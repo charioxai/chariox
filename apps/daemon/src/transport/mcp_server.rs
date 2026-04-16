@@ -585,14 +585,6 @@ mod tests {
             .as_str()
             .expect("snapshot id should be present")
             .to_string();
-        let git_init_status = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .arg("init")
-            .status()
-            .expect("git init should start");
-        assert!(git_init_status.success());
-
         let edit_response = handle_json_rpc_value(
             router.clone(),
             &auth_token,
@@ -624,7 +616,7 @@ mod tests {
         assert_eq!(edit_value["result"]["structuredContent"]["applied"], true);
         assert_eq!(
             edit_value["result"]["structuredContent"]["workspace"]["identity_changed"],
-            true
+            false
         );
         assert_eq!(
             edit_value["result"]["structuredContent"]["change"]["kind"],

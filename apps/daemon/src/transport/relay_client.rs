@@ -2236,10 +2236,10 @@ mod tests {
                 kernel
                     .available_providers
                     .iter()
-                    .find(|provider| provider.as_str() == "dev-stub")
+                    .find(|provider| provider.as_str() == "managed-dev-stub")
             })
             .cloned()
-            .expect("worker should advertise dev-stub");
+            .expect("worker should advertise managed-dev-stub");
 
         let session_id = {
             let mut app = app_home.lock().await;
@@ -2372,10 +2372,10 @@ mod tests {
                 kernel
                     .available_providers
                     .iter()
-                    .find(|provider| provider.as_str() == "dev-stub")
+                    .find(|provider| provider.as_str() == "managed-dev-stub")
             })
             .cloned()
-            .expect("worker should advertise dev-stub");
+            .expect("worker should advertise managed-dev-stub");
 
         let mut app_home =
             DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap");
@@ -2509,10 +2509,10 @@ mod tests {
                 kernel
                     .available_providers
                     .iter()
-                    .find(|provider| provider.as_str() == "dev-stub")
+                    .find(|provider| provider.as_str() == "managed-dev-stub")
             })
             .cloned()
-            .expect("worker should advertise dev-stub");
+            .expect("worker should advertise managed-dev-stub");
 
         let mut app_home =
             DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap");
@@ -2670,10 +2670,10 @@ mod tests {
                 kernel
                     .available_providers
                     .iter()
-                    .find(|provider| provider.as_str() == "dev-stub")
+                    .find(|provider| provider.as_str() == "managed-dev-stub")
             })
             .cloned()
-            .expect("worker should advertise dev-stub");
+            .expect("worker should advertise managed-dev-stub");
 
         let mut app_home =
             DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap");

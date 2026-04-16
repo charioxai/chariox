@@ -231,6 +231,15 @@ async function assertFileContent(filePath, expected) {
   return actual
 }
 
+async function assertFileBytes(filePath, expected) {
+  const actual = await readFile(filePath)
+  const expectedBytes = Buffer.from(expected)
+  if (!actual.equals(expectedBytes)) {
+    throw new Error(`unexpected bytes for ${filePath}: expected ${expectedBytes.toString('hex')}, got ${actual.toString('hex')}`)
+  }
+  return actual
+}
+
 async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, events, expectedCompletionCount, requiredFiles, forbiddenFiles, timeoutMs, pollMs, debugSnapshot }) {
   const started = Date.now()
   let lastRequiredCount = 0
@@ -656,6 +665,7 @@ async function main() {
   await writeFile(path.join(workspace, 'seed.txt'), 'seed-value-42\n', 'utf8')
   for (const provider of options.providers) {
     await writeFile(path.join(outputsDir, `${provider}-delete-me.txt`), 'delete-me\n', 'utf8')
+    await writeFile(path.join(outputsDir, `${provider}-opaque-delete-me.bin`), Buffer.from([9, 8, 7]))
   }
 
   const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
@@ -750,6 +760,7 @@ async function main() {
 
     const positiveFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}.txt`))
     const movedFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-moved.txt`))
+    const opaqueMovedFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-opaque-moved.bin`))
     const directFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-direct.txt`))
     const positivePrompts = []
     for (const { provider, agent } of agents) {
@@ -763,6 +774,8 @@ async function main() {
         `+${patchInitial.trimEnd()}`,
         '*** End Patch',
       ].join('\n')
+      const opaqueBytes = Buffer.from([0, provider.length, 255, 10])
+      const opaqueBase64 = opaqueBytes.toString('base64')
       const prompt = [
         'This is a live Arroba managed I/O positive smoke test.',
         'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
@@ -772,6 +785,9 @@ async function main() {
         `Step 3: call \`arroba.edit_artifact\` with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text"}.`,
         `Step 4: call \`arroba.apply_patch\` with JSON arguments {"patch_text":${JSON.stringify(patchText)},"domain":"text"}.`,
         `Step 5: call \`arroba.move_artifact\` with JSON arguments {"from_path":"outputs/${provider}-patch.txt","to_path":"outputs/${provider}-moved.txt","old_text":${JSON.stringify(patchInitial)},"new_text":${JSON.stringify(patchMoved)},"domain":"text"}.`,
+        `Step 6: call \`arroba.write_artifact\` with JSON arguments {"path":"outputs/${provider}-opaque.bin","content_base64":${JSON.stringify(opaqueBase64)},"domain":"opaque"}.`,
+        `Step 7: call \`arroba.read_artifact\` with JSON arguments {"path":"outputs/${provider}-opaque.bin","domain":"opaque"} and verify the returned content_base64 is ${JSON.stringify(opaqueBase64)}.`,
+        `Step 8: call \`arroba.move_artifact\` with JSON arguments {"from_path":"outputs/${provider}-opaque.bin","to_path":"outputs/${provider}-opaque-moved.bin","domain":"opaque"}.`,
         `After the tool succeeds, reply exactly ${provider.toUpperCase()}_MANAGED_IO_DONE and nothing else.`,
       ].join('\n')
       positivePrompts.push({ provider, agent, prompt })
@@ -787,7 +803,7 @@ async function main() {
           attachmentId: attachment.id,
           events,
           expectedCompletionCount: beforeCompletionCount + 1,
-          requiredFiles: [path.join(outputsDir, `${provider}.txt`), path.join(outputsDir, `${provider}-moved.txt`)],
+          requiredFiles: [path.join(outputsDir, `${provider}.txt`), path.join(outputsDir, `${provider}-moved.txt`), path.join(outputsDir, `${provider}-opaque-moved.bin`)],
           forbiddenFiles: directFiles,
           timeoutMs: options.timeoutMs,
           pollMs: options.pollMs,
@@ -805,7 +821,7 @@ async function main() {
         attachmentId: attachment.id,
         events,
         expectedCompletionCount: beforePositiveCompletionCount + agents.length,
-        requiredFiles: [...positiveFiles, ...movedFiles],
+        requiredFiles: [...positiveFiles, ...movedFiles, ...opaqueMovedFiles],
         forbiddenFiles: directFiles,
         timeoutMs: options.timeoutMs,
         pollMs: options.pollMs,
@@ -829,8 +845,12 @@ async function main() {
         `${provider}-managed-io-edit-ok: seed-value-42\n`,
       )
       await assertFileContent(path.join(outputsDir, `${provider}-moved.txt`), `patch-moved-${provider}\n`)
+      await assertFileBytes(path.join(outputsDir, `${provider}-opaque-moved.bin`), [0, provider.length, 255, 10])
       if (await fileExists(path.join(outputsDir, `${provider}-patch.txt`))) {
         throw new Error(`managed move left source file behind: outputs/${provider}-patch.txt`)
+      }
+      if (await fileExists(path.join(outputsDir, `${provider}-opaque.bin`))) {
+        throw new Error(`managed opaque move left source file behind: outputs/${provider}-opaque.bin`)
       }
     }
 
@@ -862,6 +882,7 @@ async function main() {
         'This is a live Arroba managed I/O delete smoke test.',
         'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
         `Call \`arroba.delete_artifact\` with JSON arguments {"path":"outputs/${provider}-delete-me.txt","domain":"text"} to delete the pre-existing delete-me file.`,
+        `Then call \`arroba.delete_artifact\` with JSON arguments {"path":"outputs/${provider}-opaque-delete-me.bin","domain":"opaque"} to delete the pre-existing opaque delete-me file.`,
         `After the tool succeeds, reply exactly ${provider.toUpperCase()}_MANAGED_IO_DELETE_DONE and nothing else.`,
       ].join('\n')
       deletePrompts.push({ provider, agent, prompt })
@@ -910,6 +931,9 @@ async function main() {
       if (await fileExists(path.join(outputsDir, `${provider}-delete-me.txt`))) {
         throw new Error(`managed delete left file behind: outputs/${provider}-delete-me.txt`)
       }
+      if (await fileExists(path.join(outputsDir, `${provider}-opaque-delete-me.bin`))) {
+        throw new Error(`managed opaque delete left file behind: outputs/${provider}-opaque-delete-me.bin`)
+      }
     }
 
     if (options.positiveOnly) {
@@ -922,8 +946,12 @@ async function main() {
           content: await readFile(filePath, 'utf8'),
           movedRelativePath: `outputs/${provider}-moved.txt`,
           movedContent: await readFile(path.join(outputsDir, `${provider}-moved.txt`), 'utf8'),
+          opaqueMovedRelativePath: `outputs/${provider}-opaque-moved.bin`,
+          opaqueMovedHex: (await readFile(path.join(outputsDir, `${provider}-opaque-moved.bin`))).toString('hex'),
           patchSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-patch.txt`)),
+          opaqueMoveSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque.bin`)),
           deletedFileExists: await fileExists(path.join(outputsDir, `${provider}-delete-me.txt`)),
+          opaqueDeletedFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque-delete-me.bin`)),
           directWriteFileExists: await fileExists(path.join(outputsDir, `${provider}-direct.txt`)),
         })
       }
@@ -1065,8 +1093,12 @@ async function main() {
         content: await readFile(filePath, 'utf8'),
         movedRelativePath: `outputs/${provider}-moved.txt`,
         movedContent: await readFile(path.join(outputsDir, `${provider}-moved.txt`), 'utf8'),
+        opaqueMovedRelativePath: `outputs/${provider}-opaque-moved.bin`,
+        opaqueMovedHex: (await readFile(path.join(outputsDir, `${provider}-opaque-moved.bin`))).toString('hex'),
         patchSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-patch.txt`)),
+        opaqueMoveSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque.bin`)),
         deletedFileExists: await fileExists(path.join(outputsDir, `${provider}-delete-me.txt`)),
+        opaqueDeletedFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque-delete-me.bin`)),
         directWriteFileExists: await fileExists(path.join(outputsDir, `${provider}-direct.txt`)),
       })
     }

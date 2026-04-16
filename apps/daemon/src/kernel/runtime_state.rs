@@ -7311,24 +7311,31 @@ impl KernelRuntimeState {
                 })?;
                 let domain =
                     KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
-                if domain != crate::io::ArtifactDomainKind::TextDocument {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "runtime_tool_delete_artifact",
-                        message: "managed delete currently supports only text artifacts"
-                            .to_string(),
-                    });
-                }
-                let mut output = apply_managed_patch_operations(
-                    &mut coordinator,
-                    workspace_identity,
-                    workspace_root.clone(),
-                    domain,
-                    vec![ManagedPatchOperation::Delete {
-                        path: PathBuf::from(args.path),
-                    }],
-                    managed_io_reservation_owner(provider_run, tool_name),
-                    &self.owned.managed_io_external_changes,
-                )?;
+                let mut output = if domain == crate::io::ArtifactDomainKind::TextDocument {
+                    apply_managed_patch_operations(
+                        &mut coordinator,
+                        workspace_identity,
+                        workspace_root.clone(),
+                        domain,
+                        vec![ManagedPatchOperation::Delete {
+                            path: PathBuf::from(args.path),
+                        }],
+                        managed_io_reservation_owner(provider_run, tool_name),
+                        &self.owned.managed_io_external_changes,
+                    )?
+                } else {
+                    apply_managed_whole_file_operations(
+                        &mut coordinator,
+                        workspace_identity,
+                        workspace_root.clone(),
+                        domain,
+                        vec![ManagedWholeFileOperation::Delete {
+                            path: PathBuf::from(args.path),
+                        }],
+                        managed_io_reservation_owner(provider_run, tool_name),
+                        &self.owned.managed_io_external_changes,
+                    )?
+                };
                 add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
                 Ok(output)
             }
@@ -7342,26 +7349,41 @@ impl KernelRuntimeState {
                 })?;
                 let domain =
                     KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
-                if domain != crate::io::ArtifactDomainKind::TextDocument {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "runtime_tool_move_artifact",
-                        message: "managed move currently supports only text artifacts".to_string(),
-                    });
-                }
-                let mut output = apply_managed_patch_operations(
-                    &mut coordinator,
-                    workspace_identity,
-                    workspace_root.clone(),
-                    domain,
-                    vec![ManagedPatchOperation::Move {
-                        from_path: PathBuf::from(args.from_path),
-                        to_path: PathBuf::from(args.to_path),
-                        old_text: args.old_text,
-                        new_text: args.new_text,
-                    }],
-                    managed_io_reservation_owner(provider_run, tool_name),
-                    &self.owned.managed_io_external_changes,
-                )?;
+                let mut output = if domain == crate::io::ArtifactDomainKind::TextDocument {
+                    apply_managed_patch_operations(
+                        &mut coordinator,
+                        workspace_identity,
+                        workspace_root.clone(),
+                        domain,
+                        vec![ManagedPatchOperation::Move {
+                            from_path: PathBuf::from(args.from_path),
+                            to_path: PathBuf::from(args.to_path),
+                            old_text: args.old_text,
+                            new_text: args.new_text,
+                        }],
+                        managed_io_reservation_owner(provider_run, tool_name),
+                        &self.owned.managed_io_external_changes,
+                    )?
+                } else {
+                    if args.old_text.is_some() || args.new_text.is_some() {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "runtime_tool_move_artifact",
+                            message: "non-text managed moves cannot transform content; omit old_text and new_text".to_string(),
+                        });
+                    }
+                    apply_managed_whole_file_operations(
+                        &mut coordinator,
+                        workspace_identity,
+                        workspace_root.clone(),
+                        domain,
+                        vec![ManagedWholeFileOperation::Move {
+                            from_path: PathBuf::from(args.from_path),
+                            to_path: PathBuf::from(args.to_path),
+                        }],
+                        managed_io_reservation_owner(provider_run, tool_name),
+                        &self.owned.managed_io_external_changes,
+                    )?
+                };
                 add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
                 Ok(output)
             }
@@ -7906,28 +7928,39 @@ impl KernelRuntimeState {
                 })?;
                 let domain =
                     KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
-                if domain != crate::io::ArtifactDomainKind::TextDocument {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "forwarded_managed_io_delete_artifact",
-                        message: "remote managed delete currently supports only text artifacts"
-                            .to_string(),
-                    });
+                if domain == crate::io::ArtifactDomainKind::TextDocument {
+                    apply_remote_managed_patch_operations(
+                        &mut coordinator,
+                        context.worker_workspace_identity,
+                        domain,
+                        vec![ManagedPatchOperation::Delete {
+                            path: PathBuf::from(args.path),
+                        }],
+                        artifact_states,
+                        crate::io::ArtifactReservationOwner::new(
+                            format!("remote:{}", context.worker_provider_run_id),
+                            Some(context.home_agent_id),
+                            tool_name,
+                        ),
+                        &workspace_context,
+                    )
+                } else {
+                    apply_remote_managed_whole_file_operations(
+                        &mut coordinator,
+                        context.worker_workspace_identity,
+                        domain,
+                        vec![ManagedWholeFileOperation::Delete {
+                            path: PathBuf::from(args.path),
+                        }],
+                        artifact_states,
+                        crate::io::ArtifactReservationOwner::new(
+                            format!("remote:{}", context.worker_provider_run_id),
+                            Some(context.home_agent_id),
+                            tool_name,
+                        ),
+                        &workspace_context,
+                    )
                 }
-                apply_remote_managed_patch_operations(
-                    &mut coordinator,
-                    context.worker_workspace_identity,
-                    domain,
-                    vec![ManagedPatchOperation::Delete {
-                        path: PathBuf::from(args.path),
-                    }],
-                    artifact_states,
-                    crate::io::ArtifactReservationOwner::new(
-                        format!("remote:{}", context.worker_provider_run_id),
-                        Some(context.home_agent_id),
-                        tool_name,
-                    ),
-                    &workspace_context,
-                )
             }
             crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL => {
                 let args = serde_json::from_value::<
@@ -7939,31 +7972,49 @@ impl KernelRuntimeState {
                 })?;
                 let domain =
                     KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
-                if domain != crate::io::ArtifactDomainKind::TextDocument {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "forwarded_managed_io_move_artifact",
-                        message: "remote managed move currently supports only text artifacts"
-                            .to_string(),
-                    });
+                if domain == crate::io::ArtifactDomainKind::TextDocument {
+                    apply_remote_managed_patch_operations(
+                        &mut coordinator,
+                        context.worker_workspace_identity,
+                        domain,
+                        vec![ManagedPatchOperation::Move {
+                            from_path: PathBuf::from(args.from_path),
+                            to_path: PathBuf::from(args.to_path),
+                            old_text: args.old_text,
+                            new_text: args.new_text,
+                        }],
+                        artifact_states,
+                        crate::io::ArtifactReservationOwner::new(
+                            format!("remote:{}", context.worker_provider_run_id),
+                            Some(context.home_agent_id),
+                            tool_name,
+                        ),
+                        &workspace_context,
+                    )
+                } else {
+                    if args.old_text.is_some() || args.new_text.is_some() {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "forwarded_managed_io_move_artifact",
+                            message: "non-text managed moves cannot transform content; omit old_text and new_text".to_string(),
+                        });
+                    }
+                    apply_remote_managed_whole_file_operations(
+                        &mut coordinator,
+                        context.worker_workspace_identity,
+                        domain,
+                        vec![ManagedWholeFileOperation::Move {
+                            from_path: PathBuf::from(args.from_path),
+                            to_path: PathBuf::from(args.to_path),
+                        }],
+                        artifact_states,
+                        crate::io::ArtifactReservationOwner::new(
+                            format!("remote:{}", context.worker_provider_run_id),
+                            Some(context.home_agent_id),
+                            tool_name,
+                        ),
+                        &workspace_context,
+                    )
                 }
-                apply_remote_managed_patch_operations(
-                    &mut coordinator,
-                    context.worker_workspace_identity,
-                    domain,
-                    vec![ManagedPatchOperation::Move {
-                        from_path: PathBuf::from(args.from_path),
-                        to_path: PathBuf::from(args.to_path),
-                        old_text: args.old_text,
-                        new_text: args.new_text,
-                    }],
-                    artifact_states,
-                    crate::io::ArtifactReservationOwner::new(
-                        format!("remote:{}", context.worker_provider_run_id),
-                        Some(context.home_agent_id),
-                        tool_name,
-                    ),
-                    &workspace_context,
-                )
             }
             _ => Ok((
                 crate::transport::runtime_tools::RuntimeToolResult {
@@ -8190,8 +8241,10 @@ fn remote_managed_io_artifact_states_for_tool(
                 message: format!("invalid tool arguments: {error}"),
             })?;
             let path = PathBuf::from(args.path);
-            let content = managed_io_read_optional_text(workspace_root, &path)?;
-            Ok(vec![remote_managed_io_state(&path, content)])
+            let domain =
+                KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
+            let content = managed_io_read_optional_content(workspace_root, &path, domain)?;
+            Ok(vec![remote_managed_io_state_from_content(&path, content)])
         }
         crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL => {
             let args = serde_json::from_value::<
@@ -8201,13 +8254,28 @@ fn remote_managed_io_artifact_states_for_tool(
                 operation: "remote_managed_io_move_state",
                 message: format!("invalid tool arguments: {error}"),
             })?;
-            let operations = vec![ManagedPatchOperation::Move {
-                from_path: PathBuf::from(args.from_path),
-                to_path: PathBuf::from(args.to_path),
-                old_text: args.old_text,
-                new_text: args.new_text,
-            }];
-            remote_managed_io_states_for_patch_operations(workspace_root, &operations)
+            let domain =
+                KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
+            if domain == crate::io::ArtifactDomainKind::TextDocument {
+                let operations = vec![ManagedPatchOperation::Move {
+                    from_path: PathBuf::from(args.from_path),
+                    to_path: PathBuf::from(args.to_path),
+                    old_text: args.old_text,
+                    new_text: args.new_text,
+                }];
+                remote_managed_io_states_for_patch_operations(workspace_root, &operations)
+            } else {
+                let from_path = PathBuf::from(args.from_path);
+                let to_path = PathBuf::from(args.to_path);
+                let from_content =
+                    managed_io_read_optional_content(workspace_root, &from_path, domain)?;
+                let to_content =
+                    managed_io_read_optional_content(workspace_root, &to_path, domain)?;
+                Ok(vec![
+                    remote_managed_io_state_from_content(&from_path, from_content),
+                    remote_managed_io_state_from_content(&to_path, to_content),
+                ])
+            }
         }
         _ => Ok(Vec::new()),
     }
@@ -8672,6 +8740,212 @@ fn remote_managed_patch_state(
     Ok(current)
 }
 
+fn apply_remote_managed_whole_file_operations(
+    coordinator: &mut crate::io::ArtifactEditCoordinator,
+    workspace_identity: crate::io::WorkspaceIdentity,
+    domain: crate::io::ArtifactDomainKind,
+    operations: Vec<ManagedWholeFileOperation>,
+    artifact_states: Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>,
+    reservation_owner: crate::io::ArtifactReservationOwner,
+    workspace_context: &ManagedIoWorkspaceContext,
+) -> Result<
+    (
+        crate::transport::runtime_tools::RuntimeToolResult,
+        Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>,
+    ),
+    DaemonError,
+> {
+    let mut before_states: BTreeMap<PathBuf, Option<crate::io::ArtifactContent>> = BTreeMap::new();
+    let mut final_states: BTreeMap<PathBuf, Option<crate::io::ArtifactContent>> = BTreeMap::new();
+    let mut reservation_ranges: BTreeMap<PathBuf, Vec<crate::io::TextRange>> = BTreeMap::new();
+
+    for state in &artifact_states {
+        let path = PathBuf::from(&state.path);
+        let content = remote_managed_io_content_from_state(state, domain)?;
+        coordinator.read_artifact(crate::io::ArtifactReadRequest {
+            workspace_identity: workspace_identity.clone(),
+            path,
+            domain,
+            content,
+        });
+    }
+
+    for operation in operations {
+        match operation {
+            ManagedWholeFileOperation::Delete { path } => {
+                managed_io_validate_patch_path(&workspace_context.root, &path)?;
+                let current = remote_managed_whole_file_state(
+                    &artifact_states,
+                    &path,
+                    domain,
+                    &mut before_states,
+                    &mut final_states,
+                )?;
+                if current.is_none() {
+                    return Ok((
+                        managed_patch_rejected(path, "delete file target does not exist"),
+                        Vec::new(),
+                    ));
+                }
+                reservation_ranges
+                    .entry(path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
+                final_states.insert(path, None);
+            }
+            ManagedWholeFileOperation::Move { from_path, to_path } => {
+                managed_io_validate_patch_path(&workspace_context.root, &from_path)?;
+                managed_io_validate_patch_path(&workspace_context.root, &to_path)?;
+                if from_path == to_path {
+                    return Ok((
+                        managed_patch_rejected(from_path, "move source and target are identical"),
+                        Vec::new(),
+                    ));
+                }
+                let source = remote_managed_whole_file_state(
+                    &artifact_states,
+                    &from_path,
+                    domain,
+                    &mut before_states,
+                    &mut final_states,
+                )?;
+                let Some(source) = source else {
+                    return Ok((
+                        managed_patch_rejected(from_path, "move source does not exist"),
+                        Vec::new(),
+                    ));
+                };
+                let target = remote_managed_whole_file_state(
+                    &artifact_states,
+                    &to_path,
+                    domain,
+                    &mut before_states,
+                    &mut final_states,
+                )?;
+                if target.is_some() {
+                    return Ok((
+                        managed_patch_rejected(to_path, "move target already exists"),
+                        Vec::new(),
+                    ));
+                }
+                reservation_ranges
+                    .entry(from_path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
+                reservation_ranges
+                    .entry(to_path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
+                final_states.insert(from_path, None);
+                final_states.insert(to_path, Some(source));
+            }
+        }
+    }
+
+    let mut reservations = Vec::new();
+    for (path, ranges) in reservation_ranges {
+        match managed_io_try_reserve_ranges(
+            coordinator,
+            &workspace_identity,
+            &path,
+            ranges,
+            reservation_owner.clone(),
+        ) {
+            Ok(token) => reservations.push(token),
+            Err(mut result) => {
+                for token in reservations {
+                    coordinator.release_reservation(token);
+                }
+                add_managed_io_workspace_payload(&mut result.payload, workspace_context);
+                return Ok((result, Vec::new()));
+            }
+        }
+    }
+
+    for (path, after) in &final_states {
+        match after {
+            Some(content) => {
+                coordinator.read_artifact(crate::io::ArtifactReadRequest {
+                    workspace_identity: workspace_identity.clone(),
+                    path: path.clone(),
+                    domain,
+                    content: content.clone(),
+                });
+            }
+            None => coordinator.forget_artifact(&workspace_identity, path),
+        }
+    }
+    for token in reservations {
+        coordinator.release_reservation(token);
+    }
+
+    let mut changes = Vec::new();
+    for (path, after) in &final_states {
+        let before = before_states.get(path).cloned().flatten();
+        let mut change_payload = serde_json::json!({});
+        add_managed_io_whole_file_change_payload(
+            &mut change_payload,
+            path.clone(),
+            before,
+            after.clone(),
+        );
+        if let Some(change) = change_payload.get("change") {
+            changes.push(change.clone());
+        }
+    }
+
+    let mut payload = serde_json::json!({
+        "applied": true,
+        "atomic": true,
+        "changes": changes,
+    });
+    if changes.len() == 1 {
+        payload["change"] = changes[0].clone();
+        if let Some(path) = changes[0].get("path").cloned() {
+            payload["path"] = path;
+        }
+    }
+    add_managed_io_workspace_payload(&mut payload, workspace_context);
+    let final_artifact_states = final_states
+        .into_iter()
+        .map(|(path, content)| remote_managed_io_state_from_content(&path, content))
+        .collect::<Vec<_>>();
+    Ok((
+        crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload },
+        final_artifact_states,
+    ))
+}
+
+fn remote_managed_whole_file_state(
+    artifact_states: &[crate::transport::relay_peer::RemoteManagedIoArtifactState],
+    path: &PathBuf,
+    domain: crate::io::ArtifactDomainKind,
+    before_states: &mut BTreeMap<PathBuf, Option<crate::io::ArtifactContent>>,
+    final_states: &mut BTreeMap<PathBuf, Option<crate::io::ArtifactContent>>,
+) -> Result<Option<crate::io::ArtifactContent>, DaemonError> {
+    if let Some(current) = final_states.get(path) {
+        return Ok(current.clone());
+    }
+    let state = remote_managed_io_state_for_path(artifact_states, path).ok_or_else(|| {
+        DaemonError::LocalTransport {
+            operation: "remote_managed_io_whole_file_state",
+            message: format!(
+                "missing forwarded artifact state for `{}`",
+                path.to_string_lossy()
+            ),
+        }
+    })?;
+    let current = state
+        .exists
+        .then(|| remote_managed_io_content_from_state(state, domain))
+        .transpose()?;
+    before_states
+        .entry(path.clone())
+        .or_insert_with(|| current.clone());
+    final_states.insert(path.clone(), current.clone());
+    Ok(current)
+}
+
 fn leased_workflow_tool_result_should_complete_turn(
     tool_name: &str,
     result: &crate::transport::runtime_tools::RuntimeToolResult,
@@ -8753,6 +9027,17 @@ enum ManagedPatchOperation {
         to_path: PathBuf,
         old_text: Option<String>,
         new_text: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum ManagedWholeFileOperation {
+    Delete {
+        path: PathBuf,
+    },
+    Move {
+        from_path: PathBuf,
+        to_path: PathBuf,
     },
 }
 
@@ -9315,6 +9600,197 @@ fn apply_managed_patch_operations(
     Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
 }
 
+fn apply_managed_whole_file_operations(
+    coordinator: &mut crate::io::ArtifactEditCoordinator,
+    workspace_identity: crate::io::WorkspaceIdentity,
+    workspace_root: PathBuf,
+    domain: crate::io::ArtifactDomainKind,
+    operations: Vec<ManagedWholeFileOperation>,
+    reservation_owner: crate::io::ArtifactReservationOwner,
+    external_change_monitor: &crate::io::ArtifactExternalChangeMonitor,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    let mut before_states: BTreeMap<PathBuf, Option<crate::io::ArtifactContent>> = BTreeMap::new();
+    let mut final_states: BTreeMap<PathBuf, Option<crate::io::ArtifactContent>> = BTreeMap::new();
+    let mut reservation_ranges: BTreeMap<PathBuf, Vec<crate::io::TextRange>> = BTreeMap::new();
+
+    for operation in operations {
+        match operation {
+            ManagedWholeFileOperation::Delete { path } => {
+                managed_io_validate_patch_path(&workspace_root, &path)?;
+                let current = managed_whole_file_state(
+                    &workspace_root,
+                    &path,
+                    domain,
+                    &mut before_states,
+                    &mut final_states,
+                )?;
+                if current.is_none() {
+                    return Ok(managed_patch_rejected(
+                        path,
+                        "delete file target does not exist",
+                    ));
+                }
+                reservation_ranges
+                    .entry(path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
+                final_states.insert(path, None);
+            }
+            ManagedWholeFileOperation::Move { from_path, to_path } => {
+                managed_io_validate_patch_path(&workspace_root, &from_path)?;
+                managed_io_validate_patch_path(&workspace_root, &to_path)?;
+                if from_path == to_path {
+                    return Ok(managed_patch_rejected(
+                        from_path,
+                        "move source and target are identical",
+                    ));
+                }
+                let source = managed_whole_file_state(
+                    &workspace_root,
+                    &from_path,
+                    domain,
+                    &mut before_states,
+                    &mut final_states,
+                )?;
+                let Some(source) = source else {
+                    return Ok(managed_patch_rejected(
+                        from_path,
+                        "move source does not exist",
+                    ));
+                };
+                let target = managed_whole_file_state(
+                    &workspace_root,
+                    &to_path,
+                    domain,
+                    &mut before_states,
+                    &mut final_states,
+                )?;
+                if target.is_some() {
+                    return Ok(managed_patch_rejected(
+                        to_path,
+                        "move target already exists",
+                    ));
+                }
+                reservation_ranges
+                    .entry(from_path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
+                reservation_ranges
+                    .entry(to_path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
+                final_states.insert(from_path, None);
+                final_states.insert(to_path, Some(source));
+            }
+        }
+    }
+
+    let mut reservations = Vec::new();
+    for (path, ranges) in reservation_ranges {
+        match managed_io_try_reserve_ranges(
+            coordinator,
+            &workspace_identity,
+            &path,
+            ranges,
+            reservation_owner.clone(),
+        ) {
+            Ok(token) => reservations.push(token),
+            Err(output) => {
+                for token in reservations {
+                    coordinator.release_reservation(token);
+                }
+                return Ok(output);
+            }
+        }
+    }
+
+    let external_change_notices = external_change_monitor
+        .external_change_notices(&workspace_identity, final_states.keys().cloned());
+
+    for (path, before) in &before_states {
+        let latest = match managed_io_read_optional_content(&workspace_root, path, domain) {
+            Ok(latest) => latest,
+            Err(error) => {
+                for token in reservations {
+                    coordinator.release_reservation(token);
+                }
+                return Err(error);
+            }
+        };
+        if &latest != before {
+            for token in reservations {
+                coordinator.release_reservation(token);
+            }
+            external_change_monitor.record_external_change(&workspace_identity, path);
+            let mut notices = external_change_notices.clone();
+            if !notices.iter().any(|notice| notice.path == *path) {
+                notices.push(managed_io_external_change_notice_for_path(path.clone()));
+            }
+            let mut output = managed_patch_rejected(
+                path.clone(),
+                "artifact changed while the managed whole-file operation was being prepared; reread and retry",
+            );
+            add_managed_io_external_change_notices_payload(&mut output.payload, notices);
+            return Ok(output);
+        }
+    }
+
+    if let Err(error) = managed_io_write_final_content_states(&workspace_root, &final_states) {
+        let _ = managed_io_write_final_content_states(&workspace_root, &before_states);
+        for token in reservations {
+            coordinator.release_reservation(token);
+        }
+        return Err(error);
+    }
+
+    for (path, after) in &final_states {
+        match after {
+            Some(content) => {
+                coordinator.read_artifact(crate::io::ArtifactReadRequest {
+                    workspace_identity: workspace_identity.clone(),
+                    path: path.clone(),
+                    domain,
+                    content: content.clone(),
+                });
+            }
+            None => coordinator.forget_artifact(&workspace_identity, path),
+        }
+        external_change_monitor.observe_managed_write(
+            reservation_owner.provider_run_id.as_str(),
+            &workspace_identity,
+            &workspace_root,
+            path,
+        );
+    }
+    for token in reservations {
+        coordinator.release_reservation(token);
+    }
+
+    let mut changes = Vec::new();
+    for (path, after) in final_states {
+        let before = before_states.get(&path).cloned().flatten();
+        let mut change_payload = serde_json::json!({});
+        add_managed_io_whole_file_change_payload(&mut change_payload, path, before, after);
+        if let Some(change) = change_payload.get("change") {
+            changes.push(change.clone());
+        }
+    }
+
+    let mut payload = serde_json::json!({
+        "applied": true,
+        "atomic": true,
+        "changes": changes,
+    });
+    add_managed_io_external_change_notices_payload(&mut payload, external_change_notices);
+    if changes.len() == 1 {
+        payload["change"] = changes[0].clone();
+        if let Some(path) = changes[0].get("path").cloned() {
+            payload["path"] = path;
+        }
+    }
+    Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
+}
+
 fn managed_patch_state(
     workspace_root: &PathBuf,
     path: &PathBuf,
@@ -9325,6 +9801,24 @@ fn managed_patch_state(
         return Ok(current.clone());
     }
     let current = managed_io_read_optional_text(workspace_root, path)?;
+    before_states
+        .entry(path.clone())
+        .or_insert_with(|| current.clone());
+    final_states.insert(path.clone(), current.clone());
+    Ok(current)
+}
+
+fn managed_whole_file_state(
+    workspace_root: &PathBuf,
+    path: &PathBuf,
+    domain: crate::io::ArtifactDomainKind,
+    before_states: &mut BTreeMap<PathBuf, Option<crate::io::ArtifactContent>>,
+    final_states: &mut BTreeMap<PathBuf, Option<crate::io::ArtifactContent>>,
+) -> Result<Option<crate::io::ArtifactContent>, DaemonError> {
+    if let Some(current) = final_states.get(path) {
+        return Ok(current.clone());
+    }
+    let current = managed_io_read_optional_content(workspace_root, path, domain)?;
     before_states
         .entry(path.clone())
         .or_insert_with(|| current.clone());
@@ -9588,6 +10082,69 @@ fn add_managed_io_change_payload(payload: &mut serde_json::Value, change: Manage
         "diff": diff.text,
         "diff_truncated": diff.truncated,
     });
+}
+
+fn add_managed_io_whole_file_change_payload(
+    payload: &mut serde_json::Value,
+    path: PathBuf,
+    before: Option<crate::io::ArtifactContent>,
+    after: Option<crate::io::ArtifactContent>,
+) {
+    if before.is_none() && after.is_none() {
+        return;
+    }
+    let before_existed = before.is_some();
+    let after_existed = after.is_some();
+    if let (
+        Some(crate::io::ArtifactContent::Text(before)),
+        Some(crate::io::ArtifactContent::Text(after)),
+    ) = (&before, &after)
+    {
+        add_managed_io_change_payload(
+            payload,
+            ManagedIoChangeContext {
+                path,
+                before: Some(ManagedIoTextSnapshot {
+                    existed: true,
+                    text: before.clone(),
+                }),
+                after: Some(ManagedIoTextSnapshot {
+                    existed: true,
+                    text: after.clone(),
+                }),
+            },
+        );
+        return;
+    }
+    let normalized_path = path.to_string_lossy().to_string();
+    let before_bytes = before
+        .as_ref()
+        .map(artifact_content_byte_count)
+        .unwrap_or(0);
+    let after_bytes = after.as_ref().map(artifact_content_byte_count).unwrap_or(0);
+    payload["path"] = serde_json::Value::String(normalized_path.clone());
+    payload["change"] = serde_json::json!({
+        "path": normalized_path,
+        "kind": if !before_existed {
+            "add"
+        } else if !after_existed {
+            "delete"
+        } else {
+            "update"
+        },
+        "binary": true,
+        "before_byte_count": before_bytes,
+        "after_byte_count": after_bytes,
+        "diff": "Binary files differ",
+        "diff_truncated": false,
+    });
+}
+
+fn artifact_content_byte_count(content: &crate::io::ArtifactContent) -> usize {
+    match content {
+        crate::io::ArtifactContent::Text(text) => text.len(),
+        crate::io::ArtifactContent::Bytes(bytes) => bytes.len(),
+    }
 }
 
 struct ManagedIoDiff {
@@ -10242,6 +10799,122 @@ mod managed_io_external_change_notice_tests {
             vec![4, 5, 6]
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn managed_whole_file_operations_move_and_delete_opaque_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-managed-whole-file-{}",
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::write(root.join("from.bin"), [1, 2, 3]).expect("write source");
+        std::fs::write(root.join("delete.bin"), [9, 8]).expect("write delete target");
+        let workspace = crate::io::WorkspaceIdentity::local("whole-file-repo");
+        let mut coordinator = crate::io::ArtifactEditCoordinator::new();
+        let monitor = crate::io::ArtifactExternalChangeMonitor::default();
+
+        let result = apply_managed_whole_file_operations(
+            &mut coordinator,
+            workspace.clone(),
+            root.clone(),
+            crate::io::ArtifactDomainKind::OpaqueBlob,
+            vec![
+                ManagedWholeFileOperation::Move {
+                    from_path: PathBuf::from("from.bin"),
+                    to_path: PathBuf::from("to.bin"),
+                },
+                ManagedWholeFileOperation::Delete {
+                    path: PathBuf::from("delete.bin"),
+                },
+            ],
+            crate::io::ArtifactReservationOwner::new("run-1", Some("agent-1".to_string()), "test"),
+            &monitor,
+        )
+        .expect("whole-file operations should run");
+
+        assert!(result.ok);
+        assert!(!root.join("from.bin").exists());
+        assert!(!root.join("delete.bin").exists());
+        assert_eq!(std::fs::read(root.join("to.bin")).unwrap(), vec![1, 2, 3]);
+        let to_id = coordinator.resolve_artifact_id(&workspace, &PathBuf::from("to.bin"));
+        assert_eq!(
+            coordinator.current_content(&to_id),
+            Some(&crate::io::ArtifactContent::Bytes(vec![1, 2, 3]))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_managed_whole_file_operations_return_opaque_move_and_delete_states() {
+        let workspace = crate::io::WorkspaceIdentity::local("remote-whole-file-repo");
+        let workspace_context = ManagedIoWorkspaceContext {
+            root: PathBuf::from("/tmp/remote-whole-file-repo"),
+            identity: workspace.clone(),
+            generation: 0,
+            identity_changed: false,
+            valid: true,
+        };
+        let mut coordinator = crate::io::ArtifactEditCoordinator::new();
+        let states = vec![
+            remote_managed_io_state_from_content(
+                &PathBuf::from("from.bin"),
+                Some(crate::io::ArtifactContent::Bytes(vec![1, 2, 3])),
+            ),
+            remote_managed_io_state_from_content(&PathBuf::from("to.bin"), None),
+            remote_managed_io_state_from_content(
+                &PathBuf::from("delete.bin"),
+                Some(crate::io::ArtifactContent::Bytes(vec![9, 8])),
+            ),
+        ];
+
+        let (result, final_states) = apply_remote_managed_whole_file_operations(
+            &mut coordinator,
+            workspace.clone(),
+            crate::io::ArtifactDomainKind::OpaqueBlob,
+            vec![
+                ManagedWholeFileOperation::Move {
+                    from_path: PathBuf::from("from.bin"),
+                    to_path: PathBuf::from("to.bin"),
+                },
+                ManagedWholeFileOperation::Delete {
+                    path: PathBuf::from("delete.bin"),
+                },
+            ],
+            states,
+            crate::io::ArtifactReservationOwner::new(
+                "remote:run-1",
+                Some("agent-1".to_string()),
+                "arroba.move_artifact",
+            ),
+            &workspace_context,
+        )
+        .expect("remote whole-file operations should apply");
+
+        assert!(result.ok);
+        assert_eq!(final_states.len(), 3);
+        assert!(
+            !remote_managed_io_state_for_path(&final_states, &PathBuf::from("from.bin"))
+                .unwrap()
+                .exists
+        );
+        assert_eq!(
+            remote_managed_io_state_for_path(&final_states, &PathBuf::from("to.bin"))
+                .unwrap()
+                .content_base64
+                .as_deref(),
+            Some("AQID")
+        );
+        assert!(
+            !remote_managed_io_state_for_path(&final_states, &PathBuf::from("delete.bin"))
+                .unwrap()
+                .exists
+        );
+        let to_id = coordinator.resolve_artifact_id(&workspace, &PathBuf::from("to.bin"));
+        assert_eq!(
+            coordinator.current_content(&to_id),
+            Some(&crate::io::ArtifactContent::Bytes(vec![1, 2, 3]))
+        );
     }
 
     #[test]
