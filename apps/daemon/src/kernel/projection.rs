@@ -1052,6 +1052,9 @@ impl Default for ManagedIoHealthSnapshot {
                 tracked_artifacts: 0,
                 externally_changed_artifacts: 0,
                 external_change_events: 0,
+                live_watcher_started: false,
+                live_watcher_scans: 0,
+                live_watcher_scan_errors: 0,
             },
         }
     }
@@ -1424,6 +1427,9 @@ mod tests {
                     tracked_artifacts: 4,
                     externally_changed_artifacts: 2,
                     external_change_events: 5,
+                    live_watcher_started: true,
+                    live_watcher_scans: 7,
+                    live_watcher_scan_errors: 0,
                 },
             },
             ProjectionInvariantHealthSnapshot {
@@ -1484,6 +1490,7 @@ mod tests {
                 .external_change_events,
             5
         );
+        assert!(projection.managed_io.external_changes.live_watcher_started);
         assert_eq!(projection.projection_invariants.checked_agents, 3);
         assert!(projection.projection_invariants.mismatches.is_empty());
     }

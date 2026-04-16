@@ -6995,6 +6995,7 @@ impl KernelRuntimeState {
                 self.owned.managed_io_external_changes.observe_managed_read(
                     provider_run.id(),
                     &workspace_identity,
+                    &workspace_root,
                     &read.path,
                 );
                 let mut payload = managed_io_read_payload(read);
@@ -7078,6 +7079,14 @@ impl KernelRuntimeState {
                 record_managed_io_external_change_if_rejected(
                     &self.owned.managed_io_external_changes,
                     &workspace_identity,
+                    &path,
+                    &result,
+                );
+                record_managed_io_write_if_applied(
+                    &self.owned.managed_io_external_changes,
+                    provider_run.id(),
+                    &workspace_identity,
+                    &workspace_root,
                     &path,
                     &result,
                 );
@@ -7239,6 +7248,14 @@ impl KernelRuntimeState {
                 record_managed_io_external_change_if_rejected(
                     &self.owned.managed_io_external_changes,
                     &workspace_identity,
+                    &path,
+                    &result,
+                );
+                record_managed_io_write_if_applied(
+                    &self.owned.managed_io_external_changes,
+                    provider_run.id(),
+                    &workspace_identity,
+                    &workspace_root,
                     &path,
                     &result,
                 );
@@ -7462,6 +7479,19 @@ fn record_managed_io_external_change_if_rejected(
         }
     ) {
         monitor.record_external_change(workspace_identity, path);
+    }
+}
+
+fn record_managed_io_write_if_applied(
+    monitor: &crate::io::ArtifactExternalChangeMonitor,
+    provider_run_id: &str,
+    workspace_identity: &crate::io::WorkspaceIdentity,
+    workspace_root: &PathBuf,
+    path: &PathBuf,
+    result: &crate::io::EditResult,
+) {
+    if managed_io_result_applied(result) {
+        monitor.observe_managed_write(provider_run_id, workspace_identity, workspace_root, path);
     }
 }
 
@@ -7840,6 +7870,12 @@ fn apply_managed_patch_operations(
             }
             None => coordinator.forget_artifact(&workspace_identity, path),
         }
+        external_change_monitor.observe_managed_write(
+            reservation_owner.provider_run_id.as_str(),
+            &workspace_identity,
+            &workspace_root,
+            path,
+        );
     }
     for token in reservations {
         coordinator.release_reservation(token);
