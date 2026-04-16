@@ -113,7 +113,7 @@ function printHelp() {
     'Usage: node apps/cli/scripts/live-workflow-runtime-drill.mjs [options]',
     '',
     'Options:',
-    '  --scenario simple-chain|validated-increment-chain|console-increment-chain|final-run-output-chain|cyclic-final-run-output-chain|cyclic-budgeted-final-run-output-chain|cyclic-final-run-with-intermediate-output-chain',
+    '  --scenario simple-chain|validated-increment-chain|console-increment-chain|final-run-output-chain|cyclic-final-run-output-chain|cyclic-budgeted-final-run-output-chain|cyclic-final-run-with-intermediate-output-chain|conditional-branch-subset|immediate-release-downstream',
     `  --kernel ${DEFAULT_KERNEL}`,
     '  --relay-url ws://127.0.0.1:45168 --relay-token TOKEN --target-daemon-alias NAME',
     '  --machine-ref MACHINE_ALIAS',
@@ -167,6 +167,19 @@ function workflowOutput(summary, messageJson) {
     JSON.stringify({ summary, output: { message: messageJson } }, null, 2),
     '```',
   ].join('\n')
+}
+
+function addValidatedWorkflowEdgeRequest(sessionId, workflowId, fromNodeId, toNodeId, schemaPath) {
+  return {
+    AddWorkflowEdge: {
+      session_id: sessionId,
+      workflow_ref: workflowId,
+      from_node_id: fromNodeId,
+      to_node_id: toNodeId,
+      output_schema_ref: schemaPath,
+      validation_policy: 'warn',
+    },
+  }
 }
 
 async function ensureSchemaFile() {
@@ -245,16 +258,7 @@ function buildValidatedIncrementScenario(providers, model, schemaPath) {
       ].join('\n\n')
     },
     edgeRequest(sessionId, workflowId, fromNodeId, toNodeId) {
-      return {
-        AddWorkflowEdge: {
-          session_id: sessionId,
-          workflow_ref: workflowId,
-          from_node_id: fromNodeId,
-          to_node_id: toNodeId,
-          output_schema_ref: schemaPath,
-          validation_policy: 'warn',
-        },
-      }
+      return addValidatedWorkflowEdgeRequest(sessionId, workflowId, fromNodeId, toNodeId, schemaPath)
     },
   }
 }
@@ -334,16 +338,7 @@ function buildFinalRunOutputScenario(providers, model, schemaPath) {
       ].join('\n\n')
     },
     edgeRequest(sessionId, workflowId, fromNodeId, toNodeId) {
-      return {
-        AddWorkflowEdge: {
-          session_id: sessionId,
-          workflow_ref: workflowId,
-          from_node_id: fromNodeId,
-          to_node_id: toNodeId,
-          output_schema_ref: schemaPath,
-          validation_policy: 'warn',
-        },
-      }
+      return addValidatedWorkflowEdgeRequest(sessionId, workflowId, fromNodeId, toNodeId, schemaPath)
     },
     async configureWorkflow(client, sessionId, workflowId, nodeIds) {
       await client.send(setWorkflowRunOutputSchemaRequest(sessionId, workflowId, schemaPath))
@@ -389,16 +384,7 @@ function buildCyclicFinalRunOutputScenario(providers, model, schemaPath) {
       ].join('\n\n')
     },
     edgeRequest(sessionId, workflowId, fromNodeId, toNodeId) {
-      return {
-        AddWorkflowEdge: {
-          session_id: sessionId,
-          workflow_ref: workflowId,
-          from_node_id: fromNodeId,
-          to_node_id: toNodeId,
-          output_schema_ref: schemaPath,
-          validation_policy: 'warn',
-        },
-      }
+      return addValidatedWorkflowEdgeRequest(sessionId, workflowId, fromNodeId, toNodeId, schemaPath)
     },
     async configureWorkflow(client, sessionId, workflowId, nodeIds) {
       await client.send(setWorkflowRunOutputSchemaRequest(sessionId, workflowId, schemaPath))
@@ -447,16 +433,7 @@ function buildCyclicBudgetedFinalRunOutputScenario(providers, model, schemaPath)
       ].join('\n\n')
     },
     edgeRequest(sessionId, workflowId, fromNodeId, toNodeId) {
-      return {
-        AddWorkflowEdge: {
-          session_id: sessionId,
-          workflow_ref: workflowId,
-          from_node_id: fromNodeId,
-          to_node_id: toNodeId,
-          output_schema_ref: schemaPath,
-          validation_policy: 'warn',
-        },
-      }
+      return addValidatedWorkflowEdgeRequest(sessionId, workflowId, fromNodeId, toNodeId, schemaPath)
     },
     async configureWorkflow(client, sessionId, workflowId, nodeIds) {
       await client.send(setWorkflowRunOutputSchemaRequest(sessionId, workflowId, schemaPath))
@@ -510,16 +487,7 @@ function buildCyclicFinalRunWithIntermediateOutputScenario(providers, model, sch
       ].join('\n\n')
     },
     edgeRequest(sessionId, workflowId, fromNodeId, toNodeId) {
-      return {
-        AddWorkflowEdge: {
-          session_id: sessionId,
-          workflow_ref: workflowId,
-          from_node_id: fromNodeId,
-          to_node_id: toNodeId,
-          output_schema_ref: schemaPath,
-          validation_policy: 'warn',
-        },
-      }
+      return addValidatedWorkflowEdgeRequest(sessionId, workflowId, fromNodeId, toNodeId, schemaPath)
     },
     async configureWorkflow(client, sessionId, workflowId, nodeIds) {
       await client.send(setWorkflowRunOutputSchemaRequest(sessionId, workflowId, schemaPath))
@@ -533,6 +501,160 @@ function buildCyclicFinalRunWithIntermediateOutputScenario(providers, model, sch
     },
     extraEdges(nodeIds) {
       return [[nodeIds[1], nodeIds[0]]]
+    },
+  }
+}
+
+function buildConditionalBranchSubsetScenario(providers, model) {
+  if (providers.length !== 3) {
+    throw new Error('conditional-branch-subset requires exactly 3 providers')
+  }
+  return {
+    id: 'conditional-branch-subset',
+    alias: 'conditional-branch-subset',
+    providers,
+    model,
+    autoChainEdges: false,
+    entryPrompt: 'Route the configured numbers into the selected downstream branches.',
+    nodePrompt(index) {
+      if (index === 0) {
+        return [
+          'Wait for the daemon-managed node instructions to be updated with concrete target node ids.',
+          'Then emit the exact workflow output block from those instructions.',
+        ].join('\n\n')
+      }
+      if (index === 1) {
+        return [
+          'Read the upstream handoff payload for this workflow turn.',
+          'Extract `output.message` JSON.',
+          'It must have `bucket` equal to `even` and `values` equal to `[2]`.',
+          'Emit normal workflow output.message JSON with exactly `{"bucket":"even","values":[2]}`.',
+          'Your summary should be `even branch received 1 value`.',
+        ].join('\n\n')
+      }
+      if (index === 2) {
+        return [
+          'This branch should not receive a handoff in this drill.',
+          'If you are invoked, emit output.message JSON with exactly `{"bucket":"large","values":[]}`.',
+        ].join('\n\n')
+      }
+      throw new Error(`unexpected conditional branch node index ${index}`)
+    },
+    edgeRequest(sessionId, workflowId, fromNodeId, toNodeId) {
+      return addWorkflowEdgeRequest(sessionId, workflowId, fromNodeId, toNodeId)
+    },
+    extraEdges(nodeIds) {
+      return [
+        [nodeIds[0], nodeIds[1]],
+        [nodeIds[0], nodeIds[2]],
+      ]
+    },
+    async configureWorkflow(client, sessionId, workflowId, nodeIds) {
+      const routedOutput = {
+        workflow_handoffs: [
+          {
+            to_node_id: nodeIds[1],
+            summary: 'selected even values',
+            message: { bucket: 'even', values: [2] },
+          },
+        ],
+      }
+      await client.send(updateWorkflowNodeInstructionsRequest(sessionId, workflowId, nodeIds[0], [
+        'You are the router node for a conditional branching workflow.',
+        'The input numbers are exactly `[1,2,3]`.',
+        `Send even values only to target node \`${nodeIds[1]}\`.`,
+        `Do not send any handoff to target node \`${nodeIds[2]}\` because no value is >= 8.`,
+        'Emit exactly this final fenced json block and nothing else:',
+        workflowOutput('routed 1 selected branch', JSON.stringify(routedOutput)),
+      ].join('\n\n')))
+    },
+    assertResult(result, { nodeIds }) {
+      const byNodeId = new Map(result.nodeRuns.map((nodeRun) => [nodeRun.nodeId, nodeRun]))
+      const evenRun = byNodeId.get(nodeIds[1])
+      const excludedRun = byNodeId.get(nodeIds[2])
+      if (!evenRun || evenRun.status !== 'Completed') {
+        throw new Error('conditional branch drill did not complete the even branch')
+      }
+      if (excludedRun) {
+        throw new Error('conditional branch drill invoked the excluded large-value branch')
+      }
+      const evenOutput = evenRun.completion?.output?.message
+      if (evenOutput !== JSON.stringify({ bucket: 'even', values: [2] })) {
+        throw new Error(`conditional branch even output mismatch: ${evenOutput}`)
+      }
+    },
+  }
+}
+
+function buildImmediateReleaseDownstreamScenario(providers, model, schemaPath) {
+  if (providers.length !== 2) {
+    throw new Error('immediate-release-downstream requires exactly 2 providers')
+  }
+  return {
+    id: 'immediate-release-downstream',
+    alias: 'immediate-release-downstream',
+    providers,
+    model,
+    autoChainEdges: true,
+    entryPrompt: 'Start the producer. The consumer must receive the producer intermediate output before the producer turn completes.',
+    agentWorktree(index, options) {
+      return path.join(options.worktree, 'tmp', 'live-drills', 'immediate-release-worktrees', `agent-${index + 1}`)
+    },
+    nodePrompt(index) {
+      if (index === 0) {
+        return [
+          'This is an async/immediate-release workflow drill.',
+          'First, acknowledge the workflow turn as required by the runtime.',
+          'Then call `validate_and_submit_intermediate_workflow_run_output` with workflow output JSON exactly `{"value":1842}`.',
+          'After that tool returns valid, finish this same workflow turn with normal output.message JSON exactly `{"value":9999}`.',
+          'Do not call final workflow run output tools.',
+          'Your summary should be `submitted intermediate 1842 then finished producer`.',
+        ].join('\n\n')
+      }
+      return [
+        'Read the upstream handoff payload for this workflow turn.',
+        'Extract `output.message` JSON.',
+        'It must be exactly `{"value":1842}` from the producer intermediate output, not the producer final normal output.',
+        'Add 1 and emit normal output.message JSON exactly `{"value":1843}`.',
+        'Your summary should be `received immediate 1842, sent 1843`.',
+      ].join('\n\n')
+    },
+    edgeRequest(sessionId, workflowId, fromNodeId, toNodeId) {
+      return addWorkflowEdgeRequest(sessionId, workflowId, fromNodeId, toNodeId)
+    },
+    async configureWorkflow(client, sessionId, workflowId, nodeIds) {
+      await client.send(setWorkflowIntermediateOutputSchemaRequest(sessionId, workflowId, schemaPath))
+      await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(sessionId, workflowId, nodeIds[0], true))
+      await client.send(setWorkflowNodeIntermediateOutputSchemaRequest(sessionId, workflowId, nodeIds[0], schemaPath))
+    },
+    assertResult(result, { nodeIds }) {
+      const producerRun = result.nodeRuns.find((nodeRun) => nodeRun.nodeId === nodeIds[0])
+      const consumerRun = result.nodeRuns.find((nodeRun) => nodeRun.nodeId === nodeIds[1])
+      if (!producerRun || !consumerRun) {
+        throw new Error('immediate release drill did not create both producer and consumer node runs')
+      }
+      if (consumerRun.createdAtMs >= producerRun.completedAtMs) {
+        throw new Error(
+          `immediate release drill did not create consumer before producer completion: consumer created ${consumerRun.createdAtMs}, producer completed ${producerRun.completedAtMs}`,
+        )
+      }
+      const intermediate = result.intermediateOutputs.find((output) => output.source_node_run_id === producerRun.id)
+      if (intermediate?.output?.message !== JSON.stringify({ value: 1842 })) {
+        throw new Error(`immediate release drill intermediate output mismatch: ${intermediate?.output?.message}`)
+      }
+      if (consumerRun.completion?.output?.message !== JSON.stringify({ value: 1843 })) {
+        throw new Error(`immediate release drill consumer output mismatch: ${consumerRun.completion?.output?.message}`)
+      }
+    },
+    assertEarlyResult(result, { nodeIds }) {
+      const producerRun = result.nodeRuns.find((nodeRun) => nodeRun.nodeId === nodeIds[0])
+      const consumerRun = result.nodeRuns.find((nodeRun) => nodeRun.nodeId === nodeIds[1])
+      if (!producerRun || !consumerRun) return false
+      const intermediate = result.intermediateOutputs.find((output) => output.source_node_run_id === producerRun.id)
+      if (intermediate?.output?.message !== JSON.stringify({ value: 1842 })) return false
+      if (consumerRun.createdAtMs < producerRun.startedAtMs) return false
+      if (producerRun.completedAtMs != null && consumerRun.createdAtMs >= producerRun.completedAtMs) return false
+      return true
     },
   }
 }
@@ -556,6 +678,12 @@ function createScenario(options, schemaPath) {
   }
   if (options.scenario === 'cyclic-final-run-with-intermediate-output-chain') {
     return buildCyclicFinalRunWithIntermediateOutputScenario(options.providers, options.model, schemaPath)
+  }
+  if (options.scenario === 'conditional-branch-subset') {
+    return buildConditionalBranchSubsetScenario(options.providers, options.model)
+  }
+  if (options.scenario === 'immediate-release-downstream') {
+    return buildImmediateReleaseDownstreamScenario(options.providers, options.model, schemaPath)
   }
   throw new Error(`unsupported scenario: ${options.scenario}`)
 }
@@ -624,6 +752,37 @@ async function main() {
   }
   const consoleEntriesFor = (state, workflowId) =>
     ((state.workflow_consoles || []).find((entry) => entry.workflow_id === workflowId)?.entries) || []
+  const buildWorkflowResult = (session, workflow, workflowRun, run, state) => ({
+    sessionId: session.id,
+    workflowId: workflow.id,
+    workflowRunId: workflowRun.id,
+    status: run.status,
+    finalOutput: run.final_output ?? null,
+    finalOutputValid: run.final_output_valid ?? null,
+    finalOutputWarning: run.final_output_warning ?? null,
+    completedByNodeRunId: run.completed_by_node_run_id ?? null,
+    intermediateOutputs: run.intermediate_outputs ?? [],
+    consoleEntries: consoleEntriesFor(state, workflow.id),
+    nodeRuns: run.node_runs.map((nodeRun) => ({
+      id: nodeRun.id,
+      nodeId: nodeRun.node_id,
+      status: nodeRun.status,
+      summary: nodeRun.summary,
+      completion: nodeRun.completion,
+      createdAtMs: nodeRun.created_at_ms,
+      startedAtMs: nodeRun.started_at_ms,
+      completedAtMs: nodeRun.completed_at_ms,
+      tools: nodeRun.turn_envelope?.runtime_tool_calls || [],
+    })),
+    failureEvents: run.failure_events || [],
+    terminalRecords: terminalRecords.slice(-20).map((record) => ({
+      kind: record.kind,
+      providerRunId: record.provider_run_id ?? null,
+      text: Array.isArray(record.bytes)
+        ? Buffer.from(record.bytes).toString('utf8').slice(0, 800)
+        : '',
+    })),
+  })
   const logStep = (name, details = null) => {
     const prefix = `[drill] ${name}`
     if (details == null) console.log(prefix)
@@ -692,6 +851,10 @@ async function main() {
     const nodeIds = []
     for (let index = 0; index < scenario.providers.length; index += 1) {
       const provider = scenario.providers[index]
+      const agentWorktree = typeof scenario.agentWorktree === 'function'
+        ? scenario.agentWorktree(index, options)
+        : options.worktree
+      await mkdir(agentWorktree, { recursive: true })
       logStep('spawn_agent', { index, provider })
       const spawnRequest = options.machineRef
         ? {
@@ -701,11 +864,11 @@ async function main() {
               alias: `a${index + 1}`,
               model: scenario.model,
               effort: 'medium',
-              worktree_id: options.worktree,
+              worktree_id: agentWorktree,
               machine_ref: options.machineRef,
             },
           }
-        : spawnAgentRequest(session.id, provider, `a${index + 1}`, scenario.model, options.worktree, 'medium')
+        : spawnAgentRequest(session.id, provider, `a${index + 1}`, scenario.model, agentWorktree, 'medium')
       const agent = unwrap(
         await client.send(spawnRequest),
         'AgentSpawned',
@@ -736,7 +899,7 @@ async function main() {
       nodeIds.push(node.id)
       logStep('update_node_instructions', { index, nodeId: node.id })
       await client.send(updateWorkflowNodeInstructionsRequest(session.id, workflow.id, node.id, scenario.nodePrompt(index)))
-      if (index > 0) {
+      if (index > 0 && scenario.autoChainEdges !== false) {
         const edgeRequest = scenario.edgeRequest(session.id, workflow.id, nodeIds[index - 1], nodeIds[index])
         if (edgeRequest) {
           logStep('add_edge', { fromNodeId: nodeIds[index - 1], toNodeId: nodeIds[index] })
@@ -780,34 +943,18 @@ async function main() {
       const stateResp = await client.send(getSessionStateRequest(session.id))
       const state = unwrap(stateResp, 'SessionStateLoaded')?.session ?? unwrap(stateResp, 'SessionState')?.session
       const run = (state.workflow_runs || []).find((entry) => entry.id === workflowRun.id)
-      if (run && ['Completed', 'Failed', 'Stopped'].includes(run.status)) {
-        const result = {
-          sessionId: session.id,
-          workflowId: workflow.id,
-          workflowRunId: workflowRun.id,
-          status: run.status,
-          finalOutput: run.final_output ?? null,
-          finalOutputValid: run.final_output_valid ?? null,
-          finalOutputWarning: run.final_output_warning ?? null,
-          completedByNodeRunId: run.completed_by_node_run_id ?? null,
-          intermediateOutputs: run.intermediate_outputs ?? [],
-          consoleEntries: consoleEntriesFor(state, workflow.id),
-          nodeRuns: run.node_runs.map((nodeRun) => ({
-            id: nodeRun.id,
-            status: nodeRun.status,
-            summary: nodeRun.summary,
-            completion: nodeRun.completion,
-            tools: nodeRun.turn_envelope?.runtime_tool_calls || [],
-          })),
-          failureEvents: run.failure_events || [],
-          terminalRecords: terminalRecords.slice(-20).map((record) => ({
-            kind: record.kind,
-            providerRunId: record.provider_run_id ?? null,
-            text: Array.isArray(record.bytes)
-              ? Buffer.from(record.bytes).toString('utf8').slice(0, 800)
-              : '',
-          })),
+      if (run && typeof scenario.assertEarlyResult === 'function') {
+        const result = buildWorkflowResult(session, workflow, workflowRun, run, state)
+        if (scenario.assertEarlyResult(result, { nodeIds, agentIds, workflowId: workflow.id, workflowRunId: workflowRun.id })) {
+          console.log(JSON.stringify({ ...result, earlyPass: true }, null, 2))
+          await captureTrackedProviderProcesses()
+          await client.send(endSessionRequest(session.id)).catch(() => {})
+          await client.close()
+          return
         }
+      }
+      if (run && ['Completed', 'Failed', 'Stopped'].includes(run.status)) {
+        const result = buildWorkflowResult(session, workflow, workflowRun, run, state)
         console.log(JSON.stringify(result, null, 2))
         await captureTrackedProviderProcesses()
         if (run.status !== 'Completed') {
@@ -828,6 +975,9 @@ async function main() {
               `workflow drill ${scenario.id} final output mismatch: expected ${scenario.expectedFinalOutput}, got ${actualFinalOutput}`,
             )
           }
+        }
+        if (typeof scenario.assertResult === 'function') {
+          scenario.assertResult(result, { nodeIds, agentIds, workflowId: workflow.id, workflowRunId: workflowRun.id })
         }
         await client.send(endSessionRequest(session.id)).catch(() => {})
         await client.close()
@@ -851,9 +1001,13 @@ async function main() {
       consoleEntries: consoleEntriesFor(state, workflow.id),
       nodeRuns: run?.node_runs?.map((nodeRun) => ({
         id: nodeRun.id,
+        nodeId: nodeRun.node_id,
         status: nodeRun.status,
         summary: nodeRun.summary,
         completion: nodeRun.completion,
+        createdAtMs: nodeRun.created_at_ms,
+        startedAtMs: nodeRun.started_at_ms,
+        completedAtMs: nodeRun.completed_at_ms,
         tools: nodeRun.turn_envelope?.runtime_tool_calls || [],
       })),
       failureEvents: run?.failure_events || [],

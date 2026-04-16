@@ -26,6 +26,8 @@ Terminology:
      - `cyclic-final-run-output-chain`
      - `cyclic-budgeted-final-run-output-chain`
      - `cyclic-final-run-with-intermediate-output-chain`
+     - `conditional-branch-subset`
+     - `immediate-release-downstream`
    - Verify run status, node summaries, final output, intermediate output, console entries, provider cleanup, and session projection refresh.
 
 3. Remote freeform multi-agent through relay:
@@ -46,6 +48,7 @@ Terminology:
 - Local managed I/O: `node apps/cli/scripts/live-managed-io-drill.mjs --providers opencode,codex` or `pnpm --filter @arroba/cli run managed-io:drill`
 - Local workflow: `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario <scenario> --providers opencode,codex`
 - Remote freeform multi-agent: `node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers opencode,codex`
+- Remote managed I/O: `node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode,codex` or `pnpm --filter @arroba/cli run managed-io:remote-drill`
 - Remote workflow: `node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario <scenario> --providers opencode,codex`
 - Lower-level relay runtime: `node apps/cli/scripts/live-relay-runtime-drill.mjs`
 - Lower-level remote machine runtime: `node apps/cli/scripts/live-remote-machine-runtime-drill.mjs`
@@ -61,6 +64,7 @@ Terminology:
 
 - Freeform local multi-agent: **pass** with `opencode,codex` after the router bootstrap lock fix.
 - Local managed I/O: **pass** with `opencode,codex`; agents read `seed.txt`, create provider-specific output files through `arroba.write_artifact`, edit/apply-patch/move/delete through managed tools, fail if direct/native write attempts create forbidden files, serialize same-area agent collisions to one winning write, rebase stale non-overlapping external changes, and reject stale overlapping external changes. The drill owns and tears down its daemon, session, isolated workspace, session history, and transient CLI module cache.
+- Remote managed I/O: **scripted, pending full run**. The drill owns relay/home/worker daemon lifecycle, leases agents on the worker machine, runs the same managed-I/O positive/negative/collision/external-change assertions through the home kernel, and cleans transient daemons, session history, workspace files, and CLI module cache.
 - Local workflow catalog: **pass** with spawned local daemon and `opencode,codex`.
   - `simple-chain`
   - `validated-increment-chain`
@@ -69,6 +73,8 @@ Terminology:
   - `cyclic-final-run-output-chain`
   - `cyclic-budgeted-final-run-output-chain`
   - `cyclic-final-run-with-intermediate-output-chain`
+  - `conditional-branch-subset`
+  - `immediate-release-downstream`
 - Remote freeform relay: **pass** with `opencode,codex`, direct local client plus relayed client, local sidecar agents plus worker-machine leased agents, relay restart, transport close/resume, and post-reconnect prompt completion.
 - Remote workflow relay: **pass** with `opencode,codex`, relay, home daemon, worker daemon, remote worker-machine leases, forwarded workflow runtime tools, cyclic workflow progression, intermediate output, final workflow output, and clean final projections.
 - Workflow prompt-injection invariant: **pass**. Workflow prompt construction is scheduler-owned and shared by local dispatch, remote dispatch, retry/replay paths, and tests; the renderer injects turn index, last-turn guidance only on the last allowed node turn, final-output tool guidance, runtime-tool instructions, handoff payloads, edge contracts, and control mailbox content.
@@ -84,6 +90,8 @@ Point-2 fixes proven by the local workflow catalog:
 - Node max-turn budget accounting counts completed turns with completion payloads, so recovered missing-output attempts do not consume the production success budget.
 - Final workflow-output submissions no longer generate downstream handoff validation failures while completion is still committing pending turn outputs.
 - The budgeted cyclic final-output scenario now checks the exact final output payload, so a stale pre-ack provider output cannot accidentally satisfy a later final workflow turn.
+- Conditional branching drill: **pass**. A router node with two outgoing edges emitted a structured `workflow_handoffs` payload selecting only the even branch; the selected branch completed with `{"bucket":"even","values":[2]}` and the excluded branch was not invoked.
+- Immediate-release drill: **pass for release semantics**. A valid intermediate output `{"value":1842}` created and prompted the downstream node while the producer node was still running, proving asynchronous handoff release before producer turn completion. Provider settlement after the intermediate tool remains a separate follow-up hardening item.
 
 Point-3 evidence:
 

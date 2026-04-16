@@ -4532,6 +4532,44 @@ impl KernelRuntimeOwnedState {
                         warning.clone(),
                     )?
                 };
+                if !is_final && warning.is_none() {
+                    let update = self
+                        .session_store
+                        .write()
+                        .release_workflow_intermediate_output_downstream(
+                            &context.session_id,
+                            &workflow_run_id,
+                            &context.workflow_node_run_id,
+                        )?;
+                    for warning in &update.validation_warnings {
+                        self.workflow_record_failure(
+                            &context.session_id,
+                            &workflow_run_id,
+                            &crate::session::WorkflowFailureEvent::new(
+                                crate::session::WorkflowFailureKind::OutputValidationFailed,
+                                &context.workflow_node_run_id,
+                                vec![warning.edge_id.clone()],
+                                warning.message.clone(),
+                            ),
+                        );
+                        self.record_notice(
+                            &context.session_id,
+                            None,
+                            self.attachment_store
+                                .list_session_attachment_ids(&context.session_id),
+                            format!(
+                                "Workflow output validation warning on edge `{}`: {}",
+                                warning.edge_id, warning.message
+                            ),
+                        );
+                    }
+                    let _ = self.workflow_prepare_dispatches(
+                        &context.session_id,
+                        &workflow_run_id,
+                        &update.dispatches,
+                    );
+                    let _ = self.session_snapshot(&context.session_id);
+                }
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
@@ -4540,6 +4578,11 @@ impl KernelRuntimeOwnedState {
                         "warning": warning,
                         "workflow_run_id": workflow_run.id(),
                         "workflow_node_run_id": context.workflow_node_run_id,
+                        "next_action": if is_final {
+                            "Final workflow run output was submitted. If it is valid with no warning, finish this same workflow turn now."
+                        } else {
+                            "Intermediate workflow run output was submitted. Continue this same workflow turn and emit the required final fenced json block before stopping."
+                        },
                     }),
                 })
             }
