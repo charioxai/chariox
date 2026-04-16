@@ -65,7 +65,7 @@ function printHelp() {
     'Usage: node apps/cli/scripts/live-managed-io-drill.mjs [options]',
     '',
     'Runs a live managed-I/O provider smoke test:',
-    '- positive: agents read seed.txt and write provider output files through Arroba MCP tools',
+    '- positive: agents read seed.txt and exercise Arroba write/edit/apply_patch/move/delete tools',
     '- negative: agents are asked to write directly without Arroba; direct output files must not appear',
     '',
     'Options:',
@@ -140,6 +140,14 @@ async function fileExists(filePath) {
   } catch {
     return false
   }
+}
+
+async function assertFileContent(filePath, expected) {
+  const actual = await readFile(filePath, 'utf8')
+  if (actual !== expected) {
+    throw new Error(`unexpected content for ${filePath}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
+  }
+  return actual
 }
 
 async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, events, expectedCompletionCount, requiredFiles, forbiddenFiles, timeoutMs, pollMs }) {
@@ -251,19 +259,34 @@ async function main() {
     }
 
     for (const { provider, agent } of agents) {
-      const expected = `${provider}-managed-io-ok: seed-value-42\n`
+      const written = `${provider}-managed-io-write-ok: seed-value-42\n`
+      const edited = `${provider}-managed-io-edit-ok: seed-value-42\n`
+      const patchInitial = `patch-start-${provider}\n`
+      const patchMoved = `patch-moved-${provider}\n`
+      const patchText = [
+        '*** Begin Patch',
+        `*** Add File: outputs/${provider}-patch.txt`,
+        `+${patchInitial.trimEnd()}`,
+        '*** End Patch',
+      ].join('\n')
       const prompt = [
         'This is a live Arroba managed I/O positive smoke test.',
         'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
         'Use only the Arroba MCP/runtime tools for file I/O.',
         'Step 1: call `arroba.read_artifact` with JSON arguments {"path":"seed.txt","domain":"text"}.',
-        `Step 2: call \`arroba.write_artifact\` with JSON arguments {"path":"outputs/${provider}.txt","content_text":${JSON.stringify(expected)},"domain":"text"}.`,
+        `Step 2: call \`arroba.write_artifact\` with JSON arguments {"path":"outputs/${provider}.txt","content_text":${JSON.stringify(written)},"domain":"text"}.`,
+        `Step 3: call \`arroba.edit_artifact\` with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text"}.`,
+        `Step 4: call \`arroba.apply_patch\` with JSON arguments {"patch_text":${JSON.stringify(patchText)},"domain":"text"}.`,
+        `Step 5: call \`arroba.move_artifact\` with JSON arguments {"from_path":"outputs/${provider}-patch.txt","to_path":"outputs/${provider}-moved.txt","old_text":${JSON.stringify(patchInitial)},"new_text":${JSON.stringify(patchMoved)},"domain":"text"}.`,
+        `Step 6: call \`arroba.write_artifact\` with JSON arguments {"path":"outputs/${provider}-delete-me.txt","content_text":"delete-me\\n","domain":"text"}.`,
+        `Step 7: call \`arroba.delete_artifact\` with JSON arguments {"path":"outputs/${provider}-delete-me.txt","domain":"text"}.`,
         `After the tool succeeds, reply exactly ${provider.toUpperCase()}_MANAGED_IO_DONE and nothing else.`,
       ].join('\n')
       await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
     }
 
     const positiveFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}.txt`))
+    const movedFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-moved.txt`))
     const directFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-direct.txt`))
     await waitForCompletionsAndFiles({
       client,
@@ -271,11 +294,24 @@ async function main() {
       attachmentId: attachment.id,
       events,
       expectedCompletionCount: agents.length,
-      requiredFiles: positiveFiles,
+      requiredFiles: [...positiveFiles, ...movedFiles],
       forbiddenFiles: directFiles,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
     })
+    for (const provider of options.providers) {
+      await assertFileContent(
+        path.join(outputsDir, `${provider}.txt`),
+        `${provider}-managed-io-edit-ok: seed-value-42\n`,
+      )
+      await assertFileContent(path.join(outputsDir, `${provider}-moved.txt`), `patch-moved-${provider}\n`)
+      if (await fileExists(path.join(outputsDir, `${provider}-patch.txt`))) {
+        throw new Error(`managed move left source file behind: outputs/${provider}-patch.txt`)
+      }
+      if (await fileExists(path.join(outputsDir, `${provider}-delete-me.txt`))) {
+        throw new Error(`managed delete left file behind: outputs/${provider}-delete-me.txt`)
+      }
+    }
 
     for (const { provider, agent } of agents) {
       const prompt = [
@@ -306,6 +342,10 @@ async function main() {
         provider,
         relativePath: `outputs/${provider}.txt`,
         content: await readFile(filePath, 'utf8'),
+        movedRelativePath: `outputs/${provider}-moved.txt`,
+        movedContent: await readFile(path.join(outputsDir, `${provider}-moved.txt`), 'utf8'),
+        patchSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-patch.txt`)),
+        deletedFileExists: await fileExists(path.join(outputsDir, `${provider}-delete-me.txt`)),
         directWriteFileExists: await fileExists(path.join(outputsDir, `${provider}-direct.txt`)),
       })
     }
