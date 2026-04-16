@@ -213,7 +213,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: DELETE_ARTIFACT_TOOL.to_string(),
-            description: "Delete a workspace-relative artifact through Arroba managed I/O. Non-text artifacts are coordinated as whole-file operations.".to_string(),
+            description: "Delete a workspace-relative text artifact through Arroba managed I/O.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
@@ -221,7 +221,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "path": {"type": "string"},
                     "domain": {
                         "type": "string",
-                        "enum": ["text", "structured", "opaque"]
+                        "enum": ["text"]
                     }
                 },
                 "additionalProperties": false
@@ -229,7 +229,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: MOVE_ARTIFACT_TOOL.to_string(),
-            description: "Move a workspace-relative artifact through Arroba managed I/O. Optional old_text/new_text can edit moved text content atomically. Non-text artifacts are moved as whole files without content transforms.".to_string(),
+            description: "Move a workspace-relative text artifact through Arroba managed I/O. Optional old_text/new_text can edit the moved content atomically.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["from_path", "to_path"],
@@ -240,7 +240,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "new_text": {"type": "string"},
                     "domain": {
                         "type": "string",
-                        "enum": ["text", "structured", "opaque"]
+                        "enum": ["text"]
                     }
                 },
                 "additionalProperties": false
