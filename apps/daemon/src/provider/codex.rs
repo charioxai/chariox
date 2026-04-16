@@ -232,6 +232,10 @@ fn runtime_mcp_config(
             "mcp_servers.arroba.bearer_token_env_var={:?}",
             CODEX_MCP_TOKEN_ENV
         ),
+        "-c".to_string(),
+        "mcp_servers.arroba.required=true".to_string(),
+        "-c".to_string(),
+        "mcp_servers.arroba.tool_timeout_sec=15".to_string(),
     ];
     let mut env = BTreeMap::new();
     env.insert(CODEX_MCP_TOKEN_ENV.to_string(), binding.auth_token.clone());
@@ -257,7 +261,7 @@ fn write_managed_io_model_catalog(model: &str) -> Result<PathBuf, DaemonError> {
             "priority": 0,
             "availability_nux": null,
             "upgrade": null,
-            "base_instructions": "You are Codex, a coding agent. Follow the user instructions and use available tools exactly as requested.",
+            "base_instructions": "You are Codex, a coding agent. Follow the user instructions and use available tools exactly as requested. When you need workspace file I/O in an Arroba-managed session, use the available arroba MCP tools such as arroba.read_artifact, arroba.write_artifact, arroba.edit_artifact, arroba.apply_patch, arroba.move_artifact, and arroba.delete_artifact.",
             "supports_reasoning_summaries": true,
             "default_reasoning_summary": "auto",
             "support_verbosity": true,
@@ -418,30 +422,54 @@ mod tests {
             launch.pty_env.get("ARROBA_MCP_TOKEN").map(String::as_str),
             Some("token-123")
         );
-        assert!(launch
-            .pty_args
-            .iter()
-            .any(|arg| arg.contains("mcp_servers.arroba.url")));
-        assert!(launch
-            .pty_args
-            .iter()
-            .any(|arg| arg.contains("mcp_servers.arroba.bearer_token_env_var")));
-        assert!(launch
-            .pty_args
-            .iter()
-            .any(|arg| arg.contains("model_catalog_json")));
-        assert!(launch
-            .pty_args
-            .iter()
-            .any(|arg| arg == "features.shell_tool=false"));
-        assert!(launch
-            .pty_args
-            .iter()
-            .any(|arg| arg == "features.apply_patch_freeform=false"));
-        assert!(launch
-            .pty_args
-            .iter()
-            .any(|arg| arg == "include_apply_patch_tool=false"));
+        assert!(
+            launch
+                .pty_args
+                .iter()
+                .any(|arg| arg.contains("mcp_servers.arroba.url"))
+        );
+        assert!(
+            launch
+                .pty_args
+                .iter()
+                .any(|arg| arg.contains("mcp_servers.arroba.bearer_token_env_var"))
+        );
+        assert!(
+            launch
+                .pty_args
+                .iter()
+                .any(|arg| arg == "mcp_servers.arroba.required=true")
+        );
+        assert!(
+            launch
+                .pty_args
+                .iter()
+                .any(|arg| arg == "mcp_servers.arroba.tool_timeout_sec=15")
+        );
+        assert!(
+            launch
+                .pty_args
+                .iter()
+                .any(|arg| arg.contains("model_catalog_json"))
+        );
+        assert!(
+            launch
+                .pty_args
+                .iter()
+                .any(|arg| arg == "features.shell_tool=false")
+        );
+        assert!(
+            launch
+                .pty_args
+                .iter()
+                .any(|arg| arg == "features.apply_patch_freeform=false")
+        );
+        assert!(
+            launch
+                .pty_args
+                .iter()
+                .any(|arg| arg == "include_apply_patch_tool=false")
+        );
     }
 
     #[test]

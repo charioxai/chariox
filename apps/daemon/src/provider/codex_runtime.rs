@@ -4,16 +4,16 @@ use std::time::Duration;
 use std::time::Instant;
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::error::DaemonError;
-use crate::session::unix_epoch_ms;
 use crate::session::PromptAttachment;
+use crate::session::unix_epoch_ms;
 use crate::terminal::TerminalOutputKind;
 
 use super::{
-    codex_client::codex_endpoint_is_healthy, CodexClient, CodexNotification, CodexRunSelection,
-    CodexSocket, ProviderResumeState, RuntimeProviderRun,
+    CodexClient, CodexNotification, CodexRunSelection, CodexSocket, ProviderResumeState,
+    RuntimeProviderRun, codex_client::codex_endpoint_is_healthy,
 };
 
 const CODEX_EVENT_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(1);
@@ -110,6 +110,14 @@ pub struct CodexRuntimeBinding {
     pub resume_state: ProviderResumeState,
 }
 
+fn codex_client_for_run(
+    run: &RuntimeProviderRun,
+    endpoint: &str,
+) -> Result<CodexClient, DaemonError> {
+    Ok(CodexClient::new(run.id(), endpoint)?
+        .with_runtime_mcp_binding(run.runtime_mcp_server_url(), run.runtime_mcp_auth_token()))
+}
+
 pub fn initialize_codex_runtime(
     run: &RuntimeProviderRun,
 ) -> Result<CodexRuntimeBinding, DaemonError> {
@@ -134,7 +142,7 @@ pub fn initialize_codex_runtime(
         }
         sleep(Duration::from_millis(100));
     }
-    let client = CodexClient::new(run.id(), &endpoint)?;
+    let client = codex_client_for_run(run, &endpoint)?;
     let mut socket = client.connect_initialized()?;
     let mut next_request_id = 1;
     let cwd = run
@@ -200,7 +208,7 @@ pub fn submit_codex_prompt(
     prompt: &str,
     attachments: &[PromptAttachment],
 ) -> Result<(), DaemonError> {
-    let client = CodexClient::new(run.id(), state.endpoint())?;
+    let client = codex_client_for_run(run, state.endpoint())?;
     let cwd = run
         .working_directory()
         .map(|path| path.to_string_lossy().to_string());
@@ -237,10 +245,10 @@ pub fn abort_codex_turn(
 }
 
 pub fn drain_codex_events(
-    provider_run_id: &str,
+    run: &RuntimeProviderRun,
     state: &mut CodexRuntimeState,
 ) -> Result<CodexPollResult, DaemonError> {
-    let client = CodexClient::new(provider_run_id, state.endpoint())?;
+    let client = codex_client_for_run(run, state.endpoint())?;
     let mut chunks = Vec::new();
     let mut completions = Vec::new();
     let mut notices = Vec::new();
@@ -837,15 +845,14 @@ fn normalize_variant(variant: Option<&str>) -> Option<String> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use crate::session::PromptAttachment;
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        apply_notification, codex_input, render_codex_tool_transcript_update,
-        resolve_local_attachment_path, CodexNotification, CodexOutputChunk,
-        CodexToolTranscriptState,
+        CodexNotification, CodexOutputChunk, CodexToolTranscriptState, apply_notification,
+        codex_input, render_codex_tool_transcript_update, resolve_local_attachment_path,
     };
 
     #[test]

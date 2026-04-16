@@ -344,6 +344,8 @@ pub struct RuntimeProviderRun {
     pty_env: BTreeMap<String, String>,
     working_directory: Option<PathBuf>,
     structured_endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_mcp_server_url: Option<String>,
     runtime_mcp_auth_token: Option<String>,
     #[serde(
         default,
@@ -386,6 +388,10 @@ impl RuntimeProviderRun {
             pty_env: launch_result.pty_env,
             working_directory: launch_result.working_directory,
             structured_endpoint: launch_result.structured_endpoint,
+            runtime_mcp_server_url: request
+                .runtime_mcp_binding
+                .as_ref()
+                .map(|binding| binding.server_url.clone()),
             runtime_mcp_auth_token: request
                 .runtime_mcp_binding
                 .as_ref()
@@ -438,6 +444,7 @@ impl RuntimeProviderRun {
             pty_env: BTreeMap::new(),
             working_directory: None,
             structured_endpoint: None,
+            runtime_mcp_server_url: None,
             runtime_mcp_auth_token: inferred_has_runtime_mcp_binding
                 .then(|| "inferred-managed-mcp".to_string()),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
@@ -537,6 +544,10 @@ impl RuntimeProviderRun {
     }
     pub fn runtime_mcp_auth_token(&self) -> Option<&str> {
         self.runtime_mcp_auth_token.as_deref()
+    }
+
+    pub fn runtime_mcp_server_url(&self) -> Option<&str> {
+        self.runtime_mcp_server_url.as_deref()
     }
 
     pub fn write_access_mode(&self) -> ProviderWriteAccessMode {

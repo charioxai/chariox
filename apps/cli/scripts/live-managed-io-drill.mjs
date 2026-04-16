@@ -147,6 +147,37 @@ function managedIoSpawnAgentRequest(spawnAgentRequest, sessionId, provider, alia
   }
 }
 
+async function spawnManagedIoPhaseAgents({
+  client,
+  sessionId,
+  providers,
+  model,
+  workspace,
+  machineRef,
+  spawnAgentRequest,
+  aliasSuffix,
+}) {
+  const agents = []
+  for (let index = 0; index < providers.length; index += 1) {
+    const provider = providers[index]
+    const agent = unwrapVariant(
+      await client.send(managedIoSpawnAgentRequest(
+        spawnAgentRequest,
+        sessionId,
+        provider,
+        `${provider}-managed-io-${aliasSuffix}-${index + 1}`,
+        model,
+        workspace,
+        'low',
+        machineRef,
+      )),
+      'AgentSpawned',
+    ).agent
+    agents.push({ provider, agent })
+  }
+  return agents
+}
+
 async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace, worktree) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const probe = new LocalIpcClient(kernelUrl)
@@ -290,8 +321,21 @@ async function waitForManagedReadSnapshot({ historyDir, artifactPath, timeoutMs,
 }
 
 async function waitForManagedEditResult({ historyDir, artifactPath, sinceMs, timeoutMs, pollMs }) {
+  const results = await waitForManagedEditResults({
+    historyDir,
+    artifactPath,
+    sinceMs,
+    count: 1,
+    timeoutMs,
+    pollMs,
+  })
+  return results[0]
+}
+
+async function waitForManagedEditResults({ historyDir, artifactPath, sinceMs, count, timeoutMs, pollMs }) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
+    const results = []
     const files = (await readdir(historyDir).catch(() => []))
       .filter((file) => file.endsWith('.jsonl'))
       .map((file) => path.join(historyDir, file))
@@ -317,15 +361,16 @@ async function waitForManagedEditResult({ historyDir, artifactPath, sinceMs, tim
         if (!tool.endsWith('edit_artifact') || !['completed', 'error'].includes(update.status)) continue
         if (update.input?.path !== artifactPath) continue
         try {
-          return parseManagedToolOutput(update.output)
+          results.push(parseManagedToolOutput(update.output))
         } catch {
           continue
         }
       }
     }
+    if (results.length >= count) return results.slice(0, count)
     await sleep(pollMs)
   }
-  throw new Error(`timed out waiting for managed edit result for ${artifactPath}`)
+  throw new Error(`timed out waiting for ${count} managed edit results for ${artifactPath}`)
 }
 
 async function runLiveCollisionAndExternalChecks({
@@ -366,7 +411,7 @@ async function runLiveCollisionAndExternalChecks({
     ).agent
     const firstNewText = `FROM_${provider.toUpperCase()}_A`
     const secondNewText = `FROM_${provider.toUpperCase()}_B`
-    const beforeOverlapCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+    const overlapSameAreaEditStartedAt = Date.now()
     for (const [editAgent, label, newText] of [[agent, 'A', firstNewText], [collider, 'B', secondNewText]]) {
       const prompt = [
         'This is a live Arroba managed I/O overlapping-writer drill.',
@@ -377,24 +422,25 @@ async function runLiveCollisionAndExternalChecks({
       ].join('\n')
       await client.send(submitPromptRequest(session.id, attachment.id, editAgent.id, prompt, []))
     }
-    await waitForCompletionCount({
-      client,
-      sessionId: session.id,
-      attachmentId: attachment.id,
-      events,
-      expectedCompletionCount: beforeOverlapCompletionCount + 2,
+    await waitForManagedEditResults({
+      historyDir,
+      artifactPath: `outputs/${provider}-overlap.txt`,
+      sinceMs: overlapSameAreaEditStartedAt,
+      count: 2,
       timeoutMs,
       pollMs,
     })
-    await waitForAgentsIdle({
-      client,
-      sessionId: session.id,
-      attachmentId: attachment.id,
-      agentIds: [agent.id, collider.id],
-      getSessionStateRequest,
-      timeoutMs,
-      pollMs,
-    })
+    if (!machineRef) {
+      await waitForAgentsIdle({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        agentIds: [agent.id, collider.id],
+        getSessionStateRequest,
+        timeoutMs,
+        pollMs,
+      })
+    }
     const overlapContent = await readFile(overlapPath, 'utf8')
     const allowedOverlapContents = new Set([
       `one\n${firstNewText}\nthree\n`,
@@ -431,15 +477,17 @@ async function runLiveCollisionAndExternalChecks({
     if (nonOverlapRead.content_text !== nonOverlapBase) {
       throw new Error(`external non-overlap read happened after external write for ${provider}: ${JSON.stringify(nonOverlapRead.content_text)}`)
     }
-    await waitForAgentsIdle({
-      client,
-      sessionId: session.id,
-      attachmentId: attachment.id,
-      agentIds: [agent.id],
-      getSessionStateRequest,
-      timeoutMs,
-      pollMs,
-    })
+    if (!machineRef) {
+      await waitForAgentsIdle({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        agentIds: [agent.id],
+        getSessionStateRequest,
+        timeoutMs,
+        pollMs,
+      })
+    }
     await writeFile(nonOverlapPath, nonOverlapExternallyChanged, 'utf8')
     const nonOverlapEditStartedAt = Date.now()
     await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
@@ -486,15 +534,17 @@ async function runLiveCollisionAndExternalChecks({
     if (overlapRead.content_text !== externalOverlapBase) {
       throw new Error(`external overlap read happened after external write for ${provider}: ${JSON.stringify(overlapRead.content_text)}`)
     }
-    await waitForAgentsIdle({
-      client,
-      sessionId: session.id,
-      attachmentId: attachment.id,
-      agentIds: [agent.id],
-      getSessionStateRequest,
-      timeoutMs,
-      pollMs,
-    })
+    if (!machineRef) {
+      await waitForAgentsIdle({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        agentIds: [agent.id],
+        getSessionStateRequest,
+        timeoutMs,
+        pollMs,
+      })
+    }
     await writeFile(overlapExternalPath, externalOverlapExpected, 'utf8')
     const overlapEditStartedAt = Date.now()
     await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
@@ -603,24 +653,16 @@ async function main() {
     client.onKernelEvent((event) => events.push({ ...event, observed_at_ms: Date.now() }))
     await client.subscribeToKernelEvents(session.id, attachment.id)
 
-    const agents = []
-    for (let index = 0; index < options.providers.length; index += 1) {
-      const provider = options.providers[index]
-      const agent = unwrapVariant(
-        await client.send(managedIoSpawnAgentRequest(
-          spawnAgentRequest,
-          session.id,
-          provider,
-          `${provider}-managed-io-${index + 1}`,
-          options.model,
-          workspace,
-          'low',
-          options.machineRef,
-        )),
-        'AgentSpawned',
-      ).agent
-      agents.push({ provider, agent })
-    }
+    const agents = await spawnManagedIoPhaseAgents({
+      client,
+      sessionId: session.id,
+      providers: options.providers,
+      model: options.model,
+      workspace,
+      machineRef: options.machineRef,
+      spawnAgentRequest,
+      aliasSuffix: 'positive',
+    })
     const debugSessionSnapshot = async () => {
       const state = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
       const currentSession = state.session ?? state
@@ -816,8 +858,19 @@ async function main() {
       return
     }
 
+    const negativeAgents = options.machineRef ? await spawnManagedIoPhaseAgents({
+      client,
+      sessionId: session.id,
+      providers: options.providers,
+      model: options.model,
+      workspace,
+      machineRef: options.machineRef,
+      spawnAgentRequest,
+      aliasSuffix: 'negative',
+    }) : agents
+
     const beforeNegativeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
-    for (const { provider, agent } of agents) {
+    for (const { provider, agent } of negativeAgents) {
       const prompt = [
         'This is a live Arroba managed I/O negative smoke test.',
         `Try to create outputs/${provider}-direct.txt containing exactly DIRECT_WRITE_SHOULD_NOT_EXIST using any direct/native filesystem write mechanism available to you.`,
@@ -832,28 +885,40 @@ async function main() {
       sessionId: session.id,
       attachmentId: attachment.id,
       events,
-      expectedCompletionCount: beforeNegativeCompletionCount + agents.length,
+      expectedCompletionCount: beforeNegativeCompletionCount + negativeAgents.length,
       requiredFiles: positiveFiles,
       forbiddenFiles: directFiles,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
     })
-    await waitForAgentsIdle({
+    if (!options.machineRef) {
+      await waitForAgentsIdle({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        agentIds: negativeAgents.map(({ agent }) => agent.id),
+        getSessionStateRequest,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+      })
+    }
+
+    const collisionAgents = options.machineRef ? await spawnManagedIoPhaseAgents({
       client,
       sessionId: session.id,
-      attachmentId: attachment.id,
-      agentIds: agents.map(({ agent }) => agent.id),
-      getSessionStateRequest,
-      timeoutMs: options.timeoutMs,
-      pollMs: options.pollMs,
-    })
-
+      providers: options.providers,
+      model: options.model,
+      workspace,
+      machineRef: options.machineRef,
+      spawnAgentRequest,
+      aliasSuffix: 'collision',
+    }) : agents
     const collisionAndExternalChecks = await runLiveCollisionAndExternalChecks({
       client,
       session,
       attachment,
       events,
-      agents,
+      agents: collisionAgents,
       model: options.model,
       machineRef: options.machineRef,
       workspace,

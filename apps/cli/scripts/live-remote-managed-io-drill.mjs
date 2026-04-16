@@ -44,6 +44,7 @@ function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     keepArtifactsOnFailure: false,
+    full: false,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -53,6 +54,7 @@ function parseArgs(argv) {
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--full') options.full = true
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -229,7 +231,7 @@ async function runManagedIoChild(args, cwd) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-managed-io-drill.mjs [--providers opencode,codex] [--model MODEL]')
+    console.log('Usage: node apps/cli/scripts/live-remote-managed-io-drill.mjs [--providers opencode,codex] [--model MODEL] [--full]')
     return
   }
   if (options.providers.length < 1) throw new Error('remote managed I/O drill requires at least one provider')
@@ -268,6 +270,7 @@ async function main() {
   const homeDaemonId = `managed-io-home-${process.pid}-${Date.now()}`
   const workerDaemonId = `managed-io-worker-${process.pid}-${Date.now()}`
   const homeHistoryDir = path.join(rootDir, `${homeDaemonId}-history`)
+  const workerHistoryDir = path.join(rootDir, `${workerDaemonId}-history`)
 
   let relayChild = null
   let homeChild = null
@@ -314,7 +317,7 @@ async function main() {
         opencodePort: ports.workerOpenCodePort,
         codexPort: ports.workerCodexPort,
         socketName: 'worker.sock',
-        historyDir: path.join(rootDir, `${workerDaemonId}-history`),
+        historyDir: workerHistoryDir,
       }),
       stdio: ['ignore', 'ignore', 'inherit'],
     })
@@ -334,12 +337,12 @@ async function main() {
       '--kernel', homeKernelUrl,
       '--no-spawn-daemon',
       '--machine-ref', workerMachineId,
-      '--history-dir', homeHistoryDir,
+      '--history-dir', workerHistoryDir,
       '--providers', options.providers.join(','),
       '--model', options.model,
       '--timeout-ms', String(options.timeoutMs),
       '--poll-ms', String(options.pollMs),
-      '--positive-only',
+      ...(options.full ? [] : ['--positive-only']),
       ...(options.keepArtifactsOnFailure ? ['--keep-artifacts-on-failure'] : []),
     ], repoRoot)
 
@@ -356,6 +359,7 @@ async function main() {
       workerMachineAlias,
       providers: options.providers,
       model: options.model,
+      full: options.full,
       managedIo: result,
     }, null, 2))
     succeeded = true

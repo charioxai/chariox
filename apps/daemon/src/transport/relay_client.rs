@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use arroba_relay::protocol::{ClientTarget, EncryptedRelayPayload, RelayEnvelope, RelayError};
@@ -16,8 +16,8 @@ use crate::error::DaemonError;
 use crate::kernel::command::{KernelCommand, KernelCommandSource};
 use crate::kernel::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
 use crate::kernel_transport::{
-    event_is_relevant_to_attachment, event_session_id, KernelEvent, WatchResult,
-    RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS,
+    KernelEvent, RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS, WatchResult,
+    event_is_relevant_to_attachment, event_session_id,
 };
 use crate::local::LocalDaemonRequest;
 use crate::transport::relay_crypto;
@@ -744,10 +744,12 @@ async fn handle_daemon_peer_request(
                 )
                 .await;
             match handled {
-                Ok((result, final_artifact_states)) => RelayPeerResponse::ManagedIoRuntimeToolHandled {
-                    result,
-                    final_artifact_states,
-                },
+                Ok((result, final_artifact_states)) => {
+                    RelayPeerResponse::ManagedIoRuntimeToolHandled {
+                        result,
+                        final_artifact_states,
+                    }
+                }
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,
@@ -925,10 +927,31 @@ pub async fn send_peer_request_via_relay(
             message: "relay is not connected".to_string(),
         });
     }
-    let envelope = response_rx.await.map_err(|_| DaemonError::LocalTransport {
-        operation: "read relay peer response",
-        message: "relay peer request was cancelled".to_string(),
-    })?;
+    let envelope = match timeout(
+        Duration::from_millis(config.relay_request_timeout_ms),
+        response_rx,
+    )
+    .await
+    {
+        Ok(Ok(envelope)) => envelope,
+        Ok(Err(_)) => {
+            return Err(DaemonError::LocalTransport {
+                operation: "read relay peer response",
+                message: "relay peer request was cancelled".to_string(),
+            });
+        }
+        Err(_) => {
+            let mut guard = state.write().await;
+            guard.pending_peer_requests.remove(&request_id);
+            return Err(DaemonError::LocalTransport {
+                operation: "read relay peer response",
+                message: format!(
+                    "timed out waiting for relay peer response after {}ms",
+                    config.relay_request_timeout_ms
+                ),
+            });
+        }
+    };
     if let Some(error) = envelope.error {
         return Err(DaemonError::LocalTransport {
             operation: "read relay peer response",
@@ -1056,62 +1079,82 @@ pub async fn send_peer_request_via_temporary_connection(
             operation: "write temporary relay peer request",
             message: error.to_string(),
         })?;
-    loop {
-        match socket.next().await {
-            Some(Ok(Message::Text(text))) => {
-                let envelope = serde_json::from_str::<RelayEnvelope>(&text).map_err(|error| {
-                    DaemonError::LocalTransport {
-                        operation: "decode temporary relay peer response",
-                        message: error.to_string(),
+    let response = timeout(
+        Duration::from_millis(config.relay_request_timeout_ms),
+        async {
+            loop {
+                match socket.next().await {
+                    Some(Ok(Message::Text(text))) => {
+                        let envelope =
+                            serde_json::from_str::<RelayEnvelope>(&text).map_err(|error| {
+                                DaemonError::LocalTransport {
+                                    operation: "decode temporary relay peer response",
+                                    message: error.to_string(),
+                                }
+                            })?;
+                        if let RelayEnvelope::DaemonPeerResponse {
+                            request_id: response_request_id,
+                            from_daemon_id: _,
+                            encrypted_response,
+                            error,
+                        } = envelope
+                        {
+                            if response_request_id != request_id {
+                                continue;
+                            }
+                            if let Some(error) = error {
+                                return Err(DaemonError::LocalTransport {
+                                    operation: "read temporary relay peer response",
+                                    message: error.message,
+                                });
+                            }
+                            let encrypted_response =
+                                encrypted_response.ok_or_else(|| DaemonError::LocalTransport {
+                                    operation: "read temporary relay peer response",
+                                    message: "peer returned no response payload".to_string(),
+                                })?;
+                            let decrypted = relay_crypto::decrypt_payload_for_private_key(
+                                &config.relay_private_key,
+                                &encrypted_response,
+                            )?;
+                            return serde_json::from_slice::<RelayPeerResponse>(
+                                &decrypted.plaintext,
+                            )
+                            .map_err(|error| {
+                                DaemonError::LocalTransport {
+                                    operation: "decode temporary relay peer response",
+                                    message: error.to_string(),
+                                }
+                            });
+                        }
                     }
-                })?;
-                if let RelayEnvelope::DaemonPeerResponse {
-                    request_id: response_request_id,
-                    from_daemon_id: _,
-                    encrypted_response,
-                    error,
-                } = envelope
-                {
-                    if response_request_id != request_id {
-                        continue;
-                    }
-                    if let Some(error) = error {
+                    Some(Ok(Message::Close(_))) | None => {
                         return Err(DaemonError::LocalTransport {
                             operation: "read temporary relay peer response",
-                            message: error.message,
+                            message: "relay closed temporary peer connection".to_string(),
                         });
                     }
-                    let encrypted_response =
-                        encrypted_response.ok_or_else(|| DaemonError::LocalTransport {
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => {
+                        return Err(DaemonError::LocalTransport {
                             operation: "read temporary relay peer response",
-                            message: "peer returned no response payload".to_string(),
-                        })?;
-                    let decrypted = relay_crypto::decrypt_payload_for_private_key(
-                        &config.relay_private_key,
-                        &encrypted_response,
-                    )?;
-                    return serde_json::from_slice::<RelayPeerResponse>(&decrypted.plaintext)
-                        .map_err(|error| DaemonError::LocalTransport {
-                            operation: "decode temporary relay peer response",
                             message: error.to_string(),
                         });
+                    }
                 }
             }
-            Some(Ok(Message::Close(_))) | None => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "read temporary relay peer response",
-                    message: "relay closed temporary peer connection".to_string(),
-                });
-            }
-            Some(Ok(_)) => {}
-            Some(Err(error)) => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "read temporary relay peer response",
-                    message: error.to_string(),
-                });
-            }
-        }
-    }
+        },
+    )
+    .await;
+    response.unwrap_or_else(|_| {
+        Err(DaemonError::LocalTransport {
+            operation: "read temporary relay peer response",
+            message: format!(
+                "timed out waiting for relay peer response after {}ms",
+                config.relay_request_timeout_ms
+            ),
+        })
+    })
 }
 
 async fn resolve_pending_peer_response(
@@ -1587,9 +1630,9 @@ async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
 mod tests {
     use super::*;
 
-    use arroba_relay::{protocol::ClientTarget, RelayConfig, RelayServer};
+    use arroba_relay::{RelayConfig, RelayServer, protocol::ClientTarget};
     use tokio::sync::oneshot;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     use crate::agent::CreateAgentRequest;
     use crate::app::RemoteLeaseRuntime;

@@ -228,7 +228,13 @@ mod tests {
             .create_execution_lease("home-kernel", "session-1", "agent-home-1")
             .expect("execution lease should be created");
         let leased_agent = RemoteLeaseRuntime::new(&mut app)
-            .create_leased_agent(&lease.id, "dev-stub", Some("sonnet".to_string()), None, None)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                Some("sonnet".to_string()),
+                None,
+                None,
+            )
             .expect("leased agent should be created");
 
         let hidden_backing_session = app
@@ -254,6 +260,7 @@ mod tests {
             .providers()
             .get_run(&provider_run_id)
             .expect("provider run should exist");
+        assert!(provider_run.requires_managed_io());
         assert_eq!(provider_run.session_id(), leased_agent.backing_session_id);
         assert_eq!(
             provider_run.agent_instance_id(),
@@ -278,7 +285,13 @@ mod tests {
             .create_execution_lease("home-kernel", "session-1", "agent-home-1")
             .expect("execution lease should be created");
         let leased_agent = RemoteLeaseRuntime::new(&mut app)
-            .create_leased_agent(&lease.id, "dev-stub", Some("sonnet".to_string()), None, None)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                Some("sonnet".to_string()),
+                None,
+                None,
+            )
             .expect("leased agent should be created");
 
         let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)

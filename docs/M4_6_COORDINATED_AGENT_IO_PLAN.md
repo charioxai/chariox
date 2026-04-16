@@ -317,7 +317,9 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: local managed-I/O live drill for Codex and OpenCode proving managed reads/writes/edits/apply-patch/move/delete succeed, direct/native write attempts do not create repo files, same-area agent collisions allow only one final write, stale non-overlapping external changes rebase to the intended target, and stale overlapping external changes are rejected without changing the file. The drill uses an isolated spawned daemon/session/workspace and cleans its transient artifacts on exit.
 - Landed: remote coordinated managed-I/O routing for text artifacts. Leased worker provider runs forward `read_artifact`, `edit_artifact`, `write_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact` through the home kernel when the worker workspace matches the home session repo/branch. The home kernel owns artifact snapshots/reservations/conflict decisions, and the worker applies accepted final text states only if its local artifact still matches the forwarded pre-apply state.
 - Landed: remote managed-I/O live smoke automation. It starts relay/home/worker daemons, leases provider agents on the worker machine, runs managed read/write/edit/apply-patch/move/delete through the home kernel, and cleans up sessions, daemons, history, workspaces, and transient CLI module caches.
-- Not landed yet: full remote managed-I/O negative/collision/external-change drill pass with both supported providers and type-specific non-text artifact domains beyond v1 opaque whole-file locking.
+- Landed: remote managed-I/O smoke pass with Codex after leased runs require managed I/O.
+- Landed: remote managed-I/O full pass with OpenCode, including direct-write blocking, same-area collision serialization, stale non-overlap external-change rebase, and stale overlap external-change rejection.
+- Not landed yet: full remote Codex negative/collision/external-change pass; the observed blocker is the full drill timing out while waiting for both overlapping `edit_artifact` results. Type-specific non-text artifact domains beyond v1 opaque whole-file locking are also not landed.
 
 ## Non-Goals
 

@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::Command;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::stream::MaybeTlsStream;
-use tokio_tungstenite::tungstenite::{connect, Message, WebSocket};
+use tokio_tungstenite::tungstenite::{Message, WebSocket, connect};
 
 use crate::error::DaemonError;
 use crate::provider::{OpenCodeProviderCatalog, ProviderWriteAccessMode};
@@ -19,6 +20,8 @@ pub type CodexSocket = WebSocket<MaybeTlsStream<TcpStream>>;
 pub struct CodexClient {
     provider_run_id: String,
     endpoint: String,
+    runtime_mcp_server_url: Option<String>,
+    runtime_mcp_auth_token: Option<String>,
 }
 
 struct CodexPermissionPolicy {
@@ -195,7 +198,19 @@ impl CodexClient {
         Ok(Self {
             provider_run_id: provider_run_id.into(),
             endpoint: endpoint.into(),
+            runtime_mcp_server_url: None,
+            runtime_mcp_auth_token: None,
         })
+    }
+
+    pub fn with_runtime_mcp_binding(
+        mut self,
+        server_url: Option<&str>,
+        auth_token: Option<&str>,
+    ) -> Self {
+        self.runtime_mcp_server_url = server_url.map(str::to_string);
+        self.runtime_mcp_auth_token = auth_token.map(str::to_string);
+        self
     }
 
     pub fn connect_initialized(&self) -> Result<CodexSocket, DaemonError> {
@@ -415,7 +430,7 @@ impl CodexClient {
                     Message::Close(_) => {
                         return Ok(Some(CodexNotification::Error {
                             message: "Codex app-server closed the websocket".to_string(),
-                        }))
+                        }));
                     }
                     Message::Frame(_) => return Ok(None),
                 };
@@ -488,14 +503,14 @@ impl CodexClient {
             match socket.read() {
                 Ok(Message::Text(text)) => return Ok(text.to_string()),
                 Ok(Message::Binary(bytes)) => {
-                    return Ok(String::from_utf8_lossy(&bytes).into_owned())
+                    return Ok(String::from_utf8_lossy(&bytes).into_owned());
                 }
                 Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,
                 Ok(Message::Close(_)) => {
                     return Err(self.protocol_error(
                         "codex_read",
                         "Codex app-server closed the websocket".to_string(),
-                    ))
+                    ));
                 }
                 Ok(Message::Frame(_)) => continue,
                 Err(error) => return Err(self.protocol_error("codex_read", error.to_string())),
@@ -514,11 +529,42 @@ impl CodexClient {
         let Some(method) = message.method.as_deref() else {
             return Ok(false);
         };
+        crate::logging::debug_with_fields(
+            "daemon.provider.codex",
+            "received codex server request",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "method": method,
+            }),
+        );
         let result = match method {
             "item/commandExecution/requestApproval" => json!({ "decision": "decline" }),
             "item/fileChange/requestApproval" => json!({ "decision": "decline" }),
-            "item/permissions/requestApproval" => json!({ "permissions": {} }),
-            _ => return Ok(false),
+            "item/permissions/requestApproval" => {
+                let permissions = message
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("permissions"))
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                json!({
+                    "permissions": permissions,
+                    "scope": "session",
+                })
+            }
+            "mcpServer/elicitation/request" => self.respond_to_mcp_elicitation(message),
+            "item/tool/call" => self.respond_to_dynamic_tool_call(message)?,
+            _ => {
+                crate::logging::warn_with_fields(
+                    "daemon.provider.codex",
+                    "unhandled codex server request",
+                    json!({
+                        "provider_run_id": self.provider_run_id,
+                        "method": method,
+                    }),
+                );
+                return Ok(false);
+            }
         };
         let payload = json!({
             "jsonrpc": "2.0",
@@ -529,6 +575,71 @@ impl CodexClient {
             .send(Message::Text(payload.to_string().into()))
             .map_err(|error| self.protocol_error("codex_write", error.to_string()))?;
         Ok(true)
+    }
+
+    fn respond_to_mcp_elicitation(&self, message: &JsonRpcMessage) -> Value {
+        let approve = message.params.as_ref().is_some_and(|params| {
+            params.get("serverName").and_then(Value::as_str) == Some("arroba")
+                && params
+                    .get("_meta")
+                    .and_then(|meta| meta.get("codex_approval_kind"))
+                    .and_then(Value::as_str)
+                    == Some("mcp_tool_call")
+        });
+        if approve {
+            json!({
+                "action": "accept",
+                "content": {},
+                "_meta": null,
+            })
+        } else {
+            json!({
+                "action": "decline",
+                "content": null,
+                "_meta": null,
+            })
+        }
+    }
+
+    fn respond_to_dynamic_tool_call(&self, message: &JsonRpcMessage) -> Result<Value, DaemonError> {
+        let params = message.params.as_ref().ok_or_else(|| {
+            self.protocol_error("codex_dynamic_tool_call", "missing params".to_string())
+        })?;
+        let tool_name = params.get("tool").and_then(Value::as_str).ok_or_else(|| {
+            self.protocol_error("codex_dynamic_tool_call", "missing tool name".to_string())
+        })?;
+        let arguments = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let server_url = self.runtime_mcp_server_url.as_deref().ok_or_else(|| {
+            self.protocol_error(
+                "codex_dynamic_tool_call",
+                "runtime MCP server URL is missing".to_string(),
+            )
+        })?;
+        let auth_token = self.runtime_mcp_auth_token.as_deref().ok_or_else(|| {
+            self.protocol_error(
+                "codex_dynamic_tool_call",
+                "runtime MCP auth token is missing".to_string(),
+            )
+        })?;
+        match call_runtime_mcp_tool(server_url, auth_token, tool_name, arguments) {
+            Ok(text) => Ok(json!({
+                "contentItems": [{
+                    "type": "inputText",
+                    "text": text,
+                }],
+                "success": true,
+            })),
+            Err(error) => Ok(json!({
+                "contentItems": [{
+                    "type": "inputText",
+                    "text": error.to_string(),
+                }],
+                "success": false,
+            })),
+        }
     }
 
     fn protocol_error(&self, operation: &'static str, message: String) -> DaemonError {
@@ -554,7 +665,7 @@ fn codex_permission_policy(write_access_mode: ProviderWriteAccessMode) -> CodexP
             config_overrides.insert("include_apply_patch_tool".to_string(), json!(false));
             config_overrides.insert("features.apply_patch_freeform".to_string(), json!(false));
             CodexPermissionPolicy {
-                approval_policy: "on-request",
+                approval_policy: "never",
                 sandbox: "read-only",
                 sandbox_policy: json!({
                     "type": "readOnly",
@@ -568,6 +679,146 @@ fn codex_permission_policy(write_access_mode: ProviderWriteAccessMode) -> CodexP
             }
         }
     }
+}
+
+fn call_runtime_mcp_tool(
+    server_url: &str,
+    auth_token: &str,
+    tool_name: &str,
+    arguments: Value,
+) -> Result<String, DaemonError> {
+    let endpoint = parse_http_endpoint(server_url)?;
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "id": format!("codex-dynamic-tool-{}", crate::session::unix_epoch_ms()),
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments,
+        }
+    });
+    let body = serde_json::to_vec(&payload).map_err(|error| DaemonError::LocalTransport {
+        operation: "codex_dynamic_tool_serialize",
+        message: error.to_string(),
+    })?;
+    let mut stream = TcpStream::connect((&*endpoint.host, endpoint.port)).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "codex_dynamic_tool_connect",
+            message: error.to_string(),
+        }
+    })?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "codex_dynamic_tool_timeout",
+            message: error.to_string(),
+        })?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "codex_dynamic_tool_timeout",
+            message: error.to_string(),
+        })?;
+    let request = format!(
+        "POST {} HTTP/1.1\r\nHost: {}:{}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        endpoint.path,
+        endpoint.host,
+        endpoint.port,
+        auth_token,
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .and_then(|_| stream.write_all(&body))
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "codex_dynamic_tool_write",
+            message: error.to_string(),
+        })?;
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "codex_dynamic_tool_read",
+            message: error.to_string(),
+        })?;
+    parse_runtime_mcp_response(&response)
+}
+
+struct HttpEndpoint {
+    host: String,
+    port: u16,
+    path: String,
+}
+
+fn parse_http_endpoint(server_url: &str) -> Result<HttpEndpoint, DaemonError> {
+    let rest = server_url
+        .strip_prefix("http://")
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "codex_dynamic_tool_endpoint",
+            message: "only http runtime MCP endpoints are supported".to_string(),
+        })?;
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, "mcp"));
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "codex_dynamic_tool_endpoint",
+            message: "runtime MCP endpoint must include an explicit port".to_string(),
+        })?;
+    let port = port
+        .parse::<u16>()
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "codex_dynamic_tool_endpoint",
+            message: "runtime MCP endpoint port is invalid".to_string(),
+        })?;
+    Ok(HttpEndpoint {
+        host: host.to_string(),
+        port,
+        path: format!("/{path}"),
+    })
+}
+
+fn parse_runtime_mcp_response(response: &[u8]) -> Result<String, DaemonError> {
+    let response_text = String::from_utf8_lossy(response);
+    let (head, body) =
+        response_text
+            .split_once("\r\n\r\n")
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "codex_dynamic_tool_response",
+                message: "invalid HTTP response from runtime MCP server".to_string(),
+            })?;
+    let status_ok = head
+        .lines()
+        .next()
+        .is_some_and(|line| line.contains(" 200 "));
+    if !status_ok {
+        return Err(DaemonError::LocalTransport {
+            operation: "codex_dynamic_tool_response",
+            message: head.lines().next().unwrap_or("HTTP error").to_string(),
+        });
+    }
+    let value =
+        serde_json::from_str::<Value>(body).map_err(|error| DaemonError::LocalTransport {
+            operation: "codex_dynamic_tool_response",
+            message: error.to_string(),
+        })?;
+    if let Some(error) = value.get("error") {
+        return Err(DaemonError::LocalTransport {
+            operation: "codex_dynamic_tool_response",
+            message: error.to_string(),
+        });
+    }
+    value
+        .get("result")
+        .and_then(|result| result.get("content"))
+        .and_then(Value::as_array)
+        .and_then(|content| content.first())
+        .and_then(|item| item.get("text"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "codex_dynamic_tool_response",
+            message: "runtime MCP response did not include text content".to_string(),
+        })
 }
 
 pub fn codex_endpoint_is_healthy(endpoint: &str) -> bool {
@@ -817,13 +1068,13 @@ mod tests {
 
     use crate::provider::ProviderWriteAccessMode;
 
-    use super::{codex_permission_policy, parse_notification, CodexNotification, JsonRpcMessage};
+    use super::{CodexNotification, JsonRpcMessage, codex_permission_policy, parse_notification};
 
     #[test]
     fn managed_io_permission_policy_uses_read_only_sandbox() {
         let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired);
 
-        assert_eq!(policy.approval_policy, "on-request");
+        assert_eq!(policy.approval_policy, "never");
         assert_eq!(policy.sandbox, "read-only");
         assert_eq!(
             policy.sandbox_policy,

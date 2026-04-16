@@ -27,7 +27,7 @@ impl ProviderRegistry {
     pub fn registered_adapter_count(&self) -> usize {
         #[cfg(test)]
         {
-            4
+            5
         }
 
         #[cfg(not(test))]
@@ -41,6 +41,8 @@ impl ProviderRegistry {
             DevStubAdapter::KEY => Some(&DEV_STUB_ADAPTER),
             CodexAdapter::KEY => Some(&CODEX_ADAPTER),
             OpenCodeAdapter::KEY => Some(&OPENCODE_ADAPTER),
+            #[cfg(test)]
+            ManagedDevStubAdapter::KEY => Some(&MANAGED_DEV_STUB_ADAPTER),
             #[cfg(test)]
             FailingPtyAdapter::KEY => Some(&FAILING_PTY_ADAPTER),
             _ => None,
@@ -58,6 +60,7 @@ impl ProviderRegistry {
         #[cfg(test)]
         {
             let mut keys = keys;
+            keys.push(ManagedDevStubAdapter::KEY.to_string());
             keys.push(FailingPtyAdapter::KEY.to_string());
             keys
         }
@@ -108,6 +111,47 @@ impl AgentEndpointAdapter for DevStubAdapter {
             working_directory: request.working_directory.clone(),
             structured_endpoint: None,
         })
+    }
+
+    fn park(&self, _run: &RuntimeProviderRun) {}
+
+    fn resume(&self, _run: &RuntimeProviderRun) {}
+
+    fn terminate(&self, _run: &RuntimeProviderRun) {}
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct ManagedDevStubAdapter;
+
+#[cfg(test)]
+impl ManagedDevStubAdapter {
+    const KEY: &'static str = "managed-dev-stub";
+}
+
+#[cfg(test)]
+static MANAGED_DEV_STUB_ADAPTER: ManagedDevStubAdapter = ManagedDevStubAdapter;
+
+#[cfg(test)]
+impl AgentEndpointAdapter for ManagedDevStubAdapter {
+    fn key(&self) -> &'static str {
+        Self::KEY
+    }
+
+    fn supports_managed_io_write_enforcement(&self) -> bool {
+        true
+    }
+
+    fn connect(
+        &self,
+        request: &LaunchProviderRequest,
+    ) -> Result<ProviderLaunchResult, DaemonError> {
+        let mut launch = DEV_STUB_ADAPTER.connect(request)?;
+        launch.process_label = format!(
+            "managed-dev-stub:{}:{}:{}",
+            request.provider, request.account_profile, request.model
+        );
+        Ok(launch)
     }
 
     fn park(&self, _run: &RuntimeProviderRun) {}

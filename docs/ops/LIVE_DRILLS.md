@@ -49,7 +49,8 @@ Terminology:
 - Local workflow: `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario <scenario> --providers opencode,codex`
   - Add `--no-early-pass` when validating the full `immediate-release-downstream` completion path instead of only the immediate release point.
 - Remote freeform multi-agent: `node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers opencode,codex`
-- Remote managed I/O: `node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode,codex` or `pnpm --filter @arroba/cli run managed-io:remote-drill`
+- Remote managed I/O smoke: `node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode,codex`
+- Remote managed I/O full: `node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode --full` or `pnpm --filter @arroba/cli run managed-io:remote-drill`
 - Remote workflow: `node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario <scenario> --providers opencode,codex`
 - Lower-level relay runtime: `node apps/cli/scripts/live-relay-runtime-drill.mjs`
 - Lower-level remote machine runtime: `node apps/cli/scripts/live-remote-machine-runtime-drill.mjs`
@@ -65,7 +66,7 @@ Terminology:
 
 - Freeform local multi-agent: **pass** with `opencode,codex` after the router bootstrap lock fix.
 - Local managed I/O: **pass** with `opencode,codex`; agents read `seed.txt`, create provider-specific output files through `arroba.write_artifact`, edit/apply-patch/move/delete through managed tools, fail if direct/native write attempts create forbidden files, serialize same-area agent collisions to one winning write, rebase stale non-overlapping external changes, and reject stale overlapping external changes. The drill owns and tears down its daemon, session, isolated workspace, session history, and transient CLI module cache.
-- Remote managed I/O: **scripted, pending full run**. The drill owns relay/home/worker daemon lifecycle, leases agents on the worker machine, runs the managed read/write/edit/apply-patch/move/delete smoke through the home kernel, and cleans transient daemons, session history, workspace files, and CLI module cache. The full remote negative/collision/external-change drill remains separate from the local full drill.
+- Remote managed I/O: **full pass with `opencode`** and **smoke pass with `codex`** after leased runs require managed I/O. OpenCode covers managed read/write/edit/apply-patch/move/delete, direct-write blocking, same-area collision serialization, stale non-overlap external-change rebase, and stale overlap external-change rejection. Codex full remote remains blocked in the overlap phase, where the drill times out waiting for both overlapping `edit_artifact` results.
 - Local workflow catalog: **pass** with spawned local daemon and `opencode,codex`.
   - `simple-chain`
   - `validated-increment-chain`

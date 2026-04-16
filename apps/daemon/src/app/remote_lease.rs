@@ -220,13 +220,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     &leased_agent.provider,
                     &leased_agent.provider,
                     "default",
-                    leased_agent
-                        .model
-                        .clone()
-                        .unwrap_or_else(|| "default".to_string()),
-                )
-                .with_agent_id(&leased_agent.backing_agent_id),
-            )?;
+                leased_agent
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string()),
+            )
+            .with_agent_id(&leased_agent.backing_agent_id)
+            .with_working_directory(std::path::PathBuf::from(
+                self.app
+                    .sessions
+                    .get_session(&leased_agent.backing_session_id)?
+                    .worktree_id(),
+            ))
+            .with_managed_io_required(),
+        )?;
             run.id().to_string()
         };
         let outcome = self.app.submit_prompt(
