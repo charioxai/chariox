@@ -44,15 +44,15 @@ pub(crate) struct KernelRuntimeOwnedState {
     terminal_stream: crate::terminal::TerminalStreamStore,
     workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
     managed_io_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
-    managed_io_workspace_identities: Arc<
-        std::sync::Mutex<BTreeMap<String, crate::io::WorkspaceIdentity>>,
-    >,
+    workspace_identity_monitor: crate::kernel::workspace_identity_monitor::WorkspaceIdentityMonitor,
 }
 
 struct ManagedIoWorkspaceContext {
     root: PathBuf,
     identity: crate::io::WorkspaceIdentity,
+    generation: u64,
     identity_changed: bool,
+    valid: bool,
 }
 
 impl KernelRuntimeOwnedState {
@@ -132,35 +132,6 @@ impl KernelRuntimeOwnedState {
             workspace_id: session.workspace_id().to_string(),
             worktree_root: std::path::PathBuf::from(session.worktree_id()),
             workspace_coordinator: self.workspace_coordinator.clone(),
-        })
-    }
-
-    fn managed_io_workspace_for_provider_run(
-        &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
-    ) -> Result<ManagedIoWorkspaceContext, DaemonError> {
-        let session = self.session_store.get_session(provider_run.session_id())?;
-        let workspace_root = provider_run
-            .working_directory()
-            .cloned()
-            .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
-        let identity = workspace_identity_for_root(&workspace_root);
-        let identity_changed = {
-            let mut identities = self.managed_io_workspace_identities.lock().map_err(|_| {
-                DaemonError::LocalTransport {
-                    operation: "managed_io_workspace_identity",
-                    message: "managed I/O workspace identity tracker is poisoned".to_string(),
-                }
-            })?;
-            match identities.insert(provider_run.id().to_string(), identity.clone()) {
-                Some(previous) => previous != identity,
-                None => false,
-            }
-        };
-        Ok(ManagedIoWorkspaceContext {
-            root: workspace_root,
-            identity,
-            identity_changed,
         })
     }
 
@@ -2142,6 +2113,8 @@ impl KernelRuntimeOwnedState {
         provider_run_id: &str,
         pty_process_key: Option<String>,
     ) {
+        self.workspace_identity_monitor
+            .remove_provider_run(provider_run_id);
         let process_key = self
             .provider_process_tracking
             .read()
@@ -4704,7 +4677,8 @@ impl KernelRuntimeState {
                 managed_io_coordinator: Arc::new(Mutex::new(
                     crate::io::ArtifactEditCoordinator::new(),
                 )),
-                managed_io_workspace_identities: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+                workspace_identity_monitor:
+                    crate::kernel::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
             },
         }
     }
@@ -6883,8 +6857,11 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let workspace_context = self
-            .owned
-            .managed_io_workspace_for_provider_run(provider_run)?;
+            .managed_io_workspace_for_provider_run(provider_run)
+            .await?;
+        if !workspace_context.valid {
+            return Ok(managed_io_workspace_identity_rejected(&workspace_context));
+        }
         let workspace_root = workspace_context.root.clone();
         let workspace_identity = workspace_context.identity.clone();
         let mut coordinator = self.owned.managed_io_coordinator.lock().await;
@@ -7160,6 +7137,32 @@ impl KernelRuntimeState {
         }
     }
 
+    async fn managed_io_workspace_for_provider_run(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<ManagedIoWorkspaceContext, DaemonError> {
+        let session = self
+            .owned
+            .session_store
+            .get_session(provider_run.session_id())?;
+        let workspace_root = provider_run
+            .working_directory()
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
+        let identity = workspace_identity_for_root_off_thread(workspace_root.clone()).await?;
+        let snapshot = self
+            .owned
+            .workspace_identity_monitor
+            .observe_provider_run(provider_run.id(), workspace_root.clone(), identity);
+        Ok(ManagedIoWorkspaceContext {
+            root: workspace_root,
+            identity: snapshot.current_identity,
+            generation: snapshot.generation,
+            identity_changed: snapshot.identity_changed,
+            valid: snapshot.valid,
+        })
+    }
+
     pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call(
         &self,
         context: crate::execution_lease::RemoteWorkflowTurnContext,
@@ -7215,6 +7218,8 @@ fn add_managed_io_workspace_payload(
 ) {
     payload["workspace"] = serde_json::json!({
         "identity_changed": workspace.identity_changed,
+        "identity_valid": workspace.valid,
+        "identity_generation": workspace.generation,
         "vcs_provider": workspace.identity.vcs_provider.clone(),
         "repo_id": workspace.identity.repo_id.clone(),
         "repo_url": workspace.identity.repo_url.clone(),
@@ -7222,6 +7227,21 @@ fn add_managed_io_workspace_payload(
         "head_commit": workspace.identity.head_commit.clone(),
         "worktree_root_fingerprint": workspace.identity.worktree_root_fingerprint.clone(),
     });
+}
+
+fn managed_io_workspace_identity_rejected(
+    workspace: &ManagedIoWorkspaceContext,
+) -> crate::transport::runtime_tools::RuntimeToolResult {
+    let mut payload = serde_json::json!({
+        "applied": false,
+        "reason": {
+            "kind": "workspace_identity_changed",
+            "message": "The provider run workspace identity changed since managed I/O coordination started."
+        },
+        "next_action": "Stop editing, reread the workspace state, and only retry after Arroba revalidates or rejoins the coordinated workspace.",
+    });
+    add_managed_io_workspace_payload(&mut payload, workspace);
+    crate::transport::runtime_tools::RuntimeToolResult { ok: false, payload }
 }
 
 struct ManagedIoChangeContext {
@@ -8144,6 +8164,17 @@ fn workspace_identity_for_root(workspace_root: &PathBuf) -> crate::io::Workspace
             .and_then(|value| non_empty_owned(value.trim())),
         worktree_root_fingerprint: normalized_git_root,
     }
+}
+
+async fn workspace_identity_for_root_off_thread(
+    workspace_root: PathBuf,
+) -> Result<crate::io::WorkspaceIdentity, DaemonError> {
+    tokio::task::spawn_blocking(move || workspace_identity_for_root(&workspace_root))
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "managed_io_workspace_identity",
+            message: format!("workspace identity monitor task failed: {error}"),
+        })
 }
 
 fn git_output(workspace_root: &PathBuf, args: &[&str]) -> Option<String> {
