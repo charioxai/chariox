@@ -357,7 +357,7 @@ function buildCyclicFinalRunOutputScenario(providers, model, schemaPath) {
     throw new Error('cyclic-final-run-output-chain requires exactly 2 providers')
   }
   const original = 1842
-  const threshold = original + 5
+  const threshold = original + 1
   return {
     id: 'cyclic-final-run-output-chain',
     alias: 'cyclic-final-run-output-chain',
@@ -415,7 +415,7 @@ function buildCyclicBudgetedFinalRunOutputScenario(providers, model, schemaPath)
     throw new Error('cyclic-budgeted-final-run-output-chain requires exactly 2 providers')
   }
   const original = 1842
-  const aMaxTurns = 3
+  const aMaxTurns = 2
   return {
     id: 'cyclic-budgeted-final-run-output-chain',
     alias: 'cyclic-budgeted-final-run-output-chain',
@@ -474,7 +474,7 @@ function buildCyclicFinalRunWithIntermediateOutputScenario(providers, model, sch
     throw new Error('cyclic-final-run-with-intermediate-output-chain requires exactly 2 providers')
   }
   const original = 1842
-  const threshold = original + 5
+  const threshold = original + 1
   return {
     id: 'cyclic-final-run-with-intermediate-output-chain',
     alias: 'cyclic-final-run-with-intermediate-output-chain',
@@ -501,9 +501,10 @@ function buildCyclicFinalRunWithIntermediateOutputScenario(providers, model, sch
         'Read its integer field `value`.',
         'Add 1 to that integer. The incremented integer is your computed number for this turn.',
         'Submit that computed number as intermediate workflow run output JSON with exactly one integer field: `value`.',
-        'Produce normal node-to-node workflow output JSON with exactly one integer field: `value` set to the incremented integer.',
+        `If the computed number is ${threshold} or greater, submit final workflow run output JSON with exactly one integer field: \`value\` set to the computed number. Do not generate normal node-to-node output in that case.`,
+        `If the computed number is smaller than ${threshold}, produce normal node-to-node workflow output JSON with exactly one integer field: \`value\` set to the computed number.`,
         'Do not add any other fields.',
-        'Your summary should say `received X, sent Y`.',
+        `Your summary should say \`received X, completed ${threshold}\` when you submit final workflow run output, otherwise \`received X, sent Y\`.`,
       ].join('\n\n')
     },
     edgeRequest(sessionId, workflowId, fromNodeId, toNodeId) {
@@ -522,6 +523,7 @@ function buildCyclicFinalRunWithIntermediateOutputScenario(providers, model, sch
       await client.send(setWorkflowRunOutputSchemaRequest(sessionId, workflowId, schemaPath))
       await client.send(setWorkflowIntermediateOutputSchemaRequest(sessionId, workflowId, schemaPath))
       await client.send(setWorkflowNodeCanCompleteRunRequest(sessionId, workflowId, nodeIds[0], true))
+      await client.send(setWorkflowNodeCanCompleteRunRequest(sessionId, workflowId, nodeIds[1], true))
       await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(sessionId, workflowId, nodeIds[0], true))
       await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(sessionId, workflowId, nodeIds[1], true))
       await client.send(setWorkflowNodeIntermediateOutputSchemaRequest(sessionId, workflowId, nodeIds[0], schemaPath))

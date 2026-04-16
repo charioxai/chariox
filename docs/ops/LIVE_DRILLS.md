@@ -46,7 +46,7 @@ Terminology:
 - Local managed I/O: `node apps/cli/scripts/live-managed-io-drill.mjs --providers opencode,codex`
 - Local workflow: `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario <scenario> --providers opencode,codex`
 - Remote freeform multi-agent: `node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers opencode,codex`
-- Remote workflow: `node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario <scenario> --provider codex` and the same command with `--provider opencode`
+- Remote workflow: `node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario <scenario> --providers opencode,codex`
 - Lower-level relay runtime: `node apps/cli/scripts/live-relay-runtime-drill.mjs`
 - Lower-level remote machine runtime: `node apps/cli/scripts/live-remote-machine-runtime-drill.mjs`
 
@@ -70,7 +70,7 @@ Terminology:
   - `cyclic-budgeted-final-run-output-chain`
   - `cyclic-final-run-with-intermediate-output-chain`
 - Remote freeform relay: **pass** with `opencode,codex`, direct local client plus relayed client, local sidecar agents plus worker-machine leased agents, relay restart, transport close/resume, and post-reconnect prompt completion.
-- Remote workflow relay: **not started in this gate**.
+- Remote workflow relay: **pass** with `opencode,codex`, relay, home daemon, worker daemon, remote worker-machine leases, forwarded workflow runtime tools, cyclic workflow progression, intermediate output, final workflow output, and clean final projections.
 
 Point-2 fixes proven by the local workflow catalog:
 
@@ -90,3 +90,17 @@ node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers openco
 ```
 
 Observed result: both providers were visible on the worker machine, both providers had local sidecar agents and remote leased worker agents, both local and relayed clients observed four assistant completions, the relayed client observed `transport_closed` and `transport_resumed`, and both remote worker agents completed prompts after relay restart.
+
+Point-4 evidence:
+
+```
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario validated-increment-chain --providers opencode,codex --model gpt-5.4 --poll-limit 600 --poll-interval-ms 250
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario simple-chain --providers opencode,codex --model gpt-5.4 --poll-limit 600 --poll-interval-ms 250
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario console-increment-chain --providers opencode,codex --model gpt-5.4 --poll-limit 600 --poll-interval-ms 250
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario final-run-output-chain --providers opencode,codex --model gpt-5.4 --poll-limit 600 --poll-interval-ms 250
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario cyclic-final-run-output-chain --providers opencode,codex --model gpt-5.4 --poll-limit 600 --poll-interval-ms 250
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario cyclic-budgeted-final-run-output-chain --providers opencode,codex --model gpt-5.4 --poll-limit 600 --poll-interval-ms 250
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario cyclic-final-run-with-intermediate-output-chain --providers opencode,codex --model gpt-5.4 --poll-limit 700 --poll-interval-ms 250
+```
+
+Observed result: the remote workflow catalog completed through the relay with worker-machine leased agents. The closing cyclic intermediate-output run completed with validated intermediate output and final workflow output from `workflow-node-run-2`, final output `{"value":1843}`, no failure events, and status `Completed`.

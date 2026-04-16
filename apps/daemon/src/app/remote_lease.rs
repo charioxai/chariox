@@ -330,6 +330,41 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .map(|binding| binding.context.clone())
     }
 
+    pub(crate) fn complete_leased_workflow_prompt_for_provider_run(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<Option<crate::session::PromptCompletion>, DaemonError> {
+        let Some(binding) = self.app.leased_workflow_turns.get(provider_run_id).cloned() else {
+            return Ok(None);
+        };
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(&binding.leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: binding.leased_agent_id.clone(),
+            })?;
+        if self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .is_none()
+        {
+            self.app.leased_workflow_turns.remove(provider_run_id);
+            return Ok(None);
+        }
+        let completion = self.app.complete_active_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            Some(provider_run_id),
+        )?;
+        self.app.leased_workflow_turns.remove(provider_run_id);
+        Ok(Some(completion))
+    }
+
     #[cfg(test)]
     pub(crate) fn leased_agent_active_prompt_attachments(
         &self,

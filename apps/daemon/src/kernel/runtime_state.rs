@@ -6899,7 +6899,33 @@ impl KernelRuntimeState {
                     })
                     .await?;
                 return match response {
-                    RelayPeerResponse::WorkflowRuntimeToolHandled { result } => Ok(result),
+                    RelayPeerResponse::WorkflowRuntimeToolHandled { result } => {
+                        if leased_workflow_tool_result_should_complete_turn(
+                            canonical_tool_name,
+                            &result,
+                        ) {
+                            self.with_app_side_effect(|app| {
+                                let mut runtime = crate::app::RemoteLeaseRuntime::new(app);
+                                for provider_run_id in &provider_run_ids {
+                                    if runtime
+                                        .leased_workflow_turn_context_for_provider_run(
+                                            provider_run_id,
+                                        )
+                                        .is_some()
+                                    {
+                                        let _ = runtime
+                                            .complete_leased_workflow_prompt_for_provider_run(
+                                                provider_run_id,
+                                            )?;
+                                        break;
+                                    }
+                                }
+                                Ok(())
+                            })
+                            .await?;
+                        }
+                        Ok(result)
+                    }
                     other => Err(DaemonError::LocalTransport {
                         operation: "forward leased workflow runtime tool",
                         message: format!("unexpected forwarded workflow tool response: {other:?}"),
@@ -7067,7 +7093,7 @@ impl KernelRuntimeState {
                     crate::io::ManagedFileWriteRequest {
                         workspace_identity: workspace_identity.clone(),
                         workspace_root: workspace_root.clone(),
-                        domain:
+                        domain,
                         intent: crate::io::AgentEditIntent {
                             path: path.clone(),
                             snapshot_id: args.snapshot_id.map(crate::io::ArtifactSnapshotId::new),
@@ -7234,7 +7260,7 @@ impl KernelRuntimeState {
                     crate::io::ManagedFileWriteRequest {
                         workspace_identity: workspace_identity.clone(),
                         workspace_root: workspace_root.clone(),
-                        domain:
+                        domain,
                         intent: crate::io::AgentEditIntent {
                             path: path.clone(),
                             snapshot_id: args.snapshot_id.map(crate::io::ArtifactSnapshotId::new),
@@ -7386,6 +7412,37 @@ fn managed_io_workspace_identity_rejected(
     });
     add_managed_io_workspace_payload(&mut payload, workspace);
     crate::transport::runtime_tools::RuntimeToolResult { ok: false, payload }
+}
+
+fn leased_workflow_tool_result_should_complete_turn(
+    tool_name: &str,
+    result: &crate::transport::runtime_tools::RuntimeToolResult,
+) -> bool {
+    if !result.ok {
+        return false;
+    }
+    match tool_name {
+        crate::transport::runtime_tools::VALIDATE_WORKFLOW_OUTPUT_TOOL => {
+            result
+                .payload
+                .get("valid")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+        }
+        crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL => {
+            result
+                .payload
+                .get("valid")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+                && result
+                    .payload
+                    .get("submitted")
+                    .and_then(|value| value.as_bool())
+                    == Some(true)
+        }
+        _ => false,
+    }
 }
 
 struct ManagedIoChangeContext {
