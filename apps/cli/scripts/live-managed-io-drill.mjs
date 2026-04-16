@@ -243,6 +243,7 @@ async function assertFileBytes(filePath, expected) {
 async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, events, expectedCompletionCount, requiredFiles, forbiddenFiles, timeoutMs, pollMs, debugSnapshot }) {
   const started = Date.now()
   let lastRequiredCount = 0
+  let lastMissingRequired = requiredFiles
   while (Date.now() - started < timeoutMs) {
     await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
     const forbiddenExisting = []
@@ -254,18 +255,35 @@ async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, eve
     }
 
     const requiredExisting = []
+    const missingRequired = []
     for (const requiredFile of requiredFiles) {
       if (await fileExists(requiredFile)) requiredExisting.push(requiredFile)
+      else missingRequired.push(requiredFile)
     }
     lastRequiredCount = requiredExisting.length
+    lastMissingRequired = missingRequired
     const completed = events.filter((event) => event.event === 'assistant_message_completed')
     if (requiredExisting.length === requiredFiles.length && completed.length >= expectedCompletionCount) {
       return completed
     }
+    if (completed.length >= expectedCompletionCount && missingRequired.length > 0) {
+      if (debugSnapshot) {
+        const snapshot = await debugSnapshot()
+        const allAgentsIdle = (snapshot.agents ?? []).every((agent) =>
+          !agent.is_processing &&
+          agent.state !== 'Working' &&
+          !agent.prompt?.active &&
+          (agent.prompt?.queued ?? 0) === 0
+        )
+        if (allAgentsIdle) {
+          throw new Error(`assistant completed before required managed-I/O files existed; missing=${missingRequired.join(', ')}; debug=${JSON.stringify(snapshot)}`)
+        }
+      }
+    }
     await sleep(pollMs)
   }
   const debug = debugSnapshot ? `; debug=${JSON.stringify(await debugSnapshot())}` : ''
-  throw new Error(`timed out waiting for ${expectedCompletionCount} completions and ${requiredFiles.length} required files; required files present=${lastRequiredCount}${debug}`)
+  throw new Error(`timed out waiting for ${expectedCompletionCount} completions and ${requiredFiles.length} required files; required files present=${lastRequiredCount}; missing=${lastMissingRequired.join(', ')}${debug}`)
 }
 
 async function assertFilesAbsent(filePaths, label) {
@@ -776,34 +794,60 @@ async function main() {
       ].join('\n')
       const opaqueBytes = Buffer.from([0, provider.length, 255, 10])
       const opaqueBase64 = opaqueBytes.toString('base64')
-      const prompt = [
-        'This is a live Arroba managed I/O positive smoke test.',
+      const textPrompt = [
+        'This is a live Arroba managed I/O positive text smoke test.',
         'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
         'Use only the Arroba MCP/runtime tools for file I/O.',
         'Step 1: call `arroba.read_artifact` with JSON arguments {"path":"seed.txt","domain":"text"}.',
         `Step 2: call \`arroba.write_artifact\` with JSON arguments {"path":"outputs/${provider}.txt","content_text":${JSON.stringify(written)},"domain":"text"}.`,
-        `Step 3: call \`arroba.edit_artifact\` with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text"}.`,
-        `Step 4: call \`arroba.apply_patch\` with JSON arguments {"patch_text":${JSON.stringify(patchText)},"domain":"text"}.`,
-        `Step 5: call \`arroba.move_artifact\` with JSON arguments {"from_path":"outputs/${provider}-patch.txt","to_path":"outputs/${provider}-moved.txt","old_text":${JSON.stringify(patchInitial)},"new_text":${JSON.stringify(patchMoved)},"domain":"text"}.`,
-        `Step 6: call \`arroba.write_artifact\` with JSON arguments {"path":"outputs/${provider}-opaque.bin","content_base64":${JSON.stringify(opaqueBase64)},"domain":"opaque"}.`,
-        `Step 7: call \`arroba.read_artifact\` with JSON arguments {"path":"outputs/${provider}-opaque.bin","domain":"opaque"} and verify the returned content_base64 is ${JSON.stringify(opaqueBase64)}.`,
-        `Step 8: call \`arroba.move_artifact\` with JSON arguments {"from_path":"outputs/${provider}-opaque.bin","to_path":"outputs/${provider}-opaque-moved.bin","domain":"opaque"}.`,
-        `After the tool succeeds, reply exactly ${provider.toUpperCase()}_MANAGED_IO_DONE and nothing else.`,
+        `Step 3: call \`arroba.read_artifact\` with JSON arguments {"path":"outputs/${provider}.txt","domain":"text"} and remember the returned snapshot_id.`,
+        `Step 4: call \`arroba.edit_artifact\` with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text","snapshot_id":"THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_3"}. Replace THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_3 with the exact snapshot_id from step 3.`,
+        `Step 5: call \`arroba.apply_patch\` with JSON arguments {"patch_text":${JSON.stringify(patchText)},"domain":"text"}.`,
+        `Step 6: call \`arroba.move_artifact\` with JSON arguments {"from_path":"outputs/${provider}-patch.txt","to_path":"outputs/${provider}-moved.txt","old_text":${JSON.stringify(patchInitial)},"new_text":${JSON.stringify(patchMoved)},"domain":"text"}.`,
+        `Only after all six text steps succeed and outputs/${provider}.txt plus outputs/${provider}-moved.txt exist, reply exactly ${provider.toUpperCase()}_MANAGED_IO_TEXT_DONE and nothing else.`,
+        `If any managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
       ].join('\n')
-      positivePrompts.push({ provider, agent, prompt })
+      const opaquePrompt = [
+        'This is a live Arroba managed I/O positive opaque/binary smoke test.',
+        'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
+        'Use only the Arroba MCP/runtime tools for file I/O.',
+        'Every tool call in this turn must use `"domain":"opaque"`.',
+        'Do not call apply_patch, delete_artifact, or any text-domain fallback operation in this turn.',
+        'Do not include old_text, new_text, content_text, or patch_text in the opaque move call.',
+        `Step 1: call \`arroba.write_artifact\` with JSON arguments {"path":"outputs/${provider}-opaque.bin","content_base64":${JSON.stringify(opaqueBase64)},"domain":"opaque"}.`,
+        `Step 2: call \`arroba.read_artifact\` with JSON arguments {"path":"outputs/${provider}-opaque.bin","domain":"opaque"} and verify the returned content_base64 is ${JSON.stringify(opaqueBase64)}.`,
+        `Step 3: call \`arroba.move_artifact\` exactly once with JSON arguments {"from_path":"outputs/${provider}-opaque.bin","to_path":"outputs/${provider}-opaque-moved.bin","domain":"opaque"}.`,
+        `Only after all three opaque steps succeed and outputs/${provider}-opaque-moved.bin exists, reply exactly ${provider.toUpperCase()}_MANAGED_IO_OPAQUE_DONE and nothing else.`,
+        `If any managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
+      ].join('\n')
+      positivePrompts.push({ provider, agent, textPrompt, opaquePrompt })
     }
 
     if (options.machineRef) {
-      for (const { provider, agent, prompt } of positivePrompts) {
-        const beforeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
-        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
+      for (const { provider, agent, textPrompt, opaquePrompt } of positivePrompts) {
+        const beforeTextCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, textPrompt, []))
         await waitForCompletionsAndFiles({
           client,
           sessionId: session.id,
           attachmentId: attachment.id,
           events,
-          expectedCompletionCount: beforeCompletionCount + 1,
-          requiredFiles: [path.join(outputsDir, `${provider}.txt`), path.join(outputsDir, `${provider}-moved.txt`), path.join(outputsDir, `${provider}-opaque-moved.bin`)],
+          expectedCompletionCount: beforeTextCompletionCount + 1,
+          requiredFiles: [path.join(outputsDir, `${provider}.txt`), path.join(outputsDir, `${provider}-moved.txt`)],
+          forbiddenFiles: directFiles,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
+          debugSnapshot: debugSessionSnapshot,
+        })
+        const beforeOpaqueCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, opaquePrompt, []))
+        await waitForCompletionsAndFiles({
+          client,
+          sessionId: session.id,
+          attachmentId: attachment.id,
+          events,
+          expectedCompletionCount: beforeOpaqueCompletionCount + 1,
+          requiredFiles: [path.join(outputsDir, `${provider}-opaque-moved.bin`)],
           forbiddenFiles: directFiles,
           timeoutMs: options.timeoutMs,
           pollMs: options.pollMs,
@@ -811,17 +855,33 @@ async function main() {
         })
       }
     } else {
-      const beforePositiveCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
-      for (const { agent, prompt } of positivePrompts) {
-        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
+      const beforeTextCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+      for (const { agent, textPrompt } of positivePrompts) {
+        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, textPrompt, []))
       }
       await waitForCompletionsAndFiles({
         client,
         sessionId: session.id,
         attachmentId: attachment.id,
         events,
-        expectedCompletionCount: beforePositiveCompletionCount + agents.length,
-        requiredFiles: [...positiveFiles, ...movedFiles, ...opaqueMovedFiles],
+        expectedCompletionCount: beforeTextCompletionCount + agents.length,
+        requiredFiles: [...positiveFiles, ...movedFiles],
+        forbiddenFiles: directFiles,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        debugSnapshot: debugSessionSnapshot,
+      })
+      const beforeOpaqueCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+      for (const { agent, opaquePrompt } of positivePrompts) {
+        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, opaquePrompt, []))
+      }
+      await waitForCompletionsAndFiles({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        events,
+        expectedCompletionCount: beforeOpaqueCompletionCount + agents.length,
+        requiredFiles: opaqueMovedFiles,
         forbiddenFiles: directFiles,
         timeoutMs: options.timeoutMs,
         pollMs: options.pollMs,

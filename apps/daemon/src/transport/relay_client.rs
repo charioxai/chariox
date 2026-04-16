@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{Mutex, RwLock, mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -16,8 +16,8 @@ use crate::error::DaemonError;
 use crate::kernel::command::{KernelCommand, KernelCommandSource};
 use crate::kernel::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
 use crate::kernel_transport::{
-    KernelEvent, RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS, WatchResult,
-    event_is_relevant_to_attachment, event_session_id,
+    event_is_relevant_to_attachment, event_session_id, KernelEvent, WatchResult,
+    RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS,
 };
 use crate::local::LocalDaemonRequest;
 use crate::transport::relay_crypto;
@@ -1630,9 +1630,9 @@ async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
 mod tests {
     use super::*;
 
-    use arroba_relay::{RelayConfig, RelayServer, protocol::ClientTarget};
+    use arroba_relay::{protocol::ClientTarget, RelayConfig, RelayServer};
     use tokio::sync::oneshot;
-    use tokio::time::{Duration, sleep};
+    use tokio::time::{sleep, Duration};
 
     use crate::agent::CreateAgentRequest;
     use crate::app::RemoteLeaseRuntime;

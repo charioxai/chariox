@@ -7236,7 +7236,10 @@ impl KernelRuntimeState {
                         domain,
                         intent: crate::io::AgentEditIntent {
                             path: path.clone(),
-                            snapshot_id: args.snapshot_id.map(crate::io::ArtifactSnapshotId::new),
+                            snapshot_id: args
+                                .snapshot_id
+                                .filter(|snapshot_id| !snapshot_id.is_empty())
+                                .map(crate::io::ArtifactSnapshotId::new),
                             operation,
                         },
                     },
@@ -7365,7 +7368,7 @@ impl KernelRuntimeState {
                         &self.owned.managed_io_external_changes,
                     )?
                 } else {
-                    if args.old_text.is_some() || args.new_text.is_some() {
+                    if args.has_non_text_transform_fields() {
                         return Err(DaemonError::LocalTransport {
                             operation: "runtime_tool_move_artifact",
                             message: "non-text managed moves cannot transform content; omit old_text and new_text".to_string(),
@@ -7429,7 +7432,10 @@ impl KernelRuntimeState {
                         domain,
                         intent: crate::io::AgentEditIntent {
                             path: path.clone(),
-                            snapshot_id: args.snapshot_id.map(crate::io::ArtifactSnapshotId::new),
+                            snapshot_id: args
+                                .snapshot_id
+                                .filter(|snapshot_id| !snapshot_id.is_empty())
+                                .map(crate::io::ArtifactSnapshotId::new),
                             operation: crate::io::AgentEditOperation::WriteArtifact { content },
                         },
                     },
@@ -7759,6 +7765,7 @@ impl KernelRuntimeState {
                         snapshot_id: args
                             .snapshot_id
                             .clone()
+                            .filter(|snapshot_id| !snapshot_id.is_empty())
                             .map(crate::io::ArtifactSnapshotId::new),
                         operation,
                     },
@@ -7842,6 +7849,7 @@ impl KernelRuntimeState {
                         snapshot_id: args
                             .snapshot_id
                             .clone()
+                            .filter(|snapshot_id| !snapshot_id.is_empty())
                             .map(crate::io::ArtifactSnapshotId::new),
                         operation: crate::io::AgentEditOperation::WriteArtifact {
                             content: managed_io_write_content_from_args(
@@ -7992,7 +8000,7 @@ impl KernelRuntimeState {
                         &workspace_context,
                     )
                 } else {
-                    if args.old_text.is_some() || args.new_text.is_some() {
+                    if args.has_non_text_transform_fields() {
                         return Err(DaemonError::LocalTransport {
                             operation: "forwarded_managed_io_move_artifact",
                             message: "non-text managed moves cannot transform content; omit old_text and new_text".to_string(),

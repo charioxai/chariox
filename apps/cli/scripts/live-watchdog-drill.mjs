@@ -110,6 +110,7 @@ function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
   if (explicit) return explicit
   if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  if (provider === 'codex' && !options.model.includes('/')) return opencodeCodexModel(options.model)
   return options.model
 }
 

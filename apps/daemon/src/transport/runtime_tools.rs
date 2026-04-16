@@ -141,6 +141,18 @@ pub struct ManagedMoveArtifactArgs {
     pub domain: Option<String>,
 }
 
+impl ManagedMoveArtifactArgs {
+    pub fn has_non_text_transform_fields(&self) -> bool {
+        self.old_text
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+            || self
+                .new_text
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidateAndSubmitWorkflowRunOutputArgs {
     pub workflow_output_json: String,
@@ -470,5 +482,19 @@ mod managed_io_tests {
         assert_eq!(args.to_path, "src/new.rs");
         assert_eq!(args.old_text.as_deref(), Some("old"));
         assert_eq!(args.new_text.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn managed_move_args_treat_empty_transform_fields_as_absent_for_non_text() {
+        let args = serde_json::from_value::<ManagedMoveArtifactArgs>(serde_json::json!({
+            "from_path": "from.bin",
+            "to_path": "to.bin",
+            "old_text": "",
+            "new_text": "",
+            "domain": "opaque"
+        }))
+        .expect("managed move args should parse");
+
+        assert!(!args.has_non_text_transform_fields());
     }
 }
