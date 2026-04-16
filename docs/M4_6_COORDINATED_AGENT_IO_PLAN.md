@@ -10,7 +10,7 @@ Arroba should be unopinionated about branches, worktrees, and whether multiple a
 - Non-overlapping concurrent edits in the same artifact must be allowed.
 - Whole-file or whole-worktree blocking is not acceptable for artifact domains that support finer conflict regions.
 - External user/process changes are allowed, but Arroba-managed provider sessions must not be able to bypass the coordinated write path.
-- If a provider cannot be configured or sandboxed so writes go through Arroba, that provider mode is unsupported for the coordinated-I/O guarantee.
+- If a provider cannot be configured so coordinated workspace writes go through Arroba, that provider mode is unsupported for the coordinated-I/O guarantee.
 
 This is a synchronization problem, closer to operating-system concurrency control than to Git merge conflict cleanup. Git conflict detection is too late and too coarse to be the primary mechanism.
 
@@ -18,7 +18,7 @@ This is a synchronization problem, closer to operating-system concurrency contro
 
 The M4.6 guarantee applies only to writes performed by agents launched and managed by Arroba provider sessions.
 
-For those sessions, Arroba must enforce write permissions so the provider cannot mutate coordinated workspace artifacts except through Arroba's managed I/O tools. Detection-only or best-effort warnings are insufficient for managed agents.
+For those sessions, Arroba must configure supported providers so they cannot mutate coordinated workspace artifacts except through Arroba's managed I/O tools. Detection-only or best-effort warnings are insufficient for managed agents.
 
 Unsupported cases:
 
@@ -36,15 +36,16 @@ External edits are still observed and reconciled before managed writes are appli
 
 ## Artifact Domains
 
-M4.6 should model conflict semantics by artifact domain, not by file extension alone. A file is just a storage container; the artifact domain defines regions, changed areas, rebase rules, and conflict checks.
+M4.6 models conflict semantics by artifact domain, not by file extension alone. A file is just a storage container; the artifact domain defines regions, changed areas, rebase rules, and conflict checks.
 
-Initial domains:
+V1 domains:
 
-| Domain | Region model | First support |
+| Domain | Region model | V1 support |
 | --- | --- | --- |
-| `TextDocument` | byte ranges, line ranges, hunks with context | Required |
-| `StructuredDocument` | document paths, keys, array identities, cells where applicable | Optional first slice if cheap |
-| `OpaqueBlob` | whole artifact | Required fallback for unsupported binary formats |
+| `TextDocument` | byte ranges, line ranges, hunks with context | Required fine-grained support |
+| `OpaqueBlob` | whole artifact | Required fallback for every non-text artifact |
+
+For v1, images, audio, video, PDFs, archives, and other non-text artifacts are treated as binary opaque blobs with whole-file locking. Type-specific region models are explicitly deferred beyond v1.
 
 Future domains:
 
@@ -57,7 +58,7 @@ Future domains:
 | `PdfDocument` | pages, annotations, extracted text regions, embedded assets |
 | `DirectoryArtifact` | subtree paths and generated bundle members |
 
-Unsupported artifact domains must not silently become unsafe. They either use conservative whole-artifact conflict semantics or require an explicit unsupported/unsafe mode that does not claim M4.6 guarantees.
+Unsupported non-text artifact types must not silently become unsafe. In v1 they use conservative whole-artifact `OpaqueBlob` conflict semantics.
 
 ## Core API Shape
 
@@ -192,17 +193,17 @@ M4.6 must include provider-specific investigation and implementation for Codex a
 Required outcomes for each supported provider:
 
 - Provider file writes are routed through Arroba managed MCP/runtime tools.
-- Direct writes to coordinated workspace artifacts are blocked by provider configuration, sandboxing, or filesystem permissions.
-- Shell/tool write access is either disabled for coordinated paths or confined to explicitly allowed scratch/output directories.
+- Direct writes to coordinated workspace artifacts are blocked by provider configuration.
+- Shell/tool write access that can mutate coordinated workspace artifacts is disabled for managed provider sessions.
 - If the provider cannot be configured this way, Arroba must mark that provider/session mode unsupported for coordinated I/O.
 
-Candidate enforcement mechanisms, to be evaluated per provider:
+Provider enforcement for v1 is provider-level. Codex and OpenCode expose enough session configuration for Arroba-supported sessions.
 
-- Provider tool-surface configuration that removes native write tools and exposes only Arroba MCP write tools.
-- Read-only workspace mount plus writable scratch/cache directories.
-- Provider sandbox or container/jail with write deny rules for coordinated artifacts.
-- Overlay workspace where the provider cannot commit writes directly to the canonical worktree.
-- FUSE or virtual filesystem interception as a later stronger option if provider configuration is insufficient.
+Current enforcement mechanisms:
+
+- Codex managed-I/O runs use the provider read-only sandbox for new threads and turns.
+- OpenCode managed-I/O runs deny native `edit`, `bash`, and `task`, leaving file writes available only through Arroba managed I/O tools.
+- OpenCode `external_directory` is not denied by Arroba because it governs access outside the project/worktree; paths inside the coordinated repo are covered by `edit`/`bash`, and paths outside the repo are outside Arroba collision-control scope.
 
 Detection is still useful for diagnostics, but it is not a substitute for blocking direct writes by Arroba-managed agents.
 
@@ -295,9 +296,9 @@ Tool responses must include structured success, warning, and rejection payloads 
 13. Add remote workspace identity handshake design and protocol docs.
 14. Add remote coordinated edit routing through the home kernel for matching workspaces.
 15. Add unsupported-provider/session-mode reporting when write enforcement cannot be guaranteed.
-16. Extend to `StructuredDocument` domains where safe.
-17. Design later image/audio/video/PDF/vector artifact domains.
-18. M5.6/default policy follow-up: make managed I/O restricted mode the default for user-launched Arroba agents, and add an explicit user command to relax/disable it when Arroba intentionally supports an unsafe/uncoordinated mode.
+16. Treat non-text artifacts as `OpaqueBlob` with whole-file locking for v1.
+17. Design later image/audio/video/PDF/vector/structured artifact domains beyond v1.
+18. M5.6/default policy follow-up: keep managed I/O restricted mode as the default for user-launched Arroba agents, and add an explicit user command to relax/disable it when Arroba intentionally supports an unsafe/uncoordinated mode.
 
 ## Current Status
 
@@ -308,12 +309,13 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: authenticated runtime/MCP dispatch wiring for managed artifact read/edit/write tools backed by the provider run workspace root.
 - Landed: provider launch contract for required managed-I/O writes.
 - Landed: Codex required managed-I/O enforcement uses Codex read-only sandbox policy for new threads/turns and skips unsafe thread resume into coordinated mode.
-- Landed: OpenCode required managed-I/O enforcement creates coordinated sessions with `edit`, `bash`, and `task` denied so direct file writes and unmanaged subagents are not exposed; it skips unsafe session resume into coordinated mode.
+- Landed: OpenCode required managed-I/O enforcement creates coordinated sessions with `edit`, `bash`, and `task` denied so direct repo writes and unmanaged subagents are not exposed; it skips unsafe session resume into coordinated mode. `external_directory` remains provider-default because it covers paths outside the project/worktree, which Arroba does not coordinate.
 - Landed: workspace identity monitor boundary with identity-generation tracking and managed-I/O rejection after workspace identity invalidation.
 - Landed: unsupported provider-mode rejection at launch when managed I/O is required but the adapter cannot enforce write blocking.
 - Landed: managed-I/O health/status surfacing for reservations, workspace identity invalidations, and external-change monitor counters.
-- Landed: external artifact change monitor boundary that tracks managed reads and records detected external changes from pre-apply verification.
-- Not landed yet: live filesystem watcher backend, remote coordinated routing, default-restricted user policy, and broader artifact domains.
+- Landed: external artifact change monitor boundary that tracks managed reads, runs a scoped live watcher for tracked artifacts, records detected external changes, and returns agent-facing external-change notices for edit/write/patch/delete/move paths.
+- Landed: local managed-I/O live drill for Codex and OpenCode proving managed reads/writes succeed and direct/native write attempts do not create repo files.
+- Not landed yet: remote coordinated edit routing and type-specific non-text artifact domains beyond v1 opaque whole-file locking.
 
 ## Non-Goals
 
