@@ -84,6 +84,7 @@ function parseArgs(argv) {
     pollIntervalMs: 2000,
     dryRun: false,
     spawnDaemon: false,
+    noEarlyPass: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -102,6 +103,7 @@ function parseArgs(argv) {
     else if (arg === '--poll-interval-ms') options.pollIntervalMs = Number(argv[++index])
     else if (arg === '--dry-run') options.dryRun = true
     else if (arg === '--spawn-daemon') options.spawnDaemon = true
+    else if (arg === '--no-early-pass') options.noEarlyPass = true
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -125,6 +127,7 @@ function printHelp() {
     '  --poll-interval-ms 2000',
     '  --dry-run',
     '  --spawn-daemon',
+    '  --no-early-pass',
   ].join('\n'))
 }
 
@@ -606,26 +609,29 @@ function buildImmediateReleaseDownstreamScenario(providers, model, schemaPath) {
           'This is an async/immediate-release workflow drill.',
           'First, acknowledge the workflow turn as required by the runtime.',
           'Then call `validate_and_submit_intermediate_workflow_run_output` with workflow output JSON exactly `{"value":1842}`.',
-          'After that tool returns valid, finish this same workflow turn with normal output.message JSON exactly `{"value":9999}`.',
+          'After that tool returns valid, you do not need to produce normal node-to-node output for this drill.',
           'Do not call final workflow run output tools.',
-          'Your summary should be `submitted intermediate 1842 then finished producer`.',
+          'Your summary should be `submitted intermediate 1842`.',
         ].join('\n\n')
       }
       return [
         'Read the upstream handoff payload for this workflow turn.',
         'Extract `output.message` JSON.',
         'It must be exactly `{"value":1842}` from the producer intermediate output, not the producer final normal output.',
-        'Add 1 and emit normal output.message JSON exactly `{"value":1843}`.',
-        'Your summary should be `received immediate 1842, sent 1843`.',
+        'Add 1 and submit final workflow run output JSON exactly `{"value":1843}`.',
+        'Do not generate normal node-to-node output.',
+        'Your summary should be `received immediate 1842, completed 1843`.',
       ].join('\n\n')
     },
     edgeRequest(sessionId, workflowId, fromNodeId, toNodeId) {
       return addWorkflowEdgeRequest(sessionId, workflowId, fromNodeId, toNodeId)
     },
     async configureWorkflow(client, sessionId, workflowId, nodeIds) {
+      await client.send(setWorkflowRunOutputSchemaRequest(sessionId, workflowId, schemaPath))
       await client.send(setWorkflowIntermediateOutputSchemaRequest(sessionId, workflowId, schemaPath))
       await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(sessionId, workflowId, nodeIds[0], true))
       await client.send(setWorkflowNodeIntermediateOutputSchemaRequest(sessionId, workflowId, nodeIds[0], schemaPath))
+      await client.send(setWorkflowNodeCanCompleteRunRequest(sessionId, workflowId, nodeIds[1], true))
     },
     assertResult(result, { nodeIds }) {
       const producerRun = result.nodeRuns.find((nodeRun) => nodeRun.nodeId === nodeIds[0])
@@ -633,7 +639,7 @@ function buildImmediateReleaseDownstreamScenario(providers, model, schemaPath) {
       if (!producerRun || !consumerRun) {
         throw new Error('immediate release drill did not create both producer and consumer node runs')
       }
-      if (consumerRun.createdAtMs >= producerRun.completedAtMs) {
+      if (producerRun.completedAtMs != null && consumerRun.createdAtMs >= producerRun.completedAtMs) {
         throw new Error(
           `immediate release drill did not create consumer before producer completion: consumer created ${consumerRun.createdAtMs}, producer completed ${producerRun.completedAtMs}`,
         )
@@ -642,8 +648,8 @@ function buildImmediateReleaseDownstreamScenario(providers, model, schemaPath) {
       if (intermediate?.output?.message !== JSON.stringify({ value: 1842 })) {
         throw new Error(`immediate release drill intermediate output mismatch: ${intermediate?.output?.message}`)
       }
-      if (consumerRun.completion?.output?.message !== JSON.stringify({ value: 1843 })) {
-        throw new Error(`immediate release drill consumer output mismatch: ${consumerRun.completion?.output?.message}`)
+      if (result.finalOutput?.message !== JSON.stringify({ value: 1843 })) {
+        throw new Error(`immediate release drill final output mismatch: ${result.finalOutput?.message}`)
       }
     },
     assertEarlyResult(result, { nodeIds }) {
@@ -943,7 +949,7 @@ async function main() {
       const stateResp = await client.send(getSessionStateRequest(session.id))
       const state = unwrap(stateResp, 'SessionStateLoaded')?.session ?? unwrap(stateResp, 'SessionState')?.session
       const run = (state.workflow_runs || []).find((entry) => entry.id === workflowRun.id)
-      if (run && typeof scenario.assertEarlyResult === 'function') {
+      if (!options.noEarlyPass && run && typeof scenario.assertEarlyResult === 'function') {
         const result = buildWorkflowResult(session, workflow, workflowRun, run, state)
         if (scenario.assertEarlyResult(result, { nodeIds, agentIds, workflowId: workflow.id, workflowRunId: workflowRun.id })) {
           console.log(JSON.stringify({ ...result, earlyPass: true }, null, 2))

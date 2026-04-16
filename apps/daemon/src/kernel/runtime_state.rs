@@ -4381,13 +4381,20 @@ impl KernelRuntimeOwnedState {
         tool_name: String,
         arguments: serde_json::Value,
         context: crate::transport::runtime_tools::WorkflowRuntimeToolContext,
-    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    ) -> Result<
+        (
+            crate::transport::runtime_tools::RuntimeToolResult,
+            WorkflowPromptDispatches,
+        ),
+        DaemonError,
+    > {
         let canonical_tool_name = tool_name
             .strip_prefix("arroba_")
             .unwrap_or(tool_name.as_str())
             .to_string();
         let arguments_json = serde_json::to_string(&arguments)
             .unwrap_or_else(|_| String::from("<unserializable runtime tool arguments>"));
+        let mut dispatches = WorkflowPromptDispatches::default();
         let result = match canonical_tool_name.as_str() {
             crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL => {
                 let args = serde_json::from_value::<
@@ -4563,11 +4570,11 @@ impl KernelRuntimeOwnedState {
                             ),
                         );
                     }
-                    let _ = self.workflow_prepare_dispatches(
+                    dispatches.extend(self.workflow_prepare_dispatches(
                         &context.session_id,
                         &workflow_run_id,
                         &update.dispatches,
-                    );
+                    ));
                     let _ = self.session_snapshot(&context.session_id);
                 }
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -4686,7 +4693,7 @@ impl KernelRuntimeOwnedState {
                 ),
             );
         let _ = self.session_snapshot(&context.session_id);
-        result
+        result.map(|result| (result, dispatches))
     }
 
     fn workflow_node_agent_id(
@@ -7112,11 +7119,13 @@ impl KernelRuntimeState {
                 workflow_node_run_id,
                 None,
             )?;
-            owned.dispatch_workflow_runtime_tool_call(
+            let (result, dispatches) = owned.dispatch_workflow_runtime_tool_call(
                 canonical_tool_name.to_string(),
                 arguments,
                 context,
-            )
+            )?;
+            self.spawn_workflow_prompt_dispatches(dispatches);
+            Ok(result)
         }
     }
 
@@ -7567,7 +7576,10 @@ impl KernelRuntimeState {
                 context.workflow_node_run_id,
                 Some(context.delivery_token),
             )?;
-            owned.dispatch_workflow_runtime_tool_call(tool_name, arguments, context)
+            let (result, dispatches) =
+                owned.dispatch_workflow_runtime_tool_call(tool_name, arguments, context)?;
+            self.spawn_workflow_prompt_dispatches(dispatches);
+            Ok(result)
         }
     }
 

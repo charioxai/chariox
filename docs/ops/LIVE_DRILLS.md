@@ -47,6 +47,7 @@ Terminology:
 - Local freeform multi-agent: `node apps/cli/scripts/live-freeform-multi-agent-drill.mjs --providers opencode,codex`
 - Local managed I/O: `node apps/cli/scripts/live-managed-io-drill.mjs --providers opencode,codex` or `pnpm --filter @arroba/cli run managed-io:drill`
 - Local workflow: `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario <scenario> --providers opencode,codex`
+  - Add `--no-early-pass` when validating the full `immediate-release-downstream` completion path instead of only the immediate release point.
 - Remote freeform multi-agent: `node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers opencode,codex`
 - Remote managed I/O: `node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode,codex` or `pnpm --filter @arroba/cli run managed-io:remote-drill`
 - Remote workflow: `node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario <scenario> --providers opencode,codex`
@@ -73,8 +74,8 @@ Terminology:
   - `cyclic-final-run-output-chain`
   - `cyclic-budgeted-final-run-output-chain`
   - `cyclic-final-run-with-intermediate-output-chain`
-  - `conditional-branch-subset`
-  - `immediate-release-downstream`
+  - `conditional-branch-subset`: router node emits structured `workflow_handoffs`, only the selected even-value branch runs, and the excluded branch is not invoked.
+  - `immediate-release-downstream`: producer submits validated intermediate output, downstream starts before producer completion, consumes `{"value":1842}`, and submits final workflow output `{"value":1843}`. Full completion is verified with both provider orders using `--no-early-pass`.
 - Remote freeform relay: **pass** with `opencode,codex`, direct local client plus relayed client, local sidecar agents plus worker-machine leased agents, relay restart, transport close/resume, and post-reconnect prompt completion.
 - Remote workflow relay: **pass** with `opencode,codex`, relay, home daemon, worker daemon, remote worker-machine leases, forwarded workflow runtime tools, cyclic workflow progression, intermediate output, final workflow output, and clean final projections.
 - Workflow prompt-injection invariant: **pass**. Workflow prompt construction is scheduler-owned and shared by local dispatch, remote dispatch, retry/replay paths, and tests; the renderer injects turn index, last-turn guidance only on the last allowed node turn, final-output tool guidance, runtime-tool instructions, handoff payloads, edge contracts, and control mailbox content.
@@ -88,6 +89,7 @@ Point-2 fixes proven by the local workflow catalog:
 - Workflow console writes no longer deadlock by taking a session-store read while constructing arguments for a write-locked mutation.
 - Resolved missing-output/output-validation failures are cleared when a later successful turn for the same workflow node produces output or submits final output.
 - Node max-turn budget accounting counts completed turns with completion payloads, so recovered missing-output attempts do not consume the production success budget.
+- Intermediate-output runtime tools now enqueue the downstream prompt dispatches they prepare; the previous path created downstream node runs but dropped the async provider submission work.
 - Final workflow-output submissions no longer generate downstream handoff validation failures while completion is still committing pending turn outputs.
 - The budgeted cyclic final-output scenario now checks the exact final output payload, so a stale pre-ack provider output cannot accidentally satisfy a later final workflow turn.
 - Conditional branching drill: **pass**. A router node with two outgoing edges emitted a structured `workflow_handoffs` payload selecting only the even branch; the selected branch completed with `{"bucket":"even","values":[2]}` and the excluded branch was not invoked.
