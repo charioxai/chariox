@@ -187,7 +187,7 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
       activeStatusLabel: null,
       focusedBusy: false,
     }),
-    { label: "", tone: "idle" },
+    badge([]),
   )
 
   assert.deepEqual(
@@ -197,7 +197,7 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
       activeStatusLabel: "reading",
       focusedBusy: true,
     }),
-    { label: "DISCONNECTED", tone: "disconnected" },
+    badge([{ label: "DISCONNECTED", tone: "disconnected" }]),
   )
 
   assert.deepEqual(
@@ -207,7 +207,7 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
       activeStatusLabel: null,
       focusedBusy: true,
     }),
-    { label: "THINKING", tone: "working" },
+    badge([{ label: "THINKING", tone: "working" }]),
   )
 
   assert.deepEqual(
@@ -217,7 +217,7 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
       activeStatusLabel: null,
       focusedBusy: true,
     }),
-    { label: "THINKING", tone: "working" },
+    badge([{ label: "THINKING", tone: "working" }]),
   )
 
   assert.deepEqual(
@@ -227,7 +227,7 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
       activeStatusLabel: null,
       focusedBusy: false,
     }),
-    { label: "IDLE", tone: "idle" },
+    badge([{ label: "IDLE", tone: "idle" }]),
   )
 
   assert.deepEqual(
@@ -237,7 +237,7 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
       activeStatusLabel: "reading",
       focusedBusy: true,
     }),
-    { label: "READING", tone: "working" },
+    badge([{ label: "READING", tone: "working" }]),
   )
 })
 
@@ -249,7 +249,105 @@ test("deriveFocusedStatusBadge stays working while the focused agent is busy", (
       activeStatusLabel: null,
       focusedBusy: true,
     }),
-    { label: "THINKING", tone: "working" },
+    badge([{ label: "THINKING", tone: "working" }]),
+  )
+})
+
+test("deriveFocusedStatusBadge shows single agent status without agents array", () => {
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: true,
+      daemonDisconnected: false,
+      activeStatusLabel: null,
+      focusedBusy: false,
+    }),
+    badge([{ label: "IDLE", tone: "idle" }]),
+  )
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: true,
+      daemonDisconnected: false,
+      activeStatusLabel: "reading",
+      focusedBusy: true,
+    }),
+    badge([{ label: "READING", tone: "working" }]),
+  )
+})
+
+test("deriveFocusedStatusBadge shows N IDLE when all agents are idle", () => {
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: true,
+      daemonDisconnected: false,
+      activeStatusLabel: null,
+      focusedBusy: false,
+      agents: [
+        { id: "agent-1", busy: false },
+        { id: "agent-2", busy: false },
+        { id: "agent-3", busy: false },
+      ],
+    }),
+    badge([{ label: "3 IDLE", tone: "idle" }]),
+  )
+})
+
+test("deriveFocusedStatusBadge shows N WORKING when all agents are working", () => {
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: true,
+      daemonDisconnected: false,
+      activeStatusLabel: null,
+      focusedBusy: true,
+      agents: [
+        { id: "agent-1", busy: true },
+        { id: "agent-2", busy: true },
+      ],
+    }),
+    badge([{ label: "2 WORKING", tone: "working" }]),
+  )
+})
+
+test("deriveFocusedStatusBadge shows X IDLE Y WORKING for mixed states", () => {
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: true,
+      daemonDisconnected: false,
+      activeStatusLabel: "reading",
+      focusedBusy: true,
+      agents: [
+        { id: "agent-1", busy: false },
+        { id: "agent-2", busy: true },
+        { id: "agent-3", busy: false },
+        { id: "agent-4", busy: true },
+      ],
+    }),
+    badge([
+      { label: "2 IDLE", tone: "idle" },
+      { label: "2 WORKING", tone: "working" },
+    ]),
+  )
+})
+
+test("deriveFocusedStatusBadge shows single agent IDLE/WORKING with one agent in array", () => {
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: true,
+      daemonDisconnected: false,
+      activeStatusLabel: null,
+      focusedBusy: false,
+      agents: [{ id: "agent-1", busy: false }],
+    }),
+    badge([{ label: "IDLE", tone: "idle" }]),
+  )
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: true,
+      daemonDisconnected: false,
+      activeStatusLabel: "patching",
+      focusedBusy: true,
+      agents: [{ id: "agent-1", busy: true }],
+    }),
+    badge([{ label: "PATCHING", tone: "working" }]),
   )
 })
 
@@ -264,6 +362,16 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
     introStep: 0,
     keyState: { up: false, down: false, left: false, right: false },
     ...overrides,
+  }
+}
+
+function badge(parts: Array<{ label: string; tone: "idle" | "working" | "disconnected" | "error" }>) {
+  return {
+    label: parts.map((part) => part.label).join(" "),
+    tone: parts.some((part) => part.tone === "working")
+      ? "working"
+      : parts[0]?.tone ?? "idle",
+    parts,
   }
 }
 

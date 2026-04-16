@@ -181,7 +181,9 @@ import {
   derivePromptMetaState,
   derivePromptUsageState,
   deriveSessionStatusMode,
+  type FocusedStatusBadge,
   type SessionStatusMode,
+  type StatusBadgePart,
 } from "./session-chrome-state.js"
 import {
   agentHasPromptWork,
@@ -1047,6 +1049,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       || agentBusyLatch(agentId)
       || Boolean(focused && (focused.is_processing || focused.state === "Working"))
   }
+  const allAgentsBusyState = () => {
+    return sessionState().agents.map((agent) => {
+      const agentId = agent.id
+      const isBusy = (submitting() && submittingAgentId === agentId)
+        || agentHasPromptWork(sessionState(), agentId)
+        || streamingAgentId() === agentId
+        || Boolean(agentActivityLabels()[agentId])
+        || agentBusyLatch(agentId)
+        || (agent.is_processing || agent.state === "Working")
+      return { id: agentId, busy: isBusy }
+    })
+  }
   const shouldPreserveAgentActivityLabel = (agentId: string | null | undefined) => {
     if (!agentId) {
       return false
@@ -1086,6 +1100,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     daemonDisconnected: daemonDisconnected(),
     activeStatusLabel: focusedActivityLabel(),
     focusedBusy: focusedAgentBusy(),
+    agents: allAgentsBusyState(),
   })
   const logProviderRunDebug = (message: string, run: RuntimeProviderRun | null, fields: Record<string, unknown> = {}) => {
     appLogger?.debug(message, {
@@ -1132,15 +1147,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       preview: text.replace(/\s+/g, " ").trim().slice(0, 160),
     })
   }
-  const logFocusedBadgeChange = (label: string, tone: StatusBadgeTone) => {
-    const nextState = `${label}:${tone}`
+  const logFocusedBadgeChange = (badge: FocusedStatusBadge) => {
+    const nextState = `${badge.label}:${badge.parts.map((part) => `${part.label}:${part.tone}`).join("|")}`
     if (lastLoggedFocusedBadgeState === nextState) {
       return
     }
     lastLoggedFocusedBadgeState = nextState
     appLogger?.info("focused status badge changed", {
-      label,
-      tone,
+      label: badge.label,
+      tone: badge.tone,
+      parts: badge.parts,
       focused_agent_id: focusedAgentId(),
       visible_agent_id: visibleTranscriptAgentId(),
     })
@@ -3236,13 +3252,25 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     label: string,
     tone: StatusBadgeTone,
   ) => {
-    for (let index = 0; index < STATUS_BADGE_WIDTH; index += 1) {
-      const character = label[index] ?? " "
+    renderStatusBadgeParts(texts, [{ label, tone }], STATUS_BADGE_WIDTH)
+  }
+
+  const renderStatusBadgeParts = (
+    texts: TextRenderable[],
+    parts: StatusBadgePart[],
+    minWidth = 0,
+  ) => {
+    const cells = badgeCells(parts)
+    const width = Math.max(minWidth, cells.length)
+    for (let index = 0; index < texts.length; index += 1) {
+      const cell = index < width ? cells[index] : undefined
+      const character = cell?.character ?? " "
+      const tone = cell?.tone ?? "idle"
       let fg = theme.success
       if (tone === "disconnected" || tone === "error") {
         fg = theme.error
       } else if (tone === "working") {
-        const distance = reflectedDistance(index, label.length, workingAnimationFrame())
+        const distance = reflectedDistance(cell?.partIndex ?? 0, cell?.partLength ?? 0, workingAnimationFrame())
         fg = distance === 0 ? theme.primary : distance === 1 ? theme.warning : theme.secondary
       }
       setTextRenderable(
@@ -3251,6 +3279,45 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         fg,
         tone === "working" && character.trim() ? TextAttributes.BOLD : TextAttributes.NONE,
       )
+    }
+  }
+
+  const badgeCells = (parts: StatusBadgePart[]) => {
+    const cells: Array<{
+      character: string
+      tone: StatusBadgeTone
+      partIndex: number
+      partLength: number
+    }> = []
+    for (const [partOffset, part] of parts.entries()) {
+      if (partOffset > 0) {
+        cells.push({
+          character: " ",
+          tone: "idle",
+          partIndex: 0,
+          partLength: 0,
+        })
+      }
+      for (let index = 0; index < part.label.length; index += 1) {
+        cells.push({
+          character: part.label[index] ?? " ",
+          tone: part.tone,
+          partIndex: index,
+          partLength: part.label.length,
+        })
+      }
+    }
+    return cells
+  }
+
+  const ensureStatusLabelTextCount = (count: number) => {
+    if (!statusIndicatorBox) {
+      return
+    }
+    while (statusLabelTexts.length < count) {
+      const text = new TextRenderable(renderer, { wrapMode: "none" })
+      statusLabelTexts.push(text)
+      statusIndicatorBox.add(text)
     }
   }
 
@@ -3509,17 +3576,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!isAttached()) {
       lastLoggedFocusedBadgeState = null
       setTextRenderable(statusOpenText, "", theme.textMuted)
-      for (const text of statusLabelTexts) {
-        setTextRenderable(text, " ", theme.textMuted)
-      }
+      ensureStatusLabelTextCount(STATUS_BADGE_WIDTH)
+      renderStatusBadgeParts(statusLabelTexts, [], STATUS_BADGE_WIDTH)
       setTextRenderable(statusCloseText, "", theme.textMuted)
       statusIndicatorBox?.requestRender()
       return
     }
     const badge = focusedStatusBadge()
-    logFocusedBadgeChange(badge.label, badge.tone)
+    logFocusedBadgeChange(badge)
     setTextRenderable(statusOpenText, "", theme.textMuted)
-    renderStatusBadgeTexts(statusLabelTexts, badge.label, badge.tone)
+    ensureStatusLabelTextCount(Math.max(STATUS_BADGE_WIDTH, badge.label.length))
+    renderStatusBadgeParts(statusLabelTexts, badge.parts, Math.max(STATUS_BADGE_WIDTH, badge.label.length))
     setTextRenderable(statusCloseText, "", theme.textMuted)
     statusIndicatorBox?.requestRender()
   }

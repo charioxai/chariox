@@ -13,9 +13,14 @@ import { agentPaneStatusBadge, type SplitPaneFooterAgent } from "./split-pane-fo
 import type { WaitingRoomState } from "./waiting-room.js"
 
 export type SessionStatusMode = "idle" | "working" | "disconnected"
+export type StatusBadgePart = {
+  label: string
+  tone: StatusBadgeTone
+}
 export type FocusedStatusBadge = {
   label: string
   tone: StatusBadgeTone
+  parts: StatusBadgePart[]
 }
 
 type ProviderSelectionOptions = {
@@ -111,25 +116,48 @@ export function deriveVisibleActivityLabel(options: {
   return chooseVisibleActivityLabel(options.providerActivityLabel, latestActiveToolLabel)
 }
 
+export type AgentBusyState = {
+  id: string
+  busy: boolean
+}
+
 export function deriveFocusedStatusBadge(options: {
   attached: boolean
   daemonDisconnected: boolean
   activeStatusLabel: string | null
   focusedBusy: boolean
+  agents?: AgentBusyState[]
 }): FocusedStatusBadge {
   if (!options.attached) {
-    return { label: "", tone: "idle" }
+    return statusBadge([])
   }
   if (options.daemonDisconnected) {
-    return { label: "DISCONNECTED", tone: "disconnected" }
+    return statusBadge([{ label: "DISCONNECTED", tone: "disconnected" }])
   }
-  if (!options.focusedBusy) {
-    return { label: "IDLE", tone: "idle" }
+
+  const agents = options.agents
+  if (!agents || agents.length <= 1) {
+    if (!options.focusedBusy) {
+      return statusBadge([{ label: "IDLE", tone: "idle" }])
+    }
+    return statusBadge([{ label: getSessionStatusLabel("working", options.activeStatusLabel), tone: "working" }])
   }
-  return {
-    label: getSessionStatusLabel("working", options.activeStatusLabel),
-    tone: "working",
+
+  const idleCount = agents.filter((a) => !a.busy).length
+  const workingCount = agents.length - idleCount
+
+  if (workingCount === 0) {
+    return statusBadge([{ label: `${agents.length} IDLE`, tone: "idle" }])
   }
+
+  if (idleCount === 0) {
+    return statusBadge([{ label: `${agents.length} WORKING`, tone: "working" }])
+  }
+
+  return statusBadge([
+    { label: `${idleCount} IDLE`, tone: "idle" },
+    { label: `${workingCount} WORKING`, tone: "working" },
+  ])
 }
 
 export function deriveAttachedFooterSummary(options: {
@@ -178,4 +206,15 @@ function normalizeProvider(provider?: string | null) {
     return null
   }
   return provider
+}
+
+function statusBadge(parts: StatusBadgePart[]): FocusedStatusBadge {
+  const label = parts.map((part) => part.label).join(" ")
+  return {
+    label,
+    tone: parts.some((part) => part.tone === "working")
+      ? "working"
+      : parts[0]?.tone ?? "idle",
+    parts,
+  }
 }
