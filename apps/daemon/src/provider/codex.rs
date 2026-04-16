@@ -422,54 +422,38 @@ mod tests {
             launch.pty_env.get("ARROBA_MCP_TOKEN").map(String::as_str),
             Some("token-123")
         );
-        assert!(
-            launch
-                .pty_args
-                .iter()
-                .any(|arg| arg.contains("mcp_servers.arroba.url"))
-        );
-        assert!(
-            launch
-                .pty_args
-                .iter()
-                .any(|arg| arg.contains("mcp_servers.arroba.bearer_token_env_var"))
-        );
-        assert!(
-            launch
-                .pty_args
-                .iter()
-                .any(|arg| arg == "mcp_servers.arroba.required=true")
-        );
-        assert!(
-            launch
-                .pty_args
-                .iter()
-                .any(|arg| arg == "mcp_servers.arroba.tool_timeout_sec=15")
-        );
-        assert!(
-            launch
-                .pty_args
-                .iter()
-                .any(|arg| arg.contains("model_catalog_json"))
-        );
-        assert!(
-            launch
-                .pty_args
-                .iter()
-                .any(|arg| arg == "features.shell_tool=false")
-        );
-        assert!(
-            launch
-                .pty_args
-                .iter()
-                .any(|arg| arg == "features.apply_patch_freeform=false")
-        );
-        assert!(
-            launch
-                .pty_args
-                .iter()
-                .any(|arg| arg == "include_apply_patch_tool=false")
-        );
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg.contains("mcp_servers.arroba.url")));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg.contains("mcp_servers.arroba.bearer_token_env_var")));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "mcp_servers.arroba.required=true"));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "mcp_servers.arroba.tool_timeout_sec=15"));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg.contains("model_catalog_json")));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "features.shell_tool=false"));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "features.apply_patch_freeform=false"));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "include_apply_patch_tool=false"));
     }
 
     #[test]

@@ -210,7 +210,10 @@ mod tests {
             .sessions()
             .get_session(&leased_agent.backing_session_id)
             .expect("backing session should exist");
-        assert_eq!(backing_session.worktree_id(), worktree.display().to_string());
+        assert_eq!(
+            backing_session.worktree_id(),
+            worktree.display().to_string()
+        );
         assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 1);
 
         let removed = RemoteLeaseRuntime::new(&mut app)

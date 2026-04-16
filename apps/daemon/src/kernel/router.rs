@@ -426,8 +426,13 @@ impl CommandRouter {
         worktree_id: Option<String>,
     ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
         let mut app = self.app.lock().await;
-        crate::app::RemoteLeaseRuntime::new(&mut app)
-            .create_leased_agent(lease_id, provider, model, effort, worktree_id)
+        crate::app::RemoteLeaseRuntime::new(&mut app).create_leased_agent(
+            lease_id,
+            provider,
+            model,
+            effort,
+            worktree_id,
+        )
     }
 
     pub(crate) async fn relay_destroy_leased_agent(

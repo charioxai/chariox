@@ -1038,6 +1038,13 @@ async function main() {
         tools: nodeRun.turn_envelope?.runtime_tool_calls || [],
       })),
       failureEvents: run?.failure_events || [],
+      terminalRecords: terminalRecords.map((record) => ({
+        kind: record.kind,
+        providerRunId: record.provider_run_id,
+        text: typeof record.bytes === 'string'
+          ? record.bytes
+          : Buffer.from(record.bytes || []).toString('utf8'),
+      })).slice(-120),
     }, null, 2))
     await captureTrackedProviderProcesses()
     if (sessionId) await client.send(endSessionRequest(sessionId)).catch(() => {})

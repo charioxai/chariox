@@ -12,14 +12,14 @@ use crate::kernel::projection::{ActorQueueSnapshot, ProviderRunActorHealthSnapsh
 use crate::session::PromptAttachment;
 
 use super::{
-    CodexRuntimeState, ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
-    RuntimeProviderRun,
     codex_runtime::{abort_codex_turn, drain_codex_events, submit_codex_prompt},
     opencode_binding::{
-        OpenCodeRunSelection, abort_opencode_session, submit_opencode_prompt,
-        sync_opencode_run_selection_for_session,
+        abort_opencode_session, submit_opencode_prompt, sync_opencode_run_selection_for_session,
+        OpenCodeRunSelection,
     },
-    opencode_runtime::{OpenCodeRuntimeState, drain_opencode_events},
+    opencode_runtime::{drain_opencode_events, OpenCodeRuntimeState},
+    CodexRuntimeState, ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
+    RuntimeProviderRun,
 };
 
 type CodexRuntimeSlot = Arc<Mutex<Option<CodexRuntimeState>>>;
@@ -795,13 +795,11 @@ mod tests {
             0
         );
         assert!(!mailbox.structured_prompt_io_in_flight("run-1"));
-        assert!(
-            mailbox
-                .structured_output_polls
-                .lock()
-                .expect("structured output poll set should not be poisoned")
-                .is_empty()
-        );
+        assert!(mailbox
+            .structured_output_polls
+            .lock()
+            .expect("structured output poll set should not be poisoned")
+            .is_empty());
         assert_eq!(
             mailbox.operation_lanes.health_snapshot().enqueued_commands,
             1
@@ -900,13 +898,11 @@ mod tests {
             .spawn_output_poll("run-1".to_string(), runtime_run("run-1"))
             .expect_err("full provider actor queue should reject output poll");
 
-        assert!(
-            mailbox
-                .structured_output_polls
-                .lock()
-                .expect("structured output poll set should not be poisoned")
-                .is_empty()
-        );
+        assert!(mailbox
+            .structured_output_polls
+            .lock()
+            .expect("structured output poll set should not be poisoned")
+            .is_empty());
         assert_eq!(
             mailbox.operation_lanes.health_snapshot().enqueue_rejections,
             1
@@ -985,17 +981,14 @@ mod tests {
             *slot.lock().expect("runtime slot should not be poisoned") = Some(taken_state);
         }
 
-        assert!(
-            !runs
-                .lock()
-                .expect("runtime map should not be poisoned")
-                .contains_key("run-1")
-        );
-        assert!(
-            slot.lock()
-                .expect("runtime slot should not be poisoned")
-                .is_none()
-        );
+        assert!(!runs
+            .lock()
+            .expect("runtime map should not be poisoned")
+            .contains_key("run-1"));
+        assert!(slot
+            .lock()
+            .expect("runtime slot should not be poisoned")
+            .is_none());
     }
 
     #[test]
@@ -1024,12 +1017,10 @@ mod tests {
                 .expect("old runtime slot should not be poisoned") = Some(taken_state);
         }
 
-        assert!(
-            old_slot
-                .lock()
-                .expect("old runtime slot should not be poisoned")
-                .is_none()
-        );
+        assert!(old_slot
+            .lock()
+            .expect("old runtime slot should not be poisoned")
+            .is_none());
         assert_eq!(
             *replacement_slot
                 .lock()

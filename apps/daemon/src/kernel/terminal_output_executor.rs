@@ -67,7 +67,9 @@ impl TerminalOutputExecutor {
         }
         if session
             .active_provider_run_id()
-            .is_none_or(|provider_run_id| self.projected_provider_run_is_idle(&request, provider_run_id))
+            .is_none_or(|provider_run_id| {
+                self.projected_provider_run_is_idle(&request, provider_run_id)
+            })
             && !session.has_any_prompt_work()
         {
             return Ok(LocalDaemonResponse::TerminalOutput {
@@ -87,9 +89,7 @@ impl TerminalOutputExecutor {
             .pump_terminal_output_with_compat_snapshot(&request.session_id, &request.attachment_id)
             .await?;
         drop(permits);
-        Ok(LocalDaemonResponse::TerminalOutput {
-            records,
-        })
+        Ok(LocalDaemonResponse::TerminalOutput { records })
     }
 
     fn projected_provider_run_is_idle(
@@ -108,7 +108,10 @@ impl TerminalOutputExecutor {
             })
     }
 
-    fn provider_run_ids_for_pump(&self, session: &crate::session::RuntimeSession) -> BTreeSet<String> {
+    fn provider_run_ids_for_pump(
+        &self,
+        session: &crate::session::RuntimeSession,
+    ) -> BTreeSet<String> {
         let mut provider_run_ids = BTreeSet::new();
         if let Some(provider_run_id) = session.active_provider_run_id() {
             if !self.projected_run_is_idle_for_session(session.id(), provider_run_id) {
@@ -119,8 +122,14 @@ impl TerminalOutputExecutor {
             if prompt_state.active_prompt().is_none() {
                 continue;
             }
-            if let Some(run) = self.provider_run_projection.get_for_agent(session.id(), agent_id) {
-                if !matches!(run.state(), ProviderRunState::Ended | ProviderRunState::Parked) {
+            if let Some(run) = self
+                .provider_run_projection
+                .get_for_agent(session.id(), agent_id)
+            {
+                if !matches!(
+                    run.state(),
+                    ProviderRunState::Ended | ProviderRunState::Parked
+                ) {
                     provider_run_ids.insert(run.id().to_string());
                 }
             }

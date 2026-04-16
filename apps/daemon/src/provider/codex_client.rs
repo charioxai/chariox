@@ -5,9 +5,9 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::stream::MaybeTlsStream;
-use tokio_tungstenite::tungstenite::{Message, WebSocket, connect};
+use tokio_tungstenite::tungstenite::{connect, Message, WebSocket};
 
 use crate::error::DaemonError;
 use crate::provider::{OpenCodeProviderCatalog, ProviderWriteAccessMode};
@@ -1068,7 +1068,7 @@ mod tests {
 
     use crate::provider::ProviderWriteAccessMode;
 
-    use super::{CodexNotification, JsonRpcMessage, codex_permission_policy, parse_notification};
+    use super::{codex_permission_policy, parse_notification, CodexNotification, JsonRpcMessage};
 
     #[test]
     fn managed_io_permission_policy_uses_read_only_sandbox() {

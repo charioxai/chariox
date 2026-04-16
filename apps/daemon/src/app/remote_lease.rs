@@ -3,7 +3,7 @@ use std::fs;
 use base64::Engine;
 
 use crate::agent::CreateAgentRequest;
-use crate::app::{DaemonApp, provider_output};
+use crate::app::{provider_output, DaemonApp};
 use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::error::DaemonError;
 use crate::execution_lease::{

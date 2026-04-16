@@ -4,16 +4,16 @@ use std::time::Duration;
 use std::time::Instant;
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::error::DaemonError;
-use crate::session::PromptAttachment;
 use crate::session::unix_epoch_ms;
+use crate::session::PromptAttachment;
 use crate::terminal::TerminalOutputKind;
 
 use super::{
-    CodexClient, CodexNotification, CodexRunSelection, CodexSocket, ProviderResumeState,
-    RuntimeProviderRun, codex_client::codex_endpoint_is_healthy,
+    codex_client::codex_endpoint_is_healthy, CodexClient, CodexNotification, CodexRunSelection,
+    CodexSocket, ProviderResumeState, RuntimeProviderRun,
 };
 
 const CODEX_EVENT_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(1);
@@ -845,14 +845,15 @@ fn normalize_variant(variant: Option<&str>) -> Option<String> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
 
     use crate::session::PromptAttachment;
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        CodexNotification, CodexOutputChunk, CodexToolTranscriptState, apply_notification,
-        codex_input, render_codex_tool_transcript_update, resolve_local_attachment_path,
+        apply_notification, codex_input, render_codex_tool_transcript_update,
+        resolve_local_attachment_path, CodexNotification, CodexOutputChunk,
+        CodexToolTranscriptState,
     };
 
     #[test]
