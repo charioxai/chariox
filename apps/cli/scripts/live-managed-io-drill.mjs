@@ -158,6 +158,7 @@ function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
   if (explicit) return explicit
   if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  if (provider === 'codex' && !options.model.includes('/')) return opencodeCodexModel(options.model)
   return options.model
 }
 
@@ -928,6 +929,57 @@ async function main() {
       }
     }
 
+    if (options.positiveOnly) {
+      const files = []
+      for (const provider of options.providers) {
+        const filePath = path.join(outputsDir, `${provider}.txt`)
+        files.push({
+          provider,
+          relativePath: `outputs/${provider}.txt`,
+          content: await readFile(filePath, 'utf8'),
+          movedRelativePath: `outputs/${provider}-moved.txt`,
+          movedContent: await readFile(path.join(outputsDir, `${provider}-moved.txt`), 'utf8'),
+          opaqueMovedRelativePath: `outputs/${provider}-opaque-moved.bin`,
+          opaqueMovedHex: (await readFile(path.join(outputsDir, `${provider}-opaque-moved.bin`))).toString('hex'),
+          patchSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-patch.txt`)),
+          opaqueMoveSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque.bin`)),
+          deletedFileExists: await fileExists(path.join(outputsDir, `${provider}-delete-me.txt`)),
+          opaqueDeletedFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque-delete-me.bin`)),
+          directWriteFileExists: await fileExists(path.join(outputsDir, `${provider}-direct.txt`)),
+        })
+      }
+      const finalState = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
+      const processes = unwrapVariant(await client.send(listProviderProcessesRequest()), 'ProviderProcessesListed').processes || []
+      console.log(JSON.stringify({
+        status: 'ok',
+        mode: 'managed-io-live-drill',
+        kernelUrl,
+        machineRef: options.machineRef,
+        workspace,
+        providers: options.providers,
+        model: options.model,
+        durationMs: Date.now() - startedAt,
+        agents: agents.map(({ provider, agent }) => ({
+          id: agent.id,
+          alias: agent.alias,
+          provider,
+        })),
+        completionCount: events.filter((event) => event.event === 'assistant_message_completed').length,
+        terminalEventCount: events.filter((event) => event.event === 'terminal_output').length,
+        files,
+        collisionAndExternalChecks: [],
+        providerProcesses: processes.map((process) => ({
+          processId: process.process_id,
+          provider: process.provider,
+          pid: process.pid ?? null,
+          ownerRunIds: process.owner_provider_run_ids || [],
+        })),
+        focusedAgentId: finalState.session?.focused_agent_id ?? finalState.focused_agent_id ?? null,
+      }, null, 2))
+      succeeded = true
+      return
+    }
+
     const deleteAgents = []
     if (options.machineRef) {
       for (const { provider } of agents) {
@@ -1016,57 +1068,6 @@ async function main() {
       if (await fileExists(path.join(outputsDir, `${provider}-opaque-delete-me.bin`))) {
         throw new Error(`managed opaque delete left file behind: outputs/${provider}-opaque-delete-me.bin`)
       }
-    }
-
-    if (options.positiveOnly) {
-      const files = []
-      for (const provider of options.providers) {
-        const filePath = path.join(outputsDir, `${provider}.txt`)
-        files.push({
-          provider,
-          relativePath: `outputs/${provider}.txt`,
-          content: await readFile(filePath, 'utf8'),
-          movedRelativePath: `outputs/${provider}-moved.txt`,
-          movedContent: await readFile(path.join(outputsDir, `${provider}-moved.txt`), 'utf8'),
-          opaqueMovedRelativePath: `outputs/${provider}-opaque-moved.bin`,
-          opaqueMovedHex: (await readFile(path.join(outputsDir, `${provider}-opaque-moved.bin`))).toString('hex'),
-          patchSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-patch.txt`)),
-          opaqueMoveSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque.bin`)),
-          deletedFileExists: await fileExists(path.join(outputsDir, `${provider}-delete-me.txt`)),
-          opaqueDeletedFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque-delete-me.bin`)),
-          directWriteFileExists: await fileExists(path.join(outputsDir, `${provider}-direct.txt`)),
-        })
-      }
-      const finalState = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
-      const processes = unwrapVariant(await client.send(listProviderProcessesRequest()), 'ProviderProcessesListed').processes || []
-      console.log(JSON.stringify({
-        status: 'ok',
-        mode: 'managed-io-live-drill',
-        kernelUrl,
-        machineRef: options.machineRef,
-        workspace,
-        providers: options.providers,
-        model: options.model,
-        durationMs: Date.now() - startedAt,
-        agents: agents.map(({ provider, agent }) => ({
-          id: agent.id,
-          alias: agent.alias,
-          provider,
-        })),
-        completionCount: events.filter((event) => event.event === 'assistant_message_completed').length,
-        terminalEventCount: events.filter((event) => event.event === 'terminal_output').length,
-        files,
-        collisionAndExternalChecks: [],
-        providerProcesses: processes.map((process) => ({
-          processId: process.process_id,
-          provider: process.provider,
-          pid: process.pid ?? null,
-          ownerRunIds: process.owner_provider_run_ids || [],
-        })),
-        focusedAgentId: finalState.session?.focused_agent_id ?? finalState.focused_agent_id ?? null,
-      }, null, 2))
-      succeeded = true
-      return
     }
 
     const negativeAgents = options.machineRef ? await spawnManagedIoPhaseAgents({

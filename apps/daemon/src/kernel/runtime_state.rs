@@ -8179,7 +8179,7 @@ fn managed_io_snapshot_id_from_arg(
     snapshot_id
         .filter(|snapshot_id| {
             let snapshot_id = snapshot_id.trim();
-            !snapshot_id.is_empty() && snapshot_id != "__arroba_create__"
+            !snapshot_id.is_empty() && snapshot_id != "__arroba_create__" && snapshot_id != "*"
         })
         .map(crate::io::ArtifactSnapshotId::new)
 }
@@ -10827,6 +10827,7 @@ mod managed_io_external_change_notice_tests {
             managed_io_snapshot_id_from_arg(Some("__arroba_create__".to_string())),
             None
         );
+        assert_eq!(managed_io_snapshot_id_from_arg(Some("*".to_string())), None);
         assert_eq!(
             managed_io_snapshot_id_from_arg(Some("snap:test".to_string())),
             Some(crate::io::ArtifactSnapshotId::new("snap:test"))
