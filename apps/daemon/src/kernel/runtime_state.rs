@@ -44,6 +44,7 @@ pub(crate) struct KernelRuntimeOwnedState {
     terminal_stream: crate::terminal::TerminalStreamStore,
     workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
     managed_io_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
+    managed_io_external_changes: crate::io::ArtifactExternalChangeMonitor,
     workspace_identity_monitor: crate::kernel::workspace_identity_monitor::WorkspaceIdentityMonitor,
 }
 
@@ -4789,6 +4790,7 @@ impl KernelRuntimeState {
                 managed_io_coordinator: Arc::new(Mutex::new(
                     crate::io::ArtifactEditCoordinator::new(),
                 )),
+                managed_io_external_changes: crate::io::ArtifactExternalChangeMonitor::default(),
                 workspace_identity_monitor:
                     crate::kernel::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
             },
@@ -4817,6 +4819,7 @@ impl KernelRuntimeState {
             active_reservations: reservations.len(),
             active_reservation_artifacts,
             workspace_identity: self.owned.workspace_identity_monitor.health_snapshot(),
+            external_changes: self.owned.managed_io_external_changes.health_snapshot(),
         }
     }
 
@@ -6982,13 +6985,18 @@ impl KernelRuntimeState {
                 let read = crate::io::ManagedFileIo::read_artifact(
                     &mut coordinator,
                     crate::io::ManagedFileReadRequest {
-                        workspace_identity,
+                        workspace_identity: workspace_identity.clone(),
                         workspace_root: workspace_root.clone(),
                         path: PathBuf::from(args.path),
                         domain,
                     },
                 )
                 .map_err(managed_io_daemon_error)?;
+                self.owned.managed_io_external_changes.observe_managed_read(
+                    provider_run.id(),
+                    &workspace_identity,
+                    &read.path,
+                );
                 let mut payload = managed_io_read_payload(read);
                 add_managed_io_workspace_payload(&mut payload, &workspace_context);
                 Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
@@ -7056,9 +7064,9 @@ impl KernelRuntimeState {
                 let result = crate::io::ManagedFileIo::apply_edit(
                     &mut coordinator,
                     crate::io::ManagedFileWriteRequest {
-                        workspace_identity,
+                        workspace_identity: workspace_identity.clone(),
                         workspace_root: workspace_root.clone(),
-                        domain,
+                        domain:
                         intent: crate::io::AgentEditIntent {
                             path: path.clone(),
                             snapshot_id: args.snapshot_id.map(crate::io::ArtifactSnapshotId::new),
@@ -7067,6 +7075,12 @@ impl KernelRuntimeState {
                     },
                 );
                 coordinator.release_reservation(reservation);
+                record_managed_io_external_change_if_rejected(
+                    &self.owned.managed_io_external_changes,
+                    &workspace_identity,
+                    &path,
+                    &result,
+                );
                 let after = managed_io_result_applied(&result)
                     .then(|| managed_io_text_for_diff(&workspace_root, &path, true))
                     .flatten();
@@ -7106,6 +7120,7 @@ impl KernelRuntimeState {
                     domain,
                     operations,
                     managed_io_reservation_owner(provider_run, tool_name),
+                    &self.owned.managed_io_external_changes,
                 )?;
                 add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
                 Ok(output)
@@ -7136,6 +7151,7 @@ impl KernelRuntimeState {
                         path: PathBuf::from(args.path),
                     }],
                     managed_io_reservation_owner(provider_run, tool_name),
+                    &self.owned.managed_io_external_changes,
                 )?;
                 add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
                 Ok(output)
@@ -7168,6 +7184,7 @@ impl KernelRuntimeState {
                         new_text: args.new_text,
                     }],
                     managed_io_reservation_owner(provider_run, tool_name),
+                    &self.owned.managed_io_external_changes,
                 )?;
                 add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
                 Ok(output)
@@ -7206,9 +7223,9 @@ impl KernelRuntimeState {
                 let result = crate::io::ManagedFileIo::apply_edit(
                     &mut coordinator,
                     crate::io::ManagedFileWriteRequest {
-                        workspace_identity,
+                        workspace_identity: workspace_identity.clone(),
                         workspace_root: workspace_root.clone(),
-                        domain,
+                        domain:
                         intent: crate::io::AgentEditIntent {
                             path: path.clone(),
                             snapshot_id: args.snapshot_id.map(crate::io::ArtifactSnapshotId::new),
@@ -7219,6 +7236,12 @@ impl KernelRuntimeState {
                     },
                 );
                 coordinator.release_reservation(reservation);
+                record_managed_io_external_change_if_rejected(
+                    &self.owned.managed_io_external_changes,
+                    &workspace_identity,
+                    &path,
+                    &result,
+                );
                 let after = managed_io_result_applied(&result)
                     .then(|| managed_io_text_for_diff(&workspace_root, &path, true))
                     .flatten();
@@ -7426,6 +7449,22 @@ fn managed_io_result_applied(result: &crate::io::EditResult) -> bool {
     )
 }
 
+fn record_managed_io_external_change_if_rejected(
+    monitor: &crate::io::ArtifactExternalChangeMonitor,
+    workspace_identity: &crate::io::WorkspaceIdentity,
+    path: &PathBuf,
+    result: &crate::io::EditResult,
+) {
+    if matches!(
+        result,
+        crate::io::EditResult::Rejected {
+            reason: crate::io::ArtifactEditError::ExternalChangeDuringApply { .. }
+        }
+    ) {
+        monitor.record_external_change(workspace_identity, path);
+    }
+}
+
 fn managed_io_reservation_ranges_for_operation(
     operation: &crate::io::AgentEditOperation,
     before: Option<&ManagedIoTextSnapshot>,
@@ -7598,6 +7637,7 @@ fn apply_managed_patch_operations(
     domain: crate::io::ArtifactDomainKind,
     operations: Vec<ManagedPatchOperation>,
     reservation_owner: crate::io::ArtifactReservationOwner,
+    external_change_monitor: &crate::io::ArtifactExternalChangeMonitor,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
     let mut before_states: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
     let mut final_states: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
@@ -7772,6 +7812,7 @@ fn apply_managed_patch_operations(
             for token in reservations {
                 coordinator.release_reservation(token);
             }
+            external_change_monitor.record_external_change(&workspace_identity, path);
             return Ok(managed_patch_rejected(
                 path.clone(),
                 "artifact changed while the managed patch was being prepared; reread and retry",

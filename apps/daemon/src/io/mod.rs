@@ -1,4 +1,5 @@
 mod coordinator;
+mod external_change_monitor;
 mod filesystem;
 mod text;
 mod types;
@@ -6,6 +7,9 @@ mod types;
 pub use coordinator::{
     ArtifactEditCoordinator, ArtifactReadRequest, ArtifactReservationToken, ArtifactWriteRequest,
     PreparedArtifactEdit,
+};
+pub(crate) use external_change_monitor::{
+    ArtifactExternalChangeHealthSnapshot, ArtifactExternalChangeMonitor,
 };
 pub use filesystem::{ManagedFileIo, ManagedFileReadRequest, ManagedFileWriteRequest};
 pub use text::TextDocumentDomain;

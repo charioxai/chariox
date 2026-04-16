@@ -311,7 +311,9 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: OpenCode required managed-I/O enforcement creates coordinated sessions with `edit`, `bash`, and `task` denied so direct file writes and unmanaged subagents are not exposed; it skips unsafe session resume into coordinated mode.
 - Landed: workspace identity monitor boundary with identity-generation tracking and managed-I/O rejection after workspace identity invalidation.
 - Landed: unsupported provider-mode rejection at launch when managed I/O is required but the adapter cannot enforce write blocking.
-- Not landed yet: filesystem watcher, remote coordinated routing, managed-I/O health/status surfacing, default-restricted user policy, and broader artifact domains.
+- Landed: managed-I/O health/status surfacing for reservations, workspace identity invalidations, and external-change monitor counters.
+- Landed: external artifact change monitor boundary that tracks managed reads and records detected external changes from pre-apply verification.
+- Not landed yet: live filesystem watcher backend, remote coordinated routing, default-restricted user policy, and broader artifact domains.
 
 ## Non-Goals
 

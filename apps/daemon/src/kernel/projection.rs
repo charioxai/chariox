@@ -1033,6 +1033,7 @@ pub struct ManagedIoHealthSnapshot {
     pub active_reservation_artifacts: usize,
     pub workspace_identity:
         crate::kernel::workspace_identity_monitor::WorkspaceIdentityMonitorHealthSnapshot,
+    pub external_changes: crate::io::ArtifactExternalChangeHealthSnapshot,
 }
 
 impl Default for ManagedIoHealthSnapshot {
@@ -1047,6 +1048,11 @@ impl Default for ManagedIoHealthSnapshot {
                     invalid_provider_runs: 0,
                     current_generation_total: 0,
                 },
+            external_changes: crate::io::ArtifactExternalChangeHealthSnapshot {
+                tracked_artifacts: 0,
+                externally_changed_artifacts: 0,
+                external_change_events: 0,
+            },
         }
     }
 }
@@ -1414,6 +1420,11 @@ mod tests {
                     invalid_provider_runs: 1,
                     current_generation_total: 2,
                 },
+                external_changes: crate::io::ArtifactExternalChangeHealthSnapshot {
+                    tracked_artifacts: 4,
+                    externally_changed_artifacts: 2,
+                    external_change_events: 5,
+                },
             },
             ProjectionInvariantHealthSnapshot {
                 checked_sessions: 1,
@@ -1464,6 +1475,14 @@ mod tests {
                 .workspace_identity
                 .invalid_provider_runs,
             1
+        );
+        assert_eq!(projection.managed_io.external_changes.tracked_artifacts, 4);
+        assert_eq!(
+            projection
+                .managed_io
+                .external_changes
+                .external_change_events,
+            5
         );
         assert_eq!(projection.projection_invariants.checked_agents, 3);
         assert!(projection.projection_invariants.mismatches.is_empty());
