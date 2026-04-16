@@ -730,6 +730,7 @@ async fn handle_incoming_payload(
                     .await;
                     Some(gap)
                 }
+                ReplaySubscriptionResult::Overflow => return,
                 ReplaySubscriptionResult::Complete | ReplaySubscriptionResult::NoCursor => None,
             };
             {
@@ -1191,6 +1192,7 @@ enum ReplaySubscriptionResult {
     NoCursor,
     Complete,
     Gap(ReplayGap),
+    Overflow,
 }
 
 async fn replay_recent_events(
@@ -1248,11 +1250,11 @@ async fn replay_recent_events(
             Some(session_id),
             Some(attachment_id),
         ) {
-            return ReplaySubscriptionResult::Complete;
+            return ReplaySubscriptionResult::Overflow;
         }
     }
 
-    let _ = try_send_outgoing_frame(
+    if !try_send_outgoing_frame(
         outgoing_tx,
         close_tx,
         close_requested,
@@ -1276,7 +1278,9 @@ async fn replay_recent_events(
         },
         Some(session_id),
         Some(attachment_id),
-    );
+    ) {
+        return ReplaySubscriptionResult::Overflow;
+    }
     ReplaySubscriptionResult::Complete
 }
 
