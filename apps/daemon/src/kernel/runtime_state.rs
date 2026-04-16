@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -7429,7 +7429,10 @@ impl KernelRuntimeState {
                         domain,
                         intent: crate::io::AgentEditIntent {
                             path: path.clone(),
-                            snapshot_id: managed_io_snapshot_id_from_arg(args.snapshot_id),
+                            snapshot_id: managed_io_write_snapshot_id_from_arg(
+                                args.snapshot_id,
+                                &path,
+                            ),
                             operation: crate::io::AgentEditOperation::WriteArtifact { content },
                         },
                     },
@@ -7836,7 +7839,10 @@ impl KernelRuntimeState {
                     workspace_identity: context.worker_workspace_identity,
                     intent: crate::io::AgentEditIntent {
                         path: path.clone(),
-                        snapshot_id: managed_io_snapshot_id_from_arg(args.snapshot_id.clone()),
+                        snapshot_id: managed_io_write_snapshot_id_from_arg(
+                            args.snapshot_id.clone(),
+                            &path,
+                        ),
                         operation: crate::io::AgentEditOperation::WriteArtifact {
                             content: managed_io_write_content_from_args(
                                 "forwarded_managed_io_write_artifact",
@@ -8182,6 +8188,19 @@ fn managed_io_snapshot_id_from_arg(
             !snapshot_id.is_empty() && snapshot_id != "__arroba_create__" && snapshot_id != "*"
         })
         .map(crate::io::ArtifactSnapshotId::new)
+}
+
+fn managed_io_write_snapshot_id_from_arg(
+    snapshot_id: Option<String>,
+    path: &Path,
+) -> Option<crate::io::ArtifactSnapshotId> {
+    let snapshot_id = managed_io_snapshot_id_from_arg(snapshot_id)?;
+    let snapshot_value = snapshot_id.as_str();
+    let path_value = path.to_string_lossy();
+    if snapshot_value.starts_with("snap:") && !snapshot_value.contains(path_value.as_ref()) {
+        return None;
+    }
+    Some(snapshot_id)
 }
 
 fn remote_managed_io_artifact_states_for_tool(
@@ -10831,6 +10850,26 @@ mod managed_io_external_change_notice_tests {
         assert_eq!(
             managed_io_snapshot_id_from_arg(Some("snap:test".to_string())),
             Some(crate::io::ArtifactSnapshotId::new("snap:test"))
+        );
+    }
+
+    #[test]
+    fn managed_io_write_snapshot_id_ignores_different_artifact_snapshot() {
+        assert_eq!(
+            managed_io_write_snapshot_id_from_arg(
+                Some("snap:repo:main:seed.txt:1:1".to_string()),
+                Path::new("outputs/opencode.txt"),
+            ),
+            None
+        );
+        assert_eq!(
+            managed_io_write_snapshot_id_from_arg(
+                Some("snap:repo:main:outputs/opencode.txt:2:4".to_string()),
+                Path::new("outputs/opencode.txt"),
+            ),
+            Some(crate::io::ArtifactSnapshotId::new(
+                "snap:repo:main:outputs/opencode.txt:2:4"
+            ))
         );
     }
 
