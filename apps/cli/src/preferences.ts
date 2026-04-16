@@ -1,6 +1,7 @@
 import os from "node:os"
 import path from "node:path"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
+import type { ThemeName } from "./theme-registry.js"
 
 export type ArrobaPreferences = {
   providers?: Record<string, ProviderPreferences>
@@ -18,6 +19,7 @@ export type MultiAgentResponseLayout = "individual" | "split"
 export type UiPreferences = {
   multiAgentResponseLayout?: MultiAgentResponseLayout
   maxAgentsPerScreen?: number
+  theme?: ThemeName
 }
 
 export type SessionPreferences = {

@@ -26,6 +26,7 @@ test("mergeUiPreferences updates the global response layout without losing other
     },
     ui: {
       multiAgentResponseLayout: "individual",
+      theme: "sober",
     },
   }
 
@@ -40,6 +41,7 @@ test("mergeUiPreferences updates the global response layout without losing other
       },
       ui: {
         multiAgentResponseLayout: "split",
+        theme: "sober",
       },
     } satisfies ArrobaPreferences,
   )

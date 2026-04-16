@@ -10,7 +10,7 @@ export const ARROBA_ASCII_ART = [
   "/_/   \\_\\_| \\_\\_| \\_\\___/|| _ ) /_/  \\_\\",
 ].join("\n")
 
-export const SESSION_NEW_HELP_TEXT = "Use the waiting room to start a new session or join an existing one."
+export const SESSION_NEW_HELP_TEXT = "Use arrows to choose provider, model, variant, theme, or session. Press Enter to continue."
 export const SESSION_NEW_PLACEHOLDER = "Use the waiting room arrows to choose your next session"
 export const SESSION_NEW_FOOTER_HINT = `Waiting room • arrows move • Enter confirms • ${HOTKEY_TOGGLE_LABEL} hotkeys`
 export const SESSION_NEW_ERROR_HINT = "No session attached. Use the waiting room to create or join a session."

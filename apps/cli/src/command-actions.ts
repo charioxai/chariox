@@ -16,7 +16,7 @@ import type {
   WorkflowWatchdogDefinition,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
-import type { MultiAgentResponseLayout } from "./preferences.js"
+import type { MultiAgentResponseLayout, UiPreferences } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { SessionListEntry } from "./sessions.js"
 import { readFile } from "node:fs/promises"
@@ -217,7 +217,7 @@ type CommandActionDeps = {
   ) => Promise<{ session: RuntimeSession; config: SessionConfigState }>
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>
-  saveUiPreferences: (prefs: { multiAgentResponseLayout: MultiAgentResponseLayout }) => Promise<void>
+  saveUiPreferences: (prefs: UiPreferences) => Promise<void>
   rebuildTranscript: () => void
   requestRender: () => void
   afterViewRender?: (layout: MultiAgentResponseLayout) => void

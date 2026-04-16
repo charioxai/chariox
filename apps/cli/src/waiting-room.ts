@@ -7,6 +7,7 @@ import {
   type CatalogModelOption,
   type ProviderCatalog,
 } from "./provider-catalog.js"
+import { normalizeThemeName, themeLabel, THEME_NAMES, type ThemeName } from "./theme-registry.js"
 
 export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = 10
 const WAITING_ROOM_ROW_TITLE_MIN_WIDTH = 24
@@ -21,7 +22,7 @@ function formatWaitingRoomSessionTitle(session: SessionListEntry) {
   return `${session.id} (${session.alias})`
 }
 
-export type WaitingRoomFocus = "new" | "provider" | "model" | "effort" | "session" | "relay"
+export type WaitingRoomFocus = "new" | "provider" | "model" | "effort" | "theme" | "session" | "relay"
 
 export type WaitingRoomKeyState = {
   up: boolean
@@ -36,6 +37,7 @@ export type WaitingRoomState = {
   providerId: BackendProviderId
   modelId: string
   effort: string
+  themeId: ThemeName
   introStep: number
   keyState: WaitingRoomKeyState
 }
@@ -77,6 +79,7 @@ export function createWaitingRoomState(
   providerId: BackendProviderId,
   model: string,
   effort: string,
+  themeId: unknown = "opencode",
 ): WaitingRoomState {
   const selected = selectConfiguredModel(catalog, model, providerId)
   return normalizeWaitingRoomState(
@@ -86,6 +89,7 @@ export function createWaitingRoomState(
       providerId,
       modelId: selected?.id ?? model,
       effort: selectConfiguredVariant(selected, effort),
+      themeId: normalizeThemeName(themeId),
       introStep: 0,
       keyState: { up: false, down: false, left: false, right: false },
     },
@@ -110,6 +114,7 @@ export function normalizeWaitingRoomState(
     sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
     modelId: selected?.id ?? state.modelId,
     effort: efforts.includes(state.effort) ? state.effort : efforts[0] ?? "",
+    themeId: normalizeThemeName(state.themeId),
   }
 }
 
@@ -185,6 +190,13 @@ export function cycleWaitingRoomValue(
     return {
       ...state,
       effort: efforts[modulo(index + delta, efforts.length)] ?? "",
+    }
+  }
+  if (state.focus === "theme") {
+    const index = Math.max(0, THEME_NAMES.indexOf(normalizeThemeName(state.themeId)))
+    return {
+      ...state,
+      themeId: THEME_NAMES[modulo(index + delta, THEME_NAMES.length)]!,
     }
   }
   return state
@@ -270,6 +282,16 @@ export function waitingRoomRows(
       titleWidth,
       indent: 1,
       focused: state.focus === "effort",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
+      id: "theme",
+      title: "Theme",
+      value: themeLabel(state.themeId),
+      titleWidth,
+      indent: 1,
+      focused: state.focus === "theme",
       selectable: true,
       scrollbar: "",
     },
@@ -521,6 +543,7 @@ function waitingRoomFocusTargets(sessions: SessionListEntry[]) {
     { focus: "provider" as const, sessionIndex: 0 },
     { focus: "model" as const, sessionIndex: 0 },
     { focus: "effort" as const, sessionIndex: 0 },
+    { focus: "theme" as const, sessionIndex: 0 },
     ...visibleSessions.map((_, sessionIndex) => ({ focus: "session" as const, sessionIndex })),
     { focus: "relay" as const, sessionIndex: 0 },
   ]

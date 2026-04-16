@@ -183,6 +183,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
     providerId: "opencode",
     modelId: "openai/gpt-5.4",
     effort: "high",
+    themeId: "opencode",
     introStep: 0,
     keyState: { up: false, down: false, left: false, right: false },
     ...overrides,

@@ -230,7 +230,7 @@ import {
 import { syncAuxiliaryPane } from "./response-layout-render.js"
 import { createRenderScheduler } from "./render-scheduler.js"
 import { bootstrapSession } from "./session-bootstrap.js"
-import { createTranscriptSyntaxStyle, EmptyBorder, SplitBorder, theme } from "./theme.js"
+import { applyTheme, createTranscriptSyntaxStyle, EmptyBorder, SplitBorder, theme } from "./theme.js"
 import {
   deriveWaitingRoomActivationDecision,
   deriveWaitingRoomModelSelectionDecision,
@@ -533,6 +533,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const initialProviderCatalog = props.bootstrap.providerCatalog
   const initialProviderCommandCatalogs = props.bootstrap.providerCommandCatalogs
   const initialPreferences = props.bootstrap.preferences
+  const initialThemeId = applyTheme(initialPreferences.ui?.theme)
   const initialPromptHistory = initialBinding?.promptHistoryEntries
     ?? (initialBinding?.session
       ? sessionPromptHistoryEntries(initialPreferences, initialBinding.session.id)
@@ -558,6 +559,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       (options.provider ?? "opencode") as BackendProviderId,
       options.model,
       options.effort,
+      initialThemeId,
     ),
   )
   const [commandCenterQuery, setCommandCenterQuery] = createSignal("")
@@ -662,7 +664,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const tools = new Map<string, ToolTranscriptUpdate>()
   const activeToolLabels = new Map<string, string>()
   const transcriptRenderables = new Map<number, TranscriptEntryRenderable>()
-  const transcriptSyntax = createTranscriptSyntaxStyle()
+  let transcriptSyntax = createTranscriptSyntaxStyle()
   let emptyTranscriptRenderable: BoxRenderable | undefined
   let footerFlashTimeout: ReturnType<typeof startTimeout> | undefined
   let lastTranscriptScrollTop = 0
@@ -1224,8 +1226,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return true
   }
   const reconcileWaitingRoom = (next: WaitingRoomState) => {
+    const currentState = waitingRoomState()
     const update = deriveWaitingRoomStateUpdate({
-      currentState: waitingRoomState(),
+      currentState,
       nextState: next,
       sessions: availableSessions(),
       catalog: providerCatalogState(),
@@ -1236,6 +1239,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     options.provider = update.nextProvider
     options.model = update.nextModel
     options.effort = update.nextEffort
+    if (currentState.themeId !== update.normalizedState.themeId) {
+      const nextThemeId = applyTheme(update.normalizedState.themeId)
+      transcriptSyntax = createTranscriptSyntaxStyle()
+      void saveUiPreferences({ theme: nextThemeId })
+      setPreferencesState((current) => mergeUiPreferences(current, { theme: nextThemeId }))
+    }
     if (update.shouldPersistProviderPreferences) {
       void saveProviderPreferences(update.nextProvider, {
         model: options.model,

@@ -26,6 +26,7 @@ const waitingRoomState: WaitingRoomState = {
   providerId: "opencode",
   modelId: "openai/gpt-5",
   effort: "medium",
+  themeId: "opencode",
   introStep: 0,
   keyState: { up: false, down: false, left: false, right: false },
 }
