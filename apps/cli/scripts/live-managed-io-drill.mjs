@@ -296,6 +296,20 @@ async function assertFilesAbsent(filePaths, label) {
   }
 }
 
+async function waitForFilesAbsent({ filePaths, timeoutMs, pollMs }) {
+  const started = Date.now()
+  let existing = filePaths
+  while (Date.now() - started < timeoutMs) {
+    existing = []
+    for (const filePath of filePaths) {
+      if (await fileExists(filePath)) existing.push(filePath)
+    }
+    if (existing.length === 0) return
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for managed-I/O files to be absent; still present=${existing.join(', ')}`)
+}
+
 async function waitForCompletionCount({ client, sessionId, attachmentId, events, expectedCompletionCount, timeoutMs, pollMs }) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
@@ -948,7 +962,7 @@ async function main() {
       deletePrompts.push({ provider, agent, prompt })
     }
     if (options.machineRef) {
-      for (const { agent, prompt } of deletePrompts) {
+      for (const { provider, agent, prompt } of deletePrompts) {
         const beforeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
         await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
         await waitForCompletionCount({
@@ -957,6 +971,14 @@ async function main() {
           attachmentId: attachment.id,
           events,
           expectedCompletionCount: beforeCompletionCount + 1,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
+        })
+        await waitForFilesAbsent({
+          filePaths: [
+            path.join(outputsDir, `${provider}-delete-me.txt`),
+            path.join(outputsDir, `${provider}-opaque-delete-me.bin`),
+          ],
           timeoutMs: options.timeoutMs,
           pollMs: options.pollMs,
         })

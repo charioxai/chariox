@@ -30,6 +30,8 @@ pub struct RemoteManagedIoArtifactState {
     pub path: String,
     pub exists: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_base64: Option<String>,

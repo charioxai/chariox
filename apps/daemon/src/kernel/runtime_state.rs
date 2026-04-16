@@ -7236,10 +7236,7 @@ impl KernelRuntimeState {
                         domain,
                         intent: crate::io::AgentEditIntent {
                             path: path.clone(),
-                            snapshot_id: args
-                                .snapshot_id
-                                .filter(|snapshot_id| !snapshot_id.is_empty())
-                                .map(crate::io::ArtifactSnapshotId::new),
+                            snapshot_id: managed_io_snapshot_id_from_arg(args.snapshot_id),
                             operation,
                         },
                     },
@@ -7432,10 +7429,7 @@ impl KernelRuntimeState {
                         domain,
                         intent: crate::io::AgentEditIntent {
                             path: path.clone(),
-                            snapshot_id: args
-                                .snapshot_id
-                                .filter(|snapshot_id| !snapshot_id.is_empty())
-                                .map(crate::io::ArtifactSnapshotId::new),
+                            snapshot_id: managed_io_snapshot_id_from_arg(args.snapshot_id),
                             operation: crate::io::AgentEditOperation::WriteArtifact { content },
                         },
                     },
@@ -7762,11 +7756,7 @@ impl KernelRuntimeState {
                     workspace_identity: context.worker_workspace_identity,
                     intent: crate::io::AgentEditIntent {
                         path: path.clone(),
-                        snapshot_id: args
-                            .snapshot_id
-                            .clone()
-                            .filter(|snapshot_id| !snapshot_id.is_empty())
-                            .map(crate::io::ArtifactSnapshotId::new),
+                        snapshot_id: managed_io_snapshot_id_from_arg(args.snapshot_id.clone()),
                         operation,
                     },
                 });
@@ -7846,11 +7836,7 @@ impl KernelRuntimeState {
                     workspace_identity: context.worker_workspace_identity,
                     intent: crate::io::AgentEditIntent {
                         path: path.clone(),
-                        snapshot_id: args
-                            .snapshot_id
-                            .clone()
-                            .filter(|snapshot_id| !snapshot_id.is_empty())
-                            .map(crate::io::ArtifactSnapshotId::new),
+                        snapshot_id: managed_io_snapshot_id_from_arg(args.snapshot_id.clone()),
                         operation: crate::io::AgentEditOperation::WriteArtifact {
                             content: managed_io_write_content_from_args(
                                 "forwarded_managed_io_write_artifact",
@@ -7874,7 +7860,11 @@ impl KernelRuntimeState {
                     });
                     let final_states = content
                         .map(|content| {
-                            vec![remote_managed_io_state_from_content(&path, Some(content))]
+                            vec![remote_managed_io_state_from_content_with_domain(
+                                &path,
+                                Some(content),
+                                domain,
+                            )]
                         })
                         .unwrap_or_default();
                     (after, final_states)
@@ -8183,6 +8173,17 @@ fn managed_io_write_content_from_args(
     }
 }
 
+fn managed_io_snapshot_id_from_arg(
+    snapshot_id: Option<String>,
+) -> Option<crate::io::ArtifactSnapshotId> {
+    snapshot_id
+        .filter(|snapshot_id| {
+            let snapshot_id = snapshot_id.trim();
+            !snapshot_id.is_empty() && snapshot_id != "__arroba_create__"
+        })
+        .map(crate::io::ArtifactSnapshotId::new)
+}
+
 fn remote_managed_io_artifact_states_for_tool(
     workspace_root: &PathBuf,
     tool_name: &str,
@@ -8201,7 +8202,9 @@ fn remote_managed_io_artifact_states_for_tool(
             let domain =
                 KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
             let content = managed_io_read_optional_content(workspace_root, &path, domain)?;
-            Ok(vec![remote_managed_io_state_from_content(&path, content)])
+            Ok(vec![remote_managed_io_state_from_content_with_domain(
+                &path, content, domain,
+            )])
         }
         crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL => {
             let args = serde_json::from_value::<
@@ -8227,7 +8230,9 @@ fn remote_managed_io_artifact_states_for_tool(
             let domain =
                 KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
             let content = managed_io_read_optional_content(workspace_root, &path, domain)?;
-            Ok(vec![remote_managed_io_state_from_content(&path, content)])
+            Ok(vec![remote_managed_io_state_from_content_with_domain(
+                &path, content, domain,
+            )])
         }
         crate::transport::runtime_tools::APPLY_PATCH_TOOL => {
             let args = serde_json::from_value::<
@@ -8252,7 +8257,9 @@ fn remote_managed_io_artifact_states_for_tool(
             let domain =
                 KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
             let content = managed_io_read_optional_content(workspace_root, &path, domain)?;
-            Ok(vec![remote_managed_io_state_from_content(&path, content)])
+            Ok(vec![remote_managed_io_state_from_content_with_domain(
+                &path, content, domain,
+            )])
         }
         crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL => {
             let args = serde_json::from_value::<
@@ -8280,8 +8287,12 @@ fn remote_managed_io_artifact_states_for_tool(
                 let to_content =
                     managed_io_read_optional_content(workspace_root, &to_path, domain)?;
                 Ok(vec![
-                    remote_managed_io_state_from_content(&from_path, from_content),
-                    remote_managed_io_state_from_content(&to_path, to_content),
+                    remote_managed_io_state_from_content_with_domain(
+                        &from_path,
+                        from_content,
+                        domain,
+                    ),
+                    remote_managed_io_state_from_content_with_domain(&to_path, to_content, domain),
                 ])
             }
         }
@@ -8325,6 +8336,7 @@ fn remote_managed_io_state(
     crate::transport::relay_peer::RemoteManagedIoArtifactState {
         path: path.to_string_lossy().to_string(),
         exists: content_text.is_some(),
+        domain: Some("text".to_string()),
         content_text,
         content_base64: None,
     }
@@ -8340,6 +8352,7 @@ fn remote_managed_io_state_from_content(
             crate::transport::relay_peer::RemoteManagedIoArtifactState {
                 path: path.to_string_lossy().to_string(),
                 exists: true,
+                domain: Some("opaque".to_string()),
                 content_text: None,
                 content_base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
             }
@@ -8347,10 +8360,28 @@ fn remote_managed_io_state_from_content(
         None => crate::transport::relay_peer::RemoteManagedIoArtifactState {
             path: path.to_string_lossy().to_string(),
             exists: false,
+            domain: None,
             content_text: None,
             content_base64: None,
         },
     }
+}
+
+fn remote_managed_io_state_from_content_with_domain(
+    path: &PathBuf,
+    content: Option<crate::io::ArtifactContent>,
+    domain: crate::io::ArtifactDomainKind,
+) -> crate::transport::relay_peer::RemoteManagedIoArtifactState {
+    let mut state = remote_managed_io_state_from_content(path, content);
+    state.domain = Some(
+        match domain {
+            crate::io::ArtifactDomainKind::TextDocument => "text",
+            crate::io::ArtifactDomainKind::StructuredDocument => "structured",
+            crate::io::ArtifactDomainKind::OpaqueBlob => "opaque",
+        }
+        .to_string(),
+    );
+    state
 }
 
 fn remote_managed_io_state_for_path<'a>(
@@ -8390,6 +8421,11 @@ fn remote_managed_io_content_from_state(
 fn remote_managed_io_state_domain(
     state: &crate::transport::relay_peer::RemoteManagedIoArtifactState,
 ) -> crate::io::ArtifactDomainKind {
+    if let Some(domain) = state.domain.as_deref() {
+        if let Ok(domain) = KernelRuntimeOwnedState::managed_io_domain_from_arg(Some(domain)) {
+            return domain;
+        }
+    }
     if state.content_base64.is_some() {
         crate::io::ArtifactDomainKind::OpaqueBlob
     } else {
@@ -8424,13 +8460,14 @@ fn apply_remote_managed_io_final_states(
         let path = PathBuf::from(&final_state.path);
         let initial = remote_managed_io_state_for_path(initial_states, &path);
         let domain = remote_managed_io_state_domain(final_state);
-        let current = remote_managed_io_state_from_content(
+        let current = remote_managed_io_state_from_content_with_domain(
             &path,
             managed_io_read_optional_content(workspace_root, &path, domain)?,
+            domain,
         );
-        let expected = initial
-            .cloned()
-            .unwrap_or_else(|| remote_managed_io_state_from_content(&path, None));
+        let expected = initial.cloned().unwrap_or_else(|| {
+            remote_managed_io_state_from_content_with_domain(&path, None, domain)
+        });
         if !remote_managed_io_states_content_equal(&current, &expected) {
             return Ok(Some(crate::transport::runtime_tools::RuntimeToolResult {
                 ok: false,
@@ -8916,7 +8953,9 @@ fn apply_remote_managed_whole_file_operations(
     add_managed_io_workspace_payload(&mut payload, workspace_context);
     let final_artifact_states = final_states
         .into_iter()
-        .map(|(path, content)| remote_managed_io_state_from_content(&path, content))
+        .map(|(path, content)| {
+            remote_managed_io_state_from_content_with_domain(&path, content, domain)
+        })
         .collect::<Vec<_>>();
     Ok((
         crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload },
@@ -10781,6 +10820,20 @@ mod managed_io_external_change_notice_tests {
     }
 
     #[test]
+    fn managed_io_snapshot_id_treats_create_sentinel_as_absent() {
+        assert_eq!(managed_io_snapshot_id_from_arg(None), None);
+        assert_eq!(managed_io_snapshot_id_from_arg(Some(String::new())), None);
+        assert_eq!(
+            managed_io_snapshot_id_from_arg(Some("__arroba_create__".to_string())),
+            None
+        );
+        assert_eq!(
+            managed_io_snapshot_id_from_arg(Some("snap:test".to_string())),
+            Some(crate::io::ArtifactSnapshotId::new("snap:test"))
+        );
+    }
+
+    #[test]
     fn remote_managed_io_final_apply_writes_opaque_bytes() {
         let root = std::env::temp_dir().join(format!(
             "arroba-remote-managed-opaque-{}",
@@ -10923,6 +10976,75 @@ mod managed_io_external_change_notice_tests {
             coordinator.current_content(&to_id),
             Some(&crate::io::ArtifactContent::Bytes(vec![1, 2, 3]))
         );
+    }
+
+    #[test]
+    fn remote_managed_opaque_move_final_apply_preserves_deleted_source_domain() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-remote-managed-opaque-move-{}",
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::write(root.join("from.bin"), [0, 8, 255, 10]).expect("write source");
+        let workspace = crate::io::WorkspaceIdentity::local("remote-opaque-move-repo");
+        let workspace_context = ManagedIoWorkspaceContext {
+            root: root.clone(),
+            identity: workspace.clone(),
+            generation: 0,
+            identity_changed: false,
+            valid: true,
+        };
+        let mut coordinator = crate::io::ArtifactEditCoordinator::new();
+        let initial_states = vec![
+            remote_managed_io_state_from_content_with_domain(
+                &PathBuf::from("from.bin"),
+                Some(crate::io::ArtifactContent::Bytes(vec![0, 8, 255, 10])),
+                crate::io::ArtifactDomainKind::OpaqueBlob,
+            ),
+            remote_managed_io_state_from_content_with_domain(
+                &PathBuf::from("to.bin"),
+                None,
+                crate::io::ArtifactDomainKind::OpaqueBlob,
+            ),
+        ];
+
+        let (result, final_states) = apply_remote_managed_whole_file_operations(
+            &mut coordinator,
+            workspace.clone(),
+            crate::io::ArtifactDomainKind::OpaqueBlob,
+            vec![ManagedWholeFileOperation::Move {
+                from_path: PathBuf::from("from.bin"),
+                to_path: PathBuf::from("to.bin"),
+            }],
+            initial_states.clone(),
+            crate::io::ArtifactReservationOwner::new(
+                "remote:run-1",
+                Some("agent-1".to_string()),
+                "arroba.move_artifact",
+            ),
+            &workspace_context,
+        )
+        .expect("remote whole-file operation should apply");
+
+        assert!(result.ok);
+        assert_eq!(
+            remote_managed_io_state_for_path(&final_states, &PathBuf::from("from.bin"))
+                .unwrap()
+                .domain
+                .as_deref(),
+            Some("opaque")
+        );
+
+        let final_apply = apply_remote_managed_io_final_states(&root, &initial_states, &final_states)
+            .expect("opaque final apply should not decode deleted source as text");
+
+        assert!(final_apply.is_none());
+        assert!(!root.join("from.bin").exists());
+        assert_eq!(
+            std::fs::read(root.join("to.bin")).expect("read moved opaque bytes"),
+            vec![0, 8, 255, 10]
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
