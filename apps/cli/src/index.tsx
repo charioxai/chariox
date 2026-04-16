@@ -7359,7 +7359,7 @@ async function catchUpAttachedSession(
   session: RuntimeSession,
   logger?: ArrobaLogger | null,
 ): Promise<void> {
-  if (!session.active_provider_run_id) {
+  if (!session.active_provider_run_id && !sessionHasPromptWork(session)) {
     return
   }
 
