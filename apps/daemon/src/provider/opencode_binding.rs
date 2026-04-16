@@ -175,6 +175,37 @@ pub(super) fn abort_opencode_session(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::opencode_managed_io_permission_rules;
+
+    #[test]
+    fn managed_io_permission_rules_block_direct_writes() {
+        assert_eq!(
+            opencode_managed_io_permission_rules(),
+            json!([
+                {
+                    "permission": "edit",
+                    "pattern": "*",
+                    "action": "deny"
+                },
+                {
+                    "permission": "bash",
+                    "pattern": "*",
+                    "action": "deny"
+                },
+                {
+                    "permission": "task",
+                    "pattern": "*",
+                    "action": "deny"
+                }
+            ])
+        );
+    }
+}
+
 pub(super) fn submit_opencode_prompt(
     run: &RuntimeProviderRun,
     state: &mut OpenCodeRuntimeState,

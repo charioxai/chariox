@@ -11,6 +11,6 @@ pub use filesystem::{ManagedFileIo, ManagedFileReadRequest, ManagedFileWriteRequ
 pub use text::TextDocumentDomain;
 pub use types::{
     AgentEditIntent, AgentEditOperation, ArtifactContent, ArtifactDomainKind, ArtifactEditError,
-    ArtifactEditWarning, ArtifactId, ArtifactReadResult, ArtifactSnapshotId, ArtifactVersion,
-    EditResult, TextRange, WorkspaceIdentity,
+    ArtifactEditWarning, ArtifactId, ArtifactReadResult, ArtifactReservationOwner,
+    ArtifactSnapshotId, ArtifactVersion, EditResult, TextRange, WorkspaceIdentity,
 };

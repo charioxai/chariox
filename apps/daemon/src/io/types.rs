@@ -79,6 +79,27 @@ impl WorkspaceIdentity {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactReservationOwner {
+    pub provider_run_id: String,
+    pub agent_instance_id: Option<String>,
+    pub tool_name: String,
+}
+
+impl ArtifactReservationOwner {
+    pub fn new(
+        provider_run_id: impl Into<String>,
+        agent_instance_id: Option<String>,
+        tool_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider_run_id: provider_run_id.into(),
+            agent_instance_id,
+            tool_name: tool_name.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactDomainKind {
     TextDocument,
@@ -193,6 +214,13 @@ pub enum ArtifactEditError {
     },
     ExternalChangeDuringApply {
         path: PathBuf,
+    },
+    ActiveReservationConflict {
+        path: PathBuf,
+        active_owner: ArtifactReservationOwner,
+        requested_ranges: Vec<TextRange>,
+        reserved_ranges: Vec<TextRange>,
+        message: String,
     },
     Conflict {
         path: PathBuf,

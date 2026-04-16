@@ -6965,8 +6965,7 @@ impl KernelRuntimeState {
                     &workspace_identity,
                     &path,
                     reservation_ranges,
-                    provider_run.id(),
-                    tool_name,
+                    managed_io_reservation_owner(provider_run, tool_name),
                 ) {
                     Ok(reservation) => reservation,
                     Err(mut output) => {
@@ -7026,7 +7025,7 @@ impl KernelRuntimeState {
                     workspace_root.clone(),
                     domain,
                     operations,
-                    format!("{}:{}", provider_run.id(), tool_name),
+                    managed_io_reservation_owner(provider_run, tool_name),
                 )?;
                 add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
                 Ok(output)
@@ -7056,7 +7055,7 @@ impl KernelRuntimeState {
                     vec![ManagedPatchOperation::Delete {
                         path: PathBuf::from(args.path),
                     }],
-                    format!("{}:{}", provider_run.id(), tool_name),
+                    managed_io_reservation_owner(provider_run, tool_name),
                 )?;
                 add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
                 Ok(output)
@@ -7088,7 +7087,7 @@ impl KernelRuntimeState {
                         old_text: args.old_text,
                         new_text: args.new_text,
                     }],
-                    format!("{}:{}", provider_run.id(), tool_name),
+                    managed_io_reservation_owner(provider_run, tool_name),
                 )?;
                 add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
                 Ok(output)
@@ -7116,8 +7115,7 @@ impl KernelRuntimeState {
                     &workspace_identity,
                     &path,
                     vec![crate::io::TextRange::new(0, usize::MAX)],
-                    provider_run.id(),
-                    tool_name,
+                    managed_io_reservation_owner(provider_run, tool_name),
                 ) {
                     Ok(reservation) => reservation,
                     Err(mut output) => {
@@ -7324,17 +7322,11 @@ fn managed_io_try_reserve_ranges(
     workspace_identity: &crate::io::WorkspaceIdentity,
     path: &PathBuf,
     ranges: Vec<crate::io::TextRange>,
-    provider_run_id: &str,
-    tool_name: &str,
+    owner: crate::io::ArtifactReservationOwner,
 ) -> Result<crate::io::ArtifactReservationToken, crate::transport::runtime_tools::RuntimeToolResult>
 {
     coordinator
-        .try_reserve_ranges(
-            workspace_identity,
-            path,
-            ranges,
-            format!("{provider_run_id}:{tool_name}"),
-        )
+        .try_reserve_ranges(workspace_identity, path, ranges, owner)
         .map_err(|reason| crate::transport::runtime_tools::RuntimeToolResult {
             ok: false,
             payload: serde_json::json!({
@@ -7343,6 +7335,17 @@ fn managed_io_try_reserve_ranges(
                 "next_action": "Another managed writer has reserved the same artifact area. Wait for that write to finish, reread the artifact with arroba.read_artifact, and retry through Arroba managed I/O.",
             }),
         })
+}
+
+fn managed_io_reservation_owner(
+    provider_run: &crate::provider::RuntimeProviderRun,
+    tool_name: &str,
+) -> crate::io::ArtifactReservationOwner {
+    crate::io::ArtifactReservationOwner::new(
+        provider_run.id().to_string(),
+        provider_run.agent_instance_id().map(str::to_string),
+        tool_name.to_string(),
+    )
 }
 
 fn parse_managed_apply_patch(patch_text: &str) -> Result<Vec<ManagedPatchOperation>, DaemonError> {
@@ -7470,7 +7473,7 @@ fn apply_managed_patch_operations(
     workspace_root: PathBuf,
     domain: crate::io::ArtifactDomainKind,
     operations: Vec<ManagedPatchOperation>,
-    reservation_owner: String,
+    reservation_owner: crate::io::ArtifactReservationOwner,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
     let mut before_states: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
     let mut final_states: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
@@ -7619,8 +7622,7 @@ fn apply_managed_patch_operations(
             &workspace_identity,
             &path,
             ranges,
-            &reservation_owner,
-            "arroba.apply_patch",
+            reservation_owner.clone(),
         ) {
             Ok(token) => reservations.push(token),
             Err(output) => {
@@ -8202,6 +8204,20 @@ fn managed_io_error_payload(error: crate::io::ArtifactEditError) -> serde_json::
             "kind": "external_change_during_apply",
             "path": path.to_string_lossy(),
         }),
+        crate::io::ArtifactEditError::ActiveReservationConflict {
+            path,
+            active_owner,
+            requested_ranges,
+            reserved_ranges,
+            message,
+        } => serde_json::json!({
+            "kind": "active_reservation_conflict",
+            "path": path.to_string_lossy(),
+            "active_owner": managed_io_reservation_owner_payload(active_owner),
+            "requested_ranges": requested_ranges.into_iter().map(managed_io_range_payload).collect::<Vec<_>>(),
+            "reserved_ranges": reserved_ranges.into_iter().map(managed_io_range_payload).collect::<Vec<_>>(),
+            "message": message,
+        }),
         crate::io::ArtifactEditError::Conflict {
             path,
             base_version,
@@ -8219,6 +8235,16 @@ fn managed_io_error_payload(error: crate::io::ArtifactEditError) -> serde_json::
             "message": message,
         }),
     }
+}
+
+fn managed_io_reservation_owner_payload(
+    owner: crate::io::ArtifactReservationOwner,
+) -> serde_json::Value {
+    serde_json::json!({
+        "provider_run_id": owner.provider_run_id,
+        "agent_instance_id": owner.agent_instance_id,
+        "tool_name": owner.tool_name,
+    })
 }
 
 fn managed_io_range_payload(range: crate::io::TextRange) -> serde_json::Value {
