@@ -30,3 +30,14 @@ Run syntax checks for edited scripts before committing:
 ```bash
 node --check apps/cli/scripts/<script>.mjs
 ```
+
+## Kernel Reconnect Drill
+
+Use this after touching CLI/kernel transport recovery:
+
+```bash
+pnpm --filter @arroba/cli run build
+node apps/cli/scripts/live-kernel-reconnect-drill.mjs
+```
+
+It kills the event subscription lane while a control request is pending and fails unless the control request completes and the event lane resubscribes from the last event id.
