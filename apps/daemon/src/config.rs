@@ -129,7 +129,7 @@ impl DaemonConfig {
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .filter(|value| *value > 0)
-                .unwrap_or(5_000),
+                .unwrap_or(60_000),
             accept_remote_leases: env::var("ARROBA_ACCEPT_REMOTE_LEASES")
                 .ok()
                 .map(|value| {
@@ -177,7 +177,7 @@ impl DaemonConfig {
             relay_public_key,
             relay_private_key,
             relay_heartbeat_ms: 5_000,
-            relay_request_timeout_ms: 5_000,
+            relay_request_timeout_ms: 60_000,
             accept_remote_leases: false,
             os_user: os_user.into(),
         }

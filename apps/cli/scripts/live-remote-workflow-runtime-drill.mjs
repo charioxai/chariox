@@ -50,6 +50,7 @@ function parseArgs(argv) {
     model: DEFAULT_MODEL,
     pollLimit: DEFAULT_POLL_LIMIT,
     pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
+    noEarlyPass: false,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -59,6 +60,7 @@ function parseArgs(argv) {
     else if (arg === '--model') options.model = argv[++i]
     else if (arg === '--poll-limit') options.pollLimit = Number(argv[++i])
     else if (arg === '--poll-interval-ms') options.pollIntervalMs = Number(argv[++i])
+    else if (arg === '--no-early-pass') options.noEarlyPass = true
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -238,7 +240,7 @@ async function runWorkflowChild(args, cwd) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs [--scenario validated-increment-chain] [--providers opencode,codex] [--model MODEL]')
+    console.log('Usage: node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs [--scenario validated-increment-chain] [--providers opencode,codex] [--model MODEL] [--no-early-pass]')
     return
   }
   if (options.providers.length < 1) {
@@ -335,7 +337,7 @@ async function main() {
     })
     await waitForRemoteMachine(localClient, workerMachineId)
 
-    const stdout = await runWorkflowChild([
+    const workflowArgs = [
       path.join('apps', 'cli', 'scripts', 'live-workflow-runtime-drill.mjs'),
       '--scenario', options.scenario,
       '--relay-url', relayUrl,
@@ -348,7 +350,9 @@ async function main() {
       '--worktree', repoRoot,
       '--poll-limit', String(options.pollLimit),
       '--poll-interval-ms', String(options.pollIntervalMs),
-    ], repoRoot)
+    ]
+    if (options.noEarlyPass) workflowArgs.push('--no-early-pass')
+    const stdout = await runWorkflowChild(workflowArgs, repoRoot)
 
     const trimmed = stdout.trim()
     const lastJsonIndex = trimmed.lastIndexOf('\n{')

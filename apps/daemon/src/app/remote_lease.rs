@@ -3,7 +3,7 @@ use std::fs;
 use base64::Engine;
 
 use crate::agent::CreateAgentRequest;
-use crate::app::{provider_output, DaemonApp};
+use crate::app::{DaemonApp, provider_output};
 use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::error::DaemonError;
 use crate::execution_lease::{
@@ -100,10 +100,34 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .display()
                 .to_string(),
         };
-        let session = self.app.sessions.create_session(
-            CreateSessionRequest::new(format!("remote-lease:{}", lease.home_session_id), worktree)
-                .with_hidden(true),
-        )?;
+        let workspace_id = format!("remote-lease:{}", lease.home_session_id);
+        let existing_session = self
+            .app
+            .leased_agents
+            .values()
+            .filter(|agent| {
+                self.app
+                    .execution_leases
+                    .get(&agent.lease_id)
+                    .is_some_and(|existing_lease| {
+                        existing_lease.home_session_id == lease.home_session_id
+                    })
+            })
+            .filter_map(|agent| {
+                self.app
+                    .sessions
+                    .get_session(&agent.backing_session_id)
+                    .ok()
+            })
+            .find(|session| {
+                session.workspace_id() == workspace_id && session.worktree_id() == worktree
+            });
+        let session = match existing_session {
+            Some(session) => session,
+            None => self.app.sessions.create_session(
+                CreateSessionRequest::new(workspace_id.clone(), worktree.clone()).with_hidden(true),
+            )?,
+        };
         let session_store = self.app.session_state_store();
         let attachment = {
             let mut sessions = session_store.write();
@@ -220,20 +244,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     &leased_agent.provider,
                     &leased_agent.provider,
                     "default",
-                leased_agent
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "default".to_string()),
-            )
-            .with_agent_id(&leased_agent.backing_agent_id)
-            .with_working_directory(std::path::PathBuf::from(
-                self.app
-                    .sessions
-                    .get_session(&leased_agent.backing_session_id)?
-                    .worktree_id(),
-            ))
-            .with_managed_io_required(),
-        )?;
+                    leased_agent
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string()),
+                )
+                .with_agent_id(&leased_agent.backing_agent_id)
+                .with_working_directory(std::path::PathBuf::from(
+                    self.app
+                        .sessions
+                        .get_session(&leased_agent.backing_session_id)?
+                        .worktree_id(),
+                ))
+                .with_managed_io_required(),
+            )?;
             run.id().to_string()
         };
         let outcome = self.app.submit_prompt(
