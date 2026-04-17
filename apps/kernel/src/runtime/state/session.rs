@@ -158,7 +158,47 @@ impl KernelRuntimeOwnedState {
                 shared_auth_token.unwrap_or_else(crate::app::generate_runtime_mcp_auth_token),
             ));
         }
+        if request.mcp_servers.is_empty() {
+            let granted_mcp_servers = self.granted_mcp_servers_for_launch(&request)?;
+            request = request.with_mcp_servers(granted_mcp_servers);
+        }
         Ok(request)
+    }
+
+    fn granted_mcp_servers_for_launch(
+        &self,
+        request: &crate::provider::LaunchProviderRequest,
+    ) -> Result<Vec<crate::mcp::ArrobaMcpServerConfig>, DaemonError> {
+        let Some(agent_id) = request.agent_id.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.mcp_grants().is_empty() {
+            return Ok(Vec::new());
+        }
+        let session = self.session_store.get_session(&request.session_id)?;
+        let workspace = std::path::PathBuf::from(session.workspace_id());
+        let mut roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(&workspace)];
+        if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
+            roots.push(user_root);
+        }
+        let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
+        let mut servers = Vec::new();
+        for grant in agent.mcp_grants() {
+            let Some(server) = registry.get(grant)? else {
+                return Err(DaemonError::LocalTransport {
+                    operation: "provider.launch.mcps",
+                    message: format!(
+                        "agent `{}` has missing MCP grant `{grant}`",
+                        agent.agent_ref()
+                    ),
+                });
+            };
+            if server.enabled {
+                servers.push(server);
+            }
+        }
+        Ok(servers)
     }
 
     pub(super) fn create_session_response(

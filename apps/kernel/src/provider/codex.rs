@@ -8,6 +8,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
+use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
 use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
 
 use super::codex_client::codex_endpoint_is_healthy;
@@ -208,15 +209,14 @@ fn external_launch(endpoint: String) -> ProviderLaunchResult {
 fn runtime_mcp_config(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<(Vec<String>, BTreeMap<String, String>), DaemonError> {
-    let Some(binding) = request.and_then(|request| request.runtime_mcp_binding.as_ref()) else {
+    let Some(request) = request else {
         return Ok((Vec::new(), BTreeMap::new()));
     };
-    let model_catalog_path = write_managed_io_model_catalog(
-        request
-            .map(|request| request.model.as_str())
-            .unwrap_or("gpt-5.4"),
-    )?;
-    let args = vec![
+    if request.runtime_mcp_binding.is_none() && request.mcp_servers.is_empty() {
+        return Ok((Vec::new(), BTreeMap::new()));
+    }
+    let model_catalog_path = write_managed_io_model_catalog(request.model.as_str())?;
+    let mut args = vec![
         "-c".to_string(),
         format!("model_catalog_json={:?}", model_catalog_path),
         "-c".to_string(),
@@ -225,21 +225,89 @@ fn runtime_mcp_config(
         "features.apply_patch_freeform=false".to_string(),
         "-c".to_string(),
         "include_apply_patch_tool=false".to_string(),
-        "-c".to_string(),
-        format!("mcp_servers.arroba.url={:?}", binding.server_url),
-        "-c".to_string(),
-        format!(
-            "mcp_servers.arroba.bearer_token_env_var={:?}",
-            CODEX_MCP_TOKEN_ENV
-        ),
-        "-c".to_string(),
-        "mcp_servers.arroba.required=true".to_string(),
-        "-c".to_string(),
-        "mcp_servers.arroba.tool_timeout_sec=15".to_string(),
     ];
     let mut env = BTreeMap::new();
-    env.insert(CODEX_MCP_TOKEN_ENV.to_string(), binding.auth_token.clone());
+    for server in &request.mcp_servers {
+        append_codex_mcp_config(&mut args, server);
+    }
+    if let Some(binding) = request.runtime_mcp_binding.as_ref() {
+        args.extend([
+            "-c".to_string(),
+            format!("mcp_servers.arroba.url={:?}", binding.server_url),
+            "-c".to_string(),
+            format!(
+                "mcp_servers.arroba.bearer_token_env_var={:?}",
+                CODEX_MCP_TOKEN_ENV
+            ),
+            "-c".to_string(),
+            "mcp_servers.arroba.required=true".to_string(),
+            "-c".to_string(),
+            "mcp_servers.arroba.tool_timeout_sec=15".to_string(),
+        ]);
+        env.insert(CODEX_MCP_TOKEN_ENV.to_string(), binding.auth_token.clone());
+    }
     Ok((args, env))
+}
+
+fn append_codex_mcp_config(args: &mut Vec<String>, server: &ArrobaMcpServerConfig) {
+    let prefix = format!("mcp_servers.{}", server.name);
+    match &server.transport {
+        ArrobaMcpTransportConfig::Stdio {
+            command,
+            args: server_args,
+            env,
+            env_vars,
+            cwd,
+        } => {
+            push_codex_config(args, format!("{prefix}.command={command:?}"));
+            if !server_args.is_empty() {
+                push_codex_config(args, format!("{prefix}.args={server_args:?}"));
+            }
+            for (key, value) in env {
+                push_codex_config(args, format!("{prefix}.env.{key}={value:?}"));
+            }
+            if !env_vars.is_empty() {
+                push_codex_config(args, format!("{prefix}.env_vars={env_vars:?}"));
+            }
+            if let Some(cwd) = cwd {
+                push_codex_config(
+                    args,
+                    format!("{prefix}.cwd={:?}", cwd.display().to_string()),
+                );
+            }
+        }
+        ArrobaMcpTransportConfig::StreamableHttp {
+            url,
+            bearer_token_env_var,
+            http_headers,
+            env_http_headers,
+        } => {
+            push_codex_config(args, format!("{prefix}.url={url:?}"));
+            if let Some(env_var) = bearer_token_env_var {
+                push_codex_config(args, format!("{prefix}.bearer_token_env_var={env_var:?}"));
+            }
+            for (key, value) in http_headers {
+                push_codex_config(args, format!("{prefix}.http_headers.{key}={value:?}"));
+            }
+            for (key, value) in env_http_headers {
+                push_codex_config(args, format!("{prefix}.env_http_headers.{key}={value:?}"));
+            }
+        }
+    }
+    if server.required {
+        push_codex_config(args, format!("{prefix}.required=true"));
+    }
+    if let Some(timeout) = server.startup_timeout_sec {
+        push_codex_config(args, format!("{prefix}.startup_timeout_sec={timeout}"));
+    }
+    if let Some(timeout) = server.tool_timeout_sec {
+        push_codex_config(args, format!("{prefix}.tool_timeout_sec={timeout}"));
+    }
+}
+
+fn push_codex_config(args: &mut Vec<String>, value: String) {
+    args.push("-c".to_string());
+    args.push(value);
 }
 
 fn write_managed_io_model_catalog(model: &str) -> Result<PathBuf, DaemonError> {
@@ -336,6 +404,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    use crate::mcp::ArrobaMcpServerConfig;
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, RuntimeMcpBinding};
 
     use super::{logout_codex, plan_codex_launch, resolve_codex_executable};
@@ -454,6 +523,44 @@ mod tests {
             .pty_args
             .iter()
             .any(|arg| arg == "include_apply_patch_tool=false"));
+    }
+
+    #[test]
+    fn injects_granted_mcp_config_into_managed_launch() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-codex-resolve-test-{}-granted-mcp",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_CODEX_BIN", &path);
+        std::env::set_var("ARROBA_CODEX_PORT", "43144");
+
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
+                .with_mcp_servers(vec![ArrobaMcpServerConfig::stdio(
+                    "browser",
+                    "npx",
+                    vec!["@playwright/mcp@latest".to_string()],
+                )]);
+        let launch = plan_codex_launch(Some(&request)).expect("launch plan should resolve");
+
+        std::env::remove_var("ARROBA_CODEX_BIN");
+        std::env::remove_var("ARROBA_CODEX_PORT");
+        let _ = fs::remove_file(&path);
+
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "mcp_servers.browser.command=\"npx\""));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg.contains("mcp_servers.browser.args")));
+        assert!(!launch
+            .pty_args
+            .iter()
+            .any(|arg| arg.contains("mcp_servers.arroba.url")));
     }
 
     #[test]

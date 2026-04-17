@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::mcp::ArrobaMcpServerConfig;
 use crate::session::unix_epoch_ms;
 use crate::terminal::TerminalOutputKind;
 
@@ -213,6 +214,8 @@ pub struct LaunchProviderRequest {
     pub variant: Option<String>,
     pub working_directory: Option<PathBuf>,
     pub runtime_mcp_binding: Option<RuntimeMcpBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<ArrobaMcpServerConfig>,
     #[serde(
         default,
         skip_serializing_if = "ProviderWriteAccessMode::is_unrestricted"
@@ -258,6 +261,7 @@ impl LaunchProviderRequest {
             variant: None,
             working_directory: None,
             runtime_mcp_binding: None,
+            mcp_servers: Vec::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             resume_state: None,
         }
@@ -283,6 +287,11 @@ impl LaunchProviderRequest {
 
     pub fn with_runtime_mcp_binding(mut self, binding: RuntimeMcpBinding) -> Self {
         self.runtime_mcp_binding = Some(binding);
+        self
+    }
+
+    pub fn with_mcp_servers(mut self, mcp_servers: Vec<ArrobaMcpServerConfig>) -> Self {
+        self.mcp_servers = mcp_servers;
         self
     }
 

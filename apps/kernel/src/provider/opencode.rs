@@ -6,6 +6,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
+use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
 use crate::provider::{
     AgentEndpointMode, LaunchProviderRequest, OpenCodeClient, ProviderLaunchResult,
 };
@@ -187,23 +188,85 @@ fn external_launch(endpoint: String) -> ProviderLaunchResult {
 
 fn runtime_mcp_env(request: Option<&LaunchProviderRequest>) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
-    let Some(binding) = request.and_then(|request| request.runtime_mcp_binding.as_ref()) else {
+    let Some(request) = request else {
         return env;
     };
-    let config = serde_json::json!({
-        "mcp": {
-            "arroba": {
+    let mut mcp = serde_json::Map::new();
+    for server in &request.mcp_servers {
+        mcp.insert(server.name.clone(), opencode_mcp_config(server));
+    }
+    if let Some(binding) = request.runtime_mcp_binding.as_ref() {
+        mcp.insert(
+            "arroba".to_string(),
+            serde_json::json!({
                 "type": "remote",
                 "url": binding.server_url,
                 "enabled": true,
                 "headers": {
                     "Authorization": format!("Bearer {}", binding.auth_token),
                 }
-            }
-        }
-    });
+            }),
+        );
+    }
+    if mcp.is_empty() {
+        return env;
+    }
+    let config = serde_json::json!({ "mcp": mcp });
     env.insert(OPENCODE_CONFIG_CONTENT_ENV.to_string(), config.to_string());
     env
+}
+
+fn opencode_mcp_config(server: &ArrobaMcpServerConfig) -> serde_json::Value {
+    match &server.transport {
+        ArrobaMcpTransportConfig::Stdio {
+            command,
+            args,
+            env: static_env,
+            env_vars,
+            cwd,
+        } => {
+            let mut env = static_env.clone();
+            for name in env_vars {
+                if let Ok(value) = std::env::var(name) {
+                    env.insert(name.clone(), value);
+                }
+            }
+            let command_parts = std::iter::once(command.clone())
+                .chain(args.iter().cloned())
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "type": "local",
+                "command": command_parts,
+                "enabled": server.enabled,
+                "environment": env,
+                "cwd": cwd,
+            })
+        }
+        ArrobaMcpTransportConfig::StreamableHttp {
+            url,
+            bearer_token_env_var,
+            http_headers,
+            env_http_headers,
+        } => {
+            let mut headers = http_headers.clone();
+            for (header, env_var) in env_http_headers {
+                if let Ok(value) = std::env::var(env_var) {
+                    headers.insert(header.clone(), value);
+                }
+            }
+            if let Some(env_var) = bearer_token_env_var {
+                if let Ok(value) = std::env::var(env_var) {
+                    headers.insert("Authorization".to_string(), format!("Bearer {value}"));
+                }
+            }
+            serde_json::json!({
+                "type": "remote",
+                "url": url,
+                "enabled": server.enabled,
+                "headers": headers,
+            })
+        }
+    }
 }
 
 fn endpoint_is_healthy(base_url: &str) -> bool {
@@ -257,6 +320,7 @@ mod tests {
 
     use crate::DaemonError;
 
+    use crate::mcp::ArrobaMcpServerConfig;
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, RuntimeMcpBinding};
 
     use super::{
@@ -384,6 +448,46 @@ mod tests {
         assert!(config.contains("\"mcp\""));
         assert!(config.contains("http://127.0.0.1:43120/mcp"));
         assert!(config.contains("Bearer token-123"));
+    }
+
+    #[test]
+    fn injects_granted_mcp_config_into_managed_launch() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-opencode-resolve-test-{}-granted-mcp",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
+        let port = reserve_unused_port();
+        std::env::set_var("ARROBA_OPENCODE_PORT", port.to_string());
+
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "opencode",
+            "opencode",
+            "default",
+            "openai/gpt-5.3",
+        )
+        .with_mcp_servers(vec![ArrobaMcpServerConfig::stdio(
+            "browser",
+            "npx",
+            vec!["@playwright/mcp@latest".to_string()],
+        )]);
+        let launch = plan_opencode_launch(Some(&request)).expect("launch plan should resolve");
+
+        std::env::remove_var("ARROBA_OPENCODE_BIN");
+        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        let _ = fs::remove_file(&path);
+
+        let config = launch
+            .pty_env
+            .get("OPENCODE_CONFIG_CONTENT")
+            .expect("opencode config env should be set");
+        assert!(config.contains("\"browser\""));
+        assert!(config.contains("\"type\":\"local\""));
+        assert!(config.contains("@playwright/mcp@latest"));
+        assert!(!config.contains("\"arroba\""));
     }
 
     #[test]
