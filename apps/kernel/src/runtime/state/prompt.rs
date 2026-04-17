@@ -261,8 +261,9 @@ impl KernelRuntimeOwnedState {
         let registry = crate::skill::ArrobaSkillRegistry::new(roots);
         let mut lines = vec![
             "Available Arroba skills for this agent:".to_string(),
-            "Use these granted skills as routing hints when they match the task. Full skill-body injection is handled separately when a skill is explicitly selected or requested.".to_string(),
+            "Use these granted skills as routing hints when they match the task. If a skill is explicitly selected, mentioned, or requested below, follow its full instructions.".to_string(),
         ];
+        let mut requested_skill_bodies = Vec::new();
         for grant in agent.skill_grants() {
             let Some(skill) = registry.get(grant)? else {
                 return Err(DaemonError::LocalTransport {
@@ -278,6 +279,28 @@ impl KernelRuntimeOwnedState {
                 .as_ref()
                 .unwrap_or(&skill.description);
             lines.push(format!("- `{}`: {}", skill.name, summary));
+            if prompt_explicitly_requests_skill(prompt, &skill.name) {
+                let body = std::fs::read_to_string(&skill.path).map_err(|error| {
+                    DaemonError::LocalTransport {
+                        operation: "provider.prompt.skills",
+                        message: format!(
+                            "failed to read skill `{}` body at `{}`: {error}",
+                            skill.name,
+                            skill.path.display()
+                        ),
+                    }
+                })?;
+                requested_skill_bodies.push((skill.name, body));
+            }
+        }
+        if !requested_skill_bodies.is_empty() {
+            lines.push(String::new());
+            lines.push("Full instructions for explicitly requested Arroba skills:".to_string());
+            for (name, body) in requested_skill_bodies {
+                lines.push(format!("<arroba_skill name=\"{name}\">"));
+                lines.push(body.trim().to_string());
+                lines.push("</arroba_skill>".to_string());
+            }
         }
         Ok(format!("{}\n\n{}", lines.join("\n"), prompt))
     }
@@ -1143,5 +1166,63 @@ impl KernelRuntimeOwnedState {
             recipient_attachment_ids,
             &bytes,
         );
+    }
+}
+
+fn prompt_explicitly_requests_skill(prompt: &str, skill_name: &str) -> bool {
+    let prompt = prompt.to_lowercase();
+    let skill_name = skill_name.to_lowercase();
+    let explicit_markers = [
+        format!("@{skill_name}"),
+        format!("`{skill_name}`"),
+        format!("/skill {skill_name}"),
+        format!("skill {skill_name}"),
+        format!("use {skill_name}"),
+        format!("using {skill_name}"),
+        format!("with {skill_name}"),
+    ];
+    explicit_markers
+        .iter()
+        .any(|marker| prompt.contains(marker))
+        || contains_tokenish_skill_name(&prompt, &skill_name)
+}
+
+fn contains_tokenish_skill_name(prompt: &str, skill_name: &str) -> bool {
+    prompt.match_indices(skill_name).any(|(index, _)| {
+        let before = index
+            .checked_sub(1)
+            .and_then(|before| prompt.as_bytes().get(before))
+            .copied();
+        let after = prompt.as_bytes().get(index + skill_name.len()).copied();
+        is_skill_boundary(before) && is_skill_boundary(after)
+    })
+}
+
+fn is_skill_boundary(byte: Option<u8>) -> bool {
+    byte.is_none_or(|byte| !byte.is_ascii_alphanumeric() && byte != b'-' && byte != b'_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prompt_explicitly_requests_skill;
+
+    #[test]
+    fn detects_explicit_skill_requests() {
+        assert!(prompt_explicitly_requests_skill(
+            "Use browser-qa to validate this flow",
+            "browser-qa"
+        ));
+        assert!(prompt_explicitly_requests_skill(
+            "Please apply @release_check",
+            "release_check"
+        ));
+        assert!(prompt_explicitly_requests_skill(
+            "Run the `security-review` skill",
+            "security-review"
+        ));
+        assert!(!prompt_explicitly_requests_skill(
+            "This browser-qa-extra text is another skill",
+            "browser-qa"
+        ));
     }
 }

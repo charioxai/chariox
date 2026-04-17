@@ -17,6 +17,7 @@ Landed:
 - M7.9 partial: interactive `/skill list`, `/skill show`, `/skill install`, `/skill grant`, and `/skill revoke`.
 - M7.11 partial: agent model now stores `skill_grants`; grant/revoke IPC validates installed skills before mutating the agent.
 - M7.12 partial: local provider prompts receive a short granted-skills summary for the target agent only. Stored prompt history remains the original user prompt.
+- M7.13 partial: local provider prompts inject the full `SKILL.md` body for granted skills that are explicitly selected, mentioned, or requested.
 
 Still open in M7:
 
@@ -25,7 +26,6 @@ Still open in M7:
 - Agent grant inspection commands, for example `agent mcps` / `agent skills` or `/mcp grants`.
 - Provider MCP import from Codex/OpenCode/Claude-owned configs.
 - Provider skill import from Codex/OpenCode/Claude-owned skill locations.
-- Explicit full `SKILL.md` body injection when a granted skill is selected, mentioned, or requested.
 - Skill MCP dependency validation.
 - Runtime MCP discovery/request tools for MCPs and skills.
 - Remote-machine MCP and skill materialization/rendering.
@@ -275,7 +275,7 @@ Do not inject all full skill bodies by default.
 
 ## M7.13 Explicit Skill Body Injection
 
-Status: open.
+Status: partial. Local provider prompts now inject the full `SKILL.md` body for granted skills that are explicitly selected, mentioned, or requested. Remote prompt dispatch and richer explicit-selection UI remain open.
 
 When a granted skill is explicitly selected, mentioned, or requested, inject the full `SKILL.md` body Codex-style.
 

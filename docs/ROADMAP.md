@@ -36,7 +36,7 @@ Current milestone status:
 - M4.5: Kernel Runtime Refactor
 - M5: Relay and Remote Transport
 - M6: Remote Agents and Machine Membership
-- M7: Arroba-owned MCP and skill management. In progress: MCP/skill registries, slash-command install/list/show, per-agent grants, local Codex/OpenCode MCP rendering, and granted-skill summary injection are landed; import/update/uninstall, explicit skill-body injection, runtime discovery/request tools, remote materialization, and drills remain open.
+- M7: Arroba-owned MCP and skill management. In progress: MCP/skill registries, slash-command install/list/show, per-agent grants, local Codex/OpenCode MCP rendering, granted-skill summary injection, and local explicit full skill-body injection are landed; import/update/uninstall, runtime discovery/request tools, remote materialization, and drills remain open.
 - M8: Workflow Interconnection
 - M9: Multi-Provider Expansion and Adapter Generalization
 - M10: v1 Stabilization and Launch
