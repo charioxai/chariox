@@ -6,7 +6,7 @@ It reflects the current implementation, not the long-term remote/federated desig
 
 Primary implementation sources:
 
-- `apps/daemon/src/kernel_transport.rs`
+- `apps/kernel/src/runtime_transport.rs`
 - `apps/cli/src/ipc.ts`
 - `apps/cli/src/ipc-requests.ts`
 

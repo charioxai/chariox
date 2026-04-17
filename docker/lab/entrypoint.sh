@@ -12,7 +12,7 @@ fi
 case "${1:-daemon}" in
   daemon)
     shift || true
-    exec arroba-daemon "$@"
+    exec arroba-kernel "$@"
     ;;
   relay)
     shift || true

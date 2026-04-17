@@ -60,7 +60,7 @@ Terminology:
 ## Exit Criteria
 
 - Every required drill either passes or has a filed blocker with repro command, observed failure, and owner.
-- `cargo check --manifest-path apps/daemon/Cargo.toml` remains clean.
+- `cargo check --manifest-path apps/kernel/Cargo.toml` remains clean.
 - Daemon lib, runtime integration, websocket integration, relay-client, and bin tests remain green after any drill fixes.
 - Docs reflect the final drill results before new tasks begin.
 

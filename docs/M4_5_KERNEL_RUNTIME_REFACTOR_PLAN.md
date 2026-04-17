@@ -337,13 +337,13 @@ Production command/runtime ownership no longer depends on `Arc<Mutex<DaemonApp>>
 
 | Area | Current use | M4.5 treatment |
 |------|-------------|----------------|
-| `kernel/router.rs` | no generic local compatibility fallback remains, router code no longer calls `DaemonApp::handle_local_request`, and provider launch/runtime-tool side effects enter owned runtime-state ports | closed; keep router independence locked |
-| `kernel/session_actor.rs` | per-session mailboxes serialize requests and publish projections through runtime-owned session operations | closed; unused app-backed session helper surfaces were purged |
-| `kernel/agent_actor.rs` | per-agent mailboxes serialize prompt submit/cancel/complete with owned prompt settlement, queue advancement, provider-claim cleanup, and failure cleanup | closed |
+| `runtime/router.rs` | no generic local compatibility fallback remains, router code no longer calls `DaemonApp::handle_local_request`, and provider launch/runtime-tool side effects enter owned runtime-state ports | closed; keep router independence locked |
+| `runtime/session_actor.rs` | per-session mailboxes serialize requests and publish projections through runtime-owned session operations | closed; unused app-backed session helper surfaces were purged |
+| `runtime/agent_actor.rs` | per-agent mailboxes serialize prompt submit/cancel/complete with owned prompt settlement, queue advancement, provider-claim cleanup, and failure cleanup | closed |
 | provider launch/output seams | provider launch/process/output side effects now enter named provider-launch/process/output runtimes instead of app fallback ports | closed |
-| `kernel_transport.rs` and `transport/relay_client.rs` | subscription snapshots, replay-gap snapshots, peer lease handling, relay registration/presence, encrypted peer prompt settlement, and relay runtime-tool dispatch are owned transport/relay paths | closed; remaining side-effect ports are explicit |
+| `runtime_transport.rs` and `transport/relay_client.rs` | subscription snapshots, replay-gap snapshots, peer lease handling, relay registration/presence, encrypted peer prompt settlement, and relay runtime-tool dispatch are owned transport/relay paths | closed; remaining side-effect ports are explicit |
 | `scheduler/runtime.rs` and `transport/runtime_tools.rs` | workflow progression, queued launch state, watchdog pumping, blocked-claim retry, and MCP runtime tools now enter workflow-owned/runtime-tool commands | closed; stale app workflow/runtime-tool helpers were purged |
-| `kernel/capability_executor.rs` | capability jobs use owned context snapshots and coarse workspace claims; Arroba-managed provider-session writes are enforced by M4.6 managed I/O | keep bounded/background behavior for M4.5 and route provider writes through managed I/O |
+| `runtime/capability_executor.rs` | capability jobs use owned context snapshots and coarse workspace claims; Arroba-managed provider-session writes are enforced by M4.6 managed I/O | keep bounded/background behavior for M4.5 and route provider writes through managed I/O |
 
 New regression coverage locks in the current responsiveness contract while ownership continues moving:
 
@@ -362,12 +362,12 @@ Work the retirement in this order:
    - Router-backed local daemon client/harnesses accept `LocalDaemonRequest`, build a `KernelCommand`, and dispatch through `CommandRouter`.
    - External integration tests, public smoke harnesses, local API tests, router tests, relay/client/runtime-tool tests, and non-local setup tests no longer call the app request dispatcher.
    - The crate-private compatibility dispatcher has been deleted.
-   - Exit check: `cargo test --manifest-path apps/daemon/Cargo.toml --lib` passes, and `rg "handle_local_request\\(" apps/daemon/src apps/daemon/tests --glob '!target'` returns no matches.
+   - Exit check: `cargo test --manifest-path apps/kernel/Cargo.toml --lib` passes, and `rg "handle_local_request\\(" apps/kernel/src apps/kernel/tests --glob '!target'` returns no matches.
 
 2. Keep router independence locked. **Done.**
    - Production `CommandRouter` code does not call `DaemonApp::handle_local_request` and has no generic normal/background compatibility fallback.
    - Named cold compatibility branches remain explicit while moving them behind service-owned stores one at a time.
-   - Exit check: `rg "handle_local_request\\(" apps/daemon/src/kernel/router.rs` returns no matches, and every production router arm is explicit.
+   - Exit check: `rg "handle_local_request\\(" apps/kernel/src/runtime/router.rs` returns no matches, and every production router arm is explicit.
 
 3. Move actor workers off the compatibility mutation container by direct replacement. **Done.**
    - Replace `CompatibilityRuntimeState::with_app_mut` mutation in `SessionRuntime`, `AgentRuntime`, and `WorkflowRuntime` with injected service handles and runtime-owned stores.
@@ -383,7 +383,7 @@ Work the retirement in this order:
    - The catch-all local request dispatcher is gone; what remains is narrower handler debt where router/runtime branches still use app-backed stores or app-level provider/session/capability helpers.
    - Move each remaining helper behind its owning service/runtime and remove the old app helper name once there is a single authority for that mutation.
    - Run the full daemon suite plus multi-agent and workflow live drills before declaring the compatibility-facade milestone complete.
-   - Exit check: `rg "handle_.*_request|handle_local_request|with_app_mut|Arc<Mutex<DaemonApp>>" apps/daemon/src/app.rs apps/daemon/src/local apps/daemon/src/kernel apps/daemon/src/scheduler apps/daemon/src/transport` shows no production command/runtime ownership path through the app facade.
+   - Exit check: `rg "handle_.*_request|handle_local_request|with_app_mut|Arc<Mutex<DaemonApp>>" apps/kernel/src/app.rs apps/kernel/src/local apps/kernel/src/runtime apps/kernel/src/scheduler apps/kernel/src/transport` shows no production command/runtime ownership path through the app facade.
 
 The seven ownership points and the M4.5 dead-code purge are closed. Managed artifact I/O is owned by M4.6, not M4.5.
 
@@ -624,7 +624,7 @@ Rules:
 
 ### Phase 1. EventLog Service
 
-- Move recent-event storage out of `kernel_transport.rs` into an `EventLog` service.
+- Move recent-event storage out of `runtime_transport.rs` into an `EventLog` service.
 - Add stream ids, per-stream sequence ids, replay-window metadata, and replay-gap responses.
 - Keep current WebSocket event frames compatible.
 

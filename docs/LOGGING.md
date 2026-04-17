@@ -18,7 +18,7 @@ This document explains how Arroba logging works today:
 
 The shared logging system currently covers:
 
-- `arroba-daemon`
+- `arroba-kernel`
 - the Rust `arroba-cli` launcher
 - the primary TypeScript CLI process in `apps/cli`
 - the Fastify server process in `apps/server`
@@ -164,23 +164,23 @@ arroba-cli logs --follow
 ```
 
 ```bash
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs
 ```
 
 ```bash
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --follow
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --follow
 ```
 
 ```bash
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --process-kind daemon
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --process-kind daemon
 ```
 
 ```bash
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --level error
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --level error
 ```
 
 ```bash
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --session session-1
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --session session-1
 ```
 
 ```bash
@@ -205,7 +205,7 @@ Supported filters today:
 If you are launching through Cargo:
 
 ```bash
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --follow
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --follow
 ```
 
 If you are running the TypeScript CLI directly:

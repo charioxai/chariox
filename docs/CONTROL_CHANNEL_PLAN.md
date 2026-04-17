@@ -25,7 +25,7 @@ Arroba should have one structured control subsystem with these properties:
 
 Suggested component:
 
-- `apps/daemon/src/transport/control.rs`
+- `apps/kernel/src/transport/control.rs`
 
 Suggested service:
 
@@ -163,10 +163,10 @@ Current control-related behavior is split across several places.
 
 Main files:
 
-- `apps/daemon/src/transport/mod.rs`
-- `apps/daemon/src/app/prompt_lifecycle.rs`
-- `apps/daemon/src/provider/service.rs`
-- `apps/daemon/src/provider/codex_runtime.rs`
+- `apps/kernel/src/transport/mod.rs`
+- `apps/kernel/src/app/prompt_lifecycle.rs`
+- `apps/kernel/src/provider/service.rs`
+- `apps/kernel/src/provider/codex_runtime.rs`
 
 What exists:
 
@@ -185,8 +185,8 @@ What is missing:
 
 Main files:
 
-- `apps/daemon/src/transport/runtime_tools.rs`
-- `apps/daemon/src/transport/mcp_server.rs`
+- `apps/kernel/src/transport/runtime_tools.rs`
+- `apps/kernel/src/transport/mcp_server.rs`
 
 What exists:
 
@@ -203,7 +203,7 @@ What is missing:
 
 Main file:
 
-- `apps/daemon/src/scheduler/runtime.rs`
+- `apps/kernel/src/scheduler/runtime.rs`
 
 What exists:
 
@@ -295,7 +295,7 @@ This should be transport-owned and auditable.
 
 Add:
 
-- `apps/daemon/src/transport/control.rs`
+- `apps/kernel/src/transport/control.rs`
 
 Move or wrap:
 

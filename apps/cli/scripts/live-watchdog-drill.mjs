@@ -186,7 +186,7 @@ async function main() {
     kernelUrl = spawned.kernelUrl
     daemonChild = spawn(
       'cargo',
-      ['run', '--quiet', '--manifest-path', path.join(repoRoot, 'apps/daemon/Cargo.toml'), '--bin', 'arroba-daemon'],
+      ['run', '--quiet', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'],
       { cwd: repoRoot, env: spawned.env, stdio: ['ignore', 'ignore', 'inherit'] },
     )
   }

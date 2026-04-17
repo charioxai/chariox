@@ -50,12 +50,12 @@ Exit criteria:
 - [x] Add workspace root config (`package.json`, `pnpm-workspace.yaml`, `tsconfig` baseline).
 - [x] Add `apps/server` with strict TypeScript setup and a minimal health endpoint.
 - [x] Add `packages/domain` with strict TypeScript and exported core model types.
-- [x] Add `apps/daemon` Rust crate with minimal executable and crate-level tests.
+- [x] Add `apps/kernel` Rust crate with minimal executable and crate-level tests.
 - [x] Add root scripts:
   - `pnpm lint`
   - `pnpm build`
   - `pnpm test`
-  - `cargo test -p arroba-daemon` (or equivalent in daemon crate)
+  - `cargo test -p arroba-kernel` (or equivalent in daemon crate)
 
 ## 3.2 Domain model + schema baseline
 
@@ -96,14 +96,14 @@ pnpm install
 pnpm lint
 pnpm build
 pnpm test
-cargo test --manifest-path apps/daemon/Cargo.toml
+cargo test --manifest-path apps/kernel/Cargo.toml
 ```
 
 Optional but recommended:
 
 ```bash
-cargo fmt --manifest-path apps/daemon/Cargo.toml --check
-cargo clippy --manifest-path apps/daemon/Cargo.toml --all-targets --all-features -- -D warnings
+cargo fmt --manifest-path apps/kernel/Cargo.toml --check
+cargo clippy --manifest-path apps/kernel/Cargo.toml --all-targets --all-features -- -D warnings
 ```
 
 ## 3.5 Documentation updates required in same PR set

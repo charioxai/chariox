@@ -223,14 +223,14 @@ Run and pass locally before claiming M1 complete:
 pnpm lint
 pnpm build
 pnpm test
-cargo test --manifest-path apps/daemon/Cargo.toml
+cargo test --manifest-path apps/kernel/Cargo.toml
 ```
 
 Recommended additional daemon checks:
 
 ```bash
-cargo fmt --manifest-path apps/daemon/Cargo.toml --check
-cargo clippy --manifest-path apps/daemon/Cargo.toml --all-targets --all-features -- -D warnings
+cargo fmt --manifest-path apps/kernel/Cargo.toml --check
+cargo clippy --manifest-path apps/kernel/Cargo.toml --all-targets --all-features -- -D warnings
 ```
 
 If a dedicated daemon integration test target is introduced during M1, add the exact command here in the same change.

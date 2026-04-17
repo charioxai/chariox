@@ -9,8 +9,8 @@
     "lint": "pnpm -r run lint",
     "start:cli": "pnpm --filter @arroba/cli run start",
     "test": "pnpm -r run test",
-    "test:daemon": "cargo test --manifest-path apps/daemon/Cargo.toml",
-    "smoke:daemon": "cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-daemon-harness"
+    "test:daemon": "cargo test --manifest-path apps/kernel/Cargo.toml",
+    "smoke:daemon": "cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel-harness"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

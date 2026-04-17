@@ -13,8 +13,8 @@ RUN pnpm --filter @arroba/cli run build
 FROM rust:1.88-bookworm AS rust-builder
 WORKDIR /opt/arroba
 COPY apps/relay apps/relay
-COPY apps/daemon apps/daemon
-RUN cargo build --manifest-path apps/daemon/Cargo.toml --release --bin arroba-daemon --bin arroba-cli \
+COPY apps/kernel apps/kernel
+RUN cargo build --manifest-path apps/kernel/Cargo.toml --release --bin arroba-kernel --bin arroba-cli \
   && cargo build --manifest-path apps/relay/Cargo.toml --release --bin arroba-relay
 
 FROM node:22-bookworm-slim
@@ -49,12 +49,12 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY --from=cli-builder /opt/arroba/node_modules ./node_modules
 COPY --from=cli-builder /opt/arroba/apps/cli ./apps/cli
 COPY --from=cli-builder /opt/arroba/packages ./packages
-COPY --from=rust-builder /opt/arroba/apps/daemon/target/release/arroba-daemon /usr/local/bin/arroba-daemon
-COPY --from=rust-builder /opt/arroba/apps/daemon/target/release/arroba-cli /usr/local/bin/arroba-cli
+COPY --from=rust-builder /opt/arroba/apps/kernel/target/release/arroba-kernel /usr/local/bin/arroba-kernel
+COPY --from=rust-builder /opt/arroba/apps/kernel/target/release/arroba-cli /usr/local/bin/arroba-cli
 COPY --from=rust-builder /opt/arroba/apps/relay/target/release/arroba-relay /usr/local/bin/arroba-relay
 COPY docker/lab/entrypoint.sh /usr/local/bin/arroba-container
 COPY docker/lab/arroba-open-url /usr/local/bin/arroba-open-url
-RUN mkdir -p /opt/arroba/apps/daemon \
+RUN mkdir -p /opt/arroba/apps/kernel \
   && chmod +x /usr/local/bin/arroba-container /usr/local/bin/arroba-open-url \
   && ln -sf /usr/local/bin/arroba-cli /usr/local/bin/arroba \
   && ln -sf /usr/local/bin/arroba-open-url /usr/local/bin/xdg-open \

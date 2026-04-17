@@ -8,7 +8,7 @@ Current local runtime guide for the daemon and CLI baseline.
 
 This document explains how to run the local Arroba processes that exist today:
 
-- `arroba-daemon`
+- `arroba-kernel`
 - `arroba-cli`
 - the direct TypeScript CLI development path
 
@@ -18,7 +18,7 @@ It also summarizes the current env vars and local configuration knobs that affec
 
 Today the local baseline is two main processes:
 
-1. `arroba-daemon`
+1. `arroba-kernel`
 2. `arroba-cli`
 
 `arroba-cli` is currently a Rust launcher that builds and starts the primary TypeScript CLI from `apps/cli`.
@@ -56,7 +56,7 @@ Without that, the daemon will reject the corresponding managed launch path.
 Start the daemon from the repository root:
 
 ```bash
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-daemon
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel
 ```
 
 What it does:
@@ -71,7 +71,7 @@ What it does:
 In another terminal:
 
 ```bash
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli
 ```
 
 What it does:
@@ -118,7 +118,7 @@ Common direct CLI options:
 Example:
 
 ```bash
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- \
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- \
   --workspace /path/to/repo \
   --worktree /path/to/repo \
   --model claude-sonnet-4 \
@@ -141,14 +141,14 @@ In terminal 1:
 
 ```bash
 export ARROBA_OPENCODE_PORT=43111
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-daemon
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel
 ```
 
 In terminal 2:
 
 ```bash
 export ARROBA_OPENCODE_PORT=43111
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli
 ```
 
 ## 9. Current CLI Controls
@@ -215,7 +215,7 @@ Current log viewer options:
 Example:
 
 ```bash
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --follow
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --follow
 ```
 
 ## 10. Session Selection Behavior
@@ -248,19 +248,19 @@ Examples:
 
 ```bash
 # Reattach to the newest open session for the current directory.
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli
 
 # Force attachment to a specific existing session.
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- --session 7f9c2a1b
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- --session 7f9c2a1b
 
 # Create a new named session explicitly.
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- --create-session --alias main
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- --create-session --alias main
 
 # Delete a session by alias without opening the TUI.
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- --delete-session main
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- --delete-session main
 
 # Use a custom workspace/worktree identity, which changes auto-attach behavior.
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- \
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- \
   --workspace /tmp/demo-workspace \
   --worktree /tmp/demo-workspace
 ```
@@ -429,7 +429,7 @@ export BUN_BIN=/absolute/path/to/bun
 Use the built-in viewer:
 
 ```bash
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --follow
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --follow
 ```
 
 or inspect the shared NDJSON files directly:

@@ -18,7 +18,7 @@ Living plan for the current code-simplification pass across the CLI, daemon, and
 Done:
 
 - deleted the old `arroba-cli-rust` binary implementation
-- removed the extra binary target from `apps/daemon/Cargo.toml`
+- removed the extra binary target from `apps/kernel/Cargo.toml`
 - removed the daemon integration test that still depended on the deleted Rust-only CLI
 - updated runtime and contributor docs so the supported local CLI paths are now:
   - `arroba-cli`
@@ -103,9 +103,9 @@ Why this mattered:
 
 Done:
 
-- extracted session history paging types and slicing logic into `apps/daemon/src/session_history_page.rs`
-- extracted prompt transcript rendering into `apps/daemon/src/prompt_transcript.rs`
-- simplified `apps/daemon/src/app.rs` so history pagination and prompt transcript formatting are delegated to dedicated daemon modules
+- extracted session history paging types and slicing logic into `apps/kernel/src/session_history_page.rs`
+- extracted prompt transcript rendering into `apps/kernel/src/prompt_transcript.rs`
+- simplified `apps/kernel/src/app.rs` so history pagination and prompt transcript formatting are delegated to dedicated daemon modules
 
 Why this mattered:
 
@@ -116,8 +116,8 @@ Why this mattered:
 
 Done:
 
-- extracted provider-launch, provider-run lookup, and provider-catalog request handling into `apps/daemon/src/local/provider_requests.rs`
-- simplified `apps/daemon/src/local/api.rs` so it keeps request/response types and dispatches provider-specific requests through dedicated local handlers
+- extracted provider-launch, provider-run lookup, and provider-catalog request handling into `apps/kernel/src/local/provider_requests.rs`
+- simplified `apps/kernel/src/local/api.rs` so it keeps request/response types and dispatches provider-specific requests through dedicated local handlers
 
 Why this mattered:
 
@@ -128,8 +128,8 @@ Why this mattered:
 
 Done:
 
-- extracted OpenCode runtime state, event draining, snapshot replay, and transcript rendering into `apps/daemon/src/provider/opencode_runtime.rs`
-- simplified `apps/daemon/src/provider/service.rs` so generic provider-run lifecycle code delegates provider-specific stream/render handling to the OpenCode runtime module
+- extracted OpenCode runtime state, event draining, snapshot replay, and transcript rendering into `apps/kernel/src/provider/opencode_runtime.rs`
+- simplified `apps/kernel/src/provider/service.rs` so generic provider-run lifecycle code delegates provider-specific stream/render handling to the OpenCode runtime module
 
 Why this mattered:
 
@@ -140,8 +140,8 @@ Why this mattered:
 
 Done:
 
-- extracted OpenCode session bootstrap, health checks, prompt submission, abort handling, and run-selection sync into `apps/daemon/src/provider/opencode_binding.rs`
-- simplified `apps/daemon/src/provider/service.rs` so it mainly coordinates generic provider lifecycle and delegates OpenCode-specific session binding work to dedicated provider modules
+- extracted OpenCode session bootstrap, health checks, prompt submission, abort handling, and run-selection sync into `apps/kernel/src/provider/opencode_binding.rs`
+- simplified `apps/kernel/src/provider/service.rs` so it mainly coordinates generic provider lifecycle and delegates OpenCode-specific session binding work to dedicated provider modules
 
 Why this mattered:
 
@@ -152,7 +152,7 @@ Why this mattered:
 
 Done:
 
-- updated `apps/daemon/src/bin/arroba-cli.rs` so the Rust launcher only rebuilds `apps/cli` when TypeScript CLI outputs are missing or older than the CLI sources/build inputs
+- updated `apps/kernel/src/bin/arroba-cli.rs` so the Rust launcher only rebuilds `apps/cli` when TypeScript CLI outputs are missing or older than the CLI sources/build inputs
 - added focused launcher tests covering missing-output, fresh-output, and stale-output cases
 
 Why this mattered:
@@ -295,8 +295,8 @@ Why this mattered:
 
 Done:
 
-- extracted prompt submission, completion, cancellation, queue advancement, idle completion, and provider-exit reconciliation into `apps/daemon/src/app/prompt_lifecycle.rs`
-- kept `apps/daemon/src/app.rs` focused more tightly on higher-level daemon composition and non-prompt orchestration
+- extracted prompt submission, completion, cancellation, queue advancement, idle completion, and provider-exit reconciliation into `apps/kernel/src/app/prompt_lifecycle.rs`
+- kept `apps/kernel/src/app.rs` focused more tightly on higher-level daemon composition and non-prompt orchestration
 - hardened the OpenCode launch path to use the explicit configured port directly instead of silently shifting ports
 - hardened provider-output pumping so OpenCode structured polling tolerates a missing PTY during reconciliation, while a real launched-process exit still ends the run
 
@@ -310,10 +310,10 @@ Why this mattered:
 The refactor has started, but the largest simplification targets still remain:
 
 - `apps/cli/src/index.tsx` is still the main monolith
-- `apps/daemon/src/app.rs` is still orchestration-heavy, but the history/prompt helper extraction is complete
-- `apps/daemon/src/local/api.rs` is now mostly request/response definitions plus transport dispatch
-- `apps/daemon/src/provider/service.rs` now focuses on provider lifecycle/orchestration, while `opencode_binding.rs` and `opencode_runtime.rs` own OpenCode-specific binding and transcript behavior
-- `apps/daemon/src/bin/arroba-cli.rs` now skips unnecessary CLI rebuilds by checking build freshness first
+- `apps/kernel/src/app.rs` is still orchestration-heavy, but the history/prompt helper extraction is complete
+- `apps/kernel/src/local/api.rs` is now mostly request/response definitions plus transport dispatch
+- `apps/kernel/src/provider/service.rs` now focuses on provider lifecycle/orchestration, while `opencode_binding.rs` and `opencode_runtime.rs` own OpenCode-specific binding and transcript behavior
+- `apps/kernel/src/bin/arroba-cli.rs` now skips unnecessary CLI rebuilds by checking build freshness first
 - `apps/cli/src/index.tsx` still contains most runtime wiring, but the session-state, attach/detach, waiting-room decision, and session-chrome runtime-state seams are now extracted
 
 ## Next Phases
@@ -421,7 +421,7 @@ For each phase:
 
 Current verification already completed during this pass:
 
-- `cargo test --manifest-path apps/daemon/Cargo.toml --no-run`
+- `cargo test --manifest-path apps/kernel/Cargo.toml --no-run`
 - `pnpm --filter @arroba/domain test`
 - `pnpm --filter @arroba/cli test`
 - `git diff --check`
@@ -434,19 +434,19 @@ Phase 7 is complete for this refactor pass. The next refactor should be driven b
 
 `attach`, `detach`, `end_session`, and `delete_session_ref` were still bundled into `app.rs` even though they form one coherent session-runtime lifecycle block.
 
-- moving them into `apps/daemon/src/app/session_runtime.rs` narrows `app.rs` to provider/control coordination and keeps session membership teardown in one place
+- moving them into `apps/kernel/src/app/session_runtime.rs` narrows `app.rs` to provider/control coordination and keeps session membership teardown in one place
 - `other_attachment_ids` moved with that block because it is a session fanout helper shared by the same lifecycle and prompt code paths
 
 ### 24. Daemon terminal-fanout extraction
 
 Prompt echo, provider output fanout, runtime notices, and session-history append logic were still grouped in `app.rs` even though they serve one shared responsibility: translating daemon/provider activity into terminal records plus durable history.
 
-- moving them into `apps/daemon/src/app/terminal_fanout.rs` keeps transport/history side effects together
+- moving them into `apps/kernel/src/app/terminal_fanout.rs` keeps transport/history side effects together
 - `app.rs` now reads more clearly as provider orchestration plus public control surface, rather than mixing that with transcript persistence details
 
 ### 25. Daemon provider-runtime extraction
 
 Provider launch, active-run switching, and focus-sync logic were still grouped in `app.rs` even though they represent one provider-runtime orchestration concern.
 
-- moving them into `apps/daemon/src/app/provider_runtime.rs` makes `app.rs` a thinner shell around the remaining public control surface and low-level terminal path
+- moving them into `apps/kernel/src/app/provider_runtime.rs` makes `app.rs` a thinner shell around the remaining public control surface and low-level terminal path
 - Phase 7 now stops at the point where further daemon extractions would be mostly mechanical rather than revealing new architectural seams

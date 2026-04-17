@@ -72,7 +72,7 @@ The project specification and architecture remain the primary source of truth fo
 
 ## Key Components
 
-### `apps/daemon`
+### `apps/kernel`
 
 The daemon is the runtime authority in Arroba v1. It is responsible for hosting sessions, managing PTYs, coordinating provider runs, and eventually owning the capability and control lanes described in the architecture docs.
 
@@ -147,7 +147,7 @@ For a fuller local-runtime guide, see [RUNNING_LOCAL.md](/Users/miguel/arroba/do
 
 The current local runtime is two processes:
 
-- `arroba-daemon`
+- `arroba-kernel`
 - `arroba-cli` (Rust shim that launches the TypeScript OpenTUI client)
 
 OpenCode setup currently requires:
@@ -160,14 +160,14 @@ Example:
 
 ```bash
 export ARROBA_OPENCODE_PORT=43111
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-daemon
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel
 ```
 
 Then in another terminal:
 
 ```bash
 export ARROBA_OPENCODE_PORT=43111
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli
 ```
 
 Direct TypeScript CLI development path:
@@ -227,7 +227,7 @@ Default log root resolution:
 
 Current process coverage:
 
-- `arroba-daemon`
+- `arroba-kernel`
 - the Rust `arroba-cli` launcher
 - the primary TypeScript CLI process in `apps/cli`
 - the Fastify server process in `apps/server`
@@ -255,8 +255,8 @@ jq 'select(.session_id=="session-1")' ~/.local/state/arroba/logs/*.ndjson
 Or use the built-in viewer:
 
 ```bash
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --follow
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --session session-1
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --follow
+cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --session session-1
 pnpm --filter @arroba/cli run dev -- logs --process-kind daemon --level error
 ```
 
@@ -268,14 +268,14 @@ Run the current repository verification set from the repository root:
 pnpm lint
 pnpm build
 pnpm test
-cargo test --manifest-path apps/daemon/Cargo.toml
+cargo test --manifest-path apps/kernel/Cargo.toml
 ```
 
 Optional Rust checks:
 
 ```bash
-cargo fmt --manifest-path apps/daemon/Cargo.toml --check
-cargo clippy --manifest-path apps/daemon/Cargo.toml --all-targets --all-features -- -D warnings
+cargo fmt --manifest-path apps/kernel/Cargo.toml --check
+cargo clippy --manifest-path apps/kernel/Cargo.toml --all-targets --all-features -- -D warnings
 ```
 
 ## Design Constraints

@@ -60,7 +60,7 @@ Required testing stack for kernel/CLI interaction work:
    - Extend these tests first when the TypeScript client transport or frame protocol changes.
 
 2. Daemon kernel-transport integration tests
-   - Keep real kernel-WebSocket coverage in `apps/daemon/tests/kernel_websocket_integration.rs`.
+   - Keep real kernel-WebSocket coverage in `apps/kernel/tests/kernel_websocket_integration.rs`.
    - These tests should exercise the real daemon app plus the transport server and assert pushed kernel events, not only direct service calls.
 
 3. Live program smoke validation

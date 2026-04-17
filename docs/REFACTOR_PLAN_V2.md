@@ -23,7 +23,7 @@ Status: **Complete**
 
 Shipped:
 
-- transport flow control module (`apps/daemon/src/transport/flow_control.rs`)
+- transport flow control module (`apps/kernel/src/transport/flow_control.rs`)
 - prompt activity tracking moved behind transport flow control
 - local prompt lifecycle paths updated to use transport flow control helpers
 
@@ -68,7 +68,7 @@ Status: **Complete**
 
 Shipped:
 
-- workflow scheduling, workflow prompt composition, workflow dispatch fanout, workflow completion snapshot building, and workflow control mailbox writing now live in `apps/daemon/src/scheduler/runtime.rs`
+- workflow scheduling, workflow prompt composition, workflow dispatch fanout, workflow completion snapshot building, and workflow control mailbox writing now live in `apps/kernel/src/scheduler/runtime.rs`
 - workflow prompt injection is centralized in the scheduler prompt-injection renderer and is shared by local dispatch, remote dispatch, retry/replay paths, and tests
 - workflow prompt lifecycle callbacks (`started/completed/cancelled`) are handled by scheduler runtime, not `DaemonApp`
 - transport owns workflow prompt dispatch and cancellation cleanup

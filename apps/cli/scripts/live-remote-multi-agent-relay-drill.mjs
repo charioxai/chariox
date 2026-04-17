@@ -321,9 +321,9 @@ async function main() {
     'arroba-relay',
   )
   const daemonBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/daemon/target/debug/arroba-daemon'),
-    path.join(repoRoot, 'apps/daemon/Cargo.toml'),
-    'arroba-daemon',
+    path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+    path.join(repoRoot, 'apps/kernel/Cargo.toml'),
+    'arroba-kernel',
   )
 
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`

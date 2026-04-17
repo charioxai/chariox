@@ -1,0 +1,40 @@
+[package]
+name = "arroba-kernel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+portable-pty = "0.8.1"
+rand = "0.8"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+thiserror = "2.0.12"
+tokio = { version = "1.44.2", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-tungstenite = "0.26.2"
+futures-util = "0.3.31"
+wait-timeout = "0.2.0"
+libc = "0.2.172"
+jsonschema = "0.18.0"
+tracing = "0.1.40"
+hyper = { version = "1.6.0", features = ["http1", "server"] }
+hyper-util = { version = "0.1.10", features = ["tokio"] }
+http-body-util = "0.1.3"
+bytes = "1.10.1"
+arroba-relay = { path = "../relay" }
+aes-gcm = "0.10.3"
+base64 = "0.22.1"
+hkdf = "0.12.4"
+p256 = { version = "0.13.2", features = ["ecdh"] }
+sha2 = "0.10.8"
+
+[lib]
+name = "arroba_kernel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "arroba-kernel"
+path = "src/main.rs"
+
+[[bin]]
+name = "arroba-cli"
+path = "src/bin/arroba-cli.rs"

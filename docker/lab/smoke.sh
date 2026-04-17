@@ -21,7 +21,7 @@ done
 
 docker exec arroba-worker-a sh -lc '
   command -v arroba >/dev/null &&
-  command -v arroba-daemon >/dev/null &&
+  command -v arroba-kernel >/dev/null &&
   command -v arroba-relay >/dev/null &&
   command -v bun >/dev/null &&
   test "$ARROBA_MACHINE_ALIAS" = "arroba-worker-a"
@@ -29,7 +29,7 @@ docker exec arroba-worker-a sh -lc '
 
 docker exec arroba-worker-b sh -lc '
   command -v arroba >/dev/null &&
-  command -v arroba-daemon >/dev/null &&
+  command -v arroba-kernel >/dev/null &&
   command -v arroba-relay >/dev/null &&
   command -v bun >/dev/null &&
   test "$ARROBA_MACHINE_ALIAS" = "arroba-worker-b"
@@ -42,8 +42,8 @@ if ! docker logs --tail 120 arroba-relay 2>&1 | grep -q "arroba relay listening"
 fi
 
 for container in arroba-worker-a arroba-worker-b; do
-  if ! docker exec "$container" sh -lc 'pgrep -x arroba-daemon >/dev/null'; then
-    echo "$container is running but arroba-daemon is not alive" >&2
+  if ! docker exec "$container" sh -lc 'pgrep -x arroba-kernel >/dev/null'; then
+    echo "$container is running but arroba-kernel is not alive" >&2
     docker logs --tail 160 "$container" >&2 || true
     exit 1
   fi

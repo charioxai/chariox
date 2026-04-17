@@ -20,7 +20,7 @@ Target architectural terms:
 
 - `Arroba Kernel`
   - the authoritative orchestration/runtime kernel
-- `arroba-daemon`
+- `arroba-kernel`
   - the process that hosts the kernel on one machine/user context
 - `workspace`
   - the persistent collaboration domain
@@ -57,7 +57,7 @@ Discovery topology:
 
 Current implementation mapping:
 
-- the kernel currently runs inside the Rust runtime in [apps/daemon](/Users/miguel/arroba/apps/daemon)
+- the kernel currently runs inside the Rust runtime in [apps/kernel](/Users/miguel/arroba/apps/kernel)
 - the primary client is the TypeScript CLI in [apps/cli](/Users/miguel/arroba/apps/cli)
 - the current OpenCode adapter talks to a local OpenCode HTTP + SSE endpoint
 - the primary daemon-client transport is now a kernel WebSocket with pushed events; the local Unix-socket IPC surface remains for harnesses, compatibility, and local management paths

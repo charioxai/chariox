@@ -8,7 +8,7 @@ This document defines the implementation target for Arroba v1. It is more specif
 
 Terminology note:
 
-- the docs now use `Arroba Kernel` as the architectural term for the runtime authority hosted by the `arroba-daemon` process
+- the docs now use `Arroba Kernel` as the architectural term for the runtime authority hosted by the `arroba-kernel` process
 - the docs now use `workspace` as the target term for the persistent collaboration domain that is still mostly implemented as a `session` in the current code
 
 Implementation baseline choices are documented in `docs/ARCHITECTURE.md` under **Implementation Choices (v1 baseline)**.
@@ -118,7 +118,7 @@ Properties:
 
 ### 5.3 Arroba Kernel
 
-There is one Arroba Kernel per machine OS user account, hosted by the `arroba-daemon` process.
+There is one Arroba Kernel per machine OS user account, hosted by the `arroba-kernel` process.
 
 The kernel is responsible for:
 

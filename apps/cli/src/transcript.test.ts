@@ -127,12 +127,12 @@ test("formatToolTranscriptUpdate renders read output with a compact header", () 
       tool: "read",
       status: "completed",
       input: {
-        filePath: "apps/daemon/src/provider/service.rs",
+        filePath: "apps/kernel/src/provider/service.rs",
         offset: 480,
         limit: 220,
       },
       output: [
-        "<path>/Users/miguel/arroba/apps/daemon/src/provider/service.rs</path>",
+        "<path>/Users/miguel/arroba/apps/kernel/src/provider/service.rs</path>",
         "<type>file</type>",
         "<content>1: first",
         "2: second",
@@ -141,7 +141,7 @@ test("formatToolTranscriptUpdate renders read output with a compact header", () 
     }),
     [
       "**read** · COMPLETED",
-      "`apps/daemon/src/provider/service.rs [offset=480, limit=220]`",
+      "`apps/kernel/src/provider/service.rs [offset=480, limit=220]`",
       "",
       "```rust",
       "1: first",
@@ -211,15 +211,15 @@ test("formatToolTranscriptUpdate renders grep output with a compact header", () 
       },
       output: [
         "Found 13 matches",
-        "/Users/miguel/arroba/apps/daemon/src/provider/service.rs:",
+        "/Users/miguel/arroba/apps/kernel/src/provider/service.rs:",
         "  Line 416:             status_updates.push(delta)",
         "  Line 418:             provider_idle = true;",
       ].join("\n"),
     }),
     [
       "**grep** · COMPLETED",
-      "Pattern: `status_updates.push|provider_idle = true|OpenCode is idle|thinking|idle` in apps/daemon/src/provider/service.rs (13 matches)",
-      "`apps/daemon/src/provider/service.rs`",
+      "Pattern: `status_updates.push|provider_idle = true|OpenCode is idle|thinking|idle` in apps/kernel/src/provider/service.rs (13 matches)",
+      "`apps/kernel/src/provider/service.rs`",
       "```rust",
       "Line 416:             status_updates.push(delta)",
       "Line 418:             provider_idle = true;",

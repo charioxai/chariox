@@ -56,7 +56,7 @@ Mandatory privacy rule:
 
 ### Components
 
-1. `arroba-daemon`
+1. `arroba-kernel`
 - runtime authority
 - owns sessions, provider runs, workflows, prompt queues, and routing
 

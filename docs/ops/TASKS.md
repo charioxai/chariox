@@ -111,7 +111,7 @@ A lightweight, repo-native task board so contributors and future agents can cont
 - [x] **M0-004** Create `apps/server` Fastify stub with strict TypeScript
   - Note: Added a smoke test for the server health endpoint.
   - Commit: _pending next commit_
-- [x] **M0-005** Bootstrap `apps/daemon` Rust crate and crate tests
+- [x] **M0-005** Bootstrap `apps/kernel` Rust crate and crate tests
   - Note: Baseline daemon crate remains in place and passes cargo tests.
   - Commit: _pending next commit_
 - [x] **M0-006** Add Prisma core schema for M0 entities

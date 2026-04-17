@@ -54,7 +54,7 @@ Once provider login works inside a worker, the home kernel can expose it as a ma
 The base image includes:
 
 - `arroba` / `arroba-cli` for the TypeScript CLI launcher
-- `arroba-daemon` for the kernel/daemon
+- `arroba-kernel` for the kernel/daemon
 - `arroba-relay` for the self-hosted relay
 - Node, pnpm, Bun, zsh, git, curl, ripgrep, jq, OpenSSH client, and basic process tools
 

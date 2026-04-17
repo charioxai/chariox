@@ -21,47 +21,47 @@ Chronological notes to preserve execution context between contributors/agents.
 - Moved the single-agent slow-structured local prompt submit path onto owned `CompatibilityRuntimeState` stores, including user history append, prompt-owner submit/mirror mutation, queued notice emission, prompt echo, provider prompt claim acquisition, and dispatch preparation without waiting on the compatibility app mutex.
 - Added owned queued prompt advancement for the same single-agent slow-structured path, including expected queue-front activation, provider claim acquisition, structured submit enqueue, prompt activity tracking, and session/agent-runtime projection refresh.
 - Kept multi-agent structured prompt scheduling, PTY prompt delivery, provider launch-on-submit, remote prompt submit, workflow-owned prompt progression, and broad provider dispatch semantics on the existing compatibility/provider/workflow paths until points 4 and 5 own those side effects.
-- Verified the slice with `cargo test` in `apps/daemon`: 338 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+- Verified the slice with `cargo test` in `apps/kernel`: 338 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
 
 ### M4.5 structured local prompt cancellation ownership update
 
 - Moved structured local prompt cancellation admission and prompt-owner mutation onto owned `CompatibilityRuntimeState` stores for non-remote, non-workflow prompts, including attachment validation, provider-run validation, cancelling-state mirroring, cancellation notices, prompt-activity settlement markers, structured abort dispatch creation, and projection refresh.
 - Kept PTY Ctrl-C cancellation, remote prompt cancellation, workflow-owned prompt cancellation, and abort dispatch execution side effects on existing compatibility/provider-runtime paths for follow-up slices.
-- Verified the slice with `cargo test` in `apps/daemon`: 336 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+- Verified the slice with `cargo test` in `apps/kernel`: 336 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
 
 ### M4.5 simple local prompt completion ownership update
 
 - Moved the simple local prompt-completion path onto owned `CompatibilityRuntimeState` stores when there is no queued prompt to advance and the active prompt is not remote-backed or workflow-owned, including prompt-owner mutation, session prompt-state mirroring, completion notification recording, prompt-activity cleanup, and projection refresh.
 - Kept queued prompt advancement, workflow completion, remote prompt completion, and claim-release retry side effects on the compatibility fallback until those owners are cut over in follow-up slices.
-- Verified the slice with `cargo test` in `apps/daemon`: 335 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+- Verified the slice with `cargo test` in `apps/kernel`: 335 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
 
 ### M4.5 local agent destroy ownership update
 
 - Moved local agent destroy onto the owned `CompatibilityRuntimeState` session and agent stores when the target agent is not remote-backed, preserving the compatibility fallback for remote execution lease/relay teardown.
 - Added a no-app-lock regression proving local destroy removes the agent from both session and agent-runtime projections while the compatibility app mutex is held.
-- Verified the slice with `cargo test` in `apps/daemon`: 334 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+- Verified the slice with `cargo test` in `apps/kernel`: 334 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
 
 ### M4.5 local agent spawn ownership update
 
 - Moved local session-scoped agent spawn onto the owned `CompatibilityRuntimeState` session and agent stores when runtime-owned state is available, keeping remote machine spawn on the compatibility fallback because it still owns relay/lease side effects.
 - Fixed session-runtime projection refresh for `AgentSpawned` and `AgentDestroyed` responses so session and agent-runtime projections update from agent lifecycle responses instead of depending on a separate compatibility snapshot path.
-- Verified the slice with `cargo test` in `apps/daemon`: 333 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+- Verified the slice with `cargo test` in `apps/kernel`: 333 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
 
 ### M4.5 session alias ownership update
 
 - Moved session alias updates onto the owned `CompatibilityRuntimeState` session store when runtime-owned state is available, with a no-app-lock regression covering alias mutation and projection refresh while the compatibility app mutex is held.
-- Verified the slice with `cargo test` in `apps/daemon`: 332 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+- Verified the slice with `cargo test` in `apps/kernel`: 332 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
 
 ### M4.5 session-runtime ownership update
 
 - Moved session create/default-agent bootstrap and session config updates onto the owned `CompatibilityRuntimeState` session, agent, attachment, terminal, history, and projection stores when runtime-owned state is available. These session-runtime paths no longer wait for the compatibility app lock in the normal router-owned configuration, with app-lock fallback kept only for no-owned-state legacy tests.
 - Fixed session creation responses to return the refreshed focused-agent session after default-agent bootstrap, so session/focus projections are populated from the authoritative post-bootstrap state.
-- Verified the slice with `cargo test` in `apps/daemon`: 331 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+- Verified the slice with `cargo test` in `apps/kernel`: 331 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
 
 ### M4.5 runtime integration bridge update
 
 - Restored the daemon integration suite after direct facade retirement by routing the stale test-facing session, prompt, terminal, provider-output, and structured-runtime-state helpers through the explicit `KernelSessionService`, `KernelAgentService`, provider-output pump, provider terminal-input, and provider-run actor boundaries instead of the deleted generic local request dispatcher.
-- Verified the slice with `cargo test` in `apps/daemon`: 329 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+- Verified the slice with `cargo test` in `apps/kernel`: 329 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
 
 ### M4.5 direct-cutover direction
 
@@ -187,7 +187,7 @@ Chronological notes to preserve execution context between contributors/agents.
 ### Manual multi-agent session runtime slice
 
 - Landed the first real M4 runtime slice instead of keeping agent handling as footer/chrome-only plumbing.
-- Added daemon-owned top-level agent runtime services under `apps/daemon/src/agent/`.
+- Added daemon-owned top-level agent runtime services under `apps/kernel/src/agent/`.
 - Direct prompt submission now targets `focused_agent_id`.
 - Provider runs are now associated with top-level agents, and the daemon parks/resumes runs as focus changes or the session returns to idle.
 - Session history entries now carry `agent_id`, so provider output, notices, and user prompts can be partitioned by agent in the local runtime.
@@ -273,7 +273,7 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added `prisma/schema.prisma` for the initial persistence model.
 - Added `.github/workflows/ci.yml` for pnpm and Rust verification.
 - Updated `README.md`, `docs/CONTRIBUTING.md`, `docs/ROADMAP.md`, and `docs/M0_IMPLEMENTATION_CHECKLIST.md`.
-- M0 verification now consists of `pnpm lint`, `pnpm build`, `pnpm test`, and `cargo test --manifest-path apps/daemon/Cargo.toml`.
+- M0 verification now consists of `pnpm lint`, `pnpm build`, `pnpm test`, and `cargo test --manifest-path apps/kernel/Cargo.toml`.
 - M0 is considered complete once those commands pass on the repository state produced in this update.
 
 ### M1 planning update
@@ -292,7 +292,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### M1-001 implementation update
 
-- Added the daemon runtime skeleton in `apps/daemon` with:
+- Added the daemon runtime skeleton in `apps/kernel` with:
   - `app.rs` for bootstrap and shutdown handling
   - `config.rs` for daemon configuration loading/validation
   - `error.rs` for structured daemon runtime errors
@@ -302,7 +302,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### M1-002 implementation update
 
-- Implemented an in-memory session lifecycle service in `apps/daemon/src/session/`.
+- Implemented an in-memory session lifecycle service in `apps/kernel/src/session/`.
 - Added runtime session records for workspace/worktree/host ownership, active provider run, and attachment membership state. This was later extended to prompt-queue and config-state ownership.
 - Added explicit session transition validation for `created`, `active`, `parked`, and `ended` states.
 - Added Rust unit tests for create/get/list/end flows, invalid transitions, and unknown-session lookup behavior.
@@ -356,8 +356,8 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### M1-006 implementation update
 
-- Added a local daemon request/response API in `apps/daemon/src/local/` covering create, attach, detach, provider launch, session state reads, notice polling, prompt submit/complete, config updates, terminal output polling, terminal resize, and session end flows.
-- Added a local smoke harness binary in `apps/daemon/src/bin/arroba-daemon-harness.rs` plus runtime tests proving a managed-session path through the PTY and terminal fan-out surfaces.
+- Added a local daemon request/response API in `apps/kernel/src/local/` covering create, attach, detach, provider launch, session state reads, notice polling, prompt submit/complete, config updates, terminal output polling, terminal resize, and session end flows.
+- Added a local smoke harness binary in `apps/kernel/src/bin/arroba-kernel-harness.rs` plus runtime tests proving a managed-session path through the PTY and terminal fan-out surfaces.
 - Updated `docs/PROTOCOL.md` to record the local-first daemon API baseline for M1 flows.
 
 ### Domain and schema alignment update
@@ -367,7 +367,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### M1-007 implementation update
 
-- Added daemon integration tests in `apps/daemon/tests/runtime_integration.rs`.
+- Added daemon integration tests in `apps/kernel/tests/runtime_integration.rs`.
 - Covered session lifecycle cleanup, prompt queue/notification behavior, provider run switching with PTY-backed terminal flow, and the local managed-session smoke harness path.
 - Marked the M1 testing/verification checklist items complete now that daemon integration coverage passes and the documented JS workspace verification plus dedicated daemon verification commands both pass.
 

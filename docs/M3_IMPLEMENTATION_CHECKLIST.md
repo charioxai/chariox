@@ -187,12 +187,12 @@ Run and pass locally before claiming meaningful M3 progress:
 pnpm lint
 pnpm build
 pnpm test
-cargo test --manifest-path apps/daemon/Cargo.toml
+cargo test --manifest-path apps/kernel/Cargo.toml
 ```
 
 Recommended additional Rust checks:
 
 ```bash
-cargo fmt --manifest-path apps/daemon/Cargo.toml --check
-cargo clippy --manifest-path apps/daemon/Cargo.toml --all-targets --all-features -- -D warnings
+cargo fmt --manifest-path apps/kernel/Cargo.toml --check
+cargo clippy --manifest-path apps/kernel/Cargo.toml --all-targets --all-features -- -D warnings
 ```
