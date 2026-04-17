@@ -264,7 +264,7 @@ impl KernelRuntimeState {
                                 "description": skill.description,
                                 "short_description": skill.short_description,
                                 "granted": granted,
-                                "effective_when_requested": "next_prompt"
+                                "effective_when_requested": "now"
                             })
                         })
                         .collect::<Vec<_>>()
@@ -290,7 +290,8 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_request_capability",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                let (agent, effective_when) = match args.kind.as_str() {
+                let mut skill_payload = serde_json::Value::Null;
+                let (agent, effective_when, requires_provider_restart) = match args.kind.as_str() {
                     "mcp" => {
                         if mcp_registry.get(&args.name)?.is_none() {
                             return Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -305,10 +306,11 @@ impl KernelRuntimeState {
                         (
                             self.owned.grant_agent_mcp(agent.id(), args.name.clone())?,
                             "next_provider_launch",
+                            true,
                         )
                     }
                     "skill" => {
-                        if skill_registry.get(&args.name)?.is_none() {
+                        let Some(skill) = skill_registry.get(&args.name)? else {
                             return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                                 ok: false,
                                 payload: serde_json::json!({
@@ -317,11 +319,30 @@ impl KernelRuntimeState {
                                     "name": args.name,
                                 }),
                             });
+                        };
+                        if args.return_body.unwrap_or(true) {
+                            let body = std::fs::read_to_string(&skill.path).map_err(|error| {
+                                DaemonError::LocalTransport {
+                                    operation: "runtime_tool_request_capability",
+                                    message: format!(
+                                        "failed to read skill `{}` body: {error}",
+                                        skill.name
+                                    ),
+                                }
+                            })?;
+                            skill_payload = serde_json::json!({
+                                "name": skill.name,
+                                "description": skill.description,
+                                "short_description": skill.short_description,
+                                "path": skill.path,
+                                "body": body
+                            });
                         }
                         (
                             self.owned
                                 .grant_agent_skill(agent.id(), args.name.clone())?,
-                            "next_prompt",
+                            "now",
+                            false,
                         )
                     }
                     _ => {
@@ -333,20 +354,23 @@ impl KernelRuntimeState {
                         });
                     }
                 };
-                Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "granted": true,
-                        "kind": args.kind,
-                        "name": args.name,
-                        "agent_ref": agent.agent_ref(),
-                        "effective": effective_when,
-                        "note": match effective_when {
-                            "next_provider_launch" => "MCP grants are rendered into provider-native MCP config when the provider run launches; restart/relaunch the agent provider run before using this MCP.",
-                            _ => "Skill grants are injected when the next prompt is submitted to this agent."
-                        }
-                    }),
-                })
+                let mut payload = serde_json::json!({
+                    "granted": true,
+                    "kind": args.kind,
+                    "name": args.name,
+                    "agent_ref": agent.agent_ref(),
+                    "effective": effective_when,
+                    "requires_provider_restart": requires_provider_restart,
+                    "note": match effective_when {
+                        "next_provider_launch" => "MCP grants are rendered into provider-native MCP config when the provider run launches; restart/relaunch the agent provider run before using this MCP.",
+                        "now" => "The skill grant is persisted and the returned SKILL.md body can be followed immediately in this turn.",
+                        _ => "The capability grant is persisted."
+                    }
+                });
+                if !skill_payload.is_null() {
+                    payload["skill"] = skill_payload;
+                }
+                Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
             }
             _ => Err(DaemonError::LocalTransport {
                 operation: "dispatch_capability_runtime_tool_call",

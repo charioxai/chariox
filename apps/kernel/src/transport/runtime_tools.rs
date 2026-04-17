@@ -163,6 +163,8 @@ pub struct RequestCapabilityArgs {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_body: Option<bool>,
 }
 
 impl ManagedMoveArtifactArgs {
@@ -195,7 +197,7 @@ pub fn capability_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_CAPABILITY_TOOL.to_string(),
-            description: "Request access to an Arroba-managed MCP or skill for the current agent. V1 grants valid requests automatically. MCP grants normally become effective on the next provider launch; skill grants become effective on the next prompt.".to_string(),
+            description: "Request access to an Arroba-managed MCP or skill for the current agent. V1 grants valid requests automatically. MCP grants normally become effective on the next provider launch. Skill requests can return the full SKILL.md body so the current turn can use the skill immediately.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["kind", "name"],
@@ -205,7 +207,8 @@ pub fn capability_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                         "enum": ["mcp", "skill"]
                     },
                     "name": {"type": "string"},
-                    "reason": {"type": "string"}
+                    "reason": {"type": "string"},
+                    "return_body": {"type": "boolean"}
                 },
                 "additionalProperties": false
             }),

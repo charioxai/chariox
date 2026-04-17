@@ -50,6 +50,7 @@ Terminology:
 - Local managed I/O: `node apps/cli/scripts/live-managed-io-drill.mjs --providers opencode,codex` or `pnpm --filter @arroba/cli run managed-io:drill`
 - Local workflow: `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario <scenario> --providers opencode,codex`
   - Add `--no-early-pass` when validating the full `immediate-release-downstream` completion path instead of only the immediate release point.
+- Local MCP/skill management: planned as `node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex` after the M7 drill harness lands. It should install real MCPs, install at least one public GitHub skill into `.arroba/skills`, verify per-agent grants, verify same-turn skill request bodies, and clean its isolated workspace/daemon/session artifacts on success.
 - Remote freeform multi-agent: `node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers opencode,codex`
 - Remote managed I/O smoke: `node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode,codex`
 - Remote managed I/O full: `node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.3-codex --full` or `pnpm --filter @arroba/cli run managed-io:remote-drill`
@@ -84,6 +85,7 @@ Workspace identity note: managed I/O captures repo/branch/head identity for each
 - Remote freeform relay: **pass** with `opencode,codex`, direct local client plus relayed client, local sidecar agents plus worker-machine leased agents, relay restart, transport close/resume, and post-reconnect prompt completion.
 - Remote workflow relay: **pass** with `opencode,codex`, relay, home daemon, worker daemon, remote worker-machine leases, forwarded workflow runtime tools, cyclic workflow progression, intermediate output, final workflow output, and clean final projections.
 - Workflow prompt-injection invariant: **pass**. Workflow prompt construction is scheduler-owned and shared by local dispatch, remote dispatch, retry/replay paths, and tests; the renderer injects turn index, last-turn guidance only on the last allowed node turn, final-output tool guidance, runtime-tool instructions, handoff payloads, edge contracts, and control mailbox content.
+- Local MCP/skill management: **planned**. Required coverage is local-only for now: real MCP install/grant/provider rendering, public web skill install into Arroba-owned roots, same-turn `request_capability` skill body use, per-agent MCP/skill isolation, provider import without duplicate provider-scanned exposure, and explicit MCP request response of `next_provider_launch`.
 
 Point-2 fixes proven by the local workflow catalog:
 

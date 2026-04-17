@@ -1095,6 +1095,20 @@ mod tests {
             request_value["result"]["structuredContent"]["granted"],
             true
         );
+        assert_eq!(
+            request_value["result"]["structuredContent"]["effective"],
+            "now"
+        );
+        assert_eq!(
+            request_value["result"]["structuredContent"]["requires_provider_restart"],
+            false
+        );
+        assert!(
+            request_value["result"]["structuredContent"]["skill"]["body"]
+                .as_str()
+                .expect("skill body should be returned")
+                .contains("Use the browser.")
+        );
         let agent = app
             .lock()
             .await

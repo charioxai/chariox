@@ -417,7 +417,7 @@ Outcomes:
 - provider import for existing MCPs and skills
 - per-agent MCP and skill grants
 - provider-native MCP rendering at agent launch
-- Codex-style skill discovery and prompt injection for granted skills
+- Codex-style skill discovery and prompt injection for granted skills, including same-turn runtime skill request bodies
 - `/mcp`, `/skill`, and `/skills` CLI command surfaces
 - remote-machine MCP and skill materialization after local behavior is stable
 
