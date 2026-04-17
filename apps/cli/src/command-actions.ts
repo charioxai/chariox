@@ -1295,7 +1295,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       const provider = command.args[1]
       const name = command.args[2] ?? null
       if (!provider || !deps.importMcpServers) {
-        deps.flashFooter("usage: /mcp import codex [name]", "error")
+        deps.flashFooter("usage: /mcp import <codex|opencode> [name]", "error")
         return
       }
       const outcome = await deps.importMcpServers(provider, name)

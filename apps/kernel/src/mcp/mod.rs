@@ -241,6 +241,103 @@ pub fn import_codex_mcp_servers(
     )
 }
 
+pub fn import_opencode_mcp_servers(
+    registry: &ArrobaMcpRegistry,
+    workspace: &Path,
+    requested_name: Option<&str>,
+) -> Result<McpImportOutcome, DaemonError> {
+    if let Some(name) = requested_name {
+        validate_registry_name(name, "mcp name")?;
+    }
+    let mut outcome = McpImportOutcome::default();
+    let mut found_config = false;
+    for config_path in opencode_config_paths(workspace) {
+        if !config_path.exists() {
+            continue;
+        }
+        found_config = true;
+        let partial =
+            import_opencode_mcp_servers_from_config_path(registry, &config_path, requested_name)?;
+        outcome.imported.extend(partial.imported);
+        outcome.skipped.extend(partial.skipped);
+    }
+    if !found_config {
+        return Ok(outcome);
+    }
+    if let Some(name) = requested_name {
+        let found = outcome.imported.iter().any(|mcp| mcp.name == name)
+            || outcome.skipped.iter().any(|skip| skip.name == name);
+        if !found {
+            outcome.skipped.push(McpImportSkip {
+                name: name.to_string(),
+                reason: "not found in OpenCode config".to_string(),
+            });
+        }
+    }
+    Ok(outcome)
+}
+
+pub fn import_opencode_mcp_servers_from_config_path(
+    registry: &ArrobaMcpRegistry,
+    config_path: &Path,
+    requested_name: Option<&str>,
+) -> Result<McpImportOutcome, DaemonError> {
+    if let Some(name) = requested_name {
+        validate_registry_name(name, "mcp name")?;
+    }
+    let payload = fs::read_to_string(config_path).map_err(|error| DaemonError::LocalTransport {
+        operation: "mcp.import.opencode",
+        message: format!(
+            "failed to read OpenCode MCP config `{}`: {error}",
+            config_path.display()
+        ),
+    })?;
+    let json_payload =
+        strip_jsonc_comments(&payload).map_err(|message| DaemonError::LocalTransport {
+            operation: "mcp.import.opencode",
+            message: format!(
+                "failed to strip OpenCode JSONC config `{}`: {message}",
+                config_path.display()
+            ),
+        })?;
+    let json_payload = remove_json_trailing_commas(&json_payload);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json_payload).map_err(|error| DaemonError::LocalTransport {
+            operation: "mcp.import.opencode",
+            message: format!(
+                "failed to parse OpenCode MCP config `{}`: {error}",
+                config_path.display()
+            ),
+        })?;
+    let mut outcome = McpImportOutcome::default();
+    let Some(servers) = parsed.get("mcp").and_then(serde_json::Value::as_object) else {
+        return Ok(outcome);
+    };
+    for (name, value) in servers {
+        if requested_name.is_some_and(|requested| requested != name) {
+            continue;
+        }
+        if registry.get(name)?.is_some() {
+            outcome.skipped.push(McpImportSkip {
+                name: name.clone(),
+                reason: "already installed in Arroba registry".to_string(),
+            });
+            continue;
+        }
+        match opencode_mcp_to_arroba(name, value) {
+            Ok(config) => {
+                registry.install(&config)?;
+                outcome.imported.push(config);
+            }
+            Err(reason) => outcome.skipped.push(McpImportSkip {
+                name: name.clone(),
+                reason,
+            }),
+        }
+    }
+    Ok(outcome)
+}
+
 pub fn import_codex_mcp_servers_from_config_path(
     registry: &ArrobaMcpRegistry,
     config_path: &Path,
@@ -529,6 +626,309 @@ fn codex_home_dir() -> Result<PathBuf, DaemonError> {
         })
 }
 
+fn opencode_config_paths(workspace: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(custom) = std::env::var_os("OPENCODE_CONFIG") {
+        paths.push(PathBuf::from(custom));
+    }
+    if let Some(config_dir) = std::env::var_os("OPENCODE_CONFIG_DIR") {
+        paths.extend(opencode_files_in_dir(Path::new(&config_dir)));
+    }
+    paths.extend([
+        workspace.join("opencode.jsonc"),
+        workspace.join("opencode.json"),
+        workspace.join(".opencode").join("opencode.jsonc"),
+        workspace.join(".opencode").join("opencode.json"),
+    ]);
+    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+        paths.extend(opencode_files_in_dir(
+            &PathBuf::from(config_home).join("opencode"),
+        ));
+    } else if let Some(home) = home_dir() {
+        paths.extend(opencode_files_in_dir(
+            &home.join(".config").join("opencode"),
+        ));
+    }
+    paths
+}
+
+fn opencode_files_in_dir(dir: &Path) -> Vec<PathBuf> {
+    vec![
+        dir.join("opencode.jsonc"),
+        dir.join("opencode.json"),
+        dir.join("config.json"),
+    ]
+}
+
+fn opencode_mcp_to_arroba(
+    name: &str,
+    value: &serde_json::Value,
+) -> Result<ArrobaMcpServerConfig, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "MCP entry must be an object".to_string())?;
+    let mcp_type = object
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "missing MCP type".to_string())?;
+    match mcp_type {
+        "local" => opencode_local_mcp_to_arroba(name, object),
+        "remote" => opencode_remote_mcp_to_arroba(name, object),
+        other => Err(format!("unsupported OpenCode MCP type `{other}`")),
+    }
+}
+
+fn opencode_local_mcp_to_arroba(
+    name: &str,
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<ArrobaMcpServerConfig, String> {
+    let command_parts = object
+        .get("command")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "local MCP command must be an array".to_string())?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "local MCP command entries must be strings".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some((command, args)) = command_parts.split_first() else {
+        return Err("local MCP command must not be empty".to_string());
+    };
+    let mut config = ArrobaMcpServerConfig::stdio(name, command.clone(), args.to_vec());
+    config.enabled = optional_json_bool(object.get("enabled"), "enabled")?.unwrap_or(true);
+    config.tool_timeout_sec = optional_json_timeout_ms(object.get("timeout"), "timeout")?;
+    if let ArrobaMcpTransportConfig::Stdio { env, env_vars, .. } = &mut config.transport {
+        let environment =
+            optional_json_string_map(object.get("environment"), "environment")?.unwrap_or_default();
+        for (key, value) in environment {
+            if let Some(var_name) = env_reference(&value) {
+                if var_name == key {
+                    env_vars.push(key);
+                } else {
+                    return Err(format!(
+                        "environment `{key}` references env var `{var_name}`, which cannot be represented in Arroba stdio env_vars"
+                    ));
+                }
+            } else {
+                env.insert(key, value);
+            }
+        }
+    }
+    config.validate().map_err(|error| error.to_string())?;
+    Ok(config)
+}
+
+fn opencode_remote_mcp_to_arroba(
+    name: &str,
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<ArrobaMcpServerConfig, String> {
+    let url = object
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "remote MCP url must be a string".to_string())?;
+    if object
+        .get("oauth")
+        .is_some_and(|value| value != &serde_json::Value::Bool(false))
+    {
+        return Err("OpenCode OAuth MCP config is not imported yet".to_string());
+    }
+    let mut config = ArrobaMcpServerConfig::streamable_http(name, url);
+    config.enabled = optional_json_bool(object.get("enabled"), "enabled")?.unwrap_or(true);
+    config.tool_timeout_sec = optional_json_timeout_ms(object.get("timeout"), "timeout")?;
+    if let ArrobaMcpTransportConfig::StreamableHttp {
+        http_headers,
+        env_http_headers,
+        ..
+    } = &mut config.transport
+    {
+        let headers =
+            optional_json_string_map(object.get("headers"), "headers")?.unwrap_or_default();
+        for (key, value) in headers {
+            if let Some(var_name) = env_reference(&value) {
+                env_http_headers.insert(key, var_name);
+            } else {
+                http_headers.insert(key, value);
+            }
+        }
+    }
+    config.validate().map_err(|error| error.to_string())?;
+    Ok(config)
+}
+
+fn optional_json_bool(
+    value: Option<&serde_json::Value>,
+    field: &str,
+) -> Result<Option<bool>, String> {
+    value
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| format!("{field} must be a boolean"))
+        })
+        .transpose()
+}
+
+fn optional_json_timeout_ms(
+    value: Option<&serde_json::Value>,
+    field: &str,
+) -> Result<Option<u64>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let millis = value
+        .as_u64()
+        .ok_or_else(|| format!("{field} must be a positive integer number of milliseconds"))?;
+    if millis == 0 {
+        return Err(format!("{field} must be positive"));
+    }
+    Ok(Some((millis + 999) / 1000))
+}
+
+fn optional_json_string_map(
+    value: Option<&serde_json::Value>,
+    field: &str,
+) -> Result<Option<BTreeMap<String, String>>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("{field} must be an object of strings"))?;
+    object
+        .iter()
+        .map(|(key, value)| {
+            value
+                .as_str()
+                .map(|value| (key.clone(), value.to_string()))
+                .ok_or_else(|| format!("{field}.{key} must be a string"))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()
+        .map(Some)
+}
+
+fn env_reference(value: &str) -> Option<String> {
+    value
+        .strip_prefix("{env:")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .filter(|name| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        })
+        .map(str::to_string)
+}
+
+fn strip_jsonc_comments(input: &str) -> Result<String, String> {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            output.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+            output.push(ch);
+            continue;
+        }
+
+        if ch == '/' {
+            match chars.peek().copied() {
+                Some('/') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if next == '\n' {
+                            output.push('\n');
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some('*') => {
+                    chars.next();
+                    let mut closed = false;
+                    let mut previous = '\0';
+                    for next in chars.by_ref() {
+                        if next == '\n' {
+                            output.push('\n');
+                        }
+                        if previous == '*' && next == '/' {
+                            closed = true;
+                            break;
+                        }
+                        previous = next;
+                    }
+                    if !closed {
+                        return Err("unterminated block comment".to_string());
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        output.push(ch);
+    }
+
+    Ok(output)
+}
+
+fn remove_json_trailing_commas(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            output.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+            output.push(ch);
+            continue;
+        }
+
+        if ch == ',' {
+            let mut lookahead = chars.clone();
+            while matches!(lookahead.peek(), Some(next) if next.is_whitespace()) {
+                lookahead.next();
+            }
+            if matches!(lookahead.peek(), Some('}' | ']')) {
+                continue;
+            }
+        }
+
+        output.push(ch);
+    }
+
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,6 +1036,104 @@ oauth_resource = "unsupported"
 
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(codex_root);
+    }
+
+    #[test]
+    fn imports_opencode_mcp_servers_from_jsonc_config() {
+        let root = temp_root("opencode-import-registry");
+        let opencode_root = temp_root("opencode-import-config");
+        fs::create_dir_all(&opencode_root).unwrap();
+        fs::write(
+            opencode_root.join("opencode.jsonc"),
+            r#"
+{
+  // OpenCode MCPs
+      "mcp": {
+        "docs": {
+          "type": "local",
+          "command": ["docs-server", "--verbose"],
+          "environment": {
+            "ALPHA": "1",
+            "DOCS_TOKEN": "{env:DOCS_TOKEN}",
+          },
+          "timeout": 2500,
+        },
+        "web": {
+          "type": "remote",
+          "url": "https://example.test/mcp",
+          "headers": {
+            "X-Static": "42",
+            "Authorization": "{env:WEB_TOKEN}",
+          },
+          "oauth": false,
+          "enabled": false,
+        },
+        "oauth": {
+          "type": "remote",
+          "url": "https://example.test/oauth",
+          "oauth": {},
+        },
+      },
+}
+"#,
+        )
+        .unwrap();
+
+        let registry = ArrobaMcpRegistry::new(vec![root.clone()]);
+        let outcome = import_opencode_mcp_servers_from_config_path(
+            &registry,
+            &opencode_root.join("opencode.jsonc"),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome
+                .imported
+                .iter()
+                .map(|mcp| mcp.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["docs", "web"]
+        );
+        assert_eq!(outcome.skipped.len(), 1);
+        assert_eq!(outcome.skipped[0].name, "oauth");
+        assert!(outcome.skipped[0].reason.contains("OAuth"));
+        let docs = registry.get("docs").unwrap().expect("docs import");
+        assert_eq!(docs.tool_timeout_sec, Some(3));
+        match docs.transport {
+            ArrobaMcpTransportConfig::Stdio {
+                command,
+                args,
+                env,
+                env_vars,
+                ..
+            } => {
+                assert_eq!(command, "docs-server");
+                assert_eq!(args, vec!["--verbose"]);
+                assert_eq!(env.get("ALPHA"), Some(&"1".to_string()));
+                assert_eq!(env_vars, vec!["DOCS_TOKEN"]);
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+        let web = registry.get("web").unwrap().expect("web import");
+        assert!(!web.enabled);
+        match web.transport {
+            ArrobaMcpTransportConfig::StreamableHttp {
+                http_headers,
+                env_http_headers,
+                ..
+            } => {
+                assert_eq!(http_headers.get("X-Static"), Some(&"42".to_string()));
+                assert_eq!(
+                    env_http_headers.get("Authorization"),
+                    Some(&"WEB_TOKEN".to_string())
+                );
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(opencode_root);
     }
 
     #[test]

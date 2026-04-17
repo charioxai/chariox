@@ -1515,16 +1515,26 @@ impl CommandRouter {
         &self,
         request: ImportMcpServersRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        if request.provider != "codex" {
-            return Err(DaemonError::InvalidConfig {
-                field: "provider",
-                message: "only Codex MCP import is supported",
-            });
-        }
         let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(
             request.workspace_id.as_deref(),
         )?);
-        let outcome = crate::mcp::import_codex_mcp_servers(&registry, request.name.as_deref())?;
+        let outcome = match request.provider.as_str() {
+            "codex" => crate::mcp::import_codex_mcp_servers(&registry, request.name.as_deref())?,
+            "opencode" => {
+                let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
+                crate::mcp::import_opencode_mcp_servers(
+                    &registry,
+                    &workspace,
+                    request.name.as_deref(),
+                )?
+            }
+            _ => {
+                return Err(DaemonError::InvalidConfig {
+                    field: "provider",
+                    message: "only Codex and OpenCode MCP import are supported",
+                });
+            }
+        };
         Ok(LocalDaemonResponse::McpServersImported { outcome })
     }
 
