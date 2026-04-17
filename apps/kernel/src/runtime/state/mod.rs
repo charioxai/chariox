@@ -75,6 +75,10 @@ struct ManagedIoWorkspaceContext {
 }
 
 mod owned;
+mod prompt;
+mod provider;
+mod session;
+mod workflow;
 
 impl KernelRuntimeState {
     pub(crate) fn new_with_owned_state(
