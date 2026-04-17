@@ -12,6 +12,8 @@ A lightweight, repo-native task board so contributors and future agents can cont
 
 ## In Progress
 
+- [ ] **M7-002** Implement Arroba-owned MCP and skill management
+  - Note: Build the M7 plan in `docs/M7_MCP_SKILLS_PLAN.md`: Arroba-owned MCP/skill registries, provider-native MCP rendering, per-agent grants, slash commands, provider import, prompt injection, local drills, and later remote-machine materialization.
 - [ ] **M3-002** Close the OpenCode-first capability and local-runtime cycle
   - Note: Finish the remaining shell/file/git/screenshot/transfer/schedule-facing productization and local slash-command UX without adding another provider family yet.
 - [ ] **M4-003** Stabilize the OpenCode-backed multi-agent runtime path

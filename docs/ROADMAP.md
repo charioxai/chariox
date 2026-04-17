@@ -36,7 +36,7 @@ Current milestone status:
 - M4.5: Kernel Runtime Refactor
 - M5: Relay and Remote Transport
 - M6: Remote Agents and Machine Membership
-- M7: Additional Clients
+- M7: Arroba-owned MCP and skill management
 - M8: Workflow Interconnection
 - M9: Multi-Provider Expansion and Adapter Generalization
 - M10: v1 Stabilization and Launch
@@ -52,6 +52,7 @@ Rollout priority:
 - then remove the daemon hot-path dependency on one shared `DaemonApp` lock by introducing actor-owned mutation, command routing, ordered kernel events, and query projections
 - then add relay-backed remote transport
 - then add remote agents and machine membership on top of relay
+- then add Arroba-owned MCP and skill management with per-agent grants, provider-native MCP rendering, skill prompt injection, and provider import paths
 - then add additional clients on the same daemon/protocol model
 - then add workflow interconnection on top of remote agent connectivity
 - then add additional providers such as Claude Code and Codex plus the more generic provider-adapter/protocol work they require
@@ -401,6 +402,31 @@ Exit criteria:
 
 - the TypeScript CLI is the polished reference client for the local and relay-backed runtime model
 - additional client surfaces consume the same daemon/protocol semantics rather than introducing surface-specific runtime logic
+
+## M7 - Arroba-Owned MCP and Skill Management
+
+Status:
+
+- in progress as of 2026-04-17
+- implementation plan lives in `docs/M7_MCP_SKILLS_PLAN.md`
+
+Outcomes:
+
+- Arroba-owned MCP registry stored outside provider-scanned config
+- Arroba-owned skill registry stored outside provider-scanned paths
+- provider import for existing MCPs and skills
+- per-agent MCP and skill grants
+- provider-native MCP rendering at agent launch
+- Codex-style skill discovery and prompt injection for granted skills
+- `/mcp`, `/skill`, and `/skills` CLI command surfaces
+- remote-machine MCP and skill materialization after local behavior is stable
+
+Exit criteria:
+
+- local Codex and OpenCode agents see only their granted MCPs and skills
+- imported provider MCPs and skills work as Arroba-owned copies
+- workflows reuse agent grants without overriding them
+- remote agents have an explicit design and implementation path for MCP/skill availability
 
 ## M8 - Workflow Interconnection
 

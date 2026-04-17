@@ -54,6 +54,8 @@ test("executeSlashCommand dispatches to the matching handler", async () => {
     onMachine: () => calls.push("machine"),
     onRelay: () => calls.push("relay"),
     onWorkflow: () => calls.push("workflow"),
+    onMcp: () => calls.push("mcp"),
+    onSkill: () => calls.push("skill"),
   })
 
   assert.deepEqual(calls, ["view"])
@@ -79,7 +81,23 @@ test("executeSlashCommand returns null for non-command input", async () => {
     onMachine: () => undefined,
     onRelay: () => undefined,
     onWorkflow: () => undefined,
+    onMcp: () => undefined,
+    onSkill: () => undefined,
   })
 
   assert.equal(command, null)
+})
+
+test("parseSlashCommand parses mcp and skill commands", () => {
+  assert.deepEqual(parseSlashCommand("/mcp install browser"), {
+    kind: "mcp",
+    raw: "/mcp install browser",
+    args: ["install", "browser"],
+  })
+
+  assert.deepEqual(parseSlashCommand("/skills list"), {
+    kind: "skill",
+    raw: "/skills list",
+    args: ["list"],
+  })
 })

@@ -5235,6 +5235,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleMachineCommand,
     handleRelayCommand,
     handleWorkflowCommand,
+    handleMcpCommand,
+    handleSkillCommand,
   } = createCommandActionHandlers({
     workspace: options.workspace ?? process.cwd(),
     worktree: options.worktree ?? options.workspace ?? process.cwd(),
@@ -5504,6 +5506,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           flashFooter(formatError(error), "error")
         }
       },
+      onMcp: async (command) => {
+        try {
+          await handleMcpCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onSkill: async (command) => {
+        try {
+          await handleSkillCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
     })
   }
 
@@ -5740,6 +5756,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onWorkflow: async (command) => {
         try {
           await handleWorkflowCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onMcp: async (command) => {
+        try {
+          await handleMcpCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onSkill: async (command) => {
+        try {
+          await handleSkillCommand(command)
         } catch (error) {
           flashFooter(formatError(error), "error")
         }

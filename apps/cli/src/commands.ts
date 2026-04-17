@@ -20,6 +20,8 @@ export type ParsedSlashCommand =
   | { kind: "machine"; raw: string; args: string[] }
   | { kind: "relay"; raw: string; args: string[] }
   | { kind: "workflow"; raw: string; args: string[] }
+  | { kind: "mcp"; raw: string; args: string[] }
+  | { kind: "skill"; raw: string; args: string[] }
 
 export type SlashCommandHandlers = {
   onExit: () => Promise<unknown> | unknown
@@ -35,6 +37,8 @@ export type SlashCommandHandlers = {
   onMachine: (command: Extract<ParsedSlashCommand, { kind: "machine" }>) => Promise<unknown> | unknown
   onRelay: (command: Extract<ParsedSlashCommand, { kind: "relay" }>) => Promise<unknown> | unknown
   onWorkflow: (command: Extract<ParsedSlashCommand, { kind: "workflow" }>) => Promise<unknown> | unknown
+  onMcp: (command: Extract<ParsedSlashCommand, { kind: "mcp" }>) => Promise<unknown> | unknown
+  onSkill: (command: Extract<ParsedSlashCommand, { kind: "skill" }>) => Promise<unknown> | unknown
 }
 
 export function parseSlashCommand(input: string): ParsedSlashCommand | null {
@@ -120,6 +124,21 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       args: trimmed.replace(/^\/workflow\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
+
+  if (trimmed.startsWith("/mcp")) {
+    return {
+      kind: "mcp",
+      raw: trimmed,
+      args: trimmed.replace(/^\/mcp\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
+  if (trimmed.startsWith("/skill") || trimmed.startsWith("/skills")) {
+    return {
+      kind: "skill",
+      raw: trimmed,
+      args: trimmed.replace(/^\/skills?\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
   return null
 }
 
@@ -171,6 +190,12 @@ export async function executeSlashCommand(
     case "workflow":
       await handlers.onWorkflow(command)
       break
+    case "mcp":
+      await handlers.onMcp(command)
+      break
+    case "skill":
+      await handlers.onSkill(command)
+      break
   }
   return command
 }
@@ -185,6 +210,8 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "machine":
     case "relay":
     case "workflow":
+    case "mcp":
+    case "skill":
       return true
     default:
       return false

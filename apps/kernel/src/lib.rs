@@ -10,6 +10,7 @@ pub mod history;
 pub mod io;
 pub mod local;
 pub mod logging;
+pub mod mcp;
 pub mod prompt_transcript;
 pub mod provider;
 pub mod pty;
@@ -18,6 +19,7 @@ pub mod runtime_transport;
 pub mod scheduler;
 pub mod session;
 pub mod session_history_page;
+pub mod skill;
 pub mod terminal;
 pub mod transport;
 

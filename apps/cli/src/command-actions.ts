@@ -1142,6 +1142,30 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     deps.flashFooter("usage: /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine rename <machine-ref> <alias>", "error")
   }
 
+  const handleMcpCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "mcp" }>,
+  ): Promise<void> => {
+    const [action] = command.args
+    if (!action || action === "list" || action === "ls") {
+      deps.appendNotice("MCP registry commands are planned for M7. Use /mcp install|import|list|show|grant|revoke once the registry API is wired.")
+      deps.flashFooter("MCP management is not wired yet", "info")
+      return
+    }
+    deps.flashFooter("MCP management is not wired yet", "error")
+  }
+
+  const handleSkillCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "skill" }>,
+  ): Promise<void> => {
+    const [action] = command.args
+    if (!action || action === "list" || action === "ls") {
+      deps.appendNotice("Skill registry commands are planned for M7. Use /skill install|import|list|show|grant|revoke once the registry API is wired.")
+      deps.flashFooter("skill management is not wired yet", "info")
+      return
+    }
+    deps.flashFooter("skill management is not wired yet", "error")
+  }
+
   const handleWorkflowCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "workflow" }>,
   ): Promise<void> => {
@@ -2084,6 +2108,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleMachineCommand,
     handleRelayCommand,
     handleWorkflowCommand,
+    handleMcpCommand,
+    handleSkillCommand,
   }
 }
 
