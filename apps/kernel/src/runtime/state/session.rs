@@ -1,3 +1,8 @@
+//! Session, attachment, and agent lifecycle mutations for owned runtime state.
+//!
+//! This module owns local state transitions that do not need provider I/O: session creation,
+//! focus, attachment bookkeeping, cleanup, and projection-facing state changes.
+
 use super::*;
 
 impl KernelRuntimeOwnedState {

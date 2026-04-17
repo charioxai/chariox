@@ -1,3 +1,8 @@
+//! Provider launch, structured-runtime binding, output pumping, and cancellation orchestration.
+//!
+//! These methods bridge owned runtime state with provider processes/endpoints and translate
+//! provider runtime events back into prompt/session mutations.
+
 use super::*;
 
 impl KernelRuntimeState {

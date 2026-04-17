@@ -1,3 +1,8 @@
+//! JSON payload shaping for managed-I/O tool responses.
+//!
+//! Tool handlers keep their control flow in the parent module and call here for stable success,
+//! warning, diff, and daemon-error response envelopes.
+
 use super::*;
 
 pub(super) fn managed_io_warning_payload(

@@ -1,3 +1,8 @@
+//! Async direct-prompt dispatch entry points.
+//!
+//! This layer validates runtime state, starts or queues prompts, and hands provider-specific
+//! submission work to the provider runtime without exposing owned-state internals to transports.
+
 use super::*;
 
 impl KernelRuntimeState {

@@ -1,3 +1,8 @@
+//! Managed-I/O runtime-state entry points.
+//!
+//! This root handles read/write/apply-patch command arguments, workspace identity checks,
+//! external-change notices, and delegates diff/patch/payload/remote details to submodules.
+
 use super::*;
 
 pub(super) fn managed_io_read_payload(read: crate::io::ArtifactReadResult) -> serde_json::Value {

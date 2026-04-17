@@ -1,3 +1,8 @@
+//! Remote managed-I/O coordination snapshots.
+//!
+//! Remote agents use these helpers to discover current artifact state and workspace identity so
+//! same-repo/same-branch workers can participate in the same collision-control protocol.
+
 use super::*;
 
 pub(in crate::runtime::state) fn remote_managed_io_artifact_states_for_tool(

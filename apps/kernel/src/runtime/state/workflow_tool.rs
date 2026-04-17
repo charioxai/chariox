@@ -1,3 +1,8 @@
+//! Workflow runtime-tool command handling.
+//!
+//! Workflow-executing agents use this path to resolve node context, complete nodes, trigger
+//! retries, and surface workflow-specific tool results back through the runtime state.
+
 use super::*;
 
 impl KernelRuntimeOwnedState {

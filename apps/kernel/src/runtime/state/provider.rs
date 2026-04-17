@@ -1,3 +1,8 @@
+//! Provider-run state reconciliation and focus/parking mutations.
+//!
+//! This module keeps the owned provider registry coherent with sessions, including active-run
+//! focus, park/unpark transitions, liveness reconciliation, and provider-output bookkeeping.
+
 use super::owned::OwnedProviderRunExit;
 use super::*;
 

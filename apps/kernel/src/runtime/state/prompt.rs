@@ -1,3 +1,8 @@
+//! Prompt lifecycle, settlement, queue, and history mutations.
+//!
+//! This module owns prompt state transitions once provider output or cancellation signals arrive,
+//! plus the session history/output records that make those transitions observable.
+
 use super::owned::{OwnedPromptCancellation, OwnedPromptCompletion};
 use super::*;
 

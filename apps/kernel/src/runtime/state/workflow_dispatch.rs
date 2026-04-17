@@ -1,3 +1,8 @@
+//! Workflow scheduling and node-dispatch state transitions.
+//!
+//! This module advances queued/running workflow nodes, applies retry policy, records completion,
+//! and prepares provider prompts for executable workflow nodes.
+
 use super::*;
 
 impl KernelRuntimeOwnedState {

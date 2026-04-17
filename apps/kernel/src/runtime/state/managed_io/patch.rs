@@ -1,3 +1,8 @@
+//! Managed-I/O apply-patch orchestration.
+//!
+//! This module validates patch requests against tracked workspace state, applies accepted edits,
+//! emits file-change output records, and records external-change conflicts for agent notification.
+
 use super::*;
 
 #[derive(Debug, Clone)]

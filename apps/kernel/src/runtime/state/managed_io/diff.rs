@@ -1,3 +1,8 @@
+//! Text-diff helpers for managed-I/O collision reporting.
+//!
+//! The public surface is intentionally small: callers ask for rendered diff text while internal
+//! LCS/diff operations remain local to this module.
+
 use super::*;
 
 pub(super) fn artifact_content_byte_count(content: &crate::io::ArtifactContent) -> usize {

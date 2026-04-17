@@ -1,3 +1,8 @@
+//! Workflow administrative mutations.
+//!
+//! Owns workflow CRUD, endpoint edits, watchdog updates, and queue-facing commands that alter
+//! workflow definitions rather than executing an individual node.
+
 use super::*;
 
 impl KernelRuntimeOwnedState {

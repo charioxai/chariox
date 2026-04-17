@@ -1,3 +1,9 @@
+//! Shared runtime-state facade and async orchestration wiring.
+//!
+//! Domain modules own the concrete session/provider/prompt/workflow and managed-I/O mutations.
+//! This root keeps the public `KernelRuntimeState` entry points, shared fields, and cross-domain
+//! plumbing that would otherwise create cycles between those modules.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

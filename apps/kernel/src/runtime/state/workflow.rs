@@ -1,3 +1,8 @@
+//! Core workflow prompt setup and validation helpers.
+//!
+//! This module contains shared workflow mechanics used by admin, dispatch, and tool-facing
+//! workflow code: context construction, node validation, and prompt-start preparation.
+
 use super::*;
 
 impl KernelRuntimeOwnedState {

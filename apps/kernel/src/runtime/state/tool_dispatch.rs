@@ -1,3 +1,8 @@
+//! Runtime MCP tool dispatch.
+//!
+//! Provider tool calls enter here and are routed to managed-I/O handlers or other runtime-owned
+//! tool surfaces with consistent authorization and JSON payload shaping.
+
 use super::*;
 
 impl KernelRuntimeState {

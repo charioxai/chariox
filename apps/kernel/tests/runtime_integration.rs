@@ -3068,12 +3068,16 @@ fn handle_mock_opencode_request(
                 .expect("prompt should include a text part")
                 .trim_end_matches('\n')
                 .to_string();
+            let user_message_id = payload["messageID"]
+                .as_str()
+                .expect("prompt should include a user message id")
+                .to_string();
             let session_id = path
                 .strip_prefix("/session/")
                 .and_then(|value| value.strip_suffix("/prompt_async"))
                 .expect("prompt path should include a session id")
                 .to_string();
-            schedule_mock_response(state.clone(), session_id, prompt);
+            schedule_mock_response(state.clone(), session_id, user_message_id, prompt);
             let response_delay = state
                 .lock()
                 .expect("mock state should not be poisoned")
@@ -3212,6 +3216,7 @@ fn write_sse_event(stream: &mut std::net::TcpStream, payload: &str) -> std::io::
 fn schedule_mock_response(
     state: Arc<Mutex<MockOpenCodeState>>,
     session_id: String,
+    user_message_id: String,
     prompt: String,
 ) {
     {
@@ -3255,6 +3260,8 @@ fn schedule_mock_response(
                         "id": message_id.clone(),
                         "sessionID": session_id.clone(),
                         "role": "assistant",
+                        "parentID": user_message_id.clone(),
+                        "finish": "tool-calls",
                         "time": {
                             "completed": 1,
                         }
@@ -3287,6 +3294,8 @@ fn schedule_mock_response(
                             "id": message_id.clone(),
                             "sessionID": session_id.clone(),
                             "role": "assistant",
+                            "parentID": user_message_id.clone(),
+                            "finish": "tool-calls",
                             "time": {
                                 "completed": 1
                             }
@@ -3384,6 +3393,8 @@ fn schedule_mock_response(
                     "id": message_id.clone(),
                     "sessionID": session_id.clone(),
                     "role": "assistant",
+                    "parentID": user_message_id.clone(),
+                    "finish": "stop",
                     "time": {
                         "completed": 1,
                     }
@@ -3425,6 +3436,8 @@ fn schedule_mock_response(
                         "id": message_id.clone(),
                         "sessionID": session_id.clone(),
                         "role": "assistant",
+                        "parentID": user_message_id.clone(),
+                        "finish": "stop",
                         "time": {
                             "completed": 1
                         }
