@@ -470,12 +470,17 @@ impl KernelRuntimeState {
             .run_uses_structured_prompt_io(&provider_run)
         {
             owned.note_prompt_started(&dispatch.provider_run_id);
+            let provider_prompt = owned.apply_granted_skill_summary(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt,
+            )?;
             return owned.provider_store.enqueue_structured_prompt_submit(
                 dispatch.session_id.clone(),
                 dispatch.provider_run_id.clone(),
                 dispatch.agent_id.clone(),
                 &provider_run,
-                &dispatch.prompt,
+                &provider_prompt,
                 &dispatch.attachments,
             );
         }
@@ -491,11 +496,16 @@ impl KernelRuntimeState {
                 });
             }
         }
+        let provider_prompt = owned.apply_granted_skill_summary(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            &dispatch.prompt,
+        )?;
         owned.terminal_stream.record_input(
             &dispatch.session_id,
             &dispatch.provider_run_id,
             &dispatch.source_attachment_id,
-            dispatch.prompt.as_bytes(),
+            provider_prompt.as_bytes(),
         );
         let has_managed_process = owned
             .provider_process_tracking
@@ -509,7 +519,7 @@ impl KernelRuntimeState {
         self.with_app_side_effect(|app| {
             app.write_provider_pty_input_for_runtime(
                 &dispatch.provider_run_id,
-                dispatch.prompt.as_bytes(),
+                provider_prompt.as_bytes(),
             )
         })
         .await?;

@@ -242,6 +242,46 @@ impl KernelRuntimeOwnedState {
         }))
     }
 
+    pub(super) fn apply_granted_skill_summary(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &str,
+    ) -> Result<String, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.skill_grants().is_empty() {
+            return Ok(prompt.to_string());
+        }
+        let session = self.session_store.get_session(session_id)?;
+        let workspace = std::path::PathBuf::from(session.workspace_id());
+        let mut roots = vec![crate::skill::ArrobaSkillRegistry::project_root(&workspace)];
+        if let Some(user_root) = crate::skill::ArrobaSkillRegistry::user_root() {
+            roots.push(user_root);
+        }
+        let registry = crate::skill::ArrobaSkillRegistry::new(roots);
+        let mut lines = vec![
+            "Available Arroba skills for this agent:".to_string(),
+            "Use these granted skills as routing hints when they match the task. Full skill-body injection is handled separately when a skill is explicitly selected or requested.".to_string(),
+        ];
+        for grant in agent.skill_grants() {
+            let Some(skill) = registry.get(grant)? else {
+                return Err(DaemonError::LocalTransport {
+                    operation: "provider.prompt.skills",
+                    message: format!(
+                        "agent `{}` has missing skill grant `{grant}`",
+                        agent.agent_ref()
+                    ),
+                });
+            };
+            let summary = skill
+                .short_description
+                .as_ref()
+                .unwrap_or(&skill.description);
+            lines.push(format!("- `{}`: {}", skill.name, summary));
+        }
+        Ok(format!("{}\n\n{}", lines.join("\n"), prompt))
+    }
+
     pub(super) fn complete_local_prompt_with_queued_advance(
         &self,
         session_id: &str,
@@ -311,12 +351,14 @@ impl KernelRuntimeOwnedState {
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
         {
+            let provider_prompt =
+                self.apply_granted_skill_summary(session_id, agent_id, started_next.prompt())?;
             if let Err(error) = self.provider_store.enqueue_structured_prompt_submit(
                 session_id.to_string(),
                 provider_run_id.clone(),
                 agent_id.to_string(),
                 &provider_run,
-                started_next.prompt(),
+                &provider_prompt,
                 started_next.attachments(),
             ) {
                 let _ = self.cancel_active_prompt_only(session_id, agent_id);
@@ -436,12 +478,14 @@ impl KernelRuntimeOwnedState {
                 .provider_store
                 .run_uses_structured_prompt_io(&provider_run)
             {
+                let provider_prompt =
+                    self.apply_granted_skill_summary(session_id, agent_id, started_next.prompt())?;
                 self.provider_store.enqueue_structured_prompt_submit(
                     session_id.to_string(),
                     provider_run_id.to_string(),
                     agent_id.to_string(),
                     &provider_run,
-                    started_next.prompt(),
+                    &provider_prompt,
                     started_next.attachments(),
                 )?;
                 self.note_prompt_started(provider_run_id);
