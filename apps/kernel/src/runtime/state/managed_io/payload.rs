@@ -1,6 +1,6 @@
 use super::*;
 
-pub(in crate::runtime::state) fn managed_io_warning_payload(
+pub(super) fn managed_io_warning_payload(
     warning: crate::io::ArtifactEditWarning,
 ) -> serde_json::Value {
     match warning {
@@ -15,9 +15,7 @@ pub(in crate::runtime::state) fn managed_io_warning_payload(
     }
 }
 
-pub(in crate::runtime::state) fn managed_io_error_payload(
-    error: crate::io::ArtifactEditError,
-) -> serde_json::Value {
+pub(super) fn managed_io_error_payload(error: crate::io::ArtifactEditError) -> serde_json::Value {
     match error {
         crate::io::ArtifactEditError::ArtifactNotTracked { path } => serde_json::json!({
             "kind": "artifact_not_tracked",
@@ -77,7 +75,7 @@ pub(in crate::runtime::state) fn managed_io_error_payload(
     }
 }
 
-pub(in crate::runtime::state) fn managed_io_reservation_owner_payload(
+pub(super) fn managed_io_reservation_owner_payload(
     owner: crate::io::ArtifactReservationOwner,
 ) -> serde_json::Value {
     serde_json::json!({
@@ -87,18 +85,14 @@ pub(in crate::runtime::state) fn managed_io_reservation_owner_payload(
     })
 }
 
-pub(in crate::runtime::state) fn managed_io_range_payload(
-    range: crate::io::TextRange,
-) -> serde_json::Value {
+pub(super) fn managed_io_range_payload(range: crate::io::TextRange) -> serde_json::Value {
     serde_json::json!({
         "start": range.start,
         "end": range.end,
     })
 }
 
-pub(in crate::runtime::state) fn managed_io_domain_name(
-    domain: crate::io::ArtifactDomainKind,
-) -> &'static str {
+pub(super) fn managed_io_domain_name(domain: crate::io::ArtifactDomainKind) -> &'static str {
     match domain {
         crate::io::ArtifactDomainKind::TextDocument => "text",
         crate::io::ArtifactDomainKind::StructuredDocument => "structured",

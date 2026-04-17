@@ -1,22 +1,20 @@
 use super::*;
 
-pub(in crate::runtime::state) fn artifact_content_byte_count(
-    content: &crate::io::ArtifactContent,
-) -> usize {
+pub(super) fn artifact_content_byte_count(content: &crate::io::ArtifactContent) -> usize {
     match content {
         crate::io::ArtifactContent::Text(text) => text.len(),
         crate::io::ArtifactContent::Bytes(bytes) => bytes.len(),
     }
 }
 
-pub(in crate::runtime::state) struct ManagedIoDiff {
-    pub(in crate::runtime::state) text: String,
-    pub(in crate::runtime::state) truncated: bool,
+pub(super) struct ManagedIoDiff {
+    pub(super) text: String,
+    pub(super) truncated: bool,
 }
 
-pub(in crate::runtime::state) const MANAGED_IO_MAX_DIFF_BYTES: usize = 80_000;
+pub(super) const MANAGED_IO_MAX_DIFF_BYTES: usize = 80_000;
 
-pub(in crate::runtime::state) fn managed_io_unified_diff(
+pub(super) fn managed_io_unified_diff(
     path: &PathBuf,
     before: &ManagedIoTextSnapshot,
     after: &ManagedIoTextSnapshot,
@@ -53,7 +51,7 @@ pub(in crate::runtime::state) fn managed_io_unified_diff(
     ManagedIoDiff { text, truncated }
 }
 
-pub(in crate::runtime::state) fn diff_lines(text: &str) -> Vec<&str> {
+fn diff_lines(text: &str) -> Vec<&str> {
     if text.is_empty() {
         return Vec::new();
     }
@@ -63,13 +61,13 @@ pub(in crate::runtime::state) fn diff_lines(text: &str) -> Vec<&str> {
 }
 
 #[derive(Clone, Copy)]
-pub(in crate::runtime::state) enum ManagedIoDiffOp<'a> {
+enum ManagedIoDiffOp<'a> {
     Context(&'a str),
     Remove(&'a str),
     Add(&'a str),
 }
 
-pub(in crate::runtime::state) fn managed_io_diff_ops<'a>(
+fn managed_io_diff_ops<'a>(
     before: &'a [&'a str],
     after: &'a [&'a str],
 ) -> Vec<ManagedIoDiffOp<'a>> {
@@ -100,10 +98,7 @@ pub(in crate::runtime::state) fn managed_io_diff_ops<'a>(
     ops
 }
 
-pub(in crate::runtime::state) fn managed_io_diff_hunks(
-    before: &[&str],
-    after: &[&str],
-) -> Vec<String> {
+fn managed_io_diff_hunks(before: &[&str], after: &[&str]) -> Vec<String> {
     const CONTEXT: usize = 3;
     let ops = managed_io_diff_ops(before, after);
     if !ops
@@ -175,10 +170,7 @@ pub(in crate::runtime::state) fn managed_io_diff_hunks(
     lines
 }
 
-pub(in crate::runtime::state) fn managed_io_lcs_table(
-    before: &[&str],
-    after: &[&str],
-) -> Vec<Vec<usize>> {
+fn managed_io_lcs_table(before: &[&str], after: &[&str]) -> Vec<Vec<usize>> {
     let mut table = vec![vec![0; after.len() + 1]; before.len() + 1];
     for i in (0..before.len()).rev() {
         for j in (0..after.len()).rev() {
@@ -213,7 +205,7 @@ pub(in crate::runtime::state) fn managed_io_text_for_diff(
     }
 }
 
-pub(in crate::runtime::state) fn managed_io_diff_workspace_path(
+pub(super) fn managed_io_diff_workspace_path(
     workspace_root: &PathBuf,
     path: &PathBuf,
 ) -> Option<PathBuf> {
