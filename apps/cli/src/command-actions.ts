@@ -1224,6 +1224,18 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     skill.short_description ? `short: ${skill.short_description}` : null,
     `path: ${skill.path}`,
   ].filter(Boolean).join("\n")
+  const resolveGrantTarget = (agentRef: string | undefined, usage: string): AgentInstance | null => {
+    if (!agentRef) {
+      deps.flashFooter(usage, "error")
+      return null
+    }
+    const resolved = deps.resolveSessionAgent(agentRef)
+    if (!resolved.agent) {
+      deps.flashFooter(resolved.error ?? `unknown agent ${agentRef}`, "error")
+      return null
+    }
+    return resolved.agent
+  }
 
   const handleMcpCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "mcp" }>,
@@ -1276,7 +1288,14 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} MCP ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
       return
     }
-    deps.flashFooter("usage: /mcp list | /mcp show <name> | /mcp install ... | /mcp grant <agent-ref> <name> | /mcp revoke <agent-ref> <name>", "error")
+    if (action === "grants" || action === "agent") {
+      const agent = resolveGrantTarget(command.args[1], `usage: /mcp ${action} <agent-ref>`)
+      if (!agent) return
+      deps.appendNotice(formatAgentCapabilityGrants(agent, "mcp"))
+      deps.flashFooter(`showing MCP grants for ${agent.agent_ref}`, "info")
+      return
+    }
+    deps.flashFooter("usage: /mcp list | /mcp show <name> | /mcp install ... | /mcp grant <agent-ref> <name> | /mcp revoke <agent-ref> <name> | /mcp grants <agent-ref>", "error")
   }
 
   const handleSkillCommand = async (
@@ -1326,7 +1345,14 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} skill ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
       return
     }
-    deps.flashFooter("usage: /skill list | /skill show <name> | /skill install <path> | /skill grant <agent-ref> <name> | /skill revoke <agent-ref> <name>", "error")
+    if (action === "grants" || action === "agent") {
+      const agent = resolveGrantTarget(command.args[1], `usage: /skill ${action} <agent-ref>`)
+      if (!agent) return
+      deps.appendNotice(formatAgentCapabilityGrants(agent, "skill"))
+      deps.flashFooter(`showing skill grants for ${agent.agent_ref}`, "info")
+      return
+    }
+    deps.flashFooter("usage: /skill list | /skill show <name> | /skill install <path> | /skill grant <agent-ref> <name> | /skill revoke <agent-ref> <name> | /skill grants <agent-ref>", "error")
   }
 
   const handleWorkflowCommand = async (
@@ -2304,4 +2330,14 @@ export function formatAgentListSummary(agents: AgentInstance[]): string {
     .map((agent) => `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${agent.state}]`)
     .join(", ")
   return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
+}
+
+export function formatAgentCapabilityGrants(agent: AgentInstance, kind: "mcp" | "skill"): string {
+  const grants = kind === "mcp" ? (agent.mcp_grants ?? []) : (agent.skill_grants ?? [])
+  const label = kind === "mcp" ? "MCP" : "skill"
+  const agentLabel = `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
+  if (grants.length === 0) {
+    return `${agentLabel} has no ${label} grants.`
+  }
+  return `${agentLabel} ${label} grants:\n${grants.map((grant) => `- ${grant}`).join("\n")}`
 }

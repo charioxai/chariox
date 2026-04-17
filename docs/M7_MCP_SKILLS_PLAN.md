@@ -10,12 +10,12 @@ Updated: 2026-04-17
 Landed:
 
 - M7.1/M7.2: Arroba-owned MCP config model and registry for project/user roots.
-- M7.3 partial: interactive `/mcp list`, `/mcp show`, `/mcp install`, `/mcp grant`, and `/mcp revoke`.
-- M7.5 partial: agent model now stores `mcp_grants`; grant/revoke IPC validates installed MCPs before mutating the agent.
+- M7.3 partial: interactive `/mcp list`, `/mcp show`, `/mcp install`, `/mcp grant`, `/mcp revoke`, and `/mcp grants`.
+- M7.5 partial: agent model now stores `mcp_grants`; grant/revoke IPC validates installed MCPs before mutating the agent; interactive grant inspection is landed.
 - M7.6 partial: local Codex and OpenCode provider launches render only the target agent's granted Arroba MCPs into provider-native MCP config, while keeping Arroba runtime MCP separate.
 - M7.7/M7.8: Codex-style `SKILL.md` metadata parsing and Arroba-owned skill registry over project/user roots.
-- M7.9 partial: interactive `/skill list`, `/skill show`, `/skill install`, `/skill grant`, and `/skill revoke`.
-- M7.11 partial: agent model now stores `skill_grants`; grant/revoke IPC validates installed skills before mutating the agent.
+- M7.9 partial: interactive `/skill list`, `/skill show`, `/skill install`, `/skill grant`, `/skill revoke`, and `/skill grants`.
+- M7.11 partial: agent model now stores `skill_grants`; grant/revoke IPC validates installed skills before mutating the agent; interactive grant inspection is landed.
 - M7.12 partial: local provider prompts receive a short granted-skills summary for the target agent only. Stored prompt history remains the original user prompt.
 - M7.13 partial: local provider prompts inject the full `SKILL.md` body for granted skills that are explicitly selected, mentioned, or requested.
 
@@ -23,7 +23,7 @@ Still open in M7:
 
 - Regular non-interactive `arroba mcp ...` / `arroba skill ...` CLI command surfaces, if we keep them separate from slash commands.
 - MCP/skill update and uninstall operations.
-- Agent grant inspection commands, for example `agent mcps` / `agent skills` or `/mcp grants`.
+- Regular non-interactive agent grant inspection commands, for example `arroba agent mcps` / `arroba agent skills`.
 - Provider MCP import from Codex/OpenCode/Claude-owned configs.
 - Provider skill import from Codex/OpenCode/Claude-owned skill locations.
 - Skill MCP dependency validation.
@@ -91,7 +91,7 @@ Registry entries are Arroba-owned copies. Installing an MCP registers it; it doe
 
 ## M7.3 MCP CLI Commands
 
-Status: partial. Interactive slash commands for install/list/show/grant/revoke are landed; regular command aliases, import, update, uninstall, grant inspection, and test/start remain open.
+Status: partial. Interactive slash commands for install/list/show/grant/revoke/grants are landed; regular command aliases, import, update, uninstall, and test/start remain open.
 
 Expose MCP management through regular CLI commands and the interactive slash-command surface.
 
@@ -145,7 +145,7 @@ Behavior:
 
 ## M7.5 Agent MCP Grants
 
-Status: partial. Agent-scoped MCP grant storage and grant/revoke IPC are landed; grant inspection commands remain open.
+Status: partial. Agent-scoped MCP grant storage, grant/revoke IPC, and `/mcp grants <agent-ref>` are landed; regular non-interactive grant inspection remains open.
 
 Persist per-agent MCP grants. Each agent has an effective MCP set computed from Arroba's registry plus that agent's grants.
 
@@ -198,7 +198,7 @@ Arroba-managed skills are not stored in `.agents/skills` by default because prov
 
 ## M7.9 Skill CLI Commands
 
-Status: partial. Interactive slash commands for install/list/show/grant/revoke are landed; regular command aliases, import, update, uninstall, grant inspection, and validation commands remain open.
+Status: partial. Interactive slash commands for install/list/show/grant/revoke/grants are landed; regular command aliases, import, update, uninstall, and validation commands remain open.
 
 Expose skill management through regular CLI commands and the interactive slash-command surface.
 
@@ -253,7 +253,7 @@ Behavior:
 
 ## M7.11 Agent Skill Grants
 
-Status: partial. Agent-scoped skill grant storage and grant/revoke IPC are landed; grant inspection commands remain open.
+Status: partial. Agent-scoped skill grant storage, grant/revoke IPC, and `/skill grants <agent-ref>` are landed; regular non-interactive grant inspection remains open.
 
 Persist per-agent skill grants. Each agent has an effective skill set computed from Arroba's registry plus that agent's grants.
 

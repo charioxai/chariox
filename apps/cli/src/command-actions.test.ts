@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { createCommandActionHandlers, formatAgentListSummary, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
+import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentListSummary, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
 import type { AgentInstance, ProviderProcessInfo, QueuedWorkflowLaunch, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 
 function makeAgent(overrides: Partial<AgentInstance> = {}): AgentInstance {
@@ -85,6 +85,27 @@ test("formatAgentListSummary renders aliases and pluralization", () => {
   assert.equal(
     formatAgentListSummary(agents),
     "1 agent: agent-1 (planner) [Idle]",
+  )
+})
+
+test("formatAgentCapabilityGrants renders MCP and skill grants", () => {
+  const agent = makeAgent({
+    alias: "qa",
+    mcp_grants: ["browser", "github"],
+    skill_grants: ["browser-qa"],
+  })
+
+  assert.equal(
+    formatAgentCapabilityGrants(agent, "mcp"),
+    "agent-1 (qa) MCP grants:\n- browser\n- github",
+  )
+  assert.equal(
+    formatAgentCapabilityGrants(agent, "skill"),
+    "agent-1 (qa) skill grants:\n- browser-qa",
+  )
+  assert.equal(
+    formatAgentCapabilityGrants(makeAgent(), "skill"),
+    "agent-1 has no skill grants.",
   )
 })
 
