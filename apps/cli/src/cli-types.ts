@@ -2,6 +2,7 @@ import type { LocalIpcClient } from "./ipc.js"
 import type { ArrobaPreferences } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
+import type { ThemeRegistry } from "./theme-registry.js"
 import type { DirectoryTreeEntry } from "./tree-view.js"
 
 
@@ -472,6 +473,7 @@ export type BootstrapState = {
   providerCommandCatalogs: ProviderCommandCatalogs
   options: CliOptions
   preferences: ArrobaPreferences
+  themeRegistry?: ThemeRegistry
   deferred?: BootstrapDeferredState
 }
 

@@ -59,8 +59,8 @@ test("waiting room cycles selectable themes", () => {
   assert.equal(state.focus, "theme")
 
   state = cycleWaitingRoomValue(state, [], catalog, 1)
-  assert.equal(state.themeId, "opencode")
-  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "theme")?.value, "OpenCode")
+  assert.equal(state.themeId, "matrix")
+  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "theme")?.value, "Matrix")
 })
 
 test("waiting room renders indented sections and scrolls existing sessions", () => {

@@ -246,7 +246,8 @@ import {
 import { syncAuxiliaryPane } from "./response-layout-render.js"
 import { createRenderScheduler } from "./render-scheduler.js"
 import { bootstrapSession } from "./session-bootstrap.js"
-import { applyTheme, createTranscriptSyntaxStyle, EmptyBorder, SplitBorder, theme } from "./theme.js"
+import { applyTheme, createTranscriptSyntaxStyle, EmptyBorder, setThemeRegistry, SplitBorder, theme } from "./theme.js"
+import { DEFAULT_THEME_REGISTRY, loadThemeRegistry } from "./theme-registry.js"
 import {
   deriveWaitingRoomActivationDecision,
   deriveWaitingRoomModelSelectionDecision,
@@ -257,7 +258,6 @@ import {
   createWaitingRoomState,
   cycleWaitingRoomValue,
   moveWaitingRoomFocus,
-  normalizeWaitingRoomState,
   type WaitingRoomFocus,
   type WaitingRoomState,
 } from "./waiting-room.js"
@@ -459,6 +459,12 @@ async function main() {
     : undefined)
   const workspace = options.workspace ?? process.cwd()
   const worktree = options.worktree ?? workspace
+  const themeRegistry = await loadThemeRegistry({
+    workspace,
+    onWarning: (warning) => {
+      getLogger("cli.main")?.warn("skipping custom theme", warning)
+    },
+  })
   if (options.deleteSessionRef) {
     await deleteSessionByRef(client, options.deleteSessionRef, workspace)
     return
@@ -497,6 +503,7 @@ async function main() {
         0,
       ),
   })
+  bootstrap.themeRegistry = themeRegistry
   if (bootstrap.binding) {
     getLogger("cli.main")?.info("bootstrapped cli session", {
       session_id: bootstrap.binding.session.id,
@@ -549,7 +556,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const initialProviderCatalog = props.bootstrap.providerCatalog
   const initialProviderCommandCatalogs = props.bootstrap.providerCommandCatalogs
   const initialPreferences = props.bootstrap.preferences
-  const initialThemeId = applyTheme(initialPreferences.ui?.theme)
+  const initialThemeRegistry = props.bootstrap.themeRegistry ?? DEFAULT_THEME_REGISTRY
+  setThemeRegistry(initialThemeRegistry)
+  const initialThemeId = applyTheme(initialPreferences.ui?.theme, initialThemeRegistry)
   const initialPromptHistory = initialBinding?.promptHistoryEntries
     ?? (initialBinding?.session
       ? sessionPromptHistoryEntries(initialPreferences, initialBinding.session.id)
@@ -567,6 +576,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [availableSessions, setAvailableSessions] = createSignal<RuntimeSession[]>(initialSessions)
   const [providerCatalogState, setProviderCatalogState] = createSignal<ProviderCatalog>(initialProviderCatalog)
   const [providerCommandCatalogState, setProviderCommandCatalogState] = createSignal<ProviderCommandCatalogs>(initialProviderCommandCatalogs)
+  const [themeRegistryState] = createSignal(initialThemeRegistry)
   const [relayStatusState, setRelayStatusState] = createSignal<RelayStatusView | null>(null)
   const [remoteMachinesState, setRemoteMachinesState] = createSignal<RemoteMachineView[]>([])
   const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
@@ -577,6 +587,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       options.model,
       options.effort,
       initialThemeId,
+      initialThemeRegistry,
     ),
   )
   const [commandCenterQuery, setCommandCenterQuery] = createSignal("")
@@ -1263,6 +1274,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       nextState: next,
       sessions: availableSessions(),
       catalog: providerCatalogState(),
+      themeRegistry: themeRegistryState(),
       currentProvider: (options.provider ?? "opencode") as BackendProviderId,
       currentModel: options.model,
     })
@@ -1271,7 +1283,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     options.model = update.nextModel
     options.effort = update.nextEffort
     if (currentState.themeId !== update.normalizedState.themeId) {
-      const nextThemeId = applyTheme(update.normalizedState.themeId)
+      const nextThemeId = applyTheme(update.normalizedState.themeId, themeRegistryState())
       transcriptSyntax = createTranscriptSyntaxStyle()
       setThemeRevision((revision) => revision + 1)
       void saveUiPreferences({ theme: nextThemeId })
@@ -1366,6 +1378,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       state: waitingRoomState(),
       sessions: availableSessions(),
       catalog: providerCatalogState(),
+      themeRegistry: themeRegistryState(),
       currentProvider: currentSelection.provider === "codex" ? "codex" : "opencode",
       configuredEffort: currentSelection.effort,
     })
@@ -1401,6 +1414,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       state: waitingRoomState(),
       sessions: availableSessions(),
       catalog: providerCatalogState(),
+      themeRegistry: themeRegistryState(),
     })
     if (decision.kind === "error") {
       flashFooter(decision.message, "error")
@@ -4675,7 +4689,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState(), {
           relay: relayStatusState(),
           machines: remoteMachinesState(),
-        })
+        }, themeRegistryState())
       transcriptScrollbox.add(emptyTranscriptRenderable)
       if (isAttached()) {
         transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: 0 })
@@ -6265,7 +6279,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
               ? moveWaitingRoomFocus(next, availableSessions(), -1)
               : keyName === "down"
                 ? moveWaitingRoomFocus(next, availableSessions(), 1)
-                : cycleWaitingRoomValue(next, availableSessions(), providerCatalogState(), keyName === "left" ? -1 : 1),
+                : cycleWaitingRoomValue(next, availableSessions(), providerCatalogState(), keyName === "left" ? -1 : 1, themeRegistryState()),
           )
           return
         }

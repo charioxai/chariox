@@ -5,6 +5,7 @@ import {
   type ProviderCatalog,
 } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
+import type { ThemeRegistry } from "./theme-registry.js"
 import {
   normalizeWaitingRoomState,
   waitingRoomChoice,
@@ -54,6 +55,7 @@ export function deriveWaitingRoomStateUpdate(options: {
   nextState: WaitingRoomState
   sessions: SessionListEntry[]
   catalog: ProviderCatalog
+  themeRegistry?: ThemeRegistry
   currentProvider: BackendProviderId
   currentModel: string
 }): WaitingRoomStateUpdate {
@@ -61,6 +63,7 @@ export function deriveWaitingRoomStateUpdate(options: {
     options.nextState,
     options.sessions,
     options.catalog,
+    options.themeRegistry,
   )
   const nextModel = normalizedState.modelId || options.currentModel
 
@@ -114,6 +117,7 @@ export function deriveWaitingRoomModelSelectionDecision(options: {
   state: WaitingRoomState
   sessions: SessionListEntry[]
   catalog: ProviderCatalog
+  themeRegistry?: ThemeRegistry
   currentProvider: BackendProviderId
   configuredEffort: string
 }): WaitingRoomModelSelectionDecision {
@@ -139,6 +143,7 @@ export function deriveWaitingRoomModelSelectionDecision(options: {
       },
       options.sessions,
       options.catalog,
+      options.themeRegistry,
     ),
     launch: {
       provider: options.currentProvider,
@@ -155,6 +160,7 @@ export function deriveWaitingRoomVariantSelectionDecision(options: {
   state: WaitingRoomState
   sessions: SessionListEntry[]
   catalog: ProviderCatalog
+  themeRegistry?: ThemeRegistry
 }): WaitingRoomVariantSelectionDecision {
   const selected = catalogModelOptions(options.catalog, options.currentProviderId).find(
     (option) => option.id === options.currentModelId,
@@ -177,6 +183,7 @@ export function deriveWaitingRoomVariantSelectionDecision(options: {
       },
       options.sessions,
       options.catalog,
+      options.themeRegistry,
     ),
     launch: {
       provider: options.currentProviderId,

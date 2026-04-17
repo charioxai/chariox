@@ -7,7 +7,14 @@ import {
   type CatalogModelOption,
   type ProviderCatalog,
 } from "./provider-catalog.js"
-import { normalizeThemeName, themeLabel, THEME_NAMES, type ThemeName } from "./theme-registry.js"
+import {
+  DEFAULT_THEME_REGISTRY,
+  normalizeThemeName,
+  themeLabel,
+  themeOptions,
+  type ThemeName,
+  type ThemeRegistry,
+} from "./theme-registry.js"
 
 export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = 10
 const WAITING_ROOM_ROW_TITLE_MIN_WIDTH = 24
@@ -80,6 +87,7 @@ export function createWaitingRoomState(
   model: string,
   effort: string,
   themeId: unknown = "opencode",
+  themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
 ): WaitingRoomState {
   const selected = selectConfiguredModel(catalog, model, providerId)
   return normalizeWaitingRoomState(
@@ -89,12 +97,13 @@ export function createWaitingRoomState(
       providerId,
       modelId: selected?.id ?? model,
       effort: selectConfiguredVariant(selected, effort),
-      themeId: normalizeThemeName(themeId),
+      themeId: normalizeThemeName(themeId, themeRegistry),
       introStep: 0,
       keyState: { up: false, down: false, left: false, right: false },
     },
     sessions,
     catalog,
+    themeRegistry,
   )
 }
 
@@ -102,6 +111,7 @@ export function normalizeWaitingRoomState(
   state: WaitingRoomState,
   sessions: SessionListEntry[],
   catalog: ProviderCatalog,
+  themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
 ) {
   const visibleSessions = waitingRoomSessions(sessions)
   const providerId = normalizeBackendProvider(state.providerId)
@@ -114,7 +124,7 @@ export function normalizeWaitingRoomState(
     sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
     modelId: selected?.id ?? state.modelId,
     effort: efforts.includes(state.effort) ? state.effort : efforts[0] ?? "",
-    themeId: normalizeThemeName(state.themeId),
+    themeId: normalizeThemeName(state.themeId, themeRegistry),
   }
 }
 
@@ -155,6 +165,7 @@ export function cycleWaitingRoomValue(
   sessions: SessionListEntry[],
   catalog: ProviderCatalog,
   delta: number,
+  themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
 ) {
   if (state.focus === "model") {
     const options = catalogModelOptions(catalog, state.providerId)
@@ -170,6 +181,7 @@ export function cycleWaitingRoomValue(
       },
       sessions,
       catalog,
+      themeRegistry,
     )
   }
   if (state.focus === "provider") {
@@ -182,6 +194,7 @@ export function cycleWaitingRoomValue(
       },
       sessions,
       catalog,
+      themeRegistry,
     )
   }
   if (state.focus === "effort") {
@@ -193,10 +206,12 @@ export function cycleWaitingRoomValue(
     }
   }
   if (state.focus === "theme") {
-    const index = Math.max(0, THEME_NAMES.indexOf(normalizeThemeName(state.themeId)))
+    const options = themeOptions(themeRegistry)
+    const ids = options.map((option) => option.id)
+    const index = Math.max(0, ids.indexOf(normalizeThemeName(state.themeId, themeRegistry)))
     return {
       ...state,
-      themeId: THEME_NAMES[modulo(index + delta, THEME_NAMES.length)]!,
+      themeId: ids[modulo(index + delta, ids.length)] ?? normalizeThemeName(state.themeId, themeRegistry),
     }
   }
   return state
@@ -218,6 +233,7 @@ export function waitingRoomRows(
   sessions: SessionListEntry[],
   catalog: ProviderCatalog,
   remote: WaitingRoomRemoteState = {},
+  themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
 ) {
   const choice = waitingRoomChoice(state, sessions, catalog)
   const modelOptions = catalogModelOptions(catalog, state.providerId)
@@ -288,7 +304,7 @@ export function waitingRoomRows(
     {
       id: "theme",
       title: "Theme",
-      value: themeLabel(state.themeId),
+      value: themeLabel(state.themeId, themeRegistry),
       titleWidth,
       indent: 1,
       focused: state.focus === "theme",
