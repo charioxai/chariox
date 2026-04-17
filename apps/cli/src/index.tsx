@@ -94,6 +94,7 @@ import {
   getSessionHistoryRequest,
   getSessionStateRequest,
   installMcpServerRequest,
+  installSkillRequest,
   launchProviderRunRequest,
   listMcpServersRequest,
   listProviderProcessesRequest,
@@ -5317,6 +5318,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         listSkillsRequest(options.workspace ?? process.cwd()),
       )
       return expectVariant<{ skills: ArrobaSkillMetadata[] }>(response, "SkillsListed").skills
+    },
+    installSkill: async (sourcePath) => {
+      const response = await client.send<Record<string, unknown>>(
+        installSkillRequest(options.workspace ?? process.cwd(), sourcePath),
+      )
+      return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillInstalled").skill
     },
     getSkill: async (name) => {
       const response = await client.send<Record<string, unknown>>(

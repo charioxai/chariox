@@ -107,6 +107,15 @@ export function getSkillRequest(workspaceId: string | null, name: string) {
   }
 }
 
+export function installSkillRequest(workspaceId: string | null, sourcePath: string) {
+  return {
+    InstallSkill: {
+      workspace_id: workspaceId ?? null,
+      source_path: sourcePath,
+    },
+  }
+}
+
 export function listMcpServersRequest(workspaceId?: string | null) {
   return {
     ListMcpServers: {

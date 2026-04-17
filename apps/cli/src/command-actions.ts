@@ -207,6 +207,7 @@ type CommandActionDeps = {
   installMcpServer?: (config: ArrobaMcpServerConfig) => Promise<ArrobaMcpServerConfig>
   getMcpServer?: (name: string) => Promise<ArrobaMcpServerConfig>
   listSkills?: () => Promise<ArrobaSkillMetadata[]>
+  installSkill?: (sourcePath: string) => Promise<ArrobaSkillMetadata>
   getSkill?: (name: string) => Promise<ArrobaSkillMetadata>
   logViewCommand?: (fields: Record<string, unknown>) => void
   setMultiAgentResponseLayout: (layout: MultiAgentResponseLayout) => void
@@ -1287,7 +1288,17 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`showing skill ${skill.name}`, "info")
       return
     }
-    deps.flashFooter("usage: /skill list | /skill show <name>", "error")
+    if (action === "install") {
+      const sourcePath = command.args[1]
+      if (!sourcePath || !deps.installSkill) {
+        deps.flashFooter("usage: /skill install <path>", "error")
+        return
+      }
+      const skill = await deps.installSkill(sourcePath)
+      deps.flashFooter(`installed skill ${skill.name}`, "info")
+      return
+    }
+    deps.flashFooter("usage: /skill list | /skill show <name> | /skill install <path>", "error")
   }
 
   const handleWorkflowCommand = async (

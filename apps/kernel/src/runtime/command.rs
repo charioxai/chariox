@@ -246,6 +246,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::InstallMcpServer(_) => "mcp.install",
         LocalDaemonRequest::GetMcpServer(_) => "mcp.get",
         LocalDaemonRequest::ListMcpServers(_) => "mcp.list",
+        LocalDaemonRequest::InstallSkill(_) => "skill.install",
         LocalDaemonRequest::GetSkill(_) => "skill.get",
         LocalDaemonRequest::ListSkills(_) => "skill.list",
         LocalDaemonRequest::RelayStatus(_) => "relay.status",

@@ -18,10 +18,10 @@ use crate::local::{
     ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
     GetMcpServerRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
     GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest, InstallMcpServerRequest,
-    ListAgentsRequest, ListMcpServersRequest, ListProviderProcessesRequest, ListSessionsRequest,
-    ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
-    PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest,
-    StartProviderLoginRequest, TeardownProviderProcessesRequest,
+    InstallSkillRequest, ListAgentsRequest, ListMcpServersRequest, ListProviderProcessesRequest,
+    ListSessionsRequest, ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse,
+    LogoutProviderRequest, PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest,
+    ResolveSessionRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -644,6 +644,9 @@ impl CommandRouter {
             }
             LocalDaemonRequest::ListMcpServers(request) => {
                 return self.execute_list_mcp_servers_request(request.clone()).await;
+            }
+            LocalDaemonRequest::InstallSkill(request) => {
+                return self.execute_install_skill_request(request.clone()).await;
             }
             LocalDaemonRequest::GetSkill(request) => {
                 return self.execute_get_skill_request(request.clone()).await;
@@ -1345,6 +1348,9 @@ impl CommandRouter {
             LocalDaemonRequest::ListMcpServers(request) => {
                 self.execute_list_mcp_servers_request(request).await
             }
+            LocalDaemonRequest::InstallSkill(request) => {
+                self.execute_install_skill_request(request).await
+            }
             LocalDaemonRequest::GetSkill(request) => self.execute_get_skill_request(request).await,
             LocalDaemonRequest::ListSkills(request) => {
                 self.execute_list_skills_request(request).await
@@ -1514,6 +1520,23 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::McpServersListed {
             mcps: registry.list()?,
         })
+    }
+
+    async fn execute_install_skill_request(
+        &self,
+        request: InstallSkillRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
+        let source_path = if request.source_path.is_absolute() {
+            request.source_path
+        } else {
+            workspace.join(request.source_path)
+        };
+        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+            request.workspace_id.as_deref(),
+        )?);
+        let (skill, path) = registry.install_from_path(&source_path)?;
+        Ok(LocalDaemonResponse::SkillInstalled { skill, path })
     }
 
     async fn execute_get_skill_request(

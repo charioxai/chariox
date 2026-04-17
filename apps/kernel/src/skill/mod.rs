@@ -36,6 +36,48 @@ impl ArrobaSkillRegistry {
             .map(|home| home.join(".arroba").join("skills"))
     }
 
+    pub fn install_from_path(
+        &self,
+        source: &Path,
+    ) -> Result<(ArrobaSkillMetadata, PathBuf), DaemonError> {
+        if !source.is_dir() {
+            return Err(DaemonError::LocalTransport {
+                operation: "skill.install",
+                message: format!("skill source `{}` must be a directory", source.display()),
+            });
+        }
+        let source_skill_md = source.join("SKILL.md");
+        if !source_skill_md.exists() {
+            return Err(DaemonError::LocalTransport {
+                operation: "skill.install",
+                message: format!("skill source `{}` must contain SKILL.md", source.display()),
+            });
+        }
+        let metadata = parse_skill_metadata(&source_skill_md)?;
+        let root = self.primary_root()?;
+        fs::create_dir_all(root).map_err(|error| DaemonError::LocalTransport {
+            operation: "skill.install",
+            message: format!(
+                "failed to create skill registry `{}`: {error}",
+                root.display()
+            ),
+        })?;
+        let destination = root.join(&metadata.name);
+        if destination.exists() {
+            return Err(DaemonError::LocalTransport {
+                operation: "skill.install",
+                message: format!(
+                    "skill `{}` already exists at `{}`",
+                    metadata.name,
+                    destination.display()
+                ),
+            });
+        }
+        copy_directory(source, &destination)?;
+        let installed = parse_skill_metadata(&destination.join("SKILL.md"))?;
+        Ok((installed, destination))
+    }
+
     pub fn list(&self) -> Result<Vec<ArrobaSkillMetadata>, DaemonError> {
         let mut entries = BTreeMap::new();
         for root in &self.roots {
@@ -63,6 +105,15 @@ impl ArrobaSkillRegistry {
             }
         }
         Ok(None)
+    }
+
+    fn primary_root(&self) -> Result<&PathBuf, DaemonError> {
+        self.roots
+            .first()
+            .ok_or_else(|| DaemonError::InvalidConfig {
+                field: "skill registry roots",
+                message: "must include at least one root",
+            })
     }
 }
 
@@ -152,6 +203,54 @@ fn immediate_child_dirs(root: &Path) -> Result<Vec<PathBuf>, DaemonError> {
     Ok(dirs)
 }
 
+fn copy_directory(source: &Path, destination: &Path) -> Result<(), DaemonError> {
+    fs::create_dir_all(destination).map_err(|error| DaemonError::LocalTransport {
+        operation: "skill.install",
+        message: format!(
+            "failed to create skill destination `{}`: {error}",
+            destination.display()
+        ),
+    })?;
+    for entry in fs::read_dir(source).map_err(|error| DaemonError::LocalTransport {
+        operation: "skill.install",
+        message: format!(
+            "failed to read skill source `{}`: {error}",
+            source.display()
+        ),
+    })? {
+        let entry = entry.map_err(|error| DaemonError::LocalTransport {
+            operation: "skill.install",
+            message: format!("failed to read skill source entry: {error}"),
+        })?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "skill.install",
+                message: format!(
+                    "failed to inspect skill source `{}`: {error}",
+                    source_path.display()
+                ),
+            })?;
+        if file_type.is_dir() {
+            copy_directory(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&source_path, &destination_path).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "skill.install",
+                    message: format!(
+                        "failed to copy skill file `{}` to `{}`: {error}",
+                        source_path.display(),
+                        destination_path.display()
+                    ),
+                }
+            })?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +283,34 @@ mod tests {
         assert_eq!(skills[0].short_description.as_deref(), Some("QA"));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn install_copies_skill_directory_to_primary_root() {
+        let source_root = temp_root("install-source");
+        let registry_root = temp_root("install-registry");
+        let skill_dir = source_root.join("browser-qa");
+        fs::create_dir_all(skill_dir.join("assets")).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: browser-qa\ndescription: Browser QA workflow\n---\nUse the browser.\n",
+        )
+        .unwrap();
+        fs::write(skill_dir.join("assets").join("prompt.txt"), "qa checklist").unwrap();
+
+        let registry = ArrobaSkillRegistry::new(vec![registry_root.clone()]);
+        let (metadata, destination) = registry.install_from_path(&skill_dir).unwrap();
+
+        assert_eq!(metadata.name, "browser-qa");
+        assert_eq!(destination, registry_root.join("browser-qa"));
+        assert_eq!(
+            fs::read_to_string(destination.join("assets").join("prompt.txt")).unwrap(),
+            "qa checklist"
+        );
+        assert_eq!(registry.get("browser-qa").unwrap(), Some(metadata));
+
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(registry_root);
     }
 
     #[test]

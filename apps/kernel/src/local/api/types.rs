@@ -161,6 +161,12 @@ pub struct GetSkillRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallSkillRequest {
+    pub workspace_id: Option<String>,
+    pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListMcpServersRequest {
     pub workspace_id: Option<String>,
 }
@@ -603,6 +609,7 @@ pub enum LocalDaemonRequest {
     InstallMcpServer(InstallMcpServerRequest),
     GetMcpServer(GetMcpServerRequest),
     ListMcpServers(ListMcpServersRequest),
+    InstallSkill(InstallSkillRequest),
     GetSkill(GetSkillRequest),
     ListSkills(ListSkillsRequest),
     RelayStatus(RelayStatusRequest),
@@ -727,6 +734,10 @@ pub enum LocalDaemonResponse {
     },
     Skill {
         skill: ArrobaSkillMetadata,
+    },
+    SkillInstalled {
+        skill: ArrobaSkillMetadata,
+        path: PathBuf,
     },
     SkillsListed {
         skills: Vec<ArrobaSkillMetadata>,
