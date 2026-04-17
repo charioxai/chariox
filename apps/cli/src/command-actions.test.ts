@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { createCommandActionHandlers, formatAgentListSummary, parseRequestedViewLayout } from "./command-actions.js"
+import { createCommandActionHandlers, formatAgentListSummary, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
 import type { AgentInstance, ProviderProcessInfo, QueuedWorkflowLaunch, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 
 function makeAgent(overrides: Partial<AgentInstance> = {}): AgentInstance {
@@ -86,6 +86,40 @@ test("formatAgentListSummary renders aliases and pluralization", () => {
     formatAgentListSummary(agents),
     "1 agent: agent-1 (planner) [Idle]",
   )
+})
+
+test("parseMcpInstallConfig supports stdio and streamable HTTP MCPs", () => {
+  assert.deepEqual(
+    parseMcpInstallConfig(["install", "browser", "--command", "npx", "--arg", "-y", "--arg", "@modelcontextprotocol/server-browser", "--env", "BROWSER_TOKEN"]),
+    {
+      name: "browser",
+      transport: {
+        type: "stdio",
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-browser"],
+        env: {},
+        env_vars: ["BROWSER_TOKEN"],
+      },
+      enabled: true,
+      required: false,
+    },
+  )
+  assert.deepEqual(
+    parseMcpInstallConfig(["install", "remote", "--url", "https://example.test/mcp", "--bearer-token-env-var", "REMOTE_MCP_TOKEN"]),
+    {
+      name: "remote",
+      transport: {
+        type: "streamable_http",
+        url: "https://example.test/mcp",
+        bearer_token_env_var: "REMOTE_MCP_TOKEN",
+        http_headers: {},
+        env_http_headers: {},
+      },
+      enabled: true,
+      required: false,
+    },
+  )
+  assert.equal(parseMcpInstallConfig(["install", "bad", "--command", "npx", "--url", "https://example.test/mcp"]), null)
 })
 
 test("workflow add node all adds only agents missing from the selected workflow", async () => {

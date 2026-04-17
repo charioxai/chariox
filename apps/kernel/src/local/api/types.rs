@@ -143,6 +143,24 @@ pub struct RelayStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallMcpServerRequest {
+    pub workspace_id: Option<String>,
+    pub config: ArrobaMcpServerConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetMcpServerRequest {
+    pub workspace_id: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetSkillRequest {
+    pub workspace_id: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListMcpServersRequest {
     pub workspace_id: Option<String>,
 }
@@ -582,7 +600,10 @@ pub enum LocalDaemonRequest {
     GetProviderRun(GetProviderRunRequest),
     GetProviderCatalog(GetProviderCatalogRequest),
     GetProviderCommandCatalogs(GetProviderCommandCatalogsRequest),
+    InstallMcpServer(InstallMcpServerRequest),
+    GetMcpServer(GetMcpServerRequest),
     ListMcpServers(ListMcpServersRequest),
+    GetSkill(GetSkillRequest),
     ListSkills(ListSkillsRequest),
     RelayStatus(RelayStatusRequest),
     ConfigureRelay(ConfigureRelayRequest),
@@ -694,8 +715,18 @@ pub enum LocalDaemonResponse {
     ProviderCommandCatalogs {
         catalogs: BTreeMap<String, ProviderCommandCatalog>,
     },
+    McpServerInstalled {
+        mcp: ArrobaMcpServerConfig,
+        path: PathBuf,
+    },
+    McpServer {
+        mcp: ArrobaMcpServerConfig,
+    },
     McpServersListed {
         mcps: Vec<ArrobaMcpServerConfig>,
+    },
+    Skill {
+        skill: ArrobaSkillMetadata,
     },
     SkillsListed {
         skills: Vec<ArrobaSkillMetadata>,

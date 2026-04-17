@@ -79,6 +79,34 @@ export function getDaemonHealthRequest() {
   return { GetDaemonHealth: null }
 }
 
+
+export function installMcpServerRequest(workspaceId: string | null, config: Record<string, unknown>) {
+  return {
+    InstallMcpServer: {
+      workspace_id: workspaceId ?? null,
+      config,
+    },
+  }
+}
+
+export function getMcpServerRequest(workspaceId: string | null, name: string) {
+  return {
+    GetMcpServer: {
+      workspace_id: workspaceId ?? null,
+      name,
+    },
+  }
+}
+
+export function getSkillRequest(workspaceId: string | null, name: string) {
+  return {
+    GetSkill: {
+      workspace_id: workspaceId ?? null,
+      name,
+    },
+  }
+}
+
 export function listMcpServersRequest(workspaceId?: string | null) {
   return {
     ListMcpServers: {

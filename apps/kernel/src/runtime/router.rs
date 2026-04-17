@@ -16,11 +16,12 @@ use crate::local::provider_requests::{
 };
 use crate::local::{
     ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
-    GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-    GetSessionStateRequest, ListAgentsRequest, ListMcpServersRequest, ListProviderProcessesRequest,
-    ListSessionsRequest, ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse,
-    LogoutProviderRequest, PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest,
-    ResolveSessionRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
+    GetMcpServerRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
+    GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest, InstallMcpServerRequest,
+    ListAgentsRequest, ListMcpServersRequest, ListProviderProcessesRequest, ListSessionsRequest,
+    ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
+    PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest,
+    StartProviderLoginRequest, TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -633,8 +634,19 @@ impl CommandRouter {
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
                 return provider_command_catalogs_response();
             }
+            LocalDaemonRequest::InstallMcpServer(request) => {
+                return self
+                    .execute_install_mcp_server_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::GetMcpServer(request) => {
+                return self.execute_get_mcp_server_request(request.clone()).await;
+            }
             LocalDaemonRequest::ListMcpServers(request) => {
                 return self.execute_list_mcp_servers_request(request.clone()).await;
+            }
+            LocalDaemonRequest::GetSkill(request) => {
+                return self.execute_get_skill_request(request.clone()).await;
             }
             LocalDaemonRequest::ListSkills(request) => {
                 return self.execute_list_skills_request(request.clone()).await;
@@ -1324,9 +1336,16 @@ impl CommandRouter {
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
                 provider_command_catalogs_response()
             }
+            LocalDaemonRequest::InstallMcpServer(request) => {
+                self.execute_install_mcp_server_request(request).await
+            }
+            LocalDaemonRequest::GetMcpServer(request) => {
+                self.execute_get_mcp_server_request(request).await
+            }
             LocalDaemonRequest::ListMcpServers(request) => {
                 self.execute_list_mcp_servers_request(request).await
             }
+            LocalDaemonRequest::GetSkill(request) => self.execute_get_skill_request(request).await,
             LocalDaemonRequest::ListSkills(request) => {
                 self.execute_list_skills_request(request).await
             }
@@ -1455,6 +1474,36 @@ impl CommandRouter {
         }
     }
 
+    async fn execute_install_mcp_server_request(
+        &self,
+        request: InstallMcpServerRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(
+            request.workspace_id.as_deref(),
+        )?);
+        let path = registry.install(&request.config)?;
+        Ok(LocalDaemonResponse::McpServerInstalled {
+            mcp: request.config,
+            path,
+        })
+    }
+
+    async fn execute_get_mcp_server_request(
+        &self,
+        request: GetMcpServerRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(
+            request.workspace_id.as_deref(),
+        )?);
+        let Some(mcp) = registry.get(&request.name)? else {
+            return Err(DaemonError::LocalTransport {
+                operation: "mcp.get",
+                message: format!("MCP `{}` was not found", request.name),
+            });
+        };
+        Ok(LocalDaemonResponse::McpServer { mcp })
+    }
+
     async fn execute_list_mcp_servers_request(
         &self,
         request: ListMcpServersRequest,
@@ -1465,6 +1514,22 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::McpServersListed {
             mcps: registry.list()?,
         })
+    }
+
+    async fn execute_get_skill_request(
+        &self,
+        request: GetSkillRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+            request.workspace_id.as_deref(),
+        )?);
+        let Some(skill) = registry.get(&request.name)? else {
+            return Err(DaemonError::LocalTransport {
+                operation: "skill.get",
+                message: format!("skill `{}` was not found", request.name),
+            });
+        };
+        Ok(LocalDaemonResponse::Skill { skill })
     }
 
     async fn execute_list_skills_request(

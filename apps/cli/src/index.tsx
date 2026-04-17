@@ -85,12 +85,15 @@ import {
   endSessionRequest,
   forgetRemoteMachineRequest,
   focusAgentRequest,
+  getMcpServerRequest,
   getProviderAuthStatusRequest,
   getProviderCatalogRequest,
   getProviderCommandCatalogsRequest,
   getProviderRunRequest,
+  getSkillRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
+  installMcpServerRequest,
   launchProviderRunRequest,
   listMcpServersRequest,
   listProviderProcessesRequest,
@@ -5297,11 +5300,29 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       )
       return expectVariant<{ mcps: ArrobaMcpServerConfig[] }>(response, "McpServersListed").mcps
     },
+    installMcpServer: async (config) => {
+      const response = await client.send<Record<string, unknown>>(
+        installMcpServerRequest(options.workspace ?? process.cwd(), config as unknown as Record<string, unknown>),
+      )
+      return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServerInstalled").mcp
+    },
+    getMcpServer: async (name) => {
+      const response = await client.send<Record<string, unknown>>(
+        getMcpServerRequest(options.workspace ?? process.cwd(), name),
+      )
+      return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServer").mcp
+    },
     listSkills: async () => {
       const response = await client.send<Record<string, unknown>>(
         listSkillsRequest(options.workspace ?? process.cwd()),
       )
       return expectVariant<{ skills: ArrobaSkillMetadata[] }>(response, "SkillsListed").skills
+    },
+    getSkill: async (name) => {
+      const response = await client.send<Record<string, unknown>>(
+        getSkillRequest(options.workspace ?? process.cwd(), name),
+      )
+      return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "Skill").skill
     },
     logViewCommand: (fields) => {
       appLogger?.info("handling view command", fields)

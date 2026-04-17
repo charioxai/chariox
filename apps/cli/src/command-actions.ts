@@ -204,7 +204,10 @@ type CommandActionDeps = {
   listProviderProcesses?: (provider?: string | null) => Promise<ProviderProcessInfo[]>
   teardownProviderProcesses?: (provider?: string | null) => Promise<ProviderProcessInfo[]>
   listMcpServers?: () => Promise<ArrobaMcpServerConfig[]>
+  installMcpServer?: (config: ArrobaMcpServerConfig) => Promise<ArrobaMcpServerConfig>
+  getMcpServer?: (name: string) => Promise<ArrobaMcpServerConfig>
   listSkills?: () => Promise<ArrobaSkillMetadata[]>
+  getSkill?: (name: string) => Promise<ArrobaSkillMetadata>
   logViewCommand?: (fields: Record<string, unknown>) => void
   setMultiAgentResponseLayout: (layout: MultiAgentResponseLayout) => void
   applyResponseLayout: () => void
@@ -339,6 +342,61 @@ type CommandActionDeps = {
   formatAgentLabel: (agent: AgentInstance | null | undefined) => string
   refreshSplitPaneFocusRepaint: () => void
   formatSessionList: (sessions: SessionListEntry[], currentSessionId?: string) => string
+}
+
+export const parseMcpInstallConfig = (args: string[]): ArrobaMcpServerConfig | null => {
+  const name = args[1]
+  if (!name) return null
+  let command: string | null = null
+  let url: string | null = null
+  const mcpArgs: string[] = []
+  const envVars: string[] = []
+  let bearerTokenEnvVar: string | null = null
+  for (let index = 2; index < args.length; index += 1) {
+    const arg = args[index]
+    const next = args[index + 1]
+    if (arg === "--command" && next) {
+      command = next
+      index += 1
+    } else if (arg === "--arg" && next) {
+      mcpArgs.push(next)
+      index += 1
+    } else if (arg === "--env" && next) {
+      envVars.push(next)
+      index += 1
+    } else if (arg === "--url" && next) {
+      url = next
+      index += 1
+    } else if (arg === "--bearer-token-env-var" && next) {
+      bearerTokenEnvVar = next
+      index += 1
+    } else {
+      return null
+    }
+  }
+  if (command && !url) {
+    return {
+      name,
+      transport: { type: "stdio", command, args: mcpArgs, env: {}, env_vars: envVars },
+      enabled: true,
+      required: false,
+    }
+  }
+  if (url && !command) {
+    return {
+      name,
+      transport: {
+        type: "streamable_http",
+        url,
+        bearer_token_env_var: bearerTokenEnvVar,
+        http_headers: {},
+        env_http_headers: {},
+      },
+      enabled: true,
+      required: false,
+    }
+  }
+  return null
 }
 
 export function createCommandActionHandlers(deps: CommandActionDeps) {
@@ -1155,6 +1213,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     deps.flashFooter("usage: /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine rename <machine-ref> <alias>", "error")
   }
 
+  const formatMcpDetails = (mcp: ArrobaMcpServerConfig): string => JSON.stringify(mcp, null, 2)
+  const formatSkillDetails = (skill: ArrobaSkillMetadata): string => [
+    `${skill.name}: ${skill.description}`,
+    skill.short_description ? `short: ${skill.short_description}` : null,
+    `path: ${skill.path}`,
+  ].filter(Boolean).join("\n")
+
   const handleMcpCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "mcp" }>,
   ): Promise<void> => {
@@ -1169,7 +1234,32 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`listed ${mcps.length} MCP${mcps.length === 1 ? "" : "s"}`, "info")
       return
     }
-    deps.flashFooter("usage: /mcp list", "error")
+    if (action === "show") {
+      const name = command.args[1]
+      if (!name || !deps.getMcpServer) {
+        deps.flashFooter("usage: /mcp show <name>", "error")
+        return
+      }
+      const mcp = await deps.getMcpServer(name)
+      deps.appendNotice(formatMcpDetails(mcp))
+      deps.flashFooter(`showing MCP ${mcp.name}`, "info")
+      return
+    }
+    if (action === "install") {
+      if (!deps.installMcpServer) {
+        deps.flashFooter("MCP install is not available in this daemon", "error")
+        return
+      }
+      const config = parseMcpInstallConfig(command.args)
+      if (!config) {
+        deps.flashFooter("usage: /mcp install <name> --command <cmd> [--arg value] [--env VAR] | /mcp install <name> --url <url> [--bearer-token-env-var VAR]", "error")
+        return
+      }
+      const mcp = await deps.installMcpServer(config)
+      deps.flashFooter(`installed MCP ${mcp.name}`, "info")
+      return
+    }
+    deps.flashFooter("usage: /mcp list | /mcp show <name> | /mcp install ...", "error")
   }
 
   const handleSkillCommand = async (
@@ -1186,7 +1276,18 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`listed ${skills.length} skill${skills.length === 1 ? "" : "s"}`, "info")
       return
     }
-    deps.flashFooter("usage: /skill list", "error")
+    if (action === "show") {
+      const name = command.args[1]
+      if (!name || !deps.getSkill) {
+        deps.flashFooter("usage: /skill show <name>", "error")
+        return
+      }
+      const skill = await deps.getSkill(name)
+      deps.appendNotice(formatSkillDetails(skill))
+      deps.flashFooter(`showing skill ${skill.name}`, "info")
+      return
+    }
+    deps.flashFooter("usage: /skill list | /skill show <name>", "error")
   }
 
   const handleWorkflowCommand = async (
