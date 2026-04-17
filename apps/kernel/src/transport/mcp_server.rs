@@ -168,6 +168,13 @@ async fn handle_json_rpc_value(
                         "capabilities": {
                             "tools": {
                                 "listChanged": false
+                            },
+                            "resources": {
+                                "subscribe": false,
+                                "listChanged": false
+                            },
+                            "prompts": {
+                                "listChanged": false
                             }
                         },
                         "serverInfo": {
@@ -193,6 +200,36 @@ async fn handle_json_rpc_value(
                             "inputSchema": tool.input_schema,
                         }))
                         .collect::<Vec<_>>()
+                }
+            }),
+        )),
+        "resources/list" => Ok(json_response(
+            StatusCode::OK,
+            serde_json::json!({
+                "jsonrpc": JSON_RPC_VERSION,
+                "id": id,
+                "result": {
+                    "resources": []
+                }
+            }),
+        )),
+        "resources/templates/list" => Ok(json_response(
+            StatusCode::OK,
+            serde_json::json!({
+                "jsonrpc": JSON_RPC_VERSION,
+                "id": id,
+                "result": {
+                    "resourceTemplates": []
+                }
+            }),
+        )),
+        "prompts/list" => Ok(json_response(
+            StatusCode::OK,
+            serde_json::json!({
+                "jsonrpc": JSON_RPC_VERSION,
+                "id": id,
+                "result": {
+                    "prompts": []
                 }
             }),
         )),
@@ -385,6 +422,49 @@ mod tests {
         assert!(tools
             .iter()
             .any(|tool| tool["name"] == "arroba.write_artifact"));
+    }
+
+    #[tokio::test]
+    async fn mcp_resource_and_prompt_discovery_return_empty_lists() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
+
+        for (id, method, result_key) in [
+            (1, "resources/list", "resources"),
+            (2, "resources/templates/list", "resourceTemplates"),
+            (3, "prompts/list", "prompts"),
+        ] {
+            let response = handle_json_rpc_value(
+                router.clone(),
+                "unused-token",
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": method,
+                    "params": {}
+                }),
+            )
+            .await
+            .expect("discovery request should succeed");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("discovery body should collect")
+                .to_bytes();
+            let value: Value = serde_json::from_slice(&body).expect("discovery body json");
+            assert_eq!(value["id"], id);
+            assert_eq!(
+                value["result"][result_key]
+                    .as_array()
+                    .expect("discovery result should be an array")
+                    .len(),
+                0
+            );
+        }
     }
 
     #[tokio::test]
