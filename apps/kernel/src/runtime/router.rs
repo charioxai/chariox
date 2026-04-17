@@ -36,8 +36,8 @@ use crate::runtime::projection::{
 };
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_launch_executor::ProviderLaunchCommandExecutor;
-use crate::runtime::runtime_state::KernelRuntimeState;
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
+use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;

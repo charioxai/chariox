@@ -6,7 +6,7 @@ use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, ProviderRunProjectionStore, SessionStateProjectionStore,
 };
-use crate::runtime::runtime_state::KernelRuntimeState;
+use crate::runtime::state::KernelRuntimeState;
 use crate::terminal::TerminalStreamStore;
 
 #[derive(Clone)]

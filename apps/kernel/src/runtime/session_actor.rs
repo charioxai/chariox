@@ -14,7 +14,7 @@ use crate::local::{
 use crate::runtime::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
-use crate::runtime::runtime_state::KernelRuntimeState;
+use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
 use crate::terminal::TerminalStreamStore;
 
@@ -1047,11 +1047,11 @@ mod tests {
     use crate::provider::LaunchProviderRequest;
     use crate::runtime::command::KernelCommand;
     use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
-    use crate::runtime::runtime_state::KernelRuntimeState;
     use crate::runtime::session_actor::{
         projected_config_update_absence_response, session_response_projection_action,
         FocusedAgentProjection, SessionProjectionAction, SessionRuntime,
     };
+    use crate::runtime::state::KernelRuntimeState;
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::terminal::TerminalOutputKind;
     use crate::{DaemonApp, DaemonConfig, DaemonError};

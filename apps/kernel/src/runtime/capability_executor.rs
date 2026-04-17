@@ -13,7 +13,7 @@ use crate::capability::{
 };
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
-use crate::runtime::runtime_state::KernelRuntimeState;
+use crate::runtime::state::KernelRuntimeState;
 use serde::{Deserialize, Serialize};
 
 pub(crate) const CAPABILITY_EXECUTOR_CONCURRENCY_LIMIT: usize = 64;
@@ -366,7 +366,7 @@ mod tests {
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::error::DaemonError;
     use crate::local::{LocalDaemonRequest, RunShellCapabilityRequest};
-    use crate::runtime::runtime_state::KernelRuntimeState;
+    use crate::runtime::state::KernelRuntimeState;
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
 

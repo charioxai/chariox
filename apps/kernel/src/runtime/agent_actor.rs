@@ -13,8 +13,8 @@ use crate::runtime::projection::{
     SessionStateProjectionStore,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
-use crate::runtime::runtime_state::KernelRuntimeState;
 use crate::runtime::session_actor::FocusedAgentProjection;
+use crate::runtime::state::KernelRuntimeState;
 use crate::session::{PromptCompletion, PromptIdAllocator, PromptQueueItem, PromptStatus};
 
 const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -634,8 +634,8 @@ mod tests {
     use crate::runtime::agent_actor::AgentRuntime;
     use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::runtime::prompt_state::PromptStateOwner;
-    use crate::runtime::runtime_state::KernelRuntimeState;
     use crate::runtime::session_actor::FocusedAgentProjection;
+    use crate::runtime::state::KernelRuntimeState;
     use crate::session::{
         CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
     };

@@ -4,7 +4,7 @@ use crate::app::StartedProviderLaunch;
 use crate::error::DaemonError;
 use crate::local::{LaunchProviderRunRequest, LocalDaemonResponse};
 use crate::provider::ProviderProcessService;
-use crate::runtime::runtime_state::KernelRuntimeState;
+use crate::runtime::state::KernelRuntimeState;
 
 #[derive(Clone)]
 pub(crate) struct ProviderLaunchCommandExecutor {

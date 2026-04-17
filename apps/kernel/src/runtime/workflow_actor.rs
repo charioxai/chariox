@@ -8,7 +8,7 @@ use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
-use crate::runtime::runtime_state::KernelRuntimeState;
+use crate::runtime::state::KernelRuntimeState;
 
 pub(crate) const WORKFLOW_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -282,7 +282,7 @@ mod tests {
 
     use crate::local::{CreateWorkflowRequest, LocalDaemonRequest};
     use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
-    use crate::runtime::runtime_state::KernelRuntimeState;
+    use crate::runtime::state::KernelRuntimeState;
     use crate::runtime::workflow_actor::WorkflowRuntime;
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 

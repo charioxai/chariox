@@ -4,7 +4,7 @@ use crate::app::{
 };
 use crate::error::DaemonError;
 use crate::provider::ProviderRunOperationLanes;
-use crate::runtime::runtime_state::KernelRuntimeState;
+use crate::runtime::state::KernelRuntimeState;
 use crate::session::{PromptCompletion, PromptQueueItem};
 
 #[derive(Clone)]
