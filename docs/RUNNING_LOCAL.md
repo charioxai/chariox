@@ -451,6 +451,8 @@ Agent-facing tools:
 - `arroba.move_artifact`
 - `arroba.delete_artifact`
 
+The same operations are also exposed as short aliases: `read_artifact`, `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact`. Codex may display these as provider-qualified tool names such as `mcp__arroba__read_artifact`.
+
 Text artifacts use snapshot-aware fine-grained coordination. If a stale edit overlaps an external or concurrent managed change, the tool rejects it and the agent should reread the artifact before retrying. Non-text artifacts use `domain: "opaque"` with base64 payloads and whole-file coordination in v1.
 
 Remote leased agents that are working in the same repo and branch as the home session forward managed I/O through the home kernel. If workspace identity changes while a managed run is active, managed I/O rejects the request until the run rejoins a valid coordinated workspace.

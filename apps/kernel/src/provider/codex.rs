@@ -329,7 +329,7 @@ fn write_managed_io_model_catalog(model: &str) -> Result<PathBuf, DaemonError> {
             "priority": 0,
             "availability_nux": null,
             "upgrade": null,
-            "base_instructions": "You are Codex, a coding agent. Follow the user instructions and use available tools exactly as requested. When you need workspace file I/O in an Arroba-managed session, use the available arroba MCP tools such as arroba.read_artifact, arroba.write_artifact, arroba.edit_artifact, arroba.apply_patch, arroba.move_artifact, and arroba.delete_artifact.",
+            "base_instructions": "You are Codex, a coding agent. Follow the user instructions and use available tools exactly as requested. When you need workspace file I/O in an Arroba-managed session, use the available Arroba MCP tools. Prefer short names such as read_artifact, write_artifact, edit_artifact, apply_patch, move_artifact, and delete_artifact; in Codex these may appear as mcp__arroba__read_artifact, mcp__arroba__write_artifact, and similar provider-qualified names.",
             "supports_reasoning_summaries": true,
             "default_reasoning_summary": "auto",
             "support_verbosity": true,

@@ -14,7 +14,9 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         {
             let owned = &self.owned;
-            let canonical_tool_name = tool_name.strip_prefix("arroba_").unwrap_or(tool_name);
+            let canonical_tool_name =
+                crate::transport::runtime_tools::canonical_managed_io_tool_name(tool_name)
+                    .unwrap_or_else(|| tool_name.strip_prefix("arroba_").unwrap_or(tool_name));
             let provider_runs = owned
                 .provider_store
                 .get_runs_by_runtime_mcp_auth_token(auth_token);

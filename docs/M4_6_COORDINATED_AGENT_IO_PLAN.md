@@ -278,6 +278,8 @@ Initial tools:
 - `arroba.write_artifact` internally converted to a domain operation/diff
 - `arroba.inspect_artifact`
 
+Landed note: runtime MCP now also exposes provider-friendly aliases `read_artifact`, `edit_artifact`, `apply_patch`, `write_artifact`, `move_artifact`, and `delete_artifact`; Codex may surface them as `mcp__arroba__read_artifact`-style tool names.
+
 Tool responses must include structured success, warning, and rejection payloads so agents can reread and retry deterministically.
 
 ## Milestone Slices

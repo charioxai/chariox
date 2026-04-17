@@ -13,16 +13,22 @@ pub const WORKFLOW_CONSOLE_WRITE_TOOL: &str = "workflow_console_write";
 pub const WORKFLOW_CONSOLE_CLEAR_TOOL: &str = "workflow_console_clear";
 #[allow(dead_code)]
 pub const READ_ARTIFACT_TOOL: &str = "arroba.read_artifact";
+pub const READ_ARTIFACT_TOOL_ALIAS: &str = "read_artifact";
 #[allow(dead_code)]
 pub const EDIT_ARTIFACT_TOOL: &str = "arroba.edit_artifact";
+pub const EDIT_ARTIFACT_TOOL_ALIAS: &str = "edit_artifact";
 #[allow(dead_code)]
 pub const APPLY_PATCH_TOOL: &str = "arroba.apply_patch";
+pub const APPLY_PATCH_TOOL_ALIAS: &str = "apply_patch";
 #[allow(dead_code)]
 pub const WRITE_ARTIFACT_TOOL: &str = "arroba.write_artifact";
+pub const WRITE_ARTIFACT_TOOL_ALIAS: &str = "write_artifact";
 #[allow(dead_code)]
 pub const DELETE_ARTIFACT_TOOL: &str = "arroba.delete_artifact";
+pub const DELETE_ARTIFACT_TOOL_ALIAS: &str = "delete_artifact";
 #[allow(dead_code)]
 pub const MOVE_ARTIFACT_TOOL: &str = "arroba.move_artifact";
+pub const MOVE_ARTIFACT_TOOL_ALIAS: &str = "move_artifact";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -162,7 +168,7 @@ pub struct ValidateAndSubmitWorkflowRunOutputArgs {
 
 #[allow(dead_code)]
 pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
-    vec![
+    let canonical = vec![
         RuntimeToolSpec {
             name: READ_ARTIFACT_TOOL.to_string(),
             description: "Read a workspace-relative artifact through Arroba managed I/O and return content with snapshot/version metadata. Text/structured artifacts return content_text; opaque artifacts return content_base64.".to_string(),
@@ -277,7 +283,70 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "additionalProperties": false
             }),
         },
-    ]
+    ];
+    let aliases = canonical
+        .iter()
+        .filter_map(managed_io_alias_spec)
+        .collect::<Vec<_>>();
+    let mut specs = canonical;
+    specs.extend(aliases);
+    specs
+}
+
+fn managed_io_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
+    let alias = match spec.name.as_str() {
+        READ_ARTIFACT_TOOL => READ_ARTIFACT_TOOL_ALIAS,
+        EDIT_ARTIFACT_TOOL => EDIT_ARTIFACT_TOOL_ALIAS,
+        APPLY_PATCH_TOOL => APPLY_PATCH_TOOL_ALIAS,
+        DELETE_ARTIFACT_TOOL => DELETE_ARTIFACT_TOOL_ALIAS,
+        MOVE_ARTIFACT_TOOL => MOVE_ARTIFACT_TOOL_ALIAS,
+        WRITE_ARTIFACT_TOOL => WRITE_ARTIFACT_TOOL_ALIAS,
+        _ => return None,
+    };
+    let mut spec = spec.clone();
+    spec.name = alias.to_string();
+    spec.description = format!(
+        "{} Alias for `{}`.",
+        spec.description,
+        canonical_managed_io_tool_name(alias).unwrap_or(alias)
+    );
+    Some(spec)
+}
+
+pub fn canonical_managed_io_tool_name(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        READ_ARTIFACT_TOOL
+        | READ_ARTIFACT_TOOL_ALIAS
+        | "arroba_read_artifact"
+        | "mcp__arroba__read_artifact"
+        | "mcp__arroba__arroba_read_artifact" => Some(READ_ARTIFACT_TOOL),
+        EDIT_ARTIFACT_TOOL
+        | EDIT_ARTIFACT_TOOL_ALIAS
+        | "arroba_edit_artifact"
+        | "mcp__arroba__edit_artifact"
+        | "mcp__arroba__arroba_edit_artifact" => Some(EDIT_ARTIFACT_TOOL),
+        APPLY_PATCH_TOOL
+        | APPLY_PATCH_TOOL_ALIAS
+        | "arroba_apply_patch"
+        | "mcp__arroba__apply_patch"
+        | "mcp__arroba__arroba_apply_patch" => Some(APPLY_PATCH_TOOL),
+        DELETE_ARTIFACT_TOOL
+        | DELETE_ARTIFACT_TOOL_ALIAS
+        | "arroba_delete_artifact"
+        | "mcp__arroba__delete_artifact"
+        | "mcp__arroba__arroba_delete_artifact" => Some(DELETE_ARTIFACT_TOOL),
+        MOVE_ARTIFACT_TOOL
+        | MOVE_ARTIFACT_TOOL_ALIAS
+        | "arroba_move_artifact"
+        | "mcp__arroba__move_artifact"
+        | "mcp__arroba__arroba_move_artifact" => Some(MOVE_ARTIFACT_TOOL),
+        WRITE_ARTIFACT_TOOL
+        | WRITE_ARTIFACT_TOOL_ALIAS
+        | "arroba_write_artifact"
+        | "mcp__arroba__write_artifact"
+        | "mcp__arroba__arroba_write_artifact" => Some(WRITE_ARTIFACT_TOOL),
+        _ => None,
+    }
 }
 
 pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
@@ -397,11 +466,44 @@ mod managed_io_tests {
     fn managed_io_specs_expose_read_and_edit_tools() {
         let specs = managed_io_runtime_tool_specs();
         assert!(specs.iter().any(|spec| spec.name == READ_ARTIFACT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == READ_ARTIFACT_TOOL_ALIAS));
         assert!(specs.iter().any(|spec| spec.name == EDIT_ARTIFACT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == EDIT_ARTIFACT_TOOL_ALIAS));
         assert!(specs.iter().any(|spec| spec.name == APPLY_PATCH_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == APPLY_PATCH_TOOL_ALIAS));
         assert!(specs.iter().any(|spec| spec.name == WRITE_ARTIFACT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == WRITE_ARTIFACT_TOOL_ALIAS));
         assert!(specs.iter().any(|spec| spec.name == DELETE_ARTIFACT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == DELETE_ARTIFACT_TOOL_ALIAS));
         assert!(specs.iter().any(|spec| spec.name == MOVE_ARTIFACT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == MOVE_ARTIFACT_TOOL_ALIAS));
+    }
+
+    #[test]
+    fn canonical_managed_io_tool_name_accepts_provider_aliases() {
+        assert_eq!(
+            canonical_managed_io_tool_name("mcp__arroba__read_artifact"),
+            Some(READ_ARTIFACT_TOOL)
+        );
+        assert_eq!(
+            canonical_managed_io_tool_name("mcp__arroba__arroba_read_artifact"),
+            Some(READ_ARTIFACT_TOOL)
+        );
+        assert_eq!(
+            canonical_managed_io_tool_name("arroba_apply_patch"),
+            Some(APPLY_PATCH_TOOL)
+        );
+        assert_eq!(canonical_managed_io_tool_name("unknown"), None);
     }
 
     #[test]
