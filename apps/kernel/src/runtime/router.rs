@@ -18,10 +18,10 @@ use crate::local::{
     AgentGrantKind, ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
     GetMcpServerRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
     GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest, GrantAgentCapabilityRequest,
-    InstallMcpServerRequest, InstallSkillRequest, ListAgentsRequest, ListMcpServersRequest,
-    ListProviderProcessesRequest, ListSessionsRequest, ListSkillsRequest, LocalDaemonRequest,
-    LocalDaemonResponse, LogoutProviderRequest, PumpTerminalOutputRequest, RelayStatus,
-    RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
+    ImportMcpServersRequest, InstallMcpServerRequest, InstallSkillRequest, ListAgentsRequest,
+    ListMcpServersRequest, ListProviderProcessesRequest, ListSessionsRequest, ListSkillsRequest,
+    LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest, PumpTerminalOutputRequest,
+    RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
     StartProviderLoginRequest, TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
@@ -638,6 +638,11 @@ impl CommandRouter {
             LocalDaemonRequest::InstallMcpServer(request) => {
                 return self
                     .execute_install_mcp_server_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::ImportMcpServers(request) => {
+                return self
+                    .execute_import_mcp_servers_request(request.clone())
                     .await;
             }
             LocalDaemonRequest::GetMcpServer(request) => {
@@ -1349,6 +1354,9 @@ impl CommandRouter {
             LocalDaemonRequest::InstallMcpServer(request) => {
                 self.execute_install_mcp_server_request(request).await
             }
+            LocalDaemonRequest::ImportMcpServers(request) => {
+                self.execute_import_mcp_servers_request(request).await
+            }
             LocalDaemonRequest::GetMcpServer(request) => {
                 self.execute_get_mcp_server_request(request).await
             }
@@ -1501,6 +1509,23 @@ impl CommandRouter {
             mcp: request.config,
             path,
         })
+    }
+
+    async fn execute_import_mcp_servers_request(
+        &self,
+        request: ImportMcpServersRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        if request.provider != "codex" {
+            return Err(DaemonError::InvalidConfig {
+                field: "provider",
+                message: "only Codex MCP import is supported",
+            });
+        }
+        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(
+            request.workspace_id.as_deref(),
+        )?);
+        let outcome = crate::mcp::import_codex_mcp_servers(&registry, request.name.as_deref())?;
+        Ok(LocalDaemonResponse::McpServersImported { outcome })
     }
 
     async fn execute_get_mcp_server_request(

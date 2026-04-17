@@ -252,6 +252,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => "provider.command_catalogs.get",
         LocalDaemonRequest::InstallMcpServer(_) => "mcp.install",
+        LocalDaemonRequest::ImportMcpServers(_) => "mcp.import",
         LocalDaemonRequest::GetMcpServer(_) => "mcp.get",
         LocalDaemonRequest::ListMcpServers(_) => "mcp.list",
         LocalDaemonRequest::InstallSkill(_) => "skill.install",

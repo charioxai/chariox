@@ -2,6 +2,7 @@ import type {
   AgentInstance,
   ArrobaMcpServerConfig,
   ArrobaSkillMetadata,
+  McpImportOutcome,
   ProviderAuthStatus,
   ProviderLoginStart,
   RuntimeAttachment,
@@ -205,6 +206,7 @@ type CommandActionDeps = {
   teardownProviderProcesses?: (provider?: string | null) => Promise<ProviderProcessInfo[]>
   listMcpServers?: () => Promise<ArrobaMcpServerConfig[]>
   installMcpServer?: (config: ArrobaMcpServerConfig) => Promise<ArrobaMcpServerConfig>
+  importMcpServers?: (provider: string, name?: string | null) => Promise<McpImportOutcome>
   getMcpServer?: (name: string) => Promise<ArrobaMcpServerConfig>
   grantAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
   revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
@@ -462,6 +464,19 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const formatSkillSummary = (skill: ArrobaSkillMetadata): string => {
     const summary = skill.short_description ?? skill.description
     return `${skill.name}: ${summary}`
+  }
+  const formatMcpImportOutcome = (outcome: McpImportOutcome): string => {
+    const lines: string[] = []
+    if (outcome.imported.length > 0) {
+      lines.push(`Imported MCPs: ${outcome.imported.map((mcp) => mcp.name).join(", ")}`)
+    }
+    if (outcome.skipped.length > 0) {
+      lines.push("Skipped MCPs:")
+      for (const skip of outcome.skipped) {
+        lines.push(`- ${skip.name}: ${skip.reason}`)
+      }
+    }
+    return lines.length === 0 ? "No MCPs imported." : lines.join("\n")
   }
   const formatProviderProcessNotice = (process: ProviderProcessInfo): string => {    const lines = [
       `${process.process_id} provider=${process.provider} pid=${process.pid ?? "-"} status=${process.status} mode=${process.endpoint_mode} safe=${String(process.teardown_safe)}`,
@@ -1274,6 +1289,18 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       }
       const mcp = await deps.installMcpServer(config)
       deps.flashFooter(`installed MCP ${mcp.name}`, "info")
+      return
+    }
+    if (action === "import") {
+      const provider = command.args[1]
+      const name = command.args[2] ?? null
+      if (!provider || !deps.importMcpServers) {
+        deps.flashFooter("usage: /mcp import codex [name]", "error")
+        return
+      }
+      const outcome = await deps.importMcpServers(provider, name)
+      deps.appendNotice(formatMcpImportOutcome(outcome))
+      deps.flashFooter(`imported ${outcome.imported.length} MCP${outcome.imported.length === 1 ? "" : "s"} from ${provider}`, "info")
       return
     }
     if (action === "grant" || action === "revoke") {

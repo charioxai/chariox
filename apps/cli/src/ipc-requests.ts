@@ -98,6 +98,16 @@ export function getMcpServerRequest(workspaceId: string | null, name: string) {
   }
 }
 
+export function importMcpServersRequest(workspaceId: string | null, provider: string, name?: string | null) {
+  return {
+    ImportMcpServers: {
+      workspace_id: workspaceId ?? null,
+      provider,
+      name: name ?? null,
+    },
+  }
+}
+
 export function getSkillRequest(workspaceId: string | null, name: string) {
   return {
     GetSkill: {

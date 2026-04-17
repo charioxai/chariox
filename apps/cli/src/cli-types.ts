@@ -17,6 +17,16 @@ export type ArrobaMcpServerConfig = {
   tools?: Record<string, unknown>
 }
 
+export type McpImportSkip = {
+  name: string
+  reason: string
+}
+
+export type McpImportOutcome = {
+  imported: ArrobaMcpServerConfig[]
+  skipped: McpImportSkip[]
+}
+
 export type ArrobaSkillMetadata = {
   name: string
   description: string

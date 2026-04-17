@@ -22,6 +22,7 @@ import type {
   BootstrapState,
   CaptureScreenshotResult,
   CliOptions,
+  McpImportOutcome,
   ProviderAuthStatus,
   ProviderLoginStart,
   ProviderLogoutResult,
@@ -87,6 +88,7 @@ import {
   focusAgentRequest,
   getMcpServerRequest,
   grantAgentCapabilityRequest,
+  importMcpServersRequest,
   getProviderAuthStatusRequest,
   getProviderCatalogRequest,
   getProviderCommandCatalogsRequest,
@@ -5308,6 +5310,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         installMcpServerRequest(options.workspace ?? process.cwd(), config as unknown as Record<string, unknown>),
       )
       return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServerInstalled").mcp
+    },
+    importMcpServers: async (provider, name) => {
+      const response = await client.send<Record<string, unknown>>(
+        importMcpServersRequest(options.workspace ?? process.cwd(), provider, name),
+      )
+      return expectVariant<{ outcome: McpImportOutcome }>(response, "McpServersImported").outcome
     },
     getMcpServer: async (name) => {
       const response = await client.send<Record<string, unknown>>(

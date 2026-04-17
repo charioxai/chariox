@@ -11,6 +11,7 @@ Landed:
 
 - M7.1/M7.2: Arroba-owned MCP config model and registry for project/user roots.
 - M7.3 partial: interactive `/mcp list`, `/mcp show`, `/mcp install`, `/mcp grant`, `/mcp revoke`, and `/mcp grants`.
+- M7.4 partial: `/mcp import codex [name]` imports supported Codex global MCP config entries into Arroba-owned MCP registry roots and reports skipped entries.
 - M7.5 partial: agent model now stores `mcp_grants`; grant/revoke IPC validates installed MCPs before mutating the agent; interactive grant inspection is landed.
 - M7.6 partial: local Codex and OpenCode provider launches render only the target agent's granted Arroba MCPs into provider-native MCP config, while keeping Arroba runtime MCP separate.
 - M7.7/M7.8: Codex-style `SKILL.md` metadata parsing and Arroba-owned skill registry over project/user roots.
@@ -24,7 +25,7 @@ Still open in M7:
 - Regular non-interactive `arroba mcp ...` / `arroba skill ...` CLI command surfaces, if we keep them separate from slash commands.
 - MCP/skill update and uninstall operations.
 - Regular non-interactive agent grant inspection commands, for example `arroba agent mcps` / `arroba agent skills`.
-- Provider MCP import from Codex/OpenCode/Claude-owned configs.
+- Provider MCP import from OpenCode/Claude-owned configs, plus regular non-interactive Codex import aliases.
 - Provider skill import from Codex/OpenCode/Claude-owned skill locations.
 - Skill MCP dependency validation.
 - Runtime MCP discovery/request tools for MCPs and skills.
@@ -91,7 +92,7 @@ Registry entries are Arroba-owned copies. Installing an MCP registers it; it doe
 
 ## M7.3 MCP CLI Commands
 
-Status: partial. Interactive slash commands for install/list/show/grant/revoke/grants are landed; regular command aliases, import, update, uninstall, and test/start remain open.
+Status: partial. Interactive slash commands for install/list/show/grant/revoke/grants and Codex import are landed; regular command aliases, OpenCode/Claude import, update, uninstall, and test/start remain open.
 
 Expose MCP management through regular CLI commands and the interactive slash-command surface.
 
@@ -117,12 +118,13 @@ Expected `/mcp` actions:
 - import MCPs from provider
 - list installed MCPs
 - inspect MCP config
-- grant MCP to agent
 - revoke MCP from agent
 - show agent MCP grants
 - test/start MCP server where feasible
 
 ## M7.4 Provider MCP Import
+
+Status: partial. Codex global MCP import is landed through `/mcp import codex [name]`. OpenCode/Claude import and regular command aliases remain open.
 
 Add provider import commands so users can reuse existing provider installs without reinstalling manually:
 
@@ -140,8 +142,15 @@ Behavior:
 - convert supported definitions into Arroba MCP config
 - mark unsupported fields explicitly
 - do not delete or mutate provider config
-- handle name collisions with prompt/rename/skip CLI behavior
+- handle name collisions with prompt/rename/skip CLI behavior; current Codex import skips already-installed names
 - imported MCPs become Arroba-owned copies
+
+Current Codex import notes:
+
+- reads `CODEX_HOME/config.toml` when `CODEX_HOME` is set, otherwise `~/.codex/config.toml`
+- imports stdio and streamable HTTP MCPs
+- preserves command, args, cwd, env, env vars, URL, bearer-token env var, HTTP headers, enabled/required flags, timeouts, and tool allow/deny lists
+- refuses inline `bearer_token` secrets and unsupported Codex-specific fields such as OAuth scopes/resources
 
 ## M7.5 Agent MCP Grants
 

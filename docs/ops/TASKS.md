@@ -14,8 +14,8 @@ A lightweight, repo-native task board so contributors and future agents can cont
 
 - [ ] **M7-002** Implement Arroba-owned MCP and skill management
   - Note: Build the M7 plan in `docs/M7_MCP_SKILLS_PLAN.md`: Arroba-owned MCP/skill registries, provider-native MCP rendering, per-agent grants, slash commands, provider import, prompt injection, local drills, and later remote-machine materialization.
-  - Progress: MCP and skill registry foundations are landed; `/mcp` install/list/show/grant/revoke/grants and `/skill` install/list/show/grant/revoke/grants are landed; agent-scoped `mcp_grants` and `skill_grants` are in the runtime model; local Codex/OpenCode launches render only the target agent's granted Arroba MCPs into provider-native config; local provider prompts inject a short target-agent granted-skill summary and full `SKILL.md` bodies for explicitly requested granted skills.
-  - Next: Implement provider import paths, update/uninstall/grant-inspection commands, runtime MCP discovery/request tools, remote materialization, and drills.
+  - Progress: MCP and skill registry foundations are landed; `/mcp` install/list/show/grant/revoke/grants/import-codex and `/skill` install/list/show/grant/revoke/grants are landed; agent-scoped `mcp_grants` and `skill_grants` are in the runtime model; local Codex/OpenCode launches render only the target agent's granted Arroba MCPs into provider-native config; local provider prompts inject a short target-agent granted-skill summary and full `SKILL.md` bodies for explicitly requested granted skills.
+  - Next: Implement OpenCode/Claude MCP imports, provider skill imports, update/uninstall commands, runtime MCP discovery/request tools, remote materialization, and drills.
 - [ ] **M3-002** Close the OpenCode-first capability and local-runtime cycle
   - Note: Finish the remaining shell/file/git/screenshot/transfer/schedule-facing productization and local slash-command UX without adding another provider family yet.
 - [ ] **M4-003** Stabilize the OpenCode-backed multi-agent runtime path

@@ -9,7 +9,7 @@ use crate::capability::{
     CaptureScreenshotResult, EditFileResult, InspectGitResult, ReadDirectoryTreeResult,
     ReadFileResult, RunShellCommandResult, StoredTransferArtifact,
 };
-use crate::mcp::ArrobaMcpServerConfig;
+use crate::mcp::{ArrobaMcpServerConfig, McpImportOutcome};
 use crate::provider::{
     OpenCodeProviderCatalog, ProviderAuthStatus, ProviderCommandCatalog, ProviderLoginStart,
     ProviderProcessInfo, RuntimeProviderRun,

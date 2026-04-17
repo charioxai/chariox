@@ -149,6 +149,13 @@ pub struct InstallMcpServerRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportMcpServersRequest {
+    pub workspace_id: Option<String>,
+    pub provider: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetMcpServerRequest {
     pub workspace_id: Option<String>,
     pub name: String,
@@ -629,6 +636,7 @@ pub enum LocalDaemonRequest {
     GetProviderCatalog(GetProviderCatalogRequest),
     GetProviderCommandCatalogs(GetProviderCommandCatalogsRequest),
     InstallMcpServer(InstallMcpServerRequest),
+    ImportMcpServers(ImportMcpServersRequest),
     GetMcpServer(GetMcpServerRequest),
     ListMcpServers(ListMcpServersRequest),
     InstallSkill(InstallSkillRequest),
@@ -749,6 +757,9 @@ pub enum LocalDaemonResponse {
     McpServerInstalled {
         mcp: ArrobaMcpServerConfig,
         path: PathBuf,
+    },
+    McpServersImported {
+        outcome: McpImportOutcome,
     },
     McpServer {
         mcp: ArrobaMcpServerConfig,
