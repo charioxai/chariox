@@ -479,6 +479,46 @@ impl KernelRuntimeOwnedState {
         Ok(agent)
     }
 
+    pub(super) fn grant_agent_mcp(
+        &self,
+        agent_ref: &str,
+        name: String,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.agent_store.grant_mcp(agent_ref, name)?;
+        let _ = self.session_snapshot(agent.session_id())?;
+        Ok(agent)
+    }
+
+    pub(super) fn revoke_agent_mcp(
+        &self,
+        agent_ref: &str,
+        name: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.agent_store.revoke_mcp(agent_ref, name)?;
+        let _ = self.session_snapshot(agent.session_id())?;
+        Ok(agent)
+    }
+
+    pub(super) fn grant_agent_skill(
+        &self,
+        agent_ref: &str,
+        name: String,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.agent_store.grant_skill(agent_ref, name)?;
+        let _ = self.session_snapshot(agent.session_id())?;
+        Ok(agent)
+    }
+
+    pub(super) fn revoke_agent_skill(
+        &self,
+        agent_ref: &str,
+        name: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.agent_store.revoke_skill(agent_ref, name)?;
+        let _ = self.session_snapshot(agent.session_id())?;
+        Ok(agent)
+    }
+
     pub(super) fn resize_terminal(&self, session_id: &str) -> Result<Option<String>, DaemonError> {
         let provider_run_id = self
             .session_store

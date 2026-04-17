@@ -69,6 +69,8 @@ export type AgentInstance = {
   model: string | null
   effort?: string | null
   worktree_id: string | null
+  mcp_grants?: string[]
+  skill_grants?: string[]
   state: "Idle" | "Working" | "Focused" | "Error"
   is_processing: boolean
   grid_row: number

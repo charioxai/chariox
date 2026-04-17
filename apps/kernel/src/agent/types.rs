@@ -51,6 +51,10 @@ pub struct AgentInstance {
     remote_execution: Option<RemoteAgentBinding>,
     #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
     provider_resume_state: ProviderResumeState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mcp_grants: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    skill_grants: Vec<String>,
     state: AgentState,
     is_processing: bool,
     position: GridPosition,
@@ -83,6 +87,8 @@ impl AgentInstance {
             worktree_id,
             remote_execution: None,
             provider_resume_state: ProviderResumeState::default(),
+            mcp_grants: Vec::new(),
+            skill_grants: Vec::new(),
             state: AgentState::Idle,
             is_processing: false,
             position,
@@ -129,6 +135,14 @@ impl AgentInstance {
 
     pub fn provider_resume_state(&self) -> &ProviderResumeState {
         &self.provider_resume_state
+    }
+
+    pub fn mcp_grants(&self) -> &[String] {
+        &self.mcp_grants
+    }
+
+    pub fn skill_grants(&self) -> &[String] {
+        &self.skill_grants
     }
 
     pub fn state(&self) -> AgentState {
@@ -187,6 +201,30 @@ impl AgentInstance {
 
     pub fn set_remote_execution(&mut self, remote_execution: Option<RemoteAgentBinding>) {
         self.remote_execution = remote_execution;
+    }
+
+    pub fn grant_mcp(&mut self, name: impl Into<String>) {
+        let name = name.into();
+        if !self.mcp_grants.contains(&name) {
+            self.mcp_grants.push(name);
+            self.mcp_grants.sort();
+        }
+    }
+
+    pub fn revoke_mcp(&mut self, name: &str) {
+        self.mcp_grants.retain(|grant| grant != name);
+    }
+
+    pub fn grant_skill(&mut self, name: impl Into<String>) {
+        let name = name.into();
+        if !self.skill_grants.contains(&name) {
+            self.skill_grants.push(name);
+            self.skill_grants.sort();
+        }
+    }
+
+    pub fn revoke_skill(&mut self, name: &str) {
+        self.skill_grants.retain(|grant| grant != name);
     }
 }
 

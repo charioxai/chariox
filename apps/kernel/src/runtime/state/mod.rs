@@ -262,6 +262,38 @@ impl KernelRuntimeState {
         self.owned.cycle_agent_focus(session_id)
     }
 
+    pub(crate) async fn grant_agent_mcp(
+        &self,
+        agent_ref: &str,
+        name: String,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.owned.grant_agent_mcp(agent_ref, name)
+    }
+
+    pub(crate) async fn revoke_agent_mcp(
+        &self,
+        agent_ref: &str,
+        name: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.owned.revoke_agent_mcp(agent_ref, name)
+    }
+
+    pub(crate) async fn grant_agent_skill(
+        &self,
+        agent_ref: &str,
+        name: String,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.owned.grant_agent_skill(agent_ref, name)
+    }
+
+    pub(crate) async fn revoke_agent_skill(
+        &self,
+        agent_ref: &str,
+        name: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.owned.revoke_agent_skill(agent_ref, name)
+    }
+
     pub(crate) async fn resize_terminal(
         &self,
         session_id: &str,

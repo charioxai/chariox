@@ -206,9 +206,13 @@ type CommandActionDeps = {
   listMcpServers?: () => Promise<ArrobaMcpServerConfig[]>
   installMcpServer?: (config: ArrobaMcpServerConfig) => Promise<ArrobaMcpServerConfig>
   getMcpServer?: (name: string) => Promise<ArrobaMcpServerConfig>
+  grantAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
+  revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
   listSkills?: () => Promise<ArrobaSkillMetadata[]>
   installSkill?: (sourcePath: string) => Promise<ArrobaSkillMetadata>
   getSkill?: (name: string) => Promise<ArrobaSkillMetadata>
+  grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
+  revokeAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
   logViewCommand?: (fields: Record<string, unknown>) => void
   setMultiAgentResponseLayout: (layout: MultiAgentResponseLayout) => void
   applyResponseLayout: () => void
@@ -1260,7 +1264,19 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`installed MCP ${mcp.name}`, "info")
       return
     }
-    deps.flashFooter("usage: /mcp list | /mcp show <name> | /mcp install ...", "error")
+    if (action === "grant" || action === "revoke") {
+      const agentRef = command.args[1]
+      const name = command.args[2]
+      const handler = action === "grant" ? deps.grantAgentMcp : deps.revokeAgentMcp
+      if (!agentRef || !name || !handler) {
+        deps.flashFooter(`usage: /mcp ${action} <agent-ref> <name>`, "error")
+        return
+      }
+      const agent = await handler(agentRef, name)
+      deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} MCP ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
+      return
+    }
+    deps.flashFooter("usage: /mcp list | /mcp show <name> | /mcp install ... | /mcp grant <agent-ref> <name> | /mcp revoke <agent-ref> <name>", "error")
   }
 
   const handleSkillCommand = async (
@@ -1298,7 +1314,19 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`installed skill ${skill.name}`, "info")
       return
     }
-    deps.flashFooter("usage: /skill list | /skill show <name> | /skill install <path>", "error")
+    if (action === "grant" || action === "revoke") {
+      const agentRef = command.args[1]
+      const name = command.args[2]
+      const handler = action === "grant" ? deps.grantAgentSkill : deps.revokeAgentSkill
+      if (!agentRef || !name || !handler) {
+        deps.flashFooter(`usage: /skill ${action} <agent-ref> <name>`, "error")
+        return
+      }
+      const agent = await handler(agentRef, name)
+      deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} skill ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
+      return
+    }
+    deps.flashFooter("usage: /skill list | /skill show <name> | /skill install <path> | /skill grant <agent-ref> <name> | /skill revoke <agent-ref> <name>", "error")
   }
 
   const handleWorkflowCommand = async (

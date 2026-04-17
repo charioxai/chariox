@@ -360,6 +360,82 @@ impl AgentService {
         self.store.focused_agent(session_id).cloned()
     }
 
+    pub fn grant_mcp(
+        &mut self,
+        agent_ref: &str,
+        name: String,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent_id = self.resolve_agent_id(agent_ref)?;
+        let agent = self
+            .store
+            .get_mut(&agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_ref.to_string(),
+            })?;
+        agent.grant_mcp(name);
+        Ok(agent.clone())
+    }
+
+    pub fn revoke_mcp(
+        &mut self,
+        agent_ref: &str,
+        name: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent_id = self.resolve_agent_id(agent_ref)?;
+        let agent = self
+            .store
+            .get_mut(&agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_ref.to_string(),
+            })?;
+        agent.revoke_mcp(name);
+        Ok(agent.clone())
+    }
+
+    pub fn grant_skill(
+        &mut self,
+        agent_ref: &str,
+        name: String,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent_id = self.resolve_agent_id(agent_ref)?;
+        let agent = self
+            .store
+            .get_mut(&agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_ref.to_string(),
+            })?;
+        agent.grant_skill(name);
+        Ok(agent.clone())
+    }
+
+    pub fn revoke_skill(
+        &mut self,
+        agent_ref: &str,
+        name: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent_id = self.resolve_agent_id(agent_ref)?;
+        let agent = self
+            .store
+            .get_mut(&agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_ref.to_string(),
+            })?;
+        agent.revoke_skill(name);
+        Ok(agent.clone())
+    }
+
+    fn resolve_agent_id(&self, agent_ref: &str) -> Result<String, DaemonError> {
+        if let Some(agent) = self.store.get(agent_ref) {
+            return Ok(agent.id().to_string());
+        }
+        self.store
+            .get_by_ref(agent_ref)
+            .map(|agent| agent.id().to_string())
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_ref.to_string(),
+            })
+    }
+
     /// Remove all agents for a session (called when session ends)
     pub fn remove_session_agents(&mut self, session_id: &str) -> Vec<AgentInstance> {
         self.store.remove_by_session(session_id)
@@ -512,6 +588,22 @@ impl AgentServiceStore {
 
     pub fn get_focused_agent(&self, session_id: &str) -> Option<AgentInstance> {
         self.read().get_focused_agent(session_id)
+    }
+
+    pub fn grant_mcp(&self, agent_ref: &str, name: String) -> Result<AgentInstance, DaemonError> {
+        self.write().grant_mcp(agent_ref, name)
+    }
+
+    pub fn revoke_mcp(&self, agent_ref: &str, name: &str) -> Result<AgentInstance, DaemonError> {
+        self.write().revoke_mcp(agent_ref, name)
+    }
+
+    pub fn grant_skill(&self, agent_ref: &str, name: String) -> Result<AgentInstance, DaemonError> {
+        self.write().grant_skill(agent_ref, name)
+    }
+
+    pub fn revoke_skill(&self, agent_ref: &str, name: &str) -> Result<AgentInstance, DaemonError> {
+        self.write().revoke_skill(agent_ref, name)
     }
 
     pub fn remove_session_agents(&self, session_id: &str) -> Vec<AgentInstance> {

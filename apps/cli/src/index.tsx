@@ -86,6 +86,7 @@ import {
   forgetRemoteMachineRequest,
   focusAgentRequest,
   getMcpServerRequest,
+  grantAgentCapabilityRequest,
   getProviderAuthStatusRequest,
   getProviderCatalogRequest,
   getProviderCommandCatalogsRequest,
@@ -107,6 +108,7 @@ import {
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
+  revokeAgentCapabilityRequest,
   renameRemoteMachineRequest,
   resolveSessionRequest,
   spawnAgentRequest,
@@ -5313,6 +5315,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       )
       return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServer").mcp
     },
+    grantAgentMcp: async (agentRef, name) => {
+      const response = await client.send<Record<string, unknown>>(
+        grantAgentCapabilityRequest(options.workspace ?? process.cwd(), agentRef, "mcp", name),
+      )
+      return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
+    },
+    revokeAgentMcp: async (agentRef, name) => {
+      const response = await client.send<Record<string, unknown>>(
+        revokeAgentCapabilityRequest(agentRef, "mcp", name),
+      )
+      return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityRevoked").agent
+    },
     listSkills: async () => {
       const response = await client.send<Record<string, unknown>>(
         listSkillsRequest(options.workspace ?? process.cwd()),
@@ -5330,6 +5344,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         getSkillRequest(options.workspace ?? process.cwd(), name),
       )
       return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "Skill").skill
+    },
+    grantAgentSkill: async (agentRef, name) => {
+      const response = await client.send<Record<string, unknown>>(
+        grantAgentCapabilityRequest(options.workspace ?? process.cwd(), agentRef, "skill", name),
+      )
+      return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
+    },
+    revokeAgentSkill: async (agentRef, name) => {
+      const response = await client.send<Record<string, unknown>>(
+        revokeAgentCapabilityRequest(agentRef, "skill", name),
+      )
+      return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityRevoked").agent
     },
     logViewCommand: (fields) => {
       appLogger?.info("handling view command", fields)

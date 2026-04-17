@@ -191,6 +191,14 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
         LocalDaemonRequest::CycleAgentFocus(request) => {
             LocalRequestMetadata::new("agent.cycle_focus", Interactive).session(&request.session_id)
         }
+        LocalDaemonRequest::GrantAgentCapability(request) => {
+            LocalRequestMetadata::new("agent.capability.grant", Interactive)
+                .agent(&request.agent_ref)
+        }
+        LocalDaemonRequest::RevokeAgentCapability(request) => {
+            LocalRequestMetadata::new("agent.capability.revoke", Interactive)
+                .agent(&request.agent_ref)
+        }
         LocalDaemonRequest::EndSession(request) => {
             LocalRequestMetadata::new("session.end", Interactive).session(&request.session_id)
         }
@@ -275,6 +283,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AliasSession(_) => "session.alias",
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",
         LocalDaemonRequest::DestroyAgent(_) => "agent.destroy",
+        LocalDaemonRequest::GrantAgentCapability(_) => "agent.capability.grant",
+        LocalDaemonRequest::RevokeAgentCapability(_) => "agent.capability.revoke",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
         LocalDaemonRequest::AliasWorkflow(_) => "workflow.alias",

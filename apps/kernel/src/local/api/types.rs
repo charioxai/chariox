@@ -167,6 +167,28 @@ pub struct InstallSkillRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentGrantKind {
+    Mcp,
+    Skill,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantAgentCapabilityRequest {
+    pub workspace_id: Option<String>,
+    pub agent_ref: String,
+    pub kind: AgentGrantKind,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevokeAgentCapabilityRequest {
+    pub agent_ref: String,
+    pub kind: AgentGrantKind,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListMcpServersRequest {
     pub workspace_id: Option<String>,
 }
@@ -646,6 +668,8 @@ pub enum LocalDaemonRequest {
     DestroyAgent(DestroyAgentRequest),
     FocusAgent(FocusAgentRequest),
     CycleAgentFocus(CycleAgentFocusRequest),
+    GrantAgentCapability(GrantAgentCapabilityRequest),
+    RevokeAgentCapability(RevokeAgentCapabilityRequest),
     ListAgents(ListAgentsRequest),
     CreateWorkflow(CreateWorkflowRequest),
     AliasWorkflow(AliasWorkflowRequest),
@@ -849,6 +873,12 @@ pub enum LocalDaemonResponse {
     },
     AgentFocusCycled {
         agent: Option<AgentInstance>,
+    },
+    AgentCapabilityGranted {
+        agent: AgentInstance,
+    },
+    AgentCapabilityRevoked {
+        agent: AgentInstance,
     },
     AgentsListed {
         agents: Vec<AgentInstance>,

@@ -15,13 +15,14 @@ use crate::local::provider_requests::{
     PROVIDER_CATALOG_CACHE_TTL,
 };
 use crate::local::{
-    ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
+    AgentGrantKind, ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
     GetMcpServerRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
-    GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest, InstallMcpServerRequest,
-    InstallSkillRequest, ListAgentsRequest, ListMcpServersRequest, ListProviderProcessesRequest,
-    ListSessionsRequest, ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse,
-    LogoutProviderRequest, PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest,
-    ResolveSessionRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
+    GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest, GrantAgentCapabilityRequest,
+    InstallMcpServerRequest, InstallSkillRequest, ListAgentsRequest, ListMcpServersRequest,
+    ListProviderProcessesRequest, ListSessionsRequest, ListSkillsRequest, LocalDaemonRequest,
+    LocalDaemonResponse, LogoutProviderRequest, PumpTerminalOutputRequest, RelayStatus,
+    RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
+    StartProviderLoginRequest, TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -1283,6 +1284,12 @@ impl CommandRouter {
         }
 
         match request {
+            LocalDaemonRequest::GrantAgentCapability(request) => {
+                return self.execute_grant_agent_capability_request(request).await;
+            }
+            LocalDaemonRequest::RevokeAgentCapability(request) => {
+                return self.execute_revoke_agent_capability_request(request).await;
+            }
             LocalDaemonRequest::SubmitPrompt(request) => {
                 return self
                     .agent_runtime
@@ -1474,6 +1481,8 @@ impl CommandRouter {
             | LocalDaemonRequest::DestroyAgent(_)
             | LocalDaemonRequest::FocusAgent(_)
             | LocalDaemonRequest::CycleAgentFocus(_)
+            | LocalDaemonRequest::GrantAgentCapability(_)
+            | LocalDaemonRequest::RevokeAgentCapability(_)
             | LocalDaemonRequest::PollRuntimeNotices(_)) => {
                 self.dispatch_interactive(command, request).await
             }
@@ -1537,6 +1546,75 @@ impl CommandRouter {
         )?);
         let (skill, path) = registry.install_from_path(&source_path)?;
         Ok(LocalDaemonResponse::SkillInstalled { skill, path })
+    }
+
+    async fn execute_grant_agent_capability_request(
+        &self,
+        request: GrantAgentCapabilityRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        match request.kind {
+            AgentGrantKind::Mcp => {
+                self.ensure_mcp_exists(request.workspace_id.as_deref(), &request.name)?;
+                let agent = self
+                    .runtime_state
+                    .grant_agent_mcp(&request.agent_ref, request.name)
+                    .await?;
+                Ok(LocalDaemonResponse::AgentCapabilityGranted { agent })
+            }
+            AgentGrantKind::Skill => {
+                self.ensure_skill_exists(request.workspace_id.as_deref(), &request.name)?;
+                let agent = self
+                    .runtime_state
+                    .grant_agent_skill(&request.agent_ref, request.name)
+                    .await?;
+                Ok(LocalDaemonResponse::AgentCapabilityGranted { agent })
+            }
+        }
+    }
+
+    async fn execute_revoke_agent_capability_request(
+        &self,
+        request: RevokeAgentCapabilityRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let agent = match request.kind {
+            AgentGrantKind::Mcp => {
+                self.runtime_state
+                    .revoke_agent_mcp(&request.agent_ref, &request.name)
+                    .await?
+            }
+            AgentGrantKind::Skill => {
+                self.runtime_state
+                    .revoke_agent_skill(&request.agent_ref, &request.name)
+                    .await?
+            }
+        };
+        Ok(LocalDaemonResponse::AgentCapabilityRevoked { agent })
+    }
+
+    fn ensure_mcp_exists(&self, workspace_id: Option<&str>, name: &str) -> Result<(), DaemonError> {
+        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(workspace_id)?);
+        if registry.get(name)?.is_none() {
+            return Err(DaemonError::LocalTransport {
+                operation: "agent.capability.grant",
+                message: format!("MCP `{name}` is not installed"),
+            });
+        }
+        Ok(())
+    }
+
+    fn ensure_skill_exists(
+        &self,
+        workspace_id: Option<&str>,
+        name: &str,
+    ) -> Result<(), DaemonError> {
+        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(workspace_id)?);
+        if registry.get(name)?.is_none() {
+            return Err(DaemonError::LocalTransport {
+                operation: "agent.capability.grant",
+                message: format!("skill `{name}` is not installed"),
+            });
+        }
+        Ok(())
     }
 
     async fn execute_get_skill_request(

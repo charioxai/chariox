@@ -116,6 +116,32 @@ export function installSkillRequest(workspaceId: string | null, sourcePath: stri
   }
 }
 
+export function grantAgentCapabilityRequest(
+  workspaceId: string | null,
+  agentRef: string,
+  kind: "mcp" | "skill",
+  name: string,
+) {
+  return {
+    GrantAgentCapability: {
+      workspace_id: workspaceId ?? null,
+      agent_ref: agentRef,
+      kind,
+      name,
+    },
+  }
+}
+
+export function revokeAgentCapabilityRequest(agentRef: string, kind: "mcp" | "skill", name: string) {
+  return {
+    RevokeAgentCapability: {
+      agent_ref: agentRef,
+      kind,
+      name,
+    },
+  }
+}
+
 export function listMcpServersRequest(workspaceId?: string | null) {
   return {
     ListMcpServers: {
