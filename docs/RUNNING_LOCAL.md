@@ -438,7 +438,24 @@ or inspect the shared NDJSON files directly:
 tail -f ~/.local/state/arroba/logs/*.ndjson
 ```
 
-## 13. Current Limitations
+## 13. Managed I/O
+
+Arroba-managed Codex and OpenCode provider sessions use managed I/O by default. Supported providers are launched so coordinated workspace files cannot be written through provider-native edit/shell paths; agents must use the Arroba runtime/MCP tools instead.
+
+Agent-facing tools:
+
+- `arroba.read_artifact`
+- `arroba.write_artifact`
+- `arroba.edit_artifact`
+- `arroba.apply_patch`
+- `arroba.move_artifact`
+- `arroba.delete_artifact`
+
+Text artifacts use snapshot-aware fine-grained coordination. If a stale edit overlaps an external or concurrent managed change, the tool rejects it and the agent should reread the artifact before retrying. Non-text artifacts use `domain: "opaque"` with base64 payloads and whole-file coordination in v1.
+
+Remote leased agents that are working in the same repo and branch as the home session forward managed I/O through the home kernel. If workspace identity changes while a managed run is active, managed I/O rejects the request until the run rejoins a valid coordinated workspace.
+
+## 14. Current Limitations
 
 - There is no single combined launcher yet; daemon and CLI are still separate processes.
 - OpenCode currently requires explicit `ARROBA_OPENCODE_PORT`.

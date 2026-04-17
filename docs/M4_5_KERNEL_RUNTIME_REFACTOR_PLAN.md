@@ -31,7 +31,7 @@ Rules:
 - no new app-lock fallback for a hot path after an owned store can answer the same question
 - no broad "keep compatibility working" slice; every slice must move one runtime owner to the new system and remove the matching old app helper
 - `DaemonApp` is allowed as a bootstrap/shutdown/test composition shell while the cutover is in progress, but not as the command-state owner
-- final I/O coordination is still a later slice, but the current coarse `WorkspaceCoordinator` must continue to guard visible file-writing/provider/workflow dispatch work while runtime ownership is being cut over
+- M4.6 managed artifact I/O now owns provider-session file writes; the current coarse `WorkspaceCoordinator` still guards visible file-writing/provider/workflow dispatch work at worktree scope
 
 Current event replay is a bounded in-memory recent-event buffer. It supports reconnect-friendly local behavior, but it is not yet a durable event log.
 
@@ -310,7 +310,7 @@ Current closure status:
 
 - Closed: the seven ownership points are complete. Direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, and runtime fallback deletion all route command/runtime behavior through owned runtime ports instead of the old app-backed fallback.
 - Closed: the M4.5 dead-code purge removed the now-unused app-backed helper surfaces, obsolete runtime-tool dispatcher, workflow console app wrappers, remote-lease helper, projection-removal helper, and stale test-only compatibility calls left behind by the direct cutover.
-- Keep current `WorkspaceCoordinator` enforcement at coarse worktree safety/scheduler scope. Deeper file-level scopes, port claims, sandbox enforcement, and transactional patch/rebase coordination remain deferred to the final I/O-coordination slice.
+- Keep current `WorkspaceCoordinator` enforcement at coarse worktree safety/scheduler scope. M4.6 now owns managed artifact I/O for Arroba-managed provider sessions; port claims, unsafe-mode policy commands, and post-v1 artifact-specific region models remain future work.
 
 ## Cutover Completion Plan
 
@@ -327,7 +327,7 @@ Order of work:
 7. **Done.** Delete the compatibility quarantine: remove production `CompatibilityRuntimeState::with_app_mut`, remove `Arc<Mutex<DaemonApp>>` from command/runtime constructors, and leave `DaemonApp` as bootstrap/shutdown/test composition only.
 8. **Done.** Purge M4.5 dead code: delete now-unused app-backed helper surfaces and test-only compatibility helpers exposed by the direct cutover, then rerun the daemon suites and refresh status docs.
 9. Formalize projection correctness: centralize projection refresh helpers, define which authoritative mutation refreshes which projection, and add stale-state regression tests for provider output, provider teardown, workflow progression, session delete, agent destroy, prompt cancel, prompt complete, and daemon-health projection invariant drift.
-10. Return to final I/O coordination last: decide sandbox/overlay/coordinator-owned patch semantics, same-session behavior, file/port resource scopes, and transactional rebase/repair workflows only after actor/projection ownership is stable.
+10. Return to post-M4.6 coordination last: decide port resource scopes, optional integration/mergeability checks, unsafe-mode policy commands, and artifact-specific region models beyond v1 opaque whole-file locking after the managed-I/O v1 path stays stable.
 
 ### Current Hot-Path Lock Audit
 
@@ -343,7 +343,7 @@ Production command/runtime ownership no longer depends on `Arc<Mutex<DaemonApp>>
 | provider launch/output seams | provider launch/process/output side effects now enter named provider-launch/process/output runtimes instead of app fallback ports | closed |
 | `kernel_transport.rs` and `transport/relay_client.rs` | subscription snapshots, replay-gap snapshots, peer lease handling, relay registration/presence, encrypted peer prompt settlement, and relay runtime-tool dispatch are owned transport/relay paths | closed; remaining side-effect ports are explicit |
 | `scheduler/runtime.rs` and `transport/runtime_tools.rs` | workflow progression, queued launch state, watchdog pumping, blocked-claim retry, and MCP runtime tools now enter workflow-owned/runtime-tool commands | closed; stale app workflow/runtime-tool helpers were purged |
-| `kernel/capability_executor.rs` | capability jobs use owned context snapshots and coarse workspace claims, but arbitrary shell commands are not yet under final I/O enforcement | keep bounded/background behavior for M4.5; final arbitrary I/O enforcement is deferred |
+| `kernel/capability_executor.rs` | capability jobs use owned context snapshots and coarse workspace claims; Arroba-managed provider-session writes are enforced by M4.6 managed I/O | keep bounded/background behavior for M4.5 and route provider writes through managed I/O |
 
 New regression coverage locks in the current responsiveness contract while ownership continues moving:
 
@@ -354,7 +354,7 @@ These tests do not prove actor ownership is complete. They specifically prevent 
 
 ### Compatibility Facade Retirement Checklist
 
-Retiring the facade is separate from final I/O coordination. The goal here is to remove `DaemonApp` as the public/local request facade and then shrink it into bootstrap plus explicit runtime services. Keep the existing coarse `WorkspaceCoordinator` behavior in place and defer file-level claims, port claims, sandboxing, coordinator-owned patch application, and transactional rebase/repair to the final I/O slice.
+Retiring the facade is separate from managed artifact I/O. The goal here is to remove `DaemonApp` as the public/local request facade and then shrink it into bootstrap plus explicit runtime services. Keep the existing coarse `WorkspaceCoordinator` behavior in place; M4.6 owns provider-session artifact writes through managed I/O.
 
 Work the retirement in this order:
 
@@ -385,7 +385,7 @@ Work the retirement in this order:
    - Run the full daemon suite plus multi-agent and workflow live drills before declaring the compatibility-facade milestone complete.
    - Exit check: `rg "handle_.*_request|handle_local_request|with_app_mut|Arc<Mutex<DaemonApp>>" apps/daemon/src/app.rs apps/daemon/src/local apps/daemon/src/kernel apps/daemon/src/scheduler apps/daemon/src/transport` shows no production command/runtime ownership path through the app facade.
 
-The seven ownership points and the M4.5 dead-code purge are closed. Final I/O-coordination work remains out of scope for M4.5.
+The seven ownership points and the M4.5 dead-code purge are closed. Managed artifact I/O is owned by M4.6, not M4.5.
 
 ## Non-Goals
 
@@ -531,7 +531,7 @@ Projection rules:
 | terminal output fanout | `AgentActor` + transport gateway | Fanout must not block provider event ingestion. |
 | workflow run progression | `WorkflowRunActor` | Owns mailbox delivery, barriers, node activation, failure state, watchdog interaction. |
 | capability jobs | `CapabilityExecutor` | Bounded queues. Reports progress/results through events. |
-| coarse worktree claims | `WorkspaceCoordinator` | Enforces visible collision prevention before file-writing capability/provider/workflow dispatch work without attempting final I/O conflict control. |
+| coarse worktree claims | `WorkspaceCoordinator` | Enforces visible collision prevention before file-writing capability/provider/workflow dispatch work; M4.6 managed I/O owns provider-session artifact writes. |
 | relay connection state | `RelayRuntime` | Owns registration, remote subscriptions, and relay I/O without becoming workspace authority. |
 | provider catalogs/history scans/health reads | background executors + projections | Never run on the interactive command lane. |
 
@@ -570,14 +570,14 @@ Required policies:
 
 ## Worktree and Collision Coordination
 
-M4.5 introduces the runtime boundary for workspace coordination without trying to solve the full multi-agent I/O conflict problem yet.
+M4.5 introduces the runtime boundary for workspace coordination. M4.6 builds on it with managed artifact I/O for Arroba-managed provider sessions.
 
-The current claim system is a bounded kernel safety layer and scheduler signal. It prevents obvious overlapping worktree mutations that Arroba can see today, exposes active claims in health, and lets workflow scheduling block/retry instead of failing temporary contention. It is not the final conflict-control architecture for arbitrary agent harnesses, filesystem writes, patch transactions, or merge automation.
+The current claim system is a bounded kernel safety layer and scheduler signal. It prevents obvious overlapping worktree mutations that Arroba can see today, exposes active claims in health, and lets workflow scheduling block/retry instead of failing temporary contention. Managed artifact I/O is the conflict-control architecture for supported Arroba-launched provider sessions; independent external processes remain outside that guarantee.
 
 Minimum `WorkspaceCoordinator` responsibilities:
 
 - allocate or validate `WorktreeAssignment`
-- track active worktree claims now and leave file/port scopes for the final I/O-coordination design
+- track active worktree claims now and leave port scopes for future coordination work
 - reject concurrent code-writing work in the same active worktree when claims conflict
 - expose claim state in `DaemonHealthProjection` or a dedicated coordination projection
 - release stale claims on provider-run settlement, cancellation, session delete, or explicit recovery
@@ -592,13 +592,18 @@ Current implementation:
 - active operation claims are visible in `DaemonHealthProjection`
 - file capability claims are released by scoped guards when the capability operation completes; provider prompt claims are held by the prompt lifecycle until the active prompt settles
 
-Still open:
+Closed by M4.6:
 
-- define the final I/O-coordination model after the actor/projection refactor is complete
-- decide how enforced mutation control works across harnesses Arroba does not fully control: OS/filesystem sandboxing, read-only canonical worktrees plus writable overlays, coordinator-owned patch application, harness permission gates, or an explicit fallback advisory mode
-- file-level claim scopes, if they still make sense after the enforcement model is chosen
+- final managed-I/O coordination model for Arroba-managed provider sessions
+- enforced mutation control for supported providers through provider permission gates and Arroba-owned MCP/runtime tools
+- fine-grained text conflict detection plus opaque whole-file locking for non-text artifacts
+- local and remote managed-I/O coordination for matching repo/branch workspaces
+
+Still open beyond M4.6:
+
 - port claim scopes
-- transactional patch submission/rebase protocol, if Arroba chooses coordinator-owned canonical writes
+- a user-facing command to intentionally relax/disable managed I/O in a future unsafe/uncoordinated mode
+- type-specific non-text artifact region models beyond v1 opaque whole-file locking
 
 Rules:
 
@@ -607,7 +612,7 @@ Rules:
 - Provider-run placement records the assigned worktree in runtime state.
 - Shared-session worktree mode remains allowed for single-agent or explicitly serialized work.
 - Same-session shared worktrees must remain a product-supported collaboration mode. The current provider-prompt same-session allowance preserves that behavior; it should not be expanded into deeper I/O policy without a separate design review.
-- Do not expand claims into file-level/port-level enforcement until `SessionRuntime`, `AgentRuntime`, workflow ownership, and projection-first reads no longer depend on hot `Arc<Mutex<DaemonApp>>` paths.
+- Keep worktree claims coarse. Use M4.6 managed I/O for provider-session artifact writes, and treat port-level enforcement as future coordination work.
 
 ## Migration Plan
 
@@ -664,7 +669,7 @@ Current status: Phase 6 is complete for the M4.5 boundary. Workflow commands are
 ### Phase 7. WorkspaceCoordinator and RelayRuntime
 
 - Add coarse worktree claim enforcement as a kernel-owned boundary for visible mutating work.
-- Defer file-level claims, port claims, harness sandboxing, and transactional mutation/rebase semantics until after hot-path actor/projection ownership is complete.
+- Keep port claims and post-v1 artifact-specific region models outside M4.5; M4.6 owns managed provider-session artifact writes.
 - Move relay registration, remote subscriptions, and relay background I/O behind `RelayRuntime`.
 - Validate that relay remains a transport/runtime member, not a workspace authority.
 

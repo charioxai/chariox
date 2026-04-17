@@ -13,6 +13,7 @@ These scripts exercise Arroba against real provider sessions. Keep them determin
 
 ```bash
 node apps/cli/scripts/live-managed-io-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2-codex
+node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.3-codex --full
 ```
 
 ## Wrapper Scripts

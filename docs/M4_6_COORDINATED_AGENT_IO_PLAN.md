@@ -321,7 +321,7 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: remote managed-I/O live smoke automation. It starts relay/home/worker daemons, leases provider agents on the worker machine, runs managed read/write/edit/apply-patch/move/delete through the home kernel, and cleans up sessions, daemons, history, workspaces, and transient CLI module caches.
 - Landed: remote managed-I/O full pass with OpenCode and Codex, including direct-write blocking, same-area collision serialization, stale non-overlap external-change rebase, and stale overlap external-change rejection.
 - Landed: local and remote managed-I/O drill scripts now cover opaque write/read/move/delete alongside text operations.
-- Not landed yet: type-specific non-text artifact domains beyond v1 opaque whole-file locking.
+- Post-v1: type-specific non-text artifact domains beyond v1 opaque whole-file locking.
 
 ## Non-Goals
 

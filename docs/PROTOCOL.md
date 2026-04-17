@@ -499,20 +499,20 @@ Shell capability requests MUST be validated against the requesting attachment an
 Tree/file/git capability requests MUST remain scoped to the session worktree boundary and return structured results rather than raw transcript fragments.
 Screenshot capture MUST write only into daemon-chosen session artifact locations.
 
-## 5.0.1 Workspace Coordination Direction
+## 5.0.1 Managed I/O Coordination
 
-The protocol should reserve room for kernel-owned workspace coordination because multi-agent orchestration cannot rely on human PR review as the only conflict-management mechanism.
+The kernel owns managed artifact I/O for Arroba-launched provider sessions. Supported providers are configured so coordinated workspace files can only be changed through Arroba MCP/runtime tools; direct provider-native shell/edit paths are denied for managed sessions.
 
-Current M4.5 coordination is intentionally narrower than the final design. The daemon exposes coarse worktree claims for visible mutating operations and health reporting, but it does not yet define a wire contract for arbitrary harness write enforcement, file-level locks, port claims, patch transactions, or automatic rebase loops. M4.5 has closed the direct cutover away from app-backed compatibility ports, so final I/O coordination can build on runtime-owned command mutation.
+The v1 contract is:
 
-Future coordination operations are expected to cover:
+- `arroba.read_artifact` returns content plus snapshot/version metadata.
+- `arroba.write_artifact`, `arroba.edit_artifact`, `arroba.apply_patch`, `arroba.move_artifact`, and `arroba.delete_artifact` are synchronous managed writes.
+- text artifacts coordinate edited ranges, serialize same-area writes, rebase stale non-overlapping external changes, and reject stale overlapping external changes.
+- non-text artifacts use `domain: "opaque"` and `content_base64`; they are coordinated as whole-file writes/moves/deletes.
+- remote agents working in the same repo and branch forward managed I/O through the home kernel. The home kernel owns snapshots, reservations, and conflict decisions, and the worker applies accepted final states only if its local artifact still matches the forwarded pre-apply state.
+- if the workspace identity changes during a managed run, the kernel rejects managed I/O until the run rejoins a valid coordinated workspace.
 
-- worktree or branch allocation
-- file/workspace claim requests
-- integration or mergeability validation
-- explicit conflict or claim-denial responses
-
-The exact wire surface is still open, and deeper I/O coordination should be designed after the actor/projection runtime no longer depends on hot `DaemonApp` paths. The kernel should remain the authority for these decisions.
+Future coordination work still includes port claims, an explicit user command for unsafe/uncoordinated mode, and type-specific non-text artifact region models beyond opaque whole-file locking.
 
 ## 5.1 `attach_file`
 

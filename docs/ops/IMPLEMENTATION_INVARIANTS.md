@@ -1,6 +1,6 @@
 # Implementation Invariants
 
-This checklist is the merge gate for M4.5 runtime slices before the final I/O-coordination design. It is intentionally operational: every item must be answerable from code, tests, health output, or explicit documentation.
+This checklist is the merge gate for M4.5 runtime slices and later coordination/runtime work. It is intentionally operational: every item must be answerable from code, tests, health output, or explicit documentation.
 
 ## Ownership
 

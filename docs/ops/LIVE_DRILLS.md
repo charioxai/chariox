@@ -52,7 +52,7 @@ Terminology:
   - Add `--no-early-pass` when validating the full `immediate-release-downstream` completion path instead of only the immediate release point.
 - Remote freeform multi-agent: `node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers opencode,codex`
 - Remote managed I/O smoke: `node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode,codex`
-- Remote managed I/O full: `node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode --full` or `pnpm --filter @arroba/cli run managed-io:remote-drill`
+- Remote managed I/O full: `node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.3-codex --full` or `pnpm --filter @arroba/cli run managed-io:remote-drill`
 - Remote workflow: `node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario <scenario> --providers opencode,codex`
 - Lower-level relay runtime: `node apps/cli/scripts/live-relay-runtime-drill.mjs`
 - Lower-level remote machine runtime: `node apps/cli/scripts/live-remote-machine-runtime-drill.mjs`

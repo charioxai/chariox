@@ -47,7 +47,7 @@ Current implementation caveat:
 - the OpenCode-backed multi-agent path still needs stabilization, but the current daemon and CLI suites are green
 - the current split-pane TypeScript CLI is still an initial slice centered on the primary transcript plus up to two auxiliary panes
 - the M4.5 ownership refactor is closed: the direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, runtime fallback deletion, and dead-code purge are complete; `DaemonApp` remains as bootstrap/composition scaffolding, not the command-state owner
-- current workspace claims are a bounded safety and scheduling layer, not the final I/O-conflict-control design; deeper file-level, port-level, sandbox, or transactional patch coordination is deferred until after actor/projection ownership is complete
+- current workspace claims are a bounded safety and scheduling layer, while M4.6 managed artifact I/O coordinates Arroba-managed provider-session writes; remaining coordination work is port claims, policy commands for unsafe mode, optional integration checks, and post-v1 artifact-specific region models
 - generic agent transport is intentionally deferred for now; OpenCode continues to use its native local HTTP + SSE adapter path
 
 The project specification and architecture remain the primary source of truth for behavior beyond this bootstrap.
