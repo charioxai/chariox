@@ -11,6 +11,7 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
   SessionConfigState,
+  SkillImportOutcome,
   WorkflowEdgeDefinition,
   WorkflowDefinition,
   WorkflowEndpointDefinition,
@@ -212,6 +213,7 @@ type CommandActionDeps = {
   revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
   listSkills?: () => Promise<ArrobaSkillMetadata[]>
   installSkill?: (sourcePath: string) => Promise<ArrobaSkillMetadata>
+  importSkills?: (provider: string, name?: string | null) => Promise<SkillImportOutcome>
   getSkill?: (name: string) => Promise<ArrobaSkillMetadata>
   grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
   revokeAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
@@ -477,6 +479,20 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       }
     }
     return lines.length === 0 ? "No MCPs imported." : lines.join("\n")
+  }
+  const formatSkillImportOutcome = (outcome: SkillImportOutcome): string => {
+    const lines: string[] = []
+    if (outcome.imported.length > 0) {
+      lines.push(`Imported skills: ${outcome.imported.map((skill) => skill.name).join(", ")}`)
+    }
+    if (outcome.skipped.length > 0) {
+      lines.push("Skipped skills:")
+      for (const skip of outcome.skipped) {
+        const suffix = skip.path ? ` (${skip.path})` : ""
+        lines.push(`- ${skip.name}${suffix}: ${skip.reason}`)
+      }
+    }
+    return lines.length === 0 ? "No skills imported." : lines.join("\n")
   }
   const formatProviderProcessNotice = (process: ProviderProcessInfo): string => {    const lines = [
       `${process.process_id} provider=${process.provider} pid=${process.pid ?? "-"} status=${process.status} mode=${process.endpoint_mode} safe=${String(process.teardown_safe)}`,
@@ -1358,6 +1374,18 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       }
       const skill = await deps.installSkill(sourcePath)
       deps.flashFooter(`installed skill ${skill.name}`, "info")
+      return
+    }
+    if (action === "import") {
+      const provider = command.args[1]
+      const name = command.args[2] ?? null
+      if (!provider || !deps.importSkills) {
+        deps.flashFooter("usage: /skill import <codex|opencode> [name]", "error")
+        return
+      }
+      const outcome = await deps.importSkills(provider, name)
+      deps.appendNotice(formatSkillImportOutcome(outcome))
+      deps.flashFooter(`imported ${outcome.imported.length} skill${outcome.imported.length === 1 ? "" : "s"} from ${provider}`, "info")
       return
     }
     if (action === "grant" || action === "revoke") {

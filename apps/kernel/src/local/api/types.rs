@@ -174,6 +174,13 @@ pub struct InstallSkillRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportSkillsRequest {
+    pub workspace_id: Option<String>,
+    pub provider: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentGrantKind {
     Mcp,
@@ -640,6 +647,7 @@ pub enum LocalDaemonRequest {
     GetMcpServer(GetMcpServerRequest),
     ListMcpServers(ListMcpServersRequest),
     InstallSkill(InstallSkillRequest),
+    ImportSkills(ImportSkillsRequest),
     GetSkill(GetSkillRequest),
     ListSkills(ListSkillsRequest),
     RelayStatus(RelayStatusRequest),
@@ -773,6 +781,9 @@ pub enum LocalDaemonResponse {
     SkillInstalled {
         skill: ArrobaSkillMetadata,
         path: PathBuf,
+    },
+    SkillsImported {
+        outcome: SkillImportOutcome,
     },
     SkillsListed {
         skills: Vec<ArrobaSkillMetadata>,

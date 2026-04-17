@@ -38,6 +38,7 @@ import type {
   SessionHistoryEntry,
   SessionHistoryPage,
   SessionHistoryPageEntry,
+  SkillImportOutcome,
   StoredTransferArtifact,
   TerminalOutputRecord,
   TranscriptEntry,
@@ -89,6 +90,7 @@ import {
   getMcpServerRequest,
   grantAgentCapabilityRequest,
   importMcpServersRequest,
+  importSkillsRequest,
   getProviderAuthStatusRequest,
   getProviderCatalogRequest,
   getProviderCommandCatalogsRequest,
@@ -5346,6 +5348,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         installSkillRequest(options.workspace ?? process.cwd(), sourcePath),
       )
       return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillInstalled").skill
+    },
+    importSkills: async (provider, name) => {
+      const response = await client.send<Record<string, unknown>>(
+        importSkillsRequest(options.workspace ?? process.cwd(), provider, name),
+      )
+      return expectVariant<{ outcome: SkillImportOutcome }>(response, "SkillsImported").outcome
     },
     getSkill: async (name) => {
       const response = await client.send<Record<string, unknown>>(

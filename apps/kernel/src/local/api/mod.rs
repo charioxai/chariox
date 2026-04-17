@@ -22,7 +22,7 @@ use crate::session::{
     WorkflowNodeDefinition, WorkflowRun, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
 };
 use crate::session_history_page::{SessionHistoryCursor, SessionHistoryPageEntry};
-use crate::skill::ArrobaSkillMetadata;
+use crate::skill::{ArrobaSkillMetadata, SkillImportOutcome};
 #[cfg(test)]
 mod tests;
 mod types;

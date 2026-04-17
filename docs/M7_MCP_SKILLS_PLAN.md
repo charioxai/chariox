@@ -15,7 +15,7 @@ Landed:
 - M7.5 partial: agent model now stores `mcp_grants`; grant/revoke IPC validates installed MCPs before mutating the agent; interactive grant inspection is landed.
 - M7.6 partial: local Codex and OpenCode provider launches render only the target agent's granted Arroba MCPs into provider-native MCP config, while keeping Arroba runtime MCP separate.
 - M7.7/M7.8: Codex-style `SKILL.md` metadata parsing and Arroba-owned skill registry over project/user roots.
-- M7.9 partial: interactive `/skill list`, `/skill show`, `/skill install`, `/skill grant`, `/skill revoke`, and `/skill grants`.
+- M7.9 partial: interactive `/skill list`, `/skill show`, `/skill install`, `/skill import codex|opencode [name]`, `/skill grant`, `/skill revoke`, and `/skill grants`.
 - M7.11 partial: agent model now stores `skill_grants`; grant/revoke IPC validates installed skills before mutating the agent; interactive grant inspection is landed.
 - M7.12 partial: local provider prompts receive a short granted-skills summary for the target agent only. Stored prompt history remains the original user prompt.
 - M7.13 partial: local provider prompts inject the full `SKILL.md` body for granted skills that are explicitly selected, mentioned, or requested.
@@ -26,7 +26,7 @@ Still open in M7:
 - MCP/skill update and uninstall operations.
 - Regular non-interactive agent grant inspection commands, for example `arroba agent mcps` / `arroba agent skills`.
 - Provider MCP import from Claude-owned configs, plus regular non-interactive Codex/OpenCode import aliases.
-- Provider skill import from Codex/OpenCode/Claude-owned skill locations.
+- Provider skill import from Claude-owned skill locations, plus regular non-interactive Codex/OpenCode import aliases.
 - Skill MCP dependency validation.
 - Runtime MCP discovery/request tools for MCPs and skills.
 - Remote-machine MCP and skill materialization/rendering.
@@ -216,7 +216,7 @@ Arroba-managed skills are not stored in `.agents/skills` by default because prov
 
 ## M7.9 Skill CLI Commands
 
-Status: partial. Interactive slash commands for install/list/show/grant/revoke/grants are landed; regular command aliases, import, update, uninstall, and validation commands remain open.
+Status: partial. Interactive slash commands for install/list/show/import/grant/revoke/grants are landed; regular command aliases, Claude import, update, uninstall, and validation commands remain open.
 
 Expose skill management through regular CLI commands and the interactive slash-command surface.
 
@@ -250,6 +250,8 @@ Expected `/skill` actions:
 
 ## M7.10 Provider Skill Import
 
+Status: partial. Codex and OpenCode skill import are landed through `/skill import codex [name]` and `/skill import opencode [name]`. Claude import and regular command aliases remain open.
+
 Add provider import commands so users can reuse existing provider skills:
 
 ```bash
@@ -268,6 +270,18 @@ Behavior:
 - do not mutate provider-owned skill dirs
 - handle name collisions with prompt/rename/skip CLI behavior
 - imported skills become Arroba-owned copies
+
+Current Codex import notes:
+
+- scans project `.codex/skills`, project `.agents/skills`, `CODEX_HOME/skills` or `~/.codex/skills`, and `~/.agents/skills`
+- skips Codex cached `.system` skills
+- copies the full skill directory into Arroba-owned skill roots
+
+Current OpenCode import notes:
+
+- scans project `.opencode/skill`, project `.opencode/skills`, project `.agents/skills`, `~/.agents/skills`, global OpenCode skill roots, and `skills.paths` entries from OpenCode config
+- copies the full skill directory into Arroba-owned skill roots
+- URL-backed OpenCode skill discovery/import is not implemented yet
 
 ## M7.11 Agent Skill Grants
 

@@ -18,11 +18,11 @@ use crate::local::{
     AgentGrantKind, ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
     GetMcpServerRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
     GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest, GrantAgentCapabilityRequest,
-    ImportMcpServersRequest, InstallMcpServerRequest, InstallSkillRequest, ListAgentsRequest,
-    ListMcpServersRequest, ListProviderProcessesRequest, ListSessionsRequest, ListSkillsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest, PumpTerminalOutputRequest,
-    RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
-    StartProviderLoginRequest, TeardownProviderProcessesRequest,
+    ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
+    ListAgentsRequest, ListMcpServersRequest, ListProviderProcessesRequest, ListSessionsRequest,
+    ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
+    PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest,
+    RevokeAgentCapabilityRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -653,6 +653,9 @@ impl CommandRouter {
             }
             LocalDaemonRequest::InstallSkill(request) => {
                 return self.execute_install_skill_request(request.clone()).await;
+            }
+            LocalDaemonRequest::ImportSkills(request) => {
+                return self.execute_import_skills_request(request.clone()).await;
             }
             LocalDaemonRequest::GetSkill(request) => {
                 return self.execute_get_skill_request(request.clone()).await;
@@ -1366,6 +1369,9 @@ impl CommandRouter {
             LocalDaemonRequest::InstallSkill(request) => {
                 self.execute_install_skill_request(request).await
             }
+            LocalDaemonRequest::ImportSkills(request) => {
+                self.execute_import_skills_request(request).await
+            }
             LocalDaemonRequest::GetSkill(request) => self.execute_get_skill_request(request).await,
             LocalDaemonRequest::ListSkills(request) => {
                 self.execute_list_skills_request(request).await
@@ -1581,6 +1587,33 @@ impl CommandRouter {
         )?);
         let (skill, path) = registry.install_from_path(&source_path)?;
         Ok(LocalDaemonResponse::SkillInstalled { skill, path })
+    }
+
+    async fn execute_import_skills_request(
+        &self,
+        request: ImportSkillsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
+        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+            request.workspace_id.as_deref(),
+        )?);
+        let outcome = match request.provider.as_str() {
+            "codex" => {
+                crate::skill::import_codex_skills(&registry, &workspace, request.name.as_deref())?
+            }
+            "opencode" => crate::skill::import_opencode_skills(
+                &registry,
+                &workspace,
+                request.name.as_deref(),
+            )?,
+            _ => {
+                return Err(DaemonError::InvalidConfig {
+                    field: "provider",
+                    message: "only Codex and OpenCode skill import are supported",
+                });
+            }
+        };
+        Ok(LocalDaemonResponse::SkillsImported { outcome })
     }
 
     async fn execute_grant_agent_capability_request(

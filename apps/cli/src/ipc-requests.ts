@@ -126,6 +126,16 @@ export function installSkillRequest(workspaceId: string | null, sourcePath: stri
   }
 }
 
+export function importSkillsRequest(workspaceId: string | null, provider: string, name?: string | null) {
+  return {
+    ImportSkills: {
+      workspace_id: workspaceId ?? null,
+      provider,
+      name: name ?? null,
+    },
+  }
+}
+
 export function grantAgentCapabilityRequest(
   workspaceId: string | null,
   agentRef: string,

@@ -34,6 +34,17 @@ export type ArrobaSkillMetadata = {
   path: string
 }
 
+export type SkillImportSkip = {
+  name: string
+  path: string
+  reason: string
+}
+
+export type SkillImportOutcome = {
+  imported: ArrobaSkillMetadata[]
+  skipped: SkillImportSkip[]
+}
+
 export type RuntimeSession = {
   id: string
   alias?: string | null
