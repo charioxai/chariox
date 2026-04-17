@@ -9,13 +9,13 @@ Updated: 2026-04-17
 
 Landed:
 
-- M7.1/M7.2: Arroba-owned MCP config model and registry for project/user roots.
-- M7.3 partial: interactive `/mcp list`, `/mcp show`, `/mcp install`, `/mcp grant`, `/mcp revoke`, and `/mcp grants`.
+- M7.1/M7.2: Arroba-owned MCP config model and registry for project/user roots, including update and uninstall lifecycle operations.
+- M7.3 partial: interactive `/mcp list`, `/mcp show`, `/mcp install`, `/mcp update`, `/mcp uninstall`, `/mcp import`, `/mcp grant`, `/mcp revoke`, and `/mcp grants`.
 - M7.4 partial: `/mcp import codex [name]` and `/mcp import opencode [name]` import supported provider MCP config entries into Arroba-owned MCP registry roots and report skipped entries.
 - M7.5 partial: agent model now stores `mcp_grants`; grant/revoke IPC validates installed MCPs before mutating the agent; interactive grant inspection is landed.
 - M7.6 partial: local Codex and OpenCode provider launches render only the target agent's granted Arroba MCPs into provider-native MCP config, while keeping Arroba runtime MCP separate.
-- M7.7/M7.8: Codex-style `SKILL.md` metadata parsing and Arroba-owned skill registry over project/user roots.
-- M7.9 partial: interactive `/skill list`, `/skill show`, `/skill install`, `/skill import codex|opencode [name]`, `/skill grant`, `/skill revoke`, and `/skill grants`.
+- M7.7/M7.8: Codex-style `SKILL.md` metadata parsing and Arroba-owned skill registry over project/user roots, including update and uninstall lifecycle operations.
+- M7.9 partial: interactive `/skill list`, `/skill show`, `/skill install`, `/skill update`, `/skill uninstall`, `/skill import codex|opencode [name]`, `/skill grant`, `/skill revoke`, and `/skill grants`.
 - M7.11 partial: agent model now stores `skill_grants`; grant/revoke IPC validates installed skills before mutating the agent; interactive grant inspection is landed.
 - M7.12 partial: local provider prompts receive a short granted-skills summary for the target agent only. Stored prompt history remains the original user prompt.
 - M7.13 partial: local provider prompts inject the full `SKILL.md` body for granted skills that are explicitly selected, mentioned, or requested.
@@ -23,7 +23,6 @@ Landed:
 Still open in M7:
 
 - Regular non-interactive `arroba mcp ...` / `arroba skill ...` CLI command surfaces, if we keep them separate from slash commands.
-- MCP/skill update and uninstall operations.
 - Regular non-interactive agent grant inspection commands, for example `arroba agent mcps` / `arroba agent skills`.
 - Provider MCP import from Claude-owned configs, plus regular non-interactive Codex/OpenCode import aliases.
 - Provider skill import from Claude-owned skill locations, plus regular non-interactive Codex/OpenCode import aliases.
@@ -78,7 +77,7 @@ V1 should store env var names instead of secret values by default.
 
 ## M7.2 Arroba MCP Registry
 
-Status: partial. Install, list, and show are landed; update and uninstall remain open.
+Status: landed for install, list, show, update, and uninstall.
 
 Implement registry operations over Arroba-owned MCP roots:
 
@@ -92,7 +91,7 @@ Registry entries are Arroba-owned copies. Installing an MCP registers it; it doe
 
 ## M7.3 MCP CLI Commands
 
-Status: partial. Interactive slash commands for install/list/show/grant/revoke/grants and Codex/OpenCode import are landed; regular command aliases, Claude import, update, uninstall, and test/start remain open.
+Status: partial. Interactive slash commands for install/list/show/update/uninstall/grant/revoke/grants and Codex/OpenCode import are landed; regular command aliases, Claude import, and test/start remain open.
 
 Expose MCP management through regular CLI commands and the interactive slash-command surface.
 
@@ -115,6 +114,8 @@ Interactive command:
 Expected `/mcp` actions:
 
 - install MCP
+- update MCP
+- uninstall MCP
 - import MCPs from provider
 - list installed MCPs
 - inspect MCP config
@@ -202,7 +203,7 @@ skill-name/
 
 ## M7.8 Arroba Skill Registry
 
-Status: partial. Install, list, and show are landed; update and uninstall remain open.
+Status: landed for install, list, show, update, and uninstall.
 
 Implement registry operations over Arroba-owned skill roots:
 
@@ -216,7 +217,7 @@ Arroba-managed skills are not stored in `.agents/skills` by default because prov
 
 ## M7.9 Skill CLI Commands
 
-Status: partial. Interactive slash commands for install/list/show/import/grant/revoke/grants are landed; regular command aliases, Claude import, update, uninstall, and validation commands remain open.
+Status: partial. Interactive slash commands for install/list/show/update/uninstall/import/grant/revoke/grants are landed; regular command aliases, Claude import, and validation commands remain open.
 
 Expose skill management through regular CLI commands and the interactive slash-command surface.
 
@@ -240,6 +241,8 @@ Interactive commands:
 Expected `/skill` actions:
 
 - install skill
+- update skill
+- uninstall skill
 - import skills from provider
 - list installed skills
 - inspect skill metadata/body

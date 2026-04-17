@@ -207,12 +207,16 @@ type CommandActionDeps = {
   teardownProviderProcesses?: (provider?: string | null) => Promise<ProviderProcessInfo[]>
   listMcpServers?: () => Promise<ArrobaMcpServerConfig[]>
   installMcpServer?: (config: ArrobaMcpServerConfig) => Promise<ArrobaMcpServerConfig>
+  updateMcpServer?: (config: ArrobaMcpServerConfig) => Promise<ArrobaMcpServerConfig>
+  uninstallMcpServer?: (name: string) => Promise<string>
   importMcpServers?: (provider: string, name?: string | null) => Promise<McpImportOutcome>
   getMcpServer?: (name: string) => Promise<ArrobaMcpServerConfig>
   grantAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
   revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
   listSkills?: () => Promise<ArrobaSkillMetadata[]>
   installSkill?: (sourcePath: string) => Promise<ArrobaSkillMetadata>
+  updateSkill?: (sourcePath: string) => Promise<ArrobaSkillMetadata>
+  uninstallSkill?: (name: string) => Promise<ArrobaSkillMetadata>
   importSkills?: (provider: string, name?: string | null) => Promise<SkillImportOutcome>
   getSkill?: (name: string) => Promise<ArrobaSkillMetadata>
   grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
@@ -1307,6 +1311,30 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`installed MCP ${mcp.name}`, "info")
       return
     }
+    if (action === "update") {
+      if (!deps.updateMcpServer) {
+        deps.flashFooter("MCP update is not available in this daemon", "error")
+        return
+      }
+      const config = parseMcpInstallConfig(["install", ...command.args.slice(1)])
+      if (!config) {
+        deps.flashFooter("usage: /mcp update <name> --command <cmd> [--arg value] [--env VAR] | /mcp update <name> --url <url> [--bearer-token-env-var VAR]", "error")
+        return
+      }
+      const mcp = await deps.updateMcpServer(config)
+      deps.flashFooter(`updated MCP ${mcp.name}`, "info")
+      return
+    }
+    if (action === "uninstall" || action === "remove") {
+      const name = command.args[1]
+      if (!name || !deps.uninstallMcpServer) {
+        deps.flashFooter(`usage: /mcp ${action} <name>`, "error")
+        return
+      }
+      const removedName = await deps.uninstallMcpServer(name)
+      deps.flashFooter(`uninstalled MCP ${removedName}`, "info")
+      return
+    }
     if (action === "import") {
       const provider = command.args[1]
       const name = command.args[2] ?? null
@@ -1338,7 +1366,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`showing MCP grants for ${agent.agent_ref}`, "info")
       return
     }
-    deps.flashFooter("usage: /mcp list | /mcp show <name> | /mcp install ... | /mcp grant <agent-ref> <name> | /mcp revoke <agent-ref> <name> | /mcp grants <agent-ref>", "error")
+    deps.flashFooter("usage: /mcp list | /mcp show <name> | /mcp install ... | /mcp update ... | /mcp uninstall <name> | /mcp import <codex|opencode> [name] | /mcp grant <agent-ref> <name> | /mcp revoke <agent-ref> <name> | /mcp grants <agent-ref>", "error")
   }
 
   const handleSkillCommand = async (
@@ -1376,6 +1404,26 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`installed skill ${skill.name}`, "info")
       return
     }
+    if (action === "update") {
+      const sourcePath = command.args[1]
+      if (!sourcePath || !deps.updateSkill) {
+        deps.flashFooter("usage: /skill update <path>", "error")
+        return
+      }
+      const skill = await deps.updateSkill(sourcePath)
+      deps.flashFooter(`updated skill ${skill.name}`, "info")
+      return
+    }
+    if (action === "uninstall" || action === "remove") {
+      const name = command.args[1]
+      if (!name || !deps.uninstallSkill) {
+        deps.flashFooter(`usage: /skill ${action} <name>`, "error")
+        return
+      }
+      const skill = await deps.uninstallSkill(name)
+      deps.flashFooter(`uninstalled skill ${skill.name}`, "info")
+      return
+    }
     if (action === "import") {
       const provider = command.args[1]
       const name = command.args[2] ?? null
@@ -1407,7 +1455,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`showing skill grants for ${agent.agent_ref}`, "info")
       return
     }
-    deps.flashFooter("usage: /skill list | /skill show <name> | /skill install <path> | /skill grant <agent-ref> <name> | /skill revoke <agent-ref> <name> | /skill grants <agent-ref>", "error")
+    deps.flashFooter("usage: /skill list | /skill show <name> | /skill install <path> | /skill update <path> | /skill uninstall <name> | /skill import <codex|opencode> [name] | /skill grant <agent-ref> <name> | /skill revoke <agent-ref> <name> | /skill grants <agent-ref>", "error")
   }
 
   const handleWorkflowCommand = async (

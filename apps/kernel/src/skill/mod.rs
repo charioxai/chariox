@@ -91,6 +91,73 @@ impl ArrobaSkillRegistry {
         Ok((installed, destination))
     }
 
+    pub fn update_from_path(
+        &self,
+        source: &Path,
+    ) -> Result<(ArrobaSkillMetadata, PathBuf), DaemonError> {
+        if !source.is_dir() {
+            return Err(DaemonError::LocalTransport {
+                operation: "skill.update",
+                message: format!("skill source `{}` must be a directory", source.display()),
+            });
+        }
+        let source_skill_md = source.join("SKILL.md");
+        if !source_skill_md.exists() {
+            return Err(DaemonError::LocalTransport {
+                operation: "skill.update",
+                message: format!("skill source `{}` must contain SKILL.md", source.display()),
+            });
+        }
+        let metadata = parse_skill_metadata(&source_skill_md)?;
+        let destination =
+            self.find_skill_dir(&metadata.name)?
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "skill.update",
+                    message: format!("skill `{}` is not installed", metadata.name),
+                })?;
+        if let (Ok(source_canonical), Ok(destination_canonical)) =
+            (fs::canonicalize(source), fs::canonicalize(&destination))
+        {
+            if source_canonical == destination_canonical {
+                return Err(DaemonError::LocalTransport {
+                    operation: "skill.update",
+                    message: "skill update source must not be the installed destination"
+                        .to_string(),
+                });
+            }
+        }
+        fs::remove_dir_all(&destination).map_err(|error| DaemonError::LocalTransport {
+            operation: "skill.update",
+            message: format!(
+                "failed to replace skill `{}` at `{}`: {error}",
+                metadata.name,
+                destination.display()
+            ),
+        })?;
+        copy_directory(source, &destination)?;
+        let installed = parse_skill_metadata(&destination.join("SKILL.md"))?;
+        Ok((installed, destination))
+    }
+
+    pub fn uninstall(&self, name: &str) -> Result<(ArrobaSkillMetadata, PathBuf), DaemonError> {
+        validate_registry_name(name, "skill name")?;
+        let destination =
+            self.find_skill_dir(name)?
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "skill.uninstall",
+                    message: format!("skill `{name}` is not installed"),
+                })?;
+        let metadata = parse_skill_metadata(&destination.join("SKILL.md"))?;
+        fs::remove_dir_all(&destination).map_err(|error| DaemonError::LocalTransport {
+            operation: "skill.uninstall",
+            message: format!(
+                "failed to remove skill `{}`: {error}",
+                destination.display()
+            ),
+        })?;
+        Ok((metadata, destination))
+    }
+
     pub fn list(&self) -> Result<Vec<ArrobaSkillMetadata>, DaemonError> {
         let mut entries = BTreeMap::new();
         for root in &self.roots {
@@ -111,10 +178,19 @@ impl ArrobaSkillRegistry {
 
     pub fn get(&self, name: &str) -> Result<Option<ArrobaSkillMetadata>, DaemonError> {
         validate_registry_name(name, "skill name")?;
+        let Some(skill_dir) = self.find_skill_dir(name)? else {
+            return Ok(None);
+        };
+        parse_skill_metadata(&skill_dir.join("SKILL.md")).map(Some)
+    }
+
+    fn find_skill_dir(&self, name: &str) -> Result<Option<PathBuf>, DaemonError> {
+        validate_registry_name(name, "skill name")?;
         for root in &self.roots {
-            let skill_md = root.join(name).join("SKILL.md");
+            let skill_dir = root.join(name);
+            let skill_md = skill_dir.join("SKILL.md");
             if skill_md.exists() {
-                return parse_skill_metadata(&skill_md).map(Some);
+                return Ok(Some(skill_dir));
             }
         }
         Ok(None)
@@ -643,6 +719,48 @@ mod tests {
             "qa checklist"
         );
         assert_eq!(registry.get("browser-qa").unwrap(), Some(metadata));
+
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(registry_root);
+    }
+
+    #[test]
+    fn update_replaces_and_uninstall_removes_existing_skill() {
+        let source_root = temp_root("update-source");
+        let registry_root = temp_root("update-registry");
+        let original_dir = source_root.join("original");
+        let updated_dir = source_root.join("updated");
+        fs::create_dir_all(&original_dir).unwrap();
+        fs::write(
+            original_dir.join("SKILL.md"),
+            "---\nname: browser-qa\ndescription: Old QA\n---\nOld body.\n",
+        )
+        .unwrap();
+        fs::write(original_dir.join("old.txt"), "old").unwrap();
+        fs::create_dir_all(updated_dir.join("assets")).unwrap();
+        fs::write(
+            updated_dir.join("SKILL.md"),
+            "---\nname: browser-qa\ndescription: New QA\n---\nNew body.\n",
+        )
+        .unwrap();
+        fs::write(updated_dir.join("assets").join("new.txt"), "new").unwrap();
+
+        let registry = ArrobaSkillRegistry::new(vec![registry_root.clone()]);
+        registry.install_from_path(&original_dir).unwrap();
+        let (updated, destination) = registry.update_from_path(&updated_dir).unwrap();
+        assert_eq!(updated.description, "New QA");
+        assert_eq!(destination, registry_root.join("browser-qa"));
+        assert!(!destination.join("old.txt").exists());
+        assert_eq!(
+            fs::read_to_string(destination.join("assets").join("new.txt")).unwrap(),
+            "new"
+        );
+
+        let (removed, removed_path) = registry.uninstall("browser-qa").unwrap();
+        assert_eq!(removed.name, "browser-qa");
+        assert_eq!(removed_path, registry_root.join("browser-qa"));
+        assert_eq!(registry.get("browser-qa").unwrap(), None);
+        assert!(!removed_path.exists());
 
         let _ = fs::remove_dir_all(source_root);
         let _ = fs::remove_dir_all(registry_root);

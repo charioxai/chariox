@@ -168,6 +168,41 @@ impl ArrobaMcpRegistry {
         Ok(path)
     }
 
+    pub fn update(&self, config: &ArrobaMcpServerConfig) -> Result<PathBuf, DaemonError> {
+        config.validate()?;
+        let path =
+            self.find_config_path(&config.name)?
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "mcp.update",
+                    message: format!("MCP `{}` is not installed", config.name),
+                })?;
+        let payload =
+            serde_json::to_string_pretty(config).map_err(|error| DaemonError::LocalTransport {
+                operation: "mcp.update",
+                message: format!("failed to serialize MCP `{}`: {error}", config.name),
+            })?;
+        fs::write(&path, format!("{payload}\n")).map_err(|error| DaemonError::LocalTransport {
+            operation: "mcp.update",
+            message: format!("failed to write MCP `{}`: {error}", path.display()),
+        })?;
+        Ok(path)
+    }
+
+    pub fn uninstall(&self, name: &str) -> Result<PathBuf, DaemonError> {
+        validate_registry_name(name, "mcp name")?;
+        let path = self
+            .find_config_path(name)?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "mcp.uninstall",
+                message: format!("MCP `{name}` is not installed"),
+            })?;
+        fs::remove_file(&path).map_err(|error| DaemonError::LocalTransport {
+            operation: "mcp.uninstall",
+            message: format!("failed to remove MCP `{}`: {error}", path.display()),
+        })?;
+        Ok(path)
+    }
+
     pub fn list(&self) -> Result<Vec<ArrobaMcpServerConfig>, DaemonError> {
         let mut entries = BTreeMap::new();
         for root in &self.roots {
@@ -196,10 +231,18 @@ impl ArrobaMcpRegistry {
 
     pub fn get(&self, name: &str) -> Result<Option<ArrobaMcpServerConfig>, DaemonError> {
         validate_registry_name(name, "mcp name")?;
+        let Some(path) = self.find_config_path(name)? else {
+            return Ok(None);
+        };
+        Self::read_config(&path).map(Some)
+    }
+
+    fn find_config_path(&self, name: &str) -> Result<Option<PathBuf>, DaemonError> {
+        validate_registry_name(name, "mcp name")?;
         for root in &self.roots {
             let path = root.join(format!("{name}.json"));
             if path.exists() {
-                return Self::read_config(&path).map(Some);
+                return Ok(Some(path));
             }
         }
         Ok(None)
@@ -962,6 +1005,28 @@ mod tests {
         let listed = registry.list().expect("list should succeed");
         assert_eq!(listed, vec![config.clone()]);
         assert_eq!(registry.get("browser").unwrap(), Some(config));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_updates_and_uninstalls_existing_mcp_config() {
+        let root = temp_root("update-remove");
+        let registry = ArrobaMcpRegistry::new(vec![root.clone()]);
+        let original = ArrobaMcpServerConfig::stdio("browser", "npx", vec!["old".to_string()]);
+        registry.install(&original).unwrap();
+
+        let updated = ArrobaMcpServerConfig::stdio("browser", "node", vec!["new".to_string()]);
+        let path = registry.update(&updated).expect("update should succeed");
+        assert_eq!(path, root.join("browser.json"));
+        assert_eq!(registry.get("browser").unwrap(), Some(updated));
+
+        let removed = registry
+            .uninstall("browser")
+            .expect("uninstall should succeed");
+        assert_eq!(removed, root.join("browser.json"));
+        assert_eq!(registry.get("browser").unwrap(), None);
+        assert!(!removed.exists());
 
         let _ = fs::remove_dir_all(root);
     }

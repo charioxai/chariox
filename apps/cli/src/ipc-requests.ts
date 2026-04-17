@@ -89,6 +89,24 @@ export function installMcpServerRequest(workspaceId: string | null, config: Reco
   }
 }
 
+export function updateMcpServerRequest(workspaceId: string | null, config: Record<string, unknown>) {
+  return {
+    UpdateMcpServer: {
+      workspace_id: workspaceId ?? null,
+      config,
+    },
+  }
+}
+
+export function uninstallMcpServerRequest(workspaceId: string | null, name: string) {
+  return {
+    UninstallMcpServer: {
+      workspace_id: workspaceId ?? null,
+      name,
+    },
+  }
+}
+
 export function getMcpServerRequest(workspaceId: string | null, name: string) {
   return {
     GetMcpServer: {
@@ -122,6 +140,24 @@ export function installSkillRequest(workspaceId: string | null, sourcePath: stri
     InstallSkill: {
       workspace_id: workspaceId ?? null,
       source_path: sourcePath,
+    },
+  }
+}
+
+export function updateSkillRequest(workspaceId: string | null, sourcePath: string) {
+  return {
+    UpdateSkill: {
+      workspace_id: workspaceId ?? null,
+      source_path: sourcePath,
+    },
+  }
+}
+
+export function uninstallSkillRequest(workspaceId: string | null, name: string) {
+  return {
+    UninstallSkill: {
+      workspace_id: workspaceId ?? null,
+      name,
     },
   }
 }

@@ -23,6 +23,7 @@ use crate::local::{
     ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
     PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest,
     RevokeAgentCapabilityRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
+    UninstallMcpServerRequest, UninstallSkillRequest, UpdateMcpServerRequest, UpdateSkillRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -640,6 +641,16 @@ impl CommandRouter {
                     .execute_install_mcp_server_request(request.clone())
                     .await;
             }
+            LocalDaemonRequest::UpdateMcpServer(request) => {
+                return self
+                    .execute_update_mcp_server_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::UninstallMcpServer(request) => {
+                return self
+                    .execute_uninstall_mcp_server_request(request.clone())
+                    .await;
+            }
             LocalDaemonRequest::ImportMcpServers(request) => {
                 return self
                     .execute_import_mcp_servers_request(request.clone())
@@ -653,6 +664,12 @@ impl CommandRouter {
             }
             LocalDaemonRequest::InstallSkill(request) => {
                 return self.execute_install_skill_request(request.clone()).await;
+            }
+            LocalDaemonRequest::UpdateSkill(request) => {
+                return self.execute_update_skill_request(request.clone()).await;
+            }
+            LocalDaemonRequest::UninstallSkill(request) => {
+                return self.execute_uninstall_skill_request(request.clone()).await;
             }
             LocalDaemonRequest::ImportSkills(request) => {
                 return self.execute_import_skills_request(request.clone()).await;
@@ -1357,6 +1374,12 @@ impl CommandRouter {
             LocalDaemonRequest::InstallMcpServer(request) => {
                 self.execute_install_mcp_server_request(request).await
             }
+            LocalDaemonRequest::UpdateMcpServer(request) => {
+                self.execute_update_mcp_server_request(request).await
+            }
+            LocalDaemonRequest::UninstallMcpServer(request) => {
+                self.execute_uninstall_mcp_server_request(request).await
+            }
             LocalDaemonRequest::ImportMcpServers(request) => {
                 self.execute_import_mcp_servers_request(request).await
             }
@@ -1368,6 +1391,12 @@ impl CommandRouter {
             }
             LocalDaemonRequest::InstallSkill(request) => {
                 self.execute_install_skill_request(request).await
+            }
+            LocalDaemonRequest::UpdateSkill(request) => {
+                self.execute_update_skill_request(request).await
+            }
+            LocalDaemonRequest::UninstallSkill(request) => {
+                self.execute_uninstall_skill_request(request).await
             }
             LocalDaemonRequest::ImportSkills(request) => {
                 self.execute_import_skills_request(request).await
@@ -1517,6 +1546,34 @@ impl CommandRouter {
         })
     }
 
+    async fn execute_update_mcp_server_request(
+        &self,
+        request: UpdateMcpServerRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(
+            request.workspace_id.as_deref(),
+        )?);
+        let path = registry.update(&request.config)?;
+        Ok(LocalDaemonResponse::McpServerUpdated {
+            mcp: request.config,
+            path,
+        })
+    }
+
+    async fn execute_uninstall_mcp_server_request(
+        &self,
+        request: UninstallMcpServerRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(
+            request.workspace_id.as_deref(),
+        )?);
+        let path = registry.uninstall(&request.name)?;
+        Ok(LocalDaemonResponse::McpServerUninstalled {
+            name: request.name,
+            path,
+        })
+    }
+
     async fn execute_import_mcp_servers_request(
         &self,
         request: ImportMcpServersRequest,
@@ -1587,6 +1644,34 @@ impl CommandRouter {
         )?);
         let (skill, path) = registry.install_from_path(&source_path)?;
         Ok(LocalDaemonResponse::SkillInstalled { skill, path })
+    }
+
+    async fn execute_update_skill_request(
+        &self,
+        request: UpdateSkillRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
+        let source_path = if request.source_path.is_absolute() {
+            request.source_path
+        } else {
+            workspace.join(request.source_path)
+        };
+        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+            request.workspace_id.as_deref(),
+        )?);
+        let (skill, path) = registry.update_from_path(&source_path)?;
+        Ok(LocalDaemonResponse::SkillUpdated { skill, path })
+    }
+
+    async fn execute_uninstall_skill_request(
+        &self,
+        request: UninstallSkillRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+            request.workspace_id.as_deref(),
+        )?);
+        let (skill, path) = registry.uninstall(&request.name)?;
+        Ok(LocalDaemonResponse::SkillUninstalled { skill, path })
     }
 
     async fn execute_import_skills_request(

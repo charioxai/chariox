@@ -35,7 +35,8 @@ pub use api::{
     SetWorkflowNodeIntermediateOutputSchemaRequest, SetWorkflowNodeMaxTurnsRequest,
     SetWorkflowRunOutputSchemaRequest, SetWorkflowWatchdogEnabledRequest, SpawnAgentRequest,
     StartProviderLoginRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
-    TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
+    TeardownProviderProcessesRequest, UninstallMcpServerRequest, UninstallSkillRequest,
+    UpdateMcpServerRequest, UpdateSessionConfigRequest, UpdateSkillRequest,
     UpdateWorkflowNodeInstructionsRequest, ValidateWorkflowOutputRequest,
 };
 pub use client::LocalDaemonClient;

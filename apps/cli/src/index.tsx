@@ -120,7 +120,11 @@ import {
   storeTransferredFileRequest,
   submitPromptRequest,
   teardownProviderProcessesRequest,
+  uninstallMcpServerRequest,
+  uninstallSkillRequest,
+  updateMcpServerRequest,
   updateSessionConfigRequest,
+  updateSkillRequest,
 } from "./ipc-requests.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
@@ -5327,6 +5331,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       )
       return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServerInstalled").mcp
     },
+    updateMcpServer: async (config) => {
+      const response = await client.send<Record<string, unknown>>(
+        updateMcpServerRequest(options.workspace ?? process.cwd(), config as unknown as Record<string, unknown>),
+      )
+      return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServerUpdated").mcp
+    },
+    uninstallMcpServer: async (name) => {
+      const response = await client.send<Record<string, unknown>>(
+        uninstallMcpServerRequest(options.workspace ?? process.cwd(), name),
+      )
+      return expectVariant<{ name: string }>(response, "McpServerUninstalled").name
+    },
     importMcpServers: async (provider, name) => {
       const response = await client.send<Record<string, unknown>>(
         importMcpServersRequest(options.workspace ?? process.cwd(), provider, name),
@@ -5362,6 +5378,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         installSkillRequest(options.workspace ?? process.cwd(), sourcePath),
       )
       return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillInstalled").skill
+    },
+    updateSkill: async (sourcePath) => {
+      const response = await client.send<Record<string, unknown>>(
+        updateSkillRequest(options.workspace ?? process.cwd(), sourcePath),
+      )
+      return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillUpdated").skill
+    },
+    uninstallSkill: async (name) => {
+      const response = await client.send<Record<string, unknown>>(
+        uninstallSkillRequest(options.workspace ?? process.cwd(), name),
+      )
+      return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillUninstalled").skill
     },
     importSkills: async (provider, name) => {
       const response = await client.send<Record<string, unknown>>(

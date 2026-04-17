@@ -149,6 +149,18 @@ pub struct InstallMcpServerRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateMcpServerRequest {
+    pub workspace_id: Option<String>,
+    pub config: ArrobaMcpServerConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UninstallMcpServerRequest {
+    pub workspace_id: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportMcpServersRequest {
     pub workspace_id: Option<String>,
     pub provider: String,
@@ -171,6 +183,18 @@ pub struct GetSkillRequest {
 pub struct InstallSkillRequest {
     pub workspace_id: Option<String>,
     pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateSkillRequest {
+    pub workspace_id: Option<String>,
+    pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UninstallSkillRequest {
+    pub workspace_id: Option<String>,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -643,10 +667,14 @@ pub enum LocalDaemonRequest {
     GetProviderCatalog(GetProviderCatalogRequest),
     GetProviderCommandCatalogs(GetProviderCommandCatalogsRequest),
     InstallMcpServer(InstallMcpServerRequest),
+    UpdateMcpServer(UpdateMcpServerRequest),
+    UninstallMcpServer(UninstallMcpServerRequest),
     ImportMcpServers(ImportMcpServersRequest),
     GetMcpServer(GetMcpServerRequest),
     ListMcpServers(ListMcpServersRequest),
     InstallSkill(InstallSkillRequest),
+    UpdateSkill(UpdateSkillRequest),
+    UninstallSkill(UninstallSkillRequest),
     ImportSkills(ImportSkillsRequest),
     GetSkill(GetSkillRequest),
     ListSkills(ListSkillsRequest),
@@ -766,6 +794,14 @@ pub enum LocalDaemonResponse {
         mcp: ArrobaMcpServerConfig,
         path: PathBuf,
     },
+    McpServerUpdated {
+        mcp: ArrobaMcpServerConfig,
+        path: PathBuf,
+    },
+    McpServerUninstalled {
+        name: String,
+        path: PathBuf,
+    },
     McpServersImported {
         outcome: McpImportOutcome,
     },
@@ -779,6 +815,14 @@ pub enum LocalDaemonResponse {
         skill: ArrobaSkillMetadata,
     },
     SkillInstalled {
+        skill: ArrobaSkillMetadata,
+        path: PathBuf,
+    },
+    SkillUpdated {
+        skill: ArrobaSkillMetadata,
+        path: PathBuf,
+    },
+    SkillUninstalled {
         skill: ArrobaSkillMetadata,
         path: PathBuf,
     },
