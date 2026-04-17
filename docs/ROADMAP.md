@@ -36,7 +36,7 @@ Current milestone status:
 - M4.5: Kernel Runtime Refactor
 - M5: Relay and Remote Transport
 - M6: Remote Agents and Machine Membership
-- M7: Arroba-owned MCP and skill management
+- M7: Arroba-owned MCP and skill management. In progress: MCP/skill registries, slash-command install/list/show, per-agent grants, local Codex/OpenCode MCP rendering, and granted-skill summary injection are landed; import/update/uninstall, explicit skill-body injection, runtime discovery/request tools, remote materialization, and drills remain open.
 - M8: Workflow Interconnection
 - M9: Multi-Provider Expansion and Adapter Generalization
 - M10: v1 Stabilization and Launch
@@ -52,7 +52,7 @@ Rollout priority:
 - then remove the daemon hot-path dependency on one shared `DaemonApp` lock by introducing actor-owned mutation, command routing, ordered kernel events, and query projections
 - then add relay-backed remote transport
 - then add remote agents and machine membership on top of relay
-- then add Arroba-owned MCP and skill management with per-agent grants, provider-native MCP rendering, skill prompt injection, and provider import paths
+- then add Arroba-owned MCP and skill management with per-agent grants, provider-native MCP rendering, skill prompt injection, and provider import paths; the local registry/grant/rendering baseline is now in progress and partially landed
 - then add additional clients on the same daemon/protocol model
 - then add workflow interconnection on top of remote agent connectivity
 - then add additional providers such as Claude Code and Codex plus the more generic provider-adapter/protocol work they require

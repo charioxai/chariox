@@ -2,6 +2,35 @@
 
 M7 adds Arroba-owned MCP and skill management. The design intentionally follows Codex's model where practical, while keeping Arroba responsible for orchestration, per-agent grants, local/remote placement, and provider-specific session rendering.
 
+
+## Implementation Status
+
+Updated: 2026-04-17
+
+Landed:
+
+- M7.1/M7.2: Arroba-owned MCP config model and registry for project/user roots.
+- M7.3 partial: interactive `/mcp list`, `/mcp show`, `/mcp install`, `/mcp grant`, and `/mcp revoke`.
+- M7.5 partial: agent model now stores `mcp_grants`; grant/revoke IPC validates installed MCPs before mutating the agent.
+- M7.6 partial: local Codex and OpenCode provider launches render only the target agent's granted Arroba MCPs into provider-native MCP config, while keeping Arroba runtime MCP separate.
+- M7.7/M7.8: Codex-style `SKILL.md` metadata parsing and Arroba-owned skill registry over project/user roots.
+- M7.9 partial: interactive `/skill list`, `/skill show`, `/skill install`, `/skill grant`, and `/skill revoke`.
+- M7.11 partial: agent model now stores `skill_grants`; grant/revoke IPC validates installed skills before mutating the agent.
+- M7.12 partial: local provider prompts receive a short granted-skills summary for the target agent only. Stored prompt history remains the original user prompt.
+
+Still open in M7:
+
+- Regular non-interactive `arroba mcp ...` / `arroba skill ...` CLI command surfaces, if we keep them separate from slash commands.
+- MCP/skill update and uninstall operations.
+- Agent grant inspection commands, for example `agent mcps` / `agent skills` or `/mcp grants`.
+- Provider MCP import from Codex/OpenCode/Claude-owned configs.
+- Provider skill import from Codex/OpenCode/Claude-owned skill locations.
+- Explicit full `SKILL.md` body injection when a granted skill is selected, mentioned, or requested.
+- Skill MCP dependency validation.
+- Runtime MCP discovery/request tools for MCPs and skills.
+- Remote-machine MCP and skill materialization/rendering.
+- Local and remote drills.
+
 ## Goal
 
 Users should install and manage MCPs and skills through Arroba instead of repeating the same setup in every provider. Agents should receive only the MCPs and skills that were granted to them.
@@ -30,6 +59,8 @@ Provider-native MCPs and skills remain provider-owned. Import commands copy or r
 
 ## M7.1 Arroba MCP Config Model
 
+Status: landed for V1 stdio and streamable HTTP config.
+
 Define an Arroba-owned MCP config model aligned with Codex where practical:
 
 - stdio transport: command, args, env, env var pass-through, cwd
@@ -46,6 +77,8 @@ V1 should store env var names instead of secret values by default.
 
 ## M7.2 Arroba MCP Registry
 
+Status: partial. Install, list, and show are landed; update and uninstall remain open.
+
 Implement registry operations over Arroba-owned MCP roots:
 
 - install
@@ -57,6 +90,8 @@ Implement registry operations over Arroba-owned MCP roots:
 Registry entries are Arroba-owned copies. Installing an MCP registers it; it does not expose it to every agent.
 
 ## M7.3 MCP CLI Commands
+
+Status: partial. Interactive slash commands for install/list/show/grant/revoke are landed; regular command aliases, import, update, uninstall, grant inspection, and test/start remain open.
 
 Expose MCP management through regular CLI commands and the interactive slash-command surface.
 
@@ -110,6 +145,8 @@ Behavior:
 
 ## M7.5 Agent MCP Grants
 
+Status: partial. Agent-scoped MCP grant storage and grant/revoke IPC are landed; grant inspection commands remain open.
+
 Persist per-agent MCP grants. Each agent has an effective MCP set computed from Arroba's registry plus that agent's grants.
 
 Commands:
@@ -122,11 +159,15 @@ arroba agent mcps agent-1
 
 ## M7.6 Provider-Native MCP Rendering
 
+Status: partial. Local Codex and OpenCode launches now receive only the target agent's granted Arroba MCPs as provider-native MCP config. Remote rendering remains open.
+
 At agent launch, inject only that agent's granted Arroba MCPs into the provider's native MCP config/session overlay.
 
 The provider sees normal MCP servers. Arroba does not proxy third-party MCPs through Arroba's runtime MCP.
 
 ## M7.7 Arroba Skill Format
+
+Status: landed for Codex-style `SKILL.md` metadata parsing with required name/description behavior.
 
 Use Codex-compatible `SKILL.md` layout and metadata where practical:
 
@@ -143,6 +184,8 @@ skill-name/
 
 ## M7.8 Arroba Skill Registry
 
+Status: partial. Install, list, and show are landed; update and uninstall remain open.
+
 Implement registry operations over Arroba-owned skill roots:
 
 - install
@@ -154,6 +197,8 @@ Implement registry operations over Arroba-owned skill roots:
 Arroba-managed skills are not stored in `.agents/skills` by default because providers may auto-scan those paths and expose them outside Arroba's per-agent grants.
 
 ## M7.9 Skill CLI Commands
+
+Status: partial. Interactive slash commands for install/list/show/grant/revoke are landed; regular command aliases, import, update, uninstall, grant inspection, and validation commands remain open.
 
 Expose skill management through regular CLI commands and the interactive slash-command surface.
 
@@ -208,6 +253,8 @@ Behavior:
 
 ## M7.11 Agent Skill Grants
 
+Status: partial. Agent-scoped skill grant storage and grant/revoke IPC are landed; grant inspection commands remain open.
+
 Persist per-agent skill grants. Each agent has an effective skill set computed from Arroba's registry plus that agent's grants.
 
 Commands:
@@ -220,17 +267,23 @@ arroba agent skills agent-1
 
 ## M7.12 Skill Prompt Injection
 
+Status: partial. Local provider prompts receive target-agent granted skill summaries. Remote prompts and richer selection behavior remain open.
+
 Inject a short Codex-style available-skills section into every relevant agent prompt/run, listing only that agent's granted Arroba skills.
 
 Do not inject all full skill bodies by default.
 
 ## M7.13 Explicit Skill Body Injection
 
+Status: open.
+
 When a granted skill is explicitly selected, mentioned, or requested, inject the full `SKILL.md` body Codex-style.
 
 The runtime MCP may be used for discovery/request control-plane operations, but actual skill instruction exposure is prompt injection.
 
 ## M7.14 Skill MCP Dependency Validation
+
+Status: open.
 
 If an Arroba skill declares MCP dependencies, validate that the same agent has those MCPs installed and granted.
 
@@ -241,6 +294,8 @@ For v1:
 - report missing dependencies clearly
 
 ## M7.15 Runtime MCP Discovery/Request Control Plane
+
+Status: open.
 
 Extend Arroba's runtime MCP with discovery/request tools:
 
@@ -261,6 +316,8 @@ A workflow node using an agent receives that agent's MCPs and skills. If a workf
 
 ## M7.17 Remote Machine MCP Support
 
+Status: open.
+
 Add remote-machine handling for MCPs.
 
 Initial placeholder:
@@ -276,6 +333,8 @@ Initial placeholder:
 Design details are deferred until local MCP/skill support is stable.
 
 ## M7.18 Remote Machine Skill Support
+
+Status: open.
 
 Add remote-machine handling for skills.
 
