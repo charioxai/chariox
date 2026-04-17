@@ -143,6 +143,16 @@ pub struct RelayStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListMcpServersRequest {
+    pub workspace_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListSkillsRequest {
+    pub workspace_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProviderAuthStatusRequest {
     pub provider: String,
 }
@@ -572,6 +582,8 @@ pub enum LocalDaemonRequest {
     GetProviderRun(GetProviderRunRequest),
     GetProviderCatalog(GetProviderCatalogRequest),
     GetProviderCommandCatalogs(GetProviderCommandCatalogsRequest),
+    ListMcpServers(ListMcpServersRequest),
+    ListSkills(ListSkillsRequest),
     RelayStatus(RelayStatusRequest),
     ConfigureRelay(ConfigureRelayRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
@@ -681,6 +693,12 @@ pub enum LocalDaemonResponse {
     },
     ProviderCommandCatalogs {
         catalogs: BTreeMap<String, ProviderCommandCatalog>,
+    },
+    McpServersListed {
+        mcps: Vec<ArrobaMcpServerConfig>,
+    },
+    SkillsListed {
+        skills: Vec<ArrobaSkillMetadata>,
     },
     RelayStatus {
         status: RelayStatus,

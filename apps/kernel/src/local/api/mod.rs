@@ -9,6 +9,7 @@ use crate::capability::{
     CaptureScreenshotResult, EditFileResult, InspectGitResult, ReadDirectoryTreeResult,
     ReadFileResult, RunShellCommandResult, StoredTransferArtifact,
 };
+use crate::mcp::ArrobaMcpServerConfig;
 use crate::provider::{
     OpenCodeProviderCatalog, ProviderAuthStatus, ProviderCommandCatalog, ProviderLoginStart,
     ProviderProcessInfo, RuntimeProviderRun,
@@ -21,6 +22,7 @@ use crate::session::{
     WorkflowNodeDefinition, WorkflowRun, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
 };
 use crate::session_history_page::{SessionHistoryCursor, SessionHistoryPageEntry};
+use crate::skill::ArrobaSkillMetadata;
 #[cfg(test)]
 mod tests;
 mod types;

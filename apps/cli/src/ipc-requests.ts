@@ -79,6 +79,22 @@ export function getDaemonHealthRequest() {
   return { GetDaemonHealth: null }
 }
 
+export function listMcpServersRequest(workspaceId?: string | null) {
+  return {
+    ListMcpServers: {
+      workspace_id: workspaceId ?? null,
+    },
+  }
+}
+
+export function listSkillsRequest(workspaceId?: string | null) {
+  return {
+    ListSkills: {
+      workspace_id: workspaceId ?? null,
+    },
+  }
+}
+
 export function listProviderProcessesRequest(provider?: string | null) {
   return {
     ListProviderProcesses: {

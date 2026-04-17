@@ -17,6 +17,8 @@ import {
 } from "./cli-types.js"
 import type {
   AgentInstance,
+  ArrobaMcpServerConfig,
+  ArrobaSkillMetadata,
   BootstrapState,
   CaptureScreenshotResult,
   CliOptions,
@@ -90,7 +92,9 @@ import {
   getSessionHistoryRequest,
   getSessionStateRequest,
   launchProviderRunRequest,
+  listMcpServersRequest,
   listProviderProcessesRequest,
+  listSkillsRequest,
   listRemoteMachineKernelsRequest,
   listRemoteMachinesRequest,
   relayStatusRequest,
@@ -5286,6 +5290,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         teardownProviderProcessesRequest(provider),
       )
       return expectVariant<{ processes: ProviderProcessInfo[] }>(response, "ProviderProcessesTornDown").processes
+    },
+    listMcpServers: async () => {
+      const response = await client.send<Record<string, unknown>>(
+        listMcpServersRequest(options.workspace ?? process.cwd()),
+      )
+      return expectVariant<{ mcps: ArrobaMcpServerConfig[] }>(response, "McpServersListed").mcps
+    },
+    listSkills: async () => {
+      const response = await client.send<Record<string, unknown>>(
+        listSkillsRequest(options.workspace ?? process.cwd()),
+      )
+      return expectVariant<{ skills: ArrobaSkillMetadata[] }>(response, "SkillsListed").skills
     },
     logViewCommand: (fields) => {
       appLogger?.info("handling view command", fields)

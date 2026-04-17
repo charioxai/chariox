@@ -17,10 +17,10 @@ use crate::local::provider_requests::{
 use crate::local::{
     ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
     GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-    GetSessionStateRequest, ListAgentsRequest, ListProviderProcessesRequest, ListSessionsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest, PumpTerminalOutputRequest,
-    RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest, StartProviderLoginRequest,
-    TeardownProviderProcessesRequest,
+    GetSessionStateRequest, ListAgentsRequest, ListMcpServersRequest, ListProviderProcessesRequest,
+    ListSessionsRequest, ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse,
+    LogoutProviderRequest, PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest,
+    ResolveSessionRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -632,6 +632,12 @@ impl CommandRouter {
             }
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
                 return provider_command_catalogs_response();
+            }
+            LocalDaemonRequest::ListMcpServers(request) => {
+                return self.execute_list_mcp_servers_request(request.clone()).await;
+            }
+            LocalDaemonRequest::ListSkills(request) => {
+                return self.execute_list_skills_request(request.clone()).await;
             }
             _ => {}
         }
@@ -1318,6 +1324,12 @@ impl CommandRouter {
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
                 provider_command_catalogs_response()
             }
+            LocalDaemonRequest::ListMcpServers(request) => {
+                self.execute_list_mcp_servers_request(request).await
+            }
+            LocalDaemonRequest::ListSkills(request) => {
+                self.execute_list_skills_request(request).await
+            }
             LocalDaemonRequest::RelayStatus(_) => self.projected_relay_status_response().await,
             LocalDaemonRequest::ConfigureRelay(request) => {
                 self.execute_configure_relay_request(request).await
@@ -1441,6 +1453,30 @@ impl CommandRouter {
                 self.dispatch_interactive(command, request).await
             }
         }
+    }
+
+    async fn execute_list_mcp_servers_request(
+        &self,
+        request: ListMcpServersRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(
+            request.workspace_id.as_deref(),
+        )?);
+        Ok(LocalDaemonResponse::McpServersListed {
+            mcps: registry.list()?,
+        })
+    }
+
+    async fn execute_list_skills_request(
+        &self,
+        request: ListSkillsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+            request.workspace_id.as_deref(),
+        )?);
+        Ok(LocalDaemonResponse::SkillsListed {
+            skills: registry.list()?,
+        })
     }
 
     async fn apply_focus_projection_refresh(
@@ -1810,6 +1846,36 @@ enum FocusProjectionRefresh {
     None,
     AgentSpawn,
     SnapshotSession { session_id: String },
+}
+
+fn mcp_registry_roots(workspace_id: Option<&str>) -> Result<Vec<std::path::PathBuf>, DaemonError> {
+    let workspace = registry_workspace_root(workspace_id)?;
+    let mut roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(&workspace)];
+    if let Some(root) = crate::mcp::ArrobaMcpRegistry::user_root() {
+        roots.push(root);
+    }
+    Ok(roots)
+}
+
+fn skill_registry_roots(
+    workspace_id: Option<&str>,
+) -> Result<Vec<std::path::PathBuf>, DaemonError> {
+    let workspace = registry_workspace_root(workspace_id)?;
+    let mut roots = vec![crate::skill::ArrobaSkillRegistry::project_root(&workspace)];
+    if let Some(root) = crate::skill::ArrobaSkillRegistry::user_root() {
+        roots.push(root);
+    }
+    Ok(roots)
+}
+
+fn registry_workspace_root(workspace_id: Option<&str>) -> Result<std::path::PathBuf, DaemonError> {
+    match workspace_id {
+        Some(value) if !value.trim().is_empty() => Ok(std::path::PathBuf::from(value)),
+        _ => std::env::current_dir().map_err(|error| DaemonError::LocalTransport {
+            operation: "registry.roots",
+            message: format!("failed to resolve current directory: {error}"),
+        }),
+    }
 }
 
 fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusProjectionRefresh {

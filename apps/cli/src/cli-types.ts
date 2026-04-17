@@ -4,6 +4,26 @@ import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import type { DirectoryTreeEntry } from "./tree-view.js"
 
+
+export type ArrobaMcpServerConfig = {
+  name: string
+  transport: Record<string, unknown>
+  enabled?: boolean
+  required?: boolean
+  startup_timeout_sec?: number | null
+  tool_timeout_sec?: number | null
+  enabled_tools?: string[] | null
+  disabled_tools?: string[] | null
+  tools?: Record<string, unknown>
+}
+
+export type ArrobaSkillMetadata = {
+  name: string
+  description: string
+  short_description?: string | null
+  path: string
+}
+
 export type RuntimeSession = {
   id: string
   alias?: string | null

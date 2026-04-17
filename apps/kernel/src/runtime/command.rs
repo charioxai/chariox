@@ -243,6 +243,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => "provider.command_catalogs.get",
+        LocalDaemonRequest::ListMcpServers(_) => "mcp.list",
+        LocalDaemonRequest::ListSkills(_) => "skill.list",
         LocalDaemonRequest::RelayStatus(_) => "relay.status",
         LocalDaemonRequest::ConfigureRelay(_) => "relay.configure",
         LocalDaemonRequest::ListRemoteMachines(_) => "remote_machine.list",

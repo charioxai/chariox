@@ -1,5 +1,7 @@
 import type {
   AgentInstance,
+  ArrobaMcpServerConfig,
+  ArrobaSkillMetadata,
   ProviderAuthStatus,
   ProviderLoginStart,
   RuntimeAttachment,
@@ -201,6 +203,8 @@ type CommandActionDeps = {
   }>>
   listProviderProcesses?: (provider?: string | null) => Promise<ProviderProcessInfo[]>
   teardownProviderProcesses?: (provider?: string | null) => Promise<ProviderProcessInfo[]>
+  listMcpServers?: () => Promise<ArrobaMcpServerConfig[]>
+  listSkills?: () => Promise<ArrobaSkillMetadata[]>
   logViewCommand?: (fields: Record<string, unknown>) => void
   setMultiAgentResponseLayout: (layout: MultiAgentResponseLayout) => void
   applyResponseLayout: () => void
@@ -386,8 +390,17 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
     return numeric
   }
-  const formatProviderProcessNotice = (process: ProviderProcessInfo): string => {
-    const lines = [
+  const formatMcpSummary = (mcp: ArrobaMcpServerConfig): string => {
+    const transportType = typeof mcp.transport?.type === "string" ? mcp.transport.type : "unknown"
+    const status = mcp.enabled === false ? "disabled" : "enabled"
+    return `${mcp.name} [${transportType}, ${status}]`
+  }
+
+  const formatSkillSummary = (skill: ArrobaSkillMetadata): string => {
+    const summary = skill.short_description ?? skill.description
+    return `${skill.name}: ${summary}`
+  }
+  const formatProviderProcessNotice = (process: ProviderProcessInfo): string => {    const lines = [
       `${process.process_id} provider=${process.provider} pid=${process.pid ?? "-"} status=${process.status} mode=${process.endpoint_mode} safe=${String(process.teardown_safe)}`,
       `  provider sessions: ${process.provider_session_ids.join(",") || "-"}`,
       `  owner runs: ${process.owner_provider_run_ids.join(",") || "-"}`,
@@ -1147,11 +1160,16 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   ): Promise<void> => {
     const [action] = command.args
     if (!action || action === "list" || action === "ls") {
-      deps.appendNotice("MCP registry commands are planned for M7. Use /mcp install|import|list|show|grant|revoke once the registry API is wired.")
-      deps.flashFooter("MCP management is not wired yet", "info")
+      if (!deps.listMcpServers) {
+        deps.flashFooter("MCP registry is not available in this daemon", "error")
+        return
+      }
+      const mcps = await deps.listMcpServers()
+      deps.appendNotice(mcps.length === 0 ? "No Arroba-managed MCPs installed." : mcps.map(formatMcpSummary).join("\n"))
+      deps.flashFooter(`listed ${mcps.length} MCP${mcps.length === 1 ? "" : "s"}`, "info")
       return
     }
-    deps.flashFooter("MCP management is not wired yet", "error")
+    deps.flashFooter("usage: /mcp list", "error")
   }
 
   const handleSkillCommand = async (
@@ -1159,11 +1177,16 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   ): Promise<void> => {
     const [action] = command.args
     if (!action || action === "list" || action === "ls") {
-      deps.appendNotice("Skill registry commands are planned for M7. Use /skill install|import|list|show|grant|revoke once the registry API is wired.")
-      deps.flashFooter("skill management is not wired yet", "info")
+      if (!deps.listSkills) {
+        deps.flashFooter("skill registry is not available in this daemon", "error")
+        return
+      }
+      const skills = await deps.listSkills()
+      deps.appendNotice(skills.length === 0 ? "No Arroba-managed skills installed." : skills.map(formatSkillSummary).join("\n"))
+      deps.flashFooter(`listed ${skills.length} skill${skills.length === 1 ? "" : "s"}`, "info")
       return
     }
-    deps.flashFooter("skill management is not wired yet", "error")
+    deps.flashFooter("usage: /skill list", "error")
   }
 
   const handleWorkflowCommand = async (
