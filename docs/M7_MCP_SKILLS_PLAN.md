@@ -19,6 +19,7 @@ Landed:
 - M7.11 partial: agent model now stores `skill_grants`; grant/revoke IPC validates installed skills before mutating the agent; interactive grant inspection is landed.
 - M7.12 partial: local provider prompts receive a short granted-skills summary for the target agent only. Stored prompt history remains the original user prompt.
 - M7.13 partial: local provider prompts inject the full `SKILL.md` body for granted skills that are explicitly selected, mentioned, or requested.
+- M7.15 partial: runtime MCP exposes `list_capabilities` and `request_capability` control-plane tools for Arroba-managed MCPs and skills. V1 auto-grants valid requests to the current agent and reports when the grant becomes effective.
 
 Still open in M7:
 
@@ -27,7 +28,6 @@ Still open in M7:
 - Provider MCP import from Claude-owned configs, plus regular non-interactive Codex/OpenCode import aliases.
 - Provider skill import from Claude-owned skill locations, plus regular non-interactive Codex/OpenCode import aliases.
 - Skill MCP dependency validation.
-- Runtime MCP discovery/request tools for MCPs and skills.
 - Remote-machine MCP and skill materialization/rendering.
 - Local and remote drills.
 
@@ -330,18 +330,23 @@ For v1:
 
 ## M7.15 Runtime MCP Discovery/Request Control Plane
 
-Status: open.
+Status: partial. Local agent discovery and auto-grant requests are landed through the Arroba runtime MCP. Remote behavior remains open.
 
 Extend Arroba's runtime MCP with discovery/request tools:
 
 ```text
-list_mcps
-list_skills
-request_mcp
-request_skill
+list_capabilities
+request_capability
 ```
 
-For now, assume permission is granted. Later this plugs into the permissions model.
+`list_capabilities` returns Arroba-managed MCPs and skills visible from the current workspace, plus whether each one is already granted to the current agent. `request_capability` accepts `kind` (`mcp` or `skill`) and `name`; for v1, valid requests are auto-granted.
+
+Effectiveness semantics:
+
+- MCP requests update the agent grant immediately, but provider-native MCP exposure is rendered at provider launch, so the agent must restart/relaunch its provider run before using a newly granted MCP.
+- Skill requests update the agent grant immediately and affect the next prompt injection for that agent.
+
+Later this plugs into the permissions model instead of always granting.
 
 ## M7.16 Workflow Integration
 

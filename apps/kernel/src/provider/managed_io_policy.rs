@@ -42,6 +42,8 @@ mod tests {
         assert!(instructions.contains("arroba.read_artifact"));
         assert!(instructions.contains("arroba.write_artifact"));
         assert!(instructions.contains("arroba.edit_artifact"));
+        assert!(instructions.contains("list_capabilities"));
+        assert!(instructions.contains("request_capability"));
         assert!(!instructions.ends_with('\n'));
     }
 

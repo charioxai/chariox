@@ -450,8 +450,12 @@ Agent-facing tools:
 - `arroba.apply_patch`
 - `arroba.move_artifact`
 - `arroba.delete_artifact`
+- `arroba.list_capabilities`
+- `arroba.request_capability`
 
-The same operations are also exposed as short aliases: `read_artifact`, `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact`. Codex may display these as provider-qualified tool names such as `mcp__arroba__read_artifact`.
+The same operations are also exposed as short aliases: `read_artifact`, `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, `delete_artifact`, `list_capabilities`, and `request_capability`. Codex may display these as provider-qualified tool names such as `mcp__arroba__read_artifact`.
+
+`list_capabilities` lets an agent discover Arroba-managed MCPs and skills available in the current workspace. `request_capability` accepts `kind` (`mcp` or `skill`) and `name`; v1 grants valid requests automatically. A requested MCP is rendered into provider-native MCP config on the next provider launch, while a requested skill affects the next prompt injection.
 
 Text artifacts use snapshot-aware fine-grained coordination. If a stale edit overlaps an external or concurrent managed change, the tool rejects it and the agent should reread the artifact before retrying. Non-text artifacts use `domain: "opaque"` with base64 payloads and whole-file coordination in v1.
 

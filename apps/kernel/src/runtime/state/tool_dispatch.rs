@@ -16,6 +16,9 @@ impl KernelRuntimeState {
             let owned = &self.owned;
             let canonical_tool_name =
                 crate::transport::runtime_tools::canonical_managed_io_tool_name(tool_name)
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_capability_tool_name(tool_name)
+                    })
                     .unwrap_or_else(|| tool_name.strip_prefix("arroba_").unwrap_or(tool_name));
             let provider_runs = owned
                 .provider_store
@@ -47,6 +50,19 @@ impl KernelRuntimeState {
                 }
                 return self
                     .dispatch_managed_io_runtime_tool_call(
+                        &provider_runs[0],
+                        canonical_tool_name,
+                        arguments,
+                    )
+                    .await;
+            }
+            if matches!(
+                canonical_tool_name,
+                crate::transport::runtime_tools::LIST_CAPABILITIES_TOOL
+                    | crate::transport::runtime_tools::REQUEST_CAPABILITY_TOOL
+            ) {
+                return self
+                    .dispatch_capability_runtime_tool_call(
                         &provider_runs[0],
                         canonical_tool_name,
                         arguments,
@@ -167,6 +183,175 @@ impl KernelRuntimeState {
             )?;
             self.spawn_workflow_prompt_dispatches(dispatches);
             Ok(result)
+        }
+    }
+
+    async fn dispatch_capability_runtime_tool_call(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "capability tools require an agent-scoped provider run"
+                }),
+            });
+        };
+        let session_id = provider_run.session_id().to_string();
+        let session = self.owned.session_store.get_session(&session_id)?;
+        let agent = self.owned.agent_store.get_agent(&agent_id)?;
+        let workspace = std::path::PathBuf::from(session.workspace_id());
+        let mut mcp_roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(&workspace)];
+        if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
+            mcp_roots.push(user_root);
+        }
+        let mcp_registry = crate::mcp::ArrobaMcpRegistry::new(mcp_roots);
+        let mut skill_roots = vec![crate::skill::ArrobaSkillRegistry::project_root(&workspace)];
+        if let Some(user_root) = crate::skill::ArrobaSkillRegistry::user_root() {
+            skill_roots.push(user_root);
+        }
+        let skill_registry = crate::skill::ArrobaSkillRegistry::new(skill_roots);
+
+        match tool_name {
+            crate::transport::runtime_tools::LIST_CAPABILITIES_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ListCapabilitiesArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_list_capabilities",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let kind = args.kind.as_deref().unwrap_or("all");
+                if !matches!(kind, "all" | "mcp" | "skill") {
+                    return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                        ok: false,
+                        payload: serde_json::json!({
+                            "error": "kind must be one of: all, mcp, skill"
+                        }),
+                    });
+                }
+                let mcps = if matches!(kind, "all" | "mcp") {
+                    mcp_registry
+                        .list()?
+                        .into_iter()
+                        .map(|mcp| {
+                            let granted = agent.mcp_grants().contains(&mcp.name);
+                            serde_json::json!({
+                                "kind": "mcp",
+                                "name": mcp.name,
+                                "enabled": mcp.enabled,
+                                "required": mcp.required,
+                                "granted": granted,
+                                "effective_when_requested": "next_provider_launch"
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let skills = if matches!(kind, "all" | "skill") {
+                    skill_registry
+                        .list()?
+                        .into_iter()
+                        .map(|skill| {
+                            let granted = agent.skill_grants().contains(&skill.name);
+                            serde_json::json!({
+                                "kind": "skill",
+                                "name": skill.name,
+                                "description": skill.description,
+                                "short_description": skill.short_description,
+                                "granted": granted,
+                                "effective_when_requested": "next_prompt"
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "agent_ref": agent.agent_ref(),
+                        "capabilities": {
+                            "mcps": mcps,
+                            "skills": skills
+                        }
+                    }),
+                })
+            }
+            crate::transport::runtime_tools::REQUEST_CAPABILITY_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::RequestCapabilityArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_request_capability",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let (agent, effective_when) = match args.kind.as_str() {
+                    "mcp" => {
+                        if mcp_registry.get(&args.name)?.is_none() {
+                            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                                ok: false,
+                                payload: serde_json::json!({
+                                    "error": format!("MCP `{}` is not installed", args.name),
+                                    "kind": "mcp",
+                                    "name": args.name,
+                                }),
+                            });
+                        }
+                        (
+                            self.owned.grant_agent_mcp(agent.id(), args.name.clone())?,
+                            "next_provider_launch",
+                        )
+                    }
+                    "skill" => {
+                        if skill_registry.get(&args.name)?.is_none() {
+                            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                                ok: false,
+                                payload: serde_json::json!({
+                                    "error": format!("skill `{}` is not installed", args.name),
+                                    "kind": "skill",
+                                    "name": args.name,
+                                }),
+                            });
+                        }
+                        (
+                            self.owned
+                                .grant_agent_skill(agent.id(), args.name.clone())?,
+                            "next_prompt",
+                        )
+                    }
+                    _ => {
+                        return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: false,
+                            payload: serde_json::json!({
+                                "error": "kind must be one of: mcp, skill"
+                            }),
+                        });
+                    }
+                };
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "granted": true,
+                        "kind": args.kind,
+                        "name": args.name,
+                        "agent_ref": agent.agent_ref(),
+                        "effective": effective_when,
+                        "note": match effective_when {
+                            "next_provider_launch" => "MCP grants are rendered into provider-native MCP config when the provider run launches; restart/relaunch the agent provider run before using this MCP.",
+                            _ => "Skill grants are injected when the next prompt is submitted to this agent."
+                        }
+                    }),
+                })
+            }
+            _ => Err(DaemonError::LocalTransport {
+                operation: "dispatch_capability_runtime_tool_call",
+                message: format!("unknown capability runtime tool `{tool_name}`"),
+            }),
         }
     }
 

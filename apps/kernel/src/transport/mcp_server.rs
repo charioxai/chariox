@@ -193,6 +193,7 @@ async fn handle_json_rpc_value(
                 "result": {
                     "tools": crate::transport::runtime_tools::managed_io_runtime_tool_specs()
                         .into_iter()
+                        .chain(crate::transport::runtime_tools::capability_runtime_tool_specs())
                         .chain(crate::transport::runtime_tools::workflow_runtime_tool_specs())
                         .map(|tool| serde_json::json!({
                             "name": tool.name,
@@ -422,6 +423,16 @@ mod tests {
         assert!(tools
             .iter()
             .any(|tool| tool["name"] == "arroba.write_artifact"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "arroba.list_capabilities"));
+        assert!(tools.iter().any(|tool| tool["name"] == "list_capabilities"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "arroba.request_capability"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "request_capability"));
     }
 
     #[tokio::test]
@@ -939,6 +950,160 @@ mod tests {
             "delete"
         );
         assert!(!root.join("final.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn mcp_http_tools_call_lists_and_requests_capabilities() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-capability-mcp-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join(".arroba").join("skills").join("browser-qa"))
+            .expect("skill root should be created");
+        std::fs::write(
+            root.join(".arroba")
+                .join("skills")
+                .join("browser-qa")
+                .join("SKILL.md"),
+            "---\nname: browser-qa\ndescription: Browser QA\n---\nUse the browser.\n",
+        )
+        .expect("skill should be written");
+        let mcp_registry =
+            crate::mcp::ArrobaMcpRegistry::new(vec![root.join(".arroba").join("mcps")]);
+        mcp_registry
+            .install(&crate::mcp::ArrobaMcpServerConfig::stdio(
+                "browser",
+                "npx",
+                vec!["@playwright/mcp".to_string()],
+            ))
+            .expect("mcp should install");
+
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let workspace = root.to_string_lossy().to_string();
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(&workspace, &workspace))
+            .expect("session should exist");
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("agent-a")
+                    .with_model("test-model")
+                    .with_worktree(&workspace),
+            )
+            .expect("agent should spawn");
+        let agent_id = agent.id().to_string();
+        let agent_ref = agent.agent_ref().to_string();
+        let workflow_id = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("wf".to_string()))
+            .expect("workflow should exist")
+            .id()
+            .to_string();
+        let node_id = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), &workflow_id, &agent_id)
+            .expect("node should be added")
+            .id()
+            .to_string();
+        app.sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                &workflow_id,
+                &node_id,
+                Some("entry".to_string()),
+            )
+            .expect("endpoint should exist");
+        app.invoke_workflow_endpoint_and_schedule(
+            session.id(),
+            &workflow_id,
+            "entry",
+            Some("start".to_string()),
+        )
+        .expect("workflow should invoke");
+        let auth_token = app
+            .providers()
+            .get_run_for_agent(session.id(), &agent_id)
+            .expect("provider run should exist")
+            .runtime_mcp_auth_token()
+            .expect("mcp auth token should exist")
+            .to_string();
+
+        let app = Arc::new(Mutex::new(app));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 8));
+        let list_response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "list_capabilities",
+                    "arguments": {"kind": "all"}
+                }
+            }),
+        )
+        .await
+        .expect("list request should succeed");
+        let list_body = list_response
+            .into_body()
+            .collect()
+            .await
+            .expect("list body should collect")
+            .to_bytes();
+        let list_value: Value = serde_json::from_slice(&list_body).expect("list body json");
+        assert_eq!(
+            list_value["result"]["structuredContent"]["agent_ref"],
+            agent_ref
+        );
+        assert_eq!(
+            list_value["result"]["structuredContent"]["capabilities"]["mcps"][0]["name"],
+            "browser"
+        );
+        assert_eq!(
+            list_value["result"]["structuredContent"]["capabilities"]["skills"][0]["name"],
+            "browser-qa"
+        );
+
+        let request_response = handle_json_rpc_value(
+            router,
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "request_capability",
+                    "arguments": {"kind": "skill", "name": "browser-qa"}
+                }
+            }),
+        )
+        .await
+        .expect("request capability should succeed");
+        let request_body = request_response
+            .into_body()
+            .collect()
+            .await
+            .expect("request body should collect")
+            .to_bytes();
+        let request_value: Value =
+            serde_json::from_slice(&request_body).expect("request body json");
+        assert_eq!(
+            request_value["result"]["structuredContent"]["granted"],
+            true
+        );
+        let agent = app
+            .lock()
+            .await
+            .agents()
+            .get_agent(&agent_id)
+            .expect("agent should exist");
+        assert_eq!(agent.skill_grants(), &["browser-qa".to_string()]);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
