@@ -82,6 +82,9 @@ mod provider_runtime;
 mod session;
 mod tool_dispatch;
 mod workflow;
+mod workflow_admin;
+mod workflow_dispatch;
+mod workflow_tool;
 
 impl KernelRuntimeState {
     pub(crate) fn new_with_owned_state(
