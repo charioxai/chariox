@@ -192,6 +192,7 @@ import {
   shouldEndSessionOnCliExit,
 } from "./runtime.js"
 import {
+  applyProviderRunProfileToSession,
   deriveAttachedFooterSummary,
   deriveCurrentProviderSelection,
   deriveFooterHint,
@@ -1405,7 +1406,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       focusedAgentId(),
     )
     setProviderRunState(run)
-    applySessionState(await getSessionState(client, sessionState().id))
+    applySessionState(applyProviderRunProfileToSession(await getSessionState(client, sessionState().id), run))
     await maybeResize(client, sessionState().id)
     flashFooter(`model set to ${decision.selectedModelId}`, "info")
   }
@@ -1439,7 +1440,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       focusedAgentId(),
     )
     setProviderRunState(run)
-    applySessionState(await getSessionState(client, sessionState().id))
+    applySessionState(applyProviderRunProfileToSession(await getSessionState(client, sessionState().id), run))
     await maybeResize(client, sessionState().id)
     flashFooter(`variant set to ${decision.selectedVariant}`, "info")
   }
@@ -1486,7 +1487,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           focusedAgentId(),
         )
         setProviderRunState(run)
-        applySessionState(await getSessionState(client, sessionState().id))
+        applySessionState(applyProviderRunProfileToSession(await getSessionState(client, sessionState().id), run))
         await maybeResize(client, sessionState().id)
       } catch (error) {
         appLogger?.warn("provider switch launch failed", {
@@ -3346,10 +3347,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!statusIndicatorBox) {
       return
     }
+    const moveCloseText = Boolean(statusCloseText && statusLabelTexts.length < count)
+    if (statusCloseText && moveCloseText) {
+      statusIndicatorBox.remove(statusCloseText.id)
+    }
     while (statusLabelTexts.length < count) {
       const text = new TextRenderable(renderer, { wrapMode: "none" })
       statusLabelTexts.push(text)
       statusIndicatorBox.add(text)
+    }
+    if (statusCloseText && moveCloseText) {
+      statusIndicatorBox.add(statusCloseText)
     }
   }
 
@@ -5578,7 +5586,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         focusedAgentId(),
       )
       setProviderRunState(run)
-      applySessionState(await getSessionState(client, sessionState().id))
+      applySessionState(applyProviderRunProfileToSession(await getSessionState(client, sessionState().id), run))
       await maybeResize(client, sessionState().id)
       setStatusLine("Recovered provider connection.")
       updateSessionChrome()
@@ -6464,10 +6472,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     nextProviderRun: RuntimeProviderRun | null,
   ) => {
     const previousSession = sessionState()
-    const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(nextSession)
-    const promptJustCompleted = sessionHasPromptWork(previousSession) && !sessionHasPromptWork(nextSession)
+    const projectedSession = applyProviderRunProfileToSession(nextSession, nextProviderRun ?? providerRunState())
+    const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(projectedSession)
+    const promptJustCompleted = sessionHasPromptWork(previousSession) && !sessionHasPromptWork(projectedSession)
 
-    applySessionState(nextSession)
+    applySessionState(projectedSession)
 
     const activeRun = providerRunState()
     if (nextProviderRun) {
@@ -6485,13 +6494,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
       setProviderRunState(null)
       updateSessionChrome()
-      if (!supportsKernelEventStream && sessionHasPromptWork(nextSession)) {
+      if (!supportsKernelEventStream && sessionHasPromptWork(projectedSession)) {
         void recoverProviderRun("missing active provider run")
       }
     }
 
     if (shouldRefreshPanes || promptJustCompleted) {
-      await refreshAgentPanes(nextSession)
+      await refreshAgentPanes(projectedSession)
     }
   }
 
@@ -6516,9 +6525,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       if (!isAttached() || sessionState().id !== sessionId) {
         return
       }
-      const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(nextSession)
-      const promptJustCompleted = sessionHasPromptWork(previousSession) && !sessionHasPromptWork(nextSession)
-      applySessionState(nextSession)
+      const projectedSession = applyProviderRunProfileToSession(nextSession, providerRunState())
+      const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(projectedSession)
+      const promptJustCompleted = sessionHasPromptWork(previousSession) && !sessionHasPromptWork(projectedSession)
+      applySessionState(projectedSession)
       if (!nextSession.active_provider_run_id) {
         const activeRun = providerRunState()
         if (activeRun) {
@@ -6538,12 +6548,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             reason,
           })
           setProviderRunState(run)
+          applySessionState(applyProviderRunProfileToSession(sessionState(), run))
         }
       }
       if (shouldRefreshPanes || promptJustCompleted || reason === "transport_resumed" || reason === "replay_gap") {
-        await refreshAgentPanes(nextSession)
+        await refreshAgentPanes(sessionState())
       }
-      clearLocalBusyStateForAuthoritativeIdle(nextSession)
+      clearLocalBusyStateForAuthoritativeIdle(sessionState())
       recordDaemonActivity(`kernel_resync_${reason}`)
       setDaemonDisconnected(false)
       setStatusLine(DEFAULT_CONNECTED_STATUS)
@@ -6831,11 +6842,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       recordDaemonActivity("session_state_poll")
       const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
       payload.session = normalizeRuntimeSession(payload.session)
-      const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(payload.session)
-      const promptJustCompleted = sessionHasPromptWork(previousSession) && !sessionHasPromptWork(payload.session)
-      applySessionState(payload.session)
+      const projectedSession = applyProviderRunProfileToSession(payload.session, providerRunState())
+      const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(projectedSession)
+      const promptJustCompleted = sessionHasPromptWork(previousSession) && !sessionHasPromptWork(projectedSession)
+      applySessionState(projectedSession)
       if (shouldRefreshPanes || promptJustCompleted) {
-        await refreshAgentPanes(payload.session)
+        await refreshAgentPanes(projectedSession)
       }
       if (payload.session.active_provider_run_id) {
         const activeRun = providerRunState()
@@ -6862,6 +6874,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
                         : "metadata_changed",
           })
           setProviderRunState(run)
+          applySessionState(applyProviderRunProfileToSession(sessionState(), run))
           updateSessionChrome()
         }
       } else if (providerRunState()) {

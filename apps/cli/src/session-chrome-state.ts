@@ -50,6 +50,39 @@ export function deriveCurrentProviderSelection(options: ProviderSelectionOptions
   }
 }
 
+export function applyProviderRunProfileToSession(
+  session: RuntimeSession,
+  providerRun: RuntimeProviderRun | null,
+): RuntimeSession {
+  const agentId = providerRun?.agent_instance_id
+  if (!agentId) {
+    return session
+  }
+
+  let changed = false
+  const agents = session.agents.map((agent) => {
+    if (agent.id !== agentId) {
+      return agent
+    }
+    if (
+      agent.provider === providerRun.provider
+      && agent.model === providerRun.model
+      && agent.effort === providerRun.variant
+    ) {
+      return agent
+    }
+    changed = true
+    return {
+      ...agent,
+      provider: providerRun.provider,
+      model: providerRun.model,
+      effort: providerRun.variant,
+    }
+  })
+
+  return changed ? { ...session, agents } : session
+}
+
 export function derivePromptMetaState(options: ProviderSelectionOptions): PromptMetaPart[] {
   const selection = deriveCurrentProviderSelection(options)
   return formatPromptMetaParts(

@@ -4,6 +4,7 @@ import test from "node:test"
 import type { AgentInstance, RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import {
+  applyProviderRunProfileToSession,
   deriveAttachedFooterSummary,
   deriveCurrentProviderSelection,
   deriveFooterHint,
@@ -14,6 +15,27 @@ import {
   deriveVisibleActivityLabel,
 } from "./session-chrome-state.js"
 import type { WaitingRoomState } from "./waiting-room.js"
+
+test("applyProviderRunProfileToSession overlays accepted run profile onto the matching agent", () => {
+  const projected = applyProviderRunProfileToSession(
+    session({
+      agents: [
+        agent("agent-1", { provider: "opencode", model: "openai/gpt-5.4", effort: "high" }),
+        agent("agent-2", { provider: "codex", model: "gpt-5.4", effort: "medium" }),
+      ],
+    }),
+    providerRun({
+      agent_instance_id: "agent-1",
+      provider: "opencode",
+      model: "openai/gpt-5.4",
+      variant: "low",
+    }),
+  )
+
+  assert.equal(projected.agents[0]?.effort, "low")
+  assert.equal(projected.agents[0]?.model, "openai/gpt-5.4")
+  assert.equal(projected.agents[1]?.effort, "medium")
+})
 
 test("deriveCurrentProviderSelection prefers provider run and falls back to waiting-room values", () => {
   assert.deepEqual(

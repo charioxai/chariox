@@ -55,7 +55,7 @@ test("waiting room cycles selectable themes", () => {
 
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "theme")?.value, "Sober")
 
-  state = moveWaitingRoomFocus(state, [], 4)
+  state = moveWaitingRoomFocus(state, [], 5)
   assert.equal(state.focus, "theme")
 
   state = cycleWaitingRoomValue(state, [], catalog, 1)
@@ -78,16 +78,17 @@ test("waiting room renders indented sections and scrolls existing sessions", () 
   }))
 
   let state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
-  state = moveWaitingRoomFocus(state, sessions, 5)
+  state = moveWaitingRoomFocus(state, sessions, 4)
 
   const firstWindow = waitingRoomRows(state, sessions, catalog)
   assert.equal(firstWindow[1]?.id, "provider")
   assert.equal(firstWindow[1]?.indent, 1)
   assert.equal(firstWindow[2]?.id, "model")
   assert.equal(firstWindow[3]?.id, "effort")
-  assert.equal(firstWindow[4]?.id, "theme")
-  assert.equal(firstWindow[5]?.id, "join-header")
-  assert.equal(firstWindow[5]?.indent, 0)
+  assert.equal(firstWindow[4]?.id, "join-header")
+  assert.equal(firstWindow[4]?.indent, 0)
+  assert.equal(firstWindow.at(-1)?.id, "theme")
+  assert.equal(firstWindow.at(-1)?.indent, 0)
   assert.deepEqual(
     firstWindow.find((row) => row.id === "session-header")?.columns?.map((cell) => cell.trim()),
     ["Status", "Last used", "Created at"],
@@ -144,11 +145,12 @@ test("waiting room places join below start configuration and makes relay configu
   assert.equal(rows[1]?.id, "provider")
   assert.equal(rows[2]?.id, "model")
   assert.equal(rows[3]?.id, "effort")
-  assert.equal(rows[4]?.id, "theme")
-  assert.equal(rows[5]?.id, "join-header")
-  assert.equal(rows[5]?.title, "Join Existing Session")
+  assert.equal(rows[4]?.id, "join-header")
+  assert.equal(rows[4]?.title, "Join Existing Session")
+  assert.equal(rows.at(-1)?.id, "theme")
+  assert.equal(rows.at(-1)?.indent, 0)
 
-  state = moveWaitingRoomFocus(state, [], 5)
+  state = moveWaitingRoomFocus(state, [], 4)
   assert.equal(state.focus, "relay")
   const relayRows = waitingRoomRows(state, [], catalog, {
     relay: {
@@ -175,7 +177,7 @@ test("waiting room keeps session metadata column widths stable across scroll win
   }))
 
   let state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
-  state = moveWaitingRoomFocus(state, sessions, 5)
+  state = moveWaitingRoomFocus(state, sessions, 4)
   const firstWindow = waitingRoomRows(state, sessions, catalog)
   const scrolledWindowHeader = firstWindow.find((row) => row.id === "session-header")?.columns
   const firstWindowWidths = scrolledWindowHeader?.map((column) => column.length)

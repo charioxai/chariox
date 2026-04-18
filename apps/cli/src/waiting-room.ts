@@ -302,16 +302,6 @@ export function waitingRoomRows(
       scrollbar: "",
     },
     {
-      id: "theme",
-      title: "Theme",
-      value: themeLabel(state.themeId, themeRegistry),
-      titleWidth,
-      indent: 1,
-      focused: state.focus === "theme",
-      selectable: true,
-      scrollbar: "",
-    },
-    {
       id: "join-header",
       title: "Join Existing Session",
       value: "",
@@ -373,6 +363,16 @@ export function waitingRoomRows(
 
   rows.push(
     ...waitingRoomRemoteRows(state, remote, titleWidth),
+    {
+      id: "theme",
+      title: "Theme",
+      value: themeLabel(state.themeId, themeRegistry),
+      titleWidth,
+      indent: 0,
+      focused: state.focus === "theme",
+      selectable: true,
+      scrollbar: "",
+    },
   )
 
   return rows
@@ -559,9 +559,9 @@ function waitingRoomFocusTargets(sessions: SessionListEntry[]) {
     { focus: "provider" as const, sessionIndex: 0 },
     { focus: "model" as const, sessionIndex: 0 },
     { focus: "effort" as const, sessionIndex: 0 },
-    { focus: "theme" as const, sessionIndex: 0 },
     ...visibleSessions.map((_, sessionIndex) => ({ focus: "session" as const, sessionIndex })),
     { focus: "relay" as const, sessionIndex: 0 },
+    { focus: "theme" as const, sessionIndex: 0 },
   ]
 }
 
