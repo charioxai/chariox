@@ -267,6 +267,17 @@ impl KernelRuntimeState {
         agent_ref: &str,
         name: String,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let existing = self
+            .owned
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?;
+        if existing.remote_execution().is_some() && !existing.mcp_grants().contains(&name) {
+            let mut checked = existing.clone();
+            checked.grant_mcp(name.clone());
+            self.ensure_remote_mcp_availability_for_agent(&checked)
+                .await?;
+        }
         self.owned.grant_agent_mcp(agent_ref, name)
     }
 

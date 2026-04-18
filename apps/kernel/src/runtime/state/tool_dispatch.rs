@@ -347,6 +347,78 @@ impl KernelRuntimeState {
         }
     }
 
+    pub(super) fn required_remote_mcps_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
+        if agent.mcp_grants().is_empty() {
+            return Ok(Vec::new());
+        }
+        let session = self.owned.session_store.get_session(agent.session_id())?;
+        let registry = mcp_registry_for_workspace(session.workspace_id());
+        required_remote_mcps(&registry, agent.mcp_grants())
+    }
+
+    pub(super) async fn ensure_remote_mcp_availability_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        let Some(remote_execution) = agent.remote_execution().cloned() else {
+            return Ok(());
+        };
+        let required_mcps = self.required_remote_mcps_for_agent(agent)?;
+        if required_mcps.is_empty() {
+            return Ok(());
+        }
+        let response = self
+            .with_app_side_effect(|app| {
+                app.block_on_relay_future(
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                        app.config(),
+                        ClientTarget {
+                            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                            daemon_alias: None,
+                        },
+                        RelayPeerRequest::CheckRemoteMcpAvailability {
+                            context: crate::transport::relay_peer::RemoteMcpCheckContext {
+                                home_kernel_id: app.config().daemon_id.clone(),
+                                home_session_id: agent.session_id().to_string(),
+                                home_agent_id: agent.id().to_string(),
+                                leased_agent_id: remote_execution.leased_agent_id.clone(),
+                            },
+                            required_mcps,
+                        },
+                    ),
+                )
+            })
+            .await?;
+        match response {
+            RelayPeerResponse::RemoteMcpAvailabilityChecked { results } => {
+                let unavailable = results
+                    .iter()
+                    .filter(|result| {
+                        !matches!(
+                            result.status,
+                            crate::transport::relay_peer::RemoteMcpAvailabilityStatus::Available
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if unavailable.is_empty() {
+                    Ok(())
+                } else {
+                    Err(DaemonError::LocalTransport {
+                        operation: "remote mcp availability",
+                        message: format_remote_mcp_unavailable(&unavailable),
+                    })
+                }
+            }
+            other => Err(DaemonError::LocalTransport {
+                operation: "remote mcp availability",
+                message: format!("unexpected remote MCP availability response: {other:?}"),
+            }),
+        }
+    }
+
     pub(super) fn apply_remote_materialized_skill_prompt_context(
         &self,
         agent: &crate::agent::AgentInstance,
@@ -589,6 +661,14 @@ impl KernelRuntimeState {
                                 },
                                 None,
                             ));
+                        }
+                        if agent.remote_execution().is_some()
+                            && !agent.mcp_grants().contains(&args.name)
+                        {
+                            let mut checked = agent.clone();
+                            checked.grant_mcp(args.name.clone());
+                            self.ensure_remote_mcp_availability_for_agent(&checked)
+                                .await?;
                         }
                         (
                             self.owned.grant_agent_mcp(agent.id(), args.name.clone())?,
@@ -1605,6 +1685,76 @@ fn skill_registry_for_workspace(workspace: &str) -> crate::skill::ArrobaSkillReg
         roots.push(user_root);
     }
     crate::skill::ArrobaSkillRegistry::new(roots)
+}
+
+fn mcp_registry_for_workspace(workspace: &str) -> crate::mcp::ArrobaMcpRegistry {
+    let workspace = std::path::PathBuf::from(workspace);
+    let mut roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(&workspace)];
+    if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
+        roots.push(user_root);
+    }
+    crate::mcp::ArrobaMcpRegistry::new(roots)
+}
+
+fn required_remote_mcps(
+    registry: &crate::mcp::ArrobaMcpRegistry,
+    grants: &[String],
+) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
+    grants
+        .iter()
+        .map(|grant| {
+            let config = registry
+                .get(grant)?
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "required remote MCPs",
+                    message: format!("MCP `{grant}` is granted but is not installed"),
+                })?;
+            let definition_hash = config.definition_hash()?;
+            Ok(crate::transport::relay_peer::RequiredRemoteMcp {
+                config,
+                definition_hash,
+            })
+        })
+        .collect()
+}
+
+fn format_remote_mcp_unavailable(
+    unavailable: &[&crate::transport::relay_peer::RemoteMcpAvailability],
+) -> String {
+    let details =
+        unavailable
+            .iter()
+            .map(|entry| {
+                let status = match &entry.status {
+                crate::transport::relay_peer::RemoteMcpAvailabilityStatus::Available => {
+                    "available".to_string()
+                }
+                crate::transport::relay_peer::RemoteMcpAvailabilityStatus::Missing => {
+                    "missing on worker".to_string()
+                }
+                crate::transport::relay_peer::RemoteMcpAvailabilityStatus::DefinitionMismatch {
+                    worker_hash,
+                } => format!("definition mismatch; worker has {worker_hash}"),
+                crate::transport::relay_peer::RemoteMcpAvailabilityStatus::MissingCommand {
+                    command,
+                } => format!("missing command `{command}` on worker"),
+                crate::transport::relay_peer::RemoteMcpAvailabilityStatus::MissingEnv { names } => {
+                    format!("missing environment variable(s) on worker: {}", names.join(", "))
+                }
+                crate::transport::relay_peer::RemoteMcpAvailabilityStatus::Invalid { reason } => {
+                    reason.clone()
+                }
+            };
+                format!(
+                    "- {} expected hash {}: {}",
+                    entry.name, entry.expected_hash, status
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    format!(
+        "remote MCP unavailable on worker. Install the matching MCP definition in the worker project or user registry, then retry.\n{details}"
+    )
 }
 
 fn package_granted_skills(

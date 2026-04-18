@@ -21,7 +21,7 @@ Landed:
 - M7.13 partial: local provider prompts inject the full `SKILL.md` body for granted skills that are explicitly selected, mentioned, or requested.
 - M7.15 partial: runtime MCP exposes `list_capabilities` and `request_capability` control-plane tools for Arroba-managed MCPs and skills. V1 auto-grants valid requests to the current agent and reports when the grant becomes effective. Skill requests now return the full `SKILL.md` body by default, so requested skills can be used in the same turn. Remote worker agents now forward capability discovery/request calls to the home kernel; skill requests return a home-packaged skill directory and materialize it on the worker under `.arroba/remote/skills/<home-kernel-id>/<skill>/<version>/`.
 - M7.18: remote skill packaging/materialization is landed for grant-time sync and same-turn `request_capability` use, preserving `SKILL.md`, assets, scripts, and references while skipping provider/cache/build directories and symlinks. Remote prompt dispatch verifies/synchronizes granted skills before submit and injects worker-local `materialized_root` paths into the prompt context.
-- M7.20 partial: remote skill live drills pass for OpenCode with `openai/gpt-5.2` low effort and Codex with `gpt-5.2` low effort.
+- M7.20 partial: remote skill live drills pass for OpenCode with `openai/gpt-5.2` low effort and Codex with `gpt-5.2` low effort. Remote MCP v1 conformance checks are landed: home sends required MCP definitions/hashes for remote prompts, worker checks its own project/user Arroba MCP registry, and missing/mismatched/invalid worker MCPs fail fast instead of being installed remotely.
 
 Still open in M7:
 
@@ -30,9 +30,7 @@ Still open in M7:
 - Provider MCP import from Claude-owned configs, plus regular non-interactive Codex/OpenCode import aliases.
 - Provider skill import from Claude-owned skill locations, plus regular non-interactive Codex/OpenCode import aliases.
 - Skill MCP dependency validation.
-- Remote-machine MCP materialization/rendering.
-- Remote MCP materialization/rendering.
-- Local and remote drills.
+- Remote MCP live drills.
 - MCP provider hot reload. Codex and OpenCode both expose provider-side reload mechanisms, but v1 keeps newly requested MCPs as next-provider-launch because the available reload paths are provider/server scoped rather than safely Arroba agent-scoped.
 
 ## Goal
@@ -350,6 +348,7 @@ Effectiveness semantics:
 - MCP requests update the agent grant immediately, but provider-native MCP exposure is rendered at provider launch, so the agent must restart/relaunch its provider run before using a newly granted MCP.
 - Skill requests update the agent grant immediately and return the full `SKILL.md` body by default. The current turn can follow that body immediately, and later turns also receive normal prompt injection for granted/selected skills.
 - Remote skill requests are authorized against the home agent/session and package the home skill directory for the worker. The worker writes the package atomically under `.arroba/remote/skills/<home-kernel-id>/<skill>/<version>/`, verifies file hashes, and adds `materialized_root`, `version_hash`, and file paths to the tool result.
+- Remote MCP requests are authorized against home truth, but the worker must already have the matching MCP definition installed in its own Arroba registry. Home sends the expected definition hash before remote launch/prompt; the worker checks project-local roots before user-global roots, so a project-local worker MCP can override a different global MCP. Missing, mismatched, missing-command, and missing-env cases fail fast with a remediation message. V1 does not remotely install MCPs and does not transfer secrets.
 
 Later this plugs into the permissions model instead of always granting.
 
@@ -367,21 +366,29 @@ A workflow node using an agent receives that agent's MCPs and skills. If a workf
 
 ## M7.17 Remote Machine MCP Support
 
-Status: landed for skills. Remote MCP support remains separate in M7.17.
+Status: landed for skills and remote MCP conformance. Remote MCP live drills remain open.
 
 Add remote-machine handling for MCPs.
 
 Initial placeholder:
 
 - track where each agent runs: home/local kernel or remote worker kernel
-- decide how Arroba MCP registry entries are materialized on remote machines
+- require matching Arroba MCP registry entries on remote machines; v1 does not install them remotely
 - resolve stdio command availability on the worker machine
 - pass env var names, not secret values
 - validate missing commands/env vars on the worker before launch
 - inject MCP config into the remote provider session, not the home provider session
 - keep third-party MCPs provider-native on the machine where the agent runs
 
-Design details are deferred until local MCP/skill support is stable.
+Remote MCP details for v1:
+
+- home owns MCP registry truth and agent grants
+- worker owns local MCP installation and execution
+- home sends required MCP definitions and hashes to the worker before remote launch/prompt
+- worker resolves project-local `.arroba/mcps` before user-global `~/.arroba/mcps`
+- worker fails fast when the required definition is missing, mismatched, lacks required env vars, or uses an unavailable stdio command
+- provider-native MCP config is rendered only on the worker where the remote agent runs
+- Arroba does not remotely install MCPs and does not transfer MCP secrets in v1
 
 ## M7.18 Remote Machine Skill Support
 

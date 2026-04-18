@@ -558,6 +558,7 @@ fn dispatch_workflow_prompt(
                 prompt: prompt.prompt().to_string(),
                 attachments: app.serialize_remote_prompt_attachments(prompt.attachments())?,
                 workflow_context: Some(workflow_context),
+                required_mcps: Vec::new(),
             },
         ));
         return match response {

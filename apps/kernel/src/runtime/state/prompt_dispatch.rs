@@ -270,6 +270,7 @@ impl KernelRuntimeState {
                                         prompt: remote_prompt,
                                         attachments,
                                         workflow_context,
+                                        required_mcps: Vec::new(),
                                     },
                                 ),
                             )
@@ -734,6 +735,15 @@ impl KernelRuntimeState {
                     return;
                 }
             };
+            let required_mcps = match state.required_remote_mcps_for_agent(&agent) {
+                Ok(required_mcps) => required_mcps,
+                Err(error) => {
+                    let _ = state
+                        .finish_remote_prompt_dispatch(dispatch, Err(error))
+                        .await;
+                    return;
+                }
+            };
             let config = state.config_snapshot().await;
             let attachments = dispatch.attachments.clone();
             let serialized_attachments = match tokio::task::spawn_blocking(move || {
@@ -760,6 +770,7 @@ impl KernelRuntimeState {
                             prompt: prompt.clone(),
                             attachments,
                             workflow_context: dispatch.workflow_context.clone(),
+                            required_mcps,
                         },
                     )
                     .await

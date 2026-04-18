@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 
@@ -129,6 +130,15 @@ impl ArrobaMcpServerConfig {
             }
         }
         Ok(())
+    }
+
+    pub fn definition_hash(&self) -> Result<String, DaemonError> {
+        let bytes = serde_json::to_vec(self).map_err(|error| DaemonError::LocalTransport {
+            operation: "mcp.definition_hash",
+            message: format!("failed to serialize MCP `{}`: {error}", self.name),
+        })?;
+        let digest = Sha256::digest(&bytes);
+        Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
     }
 }
 

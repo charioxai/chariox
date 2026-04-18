@@ -634,6 +634,7 @@ async fn handle_daemon_peer_request(
             prompt,
             attachments,
             workflow_context,
+            required_mcps,
         } => {
             let submitted = router
                 .relay_submit_leased_prompt(
@@ -641,6 +642,7 @@ async fn handle_daemon_peer_request(
                     &prompt,
                     attachments,
                     workflow_context,
+                    required_mcps,
                 )
                 .await;
             match submitted {
@@ -785,6 +787,23 @@ async fn handle_daemon_peer_request(
                 .await;
             match ensured {
                 Ok(materialized) => RelayPeerResponse::RemoteSkillPackagesEnsured { materialized },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::CheckRemoteMcpAvailability {
+            context,
+            required_mcps,
+        } => {
+            let checked = router
+                .relay_check_remote_mcp_availability(context, required_mcps)
+                .await;
+            match checked {
+                Ok(results) => RelayPeerResponse::RemoteMcpAvailabilityChecked { results },
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,

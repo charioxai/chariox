@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
 use crate::io::WorkspaceIdentity;
+use crate::mcp::ArrobaMcpServerConfig;
 use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutcome};
 use crate::skill::ArrobaSkillPackage;
 use crate::terminal::TerminalOutputKind;
@@ -39,6 +40,38 @@ pub struct RemoteSkillMaterialization {
     pub name: String,
     pub version_hash: String,
     pub materialized_root: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteMcpCheckContext {
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub leased_agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredRemoteMcp {
+    pub config: ArrobaMcpServerConfig,
+    pub definition_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteMcpAvailability {
+    pub name: String,
+    pub expected_hash: String,
+    pub status: RemoteMcpAvailabilityStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum RemoteMcpAvailabilityStatus {
+    Available,
+    Missing,
+    DefinitionMismatch { worker_hash: String },
+    MissingCommand { command: String },
+    MissingEnv { names: Vec<String> },
+    Invalid { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +118,8 @@ pub enum RelayPeerRequest {
         attachments: Vec<RelayPromptAttachment>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workflow_context: Option<RemoteWorkflowTurnContext>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        required_mcps: Vec<RequiredRemoteMcp>,
     },
     CompleteLeasedPrompt {
         leased_agent_id: String,
@@ -111,6 +146,10 @@ pub enum RelayPeerRequest {
     EnsureRemoteSkillPackages {
         context: RemoteSkillSyncContext,
         packages: Vec<ArrobaSkillPackage>,
+    },
+    CheckRemoteMcpAvailability {
+        context: RemoteMcpCheckContext,
+        required_mcps: Vec<RequiredRemoteMcp>,
     },
 }
 
@@ -158,6 +197,9 @@ pub enum RelayPeerResponse {
     },
     RemoteSkillPackagesEnsured {
         materialized: Vec<RemoteSkillMaterialization>,
+    },
+    RemoteMcpAvailabilityChecked {
+        results: Vec<RemoteMcpAvailability>,
     },
 }
 

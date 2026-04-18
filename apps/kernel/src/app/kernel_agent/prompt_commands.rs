@@ -138,6 +138,7 @@ impl<'a> KernelAgentService<'a> {
                         prompt: dispatch.prompt.clone(),
                         attachments,
                         workflow_context: dispatch.workflow_context.clone(),
+                        required_mcps: Vec::new(),
                     },
                 )) {
                 Ok(RelayPeerResponse::LeasedPromptSubmitted {
@@ -928,6 +929,7 @@ impl<'a> KernelAgentService<'a> {
                             } else {
                                 None
                             },
+                            required_mcps: Vec::new(),
                         },
                     ));
             let remote_provider_run_id = match response {

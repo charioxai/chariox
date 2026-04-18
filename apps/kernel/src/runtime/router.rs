@@ -453,6 +453,7 @@ impl CommandRouter {
         prompt: &str,
         attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
         workflow_context: Option<crate::execution_lease::RemoteWorkflowTurnContext>,
+        required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let mut app = self.app.lock().await;
         crate::app::RemoteLeaseRuntime::new(&mut app).submit_leased_prompt_with_workflow_context(
@@ -460,6 +461,7 @@ impl CommandRouter {
             prompt,
             attachments,
             workflow_context,
+            required_mcps,
         )
     }
 
@@ -471,6 +473,16 @@ impl CommandRouter {
         let mut app = self.app.lock().await;
         crate::app::RemoteLeaseRuntime::new(&mut app)
             .ensure_remote_skill_packages(context, packages)
+    }
+
+    pub(crate) async fn relay_check_remote_mcp_availability(
+        &self,
+        context: crate::transport::relay_peer::RemoteMcpCheckContext,
+        required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+    ) -> Result<Vec<crate::transport::relay_peer::RemoteMcpAvailability>, DaemonError> {
+        let mut app = self.app.lock().await;
+        crate::app::RemoteLeaseRuntime::new(&mut app)
+            .check_remote_mcp_availability(context, required_mcps)
     }
 
     pub(crate) async fn relay_complete_leased_prompt(
