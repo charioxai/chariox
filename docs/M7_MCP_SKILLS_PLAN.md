@@ -397,6 +397,8 @@ Design details are deferred until local MCP/skill support is stable.
 
 ## M7.19 Local Provider Drills
 
+Status: partial. The local MCP/skill drill harness is landed as `apps/cli/scripts/live-mcp-skill-drill.mjs`; registry, public web skill install, and same-turn skill live checks pass for Codex. Registry/web-skill coverage also passes across the `opencode,codex` provider set without launching providers. Actual provider-native Playwright tool use is available behind `--live-mcp-use` and is currently a known follow-up because newly requested/granted MCPs are still next-provider-launch and the drill does not yet have a clean per-agent relaunch path.
+
 Verify local Codex/OpenCode behavior:
 
 - Agent A sees only its granted MCPs.

@@ -13,6 +13,7 @@ These scripts exercise Arroba against real provider sessions. Keep them determin
 
 ```bash
 node apps/cli/scripts/live-managed-io-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2-codex
+node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2-codex
 node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.3-codex --full
 ```
 
@@ -27,6 +28,14 @@ Live drills should own their daemon/session/port/artifact lifecycle and clean up
 ## Managed I/O Identity
 
 Managed-I/O drills coordinate only while the provider run remains in the same repo/branch/head identity captured by the kernel. If a drill or concurrent developer action changes that identity mid-run, `workspace_identity_changed` is a valid failure mode. Restart the drill from a stable workspace identity rather than treating that rejection as a file-edit collision.
+
+## MCP/Skill Drills
+
+`live-mcp-skill-drill.mjs` is local-only for now. It installs a real Playwright MCP into an isolated Arroba registry, optionally installs GitHub MCP when `--include-github-mcp` is set and `GITHUB_PERSONAL_ACCESS_TOKEN` or `GITHUB_TOKEN` is present, installs a deterministic local drill skill, attempts to install a public web skill repo, and verifies per-agent grants plus same-turn skill requests.
+
+Use `--require-web-skill` when the network/web-skill install itself is the thing being validated. Without it, public skill clone failures are reported but do not fail the drill, so local registry/runtime coverage can still run offline.
+
+Use `--live-mcp-use` to also require a provider-native Playwright tool call. This is intentionally not part of the default M7 drill yet because requested MCP grants are still `next_provider_launch`, and the current provider lifecycle does not expose a clean per-agent relaunch path from the drill.
 
 ## Before Commit
 

@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "graph:drills": "pnpm run build && node scripts/workflow-graph-drills.mjs",
+    "mcp-skill:drill": "node scripts/live-mcp-skill-drill.mjs --providers opencode,codex",
     "managed-io:drill": "node scripts/live-managed-io-drill.mjs --providers opencode,codex",
     "managed-io:remote-drill": "node scripts/live-remote-managed-io-drill.mjs --providers opencode --full",
     "outline:drills": "pnpm run build && node scripts/workflow-outline-drills.mjs",
