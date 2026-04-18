@@ -19,6 +19,8 @@ import type {
   AgentInstance,
   ArrobaMcpServerConfig,
   ArrobaSkillMetadata,
+  ArrobaUserConfig,
+  ArrobaUserConfigPayload,
   BootstrapState,
   CaptureScreenshotResult,
   CliOptions,
@@ -98,6 +100,7 @@ import {
   getSkillRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
+  getUserConfigRequest,
   installMcpServerRequest,
   installSkillRequest,
   launchProviderRunRequest,
@@ -115,6 +118,7 @@ import {
   revokeAgentCapabilityRequest,
   renameRemoteMachineRequest,
   resolveSessionRequest,
+  setUserConfigValueRequest,
   spawnAgentRequest,
   startProviderLoginRequest,
   storeTransferredFileRequest,
@@ -122,6 +126,7 @@ import {
   teardownProviderProcessesRequest,
   uninstallMcpServerRequest,
   uninstallSkillRequest,
+  unsetUserConfigValueRequest,
   updateMcpServerRequest,
   updateSessionConfigRequest,
   updateSkillRequest,
@@ -5274,6 +5279,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleAgentCommand,
     handleMachineCommand,
     handleRelayCommand,
+    handleConfigCommand,
     handleWorkflowCommand,
     handleMcpCommand,
     handleSkillCommand,
@@ -5309,6 +5315,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     logoutProvider: (provider) => logoutProvider(client, provider),
     getRelayStatus: () => getRelayStatus(client),
     configureRelay: (relayUrl, relayToken) => configureRelay(client, relayUrl, relayToken),
+    getUserConfig: () => getUserConfig(client),
+    setUserConfigValue: (path, value) => setUserConfigValue(client, path, value),
+    unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),
     refreshWaitingRoomData,
     listRemoteMachines: () => listRemoteMachines(client),
     listRemoteMachineKernels: (machineRef) => listRemoteMachineKernels(client, machineRef),
@@ -5635,6 +5644,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           flashFooter(formatError(error), "error")
         }
       },
+      onConfig: async (command) => {
+        try {
+          await handleConfigCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
       onWorkflow: async (command) => {
         try {
           await handleWorkflowCommand(command)
@@ -5885,6 +5901,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onRelay: async (command) => {
         try {
           await handleRelayCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onConfig: async (command) => {
+        try {
+          await handleConfigCommand(command)
         } catch (error) {
           flashFooter(formatError(error), "error")
         }
@@ -7452,6 +7475,28 @@ async function configureRelay(
   return expectVariant<{ status: RelayStatusView }>(response, "RelayConfigured").status
 }
 
+async function getUserConfig(client: LocalIpcClient): Promise<ArrobaUserConfigPayload> {
+  const response = await client.send<Record<string, unknown>>(getUserConfigRequest())
+  return expectVariant<{ path: string, config: ArrobaUserConfig }>(response, "UserConfig")
+}
+
+async function setUserConfigValue(
+  client: LocalIpcClient,
+  path: string,
+  value: string,
+): Promise<ArrobaUserConfigPayload> {
+  const response = await client.send<Record<string, unknown>>(setUserConfigValueRequest(path, value))
+  return expectVariant<{ path: string, config: ArrobaUserConfig }>(response, "UserConfigUpdated")
+}
+
+async function unsetUserConfigValue(
+  client: LocalIpcClient,
+  path: string,
+): Promise<ArrobaUserConfigPayload> {
+  const response = await client.send<Record<string, unknown>>(unsetUserConfigValueRequest(path))
+  return expectVariant<{ path: string, config: ArrobaUserConfig }>(response, "UserConfigUpdated")
+}
+
 async function listRemoteMachines(client: LocalIpcClient): Promise<RemoteMachineView[]> {
   const response = await client.send<Record<string, unknown>>(listRemoteMachinesRequest())
   const payload = expectVariant<{
@@ -7720,7 +7765,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /machine list         list approved, pending, and offline remote machines\n  /machine kernels <m>  list live kernels for a remote machine\n  /machine approve <m>  approve a pending remote machine for spawning\n  /machine forget <m>   forget a registered remote machine\n  /machine rename <m> <alias> rename and approve a remote machine\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show [r]    show selected workflow or workflow by id/alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run [w] <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes; /workflow add node all adds missing agents\n  /workflow edge ...    add/remove workflow edges; workflow id may be omitted\n  /workflow endpoint ... manage workflow endpoints; workflow id may be omitted\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /machine list         list approved, pending, and offline remote machines\n  /machine kernels <m>  list live kernels for a remote machine\n  /machine approve <m>  approve a pending remote machine for spawning\n  /machine forget <m>   forget a registered remote machine\n  /machine rename <m> <alias> rename and approve a remote machine\n  /config show          show the Arroba user config\n  /config set <p> <v>   update the Arroba user config\n  /config managed-io [p] required|unrestricted set provider managed I/O\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show [r]    show selected workflow or workflow by id/alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run [w] <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes; /workflow add node all adds missing agents\n  /workflow edge ...    add/remove workflow edges; workflow id may be omitted\n  /workflow endpoint ... manage workflow endpoints; workflow id may be omitted\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
   )
 }
 

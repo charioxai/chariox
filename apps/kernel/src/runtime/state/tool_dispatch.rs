@@ -670,11 +670,33 @@ impl KernelRuntimeState {
                             self.ensure_remote_mcp_availability_for_agent(&checked)
                                 .await?;
                         }
-                        (
-                            self.owned.grant_agent_mcp(agent.id(), args.name.clone())?,
-                            "next_provider_launch",
-                            true,
-                        )
+                        let granted_agent =
+                            self.owned.grant_agent_mcp(agent.id(), args.name.clone())?;
+                        let (source_attachment_id, previous_prompt) = self
+                            .owned
+                            .session_store
+                            .get_session(session_id)
+                            .ok()
+                            .and_then(|session| {
+                                self.owned
+                                    .prompt_state_owner
+                                    .active_prompt_for_agent(&session, granted_agent.id())
+                                    .map(|prompt| {
+                                        (
+                                            prompt.source_attachment_id().to_string(),
+                                            prompt.prompt().to_string(),
+                                        )
+                                    })
+                            })
+                            .unwrap_or_else(|| ("arroba-runtime".to_string(), String::new()));
+                        self.remember_pending_mcp_continuation(
+                            session_id,
+                            granted_agent.id(),
+                            &source_attachment_id,
+                            &args.name,
+                            &previous_prompt,
+                        );
+                        (granted_agent, "after_provider_reload", true)
                     }
                     "skill" => {
                         let Some(skill) = skill_registry.get(&args.name)? else {
@@ -738,6 +760,7 @@ impl KernelRuntimeState {
                     "effective": effective_when,
                     "requires_provider_restart": requires_provider_restart,
                     "note": match effective_when {
+                        "after_provider_reload" => "Arroba will reload this provider conversation after the current turn and send an automatic continuation prompt once the MCP is available.",
                         "next_provider_launch" => "MCP grants are rendered into provider-native MCP config when the provider run launches; restart/relaunch the agent provider run before using this MCP.",
                         "now" => "The skill grant is persisted and the returned SKILL.md body can be followed immediately in this turn.",
                         _ => "The capability grant is persisted."

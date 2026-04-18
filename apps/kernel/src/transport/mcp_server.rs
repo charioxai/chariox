@@ -84,6 +84,10 @@ async fn handle_http_request_inner(
         }
     }
 
+    if let Some(name) = request.uri().path().strip_prefix("/mcp/proxy/") {
+        return handle_proxy_json_rpc_request(router, name.to_string(), request).await;
+    }
+
     if request.uri().path() != "/mcp" {
         return Ok(text_response(
             StatusCode::NOT_FOUND,
@@ -96,6 +100,60 @@ async fn handle_http_request_inner(
         Method::POST => handle_json_rpc_request(router, request).await,
         Method::DELETE => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
         _ => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
+    }
+}
+
+async fn handle_proxy_json_rpc_request(
+    router: Arc<CommandRouter>,
+    name: String,
+    request: Request<Incoming>,
+) -> Result<Response<HttpBody>, DaemonError> {
+    if request.method() != Method::POST {
+        return Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED));
+    }
+    let auth_token =
+        parse_bearer_token(request.headers()).ok_or_else(|| DaemonError::LocalTransport {
+            operation: "mcp_proxy_auth",
+            message: "missing or invalid bearer token".to_string(),
+        });
+    let auth_token = match auth_token {
+        Ok(token) => token,
+        Err(_) => {
+            return Ok(text_response(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized".to_string(),
+            ))
+        }
+    };
+    let body = request
+        .into_body()
+        .collect()
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "mcp_proxy_read_body",
+            message: error.to_string(),
+        })?
+        .to_bytes();
+    let payload =
+        serde_json::from_slice::<Value>(&body).map_err(|error| DaemonError::LocalTransport {
+            operation: "mcp_proxy_parse_json",
+            message: error.to_string(),
+        })?;
+    let id = payload.get("id").cloned();
+    if id.is_none()
+        && payload
+            .get("method")
+            .and_then(Value::as_str)
+            .is_some_and(|method| method.starts_with("notifications/"))
+    {
+        return Ok(empty_response(StatusCode::ACCEPTED));
+    }
+    match router
+        .dispatch_authenticated_mcp_proxy_call(&auth_token, &name, payload)
+        .await
+    {
+        Ok(response) => Ok(json_response(StatusCode::OK, response)),
+        Err(error) => Ok(json_rpc_error_response(id, -32000, &error.to_string())),
     }
 }
 

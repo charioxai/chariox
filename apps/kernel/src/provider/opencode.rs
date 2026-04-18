@@ -59,7 +59,7 @@ fn plan_opencode_launch_unlocked(
             executable,
             port,
             base_url,
-            runtime_mcp_env(request),
+            runtime_mcp_env(request)?,
         ));
     }
 
@@ -71,7 +71,7 @@ fn plan_opencode_launch_unlocked(
         executable,
         port,
         base_url,
-        runtime_mcp_env(request),
+        runtime_mcp_env(request)?,
     ))
 }
 
@@ -181,13 +181,26 @@ pub fn ensure_opencode_catalog_endpoint() -> Result<String, DaemonError> {
     }
 }
 
-fn runtime_mcp_env(request: Option<&LaunchProviderRequest>) -> BTreeMap<String, String> {
+fn runtime_mcp_env(
+    request: Option<&LaunchProviderRequest>,
+) -> Result<BTreeMap<String, String>, DaemonError> {
     let mut env = BTreeMap::new();
     let Some(request) = request else {
-        return env;
+        return Ok(env);
     };
     let mut mcp = serde_json::Map::new();
-    for server in &request.mcp_servers {
+    let provider_mcp_servers = super::mcp_proxy::provider_facing_mcp_proxy_configs(
+        &request.mcp_servers,
+        request
+            .runtime_mcp_binding
+            .as_ref()
+            .map(|binding| binding.server_url.as_str()),
+        request
+            .runtime_mcp_binding
+            .as_ref()
+            .map(|binding| binding.auth_token.as_str()),
+    )?;
+    for server in &provider_mcp_servers {
         mcp.insert(server.name.clone(), opencode_mcp_config(server));
     }
     if let Some(binding) = request.runtime_mcp_binding.as_ref() {
@@ -204,11 +217,11 @@ fn runtime_mcp_env(request: Option<&LaunchProviderRequest>) -> BTreeMap<String, 
         );
     }
     if mcp.is_empty() {
-        return env;
+        return Ok(env);
     }
     let config = serde_json::json!({ "mcp": mcp });
     env.insert(OPENCODE_CONFIG_CONTENT_ENV.to_string(), config.to_string());
-    env
+    Ok(env)
 }
 
 fn reserve_unused_port() -> Result<u16, DaemonError> {
@@ -575,6 +588,51 @@ mod tests {
         assert!(config.contains("\"type\":\"local\""));
         assert!(config.contains("@playwright/mcp@latest"));
         assert!(!config.contains("\"arroba\""));
+    }
+
+    #[test]
+    fn renders_granted_mcp_as_provider_facing_proxy_when_runtime_mcp_is_bound() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-opencode-resolve-test-{}-proxied-mcp",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
+        let port = reserve_unused_port();
+        std::env::set_var("ARROBA_OPENCODE_PORT", port.to_string());
+
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "opencode",
+            "opencode",
+            "default",
+            "openai/gpt-5.3",
+        )
+        .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+            "http://127.0.0.1:43120/mcp",
+            "token-123",
+        ))
+        .with_mcp_servers(vec![ArrobaMcpServerConfig::stdio(
+            "browser",
+            "npx",
+            vec!["@playwright/mcp@latest".to_string()],
+        )]);
+        let launch = plan_opencode_launch(Some(&request)).expect("launch plan should resolve");
+
+        std::env::remove_var("ARROBA_OPENCODE_BIN");
+        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        let _ = fs::remove_file(&path);
+
+        let config = launch
+            .pty_env
+            .get("OPENCODE_CONFIG_CONTENT")
+            .expect("opencode config env should be set");
+        assert!(config.contains("\"browser\""));
+        assert!(config.contains("\"type\":\"remote\""));
+        assert!(config.contains("http://127.0.0.1:43120/mcp/proxy/browser"));
+        assert!(config.contains("Bearer token-123"));
+        assert!(!config.contains("@playwright/mcp@latest"));
     }
 
     #[test]

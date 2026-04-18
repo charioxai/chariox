@@ -188,6 +188,8 @@ pub fn initialize_codex_runtime(
                             "error": error.to_string(),
                         }),
                     );
+                    socket = client.connect_initialized()?;
+                    next_request_id = 1;
                     let thread = client.thread_start(
                         &mut socket,
                         &mut next_request_id,

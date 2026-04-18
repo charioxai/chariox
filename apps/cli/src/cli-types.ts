@@ -82,6 +82,25 @@ export type SessionConfigState = {
   updated_by_attachment_id?: string | null
 }
 
+export type ArrobaUserConfig = {
+  version: number
+  providers?: {
+    default?: string
+    model?: string
+    account_profile?: string
+    effort?: string
+    managed_io?: Record<string, "required" | "unrestricted">
+  }
+  ui?: Record<string, unknown>
+  relay?: Record<string, unknown>
+  kernel?: Record<string, unknown>
+}
+
+export type ArrobaUserConfigPayload = {
+  path: string
+  config: ArrobaUserConfig
+}
+
 export type AgentInstance = {
   id: string
   agent_ref: string

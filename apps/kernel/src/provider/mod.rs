@@ -2,6 +2,7 @@ mod codex;
 mod codex_client;
 mod codex_runtime;
 mod managed_io_policy;
+mod mcp_proxy;
 mod opencode;
 mod opencode_binding;
 mod opencode_client;
@@ -22,7 +23,7 @@ pub use codex_client::{
 };
 pub use codex_runtime::CodexRuntimeState;
 pub(crate) use managed_io_policy::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH;
-pub(crate) use opencode::opencode_mcp_config;
+pub(crate) use mcp_proxy::dispatch_provider_mcp_proxy_request;
 pub use opencode::{
     ensure_opencode_catalog_endpoint, opencode_catalog_endpoint, plan_opencode_launch,
     resolve_opencode_executable,

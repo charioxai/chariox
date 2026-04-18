@@ -2,6 +2,7 @@
 
 M7 adds Arroba-owned MCP and skill management. The design intentionally follows Codex's model where practical, while keeping Arroba responsible for orchestration, per-agent grants, local/remote placement, and provider-specific session rendering.
 
+Current decision: the repo-local isolation spike in `docs/M7_MCP_ISOLATION_SPIKE_PLAN.md` validated the architecture. Production should now move from direct provider MCP config injection to Arroba-supervised provider-facing MCP proxies, while preserving provider-native MCP semantics for agents.
 
 ## Implementation Status
 
@@ -13,7 +14,7 @@ Landed:
 - M7.3 partial: interactive `/mcp list`, `/mcp show`, `/mcp install`, `/mcp update`, `/mcp uninstall`, `/mcp import`, `/mcp grant`, `/mcp revoke`, and `/mcp grants`.
 - M7.4 partial: `/mcp import codex [name]` and `/mcp import opencode [name]` import supported provider MCP config entries into Arroba-owned MCP registry roots and report skipped entries.
 - M7.5 partial: agent model now stores `mcp_grants`; grant/revoke IPC validates installed MCPs before mutating the agent; interactive grant inspection is landed.
-- M7.6 partial: local Codex and OpenCode provider launches render only the target agent's granted Arroba MCPs into provider-native MCP config, while keeping Arroba runtime MCP separate.
+- M7.6 partial: local Codex and OpenCode provider launches render only the target agent's granted Arroba MCPs into provider-native MCP config, while keeping Arroba runtime MCP separate. When the runtime MCP binding is available, granted third-party MCPs are rendered as provider-facing Arroba proxy entries instead of raw backing definitions.
 - M7.7/M7.8: Codex-style `SKILL.md` metadata parsing and Arroba-owned skill registry over project/user roots, including update and uninstall lifecycle operations.
 - M7.9 partial: interactive `/skill list`, `/skill show`, `/skill install`, `/skill update`, `/skill uninstall`, `/skill import codex|opencode [name]`, `/skill grant`, `/skill revoke`, and `/skill grants`.
 - M7.11 partial: agent model now stores `skill_grants`; grant/revoke IPC validates installed skills before mutating the agent; interactive grant inspection is landed.
@@ -22,15 +23,17 @@ Landed:
 - M7.15 partial: runtime MCP exposes `list_capabilities` and `request_capability` control-plane tools for Arroba-managed MCPs and skills. V1 auto-grants valid requests to the current agent and reports when the grant becomes effective. Skill requests now return the full `SKILL.md` body by default, so requested skills can be used in the same turn. Remote worker agents now forward capability discovery/request calls to the home kernel; skill requests return a home-packaged skill directory and materialize it on the worker under `.arroba/remote/skills/<home-kernel-id>/<skill>/<version>/`.
 - M7.18: remote skill packaging/materialization is landed for grant-time sync and same-turn `request_capability` use, preserving `SKILL.md`, assets, scripts, and references while skipping provider/cache/build directories and symlinks. Remote prompt dispatch verifies/synchronizes granted skills before submit and injects worker-local `materialized_root` paths into the prompt context.
 - M7.20 partial: remote skill live drills pass for OpenCode with `openai/gpt-5.2` low effort and Codex with `gpt-5.2` low effort. Remote MCP v1 conformance checks, live conformance drills, and strict provider-native remote Playwright MCP use drills pass: home sends required MCP definitions/hashes for remote prompts, worker checks its own project/user Arroba MCP registry, missing/mismatched/invalid worker MCPs fail fast instead of being installed remotely, and provider-native MCP config is rendered on the worker for Codex/OpenCode.
+- M7.21 partial: provider-facing MCP proxy config generation, authenticated `/mcp/proxy/<name>` runtime route, stdio backing process supervision, and provider launch wiring are landed. The route verifies the provider-run runtime MCP token and the agent's MCP grant before dispatching. Stdio MCP backings are keyed by definition hash and reused across provider relaunches, with cached initialize responses for resumed provider sessions. Streamable HTTP MCP backing relay is implemented for plain `http://` upstreams and covered by unit tests. Local live drills now pass for OpenCode and Codex with Playwright plus a deterministic echo MCP, including user-triggered pre-grants and agent-triggered request/reload/continuation flows. Production HTTPS/chunked HTTP client support remains open.
 
 Still open in M7:
 
+- Finish integrating the validated MCP isolation architecture into production for remaining non-local cases: production HTTP client support for HTTPS/chunked streamable HTTP MCPs, remote MCP drills, and workflow drills. See `docs/M7_MCP_ISOLATION_SPIKE_PLAN.md`.
 - Regular non-interactive `arroba mcp ...` / `arroba skill ...` CLI command surfaces, if we keep them separate from slash commands.
 - Regular non-interactive agent grant inspection commands, for example `arroba agent mcps` / `arroba agent skills`.
 - Provider MCP import from Claude-owned configs, plus regular non-interactive Codex/OpenCode import aliases.
 - Provider skill import from Claude-owned skill locations, plus regular non-interactive Codex/OpenCode import aliases.
 - Skill MCP dependency validation.
-- MCP provider hot reload. Codex and OpenCode both expose provider-side reload mechanisms, but v1 keeps newly requested MCPs as next-provider-launch because the available reload paths are provider/server scoped rather than safely Arroba agent-scoped.
+- MCP provider activation. V1 uses Arroba-managed provider conversation relaunch/reload rather than relying on provider-global hot reload APIs, preserving the provider-native conversation/thread and re-rendering agent-scoped MCP config.
 
 ## Goal
 
@@ -179,11 +182,30 @@ arroba agent mcps agent-1
 
 ## M7.6 Provider-Native MCP Rendering
 
-Status: partial. Local Codex and OpenCode launches now receive only the target agent's granted Arroba MCPs as provider-native MCP config. Remote rendering remains open.
+Status: partial. Local Codex and OpenCode launches can receive the target agent's granted Arroba MCPs as provider-native MCP config. The isolation spike validated that production should render provider-facing Arroba MCP proxy entries rather than raw backing MCP definitions, so backing MCP processes can remain warm across provider conversation relaunches. Proxy config generation, authenticated proxy dispatch, stdio backing supervision, and provider launch proxy rendering are landed. Production HTTP forwarding for HTTPS/chunked streamable HTTP MCPs remains open.
 
 At agent launch, inject only that agent's granted Arroba MCPs into the provider's native MCP config/session overlay.
 
-The provider sees normal MCP servers. Arroba does not proxy third-party MCPs through Arroba's runtime MCP.
+The provider sees normal MCP servers. Arroba does not expose third-party MCPs as generic Arroba runtime-MCP tools. Production should supervise/proxy MCP backing runtimes while still rendering provider-native MCP entries to Codex/OpenCode.
+
+Provider-facing proxy details:
+
+- Each provider run receives a runtime MCP bearer token. Agent-scoped provider runs get unique tokens so proxy calls can be attributed to the correct agent/run.
+- A provider-facing proxy entry preserves the Arroba MCP's name, enabled/required flags, timeouts, tool allow/deny lists, and per-tool config, but replaces the transport with `streamable_http` pointing at `/mcp/proxy/<mcp-name>`.
+- The runtime proxy route authenticates the bearer token, checks that the MCP is enabled in that provider run's granted MCP set, and dispatches to the backing MCP definition.
+- Streamable HTTP backing relay is implemented for local `http://` upstreams and forwards JSON-RPC body plus static/env-backed headers. HTTPS and chunked transfer support should use a production HTTP client before real external HTTP MCPs are routed through the proxy.
+- Stdio backing dispatch uses an Arroba supervisor keyed by MCP definition hash. It starts the backing process once, frames JSON-RPC to stdio MCPs as newline-delimited JSON for real MCP compatibility, accepts `Content-Length` or newline-delimited responses, forwards request/response calls, suppresses duplicate `notifications/initialized`, and returns cached `initialize` responses on provider relaunch so backing runtimes stay warm.
+- JSON-RPC notifications sent to `/mcp/proxy/<name>` return `202 Accepted` immediately. The current implementation treats notifications as provider lifecycle signals and does not block waiting for a response that MCP notifications do not produce.
+- Codex receives proxy MCP configs with `bearer_token_env_var` instead of inline authorization headers, avoiding token leakage in provider launch arguments.
+- For granted proxy tools, Arroba marks `tools/list` annotations as non-destructive, non-open-world, and read-only from the provider approval system's perspective. Arroba's capability grant is the V1 approval boundary; later permissions work should replace this coarse policy with more granular tool risk metadata.
+
+Local drill evidence:
+
+- `node apps/cli/scripts/live-mcp-skill-drill.mjs --provider codex --provider-model codex=gpt-5.2 --live-mcp-use --timeout-ms 480000 --keep-artifacts-on-failure` passed in 101.4s with Playwright and echo MCPs.
+- `node apps/cli/scripts/live-mcp-skill-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2 --live-mcp-use --timeout-ms 480000 --keep-artifacts-on-failure` passed in 74.3s with Playwright and echo MCPs.
+- `node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2 --provider-model codex=gpt-5.2 --live-mcp-use --timeout-ms 480000 --keep-artifacts-on-failure` passed in 103.4s.
+- The drill validates provider-native echo MCP calls, provider-native Playwright/browser MCP calls, Arroba managed-I/O marker writes, same-turn skill requests, web skill install, and agent-triggered MCP request followed by provider conversation relaunch plus automatic continuation.
+- A relaunch bug found during the combined drill was fixed: agent-triggered MCP activation now preserves the original provider run's managed-I/O requirement, so replacement Codex/OpenCode runs stay fenced/restricted.
 
 ## M7.7 Arroba Skill Format
 
@@ -355,7 +377,7 @@ Hot reload investigation:
 
 - OpenCode has dynamic server-level MCP add/connect routes and rebuilds MCP tools from currently connected MCP clients when constructing prompt tools. That is close to hot reload, but the OpenCode MCP state is server-global. Using it for Arroba per-agent requests would leak a newly requested MCP to other OpenCode sessions/agents served by that OpenCode process unless Arroba first isolates one OpenCode server/process per agent grant scope.
 - Codex app-server documents `config/mcpServer/reload`, which reloads MCP server config from disk and queues a refresh for loaded threads on each thread's next active turn. Arroba currently injects granted MCPs through provider launch config, not by mutating Codex's user config on disk. Using this reload safely would require an Arroba-owned, agent-scoped Codex config overlay or a thread-scoped reload API.
-- V1 decision: do not implement MCP hot reload yet. Skill hot reload is safe because Arroba can return inert markdown instructions directly through its runtime MCP. MCP hot reload remains a follow-up after provider process/config isolation is explicit.
+- V1 decision: MCP activation uses Arroba-controlled provider relaunch/resume, not provider-global hot reload. Skill hot reload is safe because Arroba can return inert markdown instructions directly through its runtime MCP. OpenCode server-global add/connect must not be used for grant isolation except as a diagnostics path, because it can expose an MCP to other sessions served by the same OpenCode process.
 
 ## M7.16 Workflow Integration
 
@@ -420,7 +442,7 @@ Open:
 
 ## M7.19 Local Provider Drills
 
-Status: local pass. The local MCP/skill drill harness is landed as `apps/cli/scripts/live-mcp-skill-drill.mjs`; registry, public web skill install, pre-granted skill use, same-turn skill body requests, and provider-native Playwright MCP use pass for local Codex and OpenCode. The strict `--live-mcp-use` path grants Playwright to a fresh MCP drill agent, force-restarts an idle provider process so next-launch MCP grants are rendered, relaunches the provider run, verifies a provider-native Playwright/browser tool call, and writes the marker through Arroba managed I/O. Remote skill materialization and remote MCP conformance/use drills are covered under M7.20.
+Status: local base pass; strict dynamic MCP activation must be rerun after production proxy/supervisor integration. The local MCP/skill drill harness is landed as `apps/cli/scripts/live-mcp-skill-drill.mjs`; registry, public web skill install, pre-granted skill use, same-turn skill body requests, and provider-native Playwright MCP use pass for local Codex and OpenCode. The isolation spike proved provider-runtime isolation, restart/resume, MCP backing-server reuse, overlapping per-agent MCP sets, and scale behavior; production now needs the same path integrated and drilled. Remote skill materialization and remote MCP conformance/use drills are covered under M7.20.
 
 Verify local Codex/OpenCode behavior:
 
@@ -442,7 +464,7 @@ Overarching local drill matrix:
 - Skill prompt injection: grant the public skill before launch, then verify the provider prompt exposes only the granted skill summary and injects the full body only when explicitly selected/mentioned/requested.
 - Real web-skill install sources: use public Agent Skills repositories such as <https://github.com/vercel-labs/agent-skills> or curated registries such as <https://github.com/gotalab/skillport> as install candidates, copying into the isolated Arroba skill root rather than provider-scanned `.agents/skills`.
 - Provider import: seed Codex/OpenCode native MCP and skill locations with a fixture, import into Arroba-owned roots, then verify grants/rendering come from Arroba-owned copies and not provider-scanned duplicates.
-- Recovery/request UX: when an agent cannot see a needed MCP, it should request it and receive an explicit `next_provider_launch` response; when it cannot see a needed skill, it should request it and receive the skill body immediately.
+- Recovery/request UX: when an agent cannot see a needed MCP, it should request it and receive an explicit provider-reload/automatic-continuation response; when it cannot see a needed skill, it should request it and receive the skill body immediately.
 
 ## M7.20 Remote Provider Drills
 

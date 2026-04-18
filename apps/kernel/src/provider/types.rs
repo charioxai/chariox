@@ -65,8 +65,11 @@ pub fn default_provider_command_catalogs() -> BTreeMap<String, ProviderCommandCa
     ])
 }
 
-pub(crate) fn provider_requires_managed_io_by_default(provider: &str) -> bool {
-    matches!(provider, "codex" | "opencode" | "default")
+pub(crate) fn provider_requires_managed_io_by_default(
+    provider: &str,
+    config: &crate::config::DaemonConfig,
+) -> bool {
+    config.provider_requires_managed_io(provider)
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]

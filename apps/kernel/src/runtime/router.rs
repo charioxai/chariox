@@ -17,14 +17,15 @@ use crate::local::provider_requests::{
 use crate::local::{
     AgentGrantKind, ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
     GetMcpServerRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
-    GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest, GrantAgentCapabilityRequest,
-    ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
-    ListAgentsRequest, ListMcpServersRequest, ListProviderProcessesRequest, ListSessionsRequest,
-    ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
-    MoveAgentToRemoteRequest, PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest,
-    ResolveSessionRequest, RevokeAgentCapabilityRequest, StartProviderLoginRequest,
+    GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest,
+    GrantAgentCapabilityRequest, ImportMcpServersRequest, ImportSkillsRequest,
+    InstallMcpServerRequest, InstallSkillRequest, ListAgentsRequest, ListMcpServersRequest,
+    ListProviderProcessesRequest, ListSessionsRequest, ListSkillsRequest, LocalDaemonRequest,
+    LocalDaemonResponse, LogoutProviderRequest, MoveAgentToRemoteRequest,
+    PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest,
+    RevokeAgentCapabilityRequest, SetUserConfigValueRequest, StartProviderLoginRequest,
     TeardownProviderProcessesRequest, UninstallMcpServerRequest, UninstallSkillRequest,
-    UpdateMcpServerRequest, UpdateSkillRequest,
+    UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -335,6 +336,41 @@ impl CommandRouter {
     pub(crate) fn runtime_mcp_bind_address(&self) -> (String, u16) {
         let config = self.config_projection.snapshot();
         (config.runtime_mcp_host, config.runtime_mcp_port)
+    }
+
+    pub(crate) async fn dispatch_authenticated_mcp_proxy_call(
+        &self,
+        auth_token: &str,
+        name: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, DaemonError> {
+        crate::mcp::validate_registry_name(name, "mcp name")?;
+        let backing = {
+            let app = self.app.lock().await;
+            let run = app
+                .providers()
+                .get_run_by_runtime_mcp_auth_token(auth_token)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "mcp.proxy.auth",
+                    message: "invalid runtime MCP auth token".to_string(),
+                })?;
+            run.mcp_servers()
+                .iter()
+                .find(|server| server.name == name && server.enabled)
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "mcp.proxy.grant",
+                    message: format!("MCP `{name}` is not granted to provider run `{}`", run.id()),
+                })?
+        };
+        tokio::task::spawn_blocking(move || {
+            crate::provider::dispatch_provider_mcp_proxy_request(&backing, payload)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "mcp.proxy.dispatch",
+            message: error.to_string(),
+        })?
     }
 
     pub(crate) fn relay_config_snapshot(&self) -> crate::config::DaemonConfig {
@@ -776,6 +812,15 @@ impl CommandRouter {
             LocalDaemonRequest::ConfigureRelay(request) => {
                 self.execute_configure_relay_request(request).await
             }
+            LocalDaemonRequest::GetUserConfig(request) => {
+                self.execute_get_user_config_request(request).await
+            }
+            LocalDaemonRequest::SetUserConfigValue(request) => {
+                self.execute_set_user_config_value_request(request).await
+            }
+            LocalDaemonRequest::UnsetUserConfigValue(request) => {
+                self.execute_unset_user_config_value_request(request).await
+            }
             LocalDaemonRequest::ApproveRemoteMachine(request) => {
                 self.execute_approve_remote_machine_request(request).await
             }
@@ -1112,6 +1157,49 @@ impl CommandRouter {
         self.provider_catalog_projection.invalidate();
         Ok(LocalDaemonResponse::RelayConfigured {
             status: self.projected_relay_status().await,
+        })
+    }
+
+    async fn execute_get_user_config_request(
+        &self,
+        _request: GetUserConfigRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = self.config_projection.snapshot();
+        Ok(LocalDaemonResponse::UserConfig {
+            path: config.user_config_path().clone(),
+            config: config.user_config,
+        })
+    }
+
+    async fn execute_set_user_config_value_request(
+        &self,
+        request: SetUserConfigValueRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = {
+            let mut app = self.app.lock().await;
+            app.set_user_config_value(request.path, request.value)?;
+            app.config().clone()
+        };
+        self.config_projection.update(config.clone());
+        Ok(LocalDaemonResponse::UserConfigUpdated {
+            path: config.user_config_path().clone(),
+            config: config.user_config,
+        })
+    }
+
+    async fn execute_unset_user_config_value_request(
+        &self,
+        request: UnsetUserConfigValueRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = {
+            let mut app = self.app.lock().await;
+            app.unset_user_config_value(request.path)?;
+            app.config().clone()
+        };
+        self.config_projection.update(config.clone());
+        Ok(LocalDaemonResponse::UserConfigUpdated {
+            path: config.user_config_path().clone(),
+            config: config.user_config,
         })
     }
 
@@ -1452,6 +1540,15 @@ impl CommandRouter {
             LocalDaemonRequest::RelayStatus(_) => self.projected_relay_status_response().await,
             LocalDaemonRequest::ConfigureRelay(request) => {
                 self.execute_configure_relay_request(request).await
+            }
+            LocalDaemonRequest::GetUserConfig(request) => {
+                self.execute_get_user_config_request(request).await
+            }
+            LocalDaemonRequest::SetUserConfigValue(request) => {
+                self.execute_set_user_config_value_request(request).await
+            }
+            LocalDaemonRequest::UnsetUserConfigValue(request) => {
+                self.execute_unset_user_config_value_request(request).await
             }
             LocalDaemonRequest::ListRemoteMachines(_) => {
                 self.projected_remote_machines_response().await

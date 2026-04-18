@@ -2,6 +2,7 @@ import type {
   AgentInstance,
   ArrobaMcpServerConfig,
   ArrobaSkillMetadata,
+  ArrobaUserConfigPayload,
   McpImportOutcome,
   ProviderAuthStatus,
   ProviderLoginStart,
@@ -23,6 +24,7 @@ import type { ParsedSlashCommand } from "./commands.js"
 import type { MultiAgentResponseLayout, UiPreferences } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { SessionListEntry } from "./sessions.js"
+import { sessionHasPromptWork } from "./session-state.js"
 import { readFile } from "node:fs/promises"
 import { resolve as resolvePath } from "node:path"
 
@@ -238,6 +240,9 @@ type CommandActionDeps = {
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>
   saveUiPreferences: (prefs: UiPreferences) => Promise<void>
+  getUserConfig?: () => Promise<ArrobaUserConfigPayload>
+  setUserConfigValue?: (path: string, value: string) => Promise<ArrobaUserConfigPayload>
+  unsetUserConfigValue?: (path: string) => Promise<ArrobaUserConfigPayload>
   rebuildTranscript: () => void
   requestRender: () => void
   afterViewRender?: (layout: MultiAgentResponseLayout) => void
@@ -1147,6 +1152,118 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
     deps.flashFooter("usage: /relay status | /relay use <ws-url> [token] | /relay disable", "error")
+  }
+
+  const handleConfigCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "config" }>,
+  ): Promise<void> => {
+    const [subcommand, keyPath, ...rest] = command.args
+    if (!subcommand || subcommand === "show") {
+      if (!deps.getUserConfig) {
+        deps.flashFooter("user config is unavailable in this build", "error")
+        return
+      }
+      const payload = await deps.getUserConfig()
+      deps.appendNotice(`config path: ${payload.path}\n${JSON.stringify(payload.config, null, 2)}`)
+      deps.flashFooter(`config loaded from ${payload.path}`, "info")
+      return
+    }
+    if (subcommand === "path") {
+      if (!deps.getUserConfig) {
+        deps.flashFooter("user config is unavailable in this build", "error")
+        return
+      }
+      const payload = await deps.getUserConfig()
+      deps.appendNotice(payload.path)
+      deps.flashFooter(`config path: ${payload.path}`, "info")
+      return
+    }
+    if (subcommand === "set") {
+      if (!deps.setUserConfigValue) {
+        deps.flashFooter("user config updates are unavailable in this build", "error")
+        return
+      }
+      const value = rest.join(" ").trim()
+      if (!keyPath || !value) {
+        deps.flashFooter("usage: /config set <path> <value>", "error")
+        return
+      }
+      await deps.setUserConfigValue(keyPath, value)
+      deps.flashFooter(`config ${keyPath} set to ${value}`, "info")
+      return
+    }
+    if (subcommand === "unset") {
+      if (!deps.unsetUserConfigValue) {
+        deps.flashFooter("user config updates are unavailable in this build", "error")
+        return
+      }
+      if (!keyPath) {
+        deps.flashFooter("usage: /config unset <path>", "error")
+        return
+      }
+      await deps.unsetUserConfigValue(keyPath)
+      deps.flashFooter(`config ${keyPath} unset`, "info")
+      return
+    }
+    if (subcommand === "managed-io") {
+      if (!deps.setUserConfigValue) {
+        deps.flashFooter("user config updates are unavailable in this build", "error")
+        return
+      }
+      const provider = keyPath ?? "default"
+      const mode = rest[0] ?? "required"
+      if (!["required", "unrestricted", "on", "off"].includes(mode)) {
+        deps.flashFooter("usage: /config managed-io [provider] required|unrestricted|on|off", "error")
+        return
+      }
+      const normalizedMode = mode === "on" ? "required" : mode === "off" ? "unrestricted" : mode
+      await deps.setUserConfigValue(`providers.managed_io.${provider}`, normalizedMode)
+      const relaunched = await relaunchFocusedProviderForManagedIoPolicy(provider)
+      deps.flashFooter(
+        relaunched
+          ? `managed I/O for ${provider} set to ${normalizedMode}; relaunched focused provider`
+          : `managed I/O for ${provider} set to ${normalizedMode}; applies on next provider launch`,
+        "info",
+      )
+      return
+    }
+    deps.flashFooter(
+      "usage: /config show | path | set <path> <value> | unset <path> | managed-io [provider] required|unrestricted",
+      "error",
+    )
+  }
+
+  const relaunchFocusedProviderForManagedIoPolicy = async (provider: string): Promise<boolean> => {
+    if (!deps.isAttached()) {
+      return false
+    }
+    const session = deps.sessionState()
+    if (sessionHasPromptWork(session)) {
+      deps.appendNotice("Managed I/O config updated. The active provider run keeps its launch-time write policy until the turn finishes and the provider is relaunched.")
+      return false
+    }
+    const focusedId = deps.focusedAgentId()
+    const agent = session.agents.find((candidate) => candidate.id === focusedId)
+    if (!agent) {
+      return false
+    }
+    const agentProvider = agent.provider === "default" ? "opencode" : agent.provider
+    const targetProvider = provider === "default" ? agentProvider : provider
+    if (agentProvider !== targetProvider) {
+      return false
+    }
+    const run = await deps.launchAgentProviderRun(
+      agentProvider,
+      agent.model ?? deps.currentModelId(),
+      agent.effort ?? deps.currentVariantId(),
+      agent.id,
+    )
+    deps.setProviderRunState(run)
+    const refreshedSession = await deps.refreshSessionState(session.id)
+    deps.applySessionState(refreshedSession)
+    await deps.refreshAgentPanes(refreshedSession)
+    deps.rebuildTranscript()
+    return true
   }
 
   const handleMachineCommand = async (
@@ -2399,6 +2516,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleAgentCommand,
     handleMachineCommand,
     handleRelayCommand,
+    handleConfigCommand,
     handleWorkflowCommand,
     handleMcpCommand,
     handleSkillCommand,

@@ -24,7 +24,23 @@ test("buildCommandCenterItems shows root slash commands", () => {
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/model"), true)
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/variant"), true)
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/view"), true)
+  assert.equal(items.some((item) => item.kind === "group" && item.label === "/config"), true)
   assert.equal(items.some((item) => item.kind === "command" && item.label === "/exit"), true)
+})
+
+test("buildCommandCenterItems includes config subcommands", () => {
+  const items = buildCommandCenterItems("/config", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "openai/gpt-5.4",
+    currentVariant: "high",
+  })
+
+  assert.equal(items.some((item) => item.kind === "command" && item.value === "/config show"), true)
+  assert.equal(items.some((item) => item.kind === "command" && item.value === "/config path"), true)
+  assert.equal(items.some((item) => item.kind === "group" && item.value === "/config managed-io "), true)
 })
 
 test("buildCommandCenterItems filters model options", () => {

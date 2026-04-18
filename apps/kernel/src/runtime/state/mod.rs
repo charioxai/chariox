@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -57,6 +57,7 @@ struct KernelRuntimeOwnedState {
     managed_io_external_changes: crate::io::ArtifactExternalChangeMonitor,
     workspace_identity_monitor:
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
+    pending_mcp_continuations: PendingMcpContinuationStore,
 }
 
 #[derive(Default)]
@@ -69,6 +70,28 @@ impl WorkflowPromptDispatches {
     fn extend(&mut self, other: Self) {
         self.local.extend(other.local);
         self.remote.extend(other.remote);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PendingMcpContinuation {
+    session_id: String,
+    agent_id: String,
+    source_attachment_id: String,
+    mcp_name: String,
+    previous_prompt: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PendingMcpContinuationStore {
+    inner: Arc<StdMutex<BTreeMap<String, PendingMcpContinuation>>>,
+}
+
+impl PendingMcpContinuationStore {
+    fn write(&self) -> StdMutexGuard<'_, BTreeMap<String, PendingMcpContinuation>> {
+        self.inner
+            .lock()
+            .expect("pending MCP continuation mutex poisoned")
     }
 }
 
@@ -139,6 +162,7 @@ impl KernelRuntimeState {
                 managed_io_external_changes: crate::io::ArtifactExternalChangeMonitor::default(),
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
+                pending_mcp_continuations: PendingMcpContinuationStore::default(),
             },
         }
     }
@@ -278,7 +302,9 @@ impl KernelRuntimeState {
             self.ensure_remote_mcp_availability_for_agent(&checked)
                 .await?;
         }
-        self.owned.grant_agent_mcp(agent_ref, name)
+        let agent = self.owned.grant_agent_mcp(agent_ref, name.clone())?;
+        let _ = self.activate_agent_mcp_grants_if_idle(agent.session_id(), agent.id(), &name)?;
+        Ok(agent)
     }
 
     pub(crate) async fn revoke_agent_mcp(

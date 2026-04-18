@@ -668,6 +668,27 @@ export function configureRelayRequest(relayUrl: string | null, relayToken: strin
   }
 }
 
+export function getUserConfigRequest() {
+  return { GetUserConfig: null }
+}
+
+export function setUserConfigValueRequest(path: string, value: string) {
+  return {
+    SetUserConfigValue: {
+      path,
+      value,
+    },
+  }
+}
+
+export function unsetUserConfigValueRequest(path: string) {
+  return {
+    UnsetUserConfigValue: {
+      path,
+    },
+  }
+}
+
 export function listRemoteMachinesRequest() {
   return { ListRemoteMachines: null }
 }

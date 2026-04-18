@@ -432,6 +432,55 @@ tail -f ~/.local/state/arroba/logs/*.ndjson
 
 Arroba-managed Codex and OpenCode provider sessions use managed I/O by default. Supported providers are launched so coordinated workspace files cannot be written through provider-native edit/shell paths; agents must use the Arroba runtime/MCP tools instead.
 
+Managed I/O defaults are read from the Arroba user config TOML:
+
+```text
+$XDG_CONFIG_HOME/arroba/config.toml
+```
+
+If `XDG_CONFIG_HOME` is unset, the fallback path is:
+
+```text
+~/.arroba/config.toml
+```
+
+The default policy is equivalent to:
+
+```toml
+version = 1
+
+[providers]
+default = "opencode"
+model = "default"
+account_profile = "default"
+
+[providers.managed_io]
+default = "required"
+codex = "required"
+opencode = "required"
+```
+
+To relax the policy for one provider:
+
+```toml
+[providers.managed_io]
+default = "required"
+opencode = "unrestricted"
+codex = "required"
+```
+
+Remote leased agents use the same per-provider managed I/O policy as local agents. For example, setting `providers.managed_io.opencode = "unrestricted"` applies to both local OpenCode runs and remote leased OpenCode backing runs.
+
+You can also modify the same TOML through the CLI:
+
+```text
+/config show
+/config path
+/config set providers.managed_io.opencode unrestricted
+/config managed-io codex required
+/config unset providers.managed_io.opencode
+```
+
 Agent-facing tools:
 
 - `arroba.read_artifact`

@@ -208,6 +208,50 @@ const COMMAND_TREE: CommandNode[] = [
     ],
   },
   {
+    id: "config",
+    label: "/config",
+    description: "Inspect and update Arroba user config",
+    value: "/config ",
+    children: [
+      { id: "config-show", label: "show", description: "Show the effective Arroba user config", value: "/config show" },
+      { id: "config-path", label: "path", description: "Show the Arroba user config path", value: "/config path" },
+      { id: "config-set", label: "set", description: "Set a dotted config key", value: "/config set " },
+      { id: "config-unset", label: "unset", description: "Unset a dotted config key", value: "/config unset " },
+      {
+        id: "config-managed-io",
+        label: "managed-io",
+        description: "Set provider managed I/O policy",
+        value: "/config managed-io ",
+        children: [
+          {
+            id: "config-managed-io-opencode-unrestricted",
+            label: "opencode unrestricted",
+            description: "Disable managed I/O for OpenCode provider runs",
+            value: "/config managed-io opencode unrestricted",
+          },
+          {
+            id: "config-managed-io-opencode-required",
+            label: "opencode required",
+            description: "Require managed I/O for OpenCode provider runs",
+            value: "/config managed-io opencode required",
+          },
+          {
+            id: "config-managed-io-codex-unrestricted",
+            label: "codex unrestricted",
+            description: "Disable managed I/O for Codex provider runs",
+            value: "/config managed-io codex unrestricted",
+          },
+          {
+            id: "config-managed-io-codex-required",
+            label: "codex required",
+            description: "Require managed I/O for Codex provider runs",
+            value: "/config managed-io codex required",
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: "model",
     label: "/model",
     description: "Change the active model",

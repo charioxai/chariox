@@ -409,6 +409,7 @@ Status:
 
 - in progress as of 2026-04-17
 - implementation plan lives in `docs/M7_MCP_SKILLS_PLAN.md`
+- dynamic grant-based MCP activation is paused pending `docs/M7_MCP_ISOLATION_SPIKE_PLAN.md`
 
 Outcomes:
 
@@ -416,14 +417,15 @@ Outcomes:
 - Arroba-owned skill registry stored outside provider-scanned paths
 - provider import for existing MCPs and skills
 - per-agent MCP and skill grants
-- provider-native MCP rendering at agent launch
+- provider-native MCP rendering at agent launch, pending spike validation for dynamic per-agent activation
 - Codex-style skill discovery and prompt injection for granted skills, including same-turn runtime skill request bodies
 - `/mcp`, `/skill`, and `/skills` CLI command surfaces
 - remote-machine MCP and skill materialization after local behavior is stable
+- repo-local MCP isolation spike to validate one provider runtime per agent, provider resume after restart, and MCP backing-server reuse
 
 Exit criteria:
 
-- local Codex and OpenCode agents see only their granted MCPs and skills
+- local Codex and OpenCode agents see only their granted MCPs and skills, with MCP grant strictness validated by the isolation spike before production activation proceeds
 - imported provider MCPs and skills work as Arroba-owned copies
 - workflows reuse agent grants without overriding them
 - remote agents have an explicit design and implementation path for MCP/skill availability

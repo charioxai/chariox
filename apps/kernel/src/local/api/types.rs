@@ -132,6 +132,20 @@ pub struct ConfigureRelayRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetUserConfigRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetUserConfigValueRequest {
+    pub path: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnsetUserConfigValueRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayStatus {
     pub configured: bool,
     pub connected: bool,
@@ -689,6 +703,9 @@ pub enum LocalDaemonRequest {
     ListSkills(ListSkillsRequest),
     RelayStatus(RelayStatusRequest),
     ConfigureRelay(ConfigureRelayRequest),
+    GetUserConfig(GetUserConfigRequest),
+    SetUserConfigValue(SetUserConfigValueRequest),
+    UnsetUserConfigValue(UnsetUserConfigValueRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     ApproveRemoteMachine(ApproveRemoteMachineRequest),
@@ -847,6 +864,14 @@ pub enum LocalDaemonResponse {
     },
     RelayConfigured {
         status: RelayStatus,
+    },
+    UserConfig {
+        path: PathBuf,
+        config: ArrobaUserConfig,
+    },
+    UserConfigUpdated {
+        path: PathBuf,
+        config: ArrobaUserConfig,
     },
     RemoteMachinesListed {
         machines: Vec<RemoteMachineRecord>,

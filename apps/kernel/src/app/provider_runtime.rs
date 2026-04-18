@@ -813,10 +813,15 @@ impl DaemonApp {
             }));
         }
         if request.runtime_mcp_binding.is_none() {
-            let shared_auth_token = self
-                .providers
-                .get_session_run_for_provider(&request.session_id, &request.provider)
-                .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string));
+            let shared_auth_token = request
+                .agent_id
+                .is_none()
+                .then(|| {
+                    self.providers
+                        .get_session_run_for_provider(&request.session_id, &request.provider)
+                        .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string))
+                })
+                .flatten();
             request = request.with_runtime_mcp_binding(RuntimeMcpBinding::new(
                 self.config.runtime_mcp_url(),
                 shared_auth_token.unwrap_or_else(generate_runtime_mcp_auth_token),
@@ -1068,10 +1073,15 @@ impl DaemonApp {
             }));
         }
         if request.runtime_mcp_binding.is_none() {
-            let shared_auth_token = self
-                .providers
-                .get_session_run_for_provider(&request.session_id, &request.provider)
-                .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string));
+            let shared_auth_token = request
+                .agent_id
+                .is_none()
+                .then(|| {
+                    self.providers
+                        .get_session_run_for_provider(&request.session_id, &request.provider)
+                        .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string))
+                })
+                .flatten();
             request = request.with_runtime_mcp_binding(RuntimeMcpBinding::new(
                 self.config.runtime_mcp_url(),
                 shared_auth_token.unwrap_or_else(generate_runtime_mcp_auth_token),
@@ -1299,7 +1309,7 @@ impl DaemonApp {
         )
         .with_agent_id(agent.id().to_string())
         .with_variant(agent.effort().map(str::to_string));
-        if crate::provider::provider_requires_managed_io_by_default(provider) {
+        if crate::provider::provider_requires_managed_io_by_default(provider, &self.config) {
             request = request.with_managed_io_required();
         }
         if let Some(worktree_id) = agent.worktree_id() {

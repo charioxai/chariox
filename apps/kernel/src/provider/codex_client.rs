@@ -13,6 +13,7 @@ use crate::error::DaemonError;
 use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
 use crate::provider::{OpenCodeProviderCatalog, ProviderWriteAccessMode};
 
+use super::codex::CODEX_MCP_TOKEN_ENV;
 use super::resolve_codex_executable;
 
 pub type CodexSocket = WebSocket<MaybeTlsStream<TcpStream>>;
@@ -257,7 +258,7 @@ impl CodexClient {
             "ephemeral": true,
             "serviceName": "arroba",
         });
-        let config_overrides = self.thread_config_overrides(&policy);
+        let config_overrides = self.thread_config_overrides(&policy)?;
         if !config_overrides.is_empty() {
             self.log_thread_config_overrides("thread/start", &config_overrides);
             params["config"] = json!(config_overrides);
@@ -288,7 +289,7 @@ impl CodexClient {
             "sandboxPolicy": policy.sandbox_policy,
             "personality": "pragmatic",
         });
-        let config_overrides = self.thread_config_overrides(&policy);
+        let config_overrides = self.thread_config_overrides(&policy)?;
         if !config_overrides.is_empty() {
             self.log_thread_config_overrides("thread/resume", &config_overrides);
             params["config"] = json!(config_overrides);
@@ -701,16 +702,26 @@ impl CodexClient {
         }
     }
 
-    fn thread_config_overrides(&self, policy: &CodexPermissionPolicy) -> BTreeMap<String, Value> {
+    fn thread_config_overrides(
+        &self,
+        policy: &CodexPermissionPolicy,
+    ) -> Result<BTreeMap<String, Value>, DaemonError> {
         let mut overrides = policy.config_overrides.clone();
-        append_codex_mcp_overrides(&mut overrides, &self.mcp_servers);
+        let provider_mcp_servers =
+            super::mcp_proxy::provider_facing_mcp_proxy_configs_with_bearer_env(
+                &self.mcp_servers,
+                self.runtime_mcp_server_url.as_deref(),
+                self.runtime_mcp_auth_token.as_deref(),
+                CODEX_MCP_TOKEN_ENV,
+            )?;
+        append_codex_mcp_overrides(&mut overrides, &provider_mcp_servers);
         if let (Some(server_url), Some(auth_token)) = (
             self.runtime_mcp_server_url.as_deref(),
             self.runtime_mcp_auth_token.as_deref(),
         ) {
             append_runtime_mcp_overrides(&mut overrides, server_url, auth_token);
         }
-        overrides
+        Ok(overrides)
     }
 
     fn log_thread_config_overrides(
@@ -1367,7 +1378,7 @@ mod tests {
             .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"));
         let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired);
 
-        let overrides = client.thread_config_overrides(&policy);
+        let overrides = client.thread_config_overrides(&policy).unwrap();
 
         assert_eq!(
             overrides.get("mcp_servers.arroba.url"),
@@ -1399,7 +1410,7 @@ mod tests {
             .with_mcp_servers(&[server]);
         let policy = codex_permission_policy(ProviderWriteAccessMode::Unrestricted);
 
-        let overrides = client.thread_config_overrides(&policy);
+        let overrides = client.thread_config_overrides(&policy).unwrap();
 
         assert_eq!(
             overrides.get("mcp_servers.browser.command"),
@@ -1409,6 +1420,44 @@ mod tests {
             overrides.get("mcp_servers.browser.args"),
             Some(&json!(["@playwright/mcp@latest"]))
         );
+        assert_eq!(
+            overrides.get("mcp_servers.browser.required"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.browser.tool_timeout_sec"),
+            Some(&json!(25))
+        );
+    }
+
+    #[test]
+    fn thread_config_overrides_proxy_granted_mcp_servers_when_runtime_mcp_is_bound() {
+        let mut server =
+            ArrobaMcpServerConfig::stdio("browser", "npx", vec!["@playwright/mcp@latest".into()]);
+        server.required = true;
+        server.tool_timeout_sec = Some(25);
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"))
+            .with_mcp_servers(&[server]);
+        let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired);
+
+        let overrides = client.thread_config_overrides(&policy).unwrap();
+
+        assert_eq!(
+            overrides.get("mcp_servers.browser.url"),
+            Some(&json!("http://127.0.0.1:43120/mcp/proxy/browser"))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.browser.bearer_token_env_var"),
+            Some(&json!("ARROBA_MCP_TOKEN"))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.browser.http_headers.Authorization"),
+            None
+        );
+        assert_eq!(overrides.get("mcp_servers.browser.command"), None);
+        assert_eq!(overrides.get("mcp_servers.browser.args"), None);
         assert_eq!(
             overrides.get("mcp_servers.browser.required"),
             Some(&json!(true))

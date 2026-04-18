@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -10,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonConfig {
+    pub user_config_path: PathBuf,
+    pub user_config: ArrobaUserConfig,
     pub daemon_id: String,
     pub host_machine_id: String,
     pub host_machine_alias: Option<String>,
@@ -40,11 +43,15 @@ pub struct DaemonConfig {
 impl DaemonConfig {
     pub fn load_from_env() -> Self {
         let runtime_identity = load_or_create_runtime_identity();
+        let user_config_path = Self::default_user_config_path();
+        let user_config = load_user_config_from_path(&user_config_path);
         let daemon_id = env::var("ARROBA_DAEMON_ID")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| runtime_identity.daemon_id.clone());
         Self {
+            user_config_path,
+            user_config,
             local_socket_path: env::var_os("ARROBA_DAEMON_SOCKET")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| Self::default_local_socket_path(&daemon_id)),
@@ -155,6 +162,8 @@ impl DaemonConfig {
         let relay_public_key = relay_crypto::public_key_from_private_key_base64(&relay_private_key)
             .unwrap_or_default();
         Self {
+            user_config_path: Self::default_user_config_path(),
+            user_config: ArrobaUserConfig::default(),
             local_socket_path: Self::default_local_socket_path(&daemon_id),
             kernel_websocket_host: "127.0.0.1".to_string(),
             kernel_websocket_port: 43118,
@@ -239,6 +248,42 @@ impl DaemonConfig {
 
     pub fn default_daemon_config_path() -> PathBuf {
         default_state_dir().join("daemon").join("config.json")
+    }
+
+    pub fn default_user_config_path() -> PathBuf {
+        default_config_dir().join("config.toml")
+    }
+
+    pub fn user_config_path(&self) -> &PathBuf {
+        &self.user_config_path
+    }
+
+    pub fn provider_requires_managed_io(&self, provider: &str) -> bool {
+        self.user_config
+            .providers
+            .managed_io
+            .mode_for(provider)
+            .requires_managed_io()
+    }
+
+    pub fn set_user_config_value(
+        &mut self,
+        key_path: impl AsRef<str>,
+        value: impl Into<String>,
+    ) -> Result<(), DaemonError> {
+        self.user_config
+            .set_value(key_path.as_ref(), value.into())?;
+        persist_user_config(&self.user_config_path, &self.user_config)?;
+        Ok(())
+    }
+
+    pub fn unset_user_config_value(
+        &mut self,
+        key_path: impl AsRef<str>,
+    ) -> Result<(), DaemonError> {
+        self.user_config.unset_value(key_path.as_ref())?;
+        persist_user_config(&self.user_config_path, &self.user_config)?;
+        Ok(())
     }
 
     pub fn persist_relay_config(&self) -> Result<(), DaemonError> {
@@ -331,6 +376,7 @@ impl DaemonConfig {
             });
         }
         validate_non_empty("os_user", &self.os_user)?;
+        self.user_config.validate()?;
         if self.local_socket_path.as_os_str().is_empty() {
             return Err(DaemonError::InvalidConfig {
                 field: "local_socket_path",
@@ -380,6 +426,295 @@ impl DaemonConfig {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArrobaUserConfig {
+    #[serde(default = "default_user_config_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub providers: UserProviderConfig,
+    #[serde(default)]
+    pub ui: UserUiConfig,
+    #[serde(default)]
+    pub relay: UserRelayConfig,
+    #[serde(default)]
+    pub kernel: UserKernelConfig,
+}
+
+impl Default for ArrobaUserConfig {
+    fn default() -> Self {
+        Self {
+            version: default_user_config_version(),
+            providers: UserProviderConfig::default(),
+            ui: UserUiConfig::default(),
+            relay: UserRelayConfig::default(),
+            kernel: UserKernelConfig::default(),
+        }
+    }
+}
+
+impl ArrobaUserConfig {
+    pub fn validate(&self) -> Result<(), DaemonError> {
+        self.providers.managed_io.validate()?;
+        Ok(())
+    }
+
+    fn set_value(&mut self, key_path: &str, value: String) -> Result<(), DaemonError> {
+        let normalized = key_path.trim();
+        validate_config_key_path(normalized)?;
+        match normalized {
+            "version" => {
+                self.version = value
+                    .parse::<u32>()
+                    .map_err(|_| DaemonError::InvalidConfig {
+                        field: "version",
+                        message: "value must be an unsigned integer",
+                    })?;
+            }
+            "providers.default" => {
+                self.providers.default = Some(non_empty_config_string("providers.default", value)?)
+            }
+            "providers.model" => {
+                self.providers.model = Some(non_empty_config_string("providers.model", value)?)
+            }
+            "providers.account_profile" => {
+                self.providers.account_profile =
+                    Some(non_empty_config_string("providers.account_profile", value)?)
+            }
+            "providers.effort" => {
+                self.providers.effort = Some(non_empty_config_string("providers.effort", value)?)
+            }
+            "ui.theme" => self.ui.theme = Some(non_empty_config_string("ui.theme", value)?),
+            "ui.multi_agent_response_layout" => {
+                self.ui.multi_agent_response_layout = Some(non_empty_config_string(
+                    "ui.multi_agent_response_layout",
+                    value,
+                )?)
+            }
+            "ui.max_agents_per_screen" => {
+                self.ui.max_agents_per_screen =
+                    Some(
+                        value
+                            .parse::<u32>()
+                            .map_err(|_| DaemonError::InvalidConfig {
+                                field: "ui.max_agents_per_screen",
+                                message: "value must be an unsigned integer",
+                            })?,
+                    );
+            }
+            "relay.url" => self.relay.url = normalized_optional(Some(value)),
+            "relay.accept_remote_leases" => {
+                self.relay.accept_remote_leases =
+                    Some(parse_config_bool("relay.accept_remote_leases", &value)?)
+            }
+            "kernel.websocket_host" => {
+                self.kernel.websocket_host =
+                    Some(non_empty_config_string("kernel.websocket_host", value)?)
+            }
+            "kernel.websocket_port" => {
+                self.kernel.websocket_port =
+                    Some(parse_config_port("kernel.websocket_port", &value)?)
+            }
+            "kernel.runtime_mcp_host" => {
+                self.kernel.runtime_mcp_host =
+                    Some(non_empty_config_string("kernel.runtime_mcp_host", value)?)
+            }
+            "kernel.runtime_mcp_port" => {
+                self.kernel.runtime_mcp_port =
+                    Some(parse_config_port("kernel.runtime_mcp_port", &value)?)
+            }
+            path if path.starts_with("providers.managed_io.") => {
+                let provider = path
+                    .trim_start_matches("providers.managed_io.")
+                    .trim()
+                    .to_string();
+                validate_config_provider_key(&provider)?;
+                self.providers
+                    .managed_io
+                    .set_mode(provider, ManagedIoMode::parse(&value)?);
+            }
+            _ => {
+                return Err(DaemonError::InvalidConfig {
+                    field: "user_config",
+                    message: "unsupported user config key",
+                });
+            }
+        }
+        self.validate()
+    }
+
+    fn unset_value(&mut self, key_path: &str) -> Result<(), DaemonError> {
+        let normalized = key_path.trim();
+        validate_config_key_path(normalized)?;
+        match normalized {
+            "providers.default" => self.providers.default = None,
+            "providers.model" => self.providers.model = None,
+            "providers.account_profile" => self.providers.account_profile = None,
+            "providers.effort" => self.providers.effort = None,
+            "ui.theme" => self.ui.theme = None,
+            "ui.multi_agent_response_layout" => self.ui.multi_agent_response_layout = None,
+            "ui.max_agents_per_screen" => self.ui.max_agents_per_screen = None,
+            "relay.url" => self.relay.url = None,
+            "relay.accept_remote_leases" => self.relay.accept_remote_leases = None,
+            "kernel.websocket_host" => self.kernel.websocket_host = None,
+            "kernel.websocket_port" => self.kernel.websocket_port = None,
+            "kernel.runtime_mcp_host" => self.kernel.runtime_mcp_host = None,
+            "kernel.runtime_mcp_port" => self.kernel.runtime_mcp_port = None,
+            path if path.starts_with("providers.managed_io.") => {
+                let provider = path.trim_start_matches("providers.managed_io.").trim();
+                validate_config_provider_key(provider)?;
+                self.providers.managed_io.remove_mode(provider);
+            }
+            "version" => {
+                return Err(DaemonError::InvalidConfig {
+                    field: "version",
+                    message: "version cannot be unset",
+                });
+            }
+            _ => {
+                return Err(DaemonError::InvalidConfig {
+                    field: "user_config",
+                    message: "unsupported user config key",
+                });
+            }
+        }
+        self.validate()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserProviderConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub managed_io: ManagedIoConfig,
+}
+
+impl Default for UserProviderConfig {
+    fn default() -> Self {
+        Self {
+            default: Some("opencode".to_string()),
+            model: Some("default".to_string()),
+            account_profile: Some("default".to_string()),
+            effort: None,
+            managed_io: ManagedIoConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedIoConfig {
+    #[serde(flatten)]
+    pub modes: BTreeMap<String, ManagedIoMode>,
+}
+
+impl Default for ManagedIoConfig {
+    fn default() -> Self {
+        Self {
+            modes: BTreeMap::from([
+                ("default".to_string(), ManagedIoMode::Required),
+                ("codex".to_string(), ManagedIoMode::Required),
+                ("opencode".to_string(), ManagedIoMode::Required),
+                ("dev-stub".to_string(), ManagedIoMode::Unrestricted),
+                ("managed-dev-stub".to_string(), ManagedIoMode::Required),
+            ]),
+        }
+    }
+}
+
+impl ManagedIoConfig {
+    pub fn mode_for(&self, provider: &str) -> ManagedIoMode {
+        let provider = match provider {
+            "default" => "opencode",
+            other => other,
+        };
+        self.modes
+            .get(provider)
+            .copied()
+            .unwrap_or(ManagedIoMode::Unrestricted)
+    }
+
+    fn set_mode(&mut self, provider: String, mode: ManagedIoMode) {
+        self.modes.insert(provider, mode);
+    }
+
+    fn remove_mode(&mut self, provider: &str) {
+        self.modes.remove(provider);
+    }
+
+    fn validate(&self) -> Result<(), DaemonError> {
+        for provider in self.modes.keys() {
+            validate_config_provider_key(provider)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedIoMode {
+    Required,
+    Unrestricted,
+}
+
+impl ManagedIoMode {
+    fn parse(value: &str) -> Result<Self, DaemonError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "required" | "managed" | "managed_io_required" | "on" | "true" | "1" => {
+                Ok(Self::Required)
+            }
+            "unrestricted" | "off" | "false" | "0" => Ok(Self::Unrestricted),
+            _ => Err(DaemonError::InvalidConfig {
+                field: "providers.managed_io",
+                message: "value must be `required` or `unrestricted`",
+            }),
+        }
+    }
+
+    pub fn requires_managed_io(&self) -> bool {
+        matches!(self, Self::Required)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserUiConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multi_agent_response_layout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_agents_per_screen: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserRelayConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accept_remote_leases: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserKernelConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub websocket_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub websocket_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_mcp_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_mcp_port: Option<u16>,
+}
+
+fn default_user_config_version() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -435,6 +770,30 @@ fn persist_daemon_config(
     })
 }
 
+fn load_user_config_from_path(path: &PathBuf) -> ArrobaUserConfig {
+    let Some(payload) = fs::read_to_string(path).ok() else {
+        return ArrobaUserConfig::default();
+    };
+    toml::from_str::<ArrobaUserConfig>(&payload).unwrap_or_default()
+}
+
+fn persist_user_config(path: &PathBuf, config: &ArrobaUserConfig) -> Result<(), DaemonError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
+            operation: "persist user config",
+            message: error.to_string(),
+        })?;
+    }
+    let payload = toml::to_string_pretty(config).map_err(|error| DaemonError::LocalTransport {
+        operation: "persist user config",
+        message: error.to_string(),
+    })?;
+    fs::write(path, payload).map_err(|error| DaemonError::LocalTransport {
+        operation: "persist user config",
+        message: error.to_string(),
+    })
+}
+
 fn upsert_machine_registration<'a>(
     entries: &'a mut Vec<PersistedMachineRegistration>,
     machine_id: &str,
@@ -460,6 +819,69 @@ fn normalized_optional(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn validate_config_key_path(key_path: &str) -> Result<(), DaemonError> {
+    validate_non_empty("config_path", key_path)?;
+    if !key_path.split('.').all(|part| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    }) {
+        return Err(DaemonError::InvalidConfig {
+            field: "config_path",
+            message: "path must contain dot-separated alphanumeric keys",
+        });
+    }
+    Ok(())
+}
+
+fn validate_config_provider_key(provider: &str) -> Result<(), DaemonError> {
+    validate_non_empty("providers.managed_io", provider)?;
+    if !provider
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    {
+        return Err(DaemonError::InvalidConfig {
+            field: "providers.managed_io",
+            message: "provider keys may only contain alphanumeric characters, `_`, `-`, or `.`",
+        });
+    }
+    Ok(())
+}
+
+fn non_empty_config_string(field: &'static str, value: String) -> Result<String, DaemonError> {
+    let value = value.trim().to_string();
+    validate_non_empty(field, &value)?;
+    Ok(value)
+}
+
+fn parse_config_bool(field: &'static str, value: &str) -> Result<bool, DaemonError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(DaemonError::InvalidConfig {
+            field,
+            message: "value must be a boolean",
+        }),
+    }
+}
+
+fn parse_config_port(field: &'static str, value: &str) -> Result<u16, DaemonError> {
+    let port = value
+        .parse::<u16>()
+        .map_err(|_| DaemonError::InvalidConfig {
+            field,
+            message: "value must be a TCP port",
+        })?;
+    if port == 0 {
+        return Err(DaemonError::InvalidConfig {
+            field,
+            message: "value must not be zero",
+        });
+    }
+    Ok(port)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -532,6 +954,24 @@ fn default_state_dir() -> PathBuf {
     std::env::temp_dir().join("arroba")
 }
 
+fn default_config_dir() -> PathBuf {
+    if let Some(config_dir) = env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        return config_dir.join("arroba");
+    }
+
+    if let Some(home_dir) = env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        return home_dir.join(".arroba");
+    }
+
+    std::env::temp_dir().join("arroba").join("config")
+}
+
 fn default_runtime_dir() -> PathBuf {
     if let Some(runtime_dir) = env::var_os("XDG_RUNTIME_DIR")
         .filter(|value| !value.is_empty())
@@ -602,5 +1042,40 @@ mod tests {
         assert!(identity.machine_id.starts_with("machine-"));
         assert!(identity.daemon_id.len() > "daemon-".len());
         assert!(identity.machine_id.len() > "machine-".len());
+    }
+
+    #[test]
+    fn managed_io_policy_defaults_to_required_for_supported_providers() {
+        let config = DaemonConfig::new("daemon", "machine", "tester");
+
+        assert!(config.provider_requires_managed_io("codex"));
+        assert!(config.provider_requires_managed_io("opencode"));
+        assert!(config.provider_requires_managed_io("default"));
+    }
+
+    #[test]
+    fn managed_io_policy_can_be_changed_and_persisted_in_user_config() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-user-config-test-{}-{}.toml",
+            std::process::id(),
+            generate_identity_suffix()
+        ));
+        let mut config = DaemonConfig::new("daemon", "machine", "tester");
+        config.user_config_path = path.clone();
+
+        config
+            .set_user_config_value("providers.managed_io.opencode", "unrestricted")
+            .expect("managed I/O policy should update");
+
+        assert!(!config.provider_requires_managed_io("opencode"));
+        assert!(config.provider_requires_managed_io("codex"));
+
+        let loaded = load_user_config_from_path(&path);
+        assert_eq!(
+            loaded.providers.managed_io.mode_for("opencode"),
+            ManagedIoMode::Unrestricted
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -2,7 +2,9 @@ import net from "node:net";
 import { createCipheriv, createDecipheriv, createECDH, hkdfSync, randomBytes, randomUUID } from "node:crypto";
 import WebSocket from "ws";
 const IPC_TIMEOUT_MS = 120_000;
-const DEFAULT_KERNEL_EVENT_STALE_MS = 5_000;
+const DEFAULT_KERNEL_EVENT_STALE_MS = 0;
+const DEFAULT_KERNEL_PING_INTERVAL_MS = 5_000;
+const DEFAULT_KERNEL_MAX_MISSED_PONGS = 2;
 export class LocalIpcError extends Error {
   constructor(operation, message, code = null, retryable = false) {
     super(`kernel transport \`${operation}\` failed: ${message}`);
@@ -13,8 +15,10 @@ export class LocalIpcError extends Error {
   }
 }
 export class LocalIpcClient {
-  websocket = null;
-  websocketConnectPromise = null;
+  controlWebsocket = null;
+  eventWebsocket = null;
+  controlWebsocketConnectPromise = null;
+  eventWebsocketConnectPromise = null;
   pending = new Map();
   eventHandlers = new Set();
   activeKernelSubscription = null;
@@ -23,11 +27,20 @@ export class LocalIpcClient {
   lastReceivedEventId = null;
   lastKernelEventAtMs = 0;
   kernelEventWatchdog = null;
-  suppressNextCloseEvent = false;
-  relayDaemonPublicKey = null;
+  controlHeartbeat = null;
+  eventHeartbeat = null;
+  missedControlPongs = 0;
+  missedEventPongs = 0;
+  suppressNextControlCloseEvent = false;
+  suppressNextEventCloseEvent = false;
+  controlRelayDaemonPublicKey = null;
+  eventRelayDaemonPublicKey = null;
   constructor(endpoint, options = {}) {
     this.socketPath = endpoint;
-    this.kernelEventStaleMs = Math.max(options.kernelEventStaleMs ?? DEFAULT_KERNEL_EVENT_STALE_MS, 250);
+    const staleMs = options.kernelEventStaleMs ?? DEFAULT_KERNEL_EVENT_STALE_MS;
+    this.kernelEventStaleMs = staleMs > 0 ? Math.max(staleMs, 250) : 0;
+    this.kernelPingIntervalMs = Math.max(options.kernelPingIntervalMs ?? DEFAULT_KERNEL_PING_INTERVAL_MS, 250);
+    this.kernelMaxMissedPongs = Math.max(options.kernelMaxMissedPongs ?? DEFAULT_KERNEL_MAX_MISSED_PONGS, 1);
     this.relayAuthToken = options.relayAuthToken?.trim() || null;
     this.relayTarget = this.relayAuthToken ? {
       daemon_id: options.targetDaemonId?.trim() || null,
@@ -50,6 +63,11 @@ export class LocalIpcClient {
     if (!this.supportsKernelEvents()) {
       return;
     }
+    const previousSubscription = this.activeKernelSubscription;
+    const resumeFromEventId = previousSubscription?.sessionId === sessionId && previousSubscription.attachmentId === attachmentId ? this.lastReceivedEventId : null;
+    if (resumeFromEventId == null) {
+      this.lastReceivedEventId = null;
+    }
     this.activeKernelSubscription = {
       sessionId,
       attachmentId,
@@ -58,16 +76,16 @@ export class LocalIpcClient {
     };
     try {
       if (this.isRelayMode()) {
-        await this.sendRelaySubscribe(sessionId, attachmentId, this.lastReceivedEventId);
+        await this.sendRelaySubscribe(sessionId, attachmentId, resumeFromEventId);
       } else {
         await this.sendWebSocket({
           __kernel_transport: {
             type: "subscribe",
             session_id: sessionId,
             attachment_id: attachmentId,
-            resume_from_event_id: this.lastReceivedEventId
+            resume_from_event_id: resumeFromEventId
           }
-        });
+        }, "event");
       }
       this.clearReconnectState();
       this.markKernelEventReceived();
@@ -84,7 +102,8 @@ export class LocalIpcClient {
     this.activeKernelSubscription = null;
     this.clearReconnectState();
     this.clearKernelEventWatchdog();
-    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
+    const socket = this.getWebSocket("event");
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
       return;
     }
     if (this.isRelayMode()) {
@@ -97,7 +116,7 @@ export class LocalIpcClient {
         __kernel_transport: {
           type: "unsubscribe"
         }
-      });
+      }, "event");
     }
   }
   async restartKernelEventStream() {
@@ -106,21 +125,18 @@ export class LocalIpcClient {
     }
     this.clearReconnectState();
     this.clearKernelEventWatchdog();
-    if (this.websocket && this.websocket.readyState !== WebSocket.CLOSED) {
-      this.suppressNextCloseEvent = true;
-      this.websocket.terminate();
-      this.websocket = null;
-      this.websocketConnectPromise = null;
+    this.clearKernelHeartbeat("event");
+    const socket = this.getWebSocket("event");
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      this.suppressNextEventCloseEvent = true;
+      socket.terminate();
+      this.setWebSocket("event", null);
+      this.setWebSocketConnectPromise("event", null);
     }
     this.scheduleReconnect(25);
   }
   onKernelEvent(handler) {
     this.eventHandlers.add(handler);
-    if (this.supportsKernelEvents()) {
-      void this.ensureWebSocket().catch(() => {
-        // The request path will report the connection error with better context.
-      });
-    }
     return () => {
       this.eventHandlers.delete(handler);
     };
@@ -129,21 +145,11 @@ export class LocalIpcClient {
     this.activeKernelSubscription = null;
     this.clearReconnectState();
     this.clearKernelEventWatchdog();
-    const socket = this.websocket;
-    this.websocket = null;
-    this.websocketConnectPromise = null;
-    this.relayDaemonPublicKey = null;
-    if (!socket) {
-      return;
-    }
-    if (socket.readyState === WebSocket.CLOSED) {
-      return;
-    }
-    await new Promise(resolve => {
-      this.suppressNextCloseEvent = true;
-      socket.once("close", () => resolve());
-      socket.close();
-    });
+    this.clearKernelHeartbeat("control");
+    this.clearKernelHeartbeat("event");
+    this.controlRelayDaemonPublicKey = null;
+    this.eventRelayDaemonPublicKey = null;
+    await Promise.all([this.closeWebSocket("control"), this.closeWebSocket("event")]);
   }
   sendLocalSocket(request) {
     return new Promise((resolve, reject) => {
@@ -220,8 +226,8 @@ export class LocalIpcClient {
       });
     });
   }
-  async sendWebSocket(request) {
-    const socket = await this.ensureWebSocket();
+  async sendWebSocket(request, lane = "control") {
+    const socket = await this.ensureWebSocket(lane);
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -232,10 +238,11 @@ export class LocalIpcClient {
         resolve: resolve,
         reject,
         timeout,
-        relayPrivateKey: null
+        relayPrivateKey: null,
+        lane
       });
       try {
-        const relayRequest = this.isRelayMode() ? normalizeRelayRequest(requestId, request, this.relayTarget, this.relayDaemonPublicKey) : null;
+        const relayRequest = this.isRelayMode() ? normalizeRelayRequest(requestId, request, this.relayTarget, this.getRelayDaemonPublicKey(lane)) : null;
         if (relayRequest) {
           const pending = this.pending.get(requestId);
           if (pending) {
@@ -252,7 +259,8 @@ export class LocalIpcClient {
     });
   }
   async sendRelaySubscribe(sessionId, attachmentId, resumeFromEventId) {
-    const socket = await this.ensureWebSocket();
+    const lane = "event";
+    const socket = await this.ensureWebSocket(lane);
     const requestId = randomUUID();
     const subscription = this.activeKernelSubscription;
     if (!subscription?.relaySubscriptionId) {
@@ -270,7 +278,8 @@ export class LocalIpcClient {
         resolve: () => resolve(),
         reject,
         timeout,
-        relayPrivateKey: keypair.privateKey
+        relayPrivateKey: keypair.privateKey,
+        lane
       });
       try {
         const frame = {
@@ -292,7 +301,8 @@ export class LocalIpcClient {
     });
   }
   async sendRelayUnsubscribe(subscriptionId, privateKey) {
-    const socket = await this.ensureWebSocket();
+    const lane = "event";
+    const socket = await this.ensureWebSocket(lane);
     const requestId = randomUUID();
     const publicKeyBase64 = relayPublicKeyFromPrivateKey(privateKey);
     await new Promise((resolve, reject) => {
@@ -304,7 +314,8 @@ export class LocalIpcClient {
         resolve: () => resolve(),
         reject,
         timeout,
-        relayPrivateKey: privateKey
+        relayPrivateKey: privateKey,
+        lane
       });
       try {
         const frame = {
@@ -321,14 +332,16 @@ export class LocalIpcClient {
       }
     });
   }
-  async ensureWebSocket() {
-    if (this.websocket?.readyState === WebSocket.OPEN) {
-      return this.websocket;
+  async ensureWebSocket(lane = "control") {
+    const existing = this.getWebSocket(lane);
+    if (existing?.readyState === WebSocket.OPEN) {
+      return existing;
     }
-    if (this.websocketConnectPromise) {
-      return this.websocketConnectPromise;
+    const connectPromise = this.getWebSocketConnectPromise(lane);
+    if (connectPromise) {
+      return connectPromise;
     }
-    this.websocketConnectPromise = new Promise((resolve, reject) => {
+    const nextConnectPromise = new Promise((resolve, reject) => {
       const socket = new WebSocket(this.socketPath);
       let settled = false;
       const fail = (operation, error) => {
@@ -336,43 +349,55 @@ export class LocalIpcClient {
           return;
         }
         settled = true;
-        this.websocketConnectPromise = null;
+        this.setWebSocketConnectPromise(lane, null);
         reject(new LocalIpcError(operation, error instanceof Error ? error.message : String(error)));
       };
       socket.once("open", () => {
         const finalizeOpen = () => {
           settled = true;
-          this.websocket = socket;
-          this.websocketConnectPromise = null;
-          this.suppressNextCloseEvent = false;
+          this.setWebSocket(lane, socket);
+          this.setWebSocketConnectPromise(lane, null);
+          this.setSuppressNextCloseEvent(lane, false);
+          this.startKernelHeartbeat(socket, lane);
           socket.on("message", data => {
-            this.handleWebSocketMessage(data);
+            this.handleWebSocketMessage(data, lane);
+          });
+          socket.on("pong", () => {
+            this.setMissedKernelPongs(lane, 0);
           });
           socket.once("close", (code, reason) => {
-            const suppressed = this.suppressNextCloseEvent;
-            this.suppressNextCloseEvent = false;
-            this.rejectPending("kernel websocket closed");
-            this.websocket = null;
+            const suppressed = this.getSuppressNextCloseEvent(lane);
+            this.setSuppressNextCloseEvent(lane, false);
+            this.rejectPending("kernel websocket closed", lane);
+            this.setWebSocket(lane, null);
+            this.setRelayDaemonPublicKey(lane, null);
+            this.clearKernelHeartbeat(lane);
             const closeMessage = reason.length > 0 ? reason.toString("utf8") : `kernel websocket closed${code ? ` (${code})` : ""}`;
             if (!suppressed) {
               this.emitSyntheticEvent({
                 event: "transport_closed",
                 message: closeMessage
               });
-              this.scheduleReconnect();
+              if (lane === "event") {
+                this.scheduleReconnect();
+              }
             }
           });
           socket.once("error", error => {
-            const suppressed = this.suppressNextCloseEvent;
-            this.suppressNextCloseEvent = false;
-            this.rejectPending(error.message);
-            this.websocket = null;
+            const suppressed = this.getSuppressNextCloseEvent(lane);
+            this.setSuppressNextCloseEvent(lane, false);
+            this.rejectPending(error.message, lane);
+            this.setWebSocket(lane, null);
+            this.setRelayDaemonPublicKey(lane, null);
+            this.clearKernelHeartbeat(lane);
             if (!suppressed) {
               this.emitSyntheticEvent({
                 event: "transport_closed",
                 message: error.message
               });
-              this.scheduleReconnect();
+              if (lane === "event") {
+                this.scheduleReconnect();
+              }
             }
           });
           resolve(socket);
@@ -394,7 +419,7 @@ export class LocalIpcClient {
               fail("connect relay transport", "relay did not provide daemon public key");
               return;
             }
-            this.relayDaemonPublicKey = frame.daemon_public_key;
+            this.setRelayDaemonPublicKey(lane, frame.daemon_public_key);
             socket.off("message", handleRelayHandshakeMessage);
             finalizeOpen();
             return;
@@ -415,14 +440,15 @@ export class LocalIpcClient {
       });
       socket.once("error", error => fail("connect kernel websocket", error));
     });
-    return this.websocketConnectPromise;
+    this.setWebSocketConnectPromise(lane, nextConnectPromise);
+    return nextConnectPromise;
   }
-  handleWebSocketMessage(data) {
+  handleWebSocketMessage(data, lane) {
     let frame;
     try {
       frame = JSON.parse(String(data));
     } catch (error) {
-      this.rejectPending(error instanceof Error ? error.message : String(error));
+      this.rejectPending(error instanceof Error ? error.message : String(error), lane);
       return;
     }
     if ("type" in frame && frame.type === "event") {
@@ -434,7 +460,7 @@ export class LocalIpcClient {
       return;
     }
     if ("kind" in frame && frame.kind === "close") {
-      this.rejectPending(frame.reason);
+      this.rejectPending(frame.reason, lane);
       return;
     }
     if ("kind" in frame && frame.kind === "client_event") {
@@ -449,7 +475,7 @@ export class LocalIpcClient {
         this.markKernelEventReceived();
         this.emitSyntheticEvent(event);
       } catch (error) {
-        this.rejectPending(error instanceof Error ? error.message : String(error));
+        this.rejectPending(error instanceof Error ? error.message : String(error), lane);
       }
       return;
     }
@@ -487,10 +513,12 @@ export class LocalIpcClient {
     }
     pending.resolve(frame.response);
   }
-  rejectPending(message) {
-    const pendingEntries = Array.from(this.pending.values());
-    this.pending.clear();
-    for (const pending of pendingEntries) {
+  rejectPending(message, lane) {
+    const pendingEntries = Array.from(this.pending.entries()).filter(([, pending]) => !lane || pending.lane === lane);
+    for (const [requestId] of pendingEntries) {
+      this.pending.delete(requestId);
+    }
+    for (const [, pending] of pendingEntries) {
       clearTimeout(pending.timeout);
       pending.reject(new LocalIpcError("kernel websocket", message, "connection_closed", true));
     }
@@ -513,7 +541,7 @@ export class LocalIpcClient {
   }
   armKernelEventWatchdog() {
     this.clearKernelEventWatchdog();
-    if (!this.activeKernelSubscription || this.eventHandlers.size === 0) {
+    if (!this.kernelEventStaleMs || !this.activeKernelSubscription || this.eventHandlers.size === 0) {
       return;
     }
     this.kernelEventWatchdog = setTimeout(() => {
@@ -537,6 +565,67 @@ export class LocalIpcClient {
       clearTimeout(this.kernelEventWatchdog);
       this.kernelEventWatchdog = null;
     }
+  }
+  startKernelHeartbeat(socket, lane) {
+    this.clearKernelHeartbeat(lane);
+    this.setMissedKernelPongs(lane, 0);
+    const heartbeat = setInterval(() => {
+      if (socket !== this.getWebSocket(lane) || socket.readyState !== WebSocket.OPEN) {
+        this.clearKernelHeartbeat(lane);
+        return;
+      }
+      if (this.getMissedKernelPongs(lane) >= this.kernelMaxMissedPongs) {
+        if (lane === "event") {
+          this.emitSyntheticEvent({
+            event: "transport_closed",
+            message: "kernel websocket heartbeat missed; reconnecting"
+          });
+        }
+        this.setSuppressNextCloseEvent(lane, true);
+        socket.terminate();
+        this.setWebSocket(lane, null);
+        this.setRelayDaemonPublicKey(lane, null);
+        if (lane === "event") {
+          this.scheduleReconnect();
+        }
+        return;
+      }
+      this.setMissedKernelPongs(lane, this.getMissedKernelPongs(lane) + 1);
+      try {
+        socket.ping();
+      } catch {
+        if (lane === "event") {
+          this.emitSyntheticEvent({
+            event: "transport_closed",
+            message: "kernel websocket heartbeat failed; reconnecting"
+          });
+        }
+        this.setSuppressNextCloseEvent(lane, true);
+        socket.terminate();
+        this.setWebSocket(lane, null);
+        this.setRelayDaemonPublicKey(lane, null);
+        if (lane === "event") {
+          this.scheduleReconnect();
+        }
+      }
+    }, this.kernelPingIntervalMs);
+    if (lane === "control") {
+      this.controlHeartbeat = heartbeat;
+    } else {
+      this.eventHeartbeat = heartbeat;
+    }
+  }
+  clearKernelHeartbeat(lane) {
+    const heartbeat = lane === "control" ? this.controlHeartbeat : this.eventHeartbeat;
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      if (lane === "control") {
+        this.controlHeartbeat = null;
+      } else {
+        this.eventHeartbeat = null;
+      }
+    }
+    this.setMissedKernelPongs(lane, 0);
   }
   scheduleReconnect(delayMs = this.reconnectDelayMs) {
     if (!this.activeKernelSubscription || this.eventHandlers.size === 0 || this.reconnectTimeout) {
@@ -564,7 +653,7 @@ export class LocalIpcClient {
             attachment_id: subscription.attachmentId,
             resume_from_event_id: this.lastReceivedEventId
           }
-        });
+        }, "event");
       }
       this.clearReconnectState();
       this.markKernelEventReceived();
@@ -576,6 +665,70 @@ export class LocalIpcClient {
     } catch {
       this.scheduleReconnect();
     }
+  }
+  getWebSocket(lane) {
+    return lane === "control" ? this.controlWebsocket : this.eventWebsocket;
+  }
+  setWebSocket(lane, socket) {
+    if (lane === "control") {
+      this.controlWebsocket = socket;
+    } else {
+      this.eventWebsocket = socket;
+    }
+  }
+  getWebSocketConnectPromise(lane) {
+    return lane === "control" ? this.controlWebsocketConnectPromise : this.eventWebsocketConnectPromise;
+  }
+  setWebSocketConnectPromise(lane, promise) {
+    if (lane === "control") {
+      this.controlWebsocketConnectPromise = promise;
+    } else {
+      this.eventWebsocketConnectPromise = promise;
+    }
+  }
+  getRelayDaemonPublicKey(lane) {
+    return lane === "control" ? this.controlRelayDaemonPublicKey : this.eventRelayDaemonPublicKey;
+  }
+  setRelayDaemonPublicKey(lane, publicKey) {
+    if (lane === "control") {
+      this.controlRelayDaemonPublicKey = publicKey;
+    } else {
+      this.eventRelayDaemonPublicKey = publicKey;
+    }
+  }
+  getSuppressNextCloseEvent(lane) {
+    return lane === "control" ? this.suppressNextControlCloseEvent : this.suppressNextEventCloseEvent;
+  }
+  setSuppressNextCloseEvent(lane, value) {
+    if (lane === "control") {
+      this.suppressNextControlCloseEvent = value;
+    } else {
+      this.suppressNextEventCloseEvent = value;
+    }
+  }
+  getMissedKernelPongs(lane) {
+    return lane === "control" ? this.missedControlPongs : this.missedEventPongs;
+  }
+  setMissedKernelPongs(lane, value) {
+    if (lane === "control") {
+      this.missedControlPongs = value;
+    } else {
+      this.missedEventPongs = value;
+    }
+  }
+  async closeWebSocket(lane) {
+    const socket = this.getWebSocket(lane);
+    this.setWebSocket(lane, null);
+    this.setWebSocketConnectPromise(lane, null);
+    this.setRelayDaemonPublicKey(lane, null);
+    if (!socket || socket.readyState === WebSocket.CLOSED) {
+      return;
+    }
+    await new Promise(resolve => {
+      this.setSuppressNextCloseEvent(lane, true);
+      socket.once("close", () => resolve());
+      socket.close();
+    });
   }
 }
 function buildRelayConnectFrame(authToken, target) {

@@ -66,6 +66,11 @@ export function getSessionStateRequest(sessionId) {
     }
   };
 }
+export function getDaemonHealthRequest() {
+  return {
+    GetDaemonHealth: null
+  };
+}
 export function listProviderProcessesRequest(provider) {
   return {
     ListProviderProcesses: {
@@ -544,11 +549,28 @@ export function submitPromptRequest(sessionId, attachmentId, targetAgentId, prom
     }
   };
 }
+export function completePromptRequest(sessionId) {
+  return {
+    CompletePrompt: {
+      session_id: sessionId
+    }
+  };
+}
 export function cancelActivePromptRequest(sessionId, attachmentId) {
   return {
     CancelActivePrompt: {
       session_id: sessionId,
       attachment_id: attachmentId
+    }
+  };
+}
+export function ackWorkflowTurnRequest(sessionId, workflowRunRef, workflowNodeRunId, deliveryToken) {
+  return {
+    AckWorkflowTurn: {
+      session_id: sessionId,
+      workflow_run_ref: workflowRunRef,
+      workflow_node_run_id: workflowNodeRunId,
+      delivery_token: deliveryToken
     }
   };
 }

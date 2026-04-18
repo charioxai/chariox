@@ -10,7 +10,7 @@ use crate::execution_lease::{
     ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding, RemoteWorkflowTurnContext,
 };
 use crate::history::SessionHistoryEntry;
-use crate::provider::LaunchProviderRequest;
+use crate::provider::{LaunchProviderRequest, ProviderRunState, RuntimeProviderRun};
 use crate::session::CreateSessionRequest;
 use crate::terminal::TerminalOutputKind;
 use crate::transport::relay_peer::{
@@ -79,6 +79,32 @@ fn validate_worker_mcp_runtime(
             RemoteMcpAvailabilityStatus::Available
         }
     }
+}
+
+fn provider_run_mcp_set_matches(
+    run: &RuntimeProviderRun,
+    required_mcps: &[RequiredRemoteMcp],
+) -> Result<bool, DaemonError> {
+    if run.state() == ProviderRunState::Ended {
+        return Ok(false);
+    }
+    let mut current = run
+        .mcp_servers()
+        .iter()
+        .map(|config| Ok((config.name.clone(), config.definition_hash()?)))
+        .collect::<Result<Vec<_>, DaemonError>>()?;
+    let mut required = required_mcps
+        .iter()
+        .map(|required| {
+            (
+                required.config.name.clone(),
+                required.definition_hash.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    current.sort();
+    required.sort();
+    Ok(current == required)
 }
 
 fn command_is_available(command: &str, cwd: Option<&std::path::Path>) -> bool {
@@ -356,40 +382,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let materialized_attachments =
             self.materialize_leased_prompt_attachments(&leased_agent, attachments)?;
         self.ensure_required_remote_mcps_available(&leased_agent, &required_mcps)?;
-        let provider_run_id = if let Some(run) = self.app.providers.get_run_for_agent(
-            &leased_agent.backing_session_id,
-            &leased_agent.backing_agent_id,
-        ) {
-            run.id().to_string()
-        } else {
-            let run = self.app.launch_provider(
-                LaunchProviderRequest::new(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.provider,
-                    &leased_agent.provider,
-                    "default",
-                    leased_agent
-                        .model
-                        .clone()
-                        .unwrap_or_else(|| "default".to_string()),
-                )
-                .with_agent_id(&leased_agent.backing_agent_id)
-                .with_working_directory(std::path::PathBuf::from(
-                    self.app
-                        .sessions
-                        .get_session(&leased_agent.backing_session_id)?
-                        .worktree_id(),
-                ))
-                .with_mcp_servers(
-                    required_mcps
-                        .iter()
-                        .map(|required| required.config.clone())
-                        .collect(),
-                )
-                .with_managed_io_required(),
-            )?;
-            run.id().to_string()
-        };
+        let provider_run_id =
+            self.ensure_leased_provider_run_matches_mcps(&leased_agent, &required_mcps)?;
         let outcome = self.app.submit_prompt(
             &leased_agent.backing_session_id,
             &leased_agent.backing_attachment_id,
@@ -408,6 +402,89 @@ impl<'a> RemoteLeaseRuntime<'a> {
             );
         }
         Ok((provider_run_id, outcome))
+    }
+
+    fn ensure_leased_provider_run_matches_mcps(
+        &mut self,
+        leased_agent: &LeasedAgent,
+        required_mcps: &[RequiredRemoteMcp],
+    ) -> Result<String, DaemonError> {
+        let existing = self.app.providers.get_run_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        );
+        if let Some(run) = existing.as_ref() {
+            if provider_run_mcp_set_matches(run, required_mcps)? {
+                return Ok(run.id().to_string());
+            }
+            if self
+                .app
+                .prompt_owner_active_prompt_for_agent(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                )?
+                .is_some()
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "remote MCP provider reload",
+                    message: format!(
+                        "remote worker provider run `{}` does not have the required MCP set and is currently busy; retry after the active turn completes",
+                        run.id()
+                    ),
+                });
+            }
+            let run_id = run.id().to_string();
+            let _ = crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
+                .remove_run(&run_id);
+            if let Ok(outcome) = self
+                .app
+                .providers
+                .terminate_run_provider_only(run.session_id(), run.id())
+            {
+                let _ = self
+                    .app
+                    .sessions
+                    .set_active_provider_run(outcome.run().session_id(), None);
+                self.app.update_provider_run_projection(outcome.into_run());
+            }
+        }
+
+        let mut request = LaunchProviderRequest::new(
+            &leased_agent.backing_session_id,
+            &leased_agent.provider,
+            &leased_agent.provider,
+            "default",
+            leased_agent
+                .model
+                .clone()
+                .unwrap_or_else(|| "default".to_string()),
+        )
+        .with_agent_id(&leased_agent.backing_agent_id)
+        .with_working_directory(std::path::PathBuf::from(
+            self.app
+                .sessions
+                .get_session(&leased_agent.backing_session_id)?
+                .worktree_id(),
+        ))
+        .with_mcp_servers(
+            required_mcps
+                .iter()
+                .map(|required| required.config.clone())
+                .collect(),
+        );
+        if let Some(run) = existing.as_ref() {
+            request = request
+                .with_variant(run.variant().map(str::to_string))
+                .with_resume_state(run.resume_state().clone());
+        }
+        if crate::provider::provider_requires_managed_io_by_default(
+            &leased_agent.provider,
+            self.app.config(),
+        ) {
+            request = request.with_managed_io_required();
+        }
+        let run = self.app.launch_provider(request)?;
+        Ok(run.id().to_string())
     }
 
     pub(crate) fn complete_leased_prompt(

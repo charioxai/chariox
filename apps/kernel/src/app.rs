@@ -350,6 +350,25 @@ impl DaemonApp {
         Ok(())
     }
 
+    pub(crate) fn set_user_config_value(
+        &mut self,
+        path: impl AsRef<str>,
+        value: impl Into<String>,
+    ) -> Result<(), DaemonError> {
+        self.config.set_user_config_value(path, value)?;
+        self.config_projection.update(self.config.clone());
+        Ok(())
+    }
+
+    pub(crate) fn unset_user_config_value(
+        &mut self,
+        path: impl AsRef<str>,
+    ) -> Result<(), DaemonError> {
+        self.config.unset_user_config_value(path)?;
+        self.config_projection.update(self.config.clone());
+        Ok(())
+    }
+
     pub(crate) fn session_state_store(&self) -> SessionStateStore {
         self.sessions.clone()
     }

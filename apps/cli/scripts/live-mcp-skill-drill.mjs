@@ -87,7 +87,7 @@ function printHelp() {
     'Usage: node apps/cli/scripts/live-mcp-skill-drill.mjs [options]',
     '',
     'Runs a local M7 MCP/skill drill with isolated daemon/session/workspace lifecycle:',
-    '- installs real MCPs into the Arroba registry, including Playwright by default',
+    '- installs MCPs into the Arroba registry, including Playwright and a deterministic local echo MCP by default',
     '- optionally installs GitHub MCP when --include-github-mcp is set and a GitHub token env var exists',
     '- installs a public web skill repo into an isolated Arroba skill root when reachable',
     '- verifies per-agent MCP/skill grants and same-turn skill request bodies',
@@ -228,6 +228,59 @@ async function createDeterministicSkill(rootDir) {
   return skillDir
 }
 
+async function createDeterministicEchoMcp(rootDir) {
+  const mcpPath = path.join(rootDir, 'local-echo-mcp.mjs')
+  await writeFile(mcpPath, [
+    "let buffer = Buffer.alloc(0)",
+    "function write(message) {",
+    "  const body = JSON.stringify(message)",
+    "  process.stdout.write(`${body}\\n`)",
+    "}",
+    "function handle(message) {",
+    "  const { id, method, params } = message",
+    "  if (method === 'notifications/initialized') return",
+    "  if (method === 'initialize') {",
+    "    write({ jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'arroba-drill-echo', version: '1.0.0' } } })",
+    "    return",
+    "  }",
+    "  if (method === 'tools/list') {",
+    "    write({ jsonrpc: '2.0', id, result: { tools: [{ name: 'echo_marker', description: 'Echoes a marker for Arroba multi-MCP live drills.', inputSchema: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'] } }] } })",
+    "    return",
+    "  }",
+    "  if (method === 'tools/call' && params?.name === 'echo_marker') {",
+    "    write({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `ECHO:${params?.arguments?.marker ?? ''}` }] } })",
+    "    return",
+    "  }",
+    "  write({ jsonrpc: '2.0', id, error: { code: -32601, message: `unknown method ${method}` } })",
+    "}",
+    "process.stdin.on('data', (chunk) => {",
+    "  buffer = Buffer.concat([buffer, chunk])",
+    "  while (true) {",
+    "    const newline = buffer.indexOf('\\n')",
+    "    if (newline >= 0) {",
+    "      const line = buffer.subarray(0, newline).toString('utf8').trim()",
+    "      buffer = buffer.subarray(newline + 1)",
+    "      if (line) handle(JSON.parse(line))",
+    "      continue",
+    "    }",
+    "    const headerEnd = buffer.indexOf('\\r\\n\\r\\n')",
+    "    if (headerEnd < 0) return",
+    "    const header = buffer.subarray(0, headerEnd).toString('utf8')",
+    "    const match = /^content-length:\\s*(\\d+)$/im.exec(header)",
+    "    if (!match) throw new Error(`missing Content-Length: ${header}`)",
+    "    const length = Number(match[1])",
+    "    const bodyStart = headerEnd + 4",
+    "    const frameEnd = bodyStart + length",
+    "    if (buffer.length < frameEnd) return",
+    "    const message = JSON.parse(buffer.subarray(bodyStart, frameEnd).toString('utf8'))",
+    "    buffer = buffer.subarray(frameEnd)",
+    "    handle(message)",
+    "  }",
+    "})",
+  ].join('\n'), 'utf8')
+  return mcpPath
+}
+
 async function clonePublicSkillRepo(rootDir, repoUrl, requireWebSkill) {
   const cloneDir = path.join(rootDir, 'web-skill-repo')
   const result = await runCommand('git', ['clone', '--depth', '1', repoUrl, cloneDir])
@@ -274,7 +327,22 @@ function playwrightMcpConfig() {
       args: ['-y', '@playwright/mcp@latest'],
     },
     enabled: true,
-    required: false,
+    required: true,
+    startup_timeout_sec: 45,
+    tool_timeout_sec: 45,
+  }
+}
+
+function echoMcpConfig(scriptPath) {
+  return {
+    name: 'echo',
+    transport: {
+      type: 'stdio',
+      command: process.execPath,
+      args: [scriptPath],
+    },
+    enabled: true,
+    required: true,
     startup_timeout_sec: 45,
     tool_timeout_sec: 45,
   }
@@ -321,7 +389,7 @@ async function waitForCompletionCount({ client, sessionId, attachmentId, events,
   throw new Error(`timed out waiting for ${expectedCompletionCount} assistant completions`)
 }
 
-async function waitForHistoryToolCall({ historyDir, predicate, timeoutMs, pollMs }) {
+async function waitForHistoryToolCall({ historyDir, predicate, timeoutMs, pollMs, agentId = null, sinceMs = 0 }) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
     const files = (await readdir(historyDir).catch(() => []))
@@ -337,6 +405,8 @@ async function waitForHistoryToolCall({ historyDir, predicate, timeoutMs, pollMs
         } catch {
           continue
         }
+        if ((entry.timestamp_ms ?? 0) < sinceMs) continue
+        if (agentId && entry.agent_id !== agentId) continue
         if (entry.kind !== 'provider_tool' || typeof entry.text !== 'string') continue
         let update
         try {
@@ -426,6 +496,31 @@ async function waitForNoProviderProcesses({ client, provider, listProviderProces
   throw new Error(`timed out waiting for ${provider} provider processes to exit; remaining=${remaining.map((process) => process.process_id).join(',')}`)
 }
 
+async function waitForAgentPromptIdle({ client, sessionId, agentId, getSessionStateRequest, timeoutMs, pollMs }) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const state = unwrapVariant(await client.send(getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
+    const session = state.session ?? state
+    const promptState = session.prompt_states?.[agentId]
+    const activePrompt = promptState?.active_prompt ?? (session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null)
+    const queuedPrompts = promptState?.queued_prompts ?? (session.queued_prompts ?? []).filter((prompt) => prompt.target_agent_id === agentId)
+    if (!activePrompt && queuedPrompts.length === 0) return
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for agent ${agentId} prompt queue to become idle`)
+}
+
+async function teardownProviderAndWait({ client, provider, teardownProviderProcessesRequest, listProviderProcessesRequest, timeoutMs, pollMs }) {
+  await client.send(teardownProviderProcessesRequest(provider, true)).catch(() => {})
+  await waitForNoProviderProcesses({
+    client,
+    provider,
+    listProviderProcessesRequest,
+    timeoutMs: Math.min(timeoutMs, 60_000),
+    pollMs,
+  })
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -511,6 +606,7 @@ async function main() {
       await client.subscribeToKernelEvents(session.id, attachment.id)
 
       const markerSkillSource = await createDeterministicSkill(rootDir)
+      const echoMcpSource = await createDeterministicEchoMcp(rootDir)
       const markerInstall = unwrapVariant(
         await client.send(installSkillRequest(workspace, markerSkillSource)),
         'SkillInstalled',
@@ -547,6 +643,10 @@ async function main() {
         await client.send(installMcpServerRequest(workspace, playwrightMcpConfig())),
         'McpServerInstalled',
       ).mcp)
+      installedMcps.push(unwrapVariant(
+        await client.send(installMcpServerRequest(workspace, echoMcpConfig(echoMcpSource))),
+        'McpServerInstalled',
+      ).mcp)
       if (options.includeGithubMcp) {
         if (process.env.GITHUB_PERSONAL_ACCESS_TOKEN || process.env.GITHUB_TOKEN) {
           installedMcps.push(unwrapVariant(
@@ -561,6 +661,7 @@ async function main() {
       const listedMcps = unwrapVariant(await client.send(listMcpServersRequest(workspace)), 'McpServersListed').mcps ?? []
       const listedSkills = unwrapVariant(await client.send(listSkillsRequest(workspace)), 'SkillsListed').skills ?? []
       if (!listedMcps.some((mcp) => mcp.name === 'playwright')) throw new Error('Playwright MCP was not listed after install')
+      if (!listedMcps.some((mcp) => mcp.name === 'echo')) throw new Error('echo MCP was not listed after install')
       if (!listedSkills.some((skill) => skill.name === markerSkillName)) throw new Error('marker skill was not listed after install')
       if (webSkill.installed && !listedSkills.some((skill) => skill.name === webSkill.name)) {
         throw new Error(`web skill ${webSkill.name} was not listed after install`)
@@ -662,33 +763,33 @@ async function main() {
         })
 
         if (options.liveMcpUse) {
-          const mcpDrillAgent = unwrapVariant(
+          await teardownProviderAndWait({
+            client,
+            provider: grantedAgent.provider,
+            teardownProviderProcessesRequest,
+            listProviderProcessesRequest,
+            timeoutMs: options.timeoutMs,
+            pollMs: options.pollMs,
+          })
+          const userMcpAgent = unwrapVariant(
             await client.send(spawnAgentRequest(
               session.id,
               grantedAgent.provider,
-              `${grantedAgent.provider}-m7-mcp-live`,
+              `${grantedAgent.provider}-m7-mcp-user-live`,
               modelForProvider(grantedAgent.provider, options),
               workspace,
               'low',
             )),
             'AgentSpawned',
           ).agent
-          agents.push({ provider: grantedAgent.provider, agent: mcpDrillAgent })
-          await client.send(grantAgentCapabilityRequest(workspace, mcpDrillAgent.id, 'mcp', 'playwright'))
+          agents.push({ provider: grantedAgent.provider, agent: userMcpAgent })
 
-          await client.send(teardownProviderProcessesRequest(grantedAgent.provider, true))
-          await waitForNoProviderProcesses({
-            client,
-            provider: grantedAgent.provider,
-            listProviderProcessesRequest,
-            timeoutMs: options.timeoutMs,
-            pollMs: options.pollMs,
-          })
-
+          await client.send(grantAgentCapabilityRequest(workspace, userMcpAgent.id, 'mcp', 'playwright'))
+          await client.send(grantAgentCapabilityRequest(workspace, userMcpAgent.id, 'mcp', 'echo'))
           await launchProviderRunAndWait({
             client,
             sessionId: session.id,
-            agentId: mcpDrillAgent.id,
+            agentId: userMcpAgent.id,
             provider: grantedAgent.provider,
             model: modelForProvider(grantedAgent.provider, options),
             effort: 'low',
@@ -698,29 +799,36 @@ async function main() {
             timeoutMs: options.timeoutMs,
             pollMs: options.pollMs,
           })
-          await sleep(1_500)
 
-          const mcpBefore = events.filter((event) => event.event === 'assistant_message_completed').length
-          await client.send(submitPromptRequest(session.id, attachment.id, mcpDrillAgent.id, [
-            'This is a live MCP grant drill.',
-            'Use the provider-native Playwright MCP tool that is available to this agent, not Arroba list_capabilities/request_capability.',
-            'The tool is usually named `mcp__playwright__browser_navigate`, `mcp__playwright__browser_snapshot`, `browser_navigate`, or similar.',
+          const userMcpStartedAt = Date.now()
+          await client.send(submitPromptRequest(session.id, attachment.id, userMcpAgent.id, [
+            'This is a live user-triggered MCP grant activation drill.',
+            'Use the provider-native echo MCP tool once with marker M7_ECHO_MCP_USER_OK.',
+            'Then use the provider-native Playwright MCP tool that is available to this agent, not Arroba list_capabilities/request_capability.',
+            'The echo tool is usually named `echo_echo_marker`, `mcp__echo__echo_marker`, or similar.',
+            'The Playwright tool is usually named `playwright_browser_snapshot`, `mcp__playwright__browser_snapshot`, `browser_snapshot`, `playwright_browser_navigate`, or similar.',
             'Prefer a non-mutating Playwright browser snapshot/title/text tool first; navigating to https://example.com is optional and may require approval.',
-            'After any Playwright/browser MCP tool call completes successfully, use Arroba managed I/O to write `outputs/playwright-mcp.txt` with exactly `M7_PLAYWRIGHT_MCP_OK`.',
-            'Then reply exactly M7_PLAYWRIGHT_MCP_DONE.',
-            'If Playwright MCP is unavailable, reply exactly M7_PLAYWRIGHT_MCP_UNAVAILABLE and do not write the marker file.',
+            'After both an echo MCP call and a Playwright/browser MCP tool call complete successfully, use Arroba managed I/O to write `outputs/playwright-mcp-user.txt` with exactly `M7_PLAYWRIGHT_MCP_USER_OK`.',
+            'Then reply exactly M7_PLAYWRIGHT_MCP_USER_DONE.',
+            'If either MCP is unavailable, reply exactly M7_MULTI_MCP_UNAVAILABLE and do not write the marker file.',
           ].join('\n'), []))
-          await waitForCompletionCount({
-            client,
-            sessionId: session.id,
-            attachmentId: attachment.id,
-            events,
-            expectedCompletionCount: mcpBefore + 1,
+          await waitForHistoryToolCall({
+            historyDir,
+            agentId: userMcpAgent.id,
+            sinceMs: userMcpStartedAt,
             timeoutMs: options.timeoutMs,
             pollMs: options.pollMs,
+            predicate: (update) => {
+              const tool = String(update.tool ?? '').toLowerCase()
+              return update.status === 'completed' &&
+                !tool.includes('arroba') &&
+                tool.includes('echo')
+            },
           })
           await waitForHistoryToolCall({
             historyDir,
+            agentId: userMcpAgent.id,
+            sinceMs: userMcpStartedAt,
             timeoutMs: options.timeoutMs,
             pollMs: options.pollMs,
             predicate: (update) => {
@@ -731,13 +839,100 @@ async function main() {
             },
           })
           await waitForFiles({
-            files: [path.join(outputsDir, 'playwright-mcp.txt')],
+            files: [path.join(outputsDir, 'playwright-mcp-user.txt')],
             timeoutMs: options.timeoutMs,
             pollMs: options.pollMs,
           })
-          const playwrightContent = (await readFile(path.join(outputsDir, 'playwright-mcp.txt'), 'utf8')).trim()
-          if (playwrightContent !== 'M7_PLAYWRIGHT_MCP_OK') {
-            throw new Error(`unexpected Playwright MCP marker content: ${JSON.stringify(playwrightContent)}`)
+          const playwrightContent = (await readFile(path.join(outputsDir, 'playwright-mcp-user.txt'), 'utf8')).trim()
+          if (playwrightContent !== 'M7_PLAYWRIGHT_MCP_USER_OK') {
+            throw new Error(`unexpected user-triggered Playwright MCP marker content: ${JSON.stringify(playwrightContent)}`)
+          }
+          await waitForAgentPromptIdle({
+            client,
+            sessionId: session.id,
+            agentId: userMcpAgent.id,
+            getSessionStateRequest,
+            timeoutMs: options.timeoutMs,
+            pollMs: options.pollMs,
+          })
+
+          await teardownProviderAndWait({
+            client,
+            provider: grantedAgent.provider,
+            teardownProviderProcessesRequest,
+            listProviderProcessesRequest,
+            timeoutMs: options.timeoutMs,
+            pollMs: options.pollMs,
+          })
+          const agentMcpAgent = unwrapVariant(
+            await client.send(spawnAgentRequest(
+              session.id,
+              grantedAgent.provider,
+              `${grantedAgent.provider}-m7-mcp-agent-live`,
+              modelForProvider(grantedAgent.provider, options),
+              workspace,
+              'low',
+            )),
+            'AgentSpawned',
+          ).agent
+          agents.push({ provider: grantedAgent.provider, agent: agentMcpAgent })
+          await launchProviderRunAndWait({
+            client,
+            sessionId: session.id,
+            agentId: agentMcpAgent.id,
+            provider: grantedAgent.provider,
+            model: modelForProvider(grantedAgent.provider, options),
+            effort: 'low',
+            launchProviderRunRequest,
+            getSessionStateRequest,
+            getProviderRunRequest,
+            timeoutMs: options.timeoutMs,
+            pollMs: options.pollMs,
+          })
+          const agentMcpStartedAt = Date.now()
+          await client.send(submitPromptRequest(session.id, attachment.id, agentMcpAgent.id, [
+            'This is a live agent-triggered MCP request drill.',
+            'First call `list_capabilities` with {"kind":"mcp"} and find `playwright`.',
+            'Then call `request_capability` with {"kind":"mcp","name":"playwright"}.',
+            'After Arroba reloads the provider conversation and sends a continuation prompt, use the provider-native Playwright/browser MCP tool, not Arroba request_capability.',
+            'The Playwright tool is usually named `playwright_browser_snapshot`, `mcp__playwright__browser_snapshot`, `browser_snapshot`, `playwright_browser_navigate`, or similar.',
+            'After any Playwright/browser MCP tool call completes successfully, you must call Arroba managed I/O (`apply_patch`, `write_artifact`, or equivalent) to write `outputs/playwright-mcp-agent.txt` with exactly `M7_PLAYWRIGHT_MCP_AGENT_OK`.',
+            'Do not reply done until that file write tool call has completed.',
+            'Then reply exactly M7_PLAYWRIGHT_MCP_AGENT_DONE.',
+            'If Playwright MCP remains unavailable after the continuation, reply exactly M7_PLAYWRIGHT_MCP_AGENT_UNAVAILABLE and do not write the marker file.',
+          ].join('\n'), []))
+          await waitForHistoryToolCall({
+            historyDir,
+            agentId: agentMcpAgent.id,
+            sinceMs: agentMcpStartedAt,
+            timeoutMs: options.timeoutMs,
+            pollMs: options.pollMs,
+            predicate: (update) => String(update.tool ?? '').endsWith('request_capability') &&
+              update.status === 'completed' &&
+              update.input?.kind === 'mcp' &&
+              update.input?.name === 'playwright',
+          })
+          await waitForHistoryToolCall({
+            historyDir,
+            agentId: agentMcpAgent.id,
+            sinceMs: agentMcpStartedAt,
+            timeoutMs: options.timeoutMs,
+            pollMs: options.pollMs,
+            predicate: (update) => {
+              const tool = String(update.tool ?? '').toLowerCase()
+              return update.status === 'completed' &&
+                !tool.includes('arroba') &&
+                (tool.includes('playwright') || tool.includes('browser'))
+            },
+          })
+          await waitForFiles({
+            files: [path.join(outputsDir, 'playwright-mcp-agent.txt')],
+            timeoutMs: options.timeoutMs,
+            pollMs: options.pollMs,
+          })
+          const agentPlaywrightContent = (await readFile(path.join(outputsDir, 'playwright-mcp-agent.txt'), 'utf8')).trim()
+          if (agentPlaywrightContent !== 'M7_PLAYWRIGHT_MCP_AGENT_OK') {
+            throw new Error(`unexpected agent-triggered Playwright MCP marker content: ${JSON.stringify(agentPlaywrightContent)}`)
           }
         }
       }

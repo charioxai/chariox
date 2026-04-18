@@ -16,7 +16,7 @@ use super::codex_client::codex_endpoint_is_healthy;
 
 const CODEX_ENV_OVERRIDE: &str = "ARROBA_CODEX_BIN";
 const CODEX_PORT_OVERRIDE: &str = "ARROBA_CODEX_PORT";
-const CODEX_MCP_TOKEN_ENV: &str = "ARROBA_MCP_TOKEN";
+pub(crate) const CODEX_MCP_TOKEN_ENV: &str = "ARROBA_MCP_TOKEN";
 
 pub fn resolve_codex_executable() -> Result<PathBuf, DaemonError> {
     let _guard = crate::env_lock::lock();
@@ -199,9 +199,23 @@ fn runtime_mcp_config(
         "include_apply_patch_tool=false".to_string(),
         "-c".to_string(),
         "approval_policy=\"never\"".to_string(),
+        "-c".to_string(),
+        "mcp_servers={}".to_string(),
     ];
     let mut env = BTreeMap::new();
-    for server in &request.mcp_servers {
+    let provider_mcp_servers = super::mcp_proxy::provider_facing_mcp_proxy_configs_with_bearer_env(
+        &request.mcp_servers,
+        request
+            .runtime_mcp_binding
+            .as_ref()
+            .map(|binding| binding.server_url.as_str()),
+        request
+            .runtime_mcp_binding
+            .as_ref()
+            .map(|binding| binding.auth_token.as_str()),
+        CODEX_MCP_TOKEN_ENV,
+    )?;
+    for server in &provider_mcp_servers {
         append_codex_mcp_config(&mut args, server);
     }
     if let Some(binding) = request.runtime_mcp_binding.as_ref() {
@@ -256,16 +270,47 @@ fn append_codex_mcp_config(args: &mut Vec<String>, server: &ArrobaMcpServerConfi
             http_headers,
             env_http_headers,
         } => {
-            push_codex_config(args, format!("{prefix}.url={url:?}"));
+            let mut fields = vec![format!("url={url:?}")];
             if let Some(env_var) = bearer_token_env_var {
-                push_codex_config(args, format!("{prefix}.bearer_token_env_var={env_var:?}"));
+                fields.push(format!("bearer_token_env_var={env_var:?}"));
             }
-            for (key, value) in http_headers {
-                push_codex_config(args, format!("{prefix}.http_headers.{key}={value:?}"));
+            if !http_headers.is_empty() {
+                fields.push(format!(
+                    "http_headers={{{}}}",
+                    http_headers
+                        .iter()
+                        .map(|(key, value)| format!("{key:?}={value:?}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
             }
-            for (key, value) in env_http_headers {
-                push_codex_config(args, format!("{prefix}.env_http_headers.{key}={value:?}"));
+            if !env_http_headers.is_empty() {
+                fields.push(format!(
+                    "env_http_headers={{{}}}",
+                    env_http_headers
+                        .iter()
+                        .map(|(key, value)| format!("{key:?}={value:?}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
             }
+            if server.required {
+                fields.push("required=true".to_string());
+            }
+            if let Some(timeout) = server.startup_timeout_sec {
+                fields.push(format!("startup_timeout_sec={timeout}"));
+            }
+            if let Some(timeout) = server.tool_timeout_sec {
+                fields.push(format!("tool_timeout_sec={timeout}"));
+            }
+            if let Some(tools) = &server.enabled_tools {
+                fields.push(format!("enabled_tools={tools:?}"));
+            }
+            if let Some(tools) = &server.disabled_tools {
+                fields.push(format!("disabled_tools={tools:?}"));
+            }
+            push_codex_config(args, format!("{prefix}={{{}}}", fields.join(",")));
+            return;
         }
     }
     if server.required {
@@ -549,6 +594,48 @@ mod tests {
             .pty_args
             .iter()
             .any(|arg| arg.contains("mcp_servers.arroba.url")));
+    }
+
+    #[test]
+    fn renders_granted_mcp_as_provider_facing_proxy_when_runtime_mcp_is_bound() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-codex-resolve-test-{}-proxied-mcp",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_CODEX_BIN", &path);
+        std::env::set_var("ARROBA_CODEX_PORT", "43144");
+
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
+                .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+                    "http://127.0.0.1:43120/mcp",
+                    "token-123",
+                ))
+                .with_mcp_servers(vec![ArrobaMcpServerConfig::stdio(
+                    "browser",
+                    "npx",
+                    vec!["@playwright/mcp@latest".to_string()],
+                )]);
+        let launch = plan_codex_launch(Some(&request)).expect("launch plan should resolve");
+
+        std::env::remove_var("ARROBA_CODEX_BIN");
+        std::env::remove_var("ARROBA_CODEX_PORT");
+        let _ = fs::remove_file(&path);
+
+        let browser_config = launch
+            .pty_args
+            .iter()
+            .find(|arg| arg.starts_with("mcp_servers.browser={"))
+            .expect("browser MCP should be rendered as one streamable HTTP table");
+        assert!(browser_config.contains("url=\"http://127.0.0.1:43120/mcp/proxy/browser\""));
+        assert!(browser_config.contains("bearer_token_env_var=\"ARROBA_MCP_TOKEN\""));
+        assert!(!browser_config.contains("http_headers"));
+        assert!(!launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "mcp_servers.browser.command=\"npx\""));
     }
 
     #[test]
