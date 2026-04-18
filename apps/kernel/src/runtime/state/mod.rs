@@ -283,7 +283,9 @@ impl KernelRuntimeState {
         agent_ref: &str,
         name: String,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.owned.grant_agent_skill(agent_ref, name)
+        let agent = self.owned.grant_agent_skill(agent_ref, name)?;
+        self.ensure_remote_skill_packages_for_agent(&agent).await?;
+        Ok(agent)
     }
 
     pub(crate) async fn revoke_agent_skill(

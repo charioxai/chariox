@@ -27,6 +27,21 @@ pub struct RemoteManagedIoContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteSkillSyncContext {
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub leased_agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteSkillMaterialization {
+    pub name: String,
+    pub version_hash: String,
+    pub materialized_root: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteManagedIoArtifactState {
     pub path: String,
     pub exists: bool,
@@ -93,6 +108,10 @@ pub enum RelayPeerRequest {
         tool_name: String,
         arguments: serde_json::Value,
     },
+    EnsureRemoteSkillPackages {
+        context: RemoteSkillSyncContext,
+        packages: Vec<ArrobaSkillPackage>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +155,9 @@ pub enum RelayPeerResponse {
         result: crate::transport::runtime_tools::RuntimeToolResult,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         skill_package: Option<ArrobaSkillPackage>,
+    },
+    RemoteSkillPackagesEnsured {
+        materialized: Vec<RemoteSkillMaterialization>,
     },
 }
 

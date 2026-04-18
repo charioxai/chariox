@@ -779,6 +779,20 @@ async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::EnsureRemoteSkillPackages { context, packages } => {
+            let ensured = router
+                .relay_ensure_remote_skill_packages(context, packages)
+                .await;
+            match ensured {
+                Ok(materialized) => RelayPeerResponse::RemoteSkillPackagesEnsured { materialized },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
     };
     let plaintext = match serde_json::to_vec(&response) {
         Ok(bytes) => bytes,

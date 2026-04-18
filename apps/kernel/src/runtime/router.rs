@@ -462,6 +462,16 @@ impl CommandRouter {
         )
     }
 
+    pub(crate) async fn relay_ensure_remote_skill_packages(
+        &self,
+        context: crate::transport::relay_peer::RemoteSkillSyncContext,
+        packages: Vec<crate::skill::ArrobaSkillPackage>,
+    ) -> Result<Vec<crate::transport::relay_peer::RemoteSkillMaterialization>, DaemonError> {
+        let mut app = self.app.lock().await;
+        crate::app::RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_skill_packages(context, packages)
+    }
+
     pub(crate) async fn relay_complete_leased_prompt(
         &self,
         leased_agent_id: &str,

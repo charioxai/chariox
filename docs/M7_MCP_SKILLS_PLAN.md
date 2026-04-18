@@ -20,7 +20,8 @@ Landed:
 - M7.12 partial: local provider prompts receive a short granted-skills summary for the target agent only. Stored prompt history remains the original user prompt.
 - M7.13 partial: local provider prompts inject the full `SKILL.md` body for granted skills that are explicitly selected, mentioned, or requested.
 - M7.15 partial: runtime MCP exposes `list_capabilities` and `request_capability` control-plane tools for Arroba-managed MCPs and skills. V1 auto-grants valid requests to the current agent and reports when the grant becomes effective. Skill requests now return the full `SKILL.md` body by default, so requested skills can be used in the same turn. Remote worker agents now forward capability discovery/request calls to the home kernel; skill requests return a home-packaged skill directory and materialize it on the worker under `.arroba/remote/skills/<home-kernel-id>/<skill>/<version>/`.
-- M7.18 partial: remote skill packaging/materialization is landed for same-turn `request_capability` use, preserving `SKILL.md`, assets, scripts, and references while skipping provider/cache/build directories and symlinks.
+- M7.18: remote skill packaging/materialization is landed for grant-time sync and same-turn `request_capability` use, preserving `SKILL.md`, assets, scripts, and references while skipping provider/cache/build directories and symlinks. Remote prompt dispatch verifies/synchronizes granted skills before submit and injects worker-local `materialized_root` paths into the prompt context.
+- M7.20 partial: remote skill live drills pass for OpenCode with `openai/gpt-5.2` low effort and Codex with `gpt-5.2` low effort.
 
 Still open in M7:
 
@@ -30,7 +31,7 @@ Still open in M7:
 - Provider skill import from Claude-owned skill locations, plus regular non-interactive Codex/OpenCode import aliases.
 - Skill MCP dependency validation.
 - Remote-machine MCP materialization/rendering.
-- Remote prompt-time skill materialization for pre-granted skills, so remote agents with existing grants can use local skill assets before calling `request_capability`.
+- Remote MCP materialization/rendering.
 - Local and remote drills.
 - MCP provider hot reload. Codex and OpenCode both expose provider-side reload mechanisms, but v1 keeps newly requested MCPs as next-provider-launch because the available reload paths are provider/server scoped rather than safely Arroba agent-scoped.
 
@@ -366,7 +367,7 @@ A workflow node using an agent receives that agent's MCPs and skills. If a workf
 
 ## M7.17 Remote Machine MCP Support
 
-Status: partial for same-turn request materialization; pre-granted prompt-time materialization remains open.
+Status: landed for skills. Remote MCP support remains separate in M7.17.
 
 Add remote-machine handling for MCPs.
 
@@ -398,14 +399,17 @@ Initial placeholder:
 
 Current implementation:
 
+- synchronizes granted remote-agent skills at grant time
+- synchronizes existing grants when a home agent is bound to a remote leased worker
+- verifies and repairs remote skill synchronization before prompt submit
 - packages whole skill directories from the home registry when a remote worker agent requests a skill through `request_capability`
 - skips symlinks and heavy/provider/cache directories such as `.git`, `node_modules`, `.venv`, `target`, `dist`, and `build`
 - verifies per-file SHA-256 and package version hashes during worker materialization
 - keeps materialized copies under `.arroba/remote/skills/...`, not provider-scanned skill roots
+- injects remote prompt skill context with each skill's worker-local `materialized_root`
 
 Open:
 
-- materialize pre-granted remote skills before prompt dispatch so remote prompt injection can reference worker-local assets without requiring an explicit request first
 - decide whether skill scripts are allowed to run from materialized paths and how to report missing worker-side runtime dependencies
 
 ## M7.19 Local Provider Drills
@@ -436,10 +440,19 @@ Overarching local drill matrix:
 
 ## M7.20 Remote Provider Drills
 
-After remote support is designed and implemented:
+Status: partial. Remote skill drills pass; remote MCP drills remain open.
 
 - remote agent receives only its granted MCPs
 - remote agent receives only its granted skills
 - missing remote command/env validation works
 - remote skill files are available and readable
 - home/local and remote agents with different grants do not leak tools/skills to each other
+
+Remote skill drill:
+
+```bash
+node apps/cli/scripts/live-remote-skill-drill.mjs --provider opencode --model openai/gpt-5.2 --effort low
+node apps/cli/scripts/live-remote-skill-drill.mjs --provider codex --model gpt-5.2 --effort low
+```
+
+Observed on 2026-04-18: both drills passed. The drill creates isolated relay/home/worker daemons, installs an Arroba-owned skill with an asset, spawns a remote leased agent, grants the skill, verifies grant-time worker materialization, submits a live remote prompt, and verifies the provider wrote `outputs/remote-skill-provider.txt` with the asset token and `REMOTE_SKILL_DRILL_OK`.

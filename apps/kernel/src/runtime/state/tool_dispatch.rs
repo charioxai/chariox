@@ -300,6 +300,121 @@ impl KernelRuntimeState {
         Ok(Some(result))
     }
 
+    pub(super) async fn ensure_remote_skill_packages_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<Vec<crate::transport::relay_peer::RemoteSkillMaterialization>, DaemonError> {
+        let Some(remote_execution) = agent.remote_execution().cloned() else {
+            return Ok(Vec::new());
+        };
+        if agent.skill_grants().is_empty() {
+            return Ok(Vec::new());
+        }
+        let session = self.owned.session_store.get_session(agent.session_id())?;
+        let skill_registry = skill_registry_for_workspace(session.workspace_id());
+        let packages = package_granted_skills(&skill_registry, agent.skill_grants())?;
+        if packages.is_empty() {
+            return Ok(Vec::new());
+        }
+        let response = self
+            .with_app_side_effect(|app| {
+                app.block_on_relay_future(
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                        app.config(),
+                        ClientTarget {
+                            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                            daemon_alias: None,
+                        },
+                        RelayPeerRequest::EnsureRemoteSkillPackages {
+                            context: crate::transport::relay_peer::RemoteSkillSyncContext {
+                                home_kernel_id: app.config().daemon_id.clone(),
+                                home_session_id: agent.session_id().to_string(),
+                                home_agent_id: agent.id().to_string(),
+                                leased_agent_id: remote_execution.leased_agent_id.clone(),
+                            },
+                            packages: packages.clone(),
+                        },
+                    ),
+                )
+            })
+            .await?;
+        match response {
+            RelayPeerResponse::RemoteSkillPackagesEnsured { materialized } => Ok(materialized),
+            other => Err(DaemonError::LocalTransport {
+                operation: "ensure remote skill packages",
+                message: format!("unexpected remote skill sync response: {other:?}"),
+            }),
+        }
+    }
+
+    pub(super) fn apply_remote_materialized_skill_prompt_context(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        prompt: &str,
+        materialized: &[crate::transport::relay_peer::RemoteSkillMaterialization],
+    ) -> Result<String, DaemonError> {
+        if agent.skill_grants().is_empty() {
+            return Ok(prompt.to_string());
+        }
+        let session = self.owned.session_store.get_session(agent.session_id())?;
+        let registry = skill_registry_for_workspace(session.workspace_id());
+        let materialized_by_name = materialized
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut lines = vec![
+            "Available Arroba skills for this remote agent:".to_string(),
+            "These granted skills were synchronized from the home kernel and materialized on this worker before this prompt. Follow them when they match the task; assets, scripts, and references are available under each materialized_root.".to_string(),
+        ];
+        let mut bodies = Vec::new();
+        for grant in agent.skill_grants() {
+            let Some(skill) = registry.get(grant)? else {
+                return Err(DaemonError::LocalTransport {
+                    operation: "remote provider.prompt.skills",
+                    message: format!(
+                        "agent `{}` has missing skill grant `{grant}`",
+                        agent.agent_ref()
+                    ),
+                });
+            };
+            let materialized = materialized_by_name
+                .get(skill.name.as_str())
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "remote provider.prompt.skills",
+                    message: format!("remote skill `{}` was not materialized", skill.name),
+                })?;
+            let summary = skill
+                .short_description
+                .as_ref()
+                .unwrap_or(&skill.description);
+            lines.push(format!(
+                "- `{}`: {}; materialized_root: {}; version: {}",
+                skill.name, summary, materialized.materialized_root, materialized.version_hash
+            ));
+            let body = std::fs::read_to_string(&skill.path).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "remote provider.prompt.skills",
+                    message: format!(
+                        "failed to read skill `{}` body at `{}`: {error}",
+                        skill.name,
+                        skill.path.display()
+                    ),
+                }
+            })?;
+            bodies.push((skill.name, materialized.materialized_root.clone(), body));
+        }
+        lines.push(String::new());
+        lines.push("Full instructions for synchronized Arroba skills:".to_string());
+        for (name, materialized_root, body) in bodies {
+            lines.push(format!(
+                "<arroba_skill name=\"{name}\" materialized_root=\"{materialized_root}\">"
+            ));
+            lines.push(body.trim().to_string());
+            lines.push("</arroba_skill>".to_string());
+        }
+        Ok(format!("{}\n\n{}", lines.join("\n"), prompt))
+    }
+
     pub(crate) async fn dispatch_forwarded_capability_runtime_tool_call(
         &self,
         context: crate::transport::relay_peer::RemoteManagedIoContext,
@@ -1481,4 +1596,30 @@ impl KernelRuntimeState {
             )),
         }
     }
+}
+
+fn skill_registry_for_workspace(workspace: &str) -> crate::skill::ArrobaSkillRegistry {
+    let workspace = std::path::PathBuf::from(workspace);
+    let mut roots = vec![crate::skill::ArrobaSkillRegistry::project_root(&workspace)];
+    if let Some(user_root) = crate::skill::ArrobaSkillRegistry::user_root() {
+        roots.push(user_root);
+    }
+    crate::skill::ArrobaSkillRegistry::new(roots)
+}
+
+fn package_granted_skills(
+    registry: &crate::skill::ArrobaSkillRegistry,
+    grants: &[String],
+) -> Result<Vec<crate::skill::ArrobaSkillPackage>, DaemonError> {
+    grants
+        .iter()
+        .map(|grant| {
+            registry
+                .package(grant)?
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "package granted skill",
+                    message: format!("skill `{grant}` is granted but is not installed"),
+                })
+        })
+        .collect()
 }

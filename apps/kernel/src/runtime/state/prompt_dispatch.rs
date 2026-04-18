@@ -226,6 +226,13 @@ impl KernelRuntimeState {
                     self.spawn_workflow_prompt_dispatches(dispatches);
                 }
                 if let Some(started_next) = completion.started_next.as_ref() {
+                    let agent = self.owned.agent_store.get_agent(target_agent_id)?;
+                    let materialized = self.ensure_remote_skill_packages_for_agent(&agent).await?;
+                    let remote_prompt = self.apply_remote_materialized_skill_prompt_context(
+                        &agent,
+                        started_next.prompt(),
+                        &materialized,
+                    )?;
                     let attachments = self
                         .with_app_side_effect(|app| {
                             app.serialize_remote_prompt_attachments(started_next.attachments())
@@ -260,7 +267,7 @@ impl KernelRuntimeState {
                                     },
                                     RelayPeerRequest::SubmitLeasedPrompt {
                                         leased_agent_id: remote_execution.leased_agent_id.clone(),
-                                        prompt: started_next.prompt().to_string(),
+                                        prompt: remote_prompt,
                                         attachments,
                                         workflow_context,
                                     },
@@ -696,6 +703,37 @@ impl KernelRuntimeState {
     ) {
         let state = self.clone();
         tokio::spawn(async move {
+            let agent = match state.owned.agent_store.get_agent(&dispatch.agent_id) {
+                Ok(agent) => agent,
+                Err(error) => {
+                    let _ = state
+                        .finish_remote_prompt_dispatch(dispatch, Err(error))
+                        .await;
+                    return;
+                }
+            };
+            let materialized = match state.ensure_remote_skill_packages_for_agent(&agent).await {
+                Ok(materialized) => materialized,
+                Err(error) => {
+                    let _ = state
+                        .finish_remote_prompt_dispatch(dispatch, Err(error))
+                        .await;
+                    return;
+                }
+            };
+            let prompt = match state.apply_remote_materialized_skill_prompt_context(
+                &agent,
+                &dispatch.prompt,
+                &materialized,
+            ) {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    let _ = state
+                        .finish_remote_prompt_dispatch(dispatch, Err(error))
+                        .await;
+                    return;
+                }
+            };
             let config = state.config_snapshot().await;
             let attachments = dispatch.attachments.clone();
             let serialized_attachments = match tokio::task::spawn_blocking(move || {
@@ -719,7 +757,7 @@ impl KernelRuntimeState {
                         },
                         RelayPeerRequest::SubmitLeasedPrompt {
                             leased_agent_id: dispatch.leased_agent_id.clone(),
-                            prompt: dispatch.prompt.clone(),
+                            prompt: prompt.clone(),
                             attachments,
                             workflow_context: dispatch.workflow_context.clone(),
                         },

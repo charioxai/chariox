@@ -789,7 +789,7 @@ impl DaemonApp {
                     return Err(error);
                 }
             };
-        self.agents.bind_remote_execution(
+        let bound = self.agents.bind_remote_execution(
             agent.id(),
             RemoteAgentBinding {
                 worker_kernel_id: worker_kernel.kernel_id.clone(),
@@ -797,7 +797,67 @@ impl DaemonApp {
                 execution_lease_id: lease.id,
                 leased_agent_id: leased_agent.id,
             },
-        )
+        )?;
+        self.ensure_remote_agent_skill_packages(&bound)?;
+        Ok(bound)
+    }
+
+    fn ensure_remote_agent_skill_packages(
+        &mut self,
+        agent: &AgentInstance,
+    ) -> Result<(), DaemonError> {
+        let Some(remote_execution) = agent.remote_execution() else {
+            return Ok(());
+        };
+        if agent.skill_grants().is_empty() {
+            return Ok(());
+        }
+        let session = self.sessions.get_session(agent.session_id())?;
+        let mut roots = vec![crate::skill::ArrobaSkillRegistry::project_root(
+            session.workspace_id(),
+        )];
+        if let Some(user_root) = crate::skill::ArrobaSkillRegistry::user_root() {
+            roots.push(user_root);
+        }
+        let registry = crate::skill::ArrobaSkillRegistry::new(roots);
+        let packages = agent
+            .skill_grants()
+            .iter()
+            .map(|grant| {
+                registry
+                    .package(grant)?
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "ensure remote agent skill packages",
+                        message: format!("skill `{grant}` is granted but is not installed"),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if packages.is_empty() {
+            return Ok(());
+        }
+        let response = self.block_on_relay_future(send_peer_request_via_temporary_connection(
+            &self.config,
+            ClientTarget {
+                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::EnsureRemoteSkillPackages {
+                context: crate::transport::relay_peer::RemoteSkillSyncContext {
+                    home_kernel_id: self.config.daemon_id.clone(),
+                    home_session_id: agent.session_id().to_string(),
+                    home_agent_id: agent.id().to_string(),
+                    leased_agent_id: remote_execution.leased_agent_id.clone(),
+                },
+                packages,
+            },
+        ))?;
+        match response {
+            RelayPeerResponse::RemoteSkillPackagesEnsured { .. } => Ok(()),
+            other => Err(DaemonError::LocalTransport {
+                operation: "ensure remote agent skill packages",
+                message: format!("unexpected remote skill sync response: {other:?}"),
+            }),
+        }
     }
 
     fn select_remote_kernel_for_machine(
