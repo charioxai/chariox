@@ -21,7 +21,7 @@ Landed:
 - M7.13 partial: local provider prompts inject the full `SKILL.md` body for granted skills that are explicitly selected, mentioned, or requested.
 - M7.15 partial: runtime MCP exposes `list_capabilities` and `request_capability` control-plane tools for Arroba-managed MCPs and skills. V1 auto-grants valid requests to the current agent and reports when the grant becomes effective. Skill requests now return the full `SKILL.md` body by default, so requested skills can be used in the same turn. Remote worker agents now forward capability discovery/request calls to the home kernel; skill requests return a home-packaged skill directory and materialize it on the worker under `.arroba/remote/skills/<home-kernel-id>/<skill>/<version>/`.
 - M7.18: remote skill packaging/materialization is landed for grant-time sync and same-turn `request_capability` use, preserving `SKILL.md`, assets, scripts, and references while skipping provider/cache/build directories and symlinks. Remote prompt dispatch verifies/synchronizes granted skills before submit and injects worker-local `materialized_root` paths into the prompt context.
-- M7.20 partial: remote skill live drills pass for OpenCode with `openai/gpt-5.2` low effort and Codex with `gpt-5.2` low effort. Remote MCP v1 conformance checks are landed: home sends required MCP definitions/hashes for remote prompts, worker checks its own project/user Arroba MCP registry, and missing/mismatched/invalid worker MCPs fail fast instead of being installed remotely.
+- M7.20 partial: remote skill live drills pass for OpenCode with `openai/gpt-5.2` low effort and Codex with `gpt-5.2` low effort. Remote MCP v1 conformance checks and live conformance drills pass: home sends required MCP definitions/hashes for remote prompts, worker checks its own project/user Arroba MCP registry, and missing/mismatched/invalid worker MCPs fail fast instead of being installed remotely.
 
 Still open in M7:
 
@@ -30,7 +30,7 @@ Still open in M7:
 - Provider MCP import from Claude-owned configs, plus regular non-interactive Codex/OpenCode import aliases.
 - Provider skill import from Claude-owned skill locations, plus regular non-interactive Codex/OpenCode import aliases.
 - Skill MCP dependency validation.
-- Remote MCP live drills.
+- Remote provider-native MCP use drills.
 - MCP provider hot reload. Codex and OpenCode both expose provider-side reload mechanisms, but v1 keeps newly requested MCPs as next-provider-launch because the available reload paths are provider/server scoped rather than safely Arroba agent-scoped.
 
 ## Goal
@@ -447,7 +447,7 @@ Overarching local drill matrix:
 
 ## M7.20 Remote Provider Drills
 
-Status: partial. Remote skill lifecycle drills pass; remote MCP drills remain open.
+Status: partial. Remote skill lifecycle drills and remote MCP conformance drills pass; remote provider-native MCP use drills remain open.
 
 - remote agent receives only its granted MCPs
 - remote agent receives only its granted skills
@@ -463,3 +463,12 @@ node apps/cli/scripts/live-remote-skill-drill.mjs --provider codex --model gpt-5
 ```
 
 Observed on 2026-04-18: both drills passed. The drill creates isolated relay/home/worker daemons, installs an Arroba-owned skill with an asset, verifies local-only grants do not materialize on the worker, moves a pre-granted local agent to remote and verifies grant synchronization, verifies remote-first grant-time worker materialization, deletes the worker copy and verifies prompt-time repair, verifies same-turn remote `request_capability` skill materialization, submits live remote prompts for each live scenario, and verifies the provider wrote `outputs/remote-skill-provider.txt` with the asset token and `REMOTE_SKILL_DRILL_OK`.
+
+Remote MCP conformance drill:
+
+```bash
+node apps/cli/scripts/live-remote-mcp-drill.mjs --provider opencode --model openai/gpt-5.2 --effort low
+node apps/cli/scripts/live-remote-mcp-drill.mjs --provider codex --model gpt-5.2 --effort low
+```
+
+Observed on 2026-04-18: both drills passed. The drill creates isolated relay/home/worker daemons with separate `HOME` roots, installs divergent Arroba MCP definitions into home and worker registries, verifies worker-missing MCP failure, worker global definition mismatch failure, project-local worker override success, missing worker stdio command failure, and missing worker env var failure.

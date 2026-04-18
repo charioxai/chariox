@@ -37,6 +37,8 @@ Use `--require-web-skill` when the network/web-skill install itself is the thing
 
 Use `--live-mcp-use` to also require a provider-native Playwright tool call. The drill grants Playwright to a fresh per-provider MCP drill agent, force-restarts the provider process when there is no active prompt/workflow, relaunches the provider run with the granted MCP config, then requires a successful Playwright/browser tool call before writing the marker file through Arroba managed I/O.
 
+`live-remote-mcp-drill.mjs` is the remote MCP v1 conformance drill. It launches isolated relay/home/worker daemons with different `HOME` roots so home and worker Arroba user-global MCP registries can diverge on one machine. It verifies worker-missing MCPs, worker global definition mismatches, project-local worker override, missing stdio commands, and missing worker env vars. It is intentionally conformance-only: v1 remote MCPs must already be installed on the worker; the drill does not remotely install MCPs or require provider-native MCP tool use.
+
 ## Before Commit
 
 Run syntax checks for edited scripts before committing:
