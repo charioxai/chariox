@@ -503,6 +503,10 @@ Screenshot capture MUST write only into daemon-chosen session artifact locations
 
 The kernel owns managed artifact I/O for Arroba-launched provider sessions. Supported providers are configured so coordinated workspace files can only be changed through Arroba MCP/runtime tools; direct provider-native shell/edit paths are denied for managed sessions.
 
+Planned macOS hardening moves this from provider-specific policy to an Arroba-owned process launch boundary. Arroba-managed provider processes will be launched behind a macOS workspace write fence that denies filesystem writes under the canonical worktree path while still allowing provider state/cache/temp writes outside the worktree. Codex provider-native sandboxing remains enabled as defense in depth. OpenCode native shell may be enabled only when this Arroba fence is active. Linux and Windows write-fence backends are deferred and must fail closed until implemented.
+
+External provider endpoints are not part of the managed-I/O guarantee. A provider process must be launched by Arroba before Arroba can apply the workspace write fence or claim managed-I/O enforcement.
+
 The v1 contract is:
 
 - `arroba.read_artifact` returns content plus snapshot/version metadata.

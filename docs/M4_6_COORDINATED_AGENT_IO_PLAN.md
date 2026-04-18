@@ -208,6 +208,64 @@ Current enforcement mechanisms:
 
 Detection is still useful for diagnostics, but it is not a substitute for blocking direct writes by Arroba-managed agents.
 
+## M4.6.1 macOS Workspace Write Fence Plan
+
+Status: planned. Linux and Windows are explicitly deferred to later versions.
+
+The next managed-I/O hardening step moves the direct-write guarantee from provider-specific configuration to an Arroba-owned launch boundary on macOS. The product invariant remains provider-neutral:
+
+- Arroba-managed provider processes may read the real workspace and run native read/inspection tools.
+- Arroba-managed provider processes must not write, delete, rename, chmod, chflags, symlink, or create files under the coordinated worktree.
+- Arroba runtime MCP managed I/O remains the only write path into the real workspace.
+- Provider-native write/edit/patch tools remain disabled or hidden where the provider supports that, but those controls are defense in depth rather than the root guarantee.
+- Native shell can be allowed only when the Arroba workspace write fence is active for that provider process.
+
+The macOS implementation should introduce a provider-neutral `WorkspaceWriteFence` launch layer. For v1 it should use the macOS sandbox facility available through `sandbox-exec`/Seatbelt profiles:
+
+```text
+(version 1)
+(deny file-write* (subpath "<canonical-real-worktree-path>"))
+(allow default)
+```
+
+The worktree path must be canonicalized before profile generation, because macOS commonly aliases `/tmp` to `/private/tmp`. The sandbox profile must deny writes to the canonical worktree path and allow writes elsewhere so providers can continue using their own state, cache, logs, auth, and temp directories outside the coordinated workspace.
+
+Arroba-owned launch behavior:
+
+- All managed-I/O provider runs that Arroba launches on macOS go through `WorkspaceWriteFence`.
+- Codex still uses its provider-native read-only sandbox, disabled native apply-patch/file-change tools, and native approval denial as a second layer.
+- OpenCode keeps native edit/write/apply-patch/task disabled, but `bash` can be re-enabled after the process-level write fence is active and drilled.
+- Provider runs without an active write fence cannot enable native shell for managed-I/O sessions unless the provider has an equivalent native sandbox that Arroba has explicitly accepted as a temporary compatibility path.
+- External provider endpoints are removed as a managed-runtime mode. Arroba can only guarantee managed I/O for provider processes it launches and fences.
+
+Planned implementation slices:
+
+1. Add a provider-neutral launch wrapper that can transform a `ProviderLaunchResult` into a fenced launch on macOS.
+2. Add a macOS sandbox profile generator with canonical-path validation and profile-file lifecycle cleanup.
+3. Thread the coordinated worktree root into provider launch planning so the fence knows the exact path to deny.
+4. Apply the fence to every Arroba-launched managed-I/O provider process, including Codex and OpenCode.
+5. Remove external OpenCode endpoint reuse/override for managed provider runs and document the replacement behavior.
+6. Re-enable OpenCode `bash` only when the fence is active; keep OpenCode native edit/write/apply-patch/task denied.
+7. Keep Codex provider-native sandboxing enabled even after the Arroba fence is active.
+8. Add telemetry/log fields that report fence support, fence backend, canonical worktree path hash, and whether native shell was enabled because of the fence. Logs must not expose auth tokens or full secret-bearing environment values.
+
+Required macOS live drills:
+
+- Start a real OpenCode server under the fence, verify provider health, and verify the workspace is unchanged after boot.
+- Ask OpenCode to run read-only shell commands such as `git status`, `rg`, and test/build commands that do not write workspace files.
+- Ask OpenCode to attempt direct writes through shell redirection, `touch`, `mkdir`, `rm`, `chmod`, `chflags`, `ln -s`, Python/Node file writes, and `git checkout`; each must fail or leave the workspace unchanged.
+- Verify OpenCode can still write through Arroba `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact`.
+- Repeat the direct-write and managed-write checks after leaving and rejoining a session.
+- Run the same fence smoke for Codex, confirming Codex still works with its native sandbox and that direct workspace mutation fails at the Arroba fence as well.
+
+Acceptance criteria:
+
+- On macOS, Arroba-managed managed-I/O runs for Codex and OpenCode use the same Arroba-owned workspace write fence.
+- OpenCode native shell is available only behind that fence.
+- Direct workspace mutation attempts from provider-native shell do not change the real worktree.
+- Managed I/O writes still apply to the real worktree through the kernel coordinator.
+- Linux and Windows fail closed for this capability until their own `WorkspaceWriteFence` backends are designed and implemented.
+
 ## External Changes
 
 External changes from humans or non-Arroba processes are not blocked. The coordinator observes them before managed writes:
