@@ -14,6 +14,7 @@ These scripts exercise Arroba against real provider sessions. Keep them determin
 ```bash
 node apps/cli/scripts/live-managed-io-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2
 node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2
+node apps/cli/scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2
 node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.3-codex --full
 ```
 
@@ -35,7 +36,9 @@ Managed-I/O drills coordinate only while the provider run remains in the same re
 
 Use `--require-web-skill` when the network/web-skill install itself is the thing being validated. Without it, public skill clone failures are reported but do not fail the drill, so local registry/runtime coverage can still run offline.
 
-Use `--live-mcp-use` to also require a provider-native Playwright tool call. The drill grants Playwright to a fresh per-provider MCP drill agent, force-restarts the provider process when there is no active prompt/workflow, relaunches the provider run with the granted MCP config, then requires a successful Playwright/browser tool call before writing the marker file through Arroba managed I/O.
+Use `--live-mcp-use` to also require provider-native Playwright tool calls. The drill covers both user-triggered MCP grants, where `/mcp grant` causes Arroba to relaunch the idle provider conversation, and agent-triggered `request_capability`, where Arroba reloads after the current turn and sends an automatic continuation prompt before requiring a Playwright/browser tool call and managed-I/O marker write.
+
+`live-runtime-mcp-reattach-drill.mjs` is the local regression drill for stale provider servers and CLI rejoin. It warms provider catalog endpoints before launching managed-I/O agents, forcing Codex/OpenCode through the path where a provider server may already be alive without run-specific Arroba MCP config. It then detaches the CLI, reattaches to the same session, submits another prompt to the same agents, and fails unless each agent completes `list_capabilities` plus `read_artifact` runtime MCP calls and writes before/after marker files through Arroba managed I/O.
 
 `live-remote-mcp-drill.mjs` is the remote MCP v1 drill. It launches isolated relay/home/worker daemons with different `HOME` roots so home and worker Arroba user-global MCP registries can diverge on one machine. It verifies worker-missing MCPs, worker global definition mismatches, project-local worker override, missing stdio commands, and missing worker env vars. V1 remote MCPs must already be installed on the worker; the drill does not remotely install MCPs. Pass `--live-mcp-use` to also require a provider-native remote Playwright/browser MCP tool call on the worker and a marker write through Arroba managed I/O. Because the drill isolates `HOME` for Arroba registries, it preserves provider auth/config/cache via `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, and `XDG_*` provider environment variables.
 
