@@ -115,7 +115,8 @@ fn codex_client_for_run(
     endpoint: &str,
 ) -> Result<CodexClient, DaemonError> {
     Ok(CodexClient::new(run.id(), endpoint)?
-        .with_runtime_mcp_binding(run.runtime_mcp_server_url(), run.runtime_mcp_auth_token()))
+        .with_runtime_mcp_binding(run.runtime_mcp_server_url(), run.runtime_mcp_auth_token())
+        .with_mcp_servers(run.mcp_servers()))
 }
 
 pub fn initialize_codex_runtime(
@@ -149,9 +150,7 @@ pub fn initialize_codex_runtime(
         .working_directory()
         .map(|path| path.to_string_lossy().to_string());
     let model = normalize_codex_model(run.model());
-    let resumable_thread_id = (!run.requires_managed_io())
-        .then(|| run.resume_state().codex_thread_id().map(str::to_string))
-        .flatten();
+    let resumable_thread_id = run.resume_state().codex_thread_id().map(str::to_string);
     let (thread_id, selection) = match resumable_thread_id {
         Some(thread_id) => {
             crate::logging::info_with_fields(
@@ -162,13 +161,48 @@ pub fn initialize_codex_runtime(
                     "thread_id": thread_id,
                 }),
             );
-            (
-                thread_id,
-                CodexRunSelection {
-                    model: normalize_resumed_codex_model(run.model()),
-                    variant: normalize_variant(run.variant()),
-                },
-            )
+            let resume = client.thread_resume(
+                &mut socket,
+                &mut next_request_id,
+                &thread_id,
+                cwd.as_deref(),
+                model.as_deref(),
+                run.write_access_mode(),
+            );
+            match resume {
+                Ok(thread) => (
+                    thread.thread.id,
+                    CodexRunSelection {
+                        model: Some(format!("codex/{}", thread.model)),
+                        variant: thread.reasoning_effort,
+                    },
+                ),
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider.codex",
+                        "codex thread resume failed; creating a new thread",
+                        serde_json::json!({
+                            "provider_run_id": run.id(),
+                            "thread_id": thread_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    let thread = client.thread_start(
+                        &mut socket,
+                        &mut next_request_id,
+                        cwd.as_deref(),
+                        model.as_deref(),
+                        run.write_access_mode(),
+                    )?;
+                    (
+                        thread.thread.id,
+                        CodexRunSelection {
+                            model: Some(format!("codex/{}", thread.model)),
+                            variant: thread.reasoning_effort,
+                        },
+                    )
+                }
+            }
         }
         None => {
             let thread = client.thread_start(
@@ -820,18 +854,6 @@ fn normalize_codex_model(model: &str) -> Option<String> {
         return None;
     }
     Some(model.strip_prefix("codex/").unwrap_or(model).to_string())
-}
-
-fn normalize_resumed_codex_model(model: &str) -> Option<String> {
-    let model = model.trim();
-    if model.is_empty() || model == "default" {
-        return None;
-    }
-    Some(if model.starts_with("codex/") {
-        model.to_string()
-    } else {
-        format!("codex/{model}")
-    })
 }
 
 fn normalize_variant(variant: Option<&str>) -> Option<String> {

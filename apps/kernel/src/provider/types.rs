@@ -360,6 +360,8 @@ pub struct RuntimeProviderRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_mcp_server_url: Option<String>,
     runtime_mcp_auth_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mcp_servers: Vec<ArrobaMcpServerConfig>,
     #[serde(
         default,
         skip_serializing_if = "ProviderWriteAccessMode::is_unrestricted"
@@ -409,6 +411,7 @@ impl RuntimeProviderRun {
                 .runtime_mcp_binding
                 .as_ref()
                 .map(|binding| binding.auth_token.clone()),
+            mcp_servers: request.mcp_servers.clone(),
             write_access_mode: request.write_access_mode,
             control_capabilities: default_control_capabilities(
                 &request.adapter_key,
@@ -460,6 +463,7 @@ impl RuntimeProviderRun {
             runtime_mcp_server_url: None,
             runtime_mcp_auth_token: inferred_has_runtime_mcp_binding
                 .then(|| "inferred-managed-mcp".to_string()),
+            mcp_servers: Vec::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             control_capabilities: default_control_capabilities(
                 &adapter_key,
@@ -561,6 +565,10 @@ impl RuntimeProviderRun {
 
     pub fn runtime_mcp_server_url(&self) -> Option<&str> {
         self.runtime_mcp_server_url.as_deref()
+    }
+
+    pub fn mcp_servers(&self) -> &[ArrobaMcpServerConfig] {
+        &self.mcp_servers
     }
 
     pub fn write_access_mode(&self) -> ProviderWriteAccessMode {

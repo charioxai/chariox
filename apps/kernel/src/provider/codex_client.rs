@@ -10,6 +10,7 @@ use tokio_tungstenite::tungstenite::stream::MaybeTlsStream;
 use tokio_tungstenite::tungstenite::{connect, Message, WebSocket};
 
 use crate::error::DaemonError;
+use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
 use crate::provider::{OpenCodeProviderCatalog, ProviderWriteAccessMode};
 
 use super::resolve_codex_executable;
@@ -22,6 +23,7 @@ pub struct CodexClient {
     endpoint: String,
     runtime_mcp_server_url: Option<String>,
     runtime_mcp_auth_token: Option<String>,
+    mcp_servers: Vec<ArrobaMcpServerConfig>,
 }
 
 struct CodexPermissionPolicy {
@@ -200,6 +202,7 @@ impl CodexClient {
             endpoint: endpoint.into(),
             runtime_mcp_server_url: None,
             runtime_mcp_auth_token: None,
+            mcp_servers: Vec::new(),
         })
     }
 
@@ -210,6 +213,11 @@ impl CodexClient {
     ) -> Self {
         self.runtime_mcp_server_url = server_url.map(str::to_string);
         self.runtime_mcp_auth_token = auth_token.map(str::to_string);
+        self
+    }
+
+    pub fn with_mcp_servers(mut self, mcp_servers: &[ArrobaMcpServerConfig]) -> Self {
+        self.mcp_servers = mcp_servers.to_vec();
         self
     }
 
@@ -242,8 +250,9 @@ impl CodexClient {
             "ephemeral": true,
             "serviceName": "arroba",
         });
-        if !policy.config_overrides.is_empty() {
-            params["config"] = json!(policy.config_overrides);
+        let config_overrides = self.thread_config_overrides(&policy);
+        if !config_overrides.is_empty() {
+            params["config"] = json!(config_overrides);
         }
         if let Some(cwd) = cwd {
             params["cwd"] = json!(cwd);
@@ -252,6 +261,36 @@ impl CodexClient {
             params["model"] = json!(model);
         }
         self.send_request(socket, next_request_id, "thread/start", params)
+    }
+
+    pub fn thread_resume(
+        &self,
+        socket: &mut CodexSocket,
+        next_request_id: &mut u64,
+        thread_id: &str,
+        cwd: Option<&str>,
+        model: Option<&str>,
+        write_access_mode: ProviderWriteAccessMode,
+    ) -> Result<CodexThreadStartResponse, DaemonError> {
+        let policy = codex_permission_policy(write_access_mode);
+        let mut params = json!({
+            "threadId": thread_id,
+            "approvalPolicy": policy.approval_policy,
+            "sandbox": policy.sandbox,
+            "sandboxPolicy": policy.sandbox_policy,
+            "personality": "pragmatic",
+        });
+        let config_overrides = self.thread_config_overrides(&policy);
+        if !config_overrides.is_empty() {
+            params["config"] = json!(config_overrides);
+        }
+        if let Some(cwd) = cwd {
+            params["cwd"] = json!(cwd);
+        }
+        if let Some(model) = model {
+            params["model"] = json!(model);
+        }
+        self.send_request(socket, next_request_id, "thread/resume", params)
     }
 
     pub fn turn_start(
@@ -642,11 +681,105 @@ impl CodexClient {
         }
     }
 
+    fn thread_config_overrides(&self, policy: &CodexPermissionPolicy) -> BTreeMap<String, Value> {
+        let mut overrides = policy.config_overrides.clone();
+        append_codex_mcp_overrides(&mut overrides, &self.mcp_servers);
+        if let (Some(server_url), Some(auth_token)) = (
+            self.runtime_mcp_server_url.as_deref(),
+            self.runtime_mcp_auth_token.as_deref(),
+        ) {
+            append_runtime_mcp_overrides(&mut overrides, server_url, auth_token);
+        }
+        overrides
+    }
+
     fn protocol_error(&self, operation: &'static str, message: String) -> DaemonError {
         DaemonError::ProviderProtocol {
             provider_run_id: self.provider_run_id.clone(),
             operation,
             message,
+        }
+    }
+}
+
+fn append_runtime_mcp_overrides(
+    overrides: &mut BTreeMap<String, Value>,
+    server_url: &str,
+    auth_token: &str,
+) {
+    overrides.insert(
+        "mcp_servers.arroba.url".to_string(),
+        json!(server_url.to_string()),
+    );
+    overrides.insert(
+        "mcp_servers.arroba.http_headers.Authorization".to_string(),
+        json!(format!("Bearer {auth_token}")),
+    );
+    overrides.insert("mcp_servers.arroba.required".to_string(), json!(true));
+    overrides.insert("mcp_servers.arroba.tool_timeout_sec".to_string(), json!(15));
+}
+
+fn append_codex_mcp_overrides(
+    overrides: &mut BTreeMap<String, Value>,
+    servers: &[ArrobaMcpServerConfig],
+) {
+    for server in servers {
+        let prefix = format!("mcp_servers.{}", server.name);
+        match &server.transport {
+            ArrobaMcpTransportConfig::Stdio {
+                command,
+                args,
+                env,
+                env_vars,
+                cwd,
+            } => {
+                overrides.insert(format!("{prefix}.command"), json!(command));
+                if !args.is_empty() {
+                    overrides.insert(format!("{prefix}.args"), json!(args));
+                }
+                for (key, value) in env {
+                    overrides.insert(format!("{prefix}.env.{key}"), json!(value));
+                }
+                if !env_vars.is_empty() {
+                    overrides.insert(format!("{prefix}.env_vars"), json!(env_vars));
+                }
+                if let Some(cwd) = cwd {
+                    overrides.insert(format!("{prefix}.cwd"), json!(cwd.display().to_string()));
+                }
+            }
+            ArrobaMcpTransportConfig::StreamableHttp {
+                url,
+                bearer_token_env_var,
+                http_headers,
+                env_http_headers,
+            } => {
+                overrides.insert(format!("{prefix}.url"), json!(url));
+                if let Some(env_var) = bearer_token_env_var {
+                    overrides.insert(format!("{prefix}.bearer_token_env_var"), json!(env_var));
+                }
+                for (key, value) in http_headers {
+                    overrides.insert(format!("{prefix}.http_headers.{key}"), json!(value));
+                }
+                for (key, value) in env_http_headers {
+                    overrides.insert(format!("{prefix}.env_http_headers.{key}"), json!(value));
+                }
+            }
+        }
+        overrides.insert(format!("{prefix}.enabled"), json!(server.enabled));
+        if server.required {
+            overrides.insert(format!("{prefix}.required"), json!(true));
+        }
+        if let Some(timeout) = server.startup_timeout_sec {
+            overrides.insert(format!("{prefix}.startup_timeout_sec"), json!(timeout));
+        }
+        if let Some(timeout) = server.tool_timeout_sec {
+            overrides.insert(format!("{prefix}.tool_timeout_sec"), json!(timeout));
+        }
+        if let Some(enabled_tools) = &server.enabled_tools {
+            overrides.insert(format!("{prefix}.enabled_tools"), json!(enabled_tools));
+        }
+        if let Some(disabled_tools) = &server.disabled_tools {
+            overrides.insert(format!("{prefix}.disabled_tools"), json!(disabled_tools));
         }
     }
 }
@@ -1066,9 +1199,12 @@ fn codex_catalog_from_models(models: Vec<CodexModel>) -> OpenCodeProviderCatalog
 mod tests {
     use serde_json::json;
 
+    use crate::mcp::ArrobaMcpServerConfig;
     use crate::provider::ProviderWriteAccessMode;
 
-    use super::{codex_permission_policy, parse_notification, CodexNotification, JsonRpcMessage};
+    use super::{
+        codex_permission_policy, parse_notification, CodexClient, CodexNotification, JsonRpcMessage,
+    };
 
     #[test]
     fn managed_io_permission_policy_uses_read_only_sandbox() {
@@ -1098,6 +1234,65 @@ mod tests {
         assert_eq!(
             policy.config_overrides.get("features.apply_patch_freeform"),
             Some(&json!(false))
+        );
+    }
+
+    #[test]
+    fn thread_config_overrides_include_runtime_mcp_binding() {
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"));
+        let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired);
+
+        let overrides = client.thread_config_overrides(&policy);
+
+        assert_eq!(
+            overrides.get("mcp_servers.arroba.url"),
+            Some(&json!("http://127.0.0.1:43120/mcp"))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.arroba.http_headers.Authorization"),
+            Some(&json!("Bearer token-123"))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.arroba.required"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.arroba.tool_timeout_sec"),
+            Some(&json!(15))
+        );
+        assert_eq!(overrides.get("features.shell_tool"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn thread_config_overrides_include_granted_mcp_servers() {
+        let mut server =
+            ArrobaMcpServerConfig::stdio("browser", "npx", vec!["@playwright/mcp@latest".into()]);
+        server.required = true;
+        server.tool_timeout_sec = Some(25);
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_mcp_servers(&[server]);
+        let policy = codex_permission_policy(ProviderWriteAccessMode::Unrestricted);
+
+        let overrides = client.thread_config_overrides(&policy);
+
+        assert_eq!(
+            overrides.get("mcp_servers.browser.command"),
+            Some(&json!("npx"))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.browser.args"),
+            Some(&json!(["@playwright/mcp@latest"]))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.browser.required"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.browser.tool_timeout_sec"),
+            Some(&json!(25))
         );
     }
 
