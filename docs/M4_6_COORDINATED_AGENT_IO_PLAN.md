@@ -202,8 +202,8 @@ Provider enforcement for v1 is provider-level. Codex and OpenCode expose enough 
 
 Current enforcement mechanisms:
 
-- Codex managed-I/O runs use the provider read-only sandbox for new threads and turns, disable Codex's native shell tool, launch with an Arroba model-metadata overlay that removes Codex's model-declared native `apply_patch` tool, and auto-decline any native command/file-change permission request so writes route through Arroba managed I/O.
-- OpenCode managed-I/O runs deny native `edit`, `bash`, and `task`, leaving file writes available only through Arroba managed I/O tools.
+- Codex managed-I/O runs use the provider read-only sandbox for new threads and turns, launch with an Arroba model-metadata overlay that removes Codex's model-declared native `apply_patch` tool, auto-decline native command/file-change permission requests, and filter Codex permission-upgrade approvals so filesystem writes are never granted. Native shell can remain available for read/inspection work, but it cannot acquire workspace write permission.
+- OpenCode managed-I/O runs deny native edit/write/apply-patch/task paths. Native `bash` is allowed only when Arroba's process-level workspace write fence is active, leaving coordinated file writes available only through Arroba managed I/O tools.
 - OpenCode `external_directory` is not denied by Arroba because it governs access outside the project/worktree; paths inside the coordinated repo are covered by `edit`/`bash`, and paths outside the repo are outside Arroba collision-control scope.
 
 Detection is still useful for diagnostics, but it is not a substitute for blocking direct writes by Arroba-managed agents.
@@ -233,7 +233,7 @@ The worktree path must be canonicalized before profile generation, because macOS
 Arroba-owned launch behavior:
 
 - All managed-I/O provider runs that Arroba launches on macOS go through `WorkspaceWriteFence`.
-- Codex still uses its provider-native read-only sandbox, disabled native apply-patch/file-change tools, and native approval denial as a second layer.
+- Codex still uses its provider-native read-only sandbox, disabled native apply-patch/file-change tools, native command/file-change approval denial, and filesystem-write permission-grant filtering as second layers. This is required because Codex app-server can request additional permissions for native shell work.
 - OpenCode keeps native edit/write/apply-patch/task disabled, but `bash` is enabled only when the process-level write fence is active.
 - Provider runs without an active write fence cannot enable native shell for managed-I/O sessions unless the provider has an equivalent native sandbox that Arroba has explicitly accepted as a temporary compatibility path.
 - External provider endpoints are removed as a managed-runtime mode. Arroba can only guarantee managed I/O for provider processes it launches and fences.
@@ -247,6 +247,7 @@ Implemented slices:
 5. Removed external Codex/OpenCode endpoint override/reuse from managed provider launch planning.
 6. Re-enabled OpenCode `bash` only when the fence is active; OpenCode native edit/write/apply-patch/task stay denied.
 7. Kept Codex provider-native sandboxing enabled after the Arroba fence is active.
+8. Hardened Codex app-server permission approvals so managed-I/O runs preserve network and direct-read permission requests but never grant filesystem write upgrades.
 
 Remaining follow-up slices:
 
@@ -261,7 +262,7 @@ Required macOS live drills:
 - Ask OpenCode to attempt direct writes through shell redirection, `touch`, `mkdir`, `rm`, `chmod`, `chflags`, `ln -s`, Python/Node file writes, and `git checkout`; each must fail or leave the workspace unchanged.
 - Verify OpenCode can still write through Arroba `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact`.
 - Repeat the direct-write and managed-write checks after leaving and rejoining a session.
-- Run the same fence smoke for Codex, confirming Codex still works with its native sandbox and that direct workspace mutation fails at the Arroba fence as well.
+- Run the same direct-write smoke for Codex, confirming Codex still works with its native sandbox and that direct workspace mutation cannot be granted through Codex app-server permission upgrades.
 
 Acceptance criteria:
 
@@ -386,6 +387,7 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: remote managed-I/O live smoke automation. It starts relay/home/worker daemons, leases provider agents on the worker machine, runs managed read/write/edit/apply-patch/move/delete through the home kernel, and cleans up sessions, daemons, history, workspaces, and transient CLI module caches.
 - Landed: remote managed-I/O full pass with OpenCode and Codex, including direct-write blocking, same-area collision serialization, stale non-overlap external-change rebase, and stale overlap external-change rejection.
 - Landed: local and remote managed-I/O drill scripts now cover opaque write/read/move/delete alongside text operations.
+- Landed: local managed-I/O drill hardening now serializes provider positive phases into smaller prompts and covers Codex permission-upgrade denial. On 2026-04-18, the full local drill passed with OpenCode `openai/gpt-5.3-codex` and Codex `gpt-5.2`; both providers completed managed text and opaque operations, direct/native write attempts left no forbidden files, collision serialization held, stale non-overlap external changes rebased, and stale overlap external changes were rejected.
 - Post-v1: type-specific non-text artifact domains beyond v1 opaque whole-file locking.
 
 ## Non-Goals

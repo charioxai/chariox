@@ -2,6 +2,15 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-04-18
+
+### M4.6 managed-I/O Codex hardening and live drills
+
+- Root-caused the local managed-I/O drill failure to Arroba's Codex app-server permission approval path: managed Codex turns used the read-only sandbox, but Arroba was approving Codex `item/permissions/requestApproval` requests wholesale, allowing native shell to acquire filesystem write permission.
+- Hardened managed Codex runs so permission approvals preserve non-write requests but never grant filesystem write upgrades, while unrestricted Codex runs keep the previous permissive behavior.
+- Split the local managed-I/O drill's positive provider phases into smaller serialized prompts so the drill validates each managed read/write/edit/apply-patch/move/opaque step deterministically before entering the direct-write negative checks.
+- Verified with `cargo check --manifest-path apps/kernel/Cargo.toml`, focused Codex permission/runtime tests, `node --check apps/cli/scripts/live-managed-io-drill.mjs`, the full local managed-I/O drill for OpenCode `openai/gpt-5.3-codex` plus Codex `gpt-5.2`, and the local runtime MCP reattach drill for both providers.
+
 ## 2026-04-15
 
 ### M4.5 production ownership closure status

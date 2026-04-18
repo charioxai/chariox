@@ -116,7 +116,8 @@ fn codex_client_for_run(
 ) -> Result<CodexClient, DaemonError> {
     Ok(CodexClient::new(run.id(), endpoint)?
         .with_runtime_mcp_binding(run.runtime_mcp_server_url(), run.runtime_mcp_auth_token())
-        .with_mcp_servers(run.mcp_servers()))
+        .with_mcp_servers(run.mcp_servers())
+        .with_write_access_mode(run.write_access_mode()))
 }
 
 pub fn initialize_codex_runtime(

@@ -322,6 +322,32 @@ async function waitForCompletionCount({ client, sessionId, attachmentId, events,
   throw new Error(`timed out waiting for ${expectedCompletionCount} completions`)
 }
 
+async function waitForPromptPhase({
+  client,
+  sessionId,
+  attachmentId,
+  events,
+  expectedCompletionCount,
+  requiredFiles,
+  forbiddenFiles,
+  timeoutMs,
+  pollMs,
+  debugSnapshot,
+}) {
+  await waitForCompletionsAndFiles({
+    client,
+    sessionId,
+    attachmentId,
+    events,
+    expectedCompletionCount,
+    requiredFiles,
+    forbiddenFiles,
+    timeoutMs,
+    pollMs,
+    debugSnapshot,
+  })
+}
+
 async function waitForAgentsIdle({ client, sessionId, attachmentId, agentIds, getSessionStateRequest, timeoutMs, pollMs }) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
@@ -795,7 +821,35 @@ async function main() {
     const movedFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-moved.txt`))
     const opaqueMovedFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-opaque-moved.bin`))
     const directFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-direct.txt`))
-    const positivePrompts = []
+    const runPositivePromptPhase = async ({ provider, agent, prompt, requiredFiles, label }) => {
+      const beforeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+      await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
+      await waitForPromptPhase({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        events,
+        expectedCompletionCount: beforeCompletionCount + 1,
+        requiredFiles,
+        forbiddenFiles: directFiles,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        debugSnapshot: debugSessionSnapshot,
+      })
+      if (!options.machineRef) {
+        await waitForAgentsIdle({
+          client,
+          sessionId: session.id,
+          attachmentId: attachment.id,
+          agentIds: [agent.id],
+          getSessionStateRequest,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
+        })
+      }
+      await assertFilesAbsent(directFiles, `${provider} ${label} direct-write check`)
+    }
+
     for (const { provider, agent } of agents) {
       const written = `${provider}-managed-io-write-ok: seed-value-42\n`
       const edited = `${provider}-managed-io-edit-ok: seed-value-42\n`
@@ -809,99 +863,113 @@ async function main() {
       ].join('\n')
       const opaqueBytes = Buffer.from([0, provider.length, 255, 10])
       const opaqueBase64 = opaqueBytes.toString('base64')
-      const textPrompt = [
-        'This is a live Arroba managed I/O positive text smoke test.',
-        'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
-        'Use only the Arroba MCP/runtime tools for file I/O.',
-        'Step 1: call `arroba.read_artifact` with JSON arguments {"path":"seed.txt","domain":"text"}.',
-        `Step 2: call \`arroba.write_artifact\` with JSON arguments {"path":"outputs/${provider}.txt","content_text":${JSON.stringify(written)},"domain":"text"}.`,
-        `Step 3: call \`arroba.read_artifact\` with JSON arguments {"path":"outputs/${provider}.txt","domain":"text"} and remember the returned snapshot_id.`,
-        `Step 4: call \`arroba.edit_artifact\` with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text","snapshot_id":"THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_3"}. Replace THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_3 with the exact snapshot_id from step 3.`,
-        `Step 5: call \`arroba.apply_patch\` with JSON arguments {"patch_text":${JSON.stringify(patchText)},"domain":"text"}.`,
-        `Step 6: call \`arroba.move_artifact\` with JSON arguments {"from_path":"outputs/${provider}-patch.txt","to_path":"outputs/${provider}-moved.txt","old_text":${JSON.stringify(patchInitial)},"new_text":${JSON.stringify(patchMoved)},"domain":"text"}.`,
-        `Only after all six text steps succeed and outputs/${provider}.txt plus outputs/${provider}-moved.txt exist, reply exactly ${provider.toUpperCase()}_MANAGED_IO_TEXT_DONE and nothing else.`,
-        `If any managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
-      ].join('\n')
-      const opaquePrompt = [
-        'This is a live Arroba managed I/O positive opaque/binary smoke test.',
-        'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
-        'Use only the Arroba MCP/runtime tools for file I/O.',
-        'Every tool call in this turn must use `"domain":"opaque"`.',
-        'Do not call apply_patch, delete_artifact, or any text-domain fallback operation in this turn.',
-        'Do not include old_text, new_text, content_text, or patch_text in the opaque move call.',
-        `Step 1: call \`arroba.write_artifact\` with JSON arguments {"path":"outputs/${provider}-opaque.bin","content_base64":${JSON.stringify(opaqueBase64)},"domain":"opaque"}.`,
-        `Step 2: call \`arroba.read_artifact\` with JSON arguments {"path":"outputs/${provider}-opaque.bin","domain":"opaque"} and verify the returned content_base64 is ${JSON.stringify(opaqueBase64)}.`,
-        `Step 3: call \`arroba.move_artifact\` exactly once with JSON arguments {"from_path":"outputs/${provider}-opaque.bin","to_path":"outputs/${provider}-opaque-moved.bin","domain":"opaque"}.`,
-        `Only after all three opaque steps succeed and outputs/${provider}-opaque-moved.bin exists, reply exactly ${provider.toUpperCase()}_MANAGED_IO_OPAQUE_DONE and nothing else.`,
-        `If any managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
-      ].join('\n')
-      positivePrompts.push({ provider, agent, textPrompt, opaquePrompt })
-    }
+      await runPositivePromptPhase({
+        provider,
+        agent,
+        label: 'text read/write',
+        requiredFiles: [path.join(outputsDir, `${provider}.txt`)],
+        prompt: [
+          'This is a live Arroba managed I/O positive text read/write smoke test.',
+          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
+          'Use only the Arroba MCP/runtime tools for file I/O.',
+          'Step 1: call `arroba.read_artifact` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.',
+          `Step 2: call \`arroba.write_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","content_text":${JSON.stringify(written)},"domain":"text"}.`,
+          `Only after both steps succeed and outputs/${provider}.txt exists, reply exactly ${provider.toUpperCase()}_MANAGED_IO_TEXT_WRITE_DONE and nothing else.`,
+          `If any managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
+        ].join('\n'),
+      })
+      await assertFileContent(path.join(outputsDir, `${provider}.txt`), written)
 
-    if (options.machineRef) {
-      for (const { provider, agent, textPrompt, opaquePrompt } of positivePrompts) {
-        const beforeTextCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
-        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, textPrompt, []))
-        await waitForCompletionsAndFiles({
-          client,
-          sessionId: session.id,
-          attachmentId: attachment.id,
-          events,
-          expectedCompletionCount: beforeTextCompletionCount + 1,
-          requiredFiles: [path.join(outputsDir, `${provider}.txt`), path.join(outputsDir, `${provider}-moved.txt`)],
-          forbiddenFiles: directFiles,
-          timeoutMs: options.timeoutMs,
-          pollMs: options.pollMs,
-          debugSnapshot: debugSessionSnapshot,
-        })
-        const beforeOpaqueCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
-        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, opaquePrompt, []))
-        await waitForCompletionsAndFiles({
-          client,
-          sessionId: session.id,
-          attachmentId: attachment.id,
-          events,
-          expectedCompletionCount: beforeOpaqueCompletionCount + 1,
-          requiredFiles: [path.join(outputsDir, `${provider}-opaque-moved.bin`)],
-          forbiddenFiles: directFiles,
-          timeoutMs: options.timeoutMs,
-          pollMs: options.pollMs,
-          debugSnapshot: debugSessionSnapshot,
-        })
-      }
-    } else {
-      const beforeTextCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
-      for (const { agent, textPrompt } of positivePrompts) {
-        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, textPrompt, []))
-      }
-      await waitForCompletionsAndFiles({
-        client,
-        sessionId: session.id,
-        attachmentId: attachment.id,
-        events,
-        expectedCompletionCount: beforeTextCompletionCount + agents.length,
-        requiredFiles: [...positiveFiles, ...movedFiles],
-        forbiddenFiles: directFiles,
-        timeoutMs: options.timeoutMs,
-        pollMs: options.pollMs,
-        debugSnapshot: debugSessionSnapshot,
+      await runPositivePromptPhase({
+        provider,
+        agent,
+        label: 'text read/edit',
+        requiredFiles: [path.join(outputsDir, `${provider}.txt`)],
+        prompt: [
+          'This is a live Arroba managed I/O positive text edit smoke test.',
+          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
+          'Use only the Arroba MCP/runtime tools for file I/O.',
+          `Step 1: call \`arroba.read_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","domain":"text"} and remember the returned snapshot_id.`,
+          `Step 2: call \`arroba.edit_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text","snapshot_id":"THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1"}. Replace THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1 with the exact snapshot_id from step 1.`,
+          `Only after the edit succeeds and outputs/${provider}.txt contains the new text, reply exactly ${provider.toUpperCase()}_MANAGED_IO_TEXT_EDIT_DONE and nothing else.`,
+          `If any managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
+        ].join('\n'),
       })
-      const beforeOpaqueCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
-      for (const { agent, opaquePrompt } of positivePrompts) {
-        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, opaquePrompt, []))
-      }
-      await waitForCompletionsAndFiles({
-        client,
-        sessionId: session.id,
-        attachmentId: attachment.id,
-        events,
-        expectedCompletionCount: beforeOpaqueCompletionCount + agents.length,
-        requiredFiles: opaqueMovedFiles,
-        forbiddenFiles: directFiles,
-        timeoutMs: options.timeoutMs,
-        pollMs: options.pollMs,
-        debugSnapshot: debugSessionSnapshot,
+      await assertFileContent(path.join(outputsDir, `${provider}.txt`), edited)
+
+      await runPositivePromptPhase({
+        provider,
+        agent,
+        label: 'text apply_patch',
+        requiredFiles: [path.join(outputsDir, `${provider}-patch.txt`)],
+        prompt: [
+          'This is a live Arroba managed I/O positive apply_patch smoke test.',
+          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
+          'Use only the Arroba MCP/runtime tools for file I/O.',
+          `Call \`arroba.apply_patch\` exactly once with JSON arguments {"patch_text":${JSON.stringify(patchText)},"domain":"text"}.`,
+          `Only after outputs/${provider}-patch.txt exists, reply exactly ${provider.toUpperCase()}_MANAGED_IO_PATCH_DONE and nothing else.`,
+          `If the managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
+        ].join('\n'),
       })
+      await assertFileContent(path.join(outputsDir, `${provider}-patch.txt`), patchInitial)
+
+      await runPositivePromptPhase({
+        provider,
+        agent,
+        label: 'text move',
+        requiredFiles: [path.join(outputsDir, `${provider}-moved.txt`)],
+        prompt: [
+          'This is a live Arroba managed I/O positive move smoke test.',
+          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
+          'Use only the Arroba MCP/runtime tools for file I/O.',
+          `Call \`arroba.move_artifact\` exactly once with JSON arguments {"from_path":"outputs/${provider}-patch.txt","to_path":"outputs/${provider}-moved.txt","old_text":${JSON.stringify(patchInitial)},"new_text":${JSON.stringify(patchMoved)},"domain":"text"}.`,
+          `Only after outputs/${provider}-moved.txt exists and outputs/${provider}-patch.txt is gone, reply exactly ${provider.toUpperCase()}_MANAGED_IO_MOVE_DONE and nothing else.`,
+          `If the managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
+        ].join('\n'),
+      })
+      await assertFileContent(path.join(outputsDir, `${provider}-moved.txt`), patchMoved)
+      if (await fileExists(path.join(outputsDir, `${provider}-patch.txt`))) {
+        throw new Error(`managed move left source file behind: outputs/${provider}-patch.txt`)
+      }
+
+      await runPositivePromptPhase({
+        provider,
+        agent,
+        label: 'opaque write',
+        requiredFiles: [path.join(outputsDir, `${provider}-opaque.bin`)],
+        prompt: [
+          'This is a live Arroba managed I/O positive opaque write smoke test.',
+          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
+          'Use only the Arroba MCP/runtime tools for file I/O.',
+          'Every tool call in this turn must use `"domain":"opaque"`.',
+          `Call \`arroba.write_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}-opaque.bin","content_base64":${JSON.stringify(opaqueBase64)},"domain":"opaque"}.`,
+          `Only after outputs/${provider}-opaque.bin exists, reply exactly ${provider.toUpperCase()}_MANAGED_IO_OPAQUE_WRITE_DONE and nothing else.`,
+          `If the managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
+        ].join('\n'),
+      })
+      await assertFileBytes(path.join(outputsDir, `${provider}-opaque.bin`), opaqueBytes)
+
+      await runPositivePromptPhase({
+        provider,
+        agent,
+        label: 'opaque read/move',
+        requiredFiles: [path.join(outputsDir, `${provider}-opaque-moved.bin`)],
+        prompt: [
+          'This is a live Arroba managed I/O positive opaque read/move smoke test.',
+          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
+          'Use only the Arroba MCP/runtime tools for file I/O.',
+          'Every tool call in this turn must use `"domain":"opaque"`.',
+          'Do not include old_text, new_text, content_text, or patch_text in the opaque move call.',
+          `Step 1: call \`arroba.read_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}-opaque.bin","domain":"opaque"} and verify the returned content_base64 is ${JSON.stringify(opaqueBase64)}.`,
+          `Step 2: call \`arroba.move_artifact\` exactly once with JSON arguments {"from_path":"outputs/${provider}-opaque.bin","to_path":"outputs/${provider}-opaque-moved.bin","domain":"opaque"}.`,
+          `Only after outputs/${provider}-opaque-moved.bin exists and outputs/${provider}-opaque.bin is gone, reply exactly ${provider.toUpperCase()}_MANAGED_IO_OPAQUE_MOVE_DONE and nothing else.`,
+          `If any managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
+        ].join('\n'),
+      })
+      await assertFileBytes(path.join(outputsDir, `${provider}-opaque-moved.bin`), opaqueBytes)
+      if (await fileExists(path.join(outputsDir, `${provider}-opaque.bin`))) {
+        throw new Error(`managed opaque move left source file behind: outputs/${provider}-opaque.bin`)
+      }
     }
     if (!options.machineRef) {
       await waitForAgentsIdle({

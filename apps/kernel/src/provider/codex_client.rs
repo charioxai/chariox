@@ -24,6 +24,7 @@ pub struct CodexClient {
     runtime_mcp_server_url: Option<String>,
     runtime_mcp_auth_token: Option<String>,
     mcp_servers: Vec<ArrobaMcpServerConfig>,
+    write_access_mode: ProviderWriteAccessMode,
 }
 
 struct CodexPermissionPolicy {
@@ -203,6 +204,7 @@ impl CodexClient {
             runtime_mcp_server_url: None,
             runtime_mcp_auth_token: None,
             mcp_servers: Vec::new(),
+            write_access_mode: ProviderWriteAccessMode::Unrestricted,
         })
     }
 
@@ -218,6 +220,11 @@ impl CodexClient {
 
     pub fn with_mcp_servers(mut self, mcp_servers: &[ArrobaMcpServerConfig]) -> Self {
         self.mcp_servers = mcp_servers.to_vec();
+        self
+    }
+
+    pub fn with_write_access_mode(mut self, write_access_mode: ProviderWriteAccessMode) -> Self {
+        self.write_access_mode = write_access_mode;
         self
     }
 
@@ -581,18 +588,7 @@ impl CodexClient {
         let result = match method {
             "item/commandExecution/requestApproval" => json!({ "decision": "decline" }),
             "item/fileChange/requestApproval" => json!({ "decision": "decline" }),
-            "item/permissions/requestApproval" => {
-                let permissions = message
-                    .params
-                    .as_ref()
-                    .and_then(|params| params.get("permissions"))
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
-                json!({
-                    "permissions": permissions,
-                    "scope": "session",
-                })
-            }
+            "item/permissions/requestApproval" => self.permissions_approval_response(message),
             "mcpServer/elicitation/request" => self.respond_to_mcp_elicitation(message),
             "item/tool/call" => self.respond_to_dynamic_tool_call(message)?,
             _ => {
@@ -639,6 +635,28 @@ impl CodexClient {
                 "content": null,
                 "_meta": null,
             })
+        }
+    }
+
+    fn permissions_approval_response(&self, message: &JsonRpcMessage) -> Value {
+        let requested_permissions = message
+            .params
+            .as_ref()
+            .and_then(|params| params.get("permissions"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        match self.write_access_mode {
+            ProviderWriteAccessMode::Unrestricted => json!({
+                "permissions": requested_permissions,
+                "scope": "session",
+            }),
+            ProviderWriteAccessMode::ManagedIoRequired => {
+                let granted_permissions = managed_io_codex_permission_grant(&requested_permissions);
+                json!({
+                    "permissions": granted_permissions,
+                    "scope": "turn",
+                })
+            }
         }
     }
 
@@ -836,6 +854,26 @@ fn codex_permission_policy(write_access_mode: ProviderWriteAccessMode) -> CodexP
             }
         }
     }
+}
+
+fn managed_io_codex_permission_grant(requested_permissions: &Value) -> Value {
+    let Some(requested) = requested_permissions.as_object() else {
+        return json!({});
+    };
+    let mut granted = serde_json::Map::new();
+    if let Some(network) = requested.get("network") {
+        granted.insert("network".to_string(), network.clone());
+    }
+    if let Some(file_system) = requested.get("fileSystem").and_then(Value::as_object) {
+        let mut granted_file_system = serde_json::Map::new();
+        if let Some(read) = file_system.get("read") {
+            granted_file_system.insert("read".to_string(), read.clone());
+        }
+        if !granted_file_system.is_empty() {
+            granted.insert("fileSystem".to_string(), Value::Object(granted_file_system));
+        }
+    }
+    Value::Object(granted)
 }
 
 fn call_runtime_mcp_tool(
@@ -1227,7 +1265,8 @@ mod tests {
     use crate::provider::ProviderWriteAccessMode;
 
     use super::{
-        codex_permission_policy, parse_notification, CodexClient, CodexNotification, JsonRpcMessage,
+        codex_permission_policy, managed_io_codex_permission_grant, parse_notification,
+        CodexClient, CodexNotification, JsonRpcMessage,
     };
 
     #[test]
@@ -1254,6 +1293,70 @@ mod tests {
         assert_eq!(
             policy.config_overrides.get("features.apply_patch_freeform"),
             Some(&json!(false))
+        );
+    }
+
+    #[test]
+    fn managed_io_permission_grant_removes_filesystem_write() {
+        let requested = json!({
+            "network": {
+                "enabled": true
+            },
+            "fileSystem": {
+                "read": ["/tmp/input"],
+                "write": ["/tmp/output"]
+            }
+        });
+
+        assert_eq!(
+            managed_io_codex_permission_grant(&requested),
+            json!({
+                "network": {
+                    "enabled": true
+                },
+                "fileSystem": {
+                    "read": ["/tmp/input"]
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn managed_io_permission_grant_denies_write_only_request() {
+        let requested = json!({
+            "fileSystem": {
+                "write": ["/tmp/output"]
+            }
+        });
+
+        assert_eq!(managed_io_codex_permission_grant(&requested), json!({}));
+    }
+
+    #[test]
+    fn managed_io_client_does_not_approve_codex_filesystem_writes() {
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_write_access_mode(ProviderWriteAccessMode::ManagedIoRequired);
+        let message = JsonRpcMessage {
+            id: Some(json!(1)),
+            method: Some("item/permissions/requestApproval".to_string()),
+            params: Some(json!({
+                "permissions": {
+                    "fileSystem": {
+                        "write": ["/tmp/output"]
+                    }
+                }
+            })),
+            result: None,
+            error: None,
+        };
+
+        assert_eq!(
+            client.permissions_approval_response(&message),
+            json!({
+                "permissions": {},
+                "scope": "turn"
+            })
         );
     }
 
