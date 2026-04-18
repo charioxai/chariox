@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -242,11 +241,12 @@ async function main() {
   }
 
   const ports = makePorts()
-  const rootDir = path.join(os.tmpdir(), `arroba-runtime-mcp-reattach-${process.pid}-${Date.now()}`)
+  const runtimeDir = path.join(cliRoot, '.tmp-live-runtime-mcp-reattach-drill')
+  const rootDir = path.join(cliRoot, 'target', 'live-runtime-mcp-reattach-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const outputsDir = path.join(workspace, 'outputs')
-  const runtimeDir = path.join(rootDir, 'runtime')
   const historyDir = path.join(rootDir, 'history')
+  await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(outputsDir, { recursive: true })
   await mkdir(runtimeDir, { recursive: true })
   await writeFile(path.join(workspace, 'seed.txt'), 'runtime-mcp-seed\n', 'utf8')
@@ -425,6 +425,7 @@ async function main() {
       await cleanup.close().catch(() => {})
     }
     await terminateChild(daemonChild)
+    await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
     if (succeeded || !options.keepArtifactsOnFailure) {
       await rm(rootDir, { recursive: true, force: true }).catch(() => {})
     } else {
