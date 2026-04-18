@@ -14,7 +14,6 @@ use crate::provider::{
 
 const OPENCODE_ENV_OVERRIDE: &str = "ARROBA_OPENCODE_BIN";
 const OPENCODE_PORT_OVERRIDE: &str = "ARROBA_OPENCODE_PORT";
-const OPENCODE_ENDPOINT_OVERRIDE: &str = "ARROBA_OPENCODE_ENDPOINT";
 
 pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
     let _guard = crate::env_lock::lock();
@@ -52,21 +51,7 @@ pub fn plan_opencode_launch(
 fn plan_opencode_launch_unlocked(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
-    let requires_isolated_server = request_requires_isolated_server(request);
-    if let Some(endpoint) = env::var_os(OPENCODE_ENDPOINT_OVERRIDE) {
-        let endpoint = endpoint.to_string_lossy().trim().to_string();
-        if !endpoint.is_empty() {
-            if requires_isolated_server {
-                return Err(DaemonError::LocalTransport {
-                    operation: "plan_opencode_launch",
-                    message: "OpenCode managed-I/O or granted-MCP runs require an Arroba-managed isolated OpenCode server; unset ARROBA_OPENCODE_ENDPOINT for these runs".to_string(),
-                });
-            }
-            return Ok(external_launch(endpoint));
-        }
-    }
-
-    if requires_isolated_server {
+    if request.is_some() {
         let executable = resolve_opencode_executable_unlocked()?;
         let port = reserve_unused_port()?;
         let base_url = format!("http://127.0.0.1:{port}");
@@ -80,10 +65,6 @@ fn plan_opencode_launch_unlocked(
 
     let port = resolve_opencode_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
-    if endpoint_is_healthy(&base_url) {
-        return Ok(external_launch(base_url));
-    }
-
     let executable = resolve_opencode_executable_unlocked()?;
 
     Ok(managed_launch(
@@ -124,13 +105,6 @@ pub fn opencode_catalog_endpoint() -> Result<String, DaemonError> {
 }
 
 fn opencode_catalog_endpoint_unlocked() -> Result<String, DaemonError> {
-    if let Some(endpoint) = env::var_os(OPENCODE_ENDPOINT_OVERRIDE) {
-        let endpoint = endpoint.to_string_lossy().trim().to_string();
-        if !endpoint.is_empty() {
-            return Ok(endpoint);
-        }
-    }
-
     let port = resolve_opencode_port()?;
     Ok(format!("http://127.0.0.1:{port}"))
 }
@@ -207,19 +181,6 @@ pub fn ensure_opencode_catalog_endpoint() -> Result<String, DaemonError> {
     }
 }
 
-fn external_launch(endpoint: String) -> ProviderLaunchResult {
-    ProviderLaunchResult {
-        endpoint_mode: AgentEndpointMode::External,
-        process_label: "opencode:endpoint".to_string(),
-        pty_target: None,
-        pty_program: None,
-        pty_args: Vec::new(),
-        pty_env: BTreeMap::new(),
-        working_directory: None,
-        structured_endpoint: Some(endpoint),
-    }
-}
-
 fn runtime_mcp_env(request: Option<&LaunchProviderRequest>) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     let Some(request) = request else {
@@ -248,12 +209,6 @@ fn runtime_mcp_env(request: Option<&LaunchProviderRequest>) -> BTreeMap<String, 
     let config = serde_json::json!({ "mcp": mcp });
     env.insert(OPENCODE_CONFIG_CONTENT_ENV.to_string(), config.to_string());
     env
-}
-
-fn request_requires_isolated_server(request: Option<&LaunchProviderRequest>) -> bool {
-    request.is_some_and(|request| {
-        request.runtime_mcp_binding.is_some() || !request.mcp_servers.is_empty()
-    })
 }
 
 fn reserve_unused_port() -> Result<u16, DaemonError> {
@@ -478,8 +433,7 @@ mod tests {
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
         std::env::set_var("ARROBA_OPENCODE_BIN", &path);
-        let port = reserve_unused_port();
-        std::env::set_var("ARROBA_OPENCODE_PORT", port.to_string());
+        std::env::set_var("ARROBA_OPENCODE_PORT", reserve_unused_port().to_string());
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -548,10 +502,15 @@ mod tests {
     }
 
     #[test]
-    fn external_opencode_endpoint_rejects_isolated_mcp_runs() {
+    fn provider_runs_ignore_external_opencode_endpoint_override() {
         let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-opencode-resolve-test-{}-ignore-endpoint",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
         std::env::set_var("ARROBA_OPENCODE_ENDPOINT", "http://127.0.0.1:43119");
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
+        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
         std::env::remove_var("ARROBA_OPENCODE_PORT");
 
         let request = LaunchProviderRequest::new(
@@ -565,18 +524,17 @@ mod tests {
             "http://127.0.0.1:43120/mcp",
             "token-123",
         ));
-        let error = plan_opencode_launch(Some(&request))
-            .expect_err("external endpoint should reject isolated mcp run");
+        let launch = plan_opencode_launch(Some(&request)).expect("provider run should resolve");
 
         std::env::remove_var("ARROBA_OPENCODE_ENDPOINT");
+        std::env::remove_var("ARROBA_OPENCODE_BIN");
+        let _ = fs::remove_file(&path);
 
-        match error {
-            DaemonError::LocalTransport { operation, message } => {
-                assert_eq!(operation, "plan_opencode_launch");
-                assert!(message.contains("isolated OpenCode server"));
-            }
-            other => panic!("unexpected error: {other}"),
-        }
+        assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
+        assert_ne!(
+            launch.structured_endpoint.as_deref(),
+            Some("http://127.0.0.1:43119")
+        );
     }
 
     #[test]
@@ -647,9 +605,12 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
+        let planned_port = launch.pty_args[4]
+            .parse::<u16>()
+            .expect("port argument should be numeric");
         assert_eq!(
             launch.structured_endpoint.as_deref(),
-            Some(format!("http://127.0.0.1:{port}").as_str())
+            Some(format!("http://127.0.0.1:{planned_port}").as_str())
         );
     }
 
@@ -693,27 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_external_opencode_endpoint_without_launching_process() {
-        let _guard = env_guard();
-        std::env::set_var("ARROBA_OPENCODE_ENDPOINT", "http://127.0.0.1:43119");
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
-        std::env::remove_var("ARROBA_OPENCODE_PORT");
-
-        let launch = plan_opencode_launch(None).expect("external endpoint should resolve");
-
-        std::env::remove_var("ARROBA_OPENCODE_ENDPOINT");
-
-        assert_eq!(launch.endpoint_mode, AgentEndpointMode::External);
-        assert_eq!(launch.pty_program, None);
-        assert_eq!(launch.pty_args, Vec::<String>::new());
-        assert_eq!(
-            launch.structured_endpoint.as_deref(),
-            Some("http://127.0.0.1:43119")
-        );
-    }
-
-    #[test]
-    fn reuses_healthy_shared_opencode_endpoint_without_launching_process() {
+    fn ensures_healthy_catalog_opencode_endpoint_without_spawning_duplicate_process() {
         let _guard = env_guard();
         let (endpoint, server) = start_health_server();
         let port = endpoint
@@ -722,42 +663,19 @@ mod tests {
             .expect("endpoint should include a port")
             .to_string();
         let path = std::env::temp_dir().join(format!(
-            "arroba-opencode-resolve-test-{}-reused-endpoint",
+            "arroba-opencode-resolve-test-{}-healthy-catalog",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
         std::env::set_var("ARROBA_OPENCODE_BIN", &path);
         std::env::set_var("ARROBA_OPENCODE_PORT", &port);
-        std::env::remove_var("ARROBA_OPENCODE_ENDPOINT");
 
-        let launch = plan_opencode_launch(None).expect("healthy endpoint should be reused");
+        let resolved =
+            ensure_opencode_catalog_endpoint().expect("healthy catalog endpoint should resolve");
 
         std::env::remove_var("ARROBA_OPENCODE_BIN");
         std::env::remove_var("ARROBA_OPENCODE_PORT");
         let _ = fs::remove_file(&path);
-        let _ = server.join();
-
-        assert_eq!(launch.endpoint_mode, AgentEndpointMode::External);
-        assert_eq!(launch.pty_program, None);
-        assert_eq!(launch.pty_args, Vec::<String>::new());
-        assert_eq!(
-            launch.structured_endpoint.as_deref(),
-            Some(endpoint.as_str())
-        );
-    }
-
-    #[test]
-    fn ensures_healthy_external_opencode_endpoint_for_catalog_queries() {
-        let _guard = env_guard();
-        let (endpoint, server) = start_health_server();
-        std::env::set_var("ARROBA_OPENCODE_ENDPOINT", &endpoint);
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
-        std::env::remove_var("ARROBA_OPENCODE_PORT");
-
-        let resolved =
-            ensure_opencode_catalog_endpoint().expect("healthy external endpoint should resolve");
-
-        std::env::remove_var("ARROBA_OPENCODE_ENDPOINT");
         let _ = server.join();
 
         assert_eq!(resolved, endpoint);

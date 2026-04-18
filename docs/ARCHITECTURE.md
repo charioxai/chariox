@@ -952,7 +952,7 @@ Current local runtime note:
 
 - M2 baseline: PTY-launched OpenCode wrapper path
 - current M3 direction: daemon-launched `opencode serve` plus local HTTP/SSE adapter
-- current implementation also supports an external OpenCode endpoint via `ARROBA_OPENCODE_ENDPOINT`, which is the first concrete `external agent endpoint` path in the codebase
+- current implementation launches Arroba-owned OpenCode provider processes rather than attaching managed runtime sessions to external OpenCode endpoints
 - adapter-owned OpenCode session/event handling should remain behind daemon/provider abstractions so later providers can still use PTY or their own structured surfaces without changing client contracts
 - OpenCode remains the only agent-side structured transport that Arroba is currently tightening closely against; a generic agent WebSocket protocol is intentionally deferred until more agent integrations exist
 

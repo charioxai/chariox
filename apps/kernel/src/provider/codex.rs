@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread::sleep;
@@ -15,7 +16,6 @@ use super::codex_client::codex_endpoint_is_healthy;
 
 const CODEX_ENV_OVERRIDE: &str = "ARROBA_CODEX_BIN";
 const CODEX_PORT_OVERRIDE: &str = "ARROBA_CODEX_PORT";
-const CODEX_ENDPOINT_OVERRIDE: &str = "ARROBA_CODEX_ENDPOINT";
 const CODEX_MCP_TOKEN_ENV: &str = "ARROBA_MCP_TOKEN";
 
 pub fn resolve_codex_executable() -> Result<PathBuf, DaemonError> {
@@ -51,18 +51,12 @@ pub fn plan_codex_launch(
 fn plan_codex_launch_unlocked(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
-    if let Some(endpoint) = env::var_os(CODEX_ENDPOINT_OVERRIDE) {
-        let endpoint = endpoint.to_string_lossy().trim().to_string();
-        if !endpoint.is_empty() {
-            return Ok(external_launch(endpoint));
-        }
-    }
-
-    let port = resolve_codex_port()?;
+    let port = if request.is_some() {
+        reserve_unused_port()?
+    } else {
+        resolve_codex_port()?
+    };
     let endpoint = format!("ws://127.0.0.1:{port}");
-    if codex_endpoint_is_healthy(&endpoint) {
-        return Ok(external_launch(endpoint));
-    }
 
     let executable = resolve_codex_executable_unlocked()?;
     let (config_args, env) = runtime_mcp_config(request)?;
@@ -89,13 +83,6 @@ pub fn codex_catalog_endpoint() -> Result<String, DaemonError> {
 }
 
 fn codex_catalog_endpoint_unlocked() -> Result<String, DaemonError> {
-    if let Some(endpoint) = env::var_os(CODEX_ENDPOINT_OVERRIDE) {
-        let endpoint = endpoint.to_string_lossy().trim().to_string();
-        if !endpoint.is_empty() {
-            return Ok(endpoint);
-        }
-    }
-
     let port = resolve_codex_port()?;
     Ok(format!("ws://127.0.0.1:{port}"))
 }
@@ -193,19 +180,6 @@ pub fn logout_codex() -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn external_launch(endpoint: String) -> ProviderLaunchResult {
-    ProviderLaunchResult {
-        endpoint_mode: AgentEndpointMode::External,
-        process_label: "codex:endpoint".to_string(),
-        pty_target: None,
-        pty_program: None,
-        pty_args: Vec::new(),
-        pty_env: BTreeMap::new(),
-        working_directory: None,
-        structured_endpoint: Some(endpoint),
-    }
-}
-
 fn runtime_mcp_config(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<(Vec<String>, BTreeMap<String, String>), DaemonError> {
@@ -219,8 +193,6 @@ fn runtime_mcp_config(
     let mut args = vec![
         "-c".to_string(),
         format!("model_catalog_json={:?}", model_catalog_path),
-        "-c".to_string(),
-        "features.shell_tool=false".to_string(),
         "-c".to_string(),
         "features.apply_patch_freeform=false".to_string(),
         "-c".to_string(),
@@ -381,6 +353,20 @@ fn resolve_codex_port() -> Result<u16, DaemonError> {
         })
 }
 
+fn reserve_unused_port() -> Result<u16, DaemonError> {
+    TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "codex_reserve_port",
+            message: error.to_string(),
+        })?
+        .local_addr()
+        .map(|address| address.port())
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "codex_reserve_port",
+            message: error.to_string(),
+        })
+}
+
 fn resolve_candidate(candidate: PathBuf, treat_as_literal_path: bool) -> Option<PathBuf> {
     if treat_as_literal_path || candidate.components().count() > 1 {
         return candidate.exists().then_some(candidate);
@@ -516,10 +502,6 @@ mod tests {
         assert!(launch
             .pty_args
             .iter()
-            .any(|arg| arg == "features.shell_tool=false"));
-        assert!(launch
-            .pty_args
-            .iter()
             .any(|arg| arg == "features.apply_patch_freeform=false"));
         assert!(launch
             .pty_args
@@ -590,10 +572,10 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
-        assert_eq!(
-            launch.structured_endpoint.as_deref(),
-            Some("ws://127.0.0.1:43144")
-        );
+        assert!(launch
+            .structured_endpoint
+            .as_deref()
+            .is_some_and(|endpoint| endpoint.starts_with("ws://127.0.0.1:")));
     }
 
     #[test]

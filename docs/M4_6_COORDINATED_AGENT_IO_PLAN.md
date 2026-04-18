@@ -208,11 +208,11 @@ Current enforcement mechanisms:
 
 Detection is still useful for diagnostics, but it is not a substitute for blocking direct writes by Arroba-managed agents.
 
-## M4.6.1 macOS Workspace Write Fence Plan
+## M4.6.1 macOS Workspace Write Fence
 
-Status: planned. Linux and Windows are explicitly deferred to later versions.
+Status: implemented for Arroba-launched local provider runs on macOS. Linux and Windows are explicitly deferred to later versions.
 
-The next managed-I/O hardening step moves the direct-write guarantee from provider-specific configuration to an Arroba-owned launch boundary on macOS. The product invariant remains provider-neutral:
+The managed-I/O hardening step moves the direct-write guarantee from provider-specific configuration to an Arroba-owned launch boundary on macOS. The product invariant remains provider-neutral:
 
 - Arroba-managed provider processes may read the real workspace and run native read/inspection tools.
 - Arroba-managed provider processes must not write, delete, rename, chmod, chflags, symlink, or create files under the coordinated worktree.
@@ -220,7 +220,7 @@ The next managed-I/O hardening step moves the direct-write guarantee from provid
 - Provider-native write/edit/patch tools remain disabled or hidden where the provider supports that, but those controls are defense in depth rather than the root guarantee.
 - Native shell can be allowed only when the Arroba workspace write fence is active for that provider process.
 
-The macOS implementation should introduce a provider-neutral `WorkspaceWriteFence` launch layer. For v1 it should use the macOS sandbox facility available through `sandbox-exec`/Seatbelt profiles:
+The macOS implementation uses a provider-neutral `WorkspaceWriteFence` launch layer. For v1 it uses the macOS sandbox facility available through `sandbox-exec`/Seatbelt profiles:
 
 ```text
 (version 1)
@@ -234,20 +234,25 @@ Arroba-owned launch behavior:
 
 - All managed-I/O provider runs that Arroba launches on macOS go through `WorkspaceWriteFence`.
 - Codex still uses its provider-native read-only sandbox, disabled native apply-patch/file-change tools, and native approval denial as a second layer.
-- OpenCode keeps native edit/write/apply-patch/task disabled, but `bash` can be re-enabled after the process-level write fence is active and drilled.
+- OpenCode keeps native edit/write/apply-patch/task disabled, but `bash` is enabled only when the process-level write fence is active.
 - Provider runs without an active write fence cannot enable native shell for managed-I/O sessions unless the provider has an equivalent native sandbox that Arroba has explicitly accepted as a temporary compatibility path.
 - External provider endpoints are removed as a managed-runtime mode. Arroba can only guarantee managed I/O for provider processes it launches and fences.
 
-Planned implementation slices:
+Implemented slices:
 
-1. Add a provider-neutral launch wrapper that can transform a `ProviderLaunchResult` into a fenced launch on macOS.
-2. Add a macOS sandbox profile generator with canonical-path validation and profile-file lifecycle cleanup.
-3. Thread the coordinated worktree root into provider launch planning so the fence knows the exact path to deny.
-4. Apply the fence to every Arroba-launched managed-I/O provider process, including Codex and OpenCode.
-5. Remove external OpenCode endpoint reuse/override for managed provider runs and document the replacement behavior.
-6. Re-enable OpenCode `bash` only when the fence is active; keep OpenCode native edit/write/apply-patch/task denied.
-7. Keep Codex provider-native sandboxing enabled even after the Arroba fence is active.
-8. Add telemetry/log fields that report fence support, fence backend, canonical worktree path hash, and whether native shell was enabled because of the fence. Logs must not expose auth tokens or full secret-bearing environment values.
+1. Added a provider-neutral launch wrapper that transforms a managed-I/O `ProviderLaunchResult` into a fenced launch on macOS.
+2. Added a macOS sandbox profile generator with canonical-path validation.
+3. Threaded the coordinated worktree root into provider launch planning so the fence denies the exact canonical path.
+4. Applied the fence to Arroba-launched Codex and OpenCode managed-I/O provider processes.
+5. Removed external Codex/OpenCode endpoint override/reuse from managed provider launch planning.
+6. Re-enabled OpenCode `bash` only when the fence is active; OpenCode native edit/write/apply-patch/task stay denied.
+7. Kept Codex provider-native sandboxing enabled after the Arroba fence is active.
+
+Remaining follow-up slices:
+
+1. Add telemetry/log fields that report fence support, fence backend, canonical worktree path hash, and whether native shell was enabled because of the fence. Logs must not expose auth tokens or full secret-bearing environment values.
+2. Add profile lifecycle cleanup if the profile cache needs pruning beyond normal temp-directory cleanup.
+3. Design Linux and Windows write-fence backends.
 
 Required macOS live drills:
 

@@ -10,6 +10,7 @@ mod registry;
 mod run_actor;
 mod service;
 mod types;
+mod workspace_write_fence;
 
 pub use codex::{
     codex_catalog_endpoint, ensure_codex_catalog_endpoint, logout_codex, plan_codex_launch,
@@ -21,6 +22,7 @@ pub use codex_client::{
 };
 pub use codex_runtime::CodexRuntimeState;
 pub(crate) use managed_io_policy::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH;
+pub(crate) use opencode::opencode_mcp_config;
 pub use opencode::{
     ensure_opencode_catalog_endpoint, opencode_catalog_endpoint, plan_opencode_launch,
     resolve_opencode_executable,
@@ -45,3 +47,4 @@ pub use types::{
     ProviderPromptSignalBatch, ProviderResumeState, ProviderRunState, ProviderWriteAccessMode,
     RuntimeMcpBinding, RuntimeProviderRun,
 };
+pub(crate) use workspace_write_fence::{apply_workspace_write_fence, workspace_write_fence_active};

@@ -5,7 +5,9 @@ use crate::error::DaemonError;
 use crate::session::PromptAttachment;
 use rand::distributions::{Alphanumeric, DistString};
 
-use super::{OpenCodeClient, ProviderResumeState, RuntimeProviderRun};
+use super::{
+    workspace_write_fence_active, OpenCodeClient, ProviderResumeState, RuntimeProviderRun,
+};
 use crate::provider::opencode_runtime::OpenCodeRuntimeState;
 
 const OPENCODE_EVENT_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -57,12 +59,11 @@ pub(crate) fn initialize_opencode_runtime(
 
     let selection = resolve_initial_selection(run, &client)?;
 
+    let allow_native_bash = workspace_write_fence_active(run);
     let managed_io_permission = run
         .requires_managed_io()
-        .then(opencode_managed_io_permission_rules);
-    let resumable_session_id = (!run.requires_managed_io())
-        .then(|| run.resume_state().opencode_session_id().map(str::to_string))
-        .flatten();
+        .then(|| opencode_managed_io_permission_rules(allow_native_bash));
+    let resumable_session_id = run.resume_state().opencode_session_id().map(str::to_string);
     let session_id = match resumable_session_id {
         Some(session_id) if client.snapshot(&session_id).is_ok() => {
             crate::logging::info_with_fields(
@@ -135,24 +136,30 @@ pub(crate) fn initialize_opencode_runtime(
     })
 }
 
-fn opencode_managed_io_permission_rules() -> serde_json::Value {
-    serde_json::json!([
-        {
+fn opencode_managed_io_permission_rules(allow_native_bash: bool) -> serde_json::Value {
+    let mut rules = vec![
+        serde_json::json!({
             "permission": "edit",
             "pattern": "*",
             "action": "deny"
-        },
-        {
-            "permission": "bash",
-            "pattern": "*",
-            "action": "deny"
-        },
-        {
+        }),
+        serde_json::json!({
             "permission": "task",
             "pattern": "*",
             "action": "deny"
-        }
-    ])
+        }),
+    ];
+    if !allow_native_bash {
+        rules.insert(
+            1,
+            serde_json::json!({
+                "permission": "bash",
+                "pattern": "*",
+                "action": "deny"
+            }),
+        );
+    }
+    serde_json::Value::Array(rules)
 }
 
 pub(super) fn sync_opencode_run_selection_for_session(
@@ -196,7 +203,7 @@ mod tests {
     #[test]
     fn managed_io_permission_rules_block_direct_writes() {
         assert_eq!(
-            opencode_managed_io_permission_rules(),
+            opencode_managed_io_permission_rules(false),
             json!([
                 {
                     "permission": "edit",
@@ -205,6 +212,25 @@ mod tests {
                 },
                 {
                     "permission": "bash",
+                    "pattern": "*",
+                    "action": "deny"
+                },
+                {
+                    "permission": "task",
+                    "pattern": "*",
+                    "action": "deny"
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn managed_io_permission_rules_allow_bash_when_workspace_is_fenced() {
+        assert_eq!(
+            opencode_managed_io_permission_rules(true),
+            json!([
+                {
+                    "permission": "edit",
                     "pattern": "*",
                     "action": "deny"
                 },
@@ -253,6 +279,7 @@ pub(super) fn submit_opencode_prompt(
         Some(run.model()),
         run.variant(),
         run.requires_managed_io(),
+        workspace_write_fence_active(run),
     )?;
     state.note_prompt_submitted(message_id);
     Ok(())

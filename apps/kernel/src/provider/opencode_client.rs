@@ -467,6 +467,7 @@ impl OpenCodeClient {
         model: Option<&str>,
         variant: Option<&str>,
         disable_native_writes: bool,
+        allow_native_bash: bool,
     ) -> Result<(), DaemonError> {
         let mut parts = Vec::new();
         if !prompt.is_empty() {
@@ -497,14 +498,17 @@ impl OpenCodeClient {
             body["variant"] = json!(variant);
         }
         if disable_native_writes {
-            body["tools"] = json!({
-                "edit": false,
-                "write": false,
-                "apply_patch": false,
-                "multiedit": false,
-                "bash": false,
-                "task": false
-            });
+            let mut tools = serde_json::Map::from_iter([
+                ("edit".to_string(), json!(false)),
+                ("write".to_string(), json!(false)),
+                ("apply_patch".to_string(), json!(false)),
+                ("multiedit".to_string(), json!(false)),
+                ("task".to_string(), json!(false)),
+            ]);
+            if !allow_native_bash {
+                tools.insert("bash".to_string(), json!(false));
+            }
+            body["tools"] = serde_json::Value::Object(tools);
         }
 
         self.send_no_content_request(
@@ -647,6 +651,20 @@ impl OpenCodeClient {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    pub fn add_mcp_server(&self, name: &str, config: serde_json::Value) -> Result<(), DaemonError> {
+        let _: serde_json::Value = self.send_json_request(
+            "POST",
+            "/mcp",
+            Some(&serde_json::json!({ "name": name, "config": config })),
+        )?;
+        Ok(())
+    }
+
+    pub fn connect_mcp_server(&self, name: &str) -> Result<(), DaemonError> {
+        let _: bool = self.send_json_request("POST", &format!("/mcp/{name}/connect"), None)?;
+        Ok(())
     }
 
     fn health(&self) -> Result<(), DaemonError> {

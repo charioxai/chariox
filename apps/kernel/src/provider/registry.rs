@@ -1,6 +1,6 @@
 use super::{
-    plan_codex_launch, plan_opencode_launch, AgentEndpointMode, LaunchProviderRequest,
-    ProviderLaunchResult, RuntimeProviderRun,
+    apply_workspace_write_fence, plan_codex_launch, plan_opencode_launch, AgentEndpointMode,
+    LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
 };
 use crate::error::DaemonError;
 
@@ -211,11 +211,9 @@ impl AgentEndpointAdapter for OpenCodeAdapter {
     ) -> Result<ProviderLaunchResult, DaemonError> {
         let mut launch = plan_opencode_launch(Some(request))?;
         launch.process_label = format!("opencode:{}:{}", request.provider, request.model);
-        if launch.endpoint_mode == AgentEndpointMode::Managed {
-            launch.pty_target = Some(format!("opencode-pty:{}", request.session_id));
-        }
+        launch.pty_target = None;
         launch.working_directory = request.working_directory.clone();
-        Ok(launch)
+        apply_workspace_write_fence(launch, request)
     }
 
     fn park(&self, _run: &RuntimeProviderRun) {}
@@ -249,11 +247,9 @@ impl AgentEndpointAdapter for CodexAdapter {
     ) -> Result<ProviderLaunchResult, DaemonError> {
         let mut launch = plan_codex_launch(Some(request))?;
         launch.process_label = format!("codex:{}:{}", request.provider, request.model);
-        if launch.endpoint_mode == AgentEndpointMode::Managed {
-            launch.pty_target = Some(format!("codex-pty:{}", request.session_id));
-        }
+        launch.pty_target = None;
         launch.working_directory = request.working_directory.clone();
-        Ok(launch)
+        apply_workspace_write_fence(launch, request)
     }
 
     fn park(&self, _run: &RuntimeProviderRun) {}
@@ -356,7 +352,6 @@ mod tests {
         let port = launch_result.pty_args[4]
             .parse::<u16>()
             .expect("port argument should be numeric");
-        assert!(port >= 43112, "port should be >= 43112, got {}", port);
         let endpoint = format!("http://127.0.0.1:{port}");
         assert_eq!(
             launch_result.structured_endpoint.as_deref(),

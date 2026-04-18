@@ -819,7 +819,6 @@ fn codex_permission_policy(write_access_mode: ProviderWriteAccessMode) -> CodexP
         },
         ProviderWriteAccessMode::ManagedIoRequired => {
             let mut config_overrides = BTreeMap::new();
-            config_overrides.insert("features.shell_tool".to_string(), json!(false));
             config_overrides.insert("include_apply_patch_tool".to_string(), json!(false));
             config_overrides.insert("features.apply_patch_freeform".to_string(), json!(false));
             CodexPermissionPolicy {
@@ -1249,10 +1248,6 @@ mod tests {
             })
         );
         assert_eq!(
-            policy.config_overrides.get("features.shell_tool"),
-            Some(&json!(false))
-        );
-        assert_eq!(
             policy.config_overrides.get("include_apply_patch_tool"),
             Some(&json!(false))
         );
@@ -1287,7 +1282,7 @@ mod tests {
             overrides.get("mcp_servers.arroba.tool_timeout_sec"),
             Some(&json!(15))
         );
-        assert_eq!(overrides.get("features.shell_tool"), Some(&json!(false)));
+        assert_eq!(overrides.get("features.shell_tool"), None);
     }
 
     #[test]
