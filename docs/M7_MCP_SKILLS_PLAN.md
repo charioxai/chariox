@@ -5,7 +5,7 @@ M7 adds Arroba-owned MCP and skill management. The design intentionally follows 
 
 ## Implementation Status
 
-Updated: 2026-04-17
+Updated: 2026-04-18
 
 Landed:
 
@@ -19,7 +19,8 @@ Landed:
 - M7.11 partial: agent model now stores `skill_grants`; grant/revoke IPC validates installed skills before mutating the agent; interactive grant inspection is landed.
 - M7.12 partial: local provider prompts receive a short granted-skills summary for the target agent only. Stored prompt history remains the original user prompt.
 - M7.13 partial: local provider prompts inject the full `SKILL.md` body for granted skills that are explicitly selected, mentioned, or requested.
-- M7.15 partial: runtime MCP exposes `list_capabilities` and `request_capability` control-plane tools for Arroba-managed MCPs and skills. V1 auto-grants valid requests to the current agent and reports when the grant becomes effective. Skill requests now return the full `SKILL.md` body by default, so requested skills can be used in the same turn.
+- M7.15 partial: runtime MCP exposes `list_capabilities` and `request_capability` control-plane tools for Arroba-managed MCPs and skills. V1 auto-grants valid requests to the current agent and reports when the grant becomes effective. Skill requests now return the full `SKILL.md` body by default, so requested skills can be used in the same turn. Remote worker agents now forward capability discovery/request calls to the home kernel; skill requests return a home-packaged skill directory and materialize it on the worker under `.arroba/remote/skills/<home-kernel-id>/<skill>/<version>/`.
+- M7.18 partial: remote skill packaging/materialization is landed for same-turn `request_capability` use, preserving `SKILL.md`, assets, scripts, and references while skipping provider/cache/build directories and symlinks.
 
 Still open in M7:
 
@@ -28,7 +29,8 @@ Still open in M7:
 - Provider MCP import from Claude-owned configs, plus regular non-interactive Codex/OpenCode import aliases.
 - Provider skill import from Claude-owned skill locations, plus regular non-interactive Codex/OpenCode import aliases.
 - Skill MCP dependency validation.
-- Remote-machine MCP and skill materialization/rendering.
+- Remote-machine MCP materialization/rendering.
+- Remote prompt-time skill materialization for pre-granted skills, so remote agents with existing grants can use local skill assets before calling `request_capability`.
 - Local and remote drills.
 - MCP provider hot reload. Codex and OpenCode both expose provider-side reload mechanisms, but v1 keeps newly requested MCPs as next-provider-launch because the available reload paths are provider/server scoped rather than safely Arroba agent-scoped.
 
@@ -331,7 +333,7 @@ For v1:
 
 ## M7.15 Runtime MCP Discovery/Request Control Plane
 
-Status: partial. Local agent discovery and auto-grant requests are landed through the Arroba runtime MCP. Same-turn skill request use is landed by returning the requested `SKILL.md` body. Remote behavior remains open.
+Status: partial. Local agent discovery and auto-grant requests are landed through the Arroba runtime MCP. Same-turn skill request use is landed by returning the requested `SKILL.md` body. Remote worker agents forward discovery/request calls to the home kernel; skill requests transfer and materialize the complete skill directory on the worker.
 
 Extend Arroba's runtime MCP with discovery/request tools:
 
@@ -346,6 +348,7 @@ Effectiveness semantics:
 
 - MCP requests update the agent grant immediately, but provider-native MCP exposure is rendered at provider launch, so the agent must restart/relaunch its provider run before using a newly granted MCP.
 - Skill requests update the agent grant immediately and return the full `SKILL.md` body by default. The current turn can follow that body immediately, and later turns also receive normal prompt injection for granted/selected skills.
+- Remote skill requests are authorized against the home agent/session and package the home skill directory for the worker. The worker writes the package atomically under `.arroba/remote/skills/<home-kernel-id>/<skill>/<version>/`, verifies file hashes, and adds `materialized_root`, `version_hash`, and file paths to the tool result.
 
 Later this plugs into the permissions model instead of always granting.
 
@@ -363,7 +366,7 @@ A workflow node using an agent receives that agent's MCPs and skills. If a workf
 
 ## M7.17 Remote Machine MCP Support
 
-Status: open.
+Status: partial for same-turn request materialization; pre-granted prompt-time materialization remains open.
 
 Add remote-machine handling for MCPs.
 
@@ -387,13 +390,23 @@ Add remote-machine handling for skills.
 
 Initial placeholder:
 
-- make Arroba-owned skills available to remote worker kernels
+- make Arroba-owned skills available to remote worker kernels through home-kernel packaging
 - preserve skill directory layout, including `SKILL.md`, assets, scripts, and references
 - avoid provider-scanned paths unless explicitly importing provider-native skills
 - inject granted skill summaries/full bodies into the remote agent prompt from Arroba-controlled skill copies
 - validate script/reference paths resolve on the worker if a skill needs local files
 
-Design details are deferred until local MCP/skill support is stable.
+Current implementation:
+
+- packages whole skill directories from the home registry when a remote worker agent requests a skill through `request_capability`
+- skips symlinks and heavy/provider/cache directories such as `.git`, `node_modules`, `.venv`, `target`, `dist`, and `build`
+- verifies per-file SHA-256 and package version hashes during worker materialization
+- keeps materialized copies under `.arroba/remote/skills/...`, not provider-scanned skill roots
+
+Open:
+
+- materialize pre-granted remote skills before prompt dispatch so remote prompt injection can reference worker-local assets without requiring an explicit request first
+- decide whether skill scripts are allowed to run from materialized paths and how to report missing worker-side runtime dependencies
 
 ## M7.19 Local Provider Drills
 

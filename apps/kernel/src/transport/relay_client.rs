@@ -758,6 +758,27 @@ async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::ForwardCapabilityRuntimeTool {
+            context,
+            tool_name,
+            arguments,
+        } => {
+            let handled = router
+                .dispatch_forwarded_capability_runtime_tool_call(context, tool_name, arguments)
+                .await;
+            match handled {
+                Ok((result, skill_package)) => RelayPeerResponse::CapabilityRuntimeToolHandled {
+                    result,
+                    skill_package,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
     };
     let plaintext = match serde_json::to_vec(&response) {
         Ok(bytes) => bytes,

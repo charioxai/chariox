@@ -61,6 +61,16 @@ impl KernelRuntimeState {
                 crate::transport::runtime_tools::LIST_CAPABILITIES_TOOL
                     | crate::transport::runtime_tools::REQUEST_CAPABILITY_TOOL
             ) {
+                if let Some(result) = self
+                    .try_dispatch_remote_capability_runtime_tool_call(
+                        &provider_runs[0],
+                        canonical_tool_name,
+                        arguments.clone(),
+                    )
+                    .await?
+                {
+                    return Ok(result);
+                }
                 return self
                     .dispatch_capability_runtime_tool_call(
                         &provider_runs[0],
@@ -186,6 +196,132 @@ impl KernelRuntimeState {
         }
     }
 
+    async fn try_dispatch_remote_capability_runtime_tool_call(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
+        let workspace_context = self
+            .managed_io_workspace_for_provider_run(provider_run)
+            .await?;
+        let remote_context = self
+            .with_app_side_effect(|app| {
+                crate::app::RemoteLeaseRuntime::new(app).leased_managed_io_context_for_provider_run(
+                    provider_run.id(),
+                    workspace_context.identity.clone(),
+                )
+            })
+            .await;
+        let Some(remote_context) = remote_context else {
+            return Ok(None);
+        };
+        if !workspace_context.valid {
+            return Ok(Some(managed_io_workspace_identity_rejected(
+                &workspace_context,
+            )));
+        }
+        let response = self
+            .with_app_side_effect(|app| {
+                app.block_on_relay_future(
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                        app.config(),
+                        ClientTarget {
+                            daemon_id: Some(remote_context.home_kernel_id.clone()),
+                            daemon_alias: None,
+                        },
+                        RelayPeerRequest::ForwardCapabilityRuntimeTool {
+                            context: remote_context.clone(),
+                            tool_name: tool_name.to_string(),
+                            arguments: arguments.clone(),
+                        },
+                    ),
+                )
+            })
+            .await?;
+        let (mut result, skill_package) = match response {
+            RelayPeerResponse::CapabilityRuntimeToolHandled {
+                result,
+                skill_package,
+            } => (result, skill_package),
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "forward leased capability runtime tool",
+                    message: format!("unexpected forwarded capability response: {other:?}"),
+                });
+            }
+        };
+        if result.ok {
+            if let Some(skill_package) = skill_package {
+                let materialized_root = crate::skill::materialize_skill_package(
+                    &workspace_context
+                        .root
+                        .join(".arroba")
+                        .join("remote")
+                        .join("skills")
+                        .join(&remote_context.home_kernel_id),
+                    &skill_package,
+                )?;
+                if let Some(skill) = result
+                    .payload
+                    .get_mut("skill")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    skill.insert(
+                        "path".to_string(),
+                        serde_json::Value::String(
+                            materialized_root
+                                .join("SKILL.md")
+                                .to_string_lossy()
+                                .to_string(),
+                        ),
+                    );
+                    skill.insert(
+                        "materialized_root".to_string(),
+                        serde_json::Value::String(materialized_root.to_string_lossy().to_string()),
+                    );
+                    skill.insert(
+                        "version_hash".to_string(),
+                        serde_json::Value::String(skill_package.version_hash),
+                    );
+                    skill.insert(
+                        "files".to_string(),
+                        serde_json::Value::Array(
+                            skill_package
+                                .files
+                                .into_iter()
+                                .map(|file| serde_json::Value::String(file.path))
+                                .collect(),
+                        ),
+                    );
+                }
+            }
+        }
+        Ok(Some(result))
+    }
+
+    pub(crate) async fn dispatch_forwarded_capability_runtime_tool_call(
+        &self,
+        context: crate::transport::relay_peer::RemoteManagedIoContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    ) -> Result<
+        (
+            crate::transport::runtime_tools::RuntimeToolResult,
+            Option<crate::skill::ArrobaSkillPackage>,
+        ),
+        DaemonError,
+    > {
+        self.dispatch_capability_runtime_tool_call_for_agent(
+            &context.home_session_id,
+            &context.home_agent_id,
+            &tool_name,
+            arguments,
+            true,
+        )
+        .await
+    }
+
     async fn dispatch_capability_runtime_tool_call(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
@@ -201,8 +337,34 @@ impl KernelRuntimeState {
             });
         };
         let session_id = provider_run.session_id().to_string();
-        let session = self.owned.session_store.get_session(&session_id)?;
-        let agent = self.owned.agent_store.get_agent(&agent_id)?;
+        let (result, _) = self
+            .dispatch_capability_runtime_tool_call_for_agent(
+                &session_id,
+                &agent_id,
+                tool_name,
+                arguments,
+                false,
+            )
+            .await?;
+        Ok(result)
+    }
+
+    async fn dispatch_capability_runtime_tool_call_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        include_skill_package: bool,
+    ) -> Result<
+        (
+            crate::transport::runtime_tools::RuntimeToolResult,
+            Option<crate::skill::ArrobaSkillPackage>,
+        ),
+        DaemonError,
+    > {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
         let workspace = std::path::PathBuf::from(session.workspace_id());
         let mut mcp_roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(&workspace)];
         if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
@@ -226,12 +388,15 @@ impl KernelRuntimeState {
                 })?;
                 let kind = args.kind.as_deref().unwrap_or("all");
                 if !matches!(kind, "all" | "mcp" | "skill") {
-                    return Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                        ok: false,
-                        payload: serde_json::json!({
-                            "error": "kind must be one of: all, mcp, skill"
-                        }),
-                    });
+                    return Ok((
+                        crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: false,
+                            payload: serde_json::json!({
+                                "error": "kind must be one of: all, mcp, skill"
+                            }),
+                        },
+                        None,
+                    ));
                 }
                 let mcps = if matches!(kind, "all" | "mcp") {
                     mcp_registry
@@ -271,16 +436,19 @@ impl KernelRuntimeState {
                 } else {
                     Vec::new()
                 };
-                Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "agent_ref": agent.agent_ref(),
-                        "capabilities": {
-                            "mcps": mcps,
-                            "skills": skills
-                        }
-                    }),
-                })
+                Ok((
+                    crate::transport::runtime_tools::RuntimeToolResult {
+                        ok: true,
+                        payload: serde_json::json!({
+                            "agent_ref": agent.agent_ref(),
+                            "capabilities": {
+                                "mcps": mcps,
+                                "skills": skills
+                            }
+                        }),
+                    },
+                    None,
+                ))
             }
             crate::transport::runtime_tools::REQUEST_CAPABILITY_TOOL => {
                 let args = serde_json::from_value::<
@@ -291,17 +459,21 @@ impl KernelRuntimeState {
                     message: format!("invalid tool arguments: {error}"),
                 })?;
                 let mut skill_payload = serde_json::Value::Null;
+                let mut skill_package = None;
                 let (agent, effective_when, requires_provider_restart) = match args.kind.as_str() {
                     "mcp" => {
                         if mcp_registry.get(&args.name)?.is_none() {
-                            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                                ok: false,
-                                payload: serde_json::json!({
-                                    "error": format!("MCP `{}` is not installed", args.name),
-                                    "kind": "mcp",
-                                    "name": args.name,
-                                }),
-                            });
+                            return Ok((
+                                crate::transport::runtime_tools::RuntimeToolResult {
+                                    ok: false,
+                                    payload: serde_json::json!({
+                                        "error": format!("MCP `{}` is not installed", args.name),
+                                        "kind": "mcp",
+                                        "name": args.name,
+                                    }),
+                                },
+                                None,
+                            ));
                         }
                         (
                             self.owned.grant_agent_mcp(agent.id(), args.name.clone())?,
@@ -311,15 +483,21 @@ impl KernelRuntimeState {
                     }
                     "skill" => {
                         let Some(skill) = skill_registry.get(&args.name)? else {
-                            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                                ok: false,
-                                payload: serde_json::json!({
-                                    "error": format!("skill `{}` is not installed", args.name),
-                                    "kind": "skill",
-                                    "name": args.name,
-                                }),
-                            });
+                            return Ok((
+                                crate::transport::runtime_tools::RuntimeToolResult {
+                                    ok: false,
+                                    payload: serde_json::json!({
+                                        "error": format!("skill `{}` is not installed", args.name),
+                                        "kind": "skill",
+                                        "name": args.name,
+                                    }),
+                                },
+                                None,
+                            ));
                         };
+                        if include_skill_package {
+                            skill_package = skill_registry.package(&args.name)?;
+                        }
                         if args.return_body.unwrap_or(true) {
                             let body = std::fs::read_to_string(&skill.path).map_err(|error| {
                                 DaemonError::LocalTransport {
@@ -346,12 +524,15 @@ impl KernelRuntimeState {
                         )
                     }
                     _ => {
-                        return Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                            ok: false,
-                            payload: serde_json::json!({
-                                "error": "kind must be one of: mcp, skill"
-                            }),
-                        });
+                        return Ok((
+                            crate::transport::runtime_tools::RuntimeToolResult {
+                                ok: false,
+                                payload: serde_json::json!({
+                                    "error": "kind must be one of: mcp, skill"
+                                }),
+                            },
+                            None,
+                        ));
                     }
                 };
                 let mut payload = serde_json::json!({
@@ -370,7 +551,10 @@ impl KernelRuntimeState {
                 if !skill_payload.is_null() {
                     payload["skill"] = skill_payload;
                 }
-                Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
+                Ok((
+                    crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload },
+                    skill_package,
+                ))
             }
             _ => Err(DaemonError::LocalTransport {
                 operation: "dispatch_capability_runtime_tool_call",

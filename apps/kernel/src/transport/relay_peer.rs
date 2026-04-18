@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
 use crate::io::WorkspaceIdentity;
 use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutcome};
+use crate::skill::ArrobaSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +88,11 @@ pub enum RelayPeerRequest {
         arguments: serde_json::Value,
         artifact_states: Vec<RemoteManagedIoArtifactState>,
     },
+    ForwardCapabilityRuntimeTool {
+        context: RemoteManagedIoContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +131,11 @@ pub enum RelayPeerResponse {
     ManagedIoRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
         final_artifact_states: Vec<RemoteManagedIoArtifactState>,
+    },
+    CapabilityRuntimeToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        skill_package: Option<ArrobaSkillPackage>,
     },
 }
 
