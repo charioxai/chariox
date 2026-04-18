@@ -252,6 +252,7 @@ impl CodexClient {
         });
         let config_overrides = self.thread_config_overrides(&policy);
         if !config_overrides.is_empty() {
+            self.log_thread_config_overrides("thread/start", &config_overrides);
             params["config"] = json!(config_overrides);
         }
         if let Some(cwd) = cwd {
@@ -282,6 +283,7 @@ impl CodexClient {
         });
         let config_overrides = self.thread_config_overrides(&policy);
         if !config_overrides.is_empty() {
+            self.log_thread_config_overrides("thread/resume", &config_overrides);
             params["config"] = json!(config_overrides);
         }
         if let Some(cwd) = cwd {
@@ -691,6 +693,29 @@ impl CodexClient {
             append_runtime_mcp_overrides(&mut overrides, server_url, auth_token);
         }
         overrides
+    }
+
+    fn log_thread_config_overrides(
+        &self,
+        operation: &'static str,
+        overrides: &BTreeMap<String, Value>,
+    ) {
+        crate::logging::debug_with_fields(
+            "daemon.provider.codex",
+            "sending codex thread config overrides",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "operation": operation,
+                "runtime_mcp_binding_present": self.runtime_mcp_server_url.is_some()
+                    && self.runtime_mcp_auth_token.is_some(),
+                "granted_mcp_servers": self
+                    .mcp_servers
+                    .iter()
+                    .map(|server| server.name.as_str())
+                    .collect::<Vec<_>>(),
+                "config_override_keys": overrides.keys().cloned().collect::<Vec<_>>(),
+            }),
+        );
     }
 
     fn protocol_error(&self, operation: &'static str, message: String) -> DaemonError {

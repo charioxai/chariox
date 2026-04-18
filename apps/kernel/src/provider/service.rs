@@ -396,6 +396,30 @@ impl ProviderProcessService {
 
         let run_id = self.next_run_id();
         let launch_result = adapter.connect(&request)?;
+        crate::logging::info_with_fields(
+            "daemon.provider",
+            "provider launch planned",
+            serde_json::json!({
+                "provider_run_id": run_id,
+                "session_id": request.session_id.as_str(),
+                "agent_id": request.agent_id.as_deref(),
+                "adapter_key": request.adapter_key.as_str(),
+                "provider": request.provider.as_str(),
+                "model": request.model.as_str(),
+                "variant": request.variant.as_deref(),
+                "requires_managed_io": request.requires_managed_io(),
+                "runtime_mcp_binding_present": request.runtime_mcp_binding.is_some(),
+                "granted_mcp_servers": request
+                    .mcp_servers
+                    .iter()
+                    .map(|server| server.name.as_str())
+                    .collect::<Vec<_>>(),
+                "endpoint_mode": launch_result.endpoint_mode.to_string(),
+                "process_label": launch_result.process_label.as_str(),
+                "structured_endpoint": launch_result.structured_endpoint.as_deref(),
+                "pty_env_keys": launch_result.pty_env.keys().cloned().collect::<Vec<_>>(),
+            }),
+        );
         let run = RuntimeProviderRun::new(run_id.clone(), &request, launch_result);
 
         self.runs.insert(run_id, run.clone());
