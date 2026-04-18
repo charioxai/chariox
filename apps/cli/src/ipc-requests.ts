@@ -222,10 +222,11 @@ export function listProviderProcessesRequest(provider?: string | null) {
   }
 }
 
-export function teardownProviderProcessesRequest(provider?: string | null) {
+export function teardownProviderProcessesRequest(provider?: string | null, force = false) {
   return {
     TeardownProviderProcesses: {
       provider: provider ?? null,
+      force,
     },
   }
 }

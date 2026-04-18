@@ -259,6 +259,8 @@ pub struct ListProviderProcessesRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeardownProviderProcessesRequest {
     pub provider: Option<String>,
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

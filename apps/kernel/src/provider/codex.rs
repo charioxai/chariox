@@ -225,6 +225,8 @@ fn runtime_mcp_config(
         "features.apply_patch_freeform=false".to_string(),
         "-c".to_string(),
         "include_apply_patch_tool=false".to_string(),
+        "-c".to_string(),
+        "approval_policy=\"never\"".to_string(),
     ];
     let mut env = BTreeMap::new();
     for server in &request.mcp_servers {
@@ -523,6 +525,10 @@ mod tests {
             .pty_args
             .iter()
             .any(|arg| arg == "include_apply_patch_tool=false"));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "approval_policy=\"never\""));
     }
 
     #[test]

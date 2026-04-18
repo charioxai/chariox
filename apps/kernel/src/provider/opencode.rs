@@ -234,13 +234,16 @@ fn opencode_mcp_config(server: &ArrobaMcpServerConfig) -> serde_json::Value {
             let command_parts = std::iter::once(command.clone())
                 .chain(args.iter().cloned())
                 .collect::<Vec<_>>();
-            serde_json::json!({
+            let mut config = serde_json::json!({
                 "type": "local",
                 "command": command_parts,
                 "enabled": server.enabled,
                 "environment": env,
-                "cwd": cwd,
-            })
+            });
+            if let Some(cwd) = cwd {
+                config["cwd"] = serde_json::Value::String(cwd.display().to_string());
+            }
+            config
         }
         ArrobaMcpTransportConfig::StreamableHttp {
             url,

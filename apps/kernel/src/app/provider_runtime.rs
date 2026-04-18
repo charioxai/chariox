@@ -157,10 +157,18 @@ impl<'a> ProviderProcessTracker<'a> {
     pub(crate) fn teardown_safe_processes(
         &mut self,
         provider: Option<&str>,
+        force: bool,
     ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
         let safe_processes = Self::list(self.app, provider)?
             .into_iter()
-            .filter(|process| process.teardown_safe)
+            .filter(|process| {
+                process.teardown_safe
+                    || (force
+                        && !process.teardown_blockers.iter().any(|blocker| {
+                            blocker == "active prompt"
+                                || blocker.starts_with("active workflow runs:")
+                        }))
+            })
             .collect::<Vec<_>>();
         for process in &safe_processes {
             let run_ids: Vec<String> = self
@@ -1084,8 +1092,9 @@ impl DaemonApp {
     pub fn teardown_provider_processes(
         &mut self,
         provider: Option<&str>,
+        force: bool,
     ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
-        ProviderProcessTracker::new(self).teardown_safe_processes(provider)
+        ProviderProcessTracker::new(self).teardown_safe_processes(provider, force)
     }
 
     pub(crate) fn sync_active_provider_run_for_agent(
@@ -1441,7 +1450,7 @@ mod tests {
         );
 
         let torn_down = app
-            .teardown_provider_processes(None)
+            .teardown_provider_processes(None, false)
             .expect("safe teardown should succeed");
         assert_eq!(torn_down.len(), 1);
         assert!(app
@@ -1499,7 +1508,7 @@ mod tests {
         );
 
         let torn_down = app
-            .teardown_provider_processes(None)
+            .teardown_provider_processes(None, false)
             .expect("safe teardown should succeed");
         assert!(torn_down.is_empty());
         assert_eq!(
@@ -1509,6 +1518,15 @@ mod tests {
                 .state(),
             crate::provider::ProviderRunState::Running,
         );
+
+        let torn_down = app
+            .teardown_provider_processes(None, true)
+            .expect("forced teardown should succeed without active prompts");
+        assert_eq!(torn_down.len(), 1);
+        assert!(app
+            .list_provider_processes(None)
+            .expect("provider processes should relist")
+            .is_empty());
     }
 
     #[test]

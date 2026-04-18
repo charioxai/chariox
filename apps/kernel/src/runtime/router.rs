@@ -1212,7 +1212,8 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let (processes, sessions) = {
             let mut app = self.app.lock().await;
-            let processes = app.teardown_provider_processes(request.provider.as_deref())?;
+            let processes =
+                app.teardown_provider_processes(request.provider.as_deref(), request.force)?;
             let session_ids = processes
                 .iter()
                 .flat_map(|process| process.owner_session_ids.iter())
@@ -5532,7 +5533,7 @@ mod tests {
         );
         app.list_provider_processes(None)
             .expect("process list should warm projection");
-        app.teardown_provider_processes(None)
+        app.teardown_provider_processes(None, false)
             .expect("teardown should update projection");
 
         let app = Arc::new(Mutex::new(app));
@@ -5602,6 +5603,7 @@ mod tests {
         let teardown_request =
             LocalDaemonRequest::TeardownProviderProcesses(TeardownProviderProcessesRequest {
                 provider: None,
+                force: false,
             });
         let teardown_command = KernelCommand::from_local_request(
             "cmd-teardown-refresh",

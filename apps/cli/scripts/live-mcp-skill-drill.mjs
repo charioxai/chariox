@@ -98,14 +98,14 @@ function printHelp() {
     '  --provider PROVIDER',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     `  --model ${DEFAULT_MODEL}`,
-    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.2-codex)',
+    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.2)',
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     `  --poll-ms ${DEFAULT_POLL_MS}`,
     '  --no-spawn-daemon',
     '  --history-dir PATH (required when using --no-spawn-daemon and live provider checks)',
     '  --keep-artifacts-on-failure',
     '  --skip-live-provider (registry/runtime checks only)',
-    '  --live-mcp-use (also require a live provider-native Playwright tool call; currently expected to fail until MCP relaunch semantics are fixed)',
+    '  --live-mcp-use (also require a live provider-native Playwright tool call after relaunching the provider run with granted MCPs)',
     '  --require-web-skill (fail if the public skill repo cannot be cloned/imported)',
     '  --include-github-mcp (install GitHub MCP when GITHUB_PERSONAL_ACCESS_TOKEN or GITHUB_TOKEN is set)',
     `  --web-skill-repo ${WEB_SKILL_REPO}`,
@@ -129,14 +129,8 @@ function makePorts() {
 function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
   if (explicit) return explicit
-  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${options.model}`
   return options.model
-}
-
-function opencodeCodexModel(model) {
-  if (model.endsWith('-codex')) return model
-  if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
-  return model
 }
 
 async function resolveBinary(binaryPath, manifestPath, binName) {
@@ -358,6 +352,80 @@ async function waitForHistoryToolCall({ historyDir, predicate, timeoutMs, pollMs
   throw new Error('timed out waiting for expected provider tool call in history')
 }
 
+async function waitForActiveProviderRun({ client, sessionId, getSessionStateRequest, getProviderRunRequest, providerRunId, timeoutMs, pollMs }) {
+  const started = Date.now()
+  let lastActiveRunId = null
+  while (Date.now() - started < timeoutMs) {
+    if (getProviderRunRequest) {
+      const run = unwrapVariant(await client.send(getProviderRunRequest(providerRunId)).catch(() => null), 'ProviderRun')?.provider_run
+      const runState = String(run?.state ?? '').toLowerCase()
+      if (runState === 'ended' || runState === 'error' || runState === 'failed') {
+        throw new Error(`provider run ${providerRunId} ended before it became active`)
+      }
+    }
+    const state = unwrapVariant(await client.send(getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
+    const session = state.session ?? state
+    lastActiveRunId = session.active_provider_run_id ?? null
+    if (lastActiveRunId === providerRunId) return session
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for active provider run ${providerRunId}; last active run was ${lastActiveRunId ?? 'none'}`)
+}
+
+async function launchProviderRunAndWait({
+  client,
+  sessionId,
+  agentId,
+  provider,
+  model,
+  effort,
+  launchProviderRunRequest,
+  getSessionStateRequest,
+  getProviderRunRequest,
+  timeoutMs,
+  pollMs,
+}) {
+  let lastError = null
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const run = unwrapVariant(
+      await client.send(launchProviderRunRequest(sessionId, provider, 'default', model, effort, agentId)),
+      'ProviderRunLaunchAccepted',
+      'ProviderRunLaunched',
+    ).provider_run
+    try {
+      await waitForActiveProviderRun({
+        client,
+        sessionId,
+        getSessionStateRequest,
+        getProviderRunRequest,
+        providerRunId: run.id,
+        timeoutMs: Math.min(timeoutMs, 45_000),
+        pollMs,
+      })
+      return run
+    } catch (error) {
+      lastError = error
+      if (attempt < 3) await sleep(3_000 * attempt)
+    }
+  }
+  throw lastError ?? new Error(`failed to launch ${provider} provider run`)
+}
+
+async function waitForNoProviderProcesses({ client, provider, listProviderProcessesRequest, timeoutMs, pollMs }) {
+  const started = Date.now()
+  let remaining = []
+  while (Date.now() - started < timeoutMs) {
+    const listed = unwrapVariant(
+      await client.send(listProviderProcessesRequest(provider)),
+      'ProviderProcessesListed',
+    ).processes ?? []
+    remaining = listed.filter((process) => process.provider === provider)
+    if (remaining.length === 0) return
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for ${provider} provider processes to exit; remaining=${remaining.map((process) => process.process_id).join(',')}`)
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -384,15 +452,18 @@ async function main() {
     attachToSessionRequest,
     createSessionRequest,
     endSessionRequest,
+    getProviderRunRequest,
     getSessionStateRequest,
     grantAgentCapabilityRequest,
     installMcpServerRequest,
     installSkillRequest,
+    launchProviderRunRequest,
     listMcpServersRequest,
     listProviderProcessesRequest,
     listSkillsRequest,
     spawnAgentRequest,
     submitPromptRequest,
+    teardownProviderProcessesRequest,
   } = requests
 
   let daemonChild = null
@@ -591,13 +662,51 @@ async function main() {
         })
 
         if (options.liveMcpUse) {
+          const mcpDrillAgent = unwrapVariant(
+            await client.send(spawnAgentRequest(
+              session.id,
+              grantedAgent.provider,
+              `${grantedAgent.provider}-m7-mcp-live`,
+              modelForProvider(grantedAgent.provider, options),
+              workspace,
+              'low',
+            )),
+            'AgentSpawned',
+          ).agent
+          agents.push({ provider: grantedAgent.provider, agent: mcpDrillAgent })
+          await client.send(grantAgentCapabilityRequest(workspace, mcpDrillAgent.id, 'mcp', 'playwright'))
+
+          await client.send(teardownProviderProcessesRequest(grantedAgent.provider, true))
+          await waitForNoProviderProcesses({
+            client,
+            provider: grantedAgent.provider,
+            listProviderProcessesRequest,
+            timeoutMs: options.timeoutMs,
+            pollMs: options.pollMs,
+          })
+
+          await launchProviderRunAndWait({
+            client,
+            sessionId: session.id,
+            agentId: mcpDrillAgent.id,
+            provider: grantedAgent.provider,
+            model: modelForProvider(grantedAgent.provider, options),
+            effort: 'low',
+            launchProviderRunRequest,
+            getSessionStateRequest,
+            getProviderRunRequest,
+            timeoutMs: options.timeoutMs,
+            pollMs: options.pollMs,
+          })
+          await sleep(1_500)
+
           const mcpBefore = events.filter((event) => event.event === 'assistant_message_completed').length
-          await client.send(submitPromptRequest(session.id, attachment.id, grantedAgent.agent.id, [
+          await client.send(submitPromptRequest(session.id, attachment.id, mcpDrillAgent.id, [
             'This is a live MCP grant drill.',
             'Use the provider-native Playwright MCP tool that is available to this agent, not Arroba list_capabilities/request_capability.',
             'The tool is usually named `mcp__playwright__browser_navigate`, `mcp__playwright__browser_snapshot`, `browser_navigate`, or similar.',
-            'Call the Playwright browser navigation tool with URL https://example.com, then call a Playwright browser snapshot/title/text tool if needed.',
-            'Only after a Playwright/browser MCP tool call succeeds, use Arroba managed I/O to write `outputs/playwright-mcp.txt` with exactly `M7_PLAYWRIGHT_MCP_OK`.',
+            'Prefer a non-mutating Playwright browser snapshot/title/text tool first; navigating to https://example.com is optional and may require approval.',
+            'After any Playwright/browser MCP tool call completes successfully, use Arroba managed I/O to write `outputs/playwright-mcp.txt` with exactly `M7_PLAYWRIGHT_MCP_OK`.',
             'Then reply exactly M7_PLAYWRIGHT_MCP_DONE.',
             'If Playwright MCP is unavailable, reply exactly M7_PLAYWRIGHT_MCP_UNAVAILABLE and do not write the marker file.',
           ].join('\n'), []))
