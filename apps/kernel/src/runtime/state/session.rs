@@ -42,7 +42,12 @@ impl KernelRuntimeOwnedState {
         let projected_run_id = session.focused_agent_id().and_then(|agent_id| {
             self.provider_store
                 .get_run_for_agent(session.id(), agent_id)
-                .map(|run| run.id().to_string())
+                .and_then(|run| match run.state() {
+                    crate::provider::ProviderRunState::Running
+                    | crate::provider::ProviderRunState::Starting => Some(run.id().to_string()),
+                    crate::provider::ProviderRunState::Parked
+                    | crate::provider::ProviderRunState::Ended => None,
+                })
         });
         session.set_active_provider_run(projected_run_id);
     }

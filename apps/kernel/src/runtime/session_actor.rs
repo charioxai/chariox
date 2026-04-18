@@ -1647,6 +1647,140 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owned_multi_agent_reattach_resumes_focused_run_before_focus_cycle() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let (
+            session_id,
+            attachment_id,
+            default_agent_id,
+            extra_agent_id,
+            default_run_id,
+            extra_run_id,
+        ) = {
+            let mut app_locked = app.lock().await;
+            let (session, default_agent) = crate::app::KernelSessionService::new(&mut app_locked)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            let extra_agent = crate::app::KernelSessionService::new(&mut app_locked)
+                .spawn_agent(
+                    CreateAgentRequest::new(session.id(), "dev-stub")
+                        .with_alias("cycle-me")
+                        .with_worktree("worktree"),
+                )
+                .expect("extra agent should be created");
+            let attachment = crate::app::KernelSessionService::new(&mut app_locked)
+                .attach(AttachRequest::new(
+                    session.id(),
+                    "client-a",
+                    ClientCapabilityLevel::FullTerminal,
+                ))
+                .expect("attachment should attach");
+            let default_run = launch_dev_stub_provider(
+                &mut app_locked,
+                session.id(),
+                default_agent.id(),
+                "default",
+            );
+            crate::app::KernelSessionService::new(&mut app_locked)
+                .focus_agent(session.id(), extra_agent.id())
+                .expect("extra agent should focus");
+            let extra_run =
+                launch_dev_stub_provider(&mut app_locked, session.id(), extra_agent.id(), "extra");
+            crate::app::KernelSessionService::new(&mut app_locked)
+                .focus_agent(session.id(), default_agent.id())
+                .expect("default agent should refocus");
+            (
+                session.id().to_string(),
+                attachment.id().to_string(),
+                default_agent.id().to_string(),
+                extra_agent.id().to_string(),
+                default_run.id().to_string(),
+                extra_run.id().to_string(),
+            )
+        };
+        let state = owned_runtime_state(&app).await;
+
+        state
+            .detach(&attachment_id)
+            .await
+            .expect("last attachment should detach cleanly");
+        {
+            let app_locked = app.lock().await;
+            assert_eq!(
+                app_locked
+                    .providers()
+                    .get_run(&default_run_id)
+                    .expect("default run should remain")
+                    .state(),
+                crate::provider::ProviderRunState::Parked
+            );
+            assert_eq!(
+                app_locked
+                    .sessions()
+                    .get_session(&session_id)
+                    .expect("session should remain")
+                    .active_provider_run_id(),
+                None
+            );
+        }
+
+        state
+            .attach(AttachRequest::new(
+                &session_id,
+                "client-b",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .await
+            .expect("reattach should resume the focused provider run");
+        {
+            let app_locked = app.lock().await;
+            assert_eq!(
+                app_locked
+                    .sessions()
+                    .get_session(&session_id)
+                    .expect("session should remain")
+                    .active_provider_run_id(),
+                Some(default_run_id.as_str())
+            );
+            assert_eq!(
+                app_locked
+                    .providers()
+                    .get_run(&default_run_id)
+                    .expect("default run should remain")
+                    .state(),
+                crate::provider::ProviderRunState::Running
+            );
+        }
+
+        let cycled = state
+            .cycle_agent_focus(&session_id)
+            .await
+            .expect("cycling focus after reattach should not park an already parked run")
+            .expect("another agent should be focused");
+        assert_eq!(cycled.id(), extra_agent_id);
+        let app_locked = app.lock().await;
+        assert_eq!(
+            app_locked
+                .sessions()
+                .get_session(&session_id)
+                .expect("session should remain")
+                .active_provider_run_id(),
+            Some(extra_run_id.as_str())
+        );
+        assert_eq!(
+            app_locked
+                .providers()
+                .get_run(&extra_run_id)
+                .expect("extra run should remain")
+                .state(),
+            crate::provider::ProviderRunState::Running
+        );
+        assert_ne!(default_agent_id, extra_agent_id);
+    }
+
+    #[tokio::test]
     async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),

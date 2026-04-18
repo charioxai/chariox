@@ -86,11 +86,13 @@ impl KernelRuntimeOwnedState {
         if session.agents().len() > 1 {
             let focused_agent_id = session.focused_agent_id().map(str::to_string);
             if let Some(focused_agent_id) = focused_agent_id {
-                if self
+                let has_active_prompt = self
                     .prompt_state_owner
                     .active_prompt_agent_id(&session)
-                    .is_none()
-                {
+                    .is_some();
+                let has_processing_agent =
+                    session.agents().iter().any(|agent| agent.is_processing());
+                if !has_active_prompt {
                     let current_active_run_id =
                         session.active_provider_run_id().map(str::to_string);
                     if let Some(current_active_run_id) = current_active_run_id.as_deref() {
@@ -109,7 +111,11 @@ impl KernelRuntimeOwnedState {
                         }
                     }
                 }
-                self.project_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+                if has_active_prompt || has_processing_agent {
+                    self.project_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+                } else {
+                    self.sync_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+                }
             } else {
                 self.session_store
                     .set_active_provider_run(session_id, None)?;
@@ -143,7 +149,12 @@ impl KernelRuntimeOwnedState {
         let projected_run_id = self
             .provider_store
             .get_run_for_agent(session_id, agent_id)
-            .map(|run| run.id().to_string());
+            .and_then(|run| match run.state() {
+                crate::provider::ProviderRunState::Running
+                | crate::provider::ProviderRunState::Starting => Some(run.id().to_string()),
+                crate::provider::ProviderRunState::Parked
+                | crate::provider::ProviderRunState::Ended => None,
+            });
         self.session_store
             .set_active_provider_run(session_id, projected_run_id)?;
         Ok(())
@@ -334,11 +345,34 @@ impl KernelRuntimeOwnedState {
 
         if let Some(active_run_id) = active_run_id.as_deref() {
             if active_run_id != run_id {
-                let outcome = self
-                    .provider_store
-                    .park_run_provider_only(session_id, active_run_id)?;
-                self.clear_active_provider_run_session_pointer(session_id, outcome.run().id())?;
-                self.provider_run_projection.update(outcome.into_run());
+                let active_run = self.provider_store.get_run(active_run_id)?;
+                match active_run.state() {
+                    crate::provider::ProviderRunState::Running => {
+                        let outcome = self
+                            .provider_store
+                            .park_run_provider_only(session_id, active_run_id)?;
+                        self.clear_active_provider_run_session_pointer(
+                            session_id,
+                            outcome.run().id(),
+                        )?;
+                        self.provider_run_projection.update(outcome.into_run());
+                    }
+                    crate::provider::ProviderRunState::Starting => {
+                        let outcome = self
+                            .provider_store
+                            .terminate_run_provider_only(session_id, active_run_id)?;
+                        self.clear_active_provider_run_session_pointer(
+                            session_id,
+                            outcome.run().id(),
+                        )?;
+                        self.provider_run_projection.update(outcome.into_run());
+                    }
+                    crate::provider::ProviderRunState::Parked
+                    | crate::provider::ProviderRunState::Ended => {
+                        self.session_store
+                            .set_active_provider_run(session_id, None)?;
+                    }
+                }
             }
         }
 

@@ -505,15 +505,34 @@ impl ProviderRunActivationState {
 
         if let Some(active_run_id) = active_run_id.as_deref() {
             if active_run_id != run_id {
-                let outcome = app
-                    .providers
-                    .park_run_provider_only(session_id, active_run_id)?;
-                ProviderRunLivenessState::clear_active_provider_run_session_pointer(
-                    app,
-                    session_id,
-                    outcome.run().id(),
-                )?;
-                app.update_provider_run_projection(outcome.into_run());
+                let active_run = app.providers.get_run(active_run_id)?;
+                match active_run.state() {
+                    ProviderRunState::Running => {
+                        let outcome = app
+                            .providers
+                            .park_run_provider_only(session_id, active_run_id)?;
+                        ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                            app,
+                            session_id,
+                            outcome.run().id(),
+                        )?;
+                        app.update_provider_run_projection(outcome.into_run());
+                    }
+                    ProviderRunState::Starting => {
+                        let outcome = app
+                            .providers
+                            .terminate_run_provider_only(session_id, active_run_id)?;
+                        ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                            app,
+                            session_id,
+                            outcome.run().id(),
+                        )?;
+                        app.update_provider_run_projection(outcome.into_run());
+                    }
+                    ProviderRunState::Parked | ProviderRunState::Ended => {
+                        app.sessions.set_active_provider_run(session_id, None)?;
+                    }
+                }
             }
         }
 
@@ -714,7 +733,12 @@ impl DaemonApp {
         let projected_run_id = session.focused_agent_id().and_then(|agent_id| {
             self.providers
                 .get_run_for_agent(session.id(), agent_id)
-                .map(|run| run.id().to_string())
+                .and_then(|run| match run.state() {
+                    ProviderRunState::Running | ProviderRunState::Starting => {
+                        Some(run.id().to_string())
+                    }
+                    ProviderRunState::Parked | ProviderRunState::Ended => None,
+                })
         });
         session.set_active_provider_run(projected_run_id);
     }
@@ -727,7 +751,12 @@ impl DaemonApp {
         let projected_run_id = self
             .providers
             .get_run_for_agent(session_id, agent_id)
-            .map(|run| run.id().to_string());
+            .and_then(|run| match run.state() {
+                ProviderRunState::Running | ProviderRunState::Starting => {
+                    Some(run.id().to_string())
+                }
+                ProviderRunState::Parked | ProviderRunState::Ended => None,
+            });
         let _ = self
             .sessions
             .set_active_provider_run(session_id, projected_run_id)?;
@@ -1182,7 +1211,10 @@ impl DaemonApp {
         if session.agents().len() > 1 {
             let focused_agent_id = session.focused_agent_id().map(str::to_string);
             if let Some(focused_agent_id) = focused_agent_id {
-                if session.active_prompt().is_none() {
+                let has_active_prompt = session.active_prompt().is_some();
+                let has_processing_agent =
+                    session.agents().iter().any(|agent| agent.is_processing());
+                if !has_active_prompt {
                     let current_active_run_id =
                         session.active_provider_run_id().map(str::to_string);
                     if let Some(current_active_run_id) = current_active_run_id.as_deref() {
@@ -1202,7 +1234,11 @@ impl DaemonApp {
                         }
                     }
                 }
-                self.project_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+                if has_active_prompt || has_processing_agent {
+                    self.project_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+                } else {
+                    self.sync_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+                }
             } else {
                 self.sessions.set_active_provider_run(session_id, None)?;
             }

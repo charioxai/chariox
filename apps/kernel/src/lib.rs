@@ -542,6 +542,114 @@ mod tests {
     }
 
     #[test]
+    fn multi_agent_reattach_resumes_focused_run_before_focus_cycle() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let extra_agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("extra")
+                    .with_worktree("worktree-1"),
+            )
+            .expect("extra agent should be created");
+
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+
+        let default_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet-default",
+                )
+                .with_agent_id(default_agent.id()),
+            )
+            .expect("default provider run should launch");
+
+        crate::app::KernelSessionService::new(&mut app)
+            .focus_agent(session.id(), extra_agent.id())
+            .expect("extra agent should focus");
+        let extra_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet-extra",
+                )
+                .with_agent_id(extra_agent.id()),
+            )
+            .expect("extra provider run should launch");
+        crate::app::KernelSessionService::new(&mut app)
+            .focus_agent(session.id(), default_agent.id())
+            .expect("default agent should refocus");
+
+        crate::app::KernelSessionService::new(&mut app)
+            .detach(attachment.id())
+            .expect("last attachment should detach cleanly");
+        assert_eq!(
+            app.providers()
+                .get_run(default_run.id())
+                .expect("default run should remain")
+                .state(),
+            super::provider::ProviderRunState::Parked
+        );
+
+        crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-b",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("reattach should resume the focused provider run");
+        assert_eq!(
+            app.sessions()
+                .get_session(session.id())
+                .expect("session should remain")
+                .active_provider_run_id(),
+            Some(default_run.id())
+        );
+        assert_eq!(
+            app.providers()
+                .get_run(default_run.id())
+                .expect("default run should remain")
+                .state(),
+            super::provider::ProviderRunState::Running
+        );
+
+        let cycled = crate::app::KernelSessionService::new(&mut app)
+            .focus_agent(session.id(), extra_agent.id())
+            .expect("focusing another agent after reattach should not park an already parked run");
+        assert_eq!(cycled.id(), extra_agent.id());
+        assert_eq!(
+            app.sessions()
+                .get_session(session.id())
+                .expect("session should remain")
+                .active_provider_run_id(),
+            Some(extra_run.id())
+        );
+        assert_eq!(
+            app.providers()
+                .get_run(extra_run.id())
+                .expect("extra run should remain")
+                .state(),
+            super::provider::ProviderRunState::Running
+        );
+    }
+
+    #[test]
     fn launching_a_provider_run_persists_resume_state_back_to_the_agent() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
