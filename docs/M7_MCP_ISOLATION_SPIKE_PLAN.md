@@ -24,9 +24,9 @@ Current implementation status:
 - Agent-triggered grant continuation is validated for Codex and OpenCode through provider relaunch plus synthetic continuation.
 - A small scale matrix is validated for Codex and OpenCode across 1-2 agents and 1-3 MCPs per agent.
 - Overlapping-but-not-identical grants are validated for Codex and OpenCode with `agent-a: fake-alpha,fake-beta` and `agent-b: fake-beta,fake-gamma`.
-- Production integration has started: Arroba now has provider-facing proxy config generation, unique agent-scoped runtime MCP tokens, an authenticated `/mcp/proxy/<name>` route, stdio backing lifecycle supervision keyed by MCP definition hash, provider launch wiring to render proxy configs by default when the runtime MCP binding is available, and plain-HTTP streamable MCP backing relay tests.
+- Production integration has started: Arroba now has provider-facing proxy config generation, unique agent-scoped runtime MCP tokens, an authenticated `/mcp/proxy/<name>` route, stdio backing lifecycle supervision keyed by MCP definition hash, provider launch wiring to render proxy configs by default when the runtime MCP binding is available, and streamable HTTP/HTTPS MCP backing relay tests, including chunked responses.
 - Local production drills now pass for Codex and OpenCode using real Playwright MCP plus a deterministic local echo MCP. The drills cover pre-granted MCP activation, provider-native MCP tool calls, agent-triggered `request_capability`, provider conversation relaunch/resume, automatic continuation, and managed-I/O marker writes.
-- Remaining production work is production HTTP client support for HTTPS/chunked streamable HTTP MCPs plus remote/workflow MCP drills.
+- Remaining production work is remote/workflow MCP drills after production proxy integration.
 
 ## Why This Exists
 

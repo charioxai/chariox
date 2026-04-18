@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -171,38 +170,19 @@ fn forward_streamable_http_mcp_request(
     payload: serde_json::Value,
     timeout_sec: Option<u64>,
 ) -> Result<serde_json::Value, DaemonError> {
-    let target = HttpTarget::parse(url)?;
     let body = serde_json::to_vec(&payload).map_err(|error| DaemonError::LocalTransport {
         operation: "mcp.proxy.http.serialize",
         message: error.to_string(),
     })?;
     let timeout = Duration::from_secs(timeout_sec.unwrap_or(30).max(1));
-    let mut stream = TcpStream::connect((target.host.as_str(), target.port)).map_err(|error| {
-        DaemonError::LocalTransport {
-            operation: "mcp.proxy.http.connect",
-            message: format!("failed to connect to `{url}`: {error}"),
-        }
-    })?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "mcp.proxy.http.timeout",
-            message: error.to_string(),
-        })?;
-    stream
-        .set_write_timeout(Some(timeout))
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "mcp.proxy.http.timeout",
-            message: error.to_string(),
-        })?;
-
-    let mut request = format!(
-        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
-        target.path, target.host_header, body.len()
-    );
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let mut request = agent
+        .post(url)
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json");
     for (key, value) in http_headers {
         if !reserved_header(key) {
-            request.push_str(&format!("{key}: {value}\r\n"));
+            request = request.set(key, value);
         }
     }
     for (key, env_var) in env_http_headers {
@@ -210,32 +190,43 @@ fn forward_streamable_http_mcp_request(
             continue;
         }
         if let Ok(value) = std::env::var(env_var) {
-            request.push_str(&format!("{key}: {value}\r\n"));
+            request = request.set(key, &value);
         }
     }
     if let Some(env_var) = bearer_token_env_var {
         if let Ok(value) = std::env::var(env_var) {
-            request.push_str(&format!("Authorization: Bearer {value}\r\n"));
+            request = request.set("Authorization", &format!("Bearer {value}"));
         }
     }
-    request.push_str("\r\n");
-    stream
-        .write_all(request.as_bytes())
-        .and_then(|_| stream.write_all(&body))
-        .and_then(|_| stream.flush())
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "mcp.proxy.http.write",
-            message: error.to_string(),
-        })?;
 
-    let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
+    let response = match request.send_bytes(&body) {
+        Ok(response) => response,
+        Err(ureq::Error::Status(status, response)) => {
+            let body = response
+                .into_string()
+                .unwrap_or_else(|error| format!("<failed to read response body: {error}>"));
+            return Err(DaemonError::LocalTransport {
+                operation: "mcp.proxy.http.response",
+                message: format!("upstream `{url}` returned HTTP {status}: {body}"),
+            });
+        }
+        Err(error) => {
+            return Err(DaemonError::LocalTransport {
+                operation: "mcp.proxy.http.request",
+                message: format!("failed to forward MCP HTTP request to `{url}`: {error}"),
+            });
+        }
+    };
+    let text = response
+        .into_string()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "mcp.proxy.http.read",
-            message: error.to_string(),
+            message: format!("failed to read MCP HTTP response from `{url}`: {error}"),
         })?;
-    parse_http_json_response(url, &response)
+    serde_json::from_str(&text).map_err(|error| DaemonError::LocalTransport {
+        operation: "mcp.proxy.http.parse",
+        message: format!("upstream `{url}` returned invalid JSON: {error}"),
+    })
 }
 
 fn stdio_mcp_supervisor() -> &'static Mutex<StdioMcpSupervisor> {
@@ -512,80 +503,11 @@ fn parse_content_length_header(line: &str) -> Option<usize> {
         .flatten()
 }
 
-fn parse_http_json_response(url: &str, response: &[u8]) -> Result<serde_json::Value, DaemonError> {
-    let Some(header_end) = response.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return Err(DaemonError::LocalTransport {
-            operation: "mcp.proxy.http.response",
-            message: format!("upstream `{url}` returned an invalid HTTP response"),
-        });
-    };
-    let headers = String::from_utf8_lossy(&response[..header_end]);
-    let status = headers
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|code| code.parse::<u16>().ok())
-        .unwrap_or(0);
-    let body = &response[header_end + 4..];
-    if !(200..300).contains(&status) {
-        return Err(DaemonError::LocalTransport {
-            operation: "mcp.proxy.http.response",
-            message: format!(
-                "upstream `{url}` returned HTTP {status}: {}",
-                String::from_utf8_lossy(body)
-            ),
-        });
-    }
-    serde_json::from_slice(body).map_err(|error| DaemonError::LocalTransport {
-        operation: "mcp.proxy.http.parse",
-        message: format!("upstream `{url}` returned invalid JSON: {error}"),
-    })
-}
-
 fn reserved_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "host" | "content-length" | "connection" | "content-type" | "accept"
     )
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HttpTarget {
-    host: String,
-    host_header: String,
-    port: u16,
-    path: String,
-}
-
-impl HttpTarget {
-    fn parse(url: &str) -> Result<Self, DaemonError> {
-        let Some(rest) = url.strip_prefix("http://") else {
-            return Err(DaemonError::LocalTransport {
-                operation: "mcp.proxy.http.url",
-                message: "streamable HTTP MCP proxy currently supports http:// URLs; https forwarding will be added with the production HTTP client slice".to_string(),
-            });
-        };
-        let (authority, path) = rest
-            .split_once('/')
-            .map(|(authority, path)| (authority, format!("/{path}")))
-            .unwrap_or((rest, "/".to_string()));
-        let (host, port) = authority
-            .rsplit_once(':')
-            .and_then(|(host, port)| port.parse::<u16>().ok().map(|port| (host, port)))
-            .unwrap_or((authority, 80));
-        if host.is_empty() {
-            return Err(DaemonError::LocalTransport {
-                operation: "mcp.proxy.http.url",
-                message: format!("invalid MCP HTTP URL `{url}`"),
-            });
-        }
-        Ok(Self {
-            host: host.to_string(),
-            host_header: authority.to_string(),
-            port,
-            path,
-        })
-    }
 }
 
 #[cfg(test)]
@@ -634,19 +556,6 @@ mod tests {
             .expect("fallback should succeed");
 
         assert_eq!(rendered, vec![backing]);
-    }
-
-    #[test]
-    fn http_target_parses_url_parts() {
-        assert_eq!(
-            HttpTarget::parse("http://127.0.0.1:43120/mcp").unwrap(),
-            HttpTarget {
-                host: "127.0.0.1".to_string(),
-                host_header: "127.0.0.1:43120".to_string(),
-                port: 43120,
-                path: "/mcp".to_string(),
-            }
-        );
     }
 
     #[test]
@@ -702,6 +611,41 @@ mod tests {
         assert_eq!(
             response,
             json!({"jsonrpc": "2.0", "id": 1, "result": {"ok": true}})
+        );
+        server.join().expect("test server should finish");
+    }
+
+    #[test]
+    fn streamable_http_proxy_decodes_chunked_json_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
+        let address = listener.local_addr().expect("listener address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("proxy should connect");
+            let request = read_http_request(&mut stream);
+            assert!(request.starts_with("POST /mcp HTTP/1.1\r\n"));
+            let first = r#"{"jsonrpc":"2.0","id":1,"result":{"chunked":"#;
+            let second = r#""ok"}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:X}\r\n{}\r\n{:X}\r\n{}\r\n0\r\n\r\n",
+                first.len(),
+                first,
+                second.len(),
+                second,
+            )
+            .expect("chunked response should write");
+        });
+
+        let config =
+            ArrobaMcpServerConfig::streamable_http("chunked", format!("http://{address}/mcp"));
+        let response = dispatch_provider_mcp_proxy_request(
+            &config,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+        )
+        .expect("proxy should decode chunked response");
+        assert_eq!(
+            response,
+            json!({"jsonrpc": "2.0", "id": 1, "result": {"chunked": "ok"}})
         );
         server.join().expect("test server should finish");
     }
