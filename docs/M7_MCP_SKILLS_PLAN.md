@@ -21,7 +21,7 @@ Landed:
 - M7.13 partial: local provider prompts inject the full `SKILL.md` body for granted skills that are explicitly selected, mentioned, or requested.
 - M7.15 partial: runtime MCP exposes `list_capabilities` and `request_capability` control-plane tools for Arroba-managed MCPs and skills. V1 auto-grants valid requests to the current agent and reports when the grant becomes effective. Skill requests now return the full `SKILL.md` body by default, so requested skills can be used in the same turn. Remote worker agents now forward capability discovery/request calls to the home kernel; skill requests return a home-packaged skill directory and materialize it on the worker under `.arroba/remote/skills/<home-kernel-id>/<skill>/<version>/`.
 - M7.18: remote skill packaging/materialization is landed for grant-time sync and same-turn `request_capability` use, preserving `SKILL.md`, assets, scripts, and references while skipping provider/cache/build directories and symlinks. Remote prompt dispatch verifies/synchronizes granted skills before submit and injects worker-local `materialized_root` paths into the prompt context.
-- M7.20 partial: remote skill live drills pass for OpenCode with `openai/gpt-5.2` low effort and Codex with `gpt-5.2` low effort. Remote MCP v1 conformance checks and live conformance drills pass: home sends required MCP definitions/hashes for remote prompts, worker checks its own project/user Arroba MCP registry, and missing/mismatched/invalid worker MCPs fail fast instead of being installed remotely.
+- M7.20 partial: remote skill live drills pass for OpenCode with `openai/gpt-5.2` low effort and Codex with `gpt-5.2` low effort. Remote MCP v1 conformance checks, live conformance drills, and strict provider-native remote Playwright MCP use drills pass: home sends required MCP definitions/hashes for remote prompts, worker checks its own project/user Arroba MCP registry, missing/mismatched/invalid worker MCPs fail fast instead of being installed remotely, and provider-native MCP config is rendered on the worker for Codex/OpenCode.
 
 Still open in M7:
 
@@ -30,7 +30,6 @@ Still open in M7:
 - Provider MCP import from Claude-owned configs, plus regular non-interactive Codex/OpenCode import aliases.
 - Provider skill import from Claude-owned skill locations, plus regular non-interactive Codex/OpenCode import aliases.
 - Skill MCP dependency validation.
-- Remote provider-native MCP use drills.
 - MCP provider hot reload. Codex and OpenCode both expose provider-side reload mechanisms, but v1 keeps newly requested MCPs as next-provider-launch because the available reload paths are provider/server scoped rather than safely Arroba agent-scoped.
 
 ## Goal
@@ -366,7 +365,7 @@ A workflow node using an agent receives that agent's MCPs and skills. If a workf
 
 ## M7.17 Remote Machine MCP Support
 
-Status: landed for skills and remote MCP conformance. Remote MCP live drills remain open.
+Status: landed for skills, remote MCP conformance, and strict provider-native remote MCP use drills.
 
 Add remote-machine handling for MCPs.
 
@@ -392,7 +391,7 @@ Remote MCP details for v1:
 
 ## M7.18 Remote Machine Skill Support
 
-Status: open.
+Status: landed for v1 skill packaging, grant-time synchronization, prompt-time repair, same-turn remote requests, asset preservation, and live drills.
 
 Add remote-machine handling for skills.
 
@@ -421,7 +420,7 @@ Open:
 
 ## M7.19 Local Provider Drills
 
-Status: local pass. The local MCP/skill drill harness is landed as `apps/cli/scripts/live-mcp-skill-drill.mjs`; registry, public web skill install, pre-granted skill use, same-turn skill body requests, and provider-native Playwright MCP use pass for local Codex and OpenCode. The strict `--live-mcp-use` path grants Playwright to a fresh MCP drill agent, force-restarts an idle provider process so next-launch MCP grants are rendered, relaunches the provider run, verifies a provider-native Playwright/browser tool call, and writes the marker through Arroba managed I/O. Remote MCP/skill materialization remains open.
+Status: local pass. The local MCP/skill drill harness is landed as `apps/cli/scripts/live-mcp-skill-drill.mjs`; registry, public web skill install, pre-granted skill use, same-turn skill body requests, and provider-native Playwright MCP use pass for local Codex and OpenCode. The strict `--live-mcp-use` path grants Playwright to a fresh MCP drill agent, force-restarts an idle provider process so next-launch MCP grants are rendered, relaunches the provider run, verifies a provider-native Playwright/browser tool call, and writes the marker through Arroba managed I/O. Remote skill materialization and remote MCP conformance/use drills are covered under M7.20.
 
 Verify local Codex/OpenCode behavior:
 
@@ -447,7 +446,7 @@ Overarching local drill matrix:
 
 ## M7.20 Remote Provider Drills
 
-Status: partial. Remote skill lifecycle drills and remote MCP conformance drills pass; remote provider-native MCP use drills remain open.
+Status: strict pass for remote skill lifecycle, remote MCP conformance, and provider-native remote MCP use on OpenCode and Codex.
 
 - remote agent receives only its granted MCPs
 - remote agent receives only its granted skills
@@ -471,4 +470,13 @@ node apps/cli/scripts/live-remote-mcp-drill.mjs --provider opencode --model open
 node apps/cli/scripts/live-remote-mcp-drill.mjs --provider codex --model gpt-5.2 --effort low
 ```
 
-Observed on 2026-04-18: both drills passed. The drill creates isolated relay/home/worker daemons with separate `HOME` roots, installs divergent Arroba MCP definitions into home and worker registries, verifies worker-missing MCP failure, worker global definition mismatch failure, project-local worker override success, missing worker stdio command failure, and missing worker env var failure.
+Observed on 2026-04-18: both conformance drills passed. The drill creates isolated relay/home/worker daemons with separate `HOME` roots, installs divergent Arroba MCP definitions into home and worker registries, verifies worker-missing MCP failure, worker global definition mismatch failure, project-local worker override success, missing worker stdio command failure, and missing worker env var failure.
+
+Strict provider-native remote MCP use drill:
+
+```bash
+node apps/cli/scripts/live-remote-mcp-drill.mjs --provider opencode --model openai/gpt-5.2 --effort low --timeout-ms 300000 --live-mcp-use
+node apps/cli/scripts/live-remote-mcp-drill.mjs --provider codex --model gpt-5.2 --effort low --timeout-ms 300000 --live-mcp-use
+```
+
+Observed on 2026-04-18: both strict drills passed. OpenCode completed a provider-native `playwright_browser_snapshot` call and Codex completed a provider-native `browser_snapshot` call on the worker. Both then wrote `outputs/remote-playwright-mcp.txt` with exactly `M7_REMOTE_PLAYWRIGHT_MCP_OK` through Arroba managed I/O. The drill preserves real provider auth/config/cache while keeping isolated Arroba home/worker registries by passing through `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, and `XDG_*` provider paths.

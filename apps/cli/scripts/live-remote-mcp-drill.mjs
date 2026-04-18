@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
+const realHomeDir = os.homedir()
 
 const DEFAULT_PROVIDER = 'opencode'
 const DEFAULT_MODEL = 'openai/gpt-5.2'
@@ -42,6 +43,7 @@ function parseArgs(argv) {
     model: DEFAULT_MODEL,
     effort: 'low',
     timeoutMs: DEFAULT_TIMEOUT_MS,
+    liveMcpUse: false,
     keepArtifactsOnFailure: false,
   }
   for (let i = 0; i < argv.length; i += 1) {
@@ -50,6 +52,7 @@ function parseArgs(argv) {
     else if (arg === '--model') options.model = argv[++i]
     else if (arg === '--effort') options.effort = argv[++i]
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
+    else if (arg === '--live-mcp-use') options.liveMcpUse = true
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
@@ -68,11 +71,13 @@ function printHelp() {
     '- verifies worker project-local MCP override wins over mismatched global config',
     '- verifies missing stdio command fails fast',
     '- verifies missing env var fails fast',
+    '- optionally verifies provider-native remote Playwright MCP use',
     '',
     `  --provider ${DEFAULT_PROVIDER}`,
     `  --model ${DEFAULT_MODEL}`,
     '  --effort low',
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
+    '  --live-mcp-use',
     '  --keep-artifacts-on-failure',
   ].join('\n'))
 }
@@ -112,6 +117,11 @@ function daemonEnv({
   return {
     ...process.env,
     HOME: homeDir,
+    CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, '.codex'),
+    OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, '.config', 'opencode'),
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME ?? path.join(realHomeDir, '.config'),
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME ?? path.join(realHomeDir, '.local', 'share'),
+    XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? path.join(realHomeDir, '.cache'),
     ARROBA_KERNEL_PORT: String(kernelPort),
     ARROBA_MCP_PORT: String(mcpPort),
     ARROBA_OPENCODE_PORT: String(opencodePort),
@@ -269,6 +279,21 @@ function mcpConfig(name, command, extra = {}) {
   }
 }
 
+function playwrightMcpConfig() {
+  return {
+    name: 'playwright',
+    transport: {
+      type: 'stdio',
+      command: 'npx',
+      args: ['-y', '@playwright/mcp@latest'],
+    },
+    enabled: true,
+    required: false,
+    startup_timeout_sec: 45,
+    tool_timeout_sec: 45,
+  }
+}
+
 async function expectReject(label, fn, expectedText) {
   try {
     await fn()
@@ -280,6 +305,61 @@ async function expectReject(label, fn, expectedText) {
     return { ok: true, error: message }
   }
   throw new Error(`${label} unexpectedly succeeded`)
+}
+
+async function waitForCompletionCount({ client, sessionId, attachmentId, events, expectedCompletionCount, timeoutMs }) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+    const completed = events.filter((event) => event.event === 'assistant_message_completed')
+    if (completed.length >= expectedCompletionCount) return completed
+    await sleep(1000)
+  }
+  throw new Error(`timed out waiting for ${expectedCompletionCount} assistant completions`)
+}
+
+async function waitForFileText({ filePath, requiredText, timeoutMs }) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const text = await readFile(filePath, 'utf8').catch(() => '')
+    if (text.includes(requiredText)) return text
+    await sleep(1000)
+  }
+  throw new Error(`timed out waiting for ${requiredText} in ${filePath}`)
+}
+
+async function waitForHistoryToolCall({ historyDir, timeoutMs }) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const files = (await readdir(historyDir).catch(() => []))
+      .filter((file) => file.endsWith('.jsonl'))
+      .map((file) => path.join(historyDir, file))
+    for (const file of files) {
+      const lines = (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
+      for (const line of lines) {
+        if (!line.trim()) continue
+        let entry
+        try {
+          entry = JSON.parse(line)
+        } catch {
+          continue
+        }
+        if (entry.kind !== 'provider_tool' || typeof entry.text !== 'string') continue
+        let update
+        try {
+          update = JSON.parse(entry.text)
+        } catch {
+          continue
+        }
+        const tool = String(update.tool ?? '').toLowerCase()
+        if (update.status === 'completed' && !tool.includes('arroba') && (tool.includes('playwright') || tool.includes('browser'))) {
+          return update
+        }
+      }
+    }
+    await sleep(1000)
+  }
+  throw new Error('timed out waiting for provider-native Playwright/browser MCP tool call in worker history')
 }
 
 async function main() {
@@ -307,6 +387,7 @@ async function main() {
     createSessionRequest,
     endSessionRequest,
     grantAgentCapabilityRequest,
+    submitPromptRequest,
     listRemoteMachinesRequest,
   } = requests
 
@@ -398,7 +479,7 @@ async function main() {
     await waitForRemoteMachine(client, listRemoteMachinesRequest, workerMachineId)
 
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace)), 'SessionCreated').session
-    await client.send(attachToSessionRequest(session.id, `remote-mcp-drill-${Date.now()}`))
+    const attachment = unwrap(await client.send(attachToSessionRequest(session.id, `remote-mcp-drill-${Date.now()}`)), 'SessionAttached').attachment
 
     const matching = mcpConfig('remote-mcp-drill', 'node', { args: ['--version'] })
     const mismatch = mcpConfig('remote-mcp-drill', 'node', { args: ['--eval', 'console.log("mismatch")'] })
@@ -406,6 +487,11 @@ async function main() {
     const missingEnv = mcpConfig('remote-mcp-missing-env', 'node', { env_vars: ['ARROBA_REMOTE_MCP_DRILL_REQUIRED_ENV'] })
 
     const scenarioResults = []
+    const events = []
+    if (options.liveMcpUse) {
+      client.onKernelEvent((event) => events.push({ ...event, observed_at_ms: Date.now() }))
+      await client.subscribeToKernelEvents(session.id, attachment.id)
+    }
 
     await writeMcp(homeHomeDir, matching)
     const missingWorkerAgent = unwrapVariant(await client.send(spawnRemoteAgentRequest(
@@ -508,6 +594,60 @@ async function main() {
       )),
     })
 
+    if (options.liveMcpUse) {
+      await writeMcp(homeHomeDir, playwrightMcpConfig())
+      await writeMcp(workspace, playwrightMcpConfig())
+      const liveAgent = unwrapVariant(await client.send(spawnRemoteAgentRequest(
+        session.id,
+        options.provider,
+        'remote-mcp-live-playwright-agent',
+        options.model,
+        workspace,
+        options.effort,
+        workerMachineId,
+      )), 'AgentSpawned').agent
+      await client.send(grantAgentCapabilityRequest(workspace, liveAgent.id, 'mcp', 'playwright'))
+      const markerFile = path.join(workspace, 'outputs', 'remote-playwright-mcp.txt')
+      await rm(markerFile, { force: true }).catch(() => {})
+      const before = events.filter((event) => event.event === 'assistant_message_completed').length
+      await client.send(submitPromptRequest(session.id, attachment.id, liveAgent.id, [
+        'This is a remote live MCP grant drill.',
+        'Use the provider-native Playwright MCP tool that is available to this remote agent, not Arroba list_capabilities/request_capability.',
+        'The tool is usually named `mcp__playwright__browser_navigate`, `mcp__playwright__browser_snapshot`, `browser_navigate`, or similar.',
+        'Prefer a non-mutating browser snapshot/title/text tool first; navigating to https://example.com is optional.',
+        'After any Playwright/browser MCP tool call completes successfully, use Arroba managed I/O to write `outputs/remote-playwright-mcp.txt` with exactly `M7_REMOTE_PLAYWRIGHT_MCP_OK`.',
+        'Then reply exactly M7_REMOTE_PLAYWRIGHT_MCP_DONE.',
+        'If Playwright MCP is unavailable, reply exactly M7_REMOTE_PLAYWRIGHT_MCP_UNAVAILABLE and do not write the marker file.',
+      ].join('\n'), []))
+      await waitForCompletionCount({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        events,
+        expectedCompletionCount: before + 1,
+        timeoutMs: options.timeoutMs,
+      })
+      const providerTool = await waitForHistoryToolCall({
+        historyDir: workerHistoryDir,
+        timeoutMs: options.timeoutMs,
+      })
+      const markerText = (await waitForFileText({
+        filePath: markerFile,
+        requiredText: 'M7_REMOTE_PLAYWRIGHT_MCP_OK',
+        timeoutMs: options.timeoutMs,
+      })).trim()
+      if (markerText !== 'M7_REMOTE_PLAYWRIGHT_MCP_OK') {
+        throw new Error(`unexpected remote Playwright MCP marker content: ${JSON.stringify(markerText)}`)
+      }
+      scenarioResults.push({
+        scenario: 'remote_provider_native_playwright_mcp_use',
+        ok: true,
+        agent: { id: liveAgent.id, ref: liveAgent.agent_ref },
+        markerFile,
+        providerTool,
+      })
+    }
+
     console.log(JSON.stringify({
       status: 'ok',
       mode: 'remote-mcp-conformance-drill',
@@ -522,6 +662,8 @@ async function main() {
       workerHomeDir,
       workspace,
       scenarios: scenarioResults,
+      liveMcpUse: options.liveMcpUse,
+      completionCount: events.filter((event) => event.event === 'assistant_message_completed').length,
     }, null, 2))
     succeeded = true
   } finally {
