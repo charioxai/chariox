@@ -21,9 +21,10 @@ use crate::local::{
     ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
     ListAgentsRequest, ListMcpServersRequest, ListProviderProcessesRequest, ListSessionsRequest,
     ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
-    PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest,
-    RevokeAgentCapabilityRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
-    UninstallMcpServerRequest, UninstallSkillRequest, UpdateMcpServerRequest, UpdateSkillRequest,
+    MoveAgentToRemoteRequest, PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest,
+    ResolveSessionRequest, RevokeAgentCapabilityRequest, StartProviderLoginRequest,
+    TeardownProviderProcessesRequest, UninstallMcpServerRequest, UninstallSkillRequest,
+    UpdateMcpServerRequest, UpdateSkillRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -1340,6 +1341,9 @@ impl CommandRouter {
             LocalDaemonRequest::GrantAgentCapability(request) => {
                 return self.execute_grant_agent_capability_request(request).await;
             }
+            LocalDaemonRequest::MoveAgentToRemote(request) => {
+                return self.execute_move_agent_to_remote_request(request).await;
+            }
             LocalDaemonRequest::RevokeAgentCapability(request) => {
                 return self.execute_revoke_agent_capability_request(request).await;
             }
@@ -1549,6 +1553,7 @@ impl CommandRouter {
             | LocalDaemonRequest::DeleteSession(_)
             | LocalDaemonRequest::AliasSession(_)
             | LocalDaemonRequest::SpawnAgent(_)
+            | LocalDaemonRequest::MoveAgentToRemote(_)
             | LocalDaemonRequest::DestroyAgent(_)
             | LocalDaemonRequest::FocusAgent(_)
             | LocalDaemonRequest::CycleAgentFocus(_)
@@ -1751,6 +1756,21 @@ impl CommandRouter {
                 Ok(LocalDaemonResponse::AgentCapabilityGranted { agent })
             }
         }
+    }
+
+    async fn execute_move_agent_to_remote_request(
+        &self,
+        request: MoveAgentToRemoteRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let agent = self
+            .runtime_state
+            .move_agent_to_remote(
+                &request.session_id,
+                &request.agent_ref,
+                &request.machine_ref,
+            )
+            .await?;
+        Ok(LocalDaemonResponse::AgentMovedToRemote { agent })
     }
 
     async fn execute_revoke_agent_capability_request(

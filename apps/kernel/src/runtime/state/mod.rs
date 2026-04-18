@@ -362,6 +362,18 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn move_agent_to_remote(
+        &self,
+        session_id: &str,
+        agent_ref: &str,
+        machine_ref: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.with_app_side_effect(|app| {
+            app.move_agent_to_remote(session_id, agent_ref, machine_ref)
+        })
+        .await
+    }
+
     pub(crate) async fn destroy_agent(
         &self,
         agent_id: &str,

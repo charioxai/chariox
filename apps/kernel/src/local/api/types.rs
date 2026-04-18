@@ -385,6 +385,13 @@ pub struct SpawnAgentRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveAgentToRemoteRequest {
+    pub session_id: String,
+    pub agent_ref: String,
+    pub machine_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DestroyAgentRequest {
     pub session_id: String,
     pub agent_id: String,
@@ -711,6 +718,7 @@ pub enum LocalDaemonRequest {
     DeleteSession(DeleteSessionRequest),
     AliasSession(AliasSessionRequest),
     SpawnAgent(SpawnAgentRequest),
+    MoveAgentToRemote(MoveAgentToRemoteRequest),
     DestroyAgent(DestroyAgentRequest),
     FocusAgent(FocusAgentRequest),
     CycleAgentFocus(CycleAgentFocusRequest),
@@ -931,6 +939,9 @@ pub enum LocalDaemonResponse {
         session: RuntimeSession,
     },
     AgentSpawned {
+        agent: AgentInstance,
+    },
+    AgentMovedToRemote {
         agent: AgentInstance,
     },
     AgentDestroyed {

@@ -440,7 +440,7 @@ Overarching local drill matrix:
 
 ## M7.20 Remote Provider Drills
 
-Status: partial. Remote skill drills pass; remote MCP drills remain open.
+Status: partial. Remote skill lifecycle drills pass; remote MCP drills remain open.
 
 - remote agent receives only its granted MCPs
 - remote agent receives only its granted skills
@@ -455,4 +455,4 @@ node apps/cli/scripts/live-remote-skill-drill.mjs --provider opencode --model op
 node apps/cli/scripts/live-remote-skill-drill.mjs --provider codex --model gpt-5.2 --effort low
 ```
 
-Observed on 2026-04-18: both drills passed. The drill creates isolated relay/home/worker daemons, installs an Arroba-owned skill with an asset, spawns a remote leased agent, grants the skill, verifies grant-time worker materialization, submits a live remote prompt, and verifies the provider wrote `outputs/remote-skill-provider.txt` with the asset token and `REMOTE_SKILL_DRILL_OK`.
+Observed on 2026-04-18: both drills passed. The drill creates isolated relay/home/worker daemons, installs an Arroba-owned skill with an asset, verifies local-only grants do not materialize on the worker, moves a pre-granted local agent to remote and verifies grant synchronization, verifies remote-first grant-time worker materialization, deletes the worker copy and verifies prompt-time repair, verifies same-turn remote `request_capability` skill materialization, submits live remote prompts for each live scenario, and verifies the provider wrote `outputs/remote-skill-provider.txt` with the asset token and `REMOTE_SKILL_DRILL_OK`.

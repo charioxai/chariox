@@ -802,6 +802,44 @@ impl DaemonApp {
         Ok(bound)
     }
 
+    pub(crate) fn move_agent_to_remote(
+        &mut self,
+        session_id: &str,
+        agent_ref: &str,
+        machine_ref: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .agents
+            .get_agent(agent_ref)
+            .or_else(|_| self.agents.get_agent_by_ref(agent_ref))?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "move agent to remote",
+                message: format!("agent `{agent_ref}` does not belong to session `{session_id}`"),
+            });
+        }
+        if agent.remote_execution().is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "move agent to remote",
+                message: format!("agent `{agent_ref}` is already remote-backed"),
+            });
+        }
+        if self
+            .providers
+            .get_run_for_agent(session_id, agent.id())
+            .is_some()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "move agent to remote",
+                message:
+                    "agent has a provider run; stop or destroy the provider run before moving it"
+                        .to_string(),
+            });
+        }
+        let worker_kernel = self.select_remote_kernel_for_machine(machine_ref, agent.provider())?;
+        self.bind_remote_agent_to_worker(&agent, &worker_kernel)
+    }
+
     fn ensure_remote_agent_skill_packages(
         &mut self,
         agent: &AgentInstance,

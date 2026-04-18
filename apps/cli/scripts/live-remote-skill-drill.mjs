@@ -69,9 +69,11 @@ function printHelp() {
     'Runs a remote M7 skill drill with isolated relay/home/worker daemons:',
     '- creates a home session and worker leased agent',
     '- installs an Arroba-owned skill with assets',
-    '- grants it to the remote agent',
-    '- verifies grant-time materialization on the worker',
-    '- optionally prompts the live remote provider to use the synchronized skill',
+    '- verifies local-only grants do not materialize on the worker',
+    '- verifies local-to-remote move synchronizes existing skill grants',
+    '- verifies remote-first grant-time materialization on the worker',
+    '- verifies prompt-time repair after worker materialization is removed',
+    '- optionally verifies same-turn remote request_capability use',
     '',
     `  --provider ${DEFAULT_PROVIDER}`,
     `  --model ${DEFAULT_MODEL}`,
@@ -267,6 +269,23 @@ async function findMaterializedSkill(workspace, homeKernelId, skillName, timeout
   throw new Error(`timed out waiting for materialized skill ${skillName}`)
 }
 
+async function materializedSkillExists(workspace, homeKernelId, skillName) {
+  const root = path.join(workspace, '.arroba', 'remote', 'skills', homeKernelId, skillName)
+  try {
+    const versions = await readdir(root)
+    return versions.length > 0
+  } catch {
+    return false
+  }
+}
+
+async function clearMaterializedSkill(workspace, homeKernelId, skillName) {
+  await rm(path.join(workspace, '.arroba', 'remote', 'skills', homeKernelId, skillName), {
+    recursive: true,
+    force: true,
+  })
+}
+
 async function waitForCompletion({ client, sessionId, attachmentId, events, count, timeoutMs, pollMs }) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
@@ -329,6 +348,8 @@ async function main() {
     grantAgentCapabilityRequest,
     installSkillRequest,
     listRemoteMachinesRequest,
+    moveAgentToRemoteRequest,
+    spawnAgentRequest,
     submitPromptRequest,
   } = requests
 
@@ -434,10 +455,80 @@ async function main() {
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace)), 'SessionCreated').session
     const attachment = unwrap(await client.send(attachToSessionRequest(session.id, `remote-skill-drill-${Date.now()}`)), 'SessionAttached').attachment
     const installed = unwrapVariant(await client.send(installSkillRequest(workspace, sourceSkill)), 'SkillInstalled')
+
+    const scenarioResults = []
+    let completionCount = 0
+    const events = []
+    if (!options.skipLiveProvider) {
+      client.onKernelEvent((event) => events.push({ ...event, observed_at_ms: Date.now() }))
+      await client.subscribeToKernelEvents(session.id, attachment.id)
+    }
+
+    const runLivePrompt = async (agentId, prompt, outputFile) => {
+      if (options.skipLiveProvider) return null
+      await rm(outputFile, { force: true }).catch(() => {})
+      await client.send(submitPromptRequest(session.id, attachment.id, agentId, prompt, []))
+      completionCount += 1
+      await waitForCompletion({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        events,
+        count: completionCount,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+      })
+      const text = await waitForFileText({
+        filePath: outputFile,
+        requiredText: 'REMOTE_SKILL_DRILL_OK',
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+      })
+      if (!text.includes('asset-remote-skill-ok')) {
+        throw new Error(`provider file did not include asset token: ${text}`)
+      }
+      return text
+    }
+
+    const outputFile = path.join(workspace, 'outputs', 'remote-skill-provider.txt')
+
+    const localSpawned = unwrapVariant(await client.send(spawnAgentRequest(
+      session.id,
+      options.provider,
+      'local-then-remote-skill-agent',
+      options.model,
+      workspace,
+      options.effort,
+    )), 'AgentSpawned')
+    const localAgent = localSpawned.agent
+    await client.send(grantAgentCapabilityRequest(workspace, localAgent.id, 'skill', 'remote-drill'))
+    if (await materializedSkillExists(workspace, homeDaemonId, 'remote-drill')) {
+      throw new Error('local-only skill grant unexpectedly materialized on the worker')
+    }
+    const moved = unwrapVariant(await client.send(moveAgentToRemoteRequest(
+      session.id,
+      localAgent.id,
+      workerMachineId,
+    )), 'AgentMovedToRemote').agent
+    const movedMaterialized = await findMaterializedSkill(workspace, homeDaemonId, 'remote-drill', options.timeoutMs, options.pollMs)
+    const movedOutput = await runLivePrompt(
+      moved.id,
+      'Use the remote-drill skill now after this local-to-remote move. Read the synchronized asset and write outputs/remote-skill-provider.txt with the asset token and REMOTE_SKILL_DRILL_OK.',
+      outputFile,
+    )
+    scenarioResults.push({
+      scenario: 'local_grant_then_move_to_remote',
+      agent: { id: moved.id, ref: moved.agent_ref, remote_execution: moved.remote_execution },
+      materialized: movedMaterialized,
+      verifiedProviderFileText: movedOutput,
+    })
+
+    await clearMaterializedSkill(workspace, homeDaemonId, 'remote-drill')
+
     const spawned = unwrapVariant(await client.send(spawnRemoteAgentRequest(
       session.id,
       options.provider,
-      'remote-skill-agent',
+      'remote-then-grant-skill-agent',
       options.model,
       workspace,
       options.effort,
@@ -446,39 +537,67 @@ async function main() {
     const agent = spawned.agent
     await client.send(grantAgentCapabilityRequest(workspace, agent.id, 'skill', 'remote-drill'))
     const materialized = await findMaterializedSkill(workspace, homeDaemonId, 'remote-drill', options.timeoutMs, options.pollMs)
+    const verifiedProviderFileText = await runLivePrompt(
+      agent.id,
+      'Use the remote-drill skill now. Read the synchronized asset and write outputs/remote-skill-provider.txt with the asset token and REMOTE_SKILL_DRILL_OK.',
+      outputFile,
+    )
+    scenarioResults.push({
+      scenario: 'remote_then_grant',
+      agent: { id: agent.id, ref: agent.agent_ref, remote_execution: agent.remote_execution },
+      materialized,
+      verifiedProviderFileText,
+    })
 
-    let completionCount = 0
-    let verifiedProviderFileText = null
-    const events = []
-    if (!options.skipLiveProvider) {
-      client.onKernelEvent((event) => events.push({ ...event, observed_at_ms: Date.now() }))
-      await client.subscribeToKernelEvents(session.id, attachment.id)
-      await client.send(submitPromptRequest(
-        session.id,
-        attachment.id,
+    await clearMaterializedSkill(workspace, homeDaemonId, 'remote-drill')
+
+    if (options.skipLiveProvider) {
+      scenarioResults.push({
+        scenario: 'remote_prompt_time_repair_after_deleted_materialization',
+        skipped: 'requires a live provider prompt to trigger prompt-time repair',
+      })
+    } else {
+      const repairedOutput = await runLivePrompt(
         agent.id,
-        'Use the remote-drill skill now. Read the synchronized asset and write outputs/remote-skill-provider.txt with the asset token and REMOTE_SKILL_DRILL_OK.',
-        [],
-      ))
-      const completions = await waitForCompletion({
-        client,
-        sessionId: session.id,
-        attachmentId: attachment.id,
-        events,
-        count: 1,
-        timeoutMs: options.timeoutMs,
-        pollMs: options.pollMs,
+        'Use the already granted remote-drill skill again. If the skill package needs to be synchronized again, wait for Arroba to expose it, then read the synchronized asset and write outputs/remote-skill-provider.txt with the asset token and REMOTE_SKILL_DRILL_OK.',
+        outputFile,
+      )
+      const repairedMaterialized = await findMaterializedSkill(workspace, homeDaemonId, 'remote-drill', options.timeoutMs, options.pollMs)
+      scenarioResults.push({
+        scenario: 'remote_prompt_time_repair_after_deleted_materialization',
+        agent: { id: agent.id, ref: agent.agent_ref, remote_execution: agent.remote_execution },
+        materialized: repairedMaterialized,
+        verifiedProviderFileText: repairedOutput,
       })
-      completionCount = completions.length
-      verifiedProviderFileText = await waitForFileText({
-        filePath: path.join(workspace, 'outputs', 'remote-skill-provider.txt'),
-        requiredText: 'REMOTE_SKILL_DRILL_OK',
-        timeoutMs: options.timeoutMs,
-        pollMs: options.pollMs,
-      })
-      if (!verifiedProviderFileText.includes('asset-remote-skill-ok')) {
-        throw new Error(`provider file did not include asset token: ${verifiedProviderFileText}`)
+    }
+
+    await clearMaterializedSkill(workspace, homeDaemonId, 'remote-drill')
+
+    let requestScenario = null
+    if (!options.skipLiveProvider) {
+      const requestSpawned = unwrapVariant(await client.send(spawnRemoteAgentRequest(
+        session.id,
+        options.provider,
+        'remote-request-skill-agent',
+        options.model,
+        workspace,
+        options.effort,
+        workerMachineId,
+      )), 'AgentSpawned')
+      const requestAgent = requestSpawned.agent
+      const requestOutput = await runLivePrompt(
+        requestAgent.id,
+        'You do not have the remote-drill skill yet. First call list_capabilities for skills, then call request_capability with kind "skill" and name "remote-drill". Follow the returned SKILL.md body immediately. Read the synchronized asset and write outputs/remote-skill-provider.txt with the asset token and REMOTE_SKILL_DRILL_OK.',
+        outputFile,
+      )
+      const requestMaterialized = await findMaterializedSkill(workspace, homeDaemonId, 'remote-drill', options.timeoutMs, options.pollMs)
+      requestScenario = {
+        scenario: 'remote_request_capability_same_turn',
+        agent: { id: requestAgent.id, ref: requestAgent.agent_ref, remote_execution: requestAgent.remote_execution },
+        materialized: requestMaterialized,
+        verifiedProviderFileText: requestOutput,
       }
+      scenarioResults.push(requestScenario)
     }
 
     console.log(JSON.stringify({
@@ -492,15 +611,9 @@ async function main() {
       model: options.model,
       effort: options.effort,
       installedSkill: installed.skill ?? installed.metadata ?? installed,
-      remoteAgent: {
-        id: agent.id,
-        ref: agent.agent_ref,
-        remote_execution: agent.remote_execution,
-      },
-      materialized,
+      scenarios: scenarioResults,
       liveProviderSkipped: options.skipLiveProvider,
       completionCount,
-      verifiedProviderFileText,
     }, null, 2))
     succeeded = true
   } finally {

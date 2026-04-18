@@ -288,6 +288,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::StoreTransferredFile(_) => "capability.file.store_transferred",
         LocalDaemonRequest::AliasSession(_) => "session.alias",
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",
+        LocalDaemonRequest::MoveAgentToRemote(_) => "agent.move_remote",
         LocalDaemonRequest::DestroyAgent(_) => "agent.destroy",
         LocalDaemonRequest::GrantAgentCapability(_) => "agent.capability.grant",
         LocalDaemonRequest::RevokeAgentCapability(_) => "agent.capability.revoke",

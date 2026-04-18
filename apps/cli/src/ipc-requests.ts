@@ -906,6 +906,16 @@ export function spawnAgentRequest(
   }
 }
 
+export function moveAgentToRemoteRequest(sessionId: string, agentRef: string, machineRef: string) {
+  return {
+    MoveAgentToRemote: {
+      session_id: sessionId,
+      agent_ref: agentRef,
+      machine_ref: machineRef,
+    },
+  }
+}
+
 export function destroyAgentRequest(sessionId: string, agentId: string) {
   return {
     DestroyAgent: {
