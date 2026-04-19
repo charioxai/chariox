@@ -156,10 +156,11 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 
 ### Slice 1: Milestone Plan And Shell Core Skeleton
 
-- Add this milestone plan.
-- Add a parser that normalizes shell commands without `/` and slash commands with `/` to a shared shape.
-- Add shell context and command result types.
-- Add unit tests for parsing, `as <name>`, variables, and TUI-only command classification.
+- Status: implemented in `apps/cli/src/shell-core.ts` with focused coverage in `apps/cli/src/shell-core.test.ts`.
+- Added this milestone plan.
+- Added a parser that normalizes shell commands without `/` and slash commands with `/` to a shared shape.
+- Added shell context and command result types.
+- Added unit tests for parsing, `as <name>`, variables, result rendering, context updates, and TUI-only command classification.
 
 ### Slice 2: Minimal Shared Executor
 

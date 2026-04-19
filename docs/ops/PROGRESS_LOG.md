@@ -4,6 +4,11 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-04-19
 
+### M7.5 Arroba Shell core skeleton
+
+- Added the first `arroba-shell` implementation slice: shell command parsing, slash-command normalization, shell context/result types, `as <name>` bindings, variable substitution, TUI-only command classification, and result rendering helpers.
+- Verified the slice with the focused CLI shell-core test path, which also ran the existing CLI TypeScript lint/build/test suite.
+
 ### Session/agent git worktree placement
 
 - Added local session and agent placement commands for existing directories and git worktree creation: `/session new [DIR]`, `/session new --worktree DIR --branch BRANCH [--from REF]`, and `/agent spawn ... --worktree DIR --branch BRANCH [--from REF]`.
