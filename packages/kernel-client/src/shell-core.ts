@@ -4,6 +4,7 @@ export type ShellContext = {
   workspace: string
   worktree: string
   sessionId?: string | undefined
+  attachmentId?: string | undefined
   agentId?: string | undefined
   workflowId?: string | undefined
   provider: string
@@ -61,6 +62,7 @@ export function createDefaultShellContext(options: Partial<ShellContext> = {}): 
     workspace,
     worktree: options.worktree ?? workspace,
     sessionId: options.sessionId,
+    attachmentId: options.attachmentId,
     agentId: options.agentId,
     workflowId: options.workflowId,
     provider: options.provider ?? "opencode",

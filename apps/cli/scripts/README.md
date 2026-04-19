@@ -27,6 +27,14 @@ Remote wrapper drills must forward `--provider-model PROVIDER=MODEL` to their ch
 
 Live drills should own their daemon/session/port/artifact lifecycle and clean up generated files on success. If a drill supports `--keep-artifacts-on-failure`, only leave artifacts behind on failure for debugging.
 
+## Shell Scriptability Drill
+
+`live-shell-scriptability-drill.mjs` validates `arroba-shell` against an isolated local kernel with a temporary `HOME`, workspace, daemon socket, ports, and history directory. It does not launch real provider model turns. It creates sessions and dev-stub agents, mutates config, installs/grants/revokes/uninstalls a deterministic MCP and skill, exercises workflow graph/config/watchdog/queue commands, runs `stop`, and verifies `arroba-shell run` seed variables plus `--continue-on-error` line diagnostics.
+
+```bash
+pnpm --filter @arroba/cli run shell:drill
+```
+
 ## Managed I/O Identity
 
 Managed-I/O drills coordinate only while the provider run remains in the same repo/branch/head identity captured by the kernel. If a drill or concurrent developer action changes that identity mid-run, `workspace_identity_changed` is a valid failure mode. Restart the drill from a stable workspace identity rather than treating that rejection as a file-edit collision.

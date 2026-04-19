@@ -11,6 +11,7 @@
     "remote-skill:drill": "node scripts/live-remote-skill-drill.mjs",
     "managed-io:drill": "node scripts/live-managed-io-drill.mjs --providers opencode,codex",
     "managed-io:remote-drill": "node scripts/live-remote-managed-io-drill.mjs --providers opencode --full",
+    "shell:drill": "pnpm --filter @arroba/shell run build && node scripts/live-shell-scriptability-drill.mjs",
     "outline:drills": "pnpm run build && node scripts/workflow-outline-drills.mjs",
     "lint": "pnpm --filter @arroba/kernel-client run build && tsc -p tsconfig.json --noEmit",
     "test": "pnpm run lint && pnpm run build && node --test dist/*.test.js",

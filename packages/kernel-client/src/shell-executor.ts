@@ -31,6 +31,7 @@ import {
   addWorkflowNodeRequest,
   aliasWorkflowEndpointRequest,
   aliasWorkflowRequest,
+  attachToSessionRequest,
   bindWorkflowEndpointRequest,
   cancelActivePromptRequest,
   cancelWorkflowRunRequest,
@@ -120,6 +121,7 @@ type PlacementOptions = {
 
 export type ShellExecutorDeps = {
   client: ShellKernelClient
+  clientId?: string | undefined
   prepareLocalGitWorktree?: ((options: LocalGitWorktreeOptions) => Promise<string>) | undefined
   resolveExistingDirectory?: ((directory: string, baseDirectory: string, label: string) => Promise<string>) | undefined
 }
@@ -287,11 +289,19 @@ async function executeSessionCommand(
       const response = await deps.client.send(createSessionRequest(context.workspace, worktree))
       const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
       const session = payload.session
+      const attachmentId = await attachShellSession(session.id, deps)
+      const contextUpdates = {
+        sessionId: session.id,
+        ...(attachmentId ? { attachmentId } : {}),
+        agentId: session.focused_agent_id ?? undefined,
+        workspace: session.workspace_id,
+        worktree: session.worktree_id,
+      }
       return resourceResult(
         `created session ${session.alias ?? session.id} in ${session.worktree_id}`,
         parsed.assignment,
         session.id,
-        { sessionId: session.id, agentId: session.focused_agent_id ?? undefined, workspace: session.workspace_id, worktree: session.worktree_id },
+        contextUpdates,
         { session },
       )
     }
@@ -303,11 +313,19 @@ async function executeSessionCommand(
       }
       const response = await deps.client.send(resolveSessionRequest(sessionRef, context.workspace))
       const session = expectVariant<{ session: RuntimeSession }>(response, "SessionResolved").session
+      const attachmentId = await attachShellSession(session.id, deps)
+      const contextUpdates = {
+        sessionId: session.id,
+        ...(attachmentId ? { attachmentId } : context.attachmentId ? { attachmentId: context.attachmentId } : {}),
+        agentId: session.focused_agent_id ?? undefined,
+        workspace: session.workspace_id,
+        worktree: session.worktree_id,
+      }
       return resourceResult(
         `current session = ${session.alias ?? session.id}`,
         parsed.assignment,
         session.id,
-        { sessionId: session.id, agentId: session.focused_agent_id ?? undefined, workspace: session.workspace_id, worktree: session.worktree_id },
+        contextUpdates,
         { session },
       )
     }
@@ -797,7 +815,7 @@ async function executeWorkflowCommand(
       if (!nextValue) {
         return { ok: false, message: "usage: workflow max-turns <count|off>" }
       }
-      const attachmentId = await resolveShellAttachmentId(sessionId, deps)
+      const attachmentId = await resolveShellAttachmentId(context, deps)
       if (!attachmentId.ok) {
         return { ok: false, message: attachmentId.message }
       }
@@ -1049,7 +1067,7 @@ async function executeWorkflowWatchdogCommand(
     return { ok: true, message: `removed workflow watchdog ${payload.watchdog.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
   if (action === "add") {
-    const explicitWorkflowRef = args[4] === "every" ? args[1] : null
+    const explicitWorkflowRef = args[3] === "every" ? args[1] : null
     const workflowRef = explicitWorkflowRef ?? context.workflowId
     const endpointRef = explicitWorkflowRef ? args[2] : args[1]
     const everyLiteral = explicitWorkflowRef ? args[3] : args[2]
@@ -1155,7 +1173,7 @@ async function executeStopCommand(
   if (!context.sessionId) {
     return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
   }
-  const attachmentId = await resolveShellAttachmentId(context.sessionId, deps)
+  const attachmentId = await resolveShellAttachmentId(context, deps)
   if (!attachmentId.ok) {
     return { ok: false, message: attachmentId.message }
   }
@@ -1190,9 +1208,16 @@ async function resolveShellAgent(
 }
 
 async function resolveShellAttachmentId(
-  sessionId: string,
+  context: ShellContext,
   deps: ShellExecutorDeps,
 ): Promise<{ ok: true; attachmentId: string } | { ok: false; message: string }> {
+  if (context.attachmentId) {
+    return { ok: true, attachmentId: context.attachmentId }
+  }
+  const sessionId = context.sessionId
+  if (!sessionId) {
+    return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
+  }
   const response = await deps.client.send(getSessionStateRequest(sessionId))
   const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
   const attachmentId = session.attachment_ids[0]
@@ -1200,6 +1225,15 @@ async function resolveShellAttachmentId(
     return { ok: false, message: "current session has no attached client; stop/session-config commands require an attachment" }
   }
   return { ok: true, attachmentId }
+}
+
+async function attachShellSession(sessionId: string, deps: ShellExecutorDeps): Promise<string | undefined> {
+  if (!deps.clientId) {
+    return undefined
+  }
+  const response = await deps.client.send(attachToSessionRequest(sessionId, deps.clientId))
+  const payload = expectVariant<{ attachment: { id: string } }>(response, "SessionAttached")
+  return payload.attachment.id
 }
 
 function parseMcpInstallConfig(args: string[]): ArrobaMcpServerConfig | null {

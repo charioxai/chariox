@@ -127,6 +127,24 @@ test("executeShellScriptLines can continue on error with line-numbered transcrip
   assert.match(output.join(""), /\$seeded = yes/)
 })
 
+test("executeShellScriptLines can continue after thrown command errors", async () => {
+  const output: string[] = []
+  const code = await executeShellScriptLines([
+    "session list",
+    "vars",
+  ], createInitialShellContext({ workspace: "/repo", worktree: "/repo", variables: { seeded: "yes" } }), {
+    client: {
+      send: async () => {
+        throw new Error("transport failed")
+      },
+    },
+  }, (line) => output.push(line), { continueOnError: true })
+  assert.equal(code, 1)
+  assert.match(output.join(""), /transport failed/)
+  assert.match(output.join(""), /line 1 failed; continuing/)
+  assert.match(output.join(""), /\$seeded = yes/)
+})
+
 function makeAgent(overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {
     id: "agent-1",

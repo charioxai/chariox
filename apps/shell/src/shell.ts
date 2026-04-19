@@ -146,6 +146,7 @@ export async function runShellRepl(options: ShellCliOptions, io: ShellIo = {
 }): Promise<number> {
   let context = createInitialShellContext(options)
   const client = new LocalIpcClient(options.socketPath ?? options.kernelUrl ?? defaultKernelEndpoint())
+  const clientId = `arroba-shell-${process.pid}-${Date.now()}`
   const readline = createInterface({ input: io.input, output: io.output, terminal: Boolean((io.output as { isTTY?: boolean }).isTTY) })
 
   try {
@@ -153,7 +154,7 @@ export async function runShellRepl(options: ShellCliOptions, io: ShellIo = {
     for (;;) {
       const line = await readline.question("@ ")
       const parsed = parseShellCommand(line, context)
-      const result = await executeShellCommand(parsed, context, { client })
+      const result = await executeShellCommand(parsed, context, { client, clientId })
       const rendered = renderShellCommandResult(result)
       if (rendered) {
         io.output.write(`${rendered}\n`)
@@ -186,9 +187,10 @@ export async function runShellScript(options: ShellCliOptions, io: ShellIo = {
   }
   const context = createInitialShellContext(options)
   const client = new LocalIpcClient(options.socketPath ?? options.kernelUrl ?? defaultKernelEndpoint())
+  const clientId = `arroba-shell-script-${process.pid}-${Date.now()}`
   try {
     const source = await readFile(options.scriptPath, "utf8")
-    return await executeShellScriptLines(source.split(/\r?\n/), context, { client }, (line) => io.output.write(line), {
+    return await executeShellScriptLines(source.split(/\r?\n/), context, { client, clientId }, (line) => io.output.write(line), {
       continueOnError: options.continueOnError,
     })
   } catch (error) {
@@ -215,24 +217,36 @@ export async function executeShellScriptLines(
       continue
     }
     write(`@ ${line}\n`)
-    const parsed = parseShellCommand(line, context)
-    const result = await executeShellCommand(parsed, context, deps)
-    const rendered = renderShellCommandResult(result)
-    if (rendered) {
-      write(`${rendered}\n`)
-    }
-    context = applyShellCommandResult(context, result)
-    if (!result.ok) {
+    try {
+      const parsed = parseShellCommand(line, context)
+      const result = await executeShellCommand(parsed, context, deps)
+      const rendered = renderShellCommandResult(result)
+      if (rendered) {
+        write(`${rendered}\n`)
+      }
+      context = applyShellCommandResult(context, result)
+      if (!result.ok) {
+        failed = true
+        if (options.continueOnError) {
+          write(`line ${index + 1} failed; continuing\n`)
+          continue
+        }
+        write(`stopped at line ${index + 1}\n`)
+        return 1
+      }
+      if (result.data && typeof result.data === "object" && "exit" in result.data) {
+        return 0
+      }
+    } catch (error) {
       failed = true
       if (options.continueOnError) {
+        write(`${formatShellError(error)}\n`)
         write(`line ${index + 1} failed; continuing\n`)
         continue
       }
+      write(`${formatShellError(error)}\n`)
       write(`stopped at line ${index + 1}\n`)
       return 1
-    }
-    if (result.data && typeof result.data === "object" && "exit" in result.data) {
-      return 0
     }
   }
   return failed ? 1 : 0

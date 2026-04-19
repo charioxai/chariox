@@ -158,6 +158,34 @@ test("executeShellCommand creates a session and binds assignment", async () => {
   })
 })
 
+test("executeShellCommand attaches standalone shell clients when switching sessions", async () => {
+  const session = makeSession({ id: "session-2", worktree_id: "/repo/qa", focused_agent_id: "agent-1" })
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("CreateSession" in request) {
+          return { SessionCreated: { session } }
+        }
+        return { SessionAttached: { attachment: { id: "attachment-shell" } } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("session new --dir qa as s"), context, {
+    client: fake.client,
+    clientId: "arroba-shell-test",
+    resolveExistingDirectory: async () => "/repo/qa",
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.contextUpdates?.attachmentId, "attachment-shell")
+  assert.deepEqual(requests, [
+    { CreateSession: { workspace_id: "/repo", worktree_id: "/repo/qa", alias: null } },
+    { AttachToSession: { session_id: "session-2", client_id: "arroba-shell-test", capability_level: "FullTerminal" } },
+  ])
+})
+
 test("executeShellCommand lists agents for current session", async () => {
   const agents = [makeAgent(), makeAgent({ id: "agent-2", agent_ref: "agent-2", alias: "reviewer" })]
   const fake = fakeClient((request) => {
@@ -818,6 +846,27 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
   ])
 })
 
+test("executeShellCommand creates workflow watchdogs with explicit workflow ref", async () => {
+  const workflow = makeWorkflow()
+  const session = makeSession({ workflows: [workflow] })
+  const watchdog = makeWorkflowWatchdog()
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        return { WorkflowWatchdogCreated: { watchdog, workflow, endpoint: workflow.endpoints![0], session } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("workflow watchdog add workflow-1 endpoint-1 every 1m skip Run it"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests, [
+    { CreateWorkflowWatchdog: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", interval_seconds: 60, invocation_prompt: "Run it", policy: "skip", max_wakeups_configured: false, max_wakeups: null } },
+  ])
+})
+
 test("executeShellCommand manages provider auth and processes", async () => {
   const process: ProviderProcessInfo = {
     process_id: "process-1",
@@ -899,5 +948,23 @@ test("executeShellCommand cancels active prompt through the current session atta
   assert.deepEqual(requests, [
     { GetSessionState: { session_id: "session-1" } },
     { CancelActivePrompt: { session_id: "session-1", attachment_id: "attachment-1" } },
+  ])
+})
+
+test("executeShellCommand cancels active prompt through shell context attachment", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        return { PromptCancelled: { cancellation: { prompt: null, started_next: null } } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", attachmentId: "attachment-shell" })
+  const result = await executeShellCommand(parseShellCommand("stop"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests, [
+    { CancelActivePrompt: { session_id: "session-1", attachment_id: "attachment-shell" } },
   ])
 })

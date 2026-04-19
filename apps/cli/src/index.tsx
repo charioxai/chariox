@@ -804,6 +804,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       workspace: session.workspace_id || previous.workspace,
       worktree: session.worktree_id || previous.worktree,
       sessionId: session.id,
+      attachmentId: attachmentState()?.id ?? previous.attachmentId,
       agentId: session.focused_agent_id ?? session.agents[0]?.id ?? previous.agentId,
     }))
   })

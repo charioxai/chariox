@@ -208,7 +208,8 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 - Supports comments, blank lines, variables, and stop-on-error execution.
 - Supports seeded variables through repeated `--var NAME=VALUE`.
 - Supports `--continue-on-error` for audit/drill scripts while still returning non-zero if any command failed.
-- Emits line-numbered failure diagnostics so script output can be mapped back to the command file.
+- Emits line-numbered failure diagnostics for both structured command failures and thrown transport/kernel errors so script output can be mapped back to the command file.
+- Standalone shell clients attach to sessions they create/use so commands that require an attachment, such as `stop` and `workflow max-turns`, work outside the TUI.
 - Returns non-zero on failure.
 - Added script fixture tests for session/agent setup commands using mocked IPC.
 
@@ -261,6 +262,7 @@ Each slice must include focused tests and update docs before commit/push. Requir
 - `arroba-shell` can create a session, spawn an agent, list sessions/agents, and update context.
 - `arroba-shell run <file>` can set up a small workflow using variables.
 - `arroba-shell run <file> --var NAME=VALUE --continue-on-error` can run a validation script, continue past failures, and still return non-zero if anything failed.
+- `pnpm --filter @arroba/cli run shell:drill` passes against an isolated local kernel.
 - TUI workspace pane can run the same shell command executor without duplicating command logic.
 - TUI-only commands are rejected or redirected with clear messages in `arroba-shell`.
 
