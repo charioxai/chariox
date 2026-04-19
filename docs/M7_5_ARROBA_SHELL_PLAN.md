@@ -129,6 +129,13 @@ arroba-shell run setup.arroba
 arroba-shell run setup.arroba --var session=session-1 --continue-on-error
 ```
 
+From an active `arroba-shell` REPL or another script:
+
+```text
+source setup.arroba
+run setup.arroba
+```
+
 Default script behavior:
 
 - execute non-empty, non-comment lines in order
@@ -138,6 +145,7 @@ Default script behavior:
 - return non-zero on failure
 - accept repeated `--var NAME=VALUE` seed bindings before the first command
 - accept `--continue-on-error` for validation/drill scripts that should report every failing command
+- `source <file>` and `run <file>` load another script from disk, resolve relative paths against the current shell worktree, and preserve context changes/variable bindings in the caller
 
 Example script:
 
@@ -208,6 +216,7 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 - Supports comments, blank lines, variables, and stop-on-error execution.
 - Supports seeded variables through repeated `--var NAME=VALUE`.
 - Supports `--continue-on-error` for audit/drill scripts while still returning non-zero if any command failed.
+- Supports `source <file>` / `run <file>` from the REPL or nested scripts, preserving the caller's shell context.
 - Emits line-numbered failure diagnostics for both structured command failures and thrown transport/kernel errors so script output can be mapped back to the command file.
 - Standalone shell clients attach to sessions they create/use so commands that require an attachment, such as `stop` and `workflow max-turns`, work outside the TUI.
 - Returns non-zero on failure.

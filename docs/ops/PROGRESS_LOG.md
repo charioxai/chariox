@@ -79,6 +79,7 @@ Chronological notes to preserve execution context between contributors/agents.
 - `arroba-shell run <file>` still stops on first error by default, while validation/drill scripts can continue after structured command failures or thrown transport/kernel errors and return non-zero if any command failed.
 - Added standalone shell session attachments so `stop` and attachment-scoped session config commands can run from `arroba-shell`, not only from the TUI.
 - Added and passed `live-shell-scriptability-drill.mjs` through `pnpm --filter @arroba/cli run shell:drill` against an isolated local kernel.
+- Added `source <file>` / `run <file>` support inside `arroba-shell` and nested scripts, preserving context and variable bindings after loading scripts from disk.
 
 ### Session/agent git worktree placement
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { AgentInstance, RuntimeSession } from "@arroba/kernel-client/kernel-types"
-import { createInitialShellContext, defaultKernelEndpoint, executeShellScriptLines, parseShellCliArgs, shellUsage } from "./shell.js"
+import { createInitialShellContext, defaultKernelEndpoint, executeShellScript, executeShellScriptLines, parseShellCliArgs, shellUsage } from "./shell.js"
 
 test("parseShellCliArgs parses kernel and context options", () => {
   assert.deepEqual(parseShellCliArgs([
@@ -143,6 +143,50 @@ test("executeShellScriptLines can continue after thrown command errors", async (
   assert.match(output.join(""), /transport failed/)
   assert.match(output.join(""), /line 1 failed; continuing/)
   assert.match(output.join(""), /\$seeded = yes/)
+})
+
+test("executeShellScript can source a disk script into current context", async () => {
+  const session = makeSession({ id: "session-2", worktree_id: "/repo/qa", focused_agent_id: "agent-1" })
+  const seen: Record<string, unknown>[] = []
+  const output: string[] = []
+  const result = await executeShellScript([
+    "source setup.arroba",
+    "vars",
+  ], createInitialShellContext({ workspace: "/repo", worktree: "/repo" }), {
+    client: {
+      send: async (request) => {
+        seen.push(request)
+        if ("CreateSession" in request) {
+          return { SessionCreated: { session } }
+        }
+        return {}
+      },
+    },
+    resolveExistingDirectory: async () => "/repo/qa",
+  }, (line) => output.push(line), {
+    loadScript: async (scriptPath) => {
+      assert.equal(scriptPath, "/repo/setup.arroba")
+      return "session new --dir qa as sourced_session\n"
+    },
+  })
+  assert.equal(result.code, 0)
+  assert.equal(result.context.sessionId, "session-2")
+  assert.equal(result.context.variables.sourced_session, "session-2")
+  assert.equal(seen.length, 1)
+  assert.match(output.join(""), /@ source setup.arroba/)
+  assert.match(output.join(""), /bound \$sourced_session = session-2/)
+  assert.match(output.join(""), /\$sourced_session = session-2/)
+})
+
+test("executeShellScript reports source usage errors", async () => {
+  const output: string[] = []
+  const code = await executeShellScriptLines([
+    "source",
+  ], createInitialShellContext({ workspace: "/repo", worktree: "/repo" }), {
+    client: { send: async () => ({}) },
+  }, (line) => output.push(line))
+  assert.equal(code, 1)
+  assert.match(output.join(""), /usage: source <file>/)
 })
 
 function makeAgent(overrides: Partial<AgentInstance> = {}): AgentInstance {

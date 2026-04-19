@@ -29,7 +29,7 @@ Live drills should own their daemon/session/port/artifact lifecycle and clean up
 
 ## Shell Scriptability Drill
 
-`live-shell-scriptability-drill.mjs` validates `arroba-shell` against an isolated local kernel with a temporary `HOME`, workspace, daemon socket, ports, and history directory. It does not launch real provider model turns. It creates sessions and dev-stub agents, mutates config, installs/grants/revokes/uninstalls a deterministic MCP and skill, exercises workflow graph/config/watchdog/queue commands, runs `stop`, and verifies `arroba-shell run` seed variables plus `--continue-on-error` line diagnostics.
+`live-shell-scriptability-drill.mjs` validates `arroba-shell` against an isolated local kernel with a temporary `HOME`, workspace, daemon socket, ports, and history directory. It does not launch real provider model turns. It creates sessions and dev-stub agents, mutates config, installs/grants/revokes/uninstalls a deterministic MCP and skill, exercises workflow graph/config/watchdog/queue commands, runs `stop`, and verifies `arroba-shell run` seed variables, `source <file>` loading, and `--continue-on-error` line diagnostics.
 
 ```bash
 pnpm --filter @arroba/cli run shell:drill

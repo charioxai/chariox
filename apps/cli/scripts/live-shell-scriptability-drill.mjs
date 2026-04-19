@@ -131,6 +131,10 @@ async function main() {
       "process.stdin.resume()",
       "process.stdin.on('data', () => {})",
     ].join('\n'), 'utf8')
+    await writeFile(path.join(workspace, 'sourced.arroba'), [
+      'set effort low',
+      'vars',
+    ].join('\n'), 'utf8')
 
     const kernelBinary = await buildKernel()
     daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
@@ -143,6 +147,7 @@ async function main() {
       'set model shell-drill-model',
       'set effort low',
       'vars',
+      'source sourced.arroba',
       'session list',
       'session new $workspace as session',
       'session use $session',
