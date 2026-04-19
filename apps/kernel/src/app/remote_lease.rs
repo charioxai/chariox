@@ -1028,6 +1028,23 @@ impl<'a> RemoteLeaseRuntime<'a> {
         completions: Vec<RelayProjectedCompletion>,
     ) -> Result<(), DaemonError> {
         let _ = self.app.sessions.get_session(session_id)?;
+        let adapter_key = self
+            .app
+            .agents
+            .get_agent(agent_id)
+            .map(|agent| agent.provider().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        let projected_provider_diagnostic = {
+            let mut text = notices.join("\n");
+            text.push('\n');
+            text.push_str(
+                &output_chunks
+                    .iter()
+                    .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
+                    .collect::<String>(),
+            );
+            crate::provider::classify_provider_terminal_failure_text(&adapter_key, &text)
+        };
         let recipient_attachment_ids = self.app.attachments.list_session_attachment_ids(session_id);
         let saw_completion = !completions.is_empty();
         for chunk in output_chunks {
@@ -1103,18 +1120,45 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 ) {
                     let message =
                         "provider completed workflow turn without a validated workflow output";
+                    let provider_diagnostic = projected_provider_diagnostic.clone().or_else(|| {
+                        self.app
+                            .providers()
+                            .get_run(provider_run_id)
+                            .ok()
+                            .and_then(|run| run.terminal_diagnostic().map(str::to_string))
+                            .filter(|message| !message.trim().is_empty())
+                    });
+                    let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
+                        provider_diagnostic
+                    {
+                        (
+                            crate::session::WorkflowFailureKind::ProviderFailure,
+                            diagnostic.clone(),
+                            format!(
+                                "Workflow run `{workflow_run_id}` failed after provider turn failure: {diagnostic}"
+                            ),
+                        )
+                    } else {
+                        (
+                            crate::session::WorkflowFailureKind::MissingStructuredOutput,
+                            message.to_string(),
+                            format!(
+                                "Workflow run `{workflow_run_id}` failed after provider turn completion without workflow output."
+                            ),
+                        )
+                    };
                     let failure = crate::session::WorkflowFailureEvent::new(
-                        crate::session::WorkflowFailureKind::MissingStructuredOutput,
+                        failure_kind,
                         workflow_node_run_id,
                         Vec::new(),
-                        message,
+                        failure_message,
                     );
                     let _ = self.app.sessions_mut().record_workflow_failure_event(
                         session_id,
                         workflow_run_id,
                         failure,
                     );
-                    let workflow_run = self.app.sessions_mut().fail_workflow_node_run(
+                    self.app.sessions_mut().fail_workflow_node_run(
                         session_id,
                         workflow_run_id,
                         workflow_node_run_id,
@@ -1123,10 +1167,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         session_id,
                         Some(provider_run_id),
                         recipient_attachment_ids.clone(),
-                        format!(
-                            "Workflow run `{}` failed after provider turn completion without workflow output.",
-                            workflow_run.id()
-                        ),
+                        notice_message,
                     );
                     let _ = crate::app::KernelSessionReadService::new(self.app)
                         .session_snapshot(session_id);

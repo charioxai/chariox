@@ -210,6 +210,11 @@ impl<'a> ProviderOutputPump<'a> {
             })
             .collect::<Vec<_>>();
         if let Some(message) = terminal_failure {
+            let run = self
+                .context
+                .provider_store
+                .record_terminal_diagnostic(request.provider_run_id, message.clone())?;
+            self.context.app.update_provider_run_projection(run);
             self.context.fail_prompt_for_terminal_failure(
                 request.session_id,
                 request.provider_run_id,
@@ -650,15 +655,23 @@ impl<'a> ProviderOutputPumpContext<'a> {
         }
         let prompt_completed = poll_result.prompt_completed;
         let terminal_failure = poll_result.terminal_failure.clone().or_else(|| {
-            classify_provider_terminal_failure_text(
-                provider_run.adapter_key(),
+            let mut text = poll_result.notices.join("\n");
+            text.push('\n');
+            text.push_str(
                 &poll_result
                     .chunks
                     .iter()
                     .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                     .collect::<String>(),
-            )
+            );
+            classify_provider_terminal_failure_text(provider_run.adapter_key(), &text)
         });
+        if let Some(message) = terminal_failure.as_deref() {
+            let run = self
+                .provider_store
+                .record_terminal_diagnostic(provider_run_id, message.to_string())?;
+            self.app.update_provider_run_projection(run);
+        }
         let records = poll_result
             .chunks
             .into_iter()

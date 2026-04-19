@@ -305,6 +305,14 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 
+    fn provider_run_terminal_diagnostic(&self, provider_run_id: &str) -> Option<String> {
+        self.provider_store
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.terminal_diagnostic().map(str::to_string))
+            .filter(|message| !message.trim().is_empty())
+    }
+
     #[allow(dead_code)]
     pub(super) fn workflow_complete_prompt(
         &self,
@@ -323,6 +331,58 @@ impl KernelRuntimeOwnedState {
             workflow_node_run_id,
             provider_run_id,
         );
+        if completion_snapshot.is_none() {
+            let message = "provider completed workflow turn without a validated workflow output";
+            let provider_diagnostic =
+                provider_run_id.and_then(|run_id| self.provider_run_terminal_diagnostic(run_id));
+            let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
+                provider_diagnostic
+            {
+                (
+                        crate::session::WorkflowFailureKind::ProviderFailure,
+                        diagnostic.clone(),
+                        format!(
+                            "Workflow run `{workflow_run_id}` failed after provider turn failure: {diagnostic}"
+                        ),
+                    )
+            } else {
+                (
+                    crate::session::WorkflowFailureKind::MissingStructuredOutput,
+                    message.to_string(),
+                    format!("Workflow run `{workflow_run_id}` failed: {message}."),
+                )
+            };
+            self.workflow_record_failure(
+                session_id,
+                workflow_run_id,
+                &crate::session::WorkflowFailureEvent::new(
+                    failure_kind,
+                    workflow_node_run_id,
+                    Vec::new(),
+                    failure_message,
+                ),
+            );
+            self.session_store.write().fail_workflow_node_run(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            )?;
+            let _ = self.release_workflow_node_workspace_claim(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            );
+            self.record_notice(
+                session_id,
+                provider_run_id,
+                self.attachment_store
+                    .list_session_attachment_ids(session_id),
+                notice_message,
+            );
+            self.workflow_maybe_start_next_queued_launch(session_id);
+            let _ = self.session_snapshot(session_id)?;
+            return Ok(WorkflowPromptDispatches::default());
+        }
         let max_turns = self.workflow_max_turns(session_id);
         let completion_result = self.session_store.write().complete_workflow_node_run(
             session_id,

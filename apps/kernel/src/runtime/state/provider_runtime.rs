@@ -495,6 +495,69 @@ impl KernelRuntimeState {
                     error
                 ),
             );
+            let diagnostic = format!(
+                "Provider launch `{}` failed before it became ready: {}",
+                started.run.id(),
+                error
+            );
+            if let Ok(run) = owned
+                .provider_store
+                .record_terminal_diagnostic(started.run.id(), diagnostic.clone())
+            {
+                owned.provider_run_projection.update(run);
+            }
+            let leased_context = self
+                .with_app_side_effect(|app| {
+                    crate::app::RemoteLeaseRuntime::new(app)
+                        .leased_workflow_turn_context_for_provider_run(started.run.id())
+                })
+                .await;
+            if let Some(context) = leased_context {
+                let _ = self
+                    .with_app_side_effect(|app| {
+                        app.block_on_relay_future(
+                            crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                                app.config(),
+                                arroba_relay::protocol::ClientTarget {
+                                    daemon_id: Some(context.home_kernel_id.clone()),
+                                    daemon_alias: None,
+                                },
+                                crate::transport::relay_peer::RelayPeerRequest::ForwardWorkflowProviderFailure {
+                                    context,
+                                    message: diagnostic.clone(),
+                                },
+                            ),
+                        )
+                    })
+                    .await;
+                let _ = self
+                    .with_app_side_effect(|app| {
+                        crate::app::RemoteLeaseRuntime::new(app)
+                            .complete_leased_workflow_prompt_for_provider_run(started.run.id())
+                    })
+                    .await;
+            } else if let Some(agent_id) = started.run.agent_instance_id() {
+                if let Ok(session) = owned.session_store.get_session(started.run.session_id()) {
+                    if let Some(active_prompt) = owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, agent_id)
+                    {
+                        if active_prompt.workflow_run_id().is_some() {
+                            let _ = owned.workflow_fail_provider_prompt(
+                                started.run.session_id(),
+                                &active_prompt,
+                                Some(started.run.id()),
+                                &diagnostic,
+                            );
+                        }
+                        let _ = owned.complete_local_prompt_without_advance(
+                            started.run.session_id(),
+                            agent_id,
+                            Some(started.run.id()),
+                        );
+                    }
+                }
+            }
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
                     crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(started.run.id())
@@ -870,6 +933,10 @@ impl KernelRuntimeState {
             })
             .collect::<Vec<_>>();
         if let Some(message) = terminal_failure {
+            let run = owned
+                .provider_store
+                .record_terminal_diagnostic(provider_run_id, message.clone())?;
+            owned.provider_run_projection.update(run);
             self.fail_owned_provider_prompt(session_id, provider_run_id, &message)
                 .await?;
             return Ok(records);
@@ -1055,15 +1122,23 @@ impl KernelRuntimeState {
         }
         let prompt_completed = poll_result.prompt_completed;
         let terminal_failure = poll_result.terminal_failure.clone().or_else(|| {
-            crate::provider::classify_provider_terminal_failure_text(
-                adapter_key.as_str(),
+            let mut text = poll_result.notices.join("\n");
+            text.push('\n');
+            text.push_str(
                 &poll_result
                     .chunks
                     .iter()
                     .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                     .collect::<String>(),
-            )
+            );
+            crate::provider::classify_provider_terminal_failure_text(adapter_key.as_str(), &text)
         });
+        if let Some(message) = terminal_failure.as_deref() {
+            let run = owned
+                .provider_store
+                .record_terminal_diagnostic(provider_run_id, message.to_string())?;
+            owned.provider_run_projection.update(run);
+        }
         let records = poll_result
             .chunks
             .into_iter()

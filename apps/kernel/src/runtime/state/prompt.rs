@@ -879,6 +879,13 @@ impl KernelRuntimeOwnedState {
             .drain_finished_structured_prompt_submit_jobs()
         {
             if let Err(error) = finished.result {
+                let diagnostic = format!("Provider prompt dispatch failed: {error}");
+                if let Ok(run) = self
+                    .provider_store
+                    .record_terminal_diagnostic(&finished.provider_run_id, diagnostic.clone())
+                {
+                    self.provider_run_projection.update(run);
+                }
                 if let Ok(session) = self.session_store.get_session(&finished.session_id) {
                     if let Some(prompt) = self
                         .prompt_state_owner
@@ -889,7 +896,7 @@ impl KernelRuntimeOwnedState {
                                 &finished.session_id,
                                 &prompt,
                                 Some(&finished.provider_run_id),
-                                &format!("Provider prompt dispatch failed: {error}"),
+                                &diagnostic,
                             );
                         }
                     }

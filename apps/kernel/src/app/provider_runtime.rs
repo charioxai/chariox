@@ -949,6 +949,37 @@ impl DaemonApp {
                 error
             ),
         );
+        let diagnostic = format!(
+            "Provider launch `{}` failed before it became ready: {}",
+            started.run.id(),
+            error
+        );
+        if let Ok(run) = self
+            .providers
+            .record_terminal_diagnostic(started.run.id(), diagnostic.clone())
+        {
+            self.update_provider_run_projection(run);
+        }
+        if let Some(agent_id) = started.run.agent_instance_id() {
+            if let Ok(Some(active_prompt)) =
+                self.prompt_owner_active_prompt_for_agent(started.run.session_id(), agent_id)
+            {
+                if active_prompt.workflow_run_id().is_some() {
+                    let _ = crate::scheduler::runtime::on_workflow_provider_failure(
+                        self,
+                        started.run.session_id(),
+                        &active_prompt,
+                        Some(started.run.id()),
+                        &diagnostic,
+                    );
+                }
+                let _ = self.complete_active_prompt(
+                    started.run.session_id(),
+                    agent_id,
+                    Some(started.run.id()),
+                );
+            }
+        }
         let _ = ProviderProcessTracker::new(self).remove_run(started.run.id());
         self.providers.clear_runtime(started.run.id());
         if let Ok(outcome) = self

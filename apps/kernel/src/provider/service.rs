@@ -273,6 +273,15 @@ impl ProviderProcessServiceStore {
         self.write()
             .apply_structured_output_metadata(provider_run_id, batch)
     }
+
+    pub(crate) fn record_terminal_diagnostic(
+        &self,
+        provider_run_id: &str,
+        diagnostic: impl Into<String>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .record_terminal_diagnostic(provider_run_id, diagnostic)
+    }
 }
 
 pub(crate) enum ProviderRuntimeBinding {
@@ -975,13 +984,23 @@ impl ProviderProcessService {
         provider_run_id: &str,
         batch: &ProviderPromptSignalBatch,
     ) -> Result<(), DaemonError> {
+        let has_terminal_diagnostic = batch
+            .terminal_failure
+            .as_deref()
+            .is_some_and(|message| !message.trim().is_empty());
         if batch.resolved_model.is_none()
             && batch.resolved_variant.is_none()
             && batch.resolved_usage_tokens_total.is_none()
+            && !has_terminal_diagnostic
         {
             return Ok(());
         }
         let run = self.get_run_mut(provider_run_id)?;
+        if let Some(message) = batch.terminal_failure.as_deref() {
+            if !message.trim().is_empty() {
+                run.set_terminal_diagnostic(message.to_string());
+            }
+        }
         if let Some(model) = batch.resolved_model.as_deref() {
             crate::logging::debug_with_fields(
                 "daemon.provider.opencode",
@@ -1017,6 +1036,16 @@ impl ProviderProcessService {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn record_terminal_diagnostic(
+        &mut self,
+        provider_run_id: &str,
+        diagnostic: impl Into<String>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.get_run_mut(provider_run_id)?;
+        run.set_terminal_diagnostic(diagnostic);
+        Ok(run.clone())
     }
 
     pub(crate) fn mark_run_ended_provider_only(
@@ -1138,7 +1167,8 @@ mod tests {
     use crate::error::DaemonError;
     use crate::provider::opencode_binding::OpenCodeRunSelection;
     use crate::provider::{
-        AgentEndpointMode, ProviderLaunchResult, ProviderResumeState, RuntimeProviderRun,
+        AgentEndpointMode, ProviderLaunchResult, ProviderPromptSignalBatch, ProviderResumeState,
+        RuntimeProviderRun,
     };
     use crate::session::{CreateSessionRequest, SessionService, SessionStatus};
 
@@ -1620,6 +1650,33 @@ mod tests {
         );
 
         assert_eq!(run.resume_state().codex_thread_id(), Some("thread-1"));
+    }
+
+    #[test]
+    fn structured_output_metadata_records_terminal_diagnostic() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+        let run = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "sonnet"),
+        );
+
+        providers
+            .apply_structured_output_metadata(
+                run.id(),
+                &ProviderPromptSignalBatch {
+                    terminal_failure: Some("provider no credits".to_string()),
+                    ..ProviderPromptSignalBatch::default()
+                },
+            )
+            .expect("terminal diagnostic should record");
+
+        let run = providers.get_run(run.id()).expect("run should exist");
+        assert_eq!(run.terminal_diagnostic(), Some("provider no credits"));
     }
 
     #[test]

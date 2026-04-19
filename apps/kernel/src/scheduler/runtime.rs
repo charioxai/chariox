@@ -763,6 +763,25 @@ pub fn on_workflow_prompt_completed(
     );
     if completion_snapshot.is_none() {
         let message = "provider completed workflow turn without a validated workflow output";
+        let provider_diagnostic =
+            provider_run_id.and_then(|run_id| provider_run_terminal_diagnostic(app, run_id));
+        let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
+            provider_diagnostic
+        {
+            (
+                WorkflowFailureKind::ProviderFailure,
+                diagnostic.clone(),
+                format!(
+                    "Workflow run `{workflow_run_id}` failed after provider turn failure: {diagnostic}"
+                ),
+            )
+        } else {
+            (
+                WorkflowFailureKind::MissingStructuredOutput,
+                message.to_string(),
+                format!("Workflow run `{workflow_run_id}` failed: {message}."),
+            )
+        };
         app.sessions_mut().fail_workflow_node_run(
             session_id,
             workflow_run_id,
@@ -773,17 +792,17 @@ pub fn on_workflow_prompt_completed(
             session_id,
             workflow_run_id,
             &WorkflowFailureEvent::new(
-                WorkflowFailureKind::MissingStructuredOutput,
+                failure_kind,
                 workflow_node_run_id,
                 Vec::new(),
-                message,
+                failure_message,
             ),
         );
         app.record_notice(
             session_id,
             provider_run_id,
             app.attachments().list_session_attachment_ids(session_id),
-            format!("Workflow run `{workflow_run_id}` failed: {message}."),
+            notice_message,
         );
         maybe_start_next_queued_workflow_launch(app, session_id);
         let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id);
@@ -958,6 +977,42 @@ pub fn on_workflow_prompt_completed(
     Ok(())
 }
 
+pub fn on_workflow_provider_failure(
+    app: &mut DaemonApp,
+    session_id: &str,
+    prompt: &PromptQueueItem,
+    provider_run_id: Option<&str>,
+    message: &str,
+) -> Result<(), DaemonError> {
+    let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+        (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+    else {
+        return Ok(());
+    };
+    record_and_route_workflow_failure(
+        app,
+        session_id,
+        workflow_run_id,
+        &WorkflowFailureEvent::new(
+            WorkflowFailureKind::ProviderFailure,
+            workflow_node_run_id,
+            Vec::new(),
+            message,
+        ),
+    );
+    app.sessions_mut()
+        .fail_workflow_node_run(session_id, workflow_run_id, workflow_node_run_id)?;
+    app.record_notice(
+        session_id,
+        provider_run_id,
+        app.attachments().list_session_attachment_ids(session_id),
+        format!("Workflow run `{workflow_run_id}` failed after provider turn failure: {message}"),
+    );
+    maybe_start_next_queued_workflow_launch(app, session_id);
+    let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id);
+    Ok(())
+}
+
 pub fn on_workflow_prompt_cancelled(
     app: &mut DaemonApp,
     session_id: &str,
@@ -1078,6 +1133,14 @@ pub fn clear_workflow_console(
 
 fn workflow_failure_policy() -> WorkflowFailurePolicy {
     WorkflowFailurePolicy::default()
+}
+
+fn provider_run_terminal_diagnostic(app: &DaemonApp, provider_run_id: &str) -> Option<String> {
+    app.providers()
+        .get_run(provider_run_id)
+        .ok()
+        .and_then(|run| run.terminal_diagnostic().map(str::to_string))
+        .filter(|message| !message.trim().is_empty())
 }
 
 fn record_and_route_workflow_failure(

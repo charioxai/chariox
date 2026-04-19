@@ -376,6 +376,8 @@ pub struct RuntimeProviderRun {
     resume_state: ProviderResumeState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_diagnostic: Option<String>,
     started_at_ms: u64,
     last_activity_at_ms: u64,
 }
@@ -431,6 +433,7 @@ impl RuntimeProviderRun {
                         .or_else(|| state.codex_thread_id())
                 })
                 .map(str::to_string),
+            terminal_diagnostic: None,
             started_at_ms: now,
             last_activity_at_ms: now,
         }
@@ -475,6 +478,7 @@ impl RuntimeProviderRun {
             ),
             resume_state: ProviderResumeState::default(),
             provider_session_id: None,
+            terminal_diagnostic: None,
             started_at_ms: now,
             last_activity_at_ms: now,
         }
@@ -596,6 +600,17 @@ impl RuntimeProviderRun {
 
     pub fn set_provider_session_id(&mut self, provider_session_id: Option<String>) {
         self.provider_session_id = provider_session_id;
+    }
+
+    pub fn terminal_diagnostic(&self) -> Option<&str> {
+        self.terminal_diagnostic.as_deref()
+    }
+
+    pub fn set_terminal_diagnostic(&mut self, diagnostic: impl Into<String>) {
+        let diagnostic = diagnostic.into();
+        if !diagnostic.trim().is_empty() {
+            self.terminal_diagnostic = Some(diagnostic);
+        }
     }
 
     pub fn set_runtime_mcp_auth_token(&mut self, auth_token: Option<String>) {

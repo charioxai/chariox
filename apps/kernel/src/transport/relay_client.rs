@@ -688,8 +688,19 @@ async fn handle_daemon_peer_request(
                         .await
                         .ok()
                         .flatten();
+                    let provider_diagnostic =
+                        if let Some(provider_run_id) = provider_run_id.as_deref() {
+                            router
+                                .relay_provider_run_terminal_diagnostic(provider_run_id)
+                                .await
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        };
                     RelayPeerResponse::LeasedPromptCompleted {
                         provider_run_id,
+                        provider_diagnostic,
                         completion,
                     }
                 }

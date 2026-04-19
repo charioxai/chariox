@@ -182,6 +182,8 @@ pub enum RelayPeerResponse {
     },
     LeasedPromptCompleted {
         provider_run_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_diagnostic: Option<String>,
         completion: PromptCompletion,
     },
     LeasedPromptCancelled {

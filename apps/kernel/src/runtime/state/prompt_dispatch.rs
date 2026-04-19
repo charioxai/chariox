@@ -181,7 +181,7 @@ impl KernelRuntimeState {
                 .remote_execution()
                 .cloned()
             {
-                let remote_provider_run_id = match self
+                let (remote_provider_run_id, provider_diagnostic) = match self
                     .with_app_side_effect(|app| {
                         app.block_on_relay_future(
                             crate::transport::relay_client::send_peer_request_via_temporary_connection(
@@ -199,9 +199,14 @@ impl KernelRuntimeState {
                     .await?
                 {
                     RelayPeerResponse::LeasedPromptCompleted {
-                        provider_run_id, ..
-                    } => provider_run_id
-                        .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
+                        provider_run_id,
+                        provider_diagnostic,
+                        ..
+                    } => (
+                        provider_run_id
+                            .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
+                        provider_diagnostic,
+                    ),
                     other => {
                         return Err(DaemonError::LocalTransport {
                             operation: "complete remote prompt",
@@ -218,12 +223,21 @@ impl KernelRuntimeState {
                     next_queued_prompt,
                 )?;
                 if completion.completed.workflow_run_id().is_some() {
-                    let dispatches = owned.workflow_complete_prompt(
-                        session_id,
-                        &completion.completed,
-                        Some(&remote_provider_run_id),
-                    )?;
-                    self.spawn_workflow_prompt_dispatches(dispatches);
+                    if let Some(diagnostic) = provider_diagnostic.as_deref() {
+                        owned.workflow_fail_provider_prompt(
+                            session_id,
+                            &completion.completed,
+                            Some(&remote_provider_run_id),
+                            diagnostic,
+                        )?;
+                    } else {
+                        let dispatches = owned.workflow_complete_prompt(
+                            session_id,
+                            &completion.completed,
+                            Some(&remote_provider_run_id),
+                        )?;
+                        self.spawn_workflow_prompt_dispatches(dispatches);
+                    }
                 }
                 if let Some(started_next) = completion.started_next.as_ref() {
                     let agent = self.owned.agent_store.get_agent(target_agent_id)?;

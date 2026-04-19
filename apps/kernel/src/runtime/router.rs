@@ -545,6 +545,19 @@ impl CommandRouter {
         crate::app::RemoteLeaseRuntime::new(&mut app).leased_agent_provider_run_id(leased_agent_id)
     }
 
+    pub(crate) async fn relay_provider_run_terminal_diagnostic(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let app = self.app.lock().await;
+        Ok(app
+            .providers()
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.terminal_diagnostic().map(str::to_string))
+            .filter(|message| !message.trim().is_empty()))
+    }
+
     pub(crate) async fn relay_pump_leased_runtime_projections(
         &self,
     ) -> Result<Vec<(String, crate::transport::relay_peer::RelayPeerEvent)>, DaemonError> {
