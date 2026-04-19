@@ -224,6 +224,31 @@ mod tests {
         assert_eq!(removed.id, leased_agent.id);
         assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 0);
     }
+
+    #[test]
+    fn leased_agents_reject_missing_working_directory() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease("home-kernel", "session-1", "agent-home-1")
+            .expect("execution lease should be created");
+        let missing = std::env::temp_dir().join(format!(
+            "arroba-missing-leased-agent-worktree-{}",
+            crate::session::unix_epoch_ms()
+        ));
+        let error = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "opencode",
+                Some("kimi2.5".to_string()),
+                None,
+                Some(missing.display().to_string()),
+            )
+            .expect_err("missing worker directory should be rejected");
+        assert!(error.to_string().contains("remote working directory"));
+    }
+
     #[test]
     fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
         let mut config = DaemonConfig::for_tests();

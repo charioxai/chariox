@@ -110,6 +110,12 @@ export type AgentInstance = {
   model: string | null
   effort?: string | null
   worktree_id: string | null
+  remote_execution?: {
+    worker_kernel_id: string
+    worker_machine_id: string
+    execution_lease_id: string
+    leased_agent_id: string
+  } | null
   mcp_grants?: string[]
   skill_grants?: string[]
   state: "Idle" | "Working" | "Focused" | "Error"

@@ -163,12 +163,15 @@ Inside the CLI:
   - `/session delete [ref]`
 - manual multi-agent session commands:
   - `/agent spawn [alias] [model]`
+  - `/agent spawn [alias] [model] --dir <directory>`
+  - `/agent spawn [alias] [model] --machine <machine-ref> --dir <remote-directory>`
   - `/agent spawn <number_of_agents>`
   - `/agent delete [name-or-alias]`
   - `/agent focus <id>`
   - `/agent list`
   - `/agent cycle`
   - `Tab` cycles focus to the next session agent
+- `/agent spawn --dir` sets the provider working directory at spawn time. Without `--machine`, the directory is resolved on the local/home machine. With `--machine`, the directory is interpreted on the worker machine and is required; Arroba does not currently change an existing agent's directory after spawn.
 - `/view <split|individual>` switches between the focused transcript view and the current split-pane response layout
 - deleting the currently attached session keeps the CLI process alive, clears the transcript/session chrome, renders an Arroba ASCII-art no-session landing state, returns the user to an unattached shell, and removes that session from future attach/list resolution
 

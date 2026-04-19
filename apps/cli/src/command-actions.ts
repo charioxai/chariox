@@ -25,7 +25,7 @@ import type { MultiAgentResponseLayout, UiPreferences } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { SessionListEntry } from "./sessions.js"
 import { sessionHasPromptWork } from "./session-state.js"
-import { readFile } from "node:fs/promises"
+import { readFile, stat } from "node:fs/promises"
 import { resolve as resolvePath } from "node:path"
 
 const WORKFLOW_MAX_TURNS_CONFIG_KEY = "workflow.max_turns"
@@ -255,7 +255,14 @@ type CommandActionDeps = {
   ) => Promise<RuntimeProviderRun>
   setProviderRunState: (run: RuntimeProviderRun | null) => void
   refreshSessionState: (sessionId: string) => Promise<RuntimeSession>
-  spawnAgent: (provider: string, alias?: string, model?: string, effort?: string) => Promise<AgentSpawnPayload>
+  spawnAgent: (
+    provider: string,
+    alias?: string,
+    model?: string,
+    effort?: string,
+    worktreeId?: string,
+    machineRef?: string,
+  ) => Promise<AgentSpawnPayload>
   destroyAgent: (agentId: string) => Promise<RuntimeSession>
   focusAgent: (agentId: string) => Promise<AgentFocusPayload>
   resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
@@ -619,15 +626,103 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     return Number.isInteger(count) && count > 0 ? count : null
   }
 
+  const parseAgentSpawnOptions = (args: string[]) => {
+    const positional: string[] = []
+    let directory: string | undefined
+    let machineRef: string | undefined
+    let error: string | undefined
+
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index]
+      if (!arg) {
+        continue
+      }
+      if (arg === "--dir" || arg === "--directory") {
+        const value = args[index + 1]
+        if (!value || value.startsWith("--")) {
+          error = "usage: /agent spawn [alias] [model] --dir <directory>"
+          break
+        }
+        directory = value
+        index += 1
+        continue
+      }
+      if (arg === "--machine") {
+        const value = args[index + 1]
+        if (!value || value.startsWith("--")) {
+          error = "usage: /agent spawn [alias] [model] --machine <machine-ref> --dir <remote-directory>"
+          break
+        }
+        machineRef = value
+        index += 1
+        continue
+      }
+      if (arg.startsWith("--")) {
+        error = `unknown /agent spawn option ${arg}`
+        break
+      }
+      positional.push(arg)
+    }
+
+    if (!error && machineRef && !directory) {
+      error = "usage: /agent spawn [alias] [model] --machine <machine-ref> --dir <remote-directory>"
+    }
+    if (!error && positional.length > 2) {
+      error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--machine <machine-ref>]"
+    }
+    return {
+      positional,
+      directory,
+      machineRef,
+      error,
+    }
+  }
+
+  const resolveLocalSpawnDirectory = async (directory: string | undefined, machineRef: string | undefined) => {
+    if (!directory) {
+      return undefined
+    }
+    if (machineRef) {
+      return directory
+    }
+    const resolved = resolvePath(deps.worktree, directory)
+    const details = await stat(resolved)
+    if (!details.isDirectory()) {
+      throw new Error(`agent working directory is not a directory: ${resolved}`)
+    }
+    return resolved
+  }
+
   const spawnAndLaunchAgent = async (options: {
     provider: string
     alias?: string | undefined
     model: string
     effort: string
+    worktreeId?: string | undefined
+    machineRef?: string | undefined
   }): Promise<AgentSpawnPayload> => {
-    const payload = await deps.spawnAgent(options.provider, options.alias, options.model, options.effort)
+    const payload = await deps.spawnAgent(
+      options.provider,
+      options.alias,
+      options.model,
+      options.effort,
+      options.worktreeId,
+      options.machineRef,
+    )
     deps.applySessionState(payload.session)
     await deps.refreshAgentPanes(payload.session)
+    if (options.machineRef || payload.agent.remote_execution) {
+      deps.setProviderRunState(null)
+      const refreshedSession = await deps.refreshSessionState(payload.session.id)
+      deps.applySessionState(refreshedSession)
+      await deps.refreshAgentPanes(refreshedSession)
+      deps.rebuildTranscript()
+      deps.refreshSplitPaneFocusRepaint()
+      return {
+        agent: payload.agent,
+        session: refreshedSession,
+      }
+    }
     const run = await deps.launchAgentProviderRun(
       options.provider,
       options.model,
@@ -972,8 +1067,17 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       case "spawn": {
         const spawnArgs = args.slice(1)
         try {
-          const count = parseSpawnCount(spawnArgs[0])
-          if (count !== null && spawnArgs.length === 1) {
+          const parsed = parseAgentSpawnOptions(spawnArgs)
+          if (parsed.error) {
+            deps.flashFooter(parsed.error, "error")
+            return
+          }
+          const count = parseSpawnCount(parsed.positional[0])
+          if (count !== null && (parsed.positional.length > 1 || parsed.directory || parsed.machineRef)) {
+            deps.flashFooter("usage: /agent spawn <count>", "error")
+            return
+          }
+          if (count !== null && parsed.positional.length === 1) {
             const session = deps.sessionState()
             const sourceAgent = session.agents.find((agent) => agent.id === session.focused_agent_id)
               ?? session.agents[0]
@@ -1000,17 +1104,25 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
             return
           }
 
-          const alias = spawnArgs[0]
-          const model = spawnArgs[1]
+          const alias = parsed.positional[0]
+          const model = parsed.positional[1]
           const provider = deps.currentProviderId()
           const effort = deps.currentVariantId()
+          const worktreeId = await resolveLocalSpawnDirectory(parsed.directory, parsed.machineRef)
           const payload = await spawnAndLaunchAgent({
             provider,
             alias,
             model: model ?? deps.currentModelId(),
             effort,
+            worktreeId,
+            machineRef: parsed.machineRef,
           })
-          deps.flashFooter(`spawned agent ${payload.agent.agent_ref}${alias ? ` (${alias})` : ""}`, "info")
+          const placement = parsed.machineRef
+            ? ` on ${parsed.machineRef} in ${parsed.directory}`
+            : worktreeId
+              ? ` in ${worktreeId}`
+              : ""
+          deps.flashFooter(`spawned agent ${payload.agent.agent_ref}${alias ? ` (${alias})` : ""}${placement}`, "info")
         } catch (error) {
           deps.flashFooter(deps.formatError(error), "error")
         }
@@ -1094,7 +1206,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       }
       default:
         deps.flashFooter(
-          "usage: /agent spawn [alias] [model] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | list | cycle",
+          "usage: /agent spawn [alias] [model] [--dir <directory>] [--machine <machine-ref>] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | list | cycle",
           "error",
         )
     }

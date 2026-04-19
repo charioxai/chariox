@@ -242,6 +242,19 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .display()
                 .to_string(),
         };
+        let worktree_path = std::path::Path::new(&worktree);
+        if !worktree_path.exists() {
+            return Err(DaemonError::LocalTransport {
+                operation: "resolve leased agent working directory",
+                message: format!("remote working directory `{worktree}` does not exist"),
+            });
+        }
+        if !worktree_path.is_dir() {
+            return Err(DaemonError::LocalTransport {
+                operation: "resolve leased agent working directory",
+                message: format!("remote working directory `{worktree}` is not a directory"),
+            });
+        }
         let workspace_id = format!("remote-lease:{}", lease.home_session_id);
         let existing_session = self
             .app

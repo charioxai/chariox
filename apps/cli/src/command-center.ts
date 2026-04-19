@@ -53,7 +53,7 @@ const COMMAND_TREE: CommandNode[] = [
       {
         id: "agent-spawn",
         label: "spawn",
-        description: "Spawn one or more agents in the session",
+        description: "Spawn one or more local or remote agents in the session",
         value: "/agent spawn ",
       },
       { id: "agent-delete", label: "delete", description: "Delete the focused or named agent", value: "/agent delete " },
