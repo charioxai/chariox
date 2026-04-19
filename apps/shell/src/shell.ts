@@ -17,6 +17,8 @@ export type ShellCliOptions = {
   effort?: string | undefined
   mode?: "repl" | "run" | undefined
   scriptPath?: string | undefined
+  continueOnError?: boolean | undefined
+  variables?: Record<string, string> | undefined
 }
 
 export type ShellIo = {
@@ -75,6 +77,21 @@ export function parseShellCliArgs(argv: string[]): ShellCliOptions {
         options.effort = next(index, arg)
         index += 1
         break
+      case "--var": {
+        const value = next(index, arg)
+        const equalsIndex = value.indexOf("=")
+        const name = equalsIndex < 0 ? value : value.slice(0, equalsIndex)
+        const variableValue = equalsIndex < 0 ? "" : value.slice(equalsIndex + 1)
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+          throw new Error("--var requires NAME=VALUE with an identifier name")
+        }
+        options.variables = { ...(options.variables ?? {}), [name]: variableValue }
+        index += 1
+        break
+      }
+      case "--continue-on-error":
+        options.continueOnError = true
+        break
       case "--help":
       case "-h":
         throw new ShellHelpRequested()
@@ -97,13 +114,14 @@ export function createInitialShellContext(options: ShellCliOptions): ShellContex
   if (options.provider) contextOptions.provider = options.provider
   if (options.model) contextOptions.model = options.model
   if (options.effort) contextOptions.effort = options.effort
+  if (options.variables) contextOptions.variables = options.variables
   return createDefaultShellContext(contextOptions)
 }
 
 export function shellUsage(): string {
   return [
-    "usage: arroba-shell [--kernel-url URL|--socket PATH] [--workspace PATH] [--worktree PATH] [--provider NAME] [--model MODEL] [--effort LEVEL]",
-    "       arroba-shell run <file> [--kernel-url URL|--socket PATH] [--workspace PATH] [--worktree PATH] [--provider NAME] [--model MODEL] [--effort LEVEL]",
+    "usage: arroba-shell [--kernel-url URL|--socket PATH] [--workspace PATH] [--worktree PATH] [--provider NAME] [--model MODEL] [--effort LEVEL] [--var NAME=VALUE]",
+    "       arroba-shell run <file> [--kernel-url URL|--socket PATH] [--workspace PATH] [--worktree PATH] [--provider NAME] [--model MODEL] [--effort LEVEL] [--var NAME=VALUE] [--continue-on-error]",
     "",
     "Runs an Arroba command REPL. Commands do not use the TUI slash prefix:",
     "  @ session list",
@@ -170,7 +188,9 @@ export async function runShellScript(options: ShellCliOptions, io: ShellIo = {
   const client = new LocalIpcClient(options.socketPath ?? options.kernelUrl ?? defaultKernelEndpoint())
   try {
     const source = await readFile(options.scriptPath, "utf8")
-    return await executeShellScriptLines(source.split(/\r?\n/), context, { client }, (line) => io.output.write(line))
+    return await executeShellScriptLines(source.split(/\r?\n/), context, { client }, (line) => io.output.write(line), {
+      continueOnError: options.continueOnError,
+    })
   } catch (error) {
     io.error.write(`${formatShellError(error)}\n`)
     return 1
@@ -184,8 +204,10 @@ export async function executeShellScriptLines(
   initialContext: ShellContext,
   deps: ShellExecutorDeps,
   write: (text: string) => void = () => {},
+  options: { continueOnError?: boolean | undefined } = {},
 ): Promise<number> {
   let context = initialContext
+  let failed = false
   for (let index = 0; index < lines.length; index += 1) {
     const sourceLine = lines[index] ?? ""
     const line = sourceLine.trim()
@@ -201,6 +223,11 @@ export async function executeShellScriptLines(
     }
     context = applyShellCommandResult(context, result)
     if (!result.ok) {
+      failed = true
+      if (options.continueOnError) {
+        write(`line ${index + 1} failed; continuing\n`)
+        continue
+      }
       write(`stopped at line ${index + 1}\n`)
       return 1
     }
@@ -208,7 +235,7 @@ export async function executeShellScriptLines(
       return 0
     }
   }
-  return 0
+  return failed ? 1 : 0
 }
 
 export function defaultKernelEndpoint(): string {

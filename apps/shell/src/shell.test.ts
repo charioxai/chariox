@@ -27,18 +27,25 @@ test("parseShellCliArgs rejects conflicting endpoints", () => {
 })
 
 test("parseShellCliArgs parses script-run mode", () => {
-  assert.deepEqual(parseShellCliArgs(["run", "setup.arroba", "--workspace", "/repo"]), {
+  assert.deepEqual(parseShellCliArgs(["run", "setup.arroba", "--workspace", "/repo", "--var", "session=session-1", "--continue-on-error"]), {
     mode: "run",
     scriptPath: "setup.arroba",
     workspace: "/repo",
+    variables: { session: "session-1" },
+    continueOnError: true,
   })
 })
 
+test("parseShellCliArgs rejects invalid variable names", () => {
+  assert.throws(() => parseShellCliArgs(["--var", "not-valid=value"]), /NAME=VALUE/)
+})
+
 test("createInitialShellContext defaults worktree to workspace", () => {
-  const context = createInitialShellContext({ workspace: "/repo", provider: "codex" })
+  const context = createInitialShellContext({ workspace: "/repo", provider: "codex", variables: { s: "session-1" } })
   assert.equal(context.workspace, "/repo")
   assert.equal(context.worktree, "/repo")
   assert.equal(context.provider, "codex")
+  assert.equal(context.variables.s, "session-1")
 })
 
 test("defaultKernelEndpoint honors env overrides", () => {
@@ -104,6 +111,20 @@ test("executeShellScriptLines stops on first command error", async () => {
   assert.equal(code, 1)
   assert.match(output.join(""), /no current session/)
   assert.match(output.join(""), /stopped at line 1/)
+})
+
+test("executeShellScriptLines can continue on error with line-numbered transcript", async () => {
+  const output: string[] = []
+  const code = await executeShellScriptLines([
+    "agent list",
+    "vars",
+  ], createInitialShellContext({ workspace: "/repo", worktree: "/repo", variables: { seeded: "yes" } }), {
+    client: { send: async () => ({}) },
+  }, (line) => output.push(line), { continueOnError: true })
+  assert.equal(code, 1)
+  assert.match(output.join(""), /no current session/)
+  assert.match(output.join(""), /line 1 failed; continuing/)
+  assert.match(output.join(""), /\$seeded = yes/)
 })
 
 function makeAgent(overrides: Partial<AgentInstance> = {}): AgentInstance {

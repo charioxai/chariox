@@ -73,6 +73,11 @@ Chronological notes to preserve execution context between contributors/agents.
 - `stop` and `cancel` resolve the current session attachment from session state before sending `CancelActivePrompt`, matching the kernel authorization model without adding TUI-only state to the shell context.
 - Covered workflow advanced, provider auth/process, and cancellation flows with focused kernel-client executor tests. Slice 6 command-family coverage is now closed.
 
+### M7.5 shell scriptability hardening
+
+- Added script runner ergonomics for repeated `--var NAME=VALUE` seed bindings, `--continue-on-error`, and line-numbered failure diagnostics.
+- `arroba-shell run <file>` still stops on first error by default, while validation/drill scripts can continue and return non-zero if any command failed.
+
 ### Session/agent git worktree placement
 
 - Added local session and agent placement commands for existing directories and git worktree creation: `/session new [DIR]`, `/session new --worktree DIR --branch BRANCH [--from REF]`, and `/agent spawn ... --worktree DIR --branch BRANCH [--from REF]`.

@@ -126,6 +126,7 @@ Script execution:
 
 ```bash
 arroba-shell run setup.arroba
+arroba-shell run setup.arroba --var session=session-1 --continue-on-error
 ```
 
 Default script behavior:
@@ -133,7 +134,10 @@ Default script behavior:
 - execute non-empty, non-comment lines in order
 - stop on first error
 - print the command transcript and outputs
+- print line-numbered stop/continue diagnostics for failing commands
 - return non-zero on failure
+- accept repeated `--var NAME=VALUE` seed bindings before the first command
+- accept `--continue-on-error` for validation/drill scripts that should report every failing command
 
 Example script:
 
@@ -202,6 +206,9 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 - Status: implemented in `apps/shell/src/shell.ts` with focused coverage in `apps/shell/src/shell.test.ts`.
 - Added `arroba-shell run <file>`.
 - Supports comments, blank lines, variables, and stop-on-error execution.
+- Supports seeded variables through repeated `--var NAME=VALUE`.
+- Supports `--continue-on-error` for audit/drill scripts while still returning non-zero if any command failed.
+- Emits line-numbered failure diagnostics so script output can be mapped back to the command file.
 - Returns non-zero on failure.
 - Added script fixture tests for session/agent setup commands using mocked IPC.
 
@@ -253,6 +260,7 @@ Each slice must include focused tests and update docs before commit/push. Requir
 - CLI slash commands still pass existing command-action tests.
 - `arroba-shell` can create a session, spawn an agent, list sessions/agents, and update context.
 - `arroba-shell run <file>` can set up a small workflow using variables.
+- `arroba-shell run <file> --var NAME=VALUE --continue-on-error` can run a validation script, continue past failures, and still return non-zero if anything failed.
 - TUI workspace pane can run the same shell command executor without duplicating command logic.
 - TUI-only commands are rejected or redirected with clear messages in `arroba-shell`.
 
