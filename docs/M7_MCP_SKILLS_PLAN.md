@@ -6,7 +6,7 @@ Current decision: the repo-local isolation spike in `docs/M7_MCP_ISOLATION_SPIKE
 
 ## Implementation Status
 
-Updated: 2026-04-18
+Updated: 2026-04-19
 
 Landed:
 
@@ -22,12 +22,12 @@ Landed:
 - M7.13 partial: local provider prompts inject the full `SKILL.md` body for granted skills that are explicitly selected, mentioned, or requested.
 - M7.15 partial: runtime MCP exposes `list_capabilities` and `request_capability` control-plane tools for Arroba-managed MCPs and skills. V1 auto-grants valid requests to the current agent and reports when the grant becomes effective. Skill requests now return the full `SKILL.md` body by default, so requested skills can be used in the same turn. Remote worker agents now forward capability discovery/request calls to the home kernel; skill requests return a home-packaged skill directory and materialize it on the worker under `.arroba/remote/skills/<home-kernel-id>/<skill>/<version>/`.
 - M7.18: remote skill packaging/materialization is landed for grant-time sync and same-turn `request_capability` use, preserving `SKILL.md`, assets, scripts, and references while skipping provider/cache/build directories and symlinks. Remote prompt dispatch verifies/synchronizes granted skills before submit and injects worker-local `materialized_root` paths into the prompt context.
-- M7.20 partial: remote skill live drills pass for OpenCode with `openai/gpt-5.2` low effort and Codex with `gpt-5.2` low effort. Remote MCP v1 conformance checks, live conformance drills, and strict provider-native remote Playwright MCP use drills pass: home sends required MCP definitions/hashes for remote prompts, worker checks its own project/user Arroba MCP registry, missing/mismatched/invalid worker MCPs fail fast instead of being installed remotely, and provider-native MCP config is rendered on the worker for Codex/OpenCode.
-- M7.21 partial: provider-facing MCP proxy config generation, authenticated `/mcp/proxy/<name>` runtime route, stdio backing process supervision, and provider launch wiring are landed. The route verifies the provider-run runtime MCP token and the agent's MCP grant before dispatching. Stdio MCP backings are keyed by definition hash and reused across provider relaunches, with cached initialize responses for resumed provider sessions. Streamable HTTP MCP backing relay now uses a production HTTP client for `http://` and `https://` upstreams, including chunked responses, static headers, env-backed headers, bearer-token env vars, timeouts, and non-2xx error bodies. Local live drills now pass for OpenCode and Codex with Playwright plus a deterministic echo MCP, including user-triggered pre-grants and agent-triggered request/reload/continuation flows.
+- M7.20 partial: remote skill live drills pass for OpenCode with `openai/gpt-5.2` low effort and Codex with `gpt-5.2` low effort. Remote MCP v1 conformance checks, live conformance drills, and strict provider-native remote Playwright MCP use drills pass: home sends required MCP definitions/hashes for remote prompts, worker checks its own project/user Arroba MCP registry, missing/mismatched/invalid worker MCPs fail fast instead of being installed remotely, and provider-native MCP config is rendered on the worker for Codex/OpenCode. Remote workflow MCP drill coverage now passes for OpenCode; the equivalent remote Codex workflow MCP drill is still blocked because the new single-node workflow scenario remains running without provider tool output.
+- M7.21 partial: provider-facing MCP proxy config generation, authenticated `/mcp/proxy/<name>` runtime route, stdio backing process supervision, and provider launch wiring are landed. The route verifies the provider-run runtime MCP token and the agent's MCP grant before dispatching. Stdio MCP backings are keyed by definition hash and reused across provider relaunches, with cached initialize responses for resumed provider sessions. Streamable HTTP MCP backing relay now uses a production HTTP client for `http://` and `https://` upstreams, including chunked responses, static headers, env-backed headers, bearer-token env vars, timeouts, and non-2xx error bodies. Local live drills now pass for OpenCode and Codex with Playwright plus a deterministic echo MCP, including user-triggered pre-grants, agent-triggered request/reload/continuation flows, and workflow-node MCP grants.
 
 Still open in M7:
 
-- Finish integrating the validated MCP isolation architecture into production for remaining non-local cases: rerun remote MCP drills after HTTPS/chunked proxy support, then workflow drills. See `docs/M7_MCP_ISOLATION_SPIKE_PLAN.md`.
+- Finish remote Codex workflow MCP drill validation for the new `mcp-echo-workflow` scenario. Remote OpenCode passes; remote Codex currently remains running without provider tool output.
 - Regular non-interactive `arroba mcp ...` / `arroba skill ...` CLI command surfaces, if we keep them separate from slash commands.
 - Regular non-interactive agent grant inspection commands, for example `arroba agent mcps` / `arroba agent skills`.
 - Provider MCP import from Claude-owned configs, plus regular non-interactive Codex/OpenCode import aliases.
@@ -204,7 +204,10 @@ Local drill evidence:
 - `node apps/cli/scripts/live-mcp-skill-drill.mjs --provider codex --provider-model codex=gpt-5.2 --live-mcp-use --timeout-ms 480000 --keep-artifacts-on-failure` passed in 101.4s with Playwright and echo MCPs.
 - `node apps/cli/scripts/live-mcp-skill-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2 --live-mcp-use --timeout-ms 480000 --keep-artifacts-on-failure` passed in 74.3s with Playwright and echo MCPs.
 - `node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2 --provider-model codex=gpt-5.2 --live-mcp-use --timeout-ms 480000 --keep-artifacts-on-failure` passed in 103.4s.
+- `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario mcp-echo-workflow --providers opencode --provider-model opencode=openai/gpt-5.2 --poll-limit 180 --poll-interval-ms 1000` passed in ~14s.
+- `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario mcp-echo-workflow --providers codex --provider-model codex=gpt-5.2 --poll-limit 180 --poll-interval-ms 1000` passed in ~14s.
 - The drill validates provider-native echo MCP calls, provider-native Playwright/browser MCP calls, Arroba managed-I/O marker writes, same-turn skill requests, web skill install, and agent-triggered MCP request followed by provider conversation relaunch plus automatic continuation.
+- The workflow drill validates a workflow-node MCP grant, a provider-native deterministic MCP call from the workflow agent, managed-I/O marker creation, and final workflow output submission through `validate_and_submit_workflow_run_output`.
 - A relaunch bug found during the combined drill was fixed: agent-triggered MCP activation now preserves the original provider run's managed-I/O requirement, so replacement Codex/OpenCode runs stay fenced/restricted.
 
 ## M7.7 Arroba Skill Format
@@ -468,7 +471,7 @@ Overarching local drill matrix:
 
 ## M7.20 Remote Provider Drills
 
-Status: strict pass for remote skill lifecycle, remote MCP conformance, and provider-native remote MCP use on OpenCode and Codex.
+Status: strict pass for remote skill lifecycle, remote MCP conformance, and provider-native remote MCP use on OpenCode and Codex. Remote workflow MCP drill coverage passes for OpenCode and remains open for Codex.
 
 - remote agent receives only its granted MCPs
 - remote agent receives only its granted skills
@@ -502,3 +505,12 @@ node apps/cli/scripts/live-remote-mcp-drill.mjs --provider codex --model gpt-5.2
 ```
 
 Observed on 2026-04-18 after production HTTPS/chunked MCP proxy support landed: both strict drills passed. OpenCode completed a provider-native `playwright_browser_snapshot` call and Codex completed a provider-native `browser_tabs` call on the worker. Both then wrote `outputs/remote-playwright-mcp.txt` with exactly `M7_REMOTE_PLAYWRIGHT_MCP_OK` through Arroba managed I/O. The drill preserves real provider auth/config/cache while keeping isolated Arroba home/worker registries by passing through `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, and `XDG_*` provider paths.
+
+Remote workflow MCP drill:
+
+```bash
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario mcp-echo-workflow --provider opencode --model gpt-5.2 --provider-model opencode=openai/gpt-5.2 --poll-limit 240 --poll-interval-ms 1000
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario mcp-echo-workflow --provider codex --model gpt-5.2 --poll-limit 300 --poll-interval-ms 1000
+```
+
+Observed on 2026-04-19: OpenCode passed in ~72s. The wrapper installed deterministic MCP `workflow_echo` in the worker registry before invoking the remote workflow drill; the remote workflow node completed a provider-native MCP echo call, wrote the managed-I/O marker, and submitted final workflow output `{"echo":"ECHO:M7_WORKFLOW_ECHO_OK"}`. Codex remained `Running` after 300s with only prompt echo and no provider tool output, so the remote Codex workflow MCP path needs follow-up investigation before it can be marked covered.

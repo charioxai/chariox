@@ -58,6 +58,8 @@ const {
   setWorkflowRunOutputSchemaRequest,
   setWorkflowFlushContextRequest,
   endSessionRequest,
+  installMcpServerRequest,
+  grantAgentCapabilityRequest,
 } = requests
 
 const DEFAULT_KERNEL = 'ws://127.0.0.1:43284'
@@ -121,7 +123,7 @@ function printHelp() {
     'Usage: node apps/cli/scripts/live-workflow-runtime-drill.mjs [options]',
     '',
     'Options:',
-    '  --scenario simple-chain|validated-increment-chain|console-increment-chain|final-run-output-chain|cyclic-final-run-output-chain|cyclic-budgeted-final-run-output-chain|cyclic-final-run-with-intermediate-output-chain|conditional-branch-subset|immediate-release-downstream',
+    '  --scenario simple-chain|validated-increment-chain|console-increment-chain|final-run-output-chain|cyclic-final-run-output-chain|cyclic-budgeted-final-run-output-chain|cyclic-final-run-with-intermediate-output-chain|conditional-branch-subset|immediate-release-downstream|mcp-echo-workflow',
     `  --kernel ${DEFAULT_KERNEL}`,
     '  --relay-url ws://127.0.0.1:45168 --relay-token TOKEN --target-daemon-alias NAME',
     '  --machine-ref MACHINE_ALIAS',
@@ -225,6 +227,72 @@ async function ensureSchemaFile() {
     ),
   )
   return schemaPath
+}
+
+
+async function createWorkflowEchoMcp(rootDir) {
+  const mcpPath = path.join(rootDir, 'workflow-echo-mcp.mjs')
+  await mkdir(rootDir, { recursive: true })
+  await writeFile(mcpPath, [
+    "let buffer = Buffer.alloc(0)",
+    "function write(message) {",
+    "  const body = JSON.stringify(message)",
+    "  process.stdout.write(`${body}\\n`)",
+    "}",
+    "function handle(message) {",
+    "  const { id, method, params } = message",
+    "  if (method === 'notifications/initialized') return",
+    "  if (method === 'initialize') {",
+    "    write({ jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'arroba-workflow-echo', version: '1.0.0' } } })",
+    "    return",
+    "  }",
+    "  if (method === 'tools/list') {",
+    "    write({ jsonrpc: '2.0', id, result: { tools: [{ name: 'echo_marker', description: 'Echoes a marker for Arroba workflow MCP drills.', inputSchema: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'] } }] } })",
+    "    return",
+    "  }",
+    "  if (method === 'tools/call' && params?.name === 'echo_marker') {",
+    "    write({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `ECHO:${params?.arguments?.marker ?? ''}` }] } })",
+    "    return",
+    "  }",
+    "  write({ jsonrpc: '2.0', id, error: { code: -32601, message: `unknown method ${method}` } })",
+    "}",
+    "process.stdin.on('data', (chunk) => {",
+    "  buffer = Buffer.concat([buffer, chunk])",
+    "  while (true) {",
+    "    const newline = buffer.indexOf('\\n')",
+    "    if (newline >= 0) {",
+    "      const line = buffer.subarray(0, newline).toString('utf8').trim()",
+    "      buffer = buffer.subarray(newline + 1)",
+    "      if (line) handle(JSON.parse(line))",
+    "      continue",
+    "    }",
+    "    const headerEnd = buffer.indexOf('\\r\\n\\r\\n')",
+    "    if (headerEnd < 0) return",
+    "    const header = buffer.subarray(0, headerEnd).toString('utf8')",
+    "    const match = /^content-length:\\s*(\\d+)$/im.exec(header)",
+    "    if (!match) throw new Error(`missing Content-Length: ${header}`)",
+    "    const length = Number(match[1])",
+    "    const bodyStart = headerEnd + 4",
+    "    const frameEnd = bodyStart + length",
+    "    if (buffer.length < frameEnd) return",
+    "    const message = JSON.parse(buffer.subarray(bodyStart, frameEnd).toString('utf8'))",
+    "    buffer = buffer.subarray(frameEnd)",
+    "    handle(message)",
+    "  }",
+    "})",
+  ].join('\n'), 'utf8')
+  return mcpPath
+}
+
+function workflowEchoMcpConfig(mcpPath) {
+  return {
+    name: 'workflow_echo',
+    transport: { type: 'stdio', command: 'node', args: [mcpPath], env: {}, env_vars: [] },
+    enabled: true,
+    required: false,
+    startup_timeout_sec: 5,
+    tool_timeout_sec: 10,
+  }
 }
 
 async function resolveBinary(binaryPath, manifestPath, binName) {
@@ -686,6 +754,59 @@ function buildImmediateReleaseDownstreamScenario(providers, model, schemaPath) {
   }
 }
 
+
+function buildMcpEchoWorkflowScenario(providers, model) {
+  if (providers.length !== 1) {
+    throw new Error('mcp-echo-workflow requires exactly 1 provider')
+  }
+  const markerFile = `workflow-echo-mcp-${process.pid}-${Date.now()}.txt`
+  return {
+    id: 'mcp-echo-workflow',
+    alias: 'mcp-echo-workflow',
+    providers,
+    model,
+    autoChainEdges: false,
+    entryPrompt: 'Use the workflow echo MCP and finish with deterministic evidence.',
+    async beforeAgents(client, options) {
+      const mcpPath = await createWorkflowEchoMcp(path.join(options.worktree, 'tmp', 'live-drills'))
+      await client.send(installMcpServerRequest(options.workspace, workflowEchoMcpConfig(mcpPath)))
+    },
+    async afterAgentSpawn(client, options, { agent }) {
+      await client.send(grantAgentCapabilityRequest(options.workspace, agent.id, 'mcp', 'workflow_echo'))
+    },
+    nodePrompt() {
+      return [
+        'This is a workflow MCP grant drill.',
+        'Use the provider-native workflow_echo MCP tool exactly once with marker M7_WORKFLOW_ECHO_OK.',
+        'The tool is usually named `workflow_echo_echo_marker`, `mcp__workflow_echo__echo_marker`, `echo_marker`, or similar.',
+        'The MCP tool result must contain exactly `ECHO:M7_WORKFLOW_ECHO_OK`.',
+        `After the MCP tool call succeeds, use Arroba managed I/O to create \`outputs/${markerFile}\` with exactly \`ECHO:M7_WORKFLOW_ECHO_OK\`.`,
+        'Then call the Arroba runtime MCP tool `validate_and_submit_workflow_run_output` with workflow_output_json exactly `{"echo":"ECHO:M7_WORKFLOW_ECHO_OK"}`.',
+        'If the MCP is unavailable, do not write the marker and set output.message JSON exactly `{"echo":"MCP_UNAVAILABLE"}`.',
+        'After the final output tool succeeds, emit one final fenced workflow JSON block with output.message JSON exactly `{"echo":"ECHO:M7_WORKFLOW_ECHO_OK"}` and then stop.',
+      ].join('\n\n')
+    },
+    edgeRequest() {
+      return null
+    },
+    async configureWorkflow(client, sessionId, workflowId, nodeIds) {
+      await client.send(setWorkflowNodeCanCompleteRunRequest(sessionId, workflowId, nodeIds[0], true))
+    },
+    async assertResult(result, { options }) {
+      const expected = JSON.stringify({ echo: 'ECHO:M7_WORKFLOW_ECHO_OK' })
+      const output = result.finalOutput?.message ?? result.nodeRuns[0]?.completion?.output?.message
+      if (output !== expected) {
+        throw new Error(`workflow MCP echo output mismatch: expected ${expected}, got ${output}`)
+      }
+      const markerPath = path.join(options.worktree, 'outputs', markerFile)
+      const marker = (await readFile(markerPath, 'utf8')).trim()
+      if (marker !== 'ECHO:M7_WORKFLOW_ECHO_OK') {
+        throw new Error(`workflow MCP marker mismatch: ${JSON.stringify(marker)}`)
+      }
+    },
+  }
+}
+
 function createScenario(options, schemaPath) {
   if (options.scenario === 'simple-chain') return buildSimpleChainScenario(options.providers, options.model)
   if (options.scenario === 'validated-increment-chain') {
@@ -711,6 +832,9 @@ function createScenario(options, schemaPath) {
   }
   if (options.scenario === 'immediate-release-downstream') {
     return buildImmediateReleaseDownstreamScenario(options.providers, options.model, schemaPath)
+  }
+  if (options.scenario === 'mcp-echo-workflow') {
+    return buildMcpEchoWorkflowScenario(options.providers, options.model)
   }
   throw new Error(`unsupported scenario: ${options.scenario}`)
 }
@@ -874,6 +998,11 @@ async function main() {
       'SessionAttached',
     ).attachment
 
+    if (typeof scenario.beforeAgents === 'function') {
+      logStep('scenario_before_agents', { scenario: scenario.id })
+      await scenario.beforeAgents(client, options)
+    }
+
     const agentIds = []
     const nodeIds = []
     for (let index = 0; index < scenario.providers.length; index += 1) {
@@ -902,6 +1031,10 @@ async function main() {
         'AgentSpawned',
       ).agent
       agentIds.push(agent.id)
+      if (typeof scenario.afterAgentSpawn === 'function') {
+        logStep('scenario_after_agent_spawn', { index, agentId: agent.id, scenario: scenario.id })
+        await scenario.afterAgentSpawn(client, options, { agent, index, provider })
+      }
       if (!options.machineRef) {
         logStep('launch_provider', { index, provider, agentId: agent.id })
         const launchResponse = await client.send(
@@ -1005,7 +1138,7 @@ async function main() {
           }
         }
         if (typeof scenario.assertResult === 'function') {
-          scenario.assertResult(result, { nodeIds, agentIds, workflowId: workflow.id, workflowRunId: workflowRun.id })
+          await scenario.assertResult(result, { nodeIds, agentIds, workflowId: workflow.id, workflowRunId: workflowRun.id, options })
         }
         await client.send(endSessionRequest(session.id)).catch(() => {})
         await client.close()
