@@ -133,6 +133,42 @@ export type RuntimeAttachment = {
   session_id: string
 }
 
+
+export type RelayStatus = {
+  configured: boolean
+  connected: boolean
+  relay_url?: string | null
+  relay_token_configured: boolean
+  daemon_id: string
+  machine_id: string
+  machine_alias?: string | null
+}
+
+export type RemoteMachineRecord = {
+  machine_id: string
+  machine_alias?: string | null
+  registry_alias?: string | null
+  display_name: string
+  trust_status: "approved" | "pending" | "forgotten"
+  online: boolean
+  pending: boolean
+  kernel_count: number
+  available_providers?: string[]
+}
+
+export type RelayKernelPresence = {
+  kernel_id: string
+  machine_id: string
+  machine_alias?: string | null
+  relay_alias?: string | null
+  kernel_alias?: string | null
+  available_providers?: string[]
+  capabilities?: string[]
+  accepting_remote_leases?: boolean
+  leased_agent_count?: number
+  local_session_count?: number
+}
+
 export type RuntimeProviderRun = {
   id: string
   session_id: string

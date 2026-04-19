@@ -39,6 +39,12 @@ Chronological notes to preserve execution context between contributors/agents.
 - Routed `@ <command>` prompt submissions on the workflow screen through the shared shell parser/executor and rendered input/output transcript entries in the pane.
 - Kept TUI-only commands outside the shell path and added focused workspace-shell unit coverage.
 
+### M7.5 shell executor read/status coverage
+
+- Added shared `arroba-shell` executor support for `machine list|kernels`, `relay status`, `config show`, `mcp list|show`, `skill list|show`, and `provider status`.
+- Added kernel-client runtime types for relay status, remote machines, and remote kernel presence so shell and TUI surfaces can share the same response model.
+- Updated standalone shell usage examples and covered the new command families with focused kernel-client tests.
+
 ### Session/agent git worktree placement
 
 - Added local session and agent placement commands for existing directories and git worktree creation: `/session new [DIR]`, `/session new --worktree DIR --branch BRANCH [--from REF]`, and `/agent spawn ... --worktree DIR --branch BRANCH [--from REF]`.

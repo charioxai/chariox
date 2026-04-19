@@ -163,3 +163,106 @@ test("executeShellCommand rejects agent commands without current session", async
   assert.equal(result.ok, false)
   assert.match(result.message ?? "", /no current session/)
 })
+
+test("executeShellCommand lists remote machines", async () => {
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { ListRemoteMachines: null })
+    return {
+      RemoteMachinesListed: {
+        machines: [{
+          machine_id: "machine-1",
+          machine_alias: "mini",
+          registry_alias: null,
+          display_name: "mini",
+          trust_status: "approved",
+          online: true,
+          pending: false,
+          kernel_count: 1,
+          available_providers: ["codex"],
+        }],
+      },
+    }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("machine list"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /mini id=machine-1/)
+})
+
+test("executeShellCommand reports relay status", async () => {
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { RelayStatus: null })
+    return {
+      RelayStatus: {
+        status: {
+          configured: true,
+          connected: false,
+          relay_url: "wss://relay.example",
+          relay_token_configured: true,
+          daemon_id: "daemon-1",
+          machine_id: "machine-1",
+          machine_alias: "mini",
+        },
+      },
+    }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("relay status"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /configured, disconnected/)
+  assert.match(result.message ?? "", /machine=mini/)
+})
+
+test("executeShellCommand lists MCP servers and skills in the workspace", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("ListMcpServers" in request) {
+          return { McpServersListed: { mcps: [{ name: "playwright", transport: { stdio: { command: "npx" } }, enabled: true }] } }
+        }
+        return { SkillsListed: { skills: [{ name: "qa", description: "QA checks", path: "/skills/qa" }] } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const mcpResult = await executeShellCommand(parseShellCommand("mcp list"), context, { client: fake.client })
+  const skillResult = await executeShellCommand(parseShellCommand("skill list"), context, { client: fake.client })
+  assert.equal(mcpResult.ok, true)
+  assert.match(mcpResult.message ?? "", /playwright \[enabled\]/)
+  assert.equal(skillResult.ok, true)
+  assert.match(skillResult.message ?? "", /qa - QA checks/)
+  assert.deepEqual(requests, [
+    { ListMcpServers: { workspace_id: "/repo" } },
+    { ListSkills: { workspace_id: "/repo" } },
+  ])
+})
+
+test("executeShellCommand shows config and provider auth status", async () => {
+  const fake = fakeClient((request) => {
+    if ("GetUserConfig" in request) {
+      return { UserConfig: { path: "/home/.arroba/config.json", config: { version: 1, providers: { default: "codex" } } } }
+    }
+    assert.deepEqual(request, { GetProviderAuthStatus: { provider: "codex" } })
+    return {
+      ProviderAuthStatus: {
+        status: {
+          provider: "codex",
+          auth_state: "authenticated",
+          account_profile: "default",
+          login_hint: null,
+          detected_version: "1.2.3",
+        },
+      },
+    }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", provider: "codex" })
+  const configResult = await executeShellCommand(parseShellCommand("config show"), context, { client: fake.client })
+  const providerResult = await executeShellCommand(parseShellCommand("provider status"), context, { client: fake.client })
+  assert.equal(configResult.ok, true)
+  assert.match(configResult.message ?? "", /"default": "codex"/)
+  assert.equal(providerResult.ok, true)
+  assert.match(providerResult.message ?? "", /codex: authenticated as default/)
+  assert.match(providerResult.message ?? "", /version 1.2.3/)
+})

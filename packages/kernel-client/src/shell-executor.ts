@@ -3,12 +3,31 @@ import { stat } from "node:fs/promises"
 import { basename, dirname, resolve as resolvePath } from "node:path"
 import { promisify } from "node:util"
 
-import type { AgentInstance, RuntimeSession } from "./kernel-types.js"
+import type {
+  AgentInstance,
+  ArrobaMcpServerConfig,
+  ArrobaSkillMetadata,
+  ArrobaUserConfigPayload,
+  ProviderAuthStatus,
+  RelayKernelPresence,
+  RelayStatus,
+  RemoteMachineRecord,
+  RuntimeSession,
+} from "./kernel-types.js"
 import {
   createSessionRequest,
   focusAgentRequest,
+  getMcpServerRequest,
+  getProviderAuthStatusRequest,
+  getSkillRequest,
+  getUserConfigRequest,
   listAgentsRequest,
+  listMcpServersRequest,
+  listRemoteMachineKernelsRequest,
+  listRemoteMachinesRequest,
   listSessionsRequest,
+  listSkillsRequest,
+  relayStatusRequest,
   resolveSessionRequest,
   spawnAgentRequest,
   cycleAgentFocusRequest,
@@ -65,6 +84,18 @@ export async function executeShellCommand(
       return executeSessionCommand(parsed, context, deps)
     case "agent":
       return executeAgentCommand(parsed, context, deps)
+    case "machine":
+      return executeMachineCommand(parsed, deps)
+    case "relay":
+      return executeRelayCommand(parsed, deps)
+    case "config":
+      return executeConfigCommand(parsed, deps)
+    case "mcp":
+      return executeMcpCommand(parsed, context, deps)
+    case "skill":
+      return executeSkillCommand(parsed, context, deps)
+    case "provider":
+      return executeProviderCommand(parsed, context, deps)
     default:
       return {
         ok: false,
@@ -83,6 +114,12 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
           "arroba-shell commands:",
           "session list|new|attach|use",
           "agent list|spawn|focus|cycle",
+          "machine list|kernels",
+          "relay status",
+          "config show",
+          "mcp list|show",
+          "skill list|show",
+          "provider status",
           "set provider|model|effort <value>",
           "use session|agent|workflow <ref>",
           "vars",
@@ -301,6 +338,125 @@ async function executeAgentCommand(
   }
 }
 
+
+async function executeMachineCommand(
+  parsed: ParsedShellCommand,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const [action, machineRef] = parsed.args
+  switch (action) {
+    case "list":
+    case "ls": {
+      const response = await deps.client.send(listRemoteMachinesRequest())
+      const machines = expectVariant<{ machines: RemoteMachineRecord[] }>(response, "RemoteMachinesListed").machines
+      return { ok: true, message: formatRemoteMachines(machines), data: { machines } }
+    }
+    case "kernels": {
+      if (!machineRef) {
+        return { ok: false, message: "usage: machine kernels <machine-ref>" }
+      }
+      const response = await deps.client.send(listRemoteMachineKernelsRequest(machineRef))
+      const payload = expectVariant<{ kernels: RelayKernelPresence[] }>(response, "RemoteMachineKernelsListed")
+      return { ok: true, message: formatRemoteKernels(payload.kernels, machineRef), data: payload }
+    }
+    default:
+      return { ok: false, message: "usage: machine list|kernels" }
+  }
+}
+
+async function executeRelayCommand(
+  parsed: ParsedShellCommand,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const [action] = parsed.args
+  if (action && action !== "status") {
+    return { ok: false, message: "usage: relay status" }
+  }
+  const response = await deps.client.send(relayStatusRequest())
+  const status = expectVariant<{ status: RelayStatus }>(response, "RelayStatus").status
+  return { ok: true, message: formatRelayStatus(status), data: { status } }
+}
+
+async function executeConfigCommand(
+  parsed: ParsedShellCommand,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const [action] = parsed.args
+  if (action && action !== "show") {
+    return { ok: false, message: "usage: config show" }
+  }
+  const response = await deps.client.send(getUserConfigRequest())
+  const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfig")
+  return { ok: true, message: JSON.stringify(payload.config, null, 2), data: payload, format: "json" }
+}
+
+async function executeMcpCommand(
+  parsed: ParsedShellCommand,
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const [action, name] = parsed.args
+  switch (action) {
+    case "list":
+    case "ls": {
+      const response = await deps.client.send(listMcpServersRequest(context.workspace))
+      const mcps = expectVariant<{ mcps: ArrobaMcpServerConfig[] }>(response, "McpServersListed").mcps
+      return { ok: true, message: formatMcpList(mcps), data: { mcps } }
+    }
+    case "show": {
+      if (!name) {
+        return { ok: false, message: "usage: mcp show <name>" }
+      }
+      const response = await deps.client.send(getMcpServerRequest(context.workspace, name))
+      const mcp = expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServer").mcp
+      return { ok: true, message: JSON.stringify(mcp, null, 2), data: { mcp }, format: "json" }
+    }
+    default:
+      return { ok: false, message: "usage: mcp list|show" }
+  }
+}
+
+async function executeSkillCommand(
+  parsed: ParsedShellCommand,
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const [action, name] = parsed.args
+  switch (action) {
+    case "list":
+    case "ls": {
+      const response = await deps.client.send(listSkillsRequest(context.workspace))
+      const skills = expectVariant<{ skills: ArrobaSkillMetadata[] }>(response, "SkillsListed").skills
+      return { ok: true, message: formatSkillList(skills), data: { skills } }
+    }
+    case "show": {
+      if (!name) {
+        return { ok: false, message: "usage: skill show <name>" }
+      }
+      const response = await deps.client.send(getSkillRequest(context.workspace, name))
+      const skill = expectVariant<{ skill: ArrobaSkillMetadata }>(response, "Skill").skill
+      return { ok: true, message: JSON.stringify(skill, null, 2), data: { skill }, format: "json" }
+    }
+    default:
+      return { ok: false, message: "usage: skill list|show" }
+  }
+}
+
+async function executeProviderCommand(
+  parsed: ParsedShellCommand,
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const [action, providerArg] = parsed.args
+  if (action !== "status") {
+    return { ok: false, message: "usage: provider status [provider]" }
+  }
+  const provider = providerArg ?? context.provider
+  const response = await deps.client.send(getProviderAuthStatusRequest(provider))
+  const status = expectVariant<{ status: ProviderAuthStatus }>(response, "ProviderAuthStatus").status
+  return { ok: true, message: formatProviderAuthStatus(status), data: { status } }
+}
+
 function resourceResult(
   message: string,
   assignment: string | undefined,
@@ -430,6 +586,70 @@ function slugifyGitBranch(value: string): string {
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     || "worktree"
+}
+
+
+function formatRemoteMachines(machines: RemoteMachineRecord[]): string {
+  if (machines.length === 0) {
+    return "no remote machines"
+  }
+  return machines.map((machine) => {
+    const name = machine.display_name || machine.machine_alias || machine.registry_alias || machine.machine_id
+    const providers = (machine.available_providers ?? []).join(",") || "-"
+    const offline = machine.online ? "" : ",offline"
+    return `${name} id=${machine.machine_id} status=${machine.trust_status}${offline} kernels=${machine.kernel_count} providers=${providers}`
+  }).join("\n")
+}
+
+function formatRemoteKernels(kernels: RelayKernelPresence[], machineRef: string): string {
+  if (kernels.length === 0) {
+    return `no live kernels found for machine ${machineRef}`
+  }
+  return kernels.map((kernel) => {
+    const name = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
+    const providers = (kernel.available_providers ?? []).join(",") || "-"
+    return `${name} id=${kernel.kernel_id} machine=${kernel.machine_alias ?? kernel.machine_id} providers=${providers} accepting_remote_leases=${String(kernel.accepting_remote_leases ?? false)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}`
+  }).join("\n")
+}
+
+function formatRelayStatus(status: RelayStatus): string {
+  const state = !status.configured ? "not configured" : status.connected ? "connected" : "configured, disconnected"
+  return [
+    `relay ${state}`,
+    `url=${status.relay_url ?? "-"}`,
+    `token_configured=${String(status.relay_token_configured)}`,
+    `daemon=${status.daemon_id}`,
+    `machine=${status.machine_alias ?? status.machine_id}`,
+  ].join("\n")
+}
+
+function formatMcpList(mcps: ArrobaMcpServerConfig[]): string {
+  if (mcps.length === 0) {
+    return "no MCP servers installed"
+  }
+  return mcps.map((mcp) => {
+    const enabled = mcp.enabled === false ? "disabled" : "enabled"
+    const transport = Object.keys(mcp.transport ?? {})[0] ?? "transport"
+    return `${mcp.name} [${enabled}] ${transport}`
+  }).join("\n")
+}
+
+function formatSkillList(skills: ArrobaSkillMetadata[]): string {
+  if (skills.length === 0) {
+    return "no skills installed"
+  }
+  return skills.map((skill) => {
+    const description = skill.short_description || skill.description || skill.path
+    return `${skill.name} - ${description}`
+  }).join("\n")
+}
+
+function formatProviderAuthStatus(status: ProviderAuthStatus): string {
+  return [
+    status.account_profile ? `${status.provider}: ${status.auth_state} as ${status.account_profile}` : `${status.provider}: ${status.auth_state}`,
+    status.detected_version ? `version ${status.detected_version}` : null,
+    status.login_hint ?? null,
+  ].filter(Boolean).join(" • ")
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

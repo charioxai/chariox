@@ -216,13 +216,21 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 
 ### Slice 6: Broaden Command Coverage
 
-- Add remaining command families to the shared executor:
-  - machine, relay, config
-  - MCP, skills
-  - workflows
-  - provider auth/status
-  - stop/cancel
-- Add table/JSON renderers for list/show commands.
+- Status: in progress.
+- Implemented read/status/show coverage in the shared executor for:
+  - `machine list|kernels`
+  - `relay status`
+  - `config show`
+  - `mcp list|show`
+  - `skill list|show`
+  - `provider status`
+- Added basic text/JSON renderers for those list/show commands.
+- Remaining command families/actions:
+  - MCP/skill install, update, uninstall, import, grant, revoke, grants
+  - workflow new/list/show/run/runs/cancel/resume and graph management
+  - config set/unset/managed-io
+  - provider login/logout/reauth and process commands
+  - stop/cancel active prompt work
 
 ## Validation
 
