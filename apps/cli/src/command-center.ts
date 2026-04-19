@@ -38,7 +38,7 @@ const COMMAND_TREE: CommandNode[] = [
     description: "Create, attach, list, or delete sessions",
     value: "/session ",
     children: [
-      { id: "session-new", label: "new", description: "Create and attach a new session", value: "/session new " },
+      { id: "session-new", label: "new", description: "Create and attach a new session, optionally in a directory/worktree", value: "/session new " },
       { id: "session-attach", label: "attach", description: "Attach to an existing session", value: "/session attach " },
       { id: "session-list", label: "list", description: "List available sessions", value: "/session list" },
       { id: "session-delete", label: "delete", description: "Delete the current or referenced session", value: "/session delete " },
@@ -53,7 +53,7 @@ const COMMAND_TREE: CommandNode[] = [
       {
         id: "agent-spawn",
         label: "spawn",
-        description: "Spawn one or more local or remote agents in the session",
+        description: "Spawn one or more local or remote agents, optionally in a directory/worktree",
         value: "/agent spawn ",
       },
       { id: "agent-delete", label: "delete", description: "Delete the focused or named agent", value: "/agent delete " },

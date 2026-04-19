@@ -25,13 +25,24 @@ import type { MultiAgentResponseLayout, UiPreferences } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { SessionListEntry } from "./sessions.js"
 import { sessionHasPromptWork } from "./session-state.js"
+import { execFile } from "node:child_process"
 import { readFile, stat } from "node:fs/promises"
-import { resolve as resolvePath } from "node:path"
+import { basename, dirname, resolve as resolvePath } from "node:path"
+import { promisify } from "node:util"
+
+const execFileAsync = promisify(execFile)
 
 const WORKFLOW_MAX_TURNS_CONFIG_KEY = "workflow.max_turns"
 const WORKFLOW_LAUNCH_POLICY_CONFIG_KEY = "workflow.launch_policy"
 
 type FooterTone = "info" | "error"
+
+type LocalGitWorktreeOptions = {
+  baseDirectory: string
+  targetDirectory?: string | undefined
+  branch?: string | undefined
+  fromRef?: string | undefined
+}
 
 type CreateSessionResult = Pick<RuntimeSession, "id" | "alias">
 type ResolveSessionResult = Pick<RuntimeSession, "id" | "alias">
@@ -130,6 +141,7 @@ type CommandActionDeps = {
   appendNotice: (message: string) => void
   formatError: (error: unknown) => string
   createSession: (workspace: string, worktree: string, alias?: string) => Promise<CreateSessionResult>
+  prepareLocalGitWorktree?: (options: LocalGitWorktreeOptions) => Promise<string>
   attachBinding: (
     session: Pick<RuntimeSession, "id">,
     createdSession: boolean,
@@ -424,6 +436,66 @@ export const parseMcpInstallConfig = (args: string[]): ArrobaMcpServerConfig | n
   return null
 }
 
+async function defaultPrepareLocalGitWorktree(options: LocalGitWorktreeOptions): Promise<string> {
+  const baseDirectory = resolvePath(options.baseDirectory)
+  const repoRoot = (await runGit(baseDirectory, ["rev-parse", "--show-toplevel"])).trim()
+  if (!repoRoot) {
+    throw new Error(`git did not report a repository root for ${baseDirectory}`)
+  }
+
+  const fromRef = options.fromRef ?? "HEAD"
+  const targetDirectory = options.targetDirectory
+    ? resolvePath(baseDirectory, options.targetDirectory)
+    : resolvePath(dirname(repoRoot), `${basename(repoRoot)}-${slugifyGitBranch(options.branch ?? fromRef)}`)
+
+  let args: string[]
+  if (options.branch) {
+    const branchExists = await gitBranchExists(repoRoot, options.branch)
+    args = branchExists
+      ? ["worktree", "add", targetDirectory, options.branch]
+      : ["worktree", "add", "-b", options.branch, targetDirectory, fromRef]
+  } else {
+    args = ["worktree", "add", targetDirectory, fromRef]
+  }
+
+  await runGit(repoRoot, args)
+  const details = await stat(targetDirectory)
+  if (!details.isDirectory()) {
+    throw new Error(`created git worktree is not a directory: ${targetDirectory}`)
+  }
+  return targetDirectory
+}
+
+async function gitBranchExists(repoRoot: string, branch: string): Promise<boolean> {
+  try {
+    await runGit(repoRoot, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function runGit(cwd: string, args: string[]): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("git", args, { cwd })
+    return stdout
+  } catch (error) {
+    const detail = error && typeof error === "object" && "stderr" in error
+      ? String((error as { stderr?: unknown }).stderr ?? "").trim()
+      : ""
+    const message = detail || (error instanceof Error ? error.message : String(error))
+    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${message}`)
+  }
+}
+
+function slugifyGitBranch(value: string): string {
+  return value
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    || "worktree"
+}
+
 export function createCommandActionHandlers(deps: CommandActionDeps) {
   const currentWorkflowLaunchPolicy = (): "reject" | "queue" => {
     const policy =
@@ -626,10 +698,17 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     return Number.isInteger(count) && count > 0 ? count : null
   }
 
-  const parseAgentSpawnOptions = (args: string[]) => {
+  const parsePlacementOptions = (
+    args: string[],
+    commandName: string,
+    allowMachine: boolean,
+  ) => {
     const positional: string[] = []
     let directory: string | undefined
     let machineRef: string | undefined
+    let gitWorktree: string | undefined
+    let branch: string | undefined
+    let fromRef: string | undefined
     let error: string | undefined
 
     for (let index = 0; index < args.length; index += 1) {
@@ -640,14 +719,44 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       if (arg === "--dir" || arg === "--directory") {
         const value = args[index + 1]
         if (!value || value.startsWith("--")) {
-          error = "usage: /agent spawn [alias] [model] --dir <directory>"
+          error = `usage: ${commandName} --dir <directory>`
           break
         }
         directory = value
         index += 1
         continue
       }
-      if (arg === "--machine") {
+      if (arg === "--worktree") {
+        const value = args[index + 1]
+        if (!value || value.startsWith("--")) {
+          error = `usage: ${commandName} --worktree <directory> [--branch <branch>] [--from <ref>]`
+          break
+        }
+        gitWorktree = value
+        index += 1
+        continue
+      }
+      if (arg === "--branch") {
+        const value = args[index + 1]
+        if (!value || value.startsWith("--")) {
+          error = `usage: ${commandName} [--worktree <directory>] --branch <branch> [--from <ref>]`
+          break
+        }
+        branch = value
+        index += 1
+        continue
+      }
+      if (arg === "--from") {
+        const value = args[index + 1]
+        if (!value || value.startsWith("--")) {
+          error = `usage: ${commandName} [--worktree <directory>] [--branch <branch>] --from <ref>`
+          break
+        }
+        fromRef = value
+        index += 1
+        continue
+      }
+      if (arg === "--machine" && allowMachine) {
         const value = args[index + 1]
         if (!value || value.startsWith("--")) {
           error = "usage: /agent spawn [alias] [model] --machine <machine-ref> --dir <remote-directory>"
@@ -658,39 +767,88 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         continue
       }
       if (arg.startsWith("--")) {
-        error = `unknown /agent spawn option ${arg}`
+        error = `unknown ${commandName} option ${arg}`
         break
       }
       positional.push(arg)
     }
 
+    const gitRequested = Boolean(gitWorktree || branch || fromRef)
+    if (!error && directory && gitRequested) {
+      error = `usage: ${commandName} uses either --dir or --worktree/--branch, not both`
+    }
+    if (!error && machineRef && gitRequested) {
+      error = "remote git worktree creation is not supported yet; use --machine <machine-ref> --dir <remote-directory>"
+    }
     if (!error && machineRef && !directory) {
       error = "usage: /agent spawn [alias] [model] --machine <machine-ref> --dir <remote-directory>"
     }
-    if (!error && positional.length > 2) {
-      error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--machine <machine-ref>]"
-    }
+
     return {
       positional,
       directory,
       machineRef,
+      gitWorktree,
+      branch,
+      fromRef,
       error,
     }
   }
 
-  const resolveLocalSpawnDirectory = async (directory: string | undefined, machineRef: string | undefined) => {
-    if (!directory) {
-      return undefined
+  const parseAgentSpawnOptions = (args: string[]) => {
+    const parsed = parsePlacementOptions(args, "/agent spawn", true)
+    let error = parsed.error
+    if (!error && parsed.positional.length > 2) {
+      error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>]"
     }
-    if (machineRef) {
-      return directory
+    return {
+      ...parsed,
+      error,
     }
-    const resolved = resolvePath(deps.worktree, directory)
+  }
+
+  const resolveExistingLocalDirectory = async (directory: string, baseDirectory: string, label: string) => {
+    const resolved = resolvePath(baseDirectory, directory)
     const details = await stat(resolved)
     if (!details.isDirectory()) {
-      throw new Error(`agent working directory is not a directory: ${resolved}`)
+      throw new Error(`${label} is not a directory: ${resolved}`)
     }
     return resolved
+  }
+
+  const prepareLocalGitWorktree = async (options: LocalGitWorktreeOptions) => {
+    if (deps.prepareLocalGitWorktree) {
+      return deps.prepareLocalGitWorktree(options)
+    }
+    return defaultPrepareLocalGitWorktree(options)
+  }
+
+  const resolveLocalPlacement = async (options: {
+    directory?: string | undefined
+    gitWorktree?: string | undefined
+    branch?: string | undefined
+    fromRef?: string | undefined
+    machineRef?: string | undefined
+    label: string
+  }) => {
+    if (options.directory) {
+      if (options.machineRef) {
+        return options.directory
+      }
+      return resolveExistingLocalDirectory(options.directory, deps.worktree, options.label)
+    }
+    if (options.gitWorktree || options.branch || options.fromRef) {
+      if (options.machineRef) {
+        throw new Error("remote git worktree creation is not supported yet; use --machine <machine-ref> --dir <remote-directory>")
+      }
+      return prepareLocalGitWorktree({
+        baseDirectory: deps.worktree,
+        targetDirectory: options.gitWorktree,
+        branch: options.branch,
+        fromRef: options.fromRef,
+      })
+    }
+    return undefined
   }
 
   const spawnAndLaunchAgent = async (options: {
@@ -749,9 +907,37 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     switch (action) {
       case "create":
       case "new": {
-        const session = await deps.createSession(deps.workspace, deps.worktree, value || undefined)
-        await deps.attachBinding(session, true)
-        deps.flashFooter(`attached to session ${session.alias ?? session.id}`, "info")
+        try {
+          const parsed = parsePlacementOptions(args, "/session new", false)
+          if (parsed.error) {
+            deps.flashFooter(parsed.error, "error")
+            return true
+          }
+          if (parsed.positional.length > 1) {
+            deps.flashFooter("usage: /session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>]", "error")
+            return true
+          }
+          let sessionWorktree = deps.worktree
+          const positionalDirectory = parsed.positional[0]
+          if (positionalDirectory && !parsed.directory && !parsed.gitWorktree && !parsed.branch && !parsed.fromRef) {
+            sessionWorktree = await resolveExistingLocalDirectory(positionalDirectory, deps.worktree, "session working directory")
+          } else {
+            const resolvedPlacement = await resolveLocalPlacement({
+              directory: parsed.directory,
+              gitWorktree: parsed.gitWorktree,
+              branch: parsed.branch,
+              fromRef: parsed.fromRef,
+              label: "session working directory",
+            })
+            sessionWorktree = resolvedPlacement ?? deps.worktree
+          }
+          const session = await deps.createSession(deps.workspace, sessionWorktree, undefined)
+          await deps.attachBinding(session, true)
+          const placement = sessionWorktree !== deps.worktree ? ` in ${sessionWorktree}` : ""
+          deps.flashFooter(`attached to session ${session.alias ?? session.id}${placement}`, "info")
+        } catch (error) {
+          deps.flashFooter(deps.formatError(error), "error")
+        }
         return true
       }
       case "attach": {
@@ -1073,7 +1259,10 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
             return
           }
           const count = parseSpawnCount(parsed.positional[0])
-          if (count !== null && (parsed.positional.length > 1 || parsed.directory || parsed.machineRef)) {
+          if (
+            count !== null
+            && (parsed.positional.length > 1 || parsed.directory || parsed.machineRef || parsed.gitWorktree || parsed.branch || parsed.fromRef)
+          ) {
             deps.flashFooter("usage: /agent spawn <count>", "error")
             return
           }
@@ -1108,7 +1297,14 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           const model = parsed.positional[1]
           const provider = deps.currentProviderId()
           const effort = deps.currentVariantId()
-          const worktreeId = await resolveLocalSpawnDirectory(parsed.directory, parsed.machineRef)
+          const worktreeId = await resolveLocalPlacement({
+            directory: parsed.directory,
+            gitWorktree: parsed.gitWorktree,
+            branch: parsed.branch,
+            fromRef: parsed.fromRef,
+            machineRef: parsed.machineRef,
+            label: "agent working directory",
+          })
           const payload = await spawnAndLaunchAgent({
             provider,
             alias,

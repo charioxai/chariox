@@ -1,4 +1,7 @@
 import assert from "node:assert/strict"
+import { mkdtemp } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
 
 import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentListSummary, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
@@ -1047,6 +1050,46 @@ test("agent spawn passes local directory as worktree and launches locally", asyn
   assert.match(flashedMessage, /^spawned agent agent-2 \(review\) in /)
 })
 
+test("agent spawn creates a local git worktree placement before spawning", async () => {
+  const preparedWorktree = "/tmp/arroba-feature-worktree"
+  const prepareCalls: Array<{ targetDirectory?: string; branch?: string; fromRef?: string }> = []
+  const spawnCalls: Array<{ worktreeId: string | undefined; machineRef: string | undefined }> = []
+  let flashedMessage = ""
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    prepareLocalGitWorktree: async (options: { targetDirectory?: string; branch?: string; fromRef?: string }) => {
+      prepareCalls.push(options)
+      return preparedWorktree
+    },
+    spawnAgent: async (provider: string, alias?: string, model?: string, _effort?: string, worktreeId?: string, machineRef?: string) => {
+      spawnCalls.push({ worktreeId, machineRef })
+      const agent = makeAgent({
+        id: "agent-2",
+        agent_ref: "agent-2",
+        alias: alias ?? null,
+        provider,
+        model: model ?? null,
+        worktree_id: worktreeId ?? null,
+        state: "Focused",
+      })
+      return { agent, session: makeSession({ focused_agent_id: agent.id, agents: [makeAgent(), agent] }) }
+    },
+    flashFooter: (message: string) => { flashedMessage = message },
+  }))
+
+  await handlers.handleAgentCommand({
+    kind: "agent",
+    raw: "/agent spawn review openai/gpt-5 --worktree ../feature --branch feature/test --from main",
+    args: ["spawn", "review", "openai/gpt-5", "--worktree", "../feature", "--branch", "feature/test", "--from", "main"],
+  })
+
+  assert.equal(prepareCalls.length, 1)
+  assert.equal(prepareCalls[0]?.targetDirectory, "../feature")
+  assert.equal(prepareCalls[0]?.branch, "feature/test")
+  assert.equal(prepareCalls[0]?.fromRef, "main")
+  assert.deepEqual(spawnCalls, [{ worktreeId: preparedWorktree, machineRef: undefined }])
+  assert.equal(flashedMessage, "spawned agent agent-2 (review) in /tmp/arroba-feature-worktree")
+})
+
 test("agent spawn with machine requires directory and does not launch local provider", async () => {
   const spawnCalls: Array<{ worktreeId: string | undefined; machineRef: string | undefined }> = []
   let launchCount = 0
@@ -1112,6 +1155,68 @@ test("agent spawn with machine rejects missing directory", async () => {
 
   assert.equal(spawnCount, 0)
   assert.equal(flashedMessage, "usage: /agent spawn [alias] [model] --machine <machine-ref> --dir <remote-directory>")
+})
+
+test("session new can attach a new session in an existing directory", async () => {
+  const sessionDir = await mkdtemp(join(tmpdir(), "arroba-session-dir-"))
+  const createCalls: Array<{ workspace: string; worktree: string; alias: string | undefined }> = []
+  let attachedSession: Pick<RuntimeSession, "id"> | null = null
+  let flashedMessage = ""
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    createSession: async (workspace: string, worktree: string, alias?: string) => {
+      createCalls.push({ workspace, worktree, alias })
+      return { id: "session-dir", alias: null }
+    },
+    attachBinding: async (session: Pick<RuntimeSession, "id">) => {
+      attachedSession = session
+    },
+    flashFooter: (message: string) => { flashedMessage = message },
+  }))
+
+  await handlers.handleSessionCommand({
+    kind: "session",
+    raw: `/session new ${sessionDir}`,
+    action: "new",
+    args: [sessionDir],
+    value: sessionDir,
+  })
+
+  assert.deepEqual(createCalls, [{ workspace: process.cwd(), worktree: sessionDir, alias: undefined }])
+  assert.deepEqual(attachedSession, { id: "session-dir", alias: null })
+  assert.equal(flashedMessage, `attached to session session-dir in ${sessionDir}`)
+})
+
+test("session new can create a local git worktree before attaching", async () => {
+  const preparedWorktree = "/tmp/arroba-session-feature"
+  const prepareCalls: Array<{ targetDirectory?: string; branch?: string; fromRef?: string }> = []
+  const createCalls: Array<{ worktree: string; alias: string | undefined }> = []
+  let flashedMessage = ""
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    prepareLocalGitWorktree: async (options: { targetDirectory?: string; branch?: string; fromRef?: string }) => {
+      prepareCalls.push(options)
+      return preparedWorktree
+    },
+    createSession: async (_workspace: string, worktree: string, alias?: string) => {
+      createCalls.push({ worktree, alias })
+      return { id: "session-worktree", alias: null }
+    },
+    flashFooter: (message: string) => { flashedMessage = message },
+  }))
+
+  await handlers.handleSessionCommand({
+    kind: "session",
+    raw: "/session new --worktree ../feature --branch feature/session --from main",
+    action: "new",
+    args: ["--worktree", "../feature", "--branch", "feature/session", "--from", "main"],
+    value: "--worktree ../feature --branch feature/session --from main",
+  })
+
+  assert.equal(prepareCalls.length, 1)
+  assert.equal(prepareCalls[0]?.targetDirectory, "../feature")
+  assert.equal(prepareCalls[0]?.branch, "feature/session")
+  assert.equal(prepareCalls[0]?.fromRef, "main")
+  assert.deepEqual(createCalls, [{ worktree: preparedWorktree, alias: undefined }])
+  assert.equal(flashedMessage, `attached to session session-worktree in ${preparedWorktree}`)
 })
 
   test("session command aliases the current session", async () => {

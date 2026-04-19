@@ -115,6 +115,27 @@ Common direct CLI options:
 - `--worktree PATH`
   - override the logical worktree id; default is the workspace path
 
+Interactive placement commands:
+
+- `/session new [DIR]`
+  - create and attach a new session in `DIR`; if omitted, uses the directory where the CLI was launched
+
+- `/session new --dir DIR`
+  - explicit form for creating the new session in an existing local directory
+
+- `/session new --worktree DIR --branch BRANCH [--from REF]`
+  - create a local git worktree before creating the session, then launch the session in that worktree
+  - `DIR` is resolved relative to the current session/CLI worktree; if omitted, Arroba creates a sibling worktree path from the repo name and branch
+
+- `/agent spawn [ALIAS] [MODEL] --dir DIR`
+  - spawn a local agent in an existing local directory
+
+- `/agent spawn [ALIAS] [MODEL] --worktree DIR --branch BRANCH [--from REF]`
+  - create a local git worktree before spawning the agent, then launch that agent's provider process in the new worktree
+
+- `/agent spawn [ALIAS] [MODEL] --machine MACHINE --dir REMOTE_DIR`
+  - spawn a remote agent in an existing remote directory; remote git worktree creation is not yet wired
+
 Example:
 
 ```bash
