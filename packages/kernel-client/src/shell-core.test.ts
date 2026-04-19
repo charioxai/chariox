@@ -39,6 +39,8 @@ test("parseShellCommand substitutes shell variables", () => {
 
 test("parseShellCommand classifies shell-local and tui-only commands", () => {
   assert.equal(parseShellCommand("set model gpt-5.2").kind, "shell-local")
+  assert.equal(parseShellCommand("context").kind, "shell-local")
+  assert.equal(parseShellCommand("pwd").kind, "shell-local")
   const waiting = parseShellCommand("/waiting")
   assert.equal(waiting.kind, "tui-only")
   assert.match(waiting.reason ?? "", /TUI/)

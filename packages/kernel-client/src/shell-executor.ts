@@ -191,6 +191,8 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
           "workflow list|new|show|run|runs|cancel|resume|node|edge|endpoint",
           "provider status|login|logout|reauth|processes",
           "stop",
+          "context",
+          "pwd",
           "set provider|model|effort <value>",
           "use session|agent|workflow <ref>",
           "vars",
@@ -198,6 +200,10 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
           "exit",
         ].join("\n"),
       }
+    case "context":
+      return { ok: true, message: formatShellContext(context), data: { context } }
+    case "pwd":
+      return { ok: true, message: context.worktree }
     case "set": {
       if (first !== "provider" && first !== "model" && first !== "effort") {
         return { ok: false, message: "usage: set provider|model|effort <value>" }
@@ -256,6 +262,30 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
     default:
       return { ok: false, message: `${parsed.command ?? "command"} is not implemented in arroba-shell yet` }
   }
+}
+
+function formatShellContext(context: ShellContext): string {
+  const lines = [
+    `workspace: ${context.workspace}`,
+    `worktree: ${context.worktree}`,
+    `session: ${context.sessionId ?? "-"}`,
+    `attachment: ${context.attachmentId ?? "-"}`,
+    `agent: ${context.agentId ?? "-"}`,
+    `workflow: ${context.workflowId ?? "-"}`,
+    `provider: ${context.provider}`,
+    `model: ${context.model}`,
+    `effort: ${context.effort}`,
+  ]
+  const variables = Object.entries(context.variables)
+  if (variables.length === 0) {
+    lines.push("vars: -")
+  } else {
+    lines.push("vars:")
+    for (const [name, value] of variables) {
+      lines.push(`  $${name} = ${value}`)
+    }
+  }
+  return lines.join("\n")
 }
 
 async function executeSessionCommand(

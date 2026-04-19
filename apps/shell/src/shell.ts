@@ -136,6 +136,8 @@ export function shellUsage(): string {
     "  @ relay status",
     "  @ provider status codex",
     "  @ set provider codex",
+    "  @ context",
+    "  @ pwd",
     "  @ vars",
     "  @ source setup.arroba",
     "  @ exit",

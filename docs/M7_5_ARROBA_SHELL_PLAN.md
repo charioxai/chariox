@@ -56,6 +56,8 @@ These are not kernel mutations, but are valid in `arroba-shell`:
 - `use session <ref>`
 - `use agent <ref>`
 - `use workflow <ref>`
+- `context`
+- `pwd`
 - `vars`
 - `unset <name>`
 - `source <file>` or `run <file>`
@@ -146,6 +148,17 @@ Default script behavior:
 - accept repeated `--var NAME=VALUE` seed bindings before the first command
 - accept `--continue-on-error` for validation/drill scripts that should report every failing command
 - `source <file>` and `run <file>` load another script from disk, resolve relative paths against the current shell worktree, and preserve context changes/variable bindings in the caller
+
+Context inspection:
+
+```text
+context
+pwd
+```
+
+- `context` prints the current workspace, worktree, session, attachment, agent, workflow, provider, model, effort, and shell variables.
+- `pwd` prints the current shell worktree.
+- Both commands are shell-local and do not call the kernel.
 
 Example script:
 
@@ -264,7 +277,15 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 - Implemented provider and cancellation coverage in the shared executor:
   - `provider status|login|logout|reauth|processes`
   - `stop` / `cancel`
-- Remaining command families/actions: none for Slice 6. Future slices may still add richer renderers or additional aliases.
+- Remaining command/action gaps compared with the TUI slash surface:
+  - `session alias|delete`
+  - `agent delete|destroy`
+  - `machine approve|forget|rename`
+  - `relay configure`
+  - `workflow node instructions show|set|save|close`
+  - `workflow endpoint remove`
+  - provider-native namespace passthrough such as `/opencode <cmd>` and `/codex <cmd>`
+- Provider-native namespace passthrough remains intentionally excluded until it is expressed as explicit shared commands. `workflow node instructions` remains editor-coupled in the TUI for now.
 
 ## Validation
 

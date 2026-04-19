@@ -83,6 +83,10 @@ function requireOutput(output, pattern, label) {
   }
 }
 
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 async function cleanupSession(kernelUrl, sessionId) {
   if (!sessionId) return
   const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
@@ -146,6 +150,8 @@ async function main() {
       'set provider dev-stub',
       'set model shell-drill-model',
       'set effort low',
+      'context',
+      'pwd',
       'vars',
       'source sourced.arroba',
       'session list',
@@ -226,6 +232,8 @@ async function main() {
       throw new Error(`success script failed\nstdout:\n${success.stdout}\nstderr:\n${success.stderr}`)
     }
     requireOutput(success.stdout, /bound \$session = /, 'session binding')
+    requireOutput(success.stdout, /provider: dev-stub/, 'context provider')
+    requireOutput(success.stdout, new RegExp(escapeRegex(workspace)), 'pwd workspace')
     requireOutput(success.stdout, /bound \$alpha = /, 'agent binding')
     requireOutput(success.stdout, /installed MCP shell_echo/, 'MCP install')
     requireOutput(success.stdout, /installed skill shell-drill-skill/, 'skill install')

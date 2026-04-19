@@ -720,3 +720,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Moved line-oriented Arroba shell script execution into `packages/kernel-client/src/shell-script.ts`, so standalone `arroba-shell` and the embedded workflow-pane shell share `source`/`run`, nested script loading, variables, line diagnostics, and context propagation.
 - Updated the workflow-pane shell to select the workflow returned in shell context after workflow creation/show/load commands, keeping the visible workflow graph synchronized with shell-driven mutations.
 - Manual TUI drill confirmed direct `@` workflow graph creation and `@ source <file>` graph loading update the workflow pane to the expected node/edge/endpoint counts. Dev-stub workflow execution still fails with `missing_structured_output`; provider-backed runtime behavior remains covered by the workflow runtime drill suite.
+
+### M7.5 shell context and hardening update
+
+- Added shell-local `context` and `pwd` commands for standalone and embedded shells; they render the active workspace, worktree, session, attachment, agent, workflow, provider/model/effort, and shell variables without making a kernel request.
+- Extended parser/executor/shell usage tests plus the live shell scriptability drill to cover `context`/`pwd` and documented the remaining shared-executor command gaps against the TUI slash surface.
+- Revalidated standalone shell scriptability with `pnpm --filter @arroba/cli run shell:drill`. A provider-backed embedded TUI runtime drill was attempted manually, but the PTY input path is still unreliable for slash/workflow-mode automation; the committed validation remains the shared executor tests plus the scriptability drill rather than a flaky TUI automation artifact.

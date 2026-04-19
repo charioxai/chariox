@@ -66,6 +66,8 @@ test("shellUsage documents prompt commands without slash prefix", () => {
   const usage = shellUsage()
   assert.match(usage, /arroba-shell/)
   assert.match(usage, /@ session list/)
+  assert.match(usage, /@ context/)
+  assert.match(usage, /@ pwd/)
 })
 
 test("executeShellScriptLines runs comments, variables, and stops on success", async () => {

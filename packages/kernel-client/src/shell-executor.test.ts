@@ -124,6 +124,35 @@ test("executeShellCommand handles shell-local context mutations", async () => {
   assert.equal(next.model, "gpt-5.3")
 })
 
+test("executeShellCommand renders shell-local context and pwd", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo/worktree",
+    sessionId: "session-1",
+    attachmentId: "attach-1",
+    agentId: "agent-1",
+    workflowId: "workflow-1",
+    provider: "codex",
+    model: "gpt-5.2",
+    effort: "low",
+    variables: { wf: "workflow-1" },
+  })
+  const fake = fakeClient(() => ({}))
+  const contextResult = await executeShellCommand(parseShellCommand("context"), context, { client: fake.client })
+  const pwdResult = await executeShellCommand(parseShellCommand("pwd"), context, { client: fake.client })
+
+  assert.equal(contextResult.ok, true)
+  assert.match(contextResult.message ?? "", /workspace: \/repo/)
+  assert.match(contextResult.message ?? "", /worktree: \/repo\/worktree/)
+  assert.match(contextResult.message ?? "", /session: session-1/)
+  assert.match(contextResult.message ?? "", /agent: agent-1/)
+  assert.match(contextResult.message ?? "", /workflow: workflow-1/)
+  assert.match(contextResult.message ?? "", /provider: codex/)
+  assert.match(contextResult.message ?? "", /\$wf = workflow-1/)
+  assert.equal(pwdResult.message, "/repo/worktree")
+  assert.equal(fake.requests.length, 0)
+})
+
 test("executeShellCommand removes shell-local variables", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",
