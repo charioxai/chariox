@@ -15,7 +15,8 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm run lint && pnpm run build && node --test dist/*.test.js",
     "start": "bun dist/index.js",
-    "dev": "pnpm run build && bun dist/index.js"
+    "dev": "pnpm run build && bun dist/index.js",
+    "shell": "pnpm run build && node dist/shell.js"
   },
   "dependencies": {
     "@opentui/core": "0.1.87",
@@ -28,5 +29,8 @@
     "@babel/core": "^7.28.0",
     "@babel/preset-typescript": "^7.27.1",
     "babel-preset-solid": "^1.9.9"
+  },
+  "bin": {
+    "arroba-shell": "dist/shell.js"
   }
 }

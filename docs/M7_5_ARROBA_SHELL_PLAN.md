@@ -179,11 +179,12 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 
 ### Slice 3: Standalone `arroba-shell`
 
-- Add an `arroba-shell` binary/script entrypoint.
-- Connect to the kernel through the existing local IPC client.
-- Render an `@` prompt.
-- Print command outputs below submitted commands.
-- Support `exit`, `quit`, `help`, `set`, `use`, `vars`, and basic history if low-risk.
+- Status: implemented in `apps/cli/src/shell.ts` with focused coverage in `apps/cli/src/shell.test.ts`.
+- Added an `arroba-shell` binary/script entrypoint via the CLI package `bin` field and `pnpm --filter @arroba/cli run shell`.
+- Connects to the kernel through the existing local IPC client using `--kernel-url`, `--socket`, or the same environment/default endpoint rules.
+- Renders an `@` prompt and prints command outputs below submitted commands.
+- Supports `exit`, `quit`, `help`, `set`, `use`, `vars`, and `unset` through the shared shell executor.
+- Basic command history is deferred until the workspace-pane/script-runner slices if needed.
 
 ### Slice 4: Script Runner
 

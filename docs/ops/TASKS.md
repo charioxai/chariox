@@ -15,8 +15,8 @@ A lightweight, repo-native task board so contributors and future agents can cont
 - [ ] **M7.5-001** Add Arroba Shell command REPL and script runner
   - Note: Build the M7.5 plan in `docs/M7_5_ARROBA_SHELL_PLAN.md`. `arroba-shell` should be independent from the TUI while reusing the same command executor as slash commands.
   - Scope: shell parser/context/result model, standalone `arroba-shell`, script runner, workspace-pane integration, and shared executor coverage for session/agent/workflow/MCP/skill command families.
-  - Progress: Slice 1 shell core skeleton is implemented with parser normalization, context/result types, `as <name>` bindings, variable substitution, TUI-only command classification, and focused tests. Slice 2 minimal shell executor is implemented for shell-local commands plus kernel-backed session list/new/attach/use and agent list/spawn/focus/cycle.
-  - Next: Implement Slice 3: standalone `arroba-shell` entrypoint using the shell parser/executor over local kernel IPC.
+  - Progress: Slice 1 shell core skeleton is implemented with parser normalization, context/result types, `as <name>` bindings, variable substitution, TUI-only command classification, and focused tests. Slice 2 minimal shell executor is implemented for shell-local commands plus kernel-backed session list/new/attach/use and agent list/spawn/focus/cycle. Slice 3 standalone `arroba-shell` entrypoint is implemented over local kernel IPC.
+  - Next: Implement Slice 4: `arroba-shell run <file>` script runner with comments, variables, stop-on-error behavior, and mocked IPC fixture tests.
 
 - [ ] **M7-002** Implement Arroba-owned MCP and skill management
   - Note: Build the M7 plan in `docs/M7_MCP_SKILLS_PLAN.md`. The repo-local MCP isolation spike validated the per-agent provider-process/proxy architecture; production integration is in progress.

@@ -15,6 +15,12 @@ Chronological notes to preserve execution context between contributors/agents.
 - Covered `session list`, `session new --dir|--worktree`, `session attach|use`, `agent list`, `agent spawn --dir|--worktree|--machine`, `agent focus`, and `agent cycle`, with variable binding and context update behavior.
 - Verified with the focused CLI shell-core and shell-executor test path, which also ran the existing CLI TypeScript lint/build/test suite.
 
+### M7.5 standalone arroba-shell entrypoint
+
+- Added `apps/cli/src/shell.ts` as the standalone `arroba-shell` REPL entrypoint, wired to the existing local kernel IPC client and the shared shell parser/executor.
+- Added CLI package wiring for `arroba-shell` and `pnpm --filter @arroba/cli run shell`, with options for kernel endpoint, workspace/worktree, provider, model, and effort.
+- Verified with focused shell tests plus a built `node apps/cli/dist/shell.js --help` smoke check.
+
 ### Session/agent git worktree placement
 
 - Added local session and agent placement commands for existing directories and git worktree creation: `/session new [DIR]`, `/session new --worktree DIR --branch BRANCH [--from REF]`, and `/agent spawn ... --worktree DIR --branch BRANCH [--from REF]`.
