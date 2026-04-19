@@ -188,10 +188,11 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 
 ### Slice 4: Script Runner
 
-- Add `arroba-shell run <file>`.
-- Support comments, blank lines, variables, and stop-on-error execution.
-- Return non-zero on failure.
-- Add script fixture tests for session/agent setup commands using mocked IPC.
+- Status: implemented in `apps/cli/src/shell.ts` with focused coverage in `apps/cli/src/shell.test.ts`.
+- Added `arroba-shell run <file>`.
+- Supports comments, blank lines, variables, and stop-on-error execution.
+- Returns non-zero on failure.
+- Added script fixture tests for session/agent setup commands using mocked IPC.
 
 ### Slice 5: Workspace Pane Integration
 

@@ -21,6 +21,12 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added CLI package wiring for `arroba-shell` and `pnpm --filter @arroba/cli run shell`, with options for kernel endpoint, workspace/worktree, provider, model, and effort.
 - Verified with focused shell tests plus a built `node apps/cli/dist/shell.js --help` smoke check.
 
+### M7.5 arroba-shell script runner
+
+- Added `arroba-shell run <file>` for line-oriented Arroba command scripts with comments, blank lines, variable bindings, and stop-on-error behavior.
+- Added mocked IPC fixture coverage proving a script can create a session, bind its id, spawn an agent in that current session, and stop before later commands on failure.
+- Verified with the focused CLI shell-core, shell-executor, and shell tests plus a built `node apps/cli/dist/shell.js run <tmpfile>` smoke check.
+
 ### Session/agent git worktree placement
 
 - Added local session and agent placement commands for existing directories and git worktree creation: `/session new [DIR]`, `/session new --worktree DIR --branch BRANCH [--from REF]`, and `/agent spawn ... --worktree DIR --branch BRANCH [--from REF]`.

@@ -1,10 +1,11 @@
 import { createInterface } from "node:readline/promises"
+import { readFile } from "node:fs/promises"
 import { stdin as defaultStdin, stdout as defaultStdout, stderr as defaultStderr } from "node:process"
 import { fileURLToPath } from "node:url"
 
 import { LocalIpcClient } from "./ipc.js"
 import { applyShellCommandResult, createDefaultShellContext, parseShellCommand, renderShellCommandResult, type ShellContext } from "./shell-core.js"
-import { executeShellCommand } from "./shell-executor.js"
+import { executeShellCommand, type ShellExecutorDeps } from "./shell-executor.js"
 
 export type ShellCliOptions = {
   kernelUrl?: string | undefined
@@ -14,6 +15,8 @@ export type ShellCliOptions = {
   provider?: string | undefined
   model?: string | undefined
   effort?: string | undefined
+  mode?: "repl" | "run" | undefined
+  scriptPath?: string | undefined
 }
 
 export type ShellIo = {
@@ -24,15 +27,25 @@ export type ShellIo = {
 
 export function parseShellCliArgs(argv: string[]): ShellCliOptions {
   const options: ShellCliOptions = {}
+  let args = argv
+  if (args[0] === "run") {
+    const scriptPath = args[1]
+    if (!scriptPath || scriptPath.startsWith("--")) {
+      throw new Error("run requires a script file")
+    }
+    options.mode = "run"
+    options.scriptPath = scriptPath
+    args = args.slice(2)
+  }
   const next = (index: number, flag: string) => {
-    const value = argv[index + 1]
+    const value = args[index + 1]
     if (!value || value.startsWith("--")) {
       throw new Error(`${flag} requires a value`)
     }
     return value
   }
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index]
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
     switch (arg) {
       case "--kernel-url":
         options.kernelUrl = next(index, arg)
@@ -90,6 +103,7 @@ export function createInitialShellContext(options: ShellCliOptions): ShellContex
 export function shellUsage(): string {
   return [
     "usage: arroba-shell [--kernel-url URL|--socket PATH] [--workspace PATH] [--worktree PATH] [--provider NAME] [--model MODEL] [--effort LEVEL]",
+    "       arroba-shell run <file> [--kernel-url URL|--socket PATH] [--workspace PATH] [--worktree PATH] [--provider NAME] [--model MODEL] [--effort LEVEL]",
     "",
     "Runs an Arroba command REPL. Commands do not use the TUI slash prefix:",
     "  @ session list",
@@ -138,6 +152,60 @@ export async function runShellRepl(options: ShellCliOptions, io: ShellIo = {
   }
 }
 
+export async function runShellScript(options: ShellCliOptions, io: ShellIo = {
+  input: defaultStdin,
+  output: defaultStdout,
+  error: defaultStderr,
+}): Promise<number> {
+  if (!options.scriptPath) {
+    io.error.write("run requires a script file\n")
+    return 1
+  }
+  const context = createInitialShellContext(options)
+  const client = new LocalIpcClient(options.socketPath ?? options.kernelUrl ?? defaultKernelEndpoint())
+  try {
+    const source = await readFile(options.scriptPath, "utf8")
+    return await executeShellScriptLines(source.split(/\r?\n/), context, { client }, (line) => io.output.write(line))
+  } catch (error) {
+    io.error.write(`${formatShellError(error)}\n`)
+    return 1
+  } finally {
+    await client.close()
+  }
+}
+
+export async function executeShellScriptLines(
+  lines: string[],
+  initialContext: ShellContext,
+  deps: ShellExecutorDeps,
+  write: (text: string) => void = () => {},
+): Promise<number> {
+  let context = initialContext
+  for (let index = 0; index < lines.length; index += 1) {
+    const sourceLine = lines[index] ?? ""
+    const line = sourceLine.trim()
+    if (!line || line.startsWith("#")) {
+      continue
+    }
+    write(`@ ${line}\n`)
+    const parsed = parseShellCommand(line, context)
+    const result = await executeShellCommand(parsed, context, deps)
+    const rendered = renderShellCommandResult(result)
+    if (rendered) {
+      write(`${rendered}\n`)
+    }
+    context = applyShellCommandResult(context, result)
+    if (!result.ok) {
+      write(`stopped at line ${index + 1}\n`)
+      return 1
+    }
+    if (result.data && typeof result.data === "object" && "exit" in result.data) {
+      return 0
+    }
+  }
+  return 0
+}
+
 export function defaultKernelEndpoint(): string {
   if (process.env.ARROBA_KERNEL_URL) {
     return process.env.ARROBA_KERNEL_URL
@@ -156,7 +224,7 @@ class ShellHelpRequested extends Error {}
 async function main() {
   try {
     const options = parseShellCliArgs(process.argv.slice(2))
-    process.exitCode = await runShellRepl(options)
+    process.exitCode = options.mode === "run" ? await runShellScript(options) : await runShellRepl(options)
   } catch (error) {
     if (error instanceof ShellHelpRequested) {
       console.log(shellUsage())
