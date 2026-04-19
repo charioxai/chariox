@@ -17,6 +17,9 @@ importers:
 
   apps/cli:
     dependencies:
+      '@arroba/kernel-client':
+        specifier: workspace:*
+        version: link:../../packages/kernel-client
       '@opentui/core':
         specifier: 0.1.87
         version: 0.1.87(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)
@@ -49,7 +52,23 @@ importers:
         specifier: ^5.1.0
         version: 5.8.2
 
+  apps/shell:
+    dependencies:
+      '@arroba/kernel-client':
+        specifier: workspace:*
+        version: link:../../packages/kernel-client
+
   packages/domain: {}
+
+  packages/kernel-client:
+    dependencies:
+      ws:
+        specifier: ^8.18.3
+        version: 8.20.0
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
 
 packages:
 

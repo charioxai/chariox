@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { AgentInstance, RuntimeSession } from "./cli-types.js"
+import type { AgentInstance, RuntimeSession } from "./kernel-types.js"
 import { applyShellCommandResult, createDefaultShellContext, parseShellCommand } from "./shell-core.js"
 import { executeShellCommand } from "./shell-executor.js"
 

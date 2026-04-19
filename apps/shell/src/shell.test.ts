@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { AgentInstance, RuntimeSession } from "./cli-types.js"
+import type { AgentInstance, RuntimeSession } from "@arroba/kernel-client/kernel-types"
 import { createInitialShellContext, defaultKernelEndpoint, executeShellScriptLines, parseShellCliArgs, shellUsage } from "./shell.js"
 
 test("parseShellCliArgs parses kernel and context options", () => {

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "pnpm --filter @arroba/kernel-client run build && node scripts/build.mjs",
     "graph:drills": "pnpm run build && node scripts/workflow-graph-drills.mjs",
     "mcp-skill:drill": "node scripts/live-mcp-skill-drill.mjs --providers opencode,codex",
     "runtime-mcp-reattach:drill": "node scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex",
@@ -12,25 +12,22 @@
     "managed-io:drill": "node scripts/live-managed-io-drill.mjs --providers opencode,codex",
     "managed-io:remote-drill": "node scripts/live-remote-managed-io-drill.mjs --providers opencode --full",
     "outline:drills": "pnpm run build && node scripts/workflow-outline-drills.mjs",
-    "lint": "tsc -p tsconfig.json --noEmit",
+    "lint": "pnpm --filter @arroba/kernel-client run build && tsc -p tsconfig.json --noEmit",
     "test": "pnpm run lint && pnpm run build && node --test dist/*.test.js",
     "start": "bun dist/index.js",
-    "dev": "pnpm run build && bun dist/index.js",
-    "shell": "pnpm run build && node dist/shell.js"
+    "dev": "pnpm run build && bun dist/index.js"
   },
   "dependencies": {
     "@opentui/core": "0.1.87",
     "@opentui/solid": "0.1.87",
     "solid-js": "^1.9.9",
-    "ws": "^8.18.3"
+    "ws": "^8.18.3",
+    "@arroba/kernel-client": "workspace:*"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
     "@babel/core": "^7.28.0",
     "@babel/preset-typescript": "^7.27.1",
     "babel-preset-solid": "^1.9.9"
-  },
-  "bin": {
-    "arroba-shell": "dist/shell.js"
   }
 }

@@ -10,7 +10,8 @@
     "start:cli": "pnpm --filter @arroba/cli run start",
     "test": "pnpm -r run test",
     "test:daemon": "cargo test --manifest-path apps/kernel/Cargo.toml",
-    "smoke:daemon": "cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel-harness"
+    "smoke:daemon": "cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel-harness",
+    "start:shell": "pnpm --filter @arroba/shell run start"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

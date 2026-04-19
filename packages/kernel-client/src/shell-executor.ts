@@ -3,8 +3,7 @@ import { stat } from "node:fs/promises"
 import { basename, dirname, resolve as resolvePath } from "node:path"
 import { promisify } from "node:util"
 
-import type { AgentInstance, RuntimeSession } from "./cli-types.js"
-import { formatAgentListSummary } from "./command-actions.js"
+import type { AgentInstance, RuntimeSession } from "./kernel-types.js"
 import {
   createSessionRequest,
   focusAgentRequest,
@@ -14,7 +13,6 @@ import {
   spawnAgentRequest,
   cycleAgentFocusRequest,
 } from "./ipc-requests.js"
-import { formatSessionList } from "./sessions.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 
 const execFileAsync = promisify(execFile)
@@ -439,4 +437,30 @@ function expectVariant<T>(response: Record<string, unknown>, variant: string): T
     throw new Error(`unexpected response variant: expected ${variant}`)
   }
   return response[variant] as T
+}
+
+function formatSessionList(sessions: RuntimeSession[], currentSessionId?: string): string {
+  if (sessions.length === 0) {
+    return "No sessions found."
+  }
+  return [
+    "Sessions",
+    ...sessions.map((session) => {
+      const name = session.alias ? `\`${session.alias}\` (\`${session.id}\`)` : `\`${session.id}\``
+      const location = basename(session.worktree_id) || session.worktree_id
+      const attachments = `${session.attachment_ids.length} ${session.attachment_ids.length === 1 ? "CLI" : "CLIs"}`
+      const current = session.id === currentSessionId ? " current" : ""
+      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${current}`
+    }),
+  ].join("\n")
+}
+
+function formatAgentListSummary(agents: AgentInstance[]): string {
+  if (agents.length === 0) {
+    return "no agents in session"
+  }
+  const agentList = agents
+    .map((agent) => `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${agent.state}]`)
+    .join(", ")
+  return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
 }

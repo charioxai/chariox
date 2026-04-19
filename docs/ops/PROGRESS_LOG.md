@@ -7,25 +7,31 @@ Chronological notes to preserve execution context between contributors/agents.
 ### M7.5 Arroba Shell core skeleton
 
 - Added the first `arroba-shell` implementation slice: shell command parsing, slash-command normalization, shell context/result types, `as <name>` bindings, variable substitution, TUI-only command classification, and result rendering helpers.
-- Verified the slice with the focused CLI shell-core test path, which also ran the existing CLI TypeScript lint/build/test suite.
+- Verified the slice with the focused kernel-client shell-core test path.
 
 ### M7.5 minimal shell executor
 
 - Added a minimal `arroba-shell` executor over normalized shell commands, returning structured shell results for shell-local commands and low-risk kernel-backed session/agent commands.
 - Covered `session list`, `session new --dir|--worktree`, `session attach|use`, `agent list`, `agent spawn --dir|--worktree|--machine`, `agent focus`, and `agent cycle`, with variable binding and context update behavior.
-- Verified with the focused CLI shell-core and shell-executor test path, which also ran the existing CLI TypeScript lint/build/test suite.
+- Verified with the focused kernel-client shell-core and shell-executor test path.
 
 ### M7.5 standalone arroba-shell entrypoint
 
-- Added `apps/cli/src/shell.ts` as the standalone `arroba-shell` REPL entrypoint, wired to the existing local kernel IPC client and the shared shell parser/executor.
-- Added CLI package wiring for `arroba-shell` and `pnpm --filter @arroba/cli run shell`, with options for kernel endpoint, workspace/worktree, provider, model, and effort.
-- Verified with focused shell tests plus a built `node apps/cli/dist/shell.js --help` smoke check.
+- Added `apps/shell/src/shell.ts` as the standalone `arroba-shell` REPL entrypoint, wired to the existing local kernel IPC client and the shared shell parser/executor.
+- Added shell package wiring for `arroba-shell` and `pnpm --filter @arroba/shell run start`, with options for kernel endpoint, workspace/worktree, provider, model, and effort.
+- Verified with focused shell tests plus a built `node apps/shell/dist/shell.js --help` smoke check.
 
 ### M7.5 arroba-shell script runner
 
 - Added `arroba-shell run <file>` for line-oriented Arroba command scripts with comments, blank lines, variable bindings, and stop-on-error behavior.
 - Added mocked IPC fixture coverage proving a script can create a session, bind its id, spawn an agent in that current session, and stop before later commands on failure.
-- Verified with the focused CLI shell-core, shell-executor, and shell tests plus a built `node apps/cli/dist/shell.js run <tmpfile>` smoke check.
+- Verified with the focused kernel-client shell tests, shell app tests, and a built `node apps/shell/dist/shell.js run <tmpfile>` smoke check.
+
+### M7.5 shell app split
+
+- Refactored the shell out of the TUI package into `apps/shell`, keeping it as a sibling app to `apps/cli`.
+- Extracted shared kernel-facing client code into `packages/kernel-client`, including IPC transport, request builders, minimal kernel runtime types, shell parser, and shell executor.
+- Left the TUI-specific CLI types and UI command handling in `apps/cli`; the CLI imports shared IPC/request code through narrow compatibility re-export files.
 
 ### Session/agent git worktree placement
 

@@ -3,9 +3,9 @@ import { readFile } from "node:fs/promises"
 import { stdin as defaultStdin, stdout as defaultStdout, stderr as defaultStderr } from "node:process"
 import { fileURLToPath } from "node:url"
 
-import { LocalIpcClient } from "./ipc.js"
-import { applyShellCommandResult, createDefaultShellContext, parseShellCommand, renderShellCommandResult, type ShellContext } from "./shell-core.js"
-import { executeShellCommand, type ShellExecutorDeps } from "./shell-executor.js"
+import { LocalIpcClient } from "@arroba/kernel-client/ipc"
+import { applyShellCommandResult, createDefaultShellContext, parseShellCommand, renderShellCommandResult, type ShellContext } from "@arroba/kernel-client/shell-core"
+import { executeShellCommand, type ShellExecutorDeps } from "@arroba/kernel-client/shell-executor"
 
 export type ShellCliOptions = {
   kernelUrl?: string | undefined

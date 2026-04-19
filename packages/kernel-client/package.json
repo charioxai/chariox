@@ -1,0 +1,26 @@
+{
+  "name": "@arroba/kernel-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./ipc": "./dist/ipc.js",
+    "./ipc-requests": "./dist/ipc-requests.js",
+    "./kernel-types": "./dist/kernel-types.js",
+    "./shell-core": "./dist/shell-core.js",
+    "./shell-executor": "./dist/shell-executor.js"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test dist/*.test.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}

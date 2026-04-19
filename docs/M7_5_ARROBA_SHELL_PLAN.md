@@ -6,6 +6,17 @@ Add `arroba-shell` as a kernel-facing command shell independent from the TUI whi
 
 `arroba-shell` is not a POSIX shell. It does not execute arbitrary OS commands by default and does not aim to support pipes, redirects, shell expansion, or process control in v1. It is an Arroba command REPL backed by kernel IPC.
 
+
+## App And Package Boundaries
+
+`arroba-shell` is a sibling app to the TUI CLI, not a TUI subcommand:
+
+- `apps/cli`: OpenTUI client, waiting room, panes, command center, and TUI-only commands.
+- `apps/shell`: standalone Arroba command REPL and script runner.
+- `packages/kernel-client`: shared kernel IPC client, request builders, kernel-facing runtime types, shell parser, and shell executor.
+
+The shell may share kernel/domain code with the CLI, but it must not import TUI rendering or TUI state modules.
+
 ## Design Principles
 
 - One command executor: CLI slash commands and `arroba-shell` commands must normalize to the same command execution layer where possible.
@@ -156,7 +167,7 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 
 ### Slice 1: Milestone Plan And Shell Core Skeleton
 
-- Status: implemented in `apps/cli/src/shell-core.ts` with focused coverage in `apps/cli/src/shell-core.test.ts`.
+- Status: implemented in `packages/kernel-client/src/shell-core.ts` with focused coverage in `packages/kernel-client/src/shell-core.test.ts`.
 - Added this milestone plan.
 - Added a parser that normalizes shell commands without `/` and slash commands with `/` to a shared shape.
 - Added shell context and command result types.
@@ -164,7 +175,7 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 
 ### Slice 2: Minimal Shared Executor
 
-- Status: implemented in `apps/cli/src/shell-executor.ts` with focused coverage in `apps/cli/src/shell-executor.test.ts`.
+- Status: implemented in `packages/kernel-client/src/shell-executor.ts` with focused coverage in `packages/kernel-client/src/shell-executor.test.ts`.
 - Added a minimal executor that consumes normalized shell commands and returns structured `ShellCommandResult` values.
 - Added shell-local execution for `help`, `set`, `use`, `vars`, `unset`, `exit`, and `quit`.
 - Added low-risk kernel-backed command coverage:
@@ -179,8 +190,8 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 
 ### Slice 3: Standalone `arroba-shell`
 
-- Status: implemented in `apps/cli/src/shell.ts` with focused coverage in `apps/cli/src/shell.test.ts`.
-- Added an `arroba-shell` binary/script entrypoint via the CLI package `bin` field and `pnpm --filter @arroba/cli run shell`.
+- Status: implemented in `apps/shell/src/shell.ts` with focused coverage in `apps/shell/src/shell.test.ts`.
+- Added an `arroba-shell` binary/script entrypoint via the `apps/shell` package `bin` field and `pnpm --filter @arroba/shell run start`.
 - Connects to the kernel through the existing local IPC client using `--kernel-url`, `--socket`, or the same environment/default endpoint rules.
 - Renders an `@` prompt and prints command outputs below submitted commands.
 - Supports `exit`, `quit`, `help`, `set`, `use`, `vars`, and `unset` through the shared shell executor.
@@ -188,7 +199,7 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 
 ### Slice 4: Script Runner
 
-- Status: implemented in `apps/cli/src/shell.ts` with focused coverage in `apps/cli/src/shell.test.ts`.
+- Status: implemented in `apps/shell/src/shell.ts` with focused coverage in `apps/shell/src/shell.test.ts`.
 - Added `arroba-shell run <file>`.
 - Supports comments, blank lines, variables, and stop-on-error execution.
 - Returns non-zero on failure.
