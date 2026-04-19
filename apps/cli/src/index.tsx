@@ -5501,9 +5501,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ),
     setProviderRunState,
     refreshSessionState: (sessionId) => getSessionState(client, sessionId),
-    spawnAgent: async (provider, alias, model, effort, worktreeId, machineRef) => {
+    spawnAgent: async (provider, alias, model, effort, worktreeId, machineRef, worktreePlacement) => {
       const response = await client.send<Record<string, unknown>>(
-        spawnAgentRequest(sessionState().id, provider, alias, model, worktreeId, effort, machineRef),
+        spawnAgentRequest(sessionState().id, provider, alias, model, worktreeId, effort, machineRef, worktreePlacement),
       )
       const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned")
       return {

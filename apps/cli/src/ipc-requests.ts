@@ -915,6 +915,7 @@ export function spawnAgentRequest(
   worktreeId?: string,
   effort?: string,
   machineRef?: string,
+  worktreePlacement?: Record<string, unknown>,
 ) {
   return {
     SpawnAgent: {
@@ -925,6 +926,7 @@ export function spawnAgentRequest(
       effort: effort ?? null,
       worktree_id: worktreeId ?? null,
       machine_ref: machineRef ?? null,
+      worktree_placement: worktreePlacement ?? null,
     },
   }
 }

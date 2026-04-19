@@ -10,6 +10,13 @@ pub struct RemoteAgentBinding {
     pub leased_agent_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitWorktreePlacement {
+    pub target_directory: Option<String>,
+    pub branch: Option<String>,
+    pub from_ref: Option<String>,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentState {
     Idle,
@@ -237,6 +244,7 @@ pub struct CreateAgentRequest {
     pub effort: Option<String>,
     pub worktree_id: Option<String>,
     pub machine_ref: Option<String>,
+    pub worktree_placement: Option<GitWorktreePlacement>,
 }
 
 impl CreateAgentRequest {
@@ -249,6 +257,7 @@ impl CreateAgentRequest {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         }
     }
 
@@ -274,6 +283,11 @@ impl CreateAgentRequest {
 
     pub fn with_machine(mut self, machine_ref: impl Into<String>) -> Self {
         self.machine_ref = Some(machine_ref.into());
+        self
+    }
+
+    pub fn with_worktree_placement(mut self, placement: GitWorktreePlacement) -> Self {
+        self.worktree_placement = Some(placement);
         self
     }
 }

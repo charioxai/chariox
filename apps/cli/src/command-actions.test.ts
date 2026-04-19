@@ -1,11 +1,16 @@
 import assert from "node:assert/strict"
-import { mkdtemp } from "node:fs/promises"
+import { execFileSync } from "node:child_process"
+import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
 import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentListSummary, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
 import type { AgentInstance, ProviderProcessInfo, QueuedWorkflowLaunch, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
+
+function runGit(cwd: string, args: string[]) {
+  execFileSync("git", args, { cwd, stdio: "pipe" })
+}
 
 function makeAgent(overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {
@@ -1091,13 +1096,13 @@ test("agent spawn creates a local git worktree placement before spawning", async
 })
 
 test("agent spawn with machine requires directory and does not launch local provider", async () => {
-  const spawnCalls: Array<{ worktreeId: string | undefined; machineRef: string | undefined }> = []
+  const spawnCalls: Array<{ worktreeId: string | undefined; machineRef: string | undefined; placement: unknown }> = []
   let launchCount = 0
   let providerRunStateSet: RuntimeProviderRun | null | "unset" = "unset"
   let flashedMessage = ""
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    spawnAgent: async (provider: string, alias?: string, model?: string, _effort?: string, worktreeId?: string, machineRef?: string) => {
-      spawnCalls.push({ worktreeId, machineRef })
+    spawnAgent: async (provider: string, alias?: string, model?: string, _effort?: string, worktreeId?: string, machineRef?: string, placement?: unknown) => {
+      spawnCalls.push({ worktreeId, machineRef, placement })
       const agent = makeAgent({
         id: "agent-2",
         agent_ref: "agent-2",
@@ -1130,7 +1135,7 @@ test("agent spawn with machine requires directory and does not launch local prov
     args: ["spawn", "review", "openai/gpt-5", "--machine", "worker", "--dir", "/srv/project"],
   })
 
-  assert.deepEqual(spawnCalls, [{ worktreeId: "/srv/project", machineRef: "worker" }])
+  assert.deepEqual(spawnCalls, [{ worktreeId: "/srv/project", machineRef: "worker", placement: undefined }])
   assert.equal(launchCount, 0)
   assert.equal(providerRunStateSet, null)
   assert.equal(flashedMessage, "spawned agent agent-2 (review) on worker in /srv/project")
@@ -1154,7 +1159,54 @@ test("agent spawn with machine rejects missing directory", async () => {
   })
 
   assert.equal(spawnCount, 0)
-  assert.equal(flashedMessage, "usage: /agent spawn [alias] [model] --machine <machine-ref> --dir <remote-directory>")
+  assert.equal(flashedMessage, "usage: /agent spawn [alias] [model] --machine <machine-ref> (--dir <remote-directory>|--worktree <remote-directory> --branch <branch>)")
+})
+
+test("agent spawn with machine forwards remote git worktree placement", async () => {
+  const spawnCalls: Array<{ worktreeId: string | undefined; machineRef: string | undefined; placement: unknown }> = []
+  let launchCount = 0
+  let flashedMessage = ""
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    spawnAgent: async (_provider: string, alias?: string, _model?: string, _effort?: string, worktreeId?: string, machineRef?: string, placement?: unknown) => {
+      spawnCalls.push({ worktreeId, machineRef, placement })
+      const agent = makeAgent({
+        id: "agent-2",
+        agent_ref: "agent-2",
+        alias: alias ?? null,
+        worktree_id: worktreeId ?? null,
+        remote_execution: {
+          worker_kernel_id: "kernel-worker",
+          worker_machine_id: "machine-worker",
+          execution_lease_id: "lease-1",
+          leased_agent_id: "leased-agent-1",
+        },
+      })
+      return { agent, session: makeSession({ focused_agent_id: agent.id, agents: [makeAgent(), agent] }) }
+    },
+    launchAgentProviderRun: async () => {
+      launchCount += 1
+      throw new Error("remote spawn should not launch local provider")
+    },
+    flashFooter: (message: string) => { flashedMessage = message },
+  }))
+
+  await handlers.handleAgentCommand({
+    kind: "agent",
+    raw: "/agent spawn review openai/gpt-5 --machine worker --worktree /srv/project-feature --branch feature/remote --from main",
+    args: ["spawn", "review", "openai/gpt-5", "--machine", "worker", "--worktree", "/srv/project-feature", "--branch", "feature/remote", "--from", "main"],
+  })
+
+  assert.deepEqual(spawnCalls, [{
+    worktreeId: "/srv/project-feature",
+    machineRef: "worker",
+    placement: {
+      target_directory: "/srv/project-feature",
+      branch: "feature/remote",
+      from_ref: "main",
+    },
+  }])
+  assert.equal(launchCount, 0)
+  assert.equal(flashedMessage, "spawned agent agent-2 (review) on worker in /srv/project-feature")
 })
 
 test("session new can attach a new session in an existing directory", async () => {
@@ -1217,6 +1269,39 @@ test("session new can create a local git worktree before attaching", async () =>
   assert.equal(prepareCalls[0]?.fromRef, "main")
   assert.deepEqual(createCalls, [{ worktree: preparedWorktree, alias: undefined }])
   assert.equal(flashedMessage, `attached to session session-worktree in ${preparedWorktree}`)
+})
+
+test("session new materializes a real local git worktree", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "arroba-local-worktree-repo-"))
+  const target = await mkdtemp(join(tmpdir(), "arroba-local-worktree-parent-"))
+  const targetWorktree = join(target, "feature-local")
+  runGit(repo, ["init", "-b", "main"])
+  runGit(repo, ["config", "user.email", "arroba@example.test"])
+  runGit(repo, ["config", "user.name", "Arroba Test"])
+  await writeFile(join(repo, "README.md"), "local worktree\n", "utf8")
+  runGit(repo, ["add", "README.md"])
+  runGit(repo, ["commit", "-m", "init"])
+
+  const createCalls: Array<{ worktree: string }> = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    workspace: repo,
+    worktree: repo,
+    createSession: async (_workspace: string, worktree: string) => {
+      createCalls.push({ worktree })
+      return { id: "session-worktree", alias: null }
+    },
+  }))
+
+  await handlers.handleSessionCommand({
+    kind: "session",
+    raw: `/session new --worktree ${targetWorktree} --branch feature/local-drill --from main`,
+    action: "new",
+    args: ["--worktree", targetWorktree, "--branch", "feature/local-drill", "--from", "main"],
+    value: `--worktree ${targetWorktree} --branch feature/local-drill --from main`,
+  })
+
+  assert.deepEqual(createCalls, [{ worktree: targetWorktree }])
+  assert.equal(execFileSync("git", ["branch", "--show-current"], { cwd: targetWorktree, encoding: "utf8" }).trim(), "feature/local-drill")
 })
 
   test("session command aliases the current session", async () => {

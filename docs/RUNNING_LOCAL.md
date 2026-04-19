@@ -134,7 +134,11 @@ Interactive placement commands:
   - create a local git worktree before spawning the agent, then launch that agent's provider process in the new worktree
 
 - `/agent spawn [ALIAS] [MODEL] --machine MACHINE --dir REMOTE_DIR`
-  - spawn a remote agent in an existing remote directory; remote git worktree creation is not yet wired
+  - spawn a remote agent in an existing remote directory
+
+- `/agent spawn [ALIAS] [MODEL] --machine MACHINE --worktree REMOTE_DIR --branch BRANCH [--from REF]`
+  - ask the worker kernel to create the git worktree on the remote machine, then spawn the remote agent there
+  - the worker must already have `git` installed and configured, and the worker kernel must be running from the source repo; Arroba surfaces git/repo/configuration failures directly
 
 Example:
 

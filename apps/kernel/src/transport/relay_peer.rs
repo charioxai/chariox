@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::agent::GitWorktreePlacement;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
 use crate::io::WorkspaceIdentity;
 use crate::mcp::ArrobaMcpServerConfig;
@@ -107,6 +108,8 @@ pub enum RelayPeerRequest {
         effort: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         worktree_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worktree_placement: Option<GitWorktreePlacement>,
     },
     DestroyLeasedAgent {
         leased_agent_id: String,

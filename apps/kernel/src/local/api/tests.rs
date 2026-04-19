@@ -144,6 +144,7 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         }))
         .expect("worker agent should spawn")
     {
@@ -419,6 +420,7 @@ fn local_request_api_spawns_and_focuses_agents() {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         }))
         .expect("spawn should succeed")
     {
@@ -543,6 +545,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         }))
         .expect("workflow agent should spawn")
     {
@@ -640,6 +643,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         }))
         .expect("spawn should succeed")
     {
@@ -774,6 +778,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         }))
         .expect("workflow agent should spawn")
     {
@@ -962,6 +967,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         }))
         .expect("first workflow agent should spawn")
     {
@@ -978,6 +984,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         }))
         .expect("second workflow agent should spawn")
     {
@@ -1923,6 +1930,7 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         }))
         .expect("agent spawn should succeed")
     {
@@ -2294,6 +2302,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         }))
         .expect("spawn should succeed")
     {
@@ -2466,6 +2475,7 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         }))
         .expect("spawn should succeed")
     {
@@ -3625,6 +3635,7 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         }))
         .expect("workflow agent should spawn")
     {

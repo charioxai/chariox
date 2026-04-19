@@ -464,6 +464,7 @@ impl CommandRouter {
         model: Option<String>,
         effort: Option<String>,
         worktree_id: Option<String>,
+        worktree_placement: Option<crate::agent::GitWorktreePlacement>,
     ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
         let mut app = self.app.lock().await;
         crate::app::RemoteLeaseRuntime::new(&mut app).create_leased_agent(
@@ -472,6 +473,7 @@ impl CommandRouter {
             model,
             effort,
             worktree_id,
+            worktree_placement,
         )
     }
 
@@ -3032,6 +3034,7 @@ mod tests {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         });
         let spawn_command = KernelCommand::from_local_request(
             "cmd-agent-lifecycle-spawn",
@@ -4159,6 +4162,7 @@ mod tests {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         });
         let spawn_command =
             KernelCommand::from_local_request("cmd-spawn-projection", None, None, &spawn_request);
@@ -6628,6 +6632,7 @@ mod tests {
             effort: None,
             worktree_id: None,
             machine_ref: None,
+            worktree_placement: None,
         });
         let spawn_command =
             KernelCommand::from_local_request("cmd-inspection-spawn", None, None, &spawn_request);

@@ -44,6 +44,12 @@ type LocalGitWorktreeOptions = {
   fromRef?: string | undefined
 }
 
+type RemoteGitWorktreePlacement = {
+  target_directory?: string | null
+  branch?: string | null
+  from_ref?: string | null
+}
+
 type CreateSessionResult = Pick<RuntimeSession, "id" | "alias">
 type ResolveSessionResult = Pick<RuntimeSession, "id" | "alias">
 type DeleteSessionResult = Pick<RuntimeSession, "id" | "alias">
@@ -274,6 +280,7 @@ type CommandActionDeps = {
     effort?: string,
     worktreeId?: string,
     machineRef?: string,
+    worktreePlacement?: RemoteGitWorktreePlacement | undefined,
   ) => Promise<AgentSpawnPayload>
   destroyAgent: (agentId: string) => Promise<RuntimeSession>
   focusAgent: (agentId: string) => Promise<AgentFocusPayload>
@@ -777,11 +784,14 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     if (!error && directory && gitRequested) {
       error = `usage: ${commandName} uses either --dir or --worktree/--branch, not both`
     }
-    if (!error && machineRef && gitRequested) {
-      error = "remote git worktree creation is not supported yet; use --machine <machine-ref> --dir <remote-directory>"
+    if (!error && machineRef && !directory && !gitRequested) {
+      error = "usage: /agent spawn [alias] [model] --machine <machine-ref> (--dir <remote-directory>|--worktree <remote-directory> --branch <branch>)"
     }
-    if (!error && machineRef && !directory) {
-      error = "usage: /agent spawn [alias] [model] --machine <machine-ref> --dir <remote-directory>"
+    if (!error && machineRef && gitRequested && !gitWorktree) {
+      error = "usage: /agent spawn [alias] [model] --machine <machine-ref> --worktree <remote-directory> --branch <branch>"
+    }
+    if (!error && machineRef && gitRequested && !branch) {
+      error = "usage: /agent spawn [alias] [model] --machine <machine-ref> --worktree <remote-directory> --branch <branch>"
     }
 
     return {
@@ -839,7 +849,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
     if (options.gitWorktree || options.branch || options.fromRef) {
       if (options.machineRef) {
-        throw new Error("remote git worktree creation is not supported yet; use --machine <machine-ref> --dir <remote-directory>")
+        return options.gitWorktree
       }
       return prepareLocalGitWorktree({
         baseDirectory: deps.worktree,
@@ -858,6 +868,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     effort: string
     worktreeId?: string | undefined
     machineRef?: string | undefined
+    worktreePlacement?: RemoteGitWorktreePlacement | undefined
   }): Promise<AgentSpawnPayload> => {
     const payload = await deps.spawnAgent(
       options.provider,
@@ -866,6 +877,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       options.effort,
       options.worktreeId,
       options.machineRef,
+      options.worktreePlacement,
     )
     deps.applySessionState(payload.session)
     await deps.refreshAgentPanes(payload.session)
@@ -1297,6 +1309,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           const model = parsed.positional[1]
           const provider = deps.currentProviderId()
           const effort = deps.currentVariantId()
+          const remoteGitPlacement = parsed.machineRef && (parsed.gitWorktree || parsed.branch || parsed.fromRef)
+            ? {
+                target_directory: parsed.gitWorktree ?? null,
+                branch: parsed.branch ?? null,
+                from_ref: parsed.fromRef ?? null,
+              }
+            : undefined
           const worktreeId = await resolveLocalPlacement({
             directory: parsed.directory,
             gitWorktree: parsed.gitWorktree,
@@ -1312,9 +1331,10 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
             effort,
             worktreeId,
             machineRef: parsed.machineRef,
+            worktreePlacement: remoteGitPlacement,
           })
           const placement = parsed.machineRef
-            ? ` on ${parsed.machineRef} in ${parsed.directory}`
+            ? ` on ${parsed.machineRef}${worktreeId ? ` in ${worktreeId}` : ""}`
             : worktreeId
               ? ` in ${worktreeId}`
               : ""
@@ -1402,7 +1422,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       }
       default:
         deps.flashFooter(
-          "usage: /agent spawn [alias] [model] [--dir <directory>] [--machine <machine-ref>] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | list | cycle",
+          "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | list | cycle",
           "error",
         )
     }

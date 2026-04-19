@@ -490,6 +490,7 @@ mod tests {
                 effort: None,
                 worktree_id: None,
                 machine_ref: None,
+                worktree_placement: None,
             }),
         );
         let destroy = KernelCommand::from_local_request(

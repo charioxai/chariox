@@ -735,6 +735,7 @@ mod tests {
                 effort: None,
                 worktree_id: None,
                 machine_ref: None,
+                worktree_placement: None,
             }))
             .expect("workflow agent should spawn")
         {
@@ -940,6 +941,7 @@ mod tests {
                 effort: None,
                 worktree_id: None,
                 machine_ref: None,
+                worktree_placement: None,
             }))
             .expect("first workflow agent should spawn")
         {
@@ -956,6 +958,7 @@ mod tests {
                 effort: None,
                 worktree_id: None,
                 machine_ref: None,
+                worktree_placement: None,
             }))
             .expect("second workflow agent should spawn")
         {

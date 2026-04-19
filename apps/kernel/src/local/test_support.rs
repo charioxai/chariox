@@ -83,6 +83,7 @@ impl LocalRouterTestHarness {
                 effort: None,
                 worktree_id: None,
                 machine_ref: None,
+                worktree_placement: None,
             }))
             .expect("workflow test agent should spawn")
         {

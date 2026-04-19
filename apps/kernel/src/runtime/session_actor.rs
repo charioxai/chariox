@@ -580,6 +580,11 @@ impl SessionRuntimeStore {
         } else {
             create_request
         };
+        let create_request = if let Some(placement) = request.worktree_placement {
+            create_request.with_worktree_placement(placement)
+        } else {
+            create_request
+        };
         let result = match self.state.spawn_agent(create_request).await {
             Ok(agent) => {
                 let session_id = agent.session_id().to_string();
@@ -1374,6 +1379,7 @@ mod tests {
             effort: None,
             worktree_id: Some("worktree".to_string()),
             machine_ref: None,
+            worktree_placement: None,
         });
         let command =
             KernelCommand::from_local_request("owned-local-agent-spawn", None, None, &request);

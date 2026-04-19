@@ -2,6 +2,14 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-04-19
+
+### Session/agent git worktree placement
+
+- Added local session and agent placement commands for existing directories and git worktree creation: `/session new [DIR]`, `/session new --worktree DIR --branch BRANCH [--from REF]`, and `/agent spawn ... --worktree DIR --branch BRANCH [--from REF]`.
+- Extended remote agent spawn so `/agent spawn ... --machine MACHINE --worktree REMOTE_DIR --branch BRANCH [--from REF]` forwards a worktree placement spec to the worker kernel, which runs `git worktree add` on the remote machine before creating the leased backing session/agent. Git/repo/configuration failures are surfaced as worker errors.
+- Verified local placement with a real temporary git repo/worktree command-action drill and remote placement with a worker-side remote-lease git worktree materialization drill, plus focused CLI and kernel tests.
+
 ## 2026-04-18
 
 ### M4.6 managed-I/O Codex hardening and live drills

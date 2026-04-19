@@ -732,12 +732,14 @@ impl DaemonApp {
     ) -> Result<AgentInstance, DaemonError> {
         let worker_kernel =
             self.select_remote_kernel_for_machine(machine_ref, &request.provider)?;
+        let worktree_placement = request.worktree_placement.clone();
         let session_store = self.session_state_store();
         let agent = {
             let mut sessions = session_store.write();
             self.agents.create_agent(request, &mut sessions)?
         };
-        let remote_setup = self.bind_remote_agent_to_worker(&agent, &worker_kernel);
+        let remote_setup =
+            self.bind_remote_agent_to_worker(&agent, &worker_kernel, worktree_placement);
         if remote_setup.is_err() {
             let mut sessions = session_store.write();
             let _ = self.agents.destroy_agent(agent.id(), &mut sessions);
@@ -749,6 +751,7 @@ impl DaemonApp {
         &mut self,
         agent: &AgentInstance,
         worker_kernel: &RelayKernelPresence,
+        worktree_placement: Option<crate::agent::GitWorktreePlacement>,
     ) -> Result<AgentInstance, DaemonError> {
         let target = ClientTarget {
             daemon_id: Some(worker_kernel.kernel_id.clone()),
@@ -781,6 +784,7 @@ impl DaemonApp {
                     model: agent.model().map(ToOwned::to_owned),
                     effort: agent.effort().map(ToOwned::to_owned),
                     worktree_id: agent.worktree_id().map(ToOwned::to_owned),
+                    worktree_placement,
                 },
             )) {
                 Ok(RelayPeerResponse::LeasedAgentSpawned { leased_agent }) => leased_agent,
@@ -857,7 +861,7 @@ impl DaemonApp {
             });
         }
         let worker_kernel = self.select_remote_kernel_for_machine(machine_ref, agent.provider())?;
-        self.bind_remote_agent_to_worker(&agent, &worker_kernel)
+        self.bind_remote_agent_to_worker(&agent, &worker_kernel, None)
     }
 
     fn ensure_remote_agent_skill_packages(

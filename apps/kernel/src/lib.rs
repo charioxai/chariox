@@ -30,10 +30,12 @@ pub use error::DaemonError;
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::process::Command;
+    use std::sync::Mutex;
     use std::thread;
     use std::time::Duration;
 
-    use super::agent::CreateAgentRequest;
+    use super::agent::{CreateAgentRequest, GitWorktreePlacement};
     use super::app::RemoteLeaseRuntime;
     use super::attachment::{AttachRequest, ClientCapabilityLevel};
     use super::provider::{LaunchProviderRequest, ProviderResumeState};
@@ -43,6 +45,22 @@ mod tests {
         RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk,
     };
     use super::{DaemonApp, DaemonConfig, DaemonError};
+
+    static CURRENT_DIR_LOCK: Mutex<()> = Mutex::new(());
+
+    fn run_test_git(cwd: &std::path::Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn daemon_app_bootstrap_wires_runtime_services() {
@@ -203,6 +221,7 @@ mod tests {
                 Some("kimi2.5".to_string()),
                 None,
                 Some(worktree.display().to_string()),
+                None,
             )
             .expect("leased agent should be created");
         assert_eq!(leased_agent.lease_id, lease.id);
@@ -244,9 +263,63 @@ mod tests {
                 Some("kimi2.5".to_string()),
                 None,
                 Some(missing.display().to_string()),
+                None,
             )
             .expect_err("missing worker directory should be rejected");
         assert!(error.to_string().contains("remote working directory"));
+    }
+
+    #[test]
+    fn leased_agents_materialize_remote_git_worktree_before_creation() {
+        let _guard = CURRENT_DIR_LOCK.lock().expect("current dir lock");
+        let original_dir = std::env::current_dir().expect("current dir should resolve");
+        let root = std::env::temp_dir().join(format!(
+            "arroba-remote-git-worktree-base-{}",
+            crate::session::unix_epoch_ms()
+        ));
+        let target = std::env::temp_dir().join(format!(
+            "arroba-remote-git-worktree-target-{}",
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&target);
+        std::fs::create_dir_all(&root).expect("repo root should exist");
+        run_test_git(&root, &["init", "-b", "main"]);
+        run_test_git(&root, &["config", "user.email", "arroba@example.test"]);
+        run_test_git(&root, &["config", "user.name", "Arroba Test"]);
+        std::fs::write(root.join("README.md"), "remote worktree\n").expect("readme should write");
+        run_test_git(&root, &["add", "README.md"]);
+        run_test_git(&root, &["commit", "-m", "init"]);
+
+        std::env::set_current_dir(&root).expect("test should enter repo root");
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease("home-kernel", "session-1", "agent-home-1")
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "opencode",
+                Some("kimi2.5".to_string()),
+                None,
+                Some(target.display().to_string()),
+                Some(GitWorktreePlacement {
+                    target_directory: Some(target.display().to_string()),
+                    branch: Some("feature/remote-worktree".to_string()),
+                    from_ref: Some("main".to_string()),
+                }),
+            )
+            .expect("leased agent should be created in materialized worktree");
+        std::env::set_current_dir(original_dir).expect("current dir should restore");
+
+        assert!(target.join("README.md").exists());
+        let backing_session = app
+            .sessions()
+            .get_session(&leased_agent.backing_session_id)
+            .expect("backing session should exist");
+        assert_eq!(backing_session.worktree_id(), target.display().to_string());
     }
 
     #[test]
@@ -262,6 +335,7 @@ mod tests {
                 &lease.id,
                 "managed-dev-stub",
                 Some("sonnet".to_string()),
+                None,
                 None,
                 None,
             )
@@ -319,6 +393,7 @@ mod tests {
                 &lease.id,
                 "managed-dev-stub",
                 Some("sonnet".to_string()),
+                None,
                 None,
                 None,
             )

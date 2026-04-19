@@ -396,6 +396,8 @@ pub struct SpawnAgentRequest {
     pub worktree_id: Option<String>,
     #[serde(default)]
     pub machine_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_placement: Option<crate::agent::GitWorktreePlacement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
