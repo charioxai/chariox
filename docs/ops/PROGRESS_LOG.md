@@ -45,6 +45,13 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added kernel-client runtime types for relay status, remote machines, and remote kernel presence so shell and TUI surfaces can share the same response model.
 - Updated standalone shell usage examples and covered the new command families with focused kernel-client tests.
 
+
+### M7.5 shell executor MCP/skill mutations
+
+- Added shared `arroba-shell` executor support for `mcp install|update|uninstall|import|grant|revoke|grants` and `skill install|update|uninstall|import|grant|revoke|grants`.
+- MCP install/update parsing now covers stdio transports with command/args/env vars and streamable HTTP transports with optional bearer-token env vars, matching the provider-facing registry shape.
+- Covered install/update/import/grant/revoke/grants flows with focused kernel-client executor tests.
+
 ### Session/agent git worktree placement
 
 - Added local session and agent placement commands for existing directories and git worktree creation: `/session new [DIR]`, `/session new --worktree DIR --branch BRANCH [--from REF]`, and `/agent spawn ... --worktree DIR --branch BRANCH [--from REF]`.

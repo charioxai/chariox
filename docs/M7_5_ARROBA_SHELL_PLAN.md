@@ -224,9 +224,12 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
   - `mcp list|show`
   - `skill list|show`
   - `provider status`
-- Added basic text/JSON renderers for those list/show commands.
+- Implemented MCP and skill mutation/grant coverage in the shared executor:
+  - `mcp install|update|uninstall|import|grant|revoke|grants`
+  - `skill install|update|uninstall|import|grant|revoke|grants`
+- MCP installs support stdio servers through `--command`, repeated `--arg`, and repeated `--env`, plus streamable HTTP servers through `--url` and optional `--bearer-token-env-var`.
+- Added basic text/JSON renderers for list/show/import/grant results.
 - Remaining command families/actions:
-  - MCP/skill install, update, uninstall, import, grant, revoke, grants
   - workflow new/list/show/run/runs/cancel/resume and graph management
   - config set/unset/managed-io
   - provider login/logout/reauth and process commands

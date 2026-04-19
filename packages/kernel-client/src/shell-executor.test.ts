@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { AgentInstance, RuntimeSession } from "./kernel-types.js"
+import type { AgentInstance, ArrobaMcpServerConfig, ArrobaSkillMetadata, RuntimeSession } from "./kernel-types.js"
 import { applyShellCommandResult, createDefaultShellContext, parseShellCommand } from "./shell-core.js"
 import { executeShellCommand } from "./shell-executor.js"
 
@@ -265,4 +265,193 @@ test("executeShellCommand shows config and provider auth status", async () => {
   assert.equal(providerResult.ok, true)
   assert.match(providerResult.message ?? "", /codex: authenticated as default/)
   assert.match(providerResult.message ?? "", /version 1.2.3/)
+})
+
+test("executeShellCommand installs and updates MCP servers", async () => {
+  const installed: ArrobaMcpServerConfig = {
+    name: "playwright",
+    transport: { type: "stdio", command: "npx", args: ["@playwright/mcp"], env: {}, env_vars: ["GITHUB_TOKEN"] },
+    enabled: true,
+    required: false,
+  }
+  const updated: ArrobaMcpServerConfig = {
+    name: "browser",
+    transport: {
+      type: "streamable_http",
+      url: "https://mcp.example",
+      bearer_token_env_var: "MCP_TOKEN",
+      http_headers: {},
+      env_http_headers: {},
+    },
+    enabled: true,
+    required: false,
+  }
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("InstallMcpServer" in request) {
+          return { McpServerInstalled: { mcp: installed } }
+        }
+        return { McpServerUpdated: { mcp: updated } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const installResult = await executeShellCommand(
+    parseShellCommand("mcp install playwright --command npx --arg @playwright/mcp --env GITHUB_TOKEN"),
+    context,
+    { client: fake.client },
+  )
+  const updateResult = await executeShellCommand(
+    parseShellCommand("mcp update browser --url https://mcp.example --bearer-token-env-var MCP_TOKEN"),
+    context,
+    { client: fake.client },
+  )
+  assert.equal(installResult.ok, true)
+  assert.match(installResult.message ?? "", /installed MCP playwright/)
+  assert.equal(updateResult.ok, true)
+  assert.match(updateResult.message ?? "", /updated MCP browser/)
+  assert.deepEqual(requests, [
+    {
+      InstallMcpServer: {
+        workspace_id: "/repo",
+        config: installed,
+      },
+    },
+    {
+      UpdateMcpServer: {
+        workspace_id: "/repo",
+        config: updated,
+      },
+    },
+  ])
+})
+
+test("executeShellCommand imports MCP servers and skills", async () => {
+  const mcp: ArrobaMcpServerConfig = {
+    name: "github",
+    transport: { type: "stdio", command: "github-mcp-server", args: [], env: {}, env_vars: [] },
+    enabled: true,
+    required: false,
+  }
+  const skill: ArrobaSkillMetadata = {
+    name: "qa",
+    description: "QA checks",
+    short_description: "QA",
+    path: "/skills/qa",
+  }
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("ImportMcpServers" in request) {
+          return {
+            McpServersImported: {
+              outcome: {
+                imported: [mcp],
+                skipped: [{ name: "oauth", reason: "oauth transport is provider-native" }],
+              },
+            },
+          }
+        }
+        return {
+          SkillsImported: {
+            outcome: {
+              imported: [skill],
+              skipped: [{ name: "old", reason: "already installed" }],
+            },
+          },
+        }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const mcpResult = await executeShellCommand(parseShellCommand("mcp import codex github"), context, { client: fake.client })
+  const skillResult = await executeShellCommand(parseShellCommand("skill import codex qa"), context, { client: fake.client })
+  assert.equal(mcpResult.ok, true)
+  assert.match(mcpResult.message ?? "", /Imported MCPs: github/)
+  assert.match(mcpResult.message ?? "", /oauth: oauth transport is provider-native/)
+  assert.equal(skillResult.ok, true)
+  assert.match(skillResult.message ?? "", /Imported skills: qa/)
+  assert.match(skillResult.message ?? "", /old: already installed/)
+  assert.deepEqual(requests, [
+    { ImportMcpServers: { workspace_id: "/repo", provider: "codex", name: "github" } },
+    { ImportSkills: { workspace_id: "/repo", provider: "codex", name: "qa" } },
+  ])
+})
+
+test("executeShellCommand grants, revokes, and lists agent capabilities", async () => {
+  const agent = makeAgent({ mcp_grants: ["playwright"], skill_grants: ["qa"] })
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("GrantAgentCapability" in request) {
+          return { AgentCapabilityGranted: { agent } }
+        }
+        if ("RevokeAgentCapability" in request) {
+          return { AgentCapabilityRevoked: { agent } }
+        }
+        return { AgentsListed: { agents: [agent] } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    agentId: "agent-1",
+  })
+  const grantResult = await executeShellCommand(parseShellCommand("mcp grant agent-1 playwright"), context, { client: fake.client })
+  const revokeResult = await executeShellCommand(parseShellCommand("skill revoke agent-1 qa"), context, { client: fake.client })
+  const grantsResult = await executeShellCommand(parseShellCommand("mcp grants"), context, { client: fake.client })
+  assert.equal(grantResult.ok, true)
+  assert.match(grantResult.message ?? "", /granted MCP playwright to agent-1/)
+  assert.deepEqual(grantResult.contextUpdates, { agentId: "agent-1" })
+  assert.equal(revokeResult.ok, true)
+  assert.match(revokeResult.message ?? "", /revoked skill qa from agent-1/)
+  assert.equal(grantsResult.ok, true)
+  assert.match(grantsResult.message ?? "", /agent-1 MCP grants/)
+  assert.match(grantsResult.message ?? "", /playwright/)
+  assert.deepEqual(requests, [
+    { GrantAgentCapability: { workspace_id: "/repo", agent_ref: "agent-1", kind: "mcp", name: "playwright" } },
+    { RevokeAgentCapability: { agent_ref: "agent-1", kind: "skill", name: "qa" } },
+    { ListAgents: { session_id: "session-1" } },
+  ])
+})
+
+test("executeShellCommand installs and uninstalls skills", async () => {
+  const skill: ArrobaSkillMetadata = {
+    name: "qa",
+    description: "QA checks",
+    short_description: "QA",
+    path: "/skills/qa",
+  }
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("InstallSkill" in request) {
+          return { SkillInstalled: { skill } }
+        }
+        return { SkillUninstalled: { skill } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const installResult = await executeShellCommand(parseShellCommand("skill install /tmp/skills/qa"), context, { client: fake.client })
+  const uninstallResult = await executeShellCommand(parseShellCommand("skill uninstall qa"), context, { client: fake.client })
+  assert.equal(installResult.ok, true)
+  assert.match(installResult.message ?? "", /installed skill qa/)
+  assert.equal(uninstallResult.ok, true)
+  assert.match(uninstallResult.message ?? "", /uninstalled skill qa/)
+  assert.deepEqual(requests, [
+    { InstallSkill: { workspace_id: "/repo", source_path: "/tmp/skills/qa" } },
+    { UninstallSkill: { workspace_id: "/repo", name: "qa" } },
+  ])
 })
