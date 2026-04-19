@@ -229,8 +229,13 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
   - `skill install|update|uninstall|import|grant|revoke|grants`
 - MCP installs support stdio servers through `--command`, repeated `--arg`, and repeated `--env`, plus streamable HTTP servers through `--url` and optional `--bearer-token-env-var`.
 - Added basic text/JSON renderers for list/show/import/grant results.
+- Implemented workflow coverage in the shared executor:
+  - `workflow list|new|show|alias|run|runs|run-show|cancel|resume`
+  - `workflow node add|remove`
+  - `workflow edge add|remove`
+  - `workflow endpoint new|alias|bind`
 - Remaining command families/actions:
-  - workflow new/list/show/run/runs/cancel/resume and graph management
+  - workflow advanced configuration/watchdogs/queue commands
   - config set/unset/managed-io
   - provider login/logout/reauth and process commands
   - stop/cancel active prompt work

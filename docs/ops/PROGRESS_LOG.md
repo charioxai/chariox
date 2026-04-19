@@ -52,6 +52,13 @@ Chronological notes to preserve execution context between contributors/agents.
 - MCP install/update parsing now covers stdio transports with command/args/env vars and streamable HTTP transports with optional bearer-token env vars, matching the provider-facing registry shape.
 - Covered install/update/import/grant/revoke/grants flows with focused kernel-client executor tests.
 
+
+### M7.5 shell executor workflow coverage
+
+- Added shared `arroba-shell` executor support for core workflow commands: `workflow list|new|show|alias|run|runs|run-show|cancel|resume`.
+- Added graph-management coverage for `workflow node add|remove`, `workflow edge add|remove`, and `workflow endpoint new|alias|bind`, including current workflow context updates and variable binding for created workflows/nodes.
+- Covered workflow list/create/show/alias, run lifecycle, graph, and endpoint flows with focused kernel-client executor tests.
+
 ### Session/agent git worktree placement
 
 - Added local session and agent placement commands for existing directories and git worktree creation: `/session new [DIR]`, `/session new --worktree DIR --branch BRANCH [--from REF]`, and `/agent spawn ... --worktree DIR --branch BRANCH [--from REF]`.

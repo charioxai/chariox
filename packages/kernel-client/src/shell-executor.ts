@@ -10,21 +10,37 @@ import type {
   ArrobaUserConfigPayload,
   McpImportOutcome,
   ProviderAuthStatus,
+  QueuedWorkflowLaunch,
   RelayKernelPresence,
   RelayStatus,
   RemoteMachineRecord,
   RuntimeSession,
   SkillImportOutcome,
+  WorkflowDefinition,
+  WorkflowEdgeDefinition,
+  WorkflowEndpointDefinition,
+  WorkflowNodeDefinition,
+  WorkflowRun,
 } from "./kernel-types.js"
 import {
+  addWorkflowEdgeRequest,
+  addWorkflowNodeRequest,
+  aliasWorkflowEndpointRequest,
+  aliasWorkflowRequest,
+  bindWorkflowEndpointRequest,
+  cancelWorkflowRunRequest,
+  createWorkflowEndpointRequest,
+  createWorkflowRequest,
   createSessionRequest,
   focusAgentRequest,
   getMcpServerRequest,
   getProviderAuthStatusRequest,
   getSkillRequest,
+  getWorkflowRunRequest,
   grantAgentCapabilityRequest,
   importMcpServersRequest,
   importSkillsRequest,
+  invokeWorkflowEndpointRequest,
   installMcpServerRequest,
   installSkillRequest,
   getUserConfigRequest,
@@ -34,8 +50,14 @@ import {
   listRemoteMachinesRequest,
   listSessionsRequest,
   listSkillsRequest,
+  listWorkflowRunsRequest,
+  listWorkflowsRequest,
   relayStatusRequest,
+  removeWorkflowEdgeRequest,
+  removeWorkflowNodeRequest,
   revokeAgentCapabilityRequest,
+  resolveWorkflowRequest,
+  resumeWorkflowRunRequest,
   resolveSessionRequest,
   spawnAgentRequest,
   cycleAgentFocusRequest,
@@ -106,6 +128,8 @@ export async function executeShellCommand(
       return executeMcpCommand(parsed, context, deps)
     case "skill":
       return executeSkillCommand(parsed, context, deps)
+    case "workflow":
+      return executeWorkflowCommand(parsed, context, deps)
     case "provider":
       return executeProviderCommand(parsed, context, deps)
     default:
@@ -131,6 +155,7 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
           "config show",
           "mcp list|show|install|update|uninstall|import|grant|revoke|grants",
           "skill list|show|install|update|uninstall|import|grant|revoke|grants",
+          "workflow list|new|show|run|runs|cancel|resume|node|edge|endpoint",
           "provider status",
           "set provider|model|effort <value>",
           "use session|agent|workflow <ref>",
@@ -564,6 +589,251 @@ async function executeSkillCommand(
   }
 }
 
+async function executeWorkflowCommand(
+  parsed: ParsedShellCommand,
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const sessionId = context.sessionId
+  if (!sessionId) {
+    return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
+  }
+
+  const [action, ...args] = parsed.args
+  switch (action) {
+    case "list":
+    case "ls": {
+      const response = await deps.client.send(listWorkflowsRequest(sessionId))
+      const workflows = expectVariant<{ workflows: WorkflowDefinition[] }>(response, "WorkflowsListed").workflows
+      return { ok: true, message: formatWorkflowList(workflows, context.workflowId), data: { workflows } }
+    }
+    case "new":
+    case "create": {
+      const response = await deps.client.send(createWorkflowRequest(sessionId, args[0] ?? null))
+      const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowCreated")
+      return resourceResult(
+        `created workflow ${formatWorkflowLabel(payload.workflow)}`,
+        parsed.assignment,
+        payload.workflow.id,
+        { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+        payload,
+      )
+    }
+    case "show": {
+      const workflowRef = args[0] ?? context.workflowId
+      if (!workflowRef) {
+        return { ok: false, message: "usage: workflow show <workflow-ref>" }
+      }
+      const response = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
+      const workflow = expectVariant<{ workflow: WorkflowDefinition }>(response, "WorkflowResolved").workflow
+      return { ok: true, message: formatWorkflowDetails(workflow), data: { workflow }, contextUpdates: { workflowId: workflow.id } }
+    }
+    case "alias": {
+      const [workflowRef, alias] = args
+      if (!workflowRef || !alias) {
+        return { ok: false, message: "usage: workflow alias <workflow-ref> <alias>" }
+      }
+      const response = await deps.client.send(aliasWorkflowRequest(sessionId, workflowRef, alias))
+      const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowAliased")
+      return { ok: true, message: `workflow ${payload.workflow.id} aliased as ${payload.workflow.alias}`, data: payload, contextUpdates: { workflowId: payload.workflow.id } }
+    }
+    case "run":
+    case "start": {
+      const [workflowRef, endpointRef, ...promptParts] = args
+      if (!workflowRef || !endpointRef) {
+        return { ok: false, message: `usage: workflow ${action} <workflow-ref> <endpoint-ref> [prompt]` }
+      }
+      const prompt = promptParts.join(" ").trim() || null
+      const response = await deps.client.send(invokeWorkflowEndpointRequest(sessionId, workflowRef, endpointRef, prompt))
+      if ("WorkflowRunInvoked" in response) {
+        const payload = response.WorkflowRunInvoked as {
+          workflow_run: WorkflowRun
+          workflow: WorkflowDefinition
+          endpoint: WorkflowEndpointDefinition
+          session: RuntimeSession
+        }
+        return {
+          ok: true,
+          message: `started workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
+          data: payload,
+          contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+        }
+      }
+      const payload = expectVariant<{
+        queued_launch: QueuedWorkflowLaunch
+        workflow: WorkflowDefinition
+        endpoint: WorkflowEndpointDefinition
+        session: RuntimeSession
+      }>(response, "WorkflowRunQueued")
+      return {
+        ok: true,
+        message: `queued workflow launch ${payload.queued_launch.id}; active workflow run in session`,
+        data: payload,
+        contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+      }
+    }
+    case "runs": {
+      const response = await deps.client.send(listWorkflowRunsRequest(sessionId, args[0] ?? null))
+      const workflowRuns = expectVariant<{ workflow_runs: WorkflowRun[] }>(response, "WorkflowRunsListed").workflow_runs
+      return { ok: true, message: formatWorkflowRunList(workflowRuns, args[0] ?? null), data: { workflow_runs: workflowRuns } }
+    }
+    case "run-show":
+    case "run-get": {
+      const workflowRunRef = args[0]
+      if (!workflowRunRef) {
+        return { ok: false, message: `usage: workflow ${action} <run-ref>` }
+      }
+      const response = await deps.client.send(getWorkflowRunRequest(sessionId, workflowRunRef))
+      const workflowRun = expectVariant<{ workflow_run: WorkflowRun }>(response, "WorkflowRun").workflow_run
+      return { ok: true, message: JSON.stringify(workflowRun, null, 2), data: { workflow_run: workflowRun }, format: "json" }
+    }
+    case "cancel":
+    case "resume": {
+      const workflowRunRef = args[0]
+      if (!workflowRunRef) {
+        return { ok: false, message: `usage: workflow ${action} <run-ref>` }
+      }
+      const response = await deps.client.send(action === "cancel"
+        ? cancelWorkflowRunRequest(sessionId, workflowRunRef)
+        : resumeWorkflowRunRequest(sessionId, workflowRunRef))
+      const variant = action === "cancel" ? "WorkflowRunCancelled" : "WorkflowRunResumed"
+      const payload = expectVariant<{ workflow_run: WorkflowRun; session: RuntimeSession }>(response, variant)
+      return {
+        ok: true,
+        message: `${action === "cancel" ? "cancelled" : "resumed"} workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
+        data: payload,
+        contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+      }
+    }
+    case "node":
+      return executeWorkflowNodeCommand(args, parsed, context, deps)
+    case "edge":
+      return executeWorkflowEdgeCommand(args, context, deps)
+    case "endpoint":
+      return executeWorkflowEndpointCommand(args, context, deps)
+    default:
+      return { ok: false, message: "usage: workflow list|new|show|alias|run|runs|run-show|cancel|resume|node|edge|endpoint" }
+  }
+}
+
+async function executeWorkflowNodeCommand(
+  args: string[],
+  parsed: ParsedShellCommand,
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const sessionId = context.sessionId!
+  const [action, maybeWorkflowRef, maybeNodeOrAgent] = args
+  const workflowRef = args.length >= 3 ? maybeWorkflowRef : context.workflowId
+  const target = args.length >= 3 ? maybeNodeOrAgent : maybeWorkflowRef
+  if (action === "add") {
+    if (!workflowRef || !target) {
+      return { ok: false, message: "usage: workflow node add [workflow-ref] <agent-ref>" }
+    }
+    const agent = await resolveShellAgent(context, deps, target)
+    if (!agent.ok) {
+      return { ok: false, message: agent.message }
+    }
+    const response = await deps.client.send(addWorkflowNodeRequest(sessionId, workflowRef, agent.agent.id))
+    const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowNodeAdded")
+    return resourceResult(
+      `added workflow node ${payload.node.id} for agent ${agent.agent.agent_ref}`,
+      parsed.assignment,
+      payload.node.id,
+      { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+      payload,
+    )
+  }
+  if (action === "remove") {
+    if (!workflowRef || !target) {
+      return { ok: false, message: "usage: workflow node remove [workflow-ref] <node-id>" }
+    }
+    const response = await deps.client.send(removeWorkflowNodeRequest(sessionId, workflowRef, target))
+    const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowNodeRemoved")
+    return { ok: true, message: `removed workflow node ${payload.node.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+  }
+  return { ok: false, message: "usage: workflow node add [workflow-ref] <agent-ref> | remove [workflow-ref] <node-id>" }
+}
+
+async function executeWorkflowEdgeCommand(
+  args: string[],
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const sessionId = context.sessionId!
+  const [action] = args
+  if (action === "add") {
+    const explicitWorkflowRef = args.length >= 4 ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const fromNodeId = explicitWorkflowRef ? args[2] : args[1]
+    const toNodeId = explicitWorkflowRef ? args[3] : args[2]
+    if (!workflowRef || !fromNodeId || !toNodeId) {
+      return { ok: false, message: "usage: workflow edge add [workflow-ref] <from-node-id> <to-node-id>" }
+    }
+    const response = await deps.client.send(addWorkflowEdgeRequest(sessionId, workflowRef, fromNodeId, toNodeId))
+    const payload = expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEdgeAdded")
+    return { ok: true, message: `added workflow edge ${payload.edge.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+  }
+  if (action === "remove") {
+    const explicitWorkflowRef = args.length >= 3 ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const edgeId = explicitWorkflowRef ? args[2] : args[1]
+    if (!workflowRef || !edgeId) {
+      return { ok: false, message: "usage: workflow edge remove [workflow-ref] <edge-id>" }
+    }
+    const response = await deps.client.send(removeWorkflowEdgeRequest(sessionId, workflowRef, edgeId))
+    const payload = expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEdgeRemoved")
+    return { ok: true, message: `removed workflow edge ${payload.edge.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+  }
+  return { ok: false, message: "usage: workflow edge add [workflow-ref] <from-node-id> <to-node-id> | remove [workflow-ref] <edge-id>" }
+}
+
+async function executeWorkflowEndpointCommand(
+  args: string[],
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const sessionId = context.sessionId!
+  const [action] = args
+  if (action === "new" || action === "create") {
+    const explicitWorkflowRef = args.length >= 3 ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const entryNodeId = explicitWorkflowRef ? args[2] : args[1]
+    const alias = explicitWorkflowRef ? args[3] : args[2]
+    if (!workflowRef || !entryNodeId) {
+      return { ok: false, message: "usage: workflow endpoint new [workflow-ref] <entry-node-id> [alias]" }
+    }
+    const response = await deps.client.send(createWorkflowEndpointRequest(sessionId, workflowRef, entryNodeId, alias ?? null))
+    const payload = expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEndpointCreated")
+    return { ok: true, message: `created workflow endpoint ${payload.endpoint.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+  }
+  if (action === "alias") {
+    const explicitWorkflowRef = args.length >= 4 ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const endpointRef = explicitWorkflowRef ? args[2] : args[1]
+    const alias = explicitWorkflowRef ? args[3] : args[2]
+    if (!workflowRef || !endpointRef || !alias) {
+      return { ok: false, message: "usage: workflow endpoint alias [workflow-ref] <endpoint-ref> <alias>" }
+    }
+    const response = await deps.client.send(aliasWorkflowEndpointRequest(sessionId, workflowRef, endpointRef, alias))
+    const payload = expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEndpointAliased")
+    return { ok: true, message: `workflow endpoint ${payload.endpoint.id} aliased as ${payload.endpoint.alias}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+  }
+  if (action === "bind") {
+    const explicitWorkflowRef = args.length >= 4 ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const endpointRef = explicitWorkflowRef ? args[2] : args[1]
+    const entryNodeId = explicitWorkflowRef ? args[3] : args[2]
+    if (!workflowRef || !endpointRef || !entryNodeId) {
+      return { ok: false, message: "usage: workflow endpoint bind [workflow-ref] <endpoint-ref> <entry-node-id>" }
+    }
+    const response = await deps.client.send(bindWorkflowEndpointRequest(sessionId, workflowRef, endpointRef, entryNodeId))
+    const payload = expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEndpointBound")
+    return { ok: true, message: `workflow endpoint ${payload.endpoint.id} bound to node ${payload.endpoint.entry_node_id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+  }
+  return { ok: false, message: "usage: workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind [workflow-ref] <endpoint-ref> <entry-node-id>" }
+}
+
 async function executeProviderCommand(
   parsed: ParsedShellCommand,
   context: ShellContext,
@@ -878,6 +1148,40 @@ function formatAgentCapabilityGrants(agent: AgentInstance, kind: "mcp" | "skill"
     return `${agentLabel} has no ${label} grants.`
   }
   return `${agentLabel} ${label} grants:\n${grants.map((grant) => `- ${grant}`).join("\n")}`
+}
+
+function formatWorkflowLabel(workflow: WorkflowDefinition): string {
+  return workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id
+}
+
+function formatWorkflowList(workflows: WorkflowDefinition[], currentWorkflowId?: string): string {
+  if (workflows.length === 0) {
+    return "no workflows in session"
+  }
+  return workflows.map((workflow) => {
+    const current = workflow.id === currentWorkflowId ? " current" : ""
+    return `${formatWorkflowLabel(workflow)} nodes=${workflow.nodes?.length ?? 0} edges=${workflow.edges?.length ?? 0} endpoints=${workflow.endpoints?.length ?? 0}${current}`
+  }).join("\n")
+}
+
+function formatWorkflowDetails(workflow: WorkflowDefinition): string {
+  return [
+    `workflow ${formatWorkflowLabel(workflow)}`,
+    `nodes=${workflow.nodes?.length ?? 0} edges=${workflow.edges?.length ?? 0} endpoints=${workflow.endpoints?.length ?? 0}`,
+    `flush_context=${String(workflow.flush_agent_context_before_run ?? true)}`,
+    workflow.run_output_schema_ref ? `run_output_schema=${workflow.run_output_schema_ref}` : null,
+    workflow.intermediate_output_schema_ref ? `intermediate_output_schema=${workflow.intermediate_output_schema_ref}` : null,
+  ].filter(Boolean).join("\n")
+}
+
+function formatWorkflowRunList(workflowRuns: WorkflowRun[], workflowRef: string | null): string {
+  if (workflowRuns.length === 0) {
+    return workflowRef ? `no workflow runs for ${workflowRef}` : "no workflow runs in session"
+  }
+  return workflowRuns.map((run) => {
+    const failures = (run.failure_events?.length ?? 0) > 0 ? ` failures=${run.failure_events?.length ?? 0}` : ""
+    return `${run.id} workflow=${run.workflow_id} endpoint=${run.endpoint_id} [${String(run.status).toLowerCase()}${failures}]`
+  }).join("\n")
 }
 
 function formatProviderAuthStatus(status: ProviderAuthStatus): string {

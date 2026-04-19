@@ -1,7 +1,14 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { AgentInstance, ArrobaMcpServerConfig, ArrobaSkillMetadata, RuntimeSession } from "./kernel-types.js"
+import type {
+  AgentInstance,
+  ArrobaMcpServerConfig,
+  ArrobaSkillMetadata,
+  RuntimeSession,
+  WorkflowDefinition,
+  WorkflowRun,
+} from "./kernel-types.js"
 import { applyShellCommandResult, createDefaultShellContext, parseShellCommand } from "./shell-core.js"
 import { executeShellCommand } from "./shell-executor.js"
 
@@ -42,6 +49,36 @@ function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     max_agents: 6,
     agents: [makeAgent()],
     config_state: { version: 0, values: {} },
+    ...overrides,
+  }
+}
+
+function makeWorkflow(overrides: Partial<WorkflowDefinition> = {}): WorkflowDefinition {
+  return {
+    id: "workflow-1",
+    alias: "qa",
+    flush_agent_context_before_run: true,
+    nodes: [{ id: "node-1", agent_id: "agent-1" }],
+    edges: [],
+    endpoints: [{ id: "endpoint-1", alias: "default", entry_node_id: "node-1" }],
+    ...overrides,
+  }
+}
+
+function makeWorkflowRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
+  return {
+    id: "run-1",
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+    entry_node_id: "node-1",
+    status: "Running",
+    invocation_prompt: "Run QA",
+    active_node_run_id: null,
+    node_runs: [],
+    messages: [],
+    created_at_ms: 0,
+    started_at_ms: 0,
+    completed_at_ms: null,
     ...overrides,
   }
 }
@@ -453,5 +490,175 @@ test("executeShellCommand installs and uninstalls skills", async () => {
   assert.deepEqual(requests, [
     { InstallSkill: { workspace_id: "/repo", source_path: "/tmp/skills/qa" } },
     { UninstallSkill: { workspace_id: "/repo", name: "qa" } },
+  ])
+})
+
+test("executeShellCommand manages workflow list, create, show, and alias", async () => {
+  const workflow = makeWorkflow()
+  const session = makeSession({ workflows: [workflow] })
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("ListWorkflows" in request) {
+          return { WorkflowsListed: { workflows: [workflow] } }
+        }
+        if ("CreateWorkflow" in request) {
+          return { WorkflowCreated: { workflow, session } }
+        }
+        if ("ResolveWorkflow" in request) {
+          return { WorkflowResolved: { workflow } }
+        }
+        return { WorkflowAliased: { workflow: { ...workflow, alias: "review" }, session } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const listResult = await executeShellCommand(parseShellCommand("workflow list"), context, { client: fake.client })
+  const newResult = await executeShellCommand(parseShellCommand("workflow new qa as wf"), context, { client: fake.client })
+  const showResult = await executeShellCommand(parseShellCommand("workflow show workflow-1"), context, { client: fake.client })
+  const aliasResult = await executeShellCommand(parseShellCommand("workflow alias workflow-1 review"), context, { client: fake.client })
+  assert.equal(listResult.ok, true)
+  assert.match(listResult.message ?? "", /workflow-1 \(qa\) nodes=1/)
+  assert.equal(newResult.ok, true)
+  assert.deepEqual(newResult.bindings, { wf: "workflow-1" })
+  assert.deepEqual(newResult.contextUpdates, { workflowId: "workflow-1", sessionId: "session-1", agentId: "agent-1" })
+  assert.equal(showResult.ok, true)
+  assert.match(showResult.message ?? "", /workflow workflow-1 \(qa\)/)
+  assert.deepEqual(showResult.contextUpdates, { workflowId: "workflow-1" })
+  assert.equal(aliasResult.ok, true)
+  assert.match(aliasResult.message ?? "", /aliased as review/)
+  assert.deepEqual(requests, [
+    { ListWorkflows: { session_id: "session-1" } },
+    { CreateWorkflow: { session_id: "session-1", alias: "qa" } },
+    { ResolveWorkflow: { session_id: "session-1", workflow_ref: "workflow-1" } },
+    { AliasWorkflow: { session_id: "session-1", workflow_ref: "workflow-1", alias: "review" } },
+  ])
+})
+
+test("executeShellCommand runs and controls workflow runs", async () => {
+  const workflow = makeWorkflow()
+  const workflowRun = makeWorkflowRun()
+  const session = makeSession({ workflows: [workflow], workflow_runs: [workflowRun] })
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("InvokeWorkflowEndpoint" in request) {
+          return { WorkflowRunInvoked: { workflow_run: workflowRun, workflow, endpoint: workflow.endpoints![0], session } }
+        }
+        if ("ListWorkflowRuns" in request) {
+          return { WorkflowRunsListed: { workflow_runs: [workflowRun] } }
+        }
+        if ("GetWorkflowRun" in request) {
+          return { WorkflowRun: { workflow_run: workflowRun } }
+        }
+        if ("CancelWorkflowRun" in request) {
+          return { WorkflowRunCancelled: { workflow_run: { ...workflowRun, status: "Cancelled" }, session } }
+        }
+        return { WorkflowRunResumed: { workflow_run: { ...workflowRun, status: "Running" }, session } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const runResult = await executeShellCommand(parseShellCommand("workflow run workflow-1 endpoint-1 Run QA"), context, { client: fake.client })
+  const runsResult = await executeShellCommand(parseShellCommand("workflow runs workflow-1"), context, { client: fake.client })
+  const showRunResult = await executeShellCommand(parseShellCommand("workflow run-show run-1"), context, { client: fake.client })
+  const cancelResult = await executeShellCommand(parseShellCommand("workflow cancel run-1"), context, { client: fake.client })
+  const resumeResult = await executeShellCommand(parseShellCommand("workflow resume run-1"), context, { client: fake.client })
+  assert.equal(runResult.ok, true)
+  assert.match(runResult.message ?? "", /started workflow run run-1/)
+  assert.deepEqual(runResult.contextUpdates, { workflowId: "workflow-1", sessionId: "session-1", agentId: "agent-1" })
+  assert.equal(runsResult.ok, true)
+  assert.match(runsResult.message ?? "", /run-1 workflow=workflow-1/)
+  assert.equal(showRunResult.ok, true)
+  assert.equal(showRunResult.format, "json")
+  assert.equal(cancelResult.ok, true)
+  assert.match(cancelResult.message ?? "", /cancelled workflow run run-1 \[cancelled\]/)
+  assert.equal(resumeResult.ok, true)
+  assert.match(resumeResult.message ?? "", /resumed workflow run run-1 \[running\]/)
+  assert.deepEqual(requests, [
+    { InvokeWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", prompt: "Run QA" } },
+    { ListWorkflowRuns: { session_id: "session-1", workflow_ref: "workflow-1" } },
+    { GetWorkflowRun: { session_id: "session-1", workflow_run_ref: "run-1" } },
+    { CancelWorkflowRun: { session_id: "session-1", workflow_run_ref: "run-1" } },
+    { ResumeWorkflowRun: { session_id: "session-1", workflow_run_ref: "run-1" } },
+  ])
+})
+
+test("executeShellCommand manages workflow graph and endpoints", async () => {
+  const workflow = makeWorkflow({
+    nodes: [
+      { id: "node-1", agent_id: "agent-1" },
+      { id: "node-2", agent_id: "agent-2" },
+    ],
+    edges: [{ id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" }],
+  })
+  const session = makeSession({ workflows: [workflow] })
+  const node = { id: "node-2", agent_id: "agent-2" }
+  const edge = { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" }
+  const endpoint = { id: "endpoint-1", alias: "default", entry_node_id: "node-1" }
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("ListAgents" in request) {
+          return { AgentsListed: { agents: [makeAgent(), makeAgent({ id: "agent-2", agent_ref: "agent-2", alias: "reviewer" })] } }
+        }
+        if ("AddWorkflowNode" in request) {
+          return { WorkflowNodeAdded: { node, workflow, session } }
+        }
+        if ("RemoveWorkflowNode" in request) {
+          return { WorkflowNodeRemoved: { node, workflow, session } }
+        }
+        if ("AddWorkflowEdge" in request) {
+          return { WorkflowEdgeAdded: { edge, workflow, session } }
+        }
+        if ("RemoveWorkflowEdge" in request) {
+          return { WorkflowEdgeRemoved: { edge, workflow, session } }
+        }
+        if ("CreateWorkflowEndpoint" in request) {
+          return { WorkflowEndpointCreated: { endpoint, workflow, session } }
+        }
+        if ("AliasWorkflowEndpoint" in request) {
+          return { WorkflowEndpointAliased: { endpoint: { ...endpoint, alias: "smoke" }, workflow, session } }
+        }
+        return { WorkflowEndpointBound: { endpoint, workflow, session } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    workflowId: "workflow-1",
+  })
+  const nodeAdd = await executeShellCommand(parseShellCommand("workflow node add reviewer as node"), context, { client: fake.client })
+  const nodeRemove = await executeShellCommand(parseShellCommand("workflow node remove node-2"), context, { client: fake.client })
+  const edgeAdd = await executeShellCommand(parseShellCommand("workflow edge add node-1 node-2"), context, { client: fake.client })
+  const edgeRemove = await executeShellCommand(parseShellCommand("workflow edge remove edge-1"), context, { client: fake.client })
+  const endpointNew = await executeShellCommand(parseShellCommand("workflow endpoint new workflow-1 node-1 default"), context, { client: fake.client })
+  const endpointAlias = await executeShellCommand(parseShellCommand("workflow endpoint alias endpoint-1 smoke"), context, { client: fake.client })
+  const endpointBind = await executeShellCommand(parseShellCommand("workflow endpoint bind endpoint-1 node-1"), context, { client: fake.client })
+  assert.equal(nodeAdd.ok, true)
+  assert.deepEqual(nodeAdd.bindings, { node: "node-2" })
+  assert.equal(nodeRemove.ok, true)
+  assert.equal(edgeAdd.ok, true)
+  assert.equal(edgeRemove.ok, true)
+  assert.equal(endpointNew.ok, true)
+  assert.equal(endpointAlias.ok, true)
+  assert.equal(endpointBind.ok, true)
+  assert.deepEqual(requests, [
+    { ListAgents: { session_id: "session-1" } },
+    { AddWorkflowNode: { session_id: "session-1", workflow_ref: "workflow-1", agent_id: "agent-2" } },
+    { RemoveWorkflowNode: { session_id: "session-1", workflow_ref: "workflow-1", node_id: "node-2" } },
+    { AddWorkflowEdge: { session_id: "session-1", workflow_ref: "workflow-1", from_node_id: "node-1", to_node_id: "node-2" } },
+    { RemoveWorkflowEdge: { session_id: "session-1", workflow_ref: "workflow-1", edge_id: "edge-1" } },
+    { CreateWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", entry_node_id: "node-1", alias: "default" } },
+    { AliasWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", alias: "smoke" } },
+    { BindWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", entry_node_id: "node-1" } },
   ])
 })
