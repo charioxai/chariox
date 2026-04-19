@@ -24,6 +24,7 @@ pub struct CodexPollResult {
     pub chunks: Vec<CodexOutputChunk>,
     pub completions: Vec<CodexAssistantCompletion>,
     pub prompt_completed: bool,
+    pub terminal_failure: Option<String>,
     pub notices: Vec<String>,
 }
 
@@ -290,6 +291,7 @@ pub fn drain_codex_events(
     let mut completions = Vec::new();
     let mut notices = Vec::new();
     let mut prompt_completed = false;
+    let mut terminal_failure = None;
 
     for notification in std::mem::take(&mut state.buffered_notifications) {
         apply_notification(
@@ -300,6 +302,7 @@ pub fn drain_codex_events(
             &mut completions,
             &mut notices,
             &mut prompt_completed,
+            &mut terminal_failure,
         );
     }
 
@@ -317,6 +320,7 @@ pub fn drain_codex_events(
             &mut completions,
             &mut notices,
             &mut prompt_completed,
+            &mut terminal_failure,
         );
     }
 
@@ -324,6 +328,7 @@ pub fn drain_codex_events(
         chunks,
         completions,
         prompt_completed,
+        terminal_failure,
         notices,
     })
 }
@@ -336,6 +341,7 @@ fn apply_notification(
     completions: &mut Vec<CodexAssistantCompletion>,
     notices: &mut Vec<String>,
     prompt_completed: &mut bool,
+    terminal_failure: &mut Option<String>,
 ) {
     match notification {
         CodexNotification::AgentMessageDelta { item_id, delta } => {
@@ -420,12 +426,21 @@ fn apply_notification(
             }
             *prompt_completed = true;
             if let Some(message) = error_message {
+                if status == "failed" {
+                    *terminal_failure = Some(message.clone());
+                }
                 notices.push(message);
             } else if status == "failed" {
-                notices.push("Codex turn failed".to_string());
+                let message = "Codex turn failed".to_string();
+                *terminal_failure = Some(message.clone());
+                notices.push(message);
             }
         }
         CodexNotification::Error { message } => {
+            if active_turn_id.is_some() {
+                *terminal_failure = Some(message.clone());
+                *prompt_completed = true;
+            }
             notices.push(message);
         }
     }
@@ -935,6 +950,7 @@ mod tests {
         let mut completions = Vec::new();
         let mut notices = Vec::new();
         let mut prompt_completed = false;
+        let mut terminal_failure = None;
 
         apply_notification(
             CodexNotification::ReasoningTextDelta {
@@ -947,6 +963,7 @@ mod tests {
             &mut completions,
             &mut notices,
             &mut prompt_completed,
+            &mut terminal_failure,
         );
         apply_notification(
             CodexNotification::AgentMessageDelta {
@@ -959,6 +976,7 @@ mod tests {
             &mut completions,
             &mut notices,
             &mut prompt_completed,
+            &mut terminal_failure,
         );
 
         assert_eq!(
@@ -993,6 +1011,7 @@ mod tests {
         let mut completions = Vec::new();
         let mut notices = Vec::new();
         let mut prompt_completed = false;
+        let mut terminal_failure = None;
 
         apply_notification(
             CodexNotification::ItemStarted {
@@ -1015,6 +1034,7 @@ mod tests {
             &mut completions,
             &mut notices,
             &mut prompt_completed,
+            &mut terminal_failure,
         );
         apply_notification(
             CodexNotification::CommandExecutionOutputDelta {
@@ -1027,6 +1047,7 @@ mod tests {
             &mut completions,
             &mut notices,
             &mut prompt_completed,
+            &mut terminal_failure,
         );
         apply_notification(
             CodexNotification::CommandExecutionOutputDelta {
@@ -1039,6 +1060,7 @@ mod tests {
             &mut completions,
             &mut notices,
             &mut prompt_completed,
+            &mut terminal_failure,
         );
         apply_notification(
             CodexNotification::ItemCompleted {
@@ -1061,6 +1083,7 @@ mod tests {
             &mut completions,
             &mut notices,
             &mut prompt_completed,
+            &mut terminal_failure,
         );
 
         let tool_chunks = chunks
@@ -1116,6 +1139,7 @@ mod tests {
         let mut completions = Vec::new();
         let mut notices = Vec::new();
         let mut prompt_completed = false;
+        let mut terminal_failure = None;
 
         apply_notification(
             CodexNotification::ItemCompleted {
@@ -1132,6 +1156,7 @@ mod tests {
             &mut completions,
             &mut notices,
             &mut prompt_completed,
+            &mut terminal_failure,
         );
         assert!(!prompt_completed);
         assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
@@ -1148,6 +1173,7 @@ mod tests {
             &mut completions,
             &mut notices,
             &mut prompt_completed,
+            &mut terminal_failure,
         );
         assert!(prompt_completed);
         assert_eq!(active_turn_id, None);
@@ -1163,6 +1189,7 @@ mod tests {
         let mut completions = Vec::new();
         let mut notices = Vec::new();
         let mut prompt_completed = false;
+        let mut terminal_failure = None;
 
         apply_notification(
             CodexNotification::TurnCompleted {
@@ -1176,6 +1203,7 @@ mod tests {
             &mut completions,
             &mut notices,
             &mut prompt_completed,
+            &mut terminal_failure,
         );
 
         assert!(!prompt_completed);
@@ -1191,6 +1219,7 @@ mod tests {
         let mut completions = Vec::new();
         let mut notices = Vec::new();
         let mut prompt_completed = false;
+        let mut terminal_failure = None;
 
         apply_notification(
             CodexNotification::TurnCompleted {
@@ -1204,6 +1233,7 @@ mod tests {
             &mut completions,
             &mut notices,
             &mut prompt_completed,
+            &mut terminal_failure,
         );
 
         assert!(prompt_completed);
@@ -1211,6 +1241,36 @@ mod tests {
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].message_id, "codex-turn:turn-2");
         assert_eq!(notices, vec!["Aborted".to_string()]);
+    }
+
+    #[test]
+    fn failed_turn_records_terminal_failure() {
+        let mut active_turn_id = Some("turn-3".to_string());
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut completions = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+        let mut terminal_failure = None;
+
+        apply_notification(
+            CodexNotification::TurnCompleted {
+                turn_id: "turn-3".to_string(),
+                status: "failed".to_string(),
+                error_message: Some("model rejected".to_string()),
+            },
+            &mut active_turn_id,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        );
+
+        assert!(prompt_completed);
+        assert_eq!(terminal_failure.as_deref(), Some("model rejected"));
+        assert_eq!(notices, vec!["model rejected".to_string()]);
     }
 
     fn parse_tool_chunk(chunk: &CodexOutputChunk) -> Value {

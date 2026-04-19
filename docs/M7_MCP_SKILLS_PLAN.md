@@ -513,3 +513,9 @@ node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario mcp-echo
 ```
 
 Observed on 2026-04-19: OpenCode passed in ~72s and Codex passed in ~116s. The wrapper installed deterministic MCP `workflow_echo` in the worker registry before invoking the remote workflow drill; each remote workflow node completed a provider-native MCP echo call, wrote the managed-I/O marker, and submitted final workflow output `{"echo":"ECHO:M7_WORKFLOW_ECHO_OK"}`. The earlier Codex run that used only `--model gpt-5.2` failed because the workflow drill mapped that bare model to `gpt-5.2-codex`; Codex logs showed ChatGPT-backed Codex rejected that model with HTTP 400. Use the explicit `--provider-model codex=gpt-5.2` override for this drill.
+
+## V2 Workflow Failure Policy
+
+V1 behavior is fail-fast for terminal provider-turn failures on workflow-owned prompts. If Codex, OpenCode, or another supported provider reports that a workflow turn cannot continue, Arroba must mark the active workflow node run and workflow run as `Failed`, record a `provider_failure` event, release prompt/workspace state, and surface the failure in the same session/workflow state surfaces that normally show `Running`.
+
+Future V2 work should make this policy configurable by failure event. The workflow engine should be able to decide whether a provider/model rejection, provider runtime disconnect, MCP startup failure, MCP call failure, validation failure, turn stall, or transport failure should fail the run, retry, pause for user action, skip a node, or continue with a warning. That policy should remain workflow-scoped by default, with room for endpoint/node overrides later.

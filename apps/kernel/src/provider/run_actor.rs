@@ -1196,6 +1196,7 @@ fn execute_output_poll_command(
                 })
                 .collect(),
             prompt_completed: poll.prompt_completed,
+            terminal_failure: poll.terminal_failure,
             notices: poll.notices,
             resolved_model: None,
             resolved_model_source: None,
@@ -1235,6 +1236,7 @@ fn execute_output_poll_command(
             })
             .collect(),
         prompt_completed: drain.prompt_completed,
+        terminal_failure: drain.terminal_failure,
         notices: drain.notices,
         resolved_model: drain.resolved_model,
         resolved_model_source: drain.resolved_model_source,

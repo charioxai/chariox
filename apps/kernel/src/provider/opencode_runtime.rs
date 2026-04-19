@@ -21,6 +21,7 @@ pub(super) struct OpenCodeEventDrainResult {
     pub chunks: Vec<OpenCodeOutputChunk>,
     pub completions: Vec<OpenCodeAssistantCompletion>,
     pub prompt_completed: bool,
+    pub terminal_failure: Option<String>,
     pub notices: Vec<String>,
     pub resolved_model: Option<String>,
     pub resolved_model_source: Option<&'static str>,
@@ -117,6 +118,7 @@ pub(super) fn drain_opencode_events(
     let mut chunks = Vec::new();
     let mut completions = Vec::new();
     let mut prompt_completed = false;
+    let mut terminal_failure = None;
     let mut notices = Vec::new();
     let mut resolved_model = None;
     let mut resolved_model_source = None;
@@ -348,6 +350,7 @@ pub(super) fn drain_opencode_events(
                         merge_key: None,
                         bytes: render_session_error_transcript_update(&message).into_bytes(),
                     });
+                    terminal_failure = Some(message.clone());
                     notices.push(message);
                     prompt_completed = true;
                     state.active_user_message_id = None;
@@ -488,6 +491,7 @@ pub(super) fn drain_opencode_events(
         chunks,
         completions,
         prompt_completed,
+        terminal_failure,
         notices,
         resolved_model,
         resolved_model_source,

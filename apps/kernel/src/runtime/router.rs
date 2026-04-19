@@ -608,6 +608,16 @@ impl CommandRouter {
             .await
     }
 
+    pub(crate) async fn dispatch_forwarded_workflow_provider_failure(
+        &self,
+        context: crate::execution_lease::RemoteWorkflowTurnContext,
+        message: String,
+    ) -> Result<(), DaemonError> {
+        self.runtime_state
+            .dispatch_forwarded_workflow_provider_failure(context, message)
+            .await
+    }
+
     pub(crate) async fn dispatch_forwarded_managed_io_runtime_tool_call(
         &self,
         context: crate::transport::relay_peer::RemoteManagedIoContext,

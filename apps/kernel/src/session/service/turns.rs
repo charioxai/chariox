@@ -1220,4 +1220,42 @@ impl SessionService {
         workflow_run.set_status(WorkflowRunStatus::Stopped);
         Ok(workflow_run.clone())
     }
+
+    pub fn fail_workflow_node_run(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow_run = session.workflow_run_mut(workflow_run_id).ok_or_else(|| {
+            DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            }
+        })?;
+        let workflow_id = workflow_run.workflow_id().to_string();
+        let node_run = workflow_run
+            .node_runs_mut()
+            .iter_mut()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id,
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow node run was not found",
+            })?;
+        node_run.set_status(WorkflowNodeRunStatus::Failed);
+        if let Some(envelope) = node_run.turn_envelope_mut() {
+            envelope.mark_failed();
+        }
+        workflow_run.clear_active_node_run();
+        workflow_run.set_status(WorkflowRunStatus::Failed);
+        Ok(workflow_run.clone())
+    }
 }

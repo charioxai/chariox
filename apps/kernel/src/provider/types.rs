@@ -690,6 +690,7 @@ pub struct ProviderPromptSignalBatch {
     pub chunks: Vec<ProviderPromptChunk>,
     pub completions: Vec<ProviderAssistantCompletion>,
     pub prompt_completed: bool,
+    pub terminal_failure: Option<String>,
     pub notices: Vec<String>,
     pub resolved_model: Option<String>,
     pub resolved_model_source: Option<&'static str>,

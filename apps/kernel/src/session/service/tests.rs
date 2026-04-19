@@ -503,6 +503,49 @@ fn creates_lists_resolves_and_cancels_workflow_runs() {
 }
 
 #[test]
+fn provider_failure_marks_workflow_and_node_failed() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let node = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect("workflow node should be added");
+    let endpoint = service
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let workflow_run = service
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("review this diff".to_string()),
+        )
+        .expect("workflow run should be created");
+    let node_run_id = workflow_run.node_runs()[0].id().to_string();
+
+    let failed = service
+        .fail_workflow_node_run(session.id(), workflow_run.id(), &node_run_id)
+        .expect("workflow node should fail");
+
+    assert_eq!(failed.status(), WorkflowRunStatus::Failed);
+    assert_eq!(failed.active_node_run_id(), None);
+    assert_eq!(
+        failed.node_runs()[0].status(),
+        WorkflowNodeRunStatus::Failed
+    );
+}
+
+#[test]
 fn node_turn_budget_exhaustion_stops_the_whole_run() {
     let mut service = SessionService::new(&test_config());
     let session = service

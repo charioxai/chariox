@@ -1289,6 +1289,34 @@ impl KernelRuntimeState {
         }
     }
 
+    pub(crate) async fn dispatch_forwarded_workflow_provider_failure(
+        &self,
+        context: crate::execution_lease::RemoteWorkflowTurnContext,
+        message: String,
+    ) -> Result<(), DaemonError> {
+        let owned = &self.owned;
+        let session = owned.session_store.get_session(&context.home_session_id)?;
+        let Some(active_prompt) = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &context.home_agent_id)
+        else {
+            return Ok(());
+        };
+        owned.workflow_fail_provider_prompt(
+            &context.home_session_id,
+            &active_prompt,
+            Some("remote-provider-run-failed"),
+            &message,
+        )?;
+        let _ = owned.complete_remote_prompt_owner(
+            &context.home_session_id,
+            &context.home_agent_id,
+            "remote-provider-run-failed",
+            None,
+        );
+        Ok(())
+    }
+
     pub(crate) async fn dispatch_forwarded_managed_io_runtime_tool_call(
         &self,
         context: crate::transport::relay_peer::RemoteManagedIoContext,

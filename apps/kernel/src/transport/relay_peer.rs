@@ -132,6 +132,10 @@ pub enum RelayPeerRequest {
         tool_name: String,
         arguments: serde_json::Value,
     },
+    ForwardWorkflowProviderFailure {
+        context: RemoteWorkflowTurnContext,
+        message: String,
+    },
     ForwardManagedIoRuntimeTool {
         context: RemoteManagedIoContext,
         tool_name: String,
@@ -186,6 +190,7 @@ pub enum RelayPeerResponse {
     WorkflowRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
     },
+    WorkflowProviderFailureHandled,
     ManagedIoRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
         final_artifact_states: Vec<RemoteManagedIoArtifactState>,

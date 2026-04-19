@@ -600,6 +600,22 @@ impl KernelRuntimeState {
                     workflow_node_run_id,
                     provider_run_id,
                 ) {
+                    let message = if prompt_completed {
+                        "provider completed workflow turn without a validated workflow output"
+                    } else {
+                        "provider workflow turn settled without a validated workflow output"
+                    };
+                    owned.workflow_fail_provider_prompt(
+                        session_id,
+                        &active_prompt,
+                        Some(provider_run_id),
+                        message,
+                    )?;
+                    let _ = owned.complete_local_prompt_without_advance(
+                        session_id,
+                        &agent_id,
+                        Some(provider_run_id),
+                    )?;
                     return Ok(crate::app::ProviderRunExitSessionSummary {
                         had_active_prompt: true,
                         started_next_prompt: false,
@@ -689,6 +705,93 @@ impl KernelRuntimeState {
             had_active_prompt: true,
             started_next_prompt: completion.completion.started_next.is_some(),
         })
+    }
+
+    async fn fail_owned_provider_prompt(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        message: &str,
+    ) -> Result<(), DaemonError> {
+        let owned = &self.owned;
+        let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let agent_id = provider_run
+            .agent_instance_id()
+            .map(str::to_string)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: "provider run has no agent".to_string(),
+            })?;
+
+        let leased_context = self
+            .with_app_side_effect(|app| {
+                crate::app::RemoteLeaseRuntime::new(app)
+                    .leased_workflow_turn_context_for_provider_run(provider_run_id)
+            })
+            .await;
+        if let Some(context) = leased_context {
+            let response = self
+                .with_app_side_effect(|app| {
+                    app.block_on_relay_future(
+                        crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                            app.config(),
+                            arroba_relay::protocol::ClientTarget {
+                                daemon_id: Some(context.home_kernel_id.clone()),
+                                daemon_alias: None,
+                            },
+                            crate::transport::relay_peer::RelayPeerRequest::ForwardWorkflowProviderFailure {
+                                context,
+                                message: message.to_string(),
+                            },
+                        ),
+                    )
+                })
+                .await?;
+            if !matches!(
+                response,
+                crate::transport::relay_peer::RelayPeerResponse::WorkflowProviderFailureHandled
+            ) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "forward workflow provider failure",
+                    message: format!("unexpected workflow provider failure response: {response:?}"),
+                });
+            }
+            let _ = self
+                .with_app_side_effect(|app| {
+                    crate::app::RemoteLeaseRuntime::new(app)
+                        .complete_leased_workflow_prompt_for_provider_run(provider_run_id)
+                })
+                .await?;
+            return Ok(());
+        }
+
+        let session = owned.session_store.get_session(session_id)?;
+        let Some(active_prompt) = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+        else {
+            return Ok(());
+        };
+        if active_prompt.workflow_run_id().is_some() {
+            owned.workflow_fail_provider_prompt(
+                session_id,
+                &active_prompt,
+                Some(provider_run_id),
+                message,
+            )?;
+        }
+        let completion = owned.complete_local_prompt_without_advance(
+            session_id,
+            &agent_id,
+            Some(provider_run_id),
+        )?;
+        if completion
+            .as_ref()
+            .is_some_and(|completion| completion.released_claim)
+            && active_prompt.workflow_run_id().is_none()
+        {
+            self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
+        }
+        Ok(())
     }
 
     pub(super) async fn pump_owned_provider_output(
@@ -937,6 +1040,7 @@ impl KernelRuntimeState {
             owned.mark_prompt_completion_recorded(provider_run_id);
         }
         let prompt_completed = poll_result.prompt_completed;
+        let terminal_failure = poll_result.terminal_failure.clone();
         let records = poll_result
             .chunks
             .into_iter()
@@ -951,6 +1055,11 @@ impl KernelRuntimeState {
                 )
             })
             .collect::<Vec<_>>();
+        if let Some(message) = terminal_failure {
+            self.fail_owned_provider_prompt(session_id, provider_run_id, &message)
+                .await?;
+            return Ok(records);
+        }
         if !self
             .reconcile_provider_run_exit(session_id, provider_run_id)
             .await?

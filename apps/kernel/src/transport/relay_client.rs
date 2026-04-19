@@ -731,6 +731,20 @@ async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::ForwardWorkflowProviderFailure { context, message } => {
+            let handled = router
+                .dispatch_forwarded_workflow_provider_failure(context, message)
+                .await;
+            match handled {
+                Ok(()) => RelayPeerResponse::WorkflowProviderFailureHandled,
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::ForwardManagedIoRuntimeTool {
             context,
             tool_name,

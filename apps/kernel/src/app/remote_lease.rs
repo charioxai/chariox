@@ -1097,6 +1097,41 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 return Ok(());
             }
             if active_prompt.workflow_run_id().is_some() && !workflow_output_ready {
+                if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
+                    active_prompt.workflow_run_id(),
+                    active_prompt.workflow_node_run_id(),
+                ) {
+                    let message =
+                        "provider completed workflow turn without a validated workflow output";
+                    let failure = crate::session::WorkflowFailureEvent::new(
+                        crate::session::WorkflowFailureKind::MissingStructuredOutput,
+                        workflow_node_run_id,
+                        Vec::new(),
+                        message,
+                    );
+                    let _ = self.app.sessions_mut().record_workflow_failure_event(
+                        session_id,
+                        workflow_run_id,
+                        failure,
+                    );
+                    let workflow_run = self.app.sessions_mut().fail_workflow_node_run(
+                        session_id,
+                        workflow_run_id,
+                        workflow_node_run_id,
+                    )?;
+                    self.app.record_notice(
+                        session_id,
+                        Some(provider_run_id),
+                        recipient_attachment_ids.clone(),
+                        format!(
+                            "Workflow run `{}` failed after provider turn completion without workflow output.",
+                            workflow_run.id()
+                        ),
+                    );
+                    let _ = self
+                        .app
+                        .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
+                }
                 return Ok(());
             }
             let remote_execution = self

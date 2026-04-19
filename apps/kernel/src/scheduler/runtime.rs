@@ -761,6 +761,33 @@ pub fn on_workflow_prompt_completed(
         workflow_node_run_id,
         provider_run_id,
     );
+    if completion_snapshot.is_none() {
+        let message = "provider completed workflow turn without a validated workflow output";
+        app.sessions_mut().fail_workflow_node_run(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        )?;
+        record_and_route_workflow_failure(
+            app,
+            session_id,
+            workflow_run_id,
+            &WorkflowFailureEvent::new(
+                WorkflowFailureKind::MissingStructuredOutput,
+                workflow_node_run_id,
+                Vec::new(),
+                message,
+            ),
+        );
+        app.record_notice(
+            session_id,
+            provider_run_id,
+            app.attachments().list_session_attachment_ids(session_id),
+            format!("Workflow run `{workflow_run_id}` failed: {message}."),
+        );
+        maybe_start_next_queued_workflow_launch(app, session_id);
+        return Ok(());
+    }
     let max_turns = workflow_max_turns(app, session_id);
     let completion_result = {
         app.sessions_mut().complete_workflow_node_run(

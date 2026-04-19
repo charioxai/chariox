@@ -630,6 +630,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
             self.mark_prompt_completion_recorded(provider_run_id);
         }
         let prompt_completed = poll_result.prompt_completed;
+        let terminal_failure = poll_result.terminal_failure.clone();
         let records = poll_result
             .chunks
             .into_iter()
@@ -646,6 +647,10 @@ impl<'a> ProviderOutputPumpContext<'a> {
             .collect();
         let exited = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
         if exited {
+            return Ok(records);
+        }
+        if let Some(message) = terminal_failure {
+            self.fail_prompt_for_terminal_failure(session_id, provider_run_id, &message)?;
             return Ok(records);
         }
         self.settle_structured_prompt_completion(session_id, provider_run_id, prompt_completed)?;
@@ -746,6 +751,53 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 self.app
                     .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
         }
+        Ok(())
+    }
+
+    fn fail_prompt_for_terminal_failure(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        message: &str,
+    ) -> Result<(), DaemonError> {
+        let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
+            self.clear_prompt_activity(provider_run_id);
+            return Ok(());
+        };
+        let agent_id = self.provider_run_agent_id(provider_run_id)?;
+        if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        {
+            let failure = crate::session::WorkflowFailureEvent::new(
+                crate::session::WorkflowFailureKind::ProviderFailure,
+                workflow_node_run_id,
+                Vec::new(),
+                message,
+            );
+            let _ = self.app.sessions_mut().record_workflow_failure_event(
+                session_id,
+                workflow_run_id,
+                failure,
+            );
+            let workflow_run = self.app.sessions_mut().fail_workflow_node_run(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            )?;
+            self.app.record_notice(
+                session_id,
+                Some(provider_run_id),
+                self.app.attachments.list_session_attachment_ids(session_id),
+                format!(
+                    "Workflow run `{}` failed after provider turn failure: {}",
+                    workflow_run.id(),
+                    message
+                ),
+            );
+        }
+        let _ = self
+            .app
+            .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
         Ok(())
     }
 
