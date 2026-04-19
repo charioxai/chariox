@@ -254,7 +254,7 @@ pub fn submit_codex_prompt(
     let effort = normalize_variant(run.variant());
     let input = codex_input(prompt, attachments);
     let thread_id = state.thread_id.clone();
-    let response = client.turn_start(
+    let response = match client.turn_start(
         &mut state.socket,
         &mut state.next_request_id,
         &thread_id,
@@ -264,7 +264,15 @@ pub fn submit_codex_prompt(
         run.write_access_mode(),
         input,
         &mut state.buffered_notifications,
-    )?;
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            state.buffered_notifications.push(CodexNotification::Error {
+                message: error.to_string(),
+            });
+            return Ok(());
+        }
+    };
     if let Some(turn_id) = codex_turn_id_from_start_response(&response) {
         state.active_turn_id = Some(turn_id);
     }
@@ -437,10 +445,8 @@ fn apply_notification(
             }
         }
         CodexNotification::Error { message } => {
-            if active_turn_id.is_some() {
-                *terminal_failure = Some(message.clone());
-                *prompt_completed = true;
-            }
+            *terminal_failure = Some(message.clone());
+            *prompt_completed = true;
             notices.push(message);
         }
     }
@@ -1271,6 +1277,37 @@ mod tests {
         assert!(prompt_completed);
         assert_eq!(terminal_failure.as_deref(), Some("model rejected"));
         assert_eq!(notices, vec!["model rejected".to_string()]);
+    }
+
+    #[test]
+    fn error_notification_without_active_turn_records_terminal_failure() {
+        let mut active_turn_id = None;
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut completions = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+        let mut terminal_failure = None;
+
+        apply_notification(
+            CodexNotification::Error {
+                message: "unsupported model gpt-5.2-codex".to_string(),
+            },
+            &mut active_turn_id,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        );
+
+        assert!(prompt_completed);
+        assert_eq!(
+            terminal_failure.as_deref(),
+            Some("unsupported model gpt-5.2-codex")
+        );
+        assert_eq!(notices, vec!["unsupported model gpt-5.2-codex".to_string()]);
     }
 
     fn parse_tool_chunk(chunk: &CodexOutputChunk) -> Value {

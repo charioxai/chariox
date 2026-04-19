@@ -698,6 +698,43 @@ pub struct ProviderPromptSignalBatch {
     pub resolved_usage_tokens_total: Option<u64>,
 }
 
+pub(crate) fn classify_provider_terminal_failure_text(
+    adapter_key: &str,
+    text: &str,
+) -> Option<String> {
+    if !matches!(adapter_key, "codex" | "opencode") {
+        return None;
+    }
+    let normalized = text.to_lowercase();
+    let fatal_model_error = normalized.contains("unsupported model")
+        || normalized.contains("invalid model")
+        || normalized.contains("model_not_found")
+        || normalized.contains("model not found")
+        || (normalized.contains("model") && normalized.contains("does not exist"))
+        || (normalized.contains("model") && normalized.contains("not supported"))
+        || (normalized.contains("model")
+            && (normalized.contains("http 400")
+                || normalized.contains("status 400")
+                || normalized.contains("400 bad request")));
+    if !fatal_model_error {
+        return None;
+    }
+    Some(format!(
+        "Provider reported a terminal model error: {}",
+        compact_provider_error_snippet(text)
+    ))
+}
+
+fn compact_provider_error_snippet(text: &str) -> String {
+    let mut snippet = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    const MAX_CHARS: usize = 500;
+    if snippet.chars().count() > MAX_CHARS {
+        snippet = snippet.chars().take(MAX_CHARS).collect::<String>();
+        snippet.push_str("...");
+    }
+    snippet
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderProcessStatus {
@@ -810,8 +847,8 @@ impl ProviderProcessInfo {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderProcessInfo,
-        ProviderResumeState, RuntimeProviderRun,
+        classify_provider_terminal_failure_text, AgentEndpointMode, LaunchProviderRequest,
+        ProviderLaunchResult, ProviderProcessInfo, ProviderResumeState, RuntimeProviderRun,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -875,5 +912,29 @@ mod tests {
         .expect("process info should be built");
         assert_eq!(info.status, super::ProviderProcessStatus::Active);
         assert_eq!(info.provider_session_ids, vec!["thread-123".to_string()]);
+    }
+
+    #[test]
+    fn classifier_detects_provider_model_rejection_text() {
+        let failure = classify_provider_terminal_failure_text(
+            "codex",
+            "Error: HTTP 400 Bad Request: unsupported model gpt-5.2-codex",
+        )
+        .expect("model rejection text should be classified");
+
+        assert!(failure.contains("terminal model error"));
+        assert!(failure.contains("gpt-5.2-codex"));
+    }
+
+    #[test]
+    fn classifier_ignores_non_provider_text() {
+        assert!(classify_provider_terminal_failure_text(
+            "dev-stub",
+            "unsupported model gpt-5.2-codex"
+        )
+        .is_none());
+        assert!(
+            classify_provider_terminal_failure_text("codex", "normal assistant output").is_none()
+        );
     }
 }

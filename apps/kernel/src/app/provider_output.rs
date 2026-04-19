@@ -5,8 +5,10 @@ use std::time::Instant;
 use crate::app::{DaemonApp, PromptActivityStore};
 use crate::error::DaemonError;
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
+use crate::provider::{
+    classify_provider_terminal_failure_text, ProviderPromptSignalBatch, RuntimeProviderRun,
+};
 use crate::provider::{AgentEndpointMode, ProviderProcessServiceStore, ProviderRunState};
-use crate::provider::{ProviderPromptSignalBatch, RuntimeProviderRun};
 use crate::pty::PtyOutputChunk;
 use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionHistoryProjectionStore};
 use crate::session::{PromptQueueItem, PromptStatus, SessionStateStore};
@@ -184,19 +186,19 @@ impl<'a> ProviderOutputPump<'a> {
                 return Err(error);
             }
         };
+        let terminal_failure = classify_provider_terminal_failure_text(
+            provider_run.adapter_key(),
+            &chunks
+                .iter()
+                .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
+                .collect::<String>(),
+        );
         if !chunks.is_empty() {
             self.context
                 .note_prompt_response_content(request.provider_run_id);
         }
-        let exited = self
-            .context
-            .reconcile_provider_run_exit(request.session_id, request.provider_run_id)?;
-        if !exited {
-            self.context
-                .maybe_complete_active_prompt(request.session_id, request.provider_run_id)?;
-        }
 
-        Ok(chunks
+        let records = chunks
             .into_iter()
             .map(|chunk| {
                 self.context.fan_out_provider_output(
@@ -206,7 +208,24 @@ impl<'a> ProviderOutputPump<'a> {
                     &chunk.bytes,
                 )
             })
-            .collect())
+            .collect::<Vec<_>>();
+        if let Some(message) = terminal_failure {
+            self.context.fail_prompt_for_terminal_failure(
+                request.session_id,
+                request.provider_run_id,
+                &message,
+            )?;
+            return Ok(records);
+        }
+        let exited = self
+            .context
+            .reconcile_provider_run_exit(request.session_id, request.provider_run_id)?;
+        if !exited {
+            self.context
+                .maybe_complete_active_prompt(request.session_id, request.provider_run_id)?;
+        }
+
+        Ok(records)
     }
 }
 
@@ -630,7 +649,16 @@ impl<'a> ProviderOutputPumpContext<'a> {
             self.mark_prompt_completion_recorded(provider_run_id);
         }
         let prompt_completed = poll_result.prompt_completed;
-        let terminal_failure = poll_result.terminal_failure.clone();
+        let terminal_failure = poll_result.terminal_failure.clone().or_else(|| {
+            classify_provider_terminal_failure_text(
+                provider_run.adapter_key(),
+                &poll_result
+                    .chunks
+                    .iter()
+                    .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
+                    .collect::<String>(),
+            )
+        });
         let records = poll_result
             .chunks
             .into_iter()
@@ -794,6 +822,8 @@ impl<'a> ProviderOutputPumpContext<'a> {
                     message
                 ),
             );
+            let _ =
+                crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
         }
         let _ = self
             .app

@@ -879,6 +879,21 @@ impl KernelRuntimeOwnedState {
             .drain_finished_structured_prompt_submit_jobs()
         {
             if let Err(error) = finished.result {
+                if let Ok(session) = self.session_store.get_session(&finished.session_id) {
+                    if let Some(prompt) = self
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, &finished.agent_id)
+                    {
+                        if prompt.workflow_run_id().is_some() {
+                            let _ = self.workflow_fail_provider_prompt(
+                                &finished.session_id,
+                                &prompt,
+                                Some(&finished.provider_run_id),
+                                &format!("Provider prompt dispatch failed: {error}"),
+                            );
+                        }
+                    }
+                }
                 let _ = self.cancel_active_prompt_only(&finished.session_id, &finished.agent_id);
                 let _ = self.session_snapshot(&finished.session_id);
                 let recipients = self

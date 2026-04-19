@@ -786,6 +786,7 @@ pub fn on_workflow_prompt_completed(
             format!("Workflow run `{workflow_run_id}` failed: {message}."),
         );
         maybe_start_next_queued_workflow_launch(app, session_id);
+        let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id);
         return Ok(());
     }
     let max_turns = workflow_max_turns(app, session_id);

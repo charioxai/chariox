@@ -1128,6 +1128,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             workflow_run.id()
                         ),
                     );
+                    let _ = crate::app::KernelSessionReadService::new(self.app)
+                        .session_snapshot(session_id);
                     let _ = self
                         .app
                         .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;

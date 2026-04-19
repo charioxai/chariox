@@ -849,15 +849,14 @@ impl KernelRuntimeState {
         if !chunks.is_empty() {
             owned.note_prompt_response_content(provider_run_id);
         }
-        if !self
-            .reconcile_provider_run_exit(session_id, provider_run_id)
-            .await?
-        {
-            let _ = self
-                .settle_owned_provider_prompt(session_id, provider_run_id, false, false)
-                .await?;
-        }
-        Ok(chunks
+        let terminal_failure = crate::provider::classify_provider_terminal_failure_text(
+            provider_run.adapter_key(),
+            &chunks
+                .iter()
+                .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
+                .collect::<String>(),
+        );
+        let records = chunks
             .into_iter()
             .map(|chunk| {
                 owned.fan_out_terminal_output(
@@ -869,7 +868,21 @@ impl KernelRuntimeState {
                     &chunk.bytes,
                 )
             })
-            .collect())
+            .collect::<Vec<_>>();
+        if let Some(message) = terminal_failure {
+            self.fail_owned_provider_prompt(session_id, provider_run_id, &message)
+                .await?;
+            return Ok(records);
+        }
+        if !self
+            .reconcile_provider_run_exit(session_id, provider_run_id)
+            .await?
+        {
+            let _ = self
+                .settle_owned_provider_prompt(session_id, provider_run_id, false, false)
+                .await?;
+        }
+        Ok(records)
     }
 
     pub(super) async fn pump_owned_structured_provider_output(
@@ -999,6 +1012,7 @@ impl KernelRuntimeState {
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let adapter_key = provider_run.adapter_key().to_string();
         owned.provider_run_projection.update(provider_run);
         for notice in &poll_result.notices {
             owned.record_notice(
@@ -1040,7 +1054,16 @@ impl KernelRuntimeState {
             owned.mark_prompt_completion_recorded(provider_run_id);
         }
         let prompt_completed = poll_result.prompt_completed;
-        let terminal_failure = poll_result.terminal_failure.clone();
+        let terminal_failure = poll_result.terminal_failure.clone().or_else(|| {
+            crate::provider::classify_provider_terminal_failure_text(
+                adapter_key.as_str(),
+                &poll_result
+                    .chunks
+                    .iter()
+                    .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
+                    .collect::<String>(),
+            )
+        });
         let records = poll_result
             .chunks
             .into_iter()
