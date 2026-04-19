@@ -4,6 +4,8 @@ This is the post-M4.5 gate before starting new feature work. The M4.5 ownership 
 
 Script-level policy lives in `apps/cli/scripts/README.md`: live drills default to older Codex-capable models such as `gpt-5.2`, low effort, and OpenCode runs use OpenAI Codex-family models instead of OpenCode provider-default or `zen` models.
 
+Codex model override rule: when a drill includes Codex, pass an explicit provider override such as `--provider-model codex=gpt-5.2` unless the drill is intentionally validating a different Codex model. Do not assume bare `--model gpt-5.2` is enough. Some drill helpers map bare `gpt-5.2`/`gpt-5.3` to `gpt-5.2-codex`/`gpt-5.3-codex`; ChatGPT-backed Codex accounts can reject those `*-codex` ids with HTTP 400, which presents as a stuck drill with prompt echo and no provider output.
+
 Terminology:
 
 - **Freeform multi-agent mode** means a normal multi-agent session with no workflow scheduler. Agents can be focused, prompted, and observed independently, but no workflow graph owns turn progression.

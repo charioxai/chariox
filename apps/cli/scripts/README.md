@@ -9,12 +9,13 @@ These scripts exercise Arroba against real provider sessions. Keep them determin
 - Use reasoning effort `low` unless the drill is specifically validating reasoning-heavy behavior.
 - For `opencode`, use OpenAI models rather than OpenCode's provider-default or `zen` model family.
 - If an OpenCode drill receives an unqualified model such as `gpt-5.2`, map it to `openai/gpt-5.2`.
+- For `codex`, do not rely on drill-specific bare-model fallback when the exact model matters. Always pass an explicit Codex override such as `--provider-model codex=gpt-5.2` or `--provider-model codex=gpt-5.3`. Several workflow drills map bare `gpt-5.2`/`gpt-5.3` to `gpt-5.2-codex`/`gpt-5.3-codex`; ChatGPT-backed Codex accounts can reject those `*-codex` model ids with HTTP 400, leaving the drill looking stuck with only prompt echo.
 - Prefer an explicit override when debugging provider-specific behavior:
 
 ```bash
 node apps/cli/scripts/live-managed-io-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2
-node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2
-node apps/cli/scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2
+node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2 --provider-model codex=gpt-5.2
+node apps/cli/scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2 --provider-model codex=gpt-5.2
 node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.3-codex --full
 ```
 
