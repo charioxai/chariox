@@ -207,10 +207,12 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 
 ### Slice 5: Workspace Pane Integration
 
-- Add a right-side shell pane to the workspace view.
-- Keep workflow outline/canvas on the left.
-- Reuse the standalone shell engine and renderer where possible.
-- Preserve TUI-only commands as TUI controls, not shell commands.
+- Status: implemented for the workflow workspace screen.
+- Added a right-side `arroba-shell` pane to the workflow view while keeping the workflow outline/canvas on the left.
+- Reuses the shared shell parser/executor and result renderer from `packages/kernel-client`.
+- Workflow-screen shell input is submitted through the main prompt with an `@ <command>` prefix so it does not collide with workflow endpoint prompts or slash commands.
+- The pane renders command lines with `@` and prints command output below each input.
+- TUI-only commands remain rejected by the shared shell parser/executor.
 
 ### Slice 6: Broaden Command Coverage
 

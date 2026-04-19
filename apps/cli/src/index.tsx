@@ -72,6 +72,8 @@ import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent } from "./hotkeys.js"
 import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
+import { applyShellCommandResult, createDefaultShellContext, parseShellCommand, renderShellCommandResult, type ShellContext } from "@arroba/kernel-client/shell-core"
+import { executeShellCommand } from "@arroba/kernel-client/shell-executor"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import {
@@ -276,6 +278,12 @@ import {
   resolveWorkspaceVisibleTranscriptAgentId,
   type WorkspaceScreenMode,
 } from "./workspace-screen.js"
+import {
+  appendWorkspaceShellEntry,
+  isWorkspaceShellCommand,
+  workspaceShellCommandText,
+  type WorkspaceShellEntry,
+} from "./workspace-shell.js"
 import { createWorkflowController, deriveWorkflowSelectionState } from "./workflow-controller.js"
 import {
   deriveWorkflowPromptState,
@@ -632,6 +640,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [hotkeysOpen, setHotkeysOpen] = createSignal(false)
   const [expandedTurnIdsByAgent, setExpandedTurnIdsByAgent] = createSignal<Record<string, number[]>>({})
   const [workspaceScreenMode, setWorkspaceScreenMode] = createSignal<WorkspaceScreenMode>("agents")
+  const [workspaceShellContext, setWorkspaceShellContext] = createSignal<ShellContext>(createDefaultShellContext({
+    workspace: initialSession.workspace_id || options.workspace || process.cwd(),
+    worktree: initialSession.worktree_id || options.worktree || options.workspace || process.cwd(),
+    sessionId: initialBinding ? initialSession.id : undefined,
+    agentId: initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id : undefined,
+    provider: options.provider ?? "opencode",
+    model: options.model ?? "default",
+    effort: options.effort || "medium",
+  }))
+  const [workspaceShellEntries, setWorkspaceShellEntries] = createSignal<WorkspaceShellEntry[]>([])
+  const [workspaceShellEntryCounter, setWorkspaceShellEntryCounter] = createSignal(0)
   const [selectedWorkflowId, setSelectedWorkflowId] = createSignal<string | null>(initialSession.workflows?.[0]?.id ?? null)
   const [selectedWorkflowNodeId, setSelectedWorkflowNodeId] = createSignal<string | null>(null)
   const [workflowInspectorMode, setWorkflowInspectorMode] = createSignal<"runtime" | "terminal">("runtime")
@@ -775,6 +794,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     responsePaneSelection().visibleTranscriptAgentId,
   )
   const responsePaneRows = () => responsePaneRowSlots(maxAgentsPerScreen())
+  createEffect(() => {
+    if (!isAttached()) {
+      return
+    }
+    const session = sessionState()
+    setWorkspaceShellContext((previous) => ({
+      ...previous,
+      workspace: session.workspace_id || previous.workspace,
+      worktree: session.worktree_id || previous.worktree,
+      sessionId: session.id,
+      agentId: session.focused_agent_id ?? session.agents[0]?.id ?? previous.agentId,
+    }))
+  })
   const primaryTranscriptSurfaceTone = () => resolveTranscriptSurfaceTone(splitAgentResponseMode(), responsePrimaryAgent()?.id === focusedAgentId())
   const auxiliaryTranscriptSurfaceTone = (agentId: string | null | undefined) => {
     return resolveTranscriptSurfaceTone(splitAgentResponseMode(), Boolean(agentId) && agentId === focusedAgentId())
@@ -4695,6 +4727,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           rebuildTranscript()
         },
         inspector: workflowInspector(),
+        shellPane: {
+          entries: workspaceShellEntries(),
+          sessionId: workspaceShellContext().sessionId ?? null,
+          agentId: workspaceShellContext().agentId ?? null,
+        },
       })
       transcriptScrollbox.add(emptyTranscriptRenderable)
       transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: 0 })
@@ -5797,6 +5834,42 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     process.exit(exitCode)
   }
 
+  const submitWorkspaceShellCommand = async (rawPrompt: string) => {
+    const command = workspaceShellCommandText(rawPrompt)
+    if (!command) {
+      flashFooter("usage: @ <arroba-shell command>", "error")
+      return
+    }
+    const context = workspaceShellContext()
+    const parsed = parseShellCommand(command, context)
+    const result = await executeShellCommand(parsed, context, { client })
+    const rendered = renderShellCommandResult(result)
+    const nextContext = applyShellCommandResult(context, result)
+    setWorkspaceShellContext(nextContext)
+    setWorkspaceShellEntries((entries) => appendWorkspaceShellEntry(entries, {
+      id: workspaceShellEntryCounter() + 1,
+      command,
+      output: rendered,
+      ok: result.ok,
+    }))
+    setWorkspaceShellEntryCounter((counter) => counter + 1)
+
+    const nextSessionId = nextContext.sessionId
+    if (nextSessionId && nextSessionId === sessionState().id) {
+      try {
+        applySessionState(await getSessionState(client, nextSessionId))
+      } catch (error) {
+        appLogger?.warn("workspace shell session refresh failed", {
+          session_id: nextSessionId,
+          error: formatError(error),
+        })
+      }
+    }
+
+    rebuildTranscript()
+    flashFooter(result.ok ? "shell command completed" : (rendered || "shell command failed"), result.ok ? "info" : "error")
+  }
+
   const submitPrompt = async () => {
     if (!promptInput) {
       return
@@ -5809,6 +5882,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!trimmed && pendingAttachments().length === 0) {
       promptInput.clear()
       syncPromptTextSnapshot()
+      return
+    }
+    if (workflowScreenShowing() && isWorkspaceShellCommand(rawPrompt)) {
+      try {
+        await submitWorkspaceShellCommand(rawPrompt)
+      } catch (error) {
+        flashFooter(formatError(error), "error")
+      } finally {
+        promptInput.clear()
+        syncPromptTextSnapshot()
+      }
       return
     }
     if (workflowNodeInstructionsEditor() && !trimmed.startsWith("/")) {

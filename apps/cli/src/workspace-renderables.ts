@@ -25,6 +25,7 @@ import {
   waitingRoomRows,
 } from "./waiting-room.js"
 import { buildWorkflowOutlineRenderable as buildWorkflowOutlinePaneRenderable } from "./workflow-outline/render.js"
+import { renderWorkspaceShellTranscript, type WorkspaceShellEntry } from "./workspace-shell.js"
 
 type RenderContext = ReturnType<typeof useRenderer>
 
@@ -55,15 +56,107 @@ export function buildWorkflowOutlineRenderable(
       onDraftChange?: ((draft: string) => void) | null
       onEditorRef?: ((editor: TextareaRenderable | null) => void) | null
     } | null
+    shellPane?: {
+      entries: WorkspaceShellEntry[]
+      sessionId?: string | null
+      agentId?: string | null
+    } | null
   },
 ) {
   const outline = buildWorkflowOutlinePaneRenderable(renderer, options)
   if (!outline) {
     return buildAsciiCanvasRenderable(renderer, "type /workflow to start creating a workflow", theme.warning)
   }
-  if (!options.inspector) {
-    return outline
+  let mainPane = outline
+  if (options.inspector) {
+    const wrapper = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      width: "100%",
+      gap: 0,
+    })
+    const left = new BoxRenderable(renderer, {
+      flexGrow: 2,
+      minWidth: 40,
+    })
+    left.add(outline)
+    wrapper.add(left)
+
+    const inspectorConfig = options.inspector
+    const inspector = new BoxRenderable(renderer, {
+      flexGrow: 1,
+      minWidth: 32,
+      border: ["left"],
+      borderColor: theme.borderSubtle,
+      customBorderChars: SplitBorder.customBorderChars,
+      paddingLeft: 1,
+      paddingRight: 1,
+      paddingTop: 1,
+      paddingBottom: 1,
+      flexDirection: "column",
+      gap: 1,
+    })
+    inspector.add(
+      new TextRenderable(renderer, {
+        content: inspectorConfig.title,
+        fg: theme.primary,
+        attributes: TextAttributes.BOLD,
+        wrapMode: "word",
+      }),
+    )
+    if (inspectorConfig.meta.length > 0) {
+      inspector.add(
+        new TextRenderable(renderer, {
+          content: inspectorConfig.meta.join("\n"),
+          fg: theme.textMuted,
+          wrapMode: "word",
+        }),
+      )
+    }
+    if (inspectorConfig.onDraftChange) {
+      const textarea = new TextareaRenderable(renderer, {
+        flexGrow: 1,
+        minHeight: 8,
+        wrapMode: "word",
+        initialValue: inspectorConfig.draft ?? "",
+        backgroundColor: theme.backgroundPanel,
+        textColor: theme.text,
+        placeholder: inspectorConfig.placeholder ?? "Type instructions here",
+        placeholderColor: theme.textMuted,
+        onContentChange: () => {
+          inspectorConfig.onDraftChange?.(textarea.plainText)
+        },
+      })
+      textarea.onMouseUp = () => {
+        textarea.focus()
+      }
+      inspectorConfig.onEditorRef?.(textarea)
+      inspector.add(textarea)
+    } else if (inspectorConfig.body) {
+      inspector.add(
+        new TextRenderable(renderer, {
+          content: inspectorConfig.body,
+          fg: theme.text,
+          wrapMode: "word",
+        }),
+      )
+    }
+    if (inspectorConfig.hint) {
+      inspector.add(
+        new TextRenderable(renderer, {
+          content: inspectorConfig.hint,
+          fg: theme.textMuted,
+          wrapMode: "word",
+        }),
+      )
+    }
+    wrapper.add(inspector)
+    mainPane = wrapper
   }
+
+  if (!options.shellPane) {
+    return mainPane
+  }
+
   const wrapper = new BoxRenderable(renderer, {
     flexDirection: "row",
     width: "100%",
@@ -71,15 +164,14 @@ export function buildWorkflowOutlineRenderable(
   })
   const left = new BoxRenderable(renderer, {
     flexGrow: 2,
-    minWidth: 40,
+    minWidth: 48,
   })
-  left.add(outline)
+  left.add(mainPane)
   wrapper.add(left)
 
-  const inspectorConfig = options.inspector
-  const inspector = new BoxRenderable(renderer, {
+  const shell = new BoxRenderable(renderer, {
     flexGrow: 1,
-    minWidth: 32,
+    minWidth: 34,
     border: ["left"],
     borderColor: theme.borderSubtle,
     customBorderChars: SplitBorder.customBorderChars,
@@ -90,61 +182,26 @@ export function buildWorkflowOutlineRenderable(
     flexDirection: "column",
     gap: 1,
   })
-  inspector.add(
-    new TextRenderable(renderer, {
-      content: inspectorConfig.title,
-      fg: theme.primary,
-      attributes: TextAttributes.BOLD,
-      wrapMode: "word",
-    }),
-  )
-  if (inspectorConfig.meta.length > 0) {
-    inspector.add(
-      new TextRenderable(renderer, {
-        content: inspectorConfig.meta.join("\n"),
-        fg: theme.textMuted,
-        wrapMode: "word",
-      }),
-    )
-  }
-  if (inspectorConfig.onDraftChange) {
-    const textarea = new TextareaRenderable(renderer, {
-      flexGrow: 1,
-      minHeight: 8,
-      wrapMode: "word",
-      initialValue: inspectorConfig.draft ?? "",
-      backgroundColor: theme.backgroundPanel,
-      textColor: theme.text,
-      placeholder: inspectorConfig.placeholder ?? "Type instructions here",
-      placeholderColor: theme.textMuted,
-      onContentChange: () => {
-        inspectorConfig.onDraftChange?.(textarea.plainText)
-      },
-    })
-    textarea.onMouseUp = () => {
-      textarea.focus()
-    }
-    inspectorConfig.onEditorRef?.(textarea)
-    inspector.add(textarea)
-  } else if (inspectorConfig.body) {
-    inspector.add(
-      new TextRenderable(renderer, {
-        content: inspectorConfig.body,
-        fg: theme.text,
-        wrapMode: "word",
-      }),
-    )
-  }
-  if (inspectorConfig.hint) {
-    inspector.add(
-      new TextRenderable(renderer, {
-        content: inspectorConfig.hint,
-        fg: theme.textMuted,
-        wrapMode: "word",
-      }),
-    )
-  }
-  wrapper.add(inspector)
+  shell.add(new TextRenderable(renderer, {
+    content: "arroba-shell",
+    fg: theme.primary,
+    attributes: TextAttributes.BOLD,
+    wrapMode: "none",
+  }))
+  shell.add(new TextRenderable(renderer, {
+    content: [
+      `session: ${options.shellPane.sessionId ?? "-"}`,
+      `agent: ${options.shellPane.agentId ?? "-"}`,
+    ].join("  "),
+    fg: theme.textMuted,
+    wrapMode: "word",
+  }))
+  shell.add(new TextRenderable(renderer, {
+    content: renderWorkspaceShellTranscript(options.shellPane.entries),
+    fg: theme.text,
+    wrapMode: "word",
+  }))
+  wrapper.add(shell)
   return wrapper
 }
 

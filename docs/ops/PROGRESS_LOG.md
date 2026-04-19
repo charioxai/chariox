@@ -33,6 +33,12 @@ Chronological notes to preserve execution context between contributors/agents.
 - Extracted shared kernel-facing client code into `packages/kernel-client`, including IPC transport, request builders, minimal kernel runtime types, shell parser, and shell executor.
 - Left the TUI-specific CLI types and UI command handling in `apps/cli`; the CLI imports shared IPC/request code through narrow compatibility re-export files.
 
+### M7.5 workspace shell pane
+
+- Added a right-side `arroba-shell` pane to the workflow workspace screen while preserving the workflow outline/canvas on the left.
+- Routed `@ <command>` prompt submissions on the workflow screen through the shared shell parser/executor and rendered input/output transcript entries in the pane.
+- Kept TUI-only commands outside the shell path and added focused workspace-shell unit coverage.
+
 ### Session/agent git worktree placement
 
 - Added local session and agent placement commands for existing directories and git worktree creation: `/session new [DIR]`, `/session new --worktree DIR --branch BRANCH [--from REF]`, and `/agent spawn ... --worktree DIR --branch BRANCH [--from REF]`.
