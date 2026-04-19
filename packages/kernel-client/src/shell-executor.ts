@@ -10,17 +10,21 @@ import type {
   ArrobaUserConfigPayload,
   McpImportOutcome,
   ProviderAuthStatus,
+  ProviderLoginStart,
+  ProviderProcessInfo,
   QueuedWorkflowLaunch,
   RelayKernelPresence,
   RelayStatus,
   RemoteMachineRecord,
   RuntimeSession,
+  SessionConfigState,
   SkillImportOutcome,
   WorkflowDefinition,
   WorkflowEdgeDefinition,
   WorkflowEndpointDefinition,
   WorkflowNodeDefinition,
   WorkflowRun,
+  WorkflowWatchdogDefinition,
 } from "./kernel-types.js"
 import {
   addWorkflowEdgeRequest,
@@ -28,13 +32,17 @@ import {
   aliasWorkflowEndpointRequest,
   aliasWorkflowRequest,
   bindWorkflowEndpointRequest,
+  cancelActivePromptRequest,
   cancelWorkflowRunRequest,
+  clearQueuedWorkflowLaunchesRequest,
   createWorkflowEndpointRequest,
   createWorkflowRequest,
+  createWorkflowWatchdogRequest,
   createSessionRequest,
   focusAgentRequest,
   getMcpServerRequest,
   getProviderAuthStatusRequest,
+  getSessionStateRequest,
   getSkillRequest,
   getWorkflowRunRequest,
   grantAgentCapabilityRequest,
@@ -46,24 +54,42 @@ import {
   getUserConfigRequest,
   listAgentsRequest,
   listMcpServersRequest,
+  listProviderProcessesRequest,
+  listQueuedWorkflowLaunchesRequest,
   listRemoteMachineKernelsRequest,
   listRemoteMachinesRequest,
   listSessionsRequest,
   listSkillsRequest,
+  listWorkflowWatchdogsRequest,
   listWorkflowRunsRequest,
   listWorkflowsRequest,
+  logoutProviderRequest,
   relayStatusRequest,
+  removeQueuedWorkflowLaunchRequest,
   removeWorkflowEdgeRequest,
   removeWorkflowNodeRequest,
+  removeWorkflowWatchdogRequest,
   revokeAgentCapabilityRequest,
   resolveWorkflowRequest,
   resumeWorkflowRunRequest,
   resolveSessionRequest,
+  setWorkflowFlushContextRequest,
+  setWorkflowIntermediateOutputSchemaRequest,
+  setWorkflowLaunchPolicyRequest,
+  setWorkflowNodeCanCompleteRunRequest,
+  setWorkflowNodeCanEmitIntermediateOutputRequest,
+  setWorkflowNodeIntermediateOutputSchemaRequest,
+  setWorkflowNodeMaxTurnsRequest,
+  setWorkflowRunOutputSchemaRequest,
+  setWorkflowWatchdogEnabledRequest,
   setUserConfigValueRequest,
   spawnAgentRequest,
+  startProviderLoginRequest,
   cycleAgentFocusRequest,
+  teardownProviderProcessesRequest,
   uninstallMcpServerRequest,
   uninstallSkillRequest,
+  updateSessionConfigRequest,
   unsetUserConfigValueRequest,
   updateMcpServerRequest,
   updateSkillRequest,
@@ -132,6 +158,9 @@ export async function executeShellCommand(
       return executeSkillCommand(parsed, context, deps)
     case "workflow":
       return executeWorkflowCommand(parsed, context, deps)
+    case "stop":
+    case "cancel":
+      return executeStopCommand(parsed, context, deps)
     case "provider":
       return executeProviderCommand(parsed, context, deps)
     default:
@@ -158,7 +187,8 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
           "mcp list|show|install|update|uninstall|import|grant|revoke|grants",
           "skill list|show|install|update|uninstall|import|grant|revoke|grants",
           "workflow list|new|show|run|runs|cancel|resume|node|edge|endpoint",
-          "provider status",
+          "provider status|login|logout|reauth|processes",
+          "stop",
           "set provider|model|effort <value>",
           "use session|agent|workflow <ref>",
           "vars",
@@ -712,6 +742,69 @@ async function executeWorkflowCommand(
         contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
       }
     }
+    case "launch-policy": {
+      const value = args[0]?.trim().toLowerCase()
+      if (!value) {
+        const response = await deps.client.send(getSessionStateRequest(sessionId))
+        const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
+        return { ok: true, message: `workflow launch policy: ${session.workflow_launch_policy ?? "reject"}`, data: { session } }
+      }
+      if (value !== "reject" && value !== "queue") {
+        return { ok: false, message: "usage: workflow launch-policy <reject|queue>" }
+      }
+      const response = await deps.client.send(setWorkflowLaunchPolicyRequest(sessionId, value))
+      const payload = expectVariant<{ session: RuntimeSession }>(response, "WorkflowLaunchPolicyUpdated")
+      return { ok: true, message: `workflow launch policy set to ${value}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+    }
+    case "flush-context": {
+      const first = args[0]?.trim().toLowerCase()
+      const firstIsValue = first === "true" || first === "false"
+      const workflowRef = firstIsValue ? context.workflowId : (args[0] ?? context.workflowId)
+      const value = firstIsValue ? first : args[1]?.trim().toLowerCase()
+      if (!workflowRef || (value !== "true" && value !== "false")) {
+        return { ok: false, message: "usage: workflow flush-context [workflow-ref] <true|false>" }
+      }
+      const response = await deps.client.send(setWorkflowFlushContextRequest(sessionId, workflowRef, value === "true"))
+      const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowFlushContextUpdated")
+      return { ok: true, message: `workflow ${payload.workflow.id} flush-context set to ${String(payload.workflow.flush_agent_context_before_run ?? true)}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+    }
+    case "run-output-schema":
+    case "intermediate-output-schema": {
+      const explicit = args.length >= 2 ? args[0] : null
+      const workflowRef = explicit ?? context.workflowId
+      const rawValue = explicit ? args[1] : args[0]
+      if (!workflowRef || rawValue === undefined) {
+        return { ok: false, message: `usage: workflow ${action} [workflow-ref] <schema-ref|none>` }
+      }
+      const schemaRef = rawValue.trim().toLowerCase() === "none" ? null : rawValue
+      const response = await deps.client.send(action === "run-output-schema"
+        ? setWorkflowRunOutputSchemaRequest(sessionId, workflowRef, schemaRef)
+        : setWorkflowIntermediateOutputSchemaRequest(sessionId, workflowRef, schemaRef))
+      const variant = action === "run-output-schema" ? "WorkflowRunOutputSchemaUpdated" : "WorkflowIntermediateOutputSchemaUpdated"
+      const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, variant)
+      const field = action === "run-output-schema" ? "run-output-schema" : "intermediate-output-schema"
+      const value = action === "run-output-schema" ? payload.workflow.run_output_schema_ref : payload.workflow.intermediate_output_schema_ref
+      return { ok: true, message: `workflow ${payload.workflow.id} ${field} set to ${value ?? "none"}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+    }
+    case "max-turns": {
+      const value = args[0]?.trim().toLowerCase()
+      if (!value) {
+        return { ok: false, message: "usage: workflow max-turns <count|off>" }
+      }
+      const nextValue = value === "off" || value === "0"
+        ? "0"
+        : Number.isFinite(Number(value)) ? String(Math.max(1, Math.floor(Number(value)))) : null
+      if (!nextValue) {
+        return { ok: false, message: "usage: workflow max-turns <count|off>" }
+      }
+      const attachmentId = await resolveShellAttachmentId(sessionId, deps)
+      if (!attachmentId.ok) {
+        return { ok: false, message: attachmentId.message }
+      }
+      const response = await deps.client.send(updateSessionConfigRequest(sessionId, attachmentId.attachmentId, { "workflow.max_turns": nextValue }, false))
+      const payload = expectVariant<{ session: RuntimeSession; config: SessionConfigState }>(response, "SessionConfigUpdated")
+      return { ok: true, message: nextValue === "0" ? "workflow max turns disabled" : `workflow max turns set to ${nextValue}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+    }
     case "runs": {
       const response = await deps.client.send(listWorkflowRunsRequest(sessionId, args[0] ?? null))
       const workflowRuns = expectVariant<{ workflow_runs: WorkflowRun[] }>(response, "WorkflowRunsListed").workflow_runs
@@ -751,8 +844,12 @@ async function executeWorkflowCommand(
       return executeWorkflowEdgeCommand(args, context, deps)
     case "endpoint":
       return executeWorkflowEndpointCommand(args, context, deps)
+    case "watchdog":
+      return executeWorkflowWatchdogCommand(args, context, deps)
+    case "queue":
+      return executeWorkflowQueueCommand(args, context, deps)
     default:
-      return { ok: false, message: "usage: workflow list|new|show|alias|run|runs|run-show|cancel|resume|node|edge|endpoint" }
+      return { ok: false, message: "usage: workflow list|new|show|alias|run|runs|run-show|cancel|resume|node|edge|endpoint|watchdog|queue" }
   }
 }
 
@@ -792,7 +889,53 @@ async function executeWorkflowNodeCommand(
     const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowNodeRemoved")
     return { ok: true, message: `removed workflow node ${payload.node.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
-  return { ok: false, message: "usage: workflow node add [workflow-ref] <agent-ref> | remove [workflow-ref] <node-id>" }
+  if (
+    action === "can-complete-run"
+    || action === "can-emit-intermediate-output"
+    || action === "intermediate-output-schema"
+    || action === "max-turns"
+  ) {
+    const explicitWorkflowRef = args.length >= 4 ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const nodeId = explicitWorkflowRef ? args[2] : args[1]
+    const value = explicitWorkflowRef ? args[3] : args[2]
+    if (!workflowRef || !nodeId || value === undefined) {
+      return { ok: false, message: "usage: workflow node can-complete-run|can-emit-intermediate-output|intermediate-output-schema|max-turns [workflow-ref] <node-id> <value>" }
+    }
+    let request: Record<string, unknown>
+    let variant: string
+    let renderedValue: string
+    if (action === "can-complete-run" || action === "can-emit-intermediate-output") {
+      const normalized = value.trim().toLowerCase()
+      if (normalized !== "true" && normalized !== "false") {
+        return { ok: false, message: `usage: workflow node ${action} [workflow-ref] <node-id> <true|false>` }
+      }
+      const bool = normalized === "true"
+      request = action === "can-complete-run"
+        ? setWorkflowNodeCanCompleteRunRequest(sessionId, workflowRef, nodeId, bool)
+        : setWorkflowNodeCanEmitIntermediateOutputRequest(sessionId, workflowRef, nodeId, bool)
+      variant = action === "can-complete-run" ? "WorkflowNodeCanCompleteRunUpdated" : "WorkflowNodeCanEmitIntermediateOutputUpdated"
+      renderedValue = normalized
+    } else if (action === "intermediate-output-schema") {
+      const schemaRef = value.trim().toLowerCase() === "none" ? null : value
+      request = setWorkflowNodeIntermediateOutputSchemaRequest(sessionId, workflowRef, nodeId, schemaRef)
+      variant = "WorkflowNodeIntermediateOutputSchemaUpdated"
+      renderedValue = schemaRef ?? "none"
+    } else {
+      const normalized = value.trim().toLowerCase()
+      const maxTurns = normalized === "none" ? null : Number.parseInt(normalized, 10)
+      if (maxTurns !== null && (!Number.isFinite(maxTurns) || maxTurns <= 0)) {
+        return { ok: false, message: "usage: workflow node max-turns [workflow-ref] <node-id> <count|none>" }
+      }
+      request = setWorkflowNodeMaxTurnsRequest(sessionId, workflowRef, nodeId, maxTurns)
+      variant = "WorkflowNodeMaxTurnsUpdated"
+      renderedValue = maxTurns === null ? "none" : String(maxTurns)
+    }
+    const response = await deps.client.send(request)
+    const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, variant)
+    return { ok: true, message: `workflow node ${payload.node.id} ${action} set to ${renderedValue}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+  }
+  return { ok: false, message: "usage: workflow node add [workflow-ref] <agent-ref> | remove [workflow-ref] <node-id> | can-complete-run|can-emit-intermediate-output|intermediate-output-schema|max-turns ..." }
 }
 
 async function executeWorkflowEdgeCommand(
@@ -874,19 +1017,151 @@ async function executeWorkflowEndpointCommand(
   return { ok: false, message: "usage: workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind [workflow-ref] <endpoint-ref> <entry-node-id>" }
 }
 
+async function executeWorkflowWatchdogCommand(
+  args: string[],
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const sessionId = context.sessionId!
+  const [action] = args
+  if (action === "list" || !action) {
+    const workflowRef = args[1] ?? null
+    const response = await deps.client.send(listWorkflowWatchdogsRequest(sessionId, workflowRef))
+    const watchdogs = expectVariant<{ watchdogs: WorkflowWatchdogDefinition[] }>(response, "WorkflowWatchdogsListed").watchdogs
+    return { ok: true, message: formatWorkflowWatchdogs(watchdogs), data: { watchdogs } }
+  }
+  if (action === "enable" || action === "disable") {
+    const watchdogRef = args[1]
+    if (!watchdogRef) {
+      return { ok: false, message: `usage: workflow watchdog ${action} <watchdog-ref>` }
+    }
+    const response = await deps.client.send(setWorkflowWatchdogEnabledRequest(sessionId, watchdogRef, action === "enable"))
+    const payload = expectVariant<{ watchdog: WorkflowWatchdogDefinition; session: RuntimeSession }>(response, "WorkflowWatchdogUpdated")
+    return { ok: true, message: `${action === "enable" ? "enabled" : "disabled"} workflow watchdog ${payload.watchdog.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+  }
+  if (action === "remove") {
+    const watchdogRef = args[1]
+    if (!watchdogRef) {
+      return { ok: false, message: "usage: workflow watchdog remove <watchdog-ref>" }
+    }
+    const response = await deps.client.send(removeWorkflowWatchdogRequest(sessionId, watchdogRef))
+    const payload = expectVariant<{ watchdog: WorkflowWatchdogDefinition; session: RuntimeSession }>(response, "WorkflowWatchdogRemoved")
+    return { ok: true, message: `removed workflow watchdog ${payload.watchdog.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+  }
+  if (action === "add") {
+    const explicitWorkflowRef = args[4] === "every" ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const endpointRef = explicitWorkflowRef ? args[2] : args[1]
+    const everyLiteral = explicitWorkflowRef ? args[3] : args[2]
+    const intervalLiteral = explicitWorkflowRef ? args[4] : args[3]
+    const optionStart = explicitWorkflowRef ? 5 : 4
+    if (!workflowRef || !endpointRef || everyLiteral !== "every" || !intervalLiteral) {
+      return { ok: false, message: "usage: workflow watchdog add [workflow-ref] <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [prompt]" }
+    }
+    const intervalSeconds = parseWatchdogIntervalSeconds(intervalLiteral)
+    if (!intervalSeconds) {
+      return { ok: false, message: "watchdog interval must be like 30s, 5m, 1h, or 1d" }
+    }
+    const hasPolicy = args[optionStart] === "skip" || args[optionStart] === "queue"
+    const policy = (hasPolicy ? args[optionStart] : "skip") as "skip" | "queue"
+    const prompt = args.slice(optionStart + (hasPolicy ? 1 : 0)).join(" ").trim() || "Run the workflow exactly as instructed."
+    const response = await deps.client.send(createWorkflowWatchdogRequest(sessionId, workflowRef, endpointRef, intervalSeconds, prompt, policy))
+    const payload = expectVariant<{ watchdog: WorkflowWatchdogDefinition; workflow: WorkflowDefinition; endpoint: WorkflowEndpointDefinition; session: RuntimeSession }>(response, "WorkflowWatchdogCreated")
+    return { ok: true, message: `created workflow watchdog ${payload.watchdog.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+  }
+  return { ok: false, message: "usage: workflow watchdog add|list|enable|disable|remove" }
+}
+
+async function executeWorkflowQueueCommand(
+  args: string[],
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const sessionId = context.sessionId!
+  const action = args[0] ?? "list"
+  if (action === "list") {
+    const response = await deps.client.send(listQueuedWorkflowLaunchesRequest(sessionId))
+    const queuedLaunches = expectVariant<{ queued_launches: QueuedWorkflowLaunch[] }>(response, "QueuedWorkflowLaunchesListed").queued_launches
+    return { ok: true, message: formatQueuedWorkflowLaunches(queuedLaunches), data: { queued_launches: queuedLaunches } }
+  }
+  if (action === "flush" || action === "clear") {
+    const response = await deps.client.send(clearQueuedWorkflowLaunchesRequest(sessionId))
+    const payload = expectVariant<{ queued_launches: QueuedWorkflowLaunch[]; session: RuntimeSession }>(response, "QueuedWorkflowLaunchesCleared")
+    return { ok: true, message: payload.queued_launches.length === 0 ? "workflow queue already empty" : `cleared ${payload.queued_launches.length} queued workflow launch${payload.queued_launches.length === 1 ? "" : "es"}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+  }
+  if (action === "remove") {
+    const queueItemRef = args[1]
+    if (!queueItemRef) {
+      return { ok: false, message: "usage: workflow queue remove <queue-item-ref>" }
+    }
+    const response = await deps.client.send(removeQueuedWorkflowLaunchRequest(sessionId, queueItemRef))
+    const payload = expectVariant<{ queued_launch: QueuedWorkflowLaunch; session: RuntimeSession }>(response, "QueuedWorkflowLaunchRemoved")
+    return { ok: true, message: `removed queued workflow launch ${payload.queued_launch.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+  }
+  return { ok: false, message: "usage: workflow queue [list|flush|remove <queue-item-ref>]" }
+}
+
 async function executeProviderCommand(
   parsed: ParsedShellCommand,
   context: ShellContext,
   deps: ShellExecutorDeps,
 ): Promise<ShellCommandResult> {
-  const [action, providerArg] = parsed.args
-  if (action !== "status") {
-    return { ok: false, message: "usage: provider status [provider]" }
+  const [action, providerArg, ...rest] = parsed.args
+  if (action === "status") {
+    const provider = providerArg ?? context.provider
+    const response = await deps.client.send(getProviderAuthStatusRequest(provider))
+    const status = expectVariant<{ status: ProviderAuthStatus }>(response, "ProviderAuthStatus").status
+    return { ok: true, message: formatProviderAuthStatus(status), data: { status } }
   }
-  const provider = providerArg ?? context.provider
-  const response = await deps.client.send(getProviderAuthStatusRequest(provider))
-  const status = expectVariant<{ status: ProviderAuthStatus }>(response, "ProviderAuthStatus").status
-  return { ok: true, message: formatProviderAuthStatus(status), data: { status } }
+  if (action === "login" || action === "logout" || action === "reauth") {
+    const provider = providerArg ?? context.provider
+    if (action === "logout") {
+      const response = await deps.client.send(logoutProviderRequest(provider))
+      const result = expectVariant<{ provider: string }>(response, "ProviderLoggedOut")
+      return { ok: true, message: `${result.provider} logged out`, data: result }
+    }
+    if (action === "reauth") {
+      await deps.client.send(logoutProviderRequest(provider))
+    }
+    const response = await deps.client.send(startProviderLoginRequest(provider))
+    const login = expectVariant<{ login: ProviderLoginStart }>(response, "ProviderLoginStarted").login
+    const verb = action === "reauth" ? "reauth" : "login"
+    return { ok: true, message: formatProviderLoginStart(login, verb), data: { login } }
+  }
+  if (action === "processes") {
+    const subcommand = providerArg
+    if (subcommand === "teardown") {
+      const provider = rest[0] ?? null
+      const response = await deps.client.send(teardownProviderProcessesRequest(provider))
+      const processes = expectVariant<{ processes: ProviderProcessInfo[] }>(response, "ProviderProcessesTornDown").processes
+      return { ok: true, message: processes.length === 0 ? "no safe provider processes to tear down" : `tore down ${processes.length} provider process(es)\n${formatProviderProcesses(processes)}`, data: { processes } }
+    }
+    const provider = providerArg ?? null
+    const response = await deps.client.send(listProviderProcessesRequest(provider))
+    const processes = expectVariant<{ processes: ProviderProcessInfo[] }>(response, "ProviderProcessesListed").processes
+    return { ok: true, message: formatProviderProcesses(processes), data: { processes } }
+  }
+  return { ok: false, message: "usage: provider status|login|logout|reauth|processes" }
+}
+
+async function executeStopCommand(
+  parsed: ParsedShellCommand,
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  if (parsed.args.length > 0) {
+    return { ok: false, message: "usage: stop" }
+  }
+  if (!context.sessionId) {
+    return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
+  }
+  const attachmentId = await resolveShellAttachmentId(context.sessionId, deps)
+  if (!attachmentId.ok) {
+    return { ok: false, message: attachmentId.message }
+  }
+  const response = await deps.client.send(cancelActivePromptRequest(context.sessionId, attachmentId.attachmentId))
+  const payload = expectVariant<{ cancellation: { prompt?: { id?: string | null } | null } }>(response, "PromptCancelled")
+  return { ok: true, message: `cancellation requested${payload.cancellation.prompt?.id ? ` for prompt ${payload.cancellation.prompt.id}` : ""}`, data: payload }
 }
 
 async function resolveShellAgent(
@@ -912,6 +1187,19 @@ async function resolveShellAgent(
     return { ok: false, message: `agent reference ${reference} is ambiguous` }
   }
   return { ok: true, agent: matches[0]! }
+}
+
+async function resolveShellAttachmentId(
+  sessionId: string,
+  deps: ShellExecutorDeps,
+): Promise<{ ok: true; attachmentId: string } | { ok: false; message: string }> {
+  const response = await deps.client.send(getSessionStateRequest(sessionId))
+  const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
+  const attachmentId = session.attachment_ids[0]
+  if (!attachmentId) {
+    return { ok: false, message: "current session has no attached client; stop/session-config commands require an attachment" }
+  }
+  return { ok: true, attachmentId }
 }
 
 function parseMcpInstallConfig(args: string[]): ArrobaMcpServerConfig | null {
@@ -967,6 +1255,16 @@ function parseMcpInstallConfig(args: string[]): ArrobaMcpServerConfig | null {
     }
   }
   return null
+}
+
+function parseWatchdogIntervalSeconds(value: string | undefined): number | null {
+  const match = value?.trim().match(/^(\d+)([smhd])$/i)
+  if (!match) return null
+  const amount = Number.parseInt(match[1]!, 10)
+  if (!Number.isFinite(amount) || amount <= 0) return null
+  const unit = match[2]!.toLowerCase()
+  const multiplier = unit === "s" ? 1 : unit === "m" ? 60 : unit === "h" ? 3600 : 86400
+  return amount * multiplier
 }
 
 function resourceResult(
@@ -1224,12 +1522,48 @@ function formatWorkflowRunList(workflowRuns: WorkflowRun[], workflowRef: string 
   }).join("\n")
 }
 
+function formatWorkflowWatchdogs(watchdogs: WorkflowWatchdogDefinition[]): string {
+  if (watchdogs.length === 0) {
+    return "no workflow watchdogs configured"
+  }
+  return watchdogs.map((watchdog) => (
+    `${watchdog.id} workflow=${watchdog.workflow_id} endpoint=${watchdog.endpoint_id} every=${watchdog.interval_seconds}s policy=${watchdog.policy} enabled=${String(watchdog.enabled)} wakeups=${watchdog.wakeups_executed}/${watchdog.max_wakeups ?? "unbounded"}`
+  )).join("\n")
+}
+
+function formatQueuedWorkflowLaunches(queuedLaunches: QueuedWorkflowLaunch[]): string {
+  if (queuedLaunches.length === 0) {
+    return "workflow queue is empty"
+  }
+  return queuedLaunches.map((queued) => (
+    `${queued.id} workflow=${queued.workflow_id} endpoint=${queued.endpoint_id} source=${queued.source}`
+  )).join("\n")
+}
+
 function formatProviderAuthStatus(status: ProviderAuthStatus): string {
   return [
     status.account_profile ? `${status.provider}: ${status.auth_state} as ${status.account_profile}` : `${status.provider}: ${status.auth_state}`,
     status.detected_version ? `version ${status.detected_version}` : null,
     status.login_hint ?? null,
   ].filter(Boolean).join(" • ")
+}
+
+function formatProviderLoginStart(login: ProviderLoginStart, verb: "login" | "reauth"): string {
+  return [
+    `${login.provider} ${verb} started`,
+    login.user_code ? `code ${login.user_code}` : null,
+    login.verification_url ?? login.auth_url ?? null,
+  ].filter(Boolean).join(" • ")
+}
+
+function formatProviderProcesses(processes: ProviderProcessInfo[]): string {
+  if (processes.length === 0) {
+    return "no daemon-tracked provider processes"
+  }
+  return processes.map((process) => {
+    const blockers = process.teardown_blockers.length > 0 ? ` blockers=${process.teardown_blockers.join(",")}` : ""
+    return `${process.process_id} ${process.provider} ${process.process_label} status=${process.status} safe=${String(process.teardown_safe)} sessions=${process.owner_session_ids.join(",") || "-"}${blockers}`
+  }).join("\n")
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

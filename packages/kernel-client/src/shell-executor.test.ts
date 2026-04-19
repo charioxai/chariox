@@ -5,7 +5,9 @@ import type {
   AgentInstance,
   ArrobaMcpServerConfig,
   ArrobaSkillMetadata,
+  ProviderProcessInfo,
   RuntimeSession,
+  WorkflowWatchdogDefinition,
   WorkflowDefinition,
   WorkflowRun,
 } from "./kernel-types.js"
@@ -79,6 +81,23 @@ function makeWorkflowRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
     created_at_ms: 0,
     started_at_ms: 0,
     completed_at_ms: null,
+    ...overrides,
+  }
+}
+
+function makeWorkflowWatchdog(overrides: Partial<WorkflowWatchdogDefinition> = {}): WorkflowWatchdogDefinition {
+  return {
+    id: "watchdog-1",
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+    enabled: true,
+    interval_seconds: 60,
+    invocation_prompt: "Run it",
+    policy: "skip",
+    wakeups_executed: 0,
+    next_run_at_ms: 0,
+    created_at_ms: 0,
+    updated_at_ms: 0,
     ...overrides,
   }
 }
@@ -699,5 +718,186 @@ test("executeShellCommand manages workflow graph and endpoints", async () => {
     { CreateWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", entry_node_id: "node-1", alias: "default" } },
     { AliasWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", alias: "smoke" } },
     { BindWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", entry_node_id: "node-1" } },
+  ])
+})
+
+test("executeShellCommand manages advanced workflow settings, watchdogs, and queue", async () => {
+  const workflow = makeWorkflow({ flush_agent_context_before_run: false, run_output_schema_ref: "final", intermediate_output_schema_ref: "progress" })
+  const session = makeSession({ attachment_ids: ["attachment-1"], workflows: [workflow], workflow_launch_policy: "queue" })
+  const node = { id: "node-1", agent_id: "agent-1", can_complete_workflow_run: true, max_turns: 3 }
+  const watchdog = makeWorkflowWatchdog()
+  const queued = { id: "queue-1", workflow_id: "workflow-1", endpoint_id: "endpoint-1", source: "manual" as const, queued_at_ms: 0 }
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("GetSessionState" in request) {
+          return { SessionState: { session } }
+        }
+        if ("SetWorkflowLaunchPolicy" in request) {
+          return { WorkflowLaunchPolicyUpdated: { session } }
+        }
+        if ("SetWorkflowFlushContext" in request) {
+          return { WorkflowFlushContextUpdated: { workflow, session } }
+        }
+        if ("SetWorkflowRunOutputSchema" in request) {
+          return { WorkflowRunOutputSchemaUpdated: { workflow, session } }
+        }
+        if ("SetWorkflowNodeCanCompleteRun" in request) {
+          return { WorkflowNodeCanCompleteRunUpdated: { node, workflow, session } }
+        }
+        if ("CreateWorkflowWatchdog" in request) {
+          return { WorkflowWatchdogCreated: { watchdog, workflow, endpoint: workflow.endpoints![0], session } }
+        }
+        if ("ListWorkflowWatchdogs" in request) {
+          return { WorkflowWatchdogsListed: { watchdogs: [watchdog] } }
+        }
+        if ("SetWorkflowWatchdogEnabled" in request) {
+          return { WorkflowWatchdogUpdated: { watchdog: { ...watchdog, enabled: false }, session } }
+        }
+        if ("RemoveWorkflowWatchdog" in request) {
+          return { WorkflowWatchdogRemoved: { watchdog, session } }
+        }
+        if ("ListQueuedWorkflowLaunches" in request) {
+          return { QueuedWorkflowLaunchesListed: { queued_launches: [queued] } }
+        }
+        if ("RemoveQueuedWorkflowLaunch" in request) {
+          return { QueuedWorkflowLaunchRemoved: { queued_launch: queued, session } }
+        }
+        if ("ClearQueuedWorkflowLaunches" in request) {
+          return { QueuedWorkflowLaunchesCleared: { queued_launches: [queued], session } }
+        }
+        return { SessionConfigUpdated: { session, config: { version: 1, values: { "workflow.max_turns": "4" } } } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", workflowId: "workflow-1" })
+  const launchPolicy = await executeShellCommand(parseShellCommand("workflow launch-policy queue"), context, { client: fake.client })
+  const flush = await executeShellCommand(parseShellCommand("workflow flush-context false"), context, { client: fake.client })
+  const schema = await executeShellCommand(parseShellCommand("workflow run-output-schema final"), context, { client: fake.client })
+  const maxTurns = await executeShellCommand(parseShellCommand("workflow max-turns 4"), context, { client: fake.client })
+  const nodeConfig = await executeShellCommand(parseShellCommand("workflow node can-complete-run node-1 true"), context, { client: fake.client })
+  const watchdogAdd = await executeShellCommand(parseShellCommand("workflow watchdog add endpoint-1 every 1m queue Run it"), context, { client: fake.client })
+  const watchdogList = await executeShellCommand(parseShellCommand("workflow watchdog list workflow-1"), context, { client: fake.client })
+  const watchdogDisable = await executeShellCommand(parseShellCommand("workflow watchdog disable watchdog-1"), context, { client: fake.client })
+  const watchdogRemove = await executeShellCommand(parseShellCommand("workflow watchdog remove watchdog-1"), context, { client: fake.client })
+  const queueList = await executeShellCommand(parseShellCommand("workflow queue list"), context, { client: fake.client })
+  const queueRemove = await executeShellCommand(parseShellCommand("workflow queue remove queue-1"), context, { client: fake.client })
+  const queueFlush = await executeShellCommand(parseShellCommand("workflow queue flush"), context, { client: fake.client })
+  assert.equal(launchPolicy.ok, true)
+  assert.match(launchPolicy.message ?? "", /launch policy set to queue/)
+  assert.equal(flush.ok, true)
+  assert.equal(schema.ok, true)
+  assert.equal(maxTurns.ok, true)
+  assert.equal(nodeConfig.ok, true)
+  assert.equal(watchdogAdd.ok, true)
+  assert.match(watchdogAdd.message ?? "", /created workflow watchdog watchdog-1/)
+  assert.equal(watchdogList.ok, true)
+  assert.match(watchdogList.message ?? "", /watchdog-1 workflow=workflow-1/)
+  assert.equal(watchdogDisable.ok, true)
+  assert.equal(watchdogRemove.ok, true)
+  assert.equal(queueList.ok, true)
+  assert.match(queueList.message ?? "", /queue-1 workflow=workflow-1/)
+  assert.equal(queueRemove.ok, true)
+  assert.equal(queueFlush.ok, true)
+  assert.deepEqual(requests, [
+    { SetWorkflowLaunchPolicy: { session_id: "session-1", policy: "queue" } },
+    { SetWorkflowFlushContext: { session_id: "session-1", workflow_ref: "workflow-1", flush_agent_context_before_run: false } },
+    { SetWorkflowRunOutputSchema: { session_id: "session-1", workflow_ref: "workflow-1", run_output_schema_ref: "final" } },
+    { GetSessionState: { session_id: "session-1" } },
+    { UpdateSessionConfig: { session_id: "session-1", attachment_id: "attachment-1", values: { "workflow.max_turns": "4" }, requires_idle: false } },
+    { SetWorkflowNodeCanCompleteRun: { session_id: "session-1", workflow_ref: "workflow-1", node_id: "node-1", can_complete_workflow_run: true } },
+    { CreateWorkflowWatchdog: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", interval_seconds: 60, invocation_prompt: "Run it", policy: "queue", max_wakeups_configured: false, max_wakeups: null } },
+    { ListWorkflowWatchdogs: { session_id: "session-1", workflow_ref: "workflow-1" } },
+    { SetWorkflowWatchdogEnabled: { session_id: "session-1", watchdog_ref: "watchdog-1", enabled: false } },
+    { RemoveWorkflowWatchdog: { session_id: "session-1", watchdog_ref: "watchdog-1" } },
+    { ListQueuedWorkflowLaunches: { session_id: "session-1" } },
+    { RemoveQueuedWorkflowLaunch: { session_id: "session-1", queue_item_ref: "queue-1" } },
+    { ClearQueuedWorkflowLaunches: { session_id: "session-1" } },
+  ])
+})
+
+test("executeShellCommand manages provider auth and processes", async () => {
+  const process: ProviderProcessInfo = {
+    process_id: "process-1",
+    provider: "codex",
+    process_label: "codex-agent",
+    endpoint_mode: "managed",
+    status: "idle",
+    started_at_ms: 0,
+    last_activity_at_ms: 0,
+    provider_session_ids: [],
+    owner_session_ids: ["session-1"],
+    owner_provider_run_ids: [],
+    attached_session_ids: [],
+    active_workflow_run_ids: [],
+    teardown_safe: true,
+    teardown_blockers: [],
+  }
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("StartProviderLogin" in request) {
+          return { ProviderLoginStarted: { login: { provider: "codex", login_kind: "device", login_id: "login-1", auth_url: null, verification_url: "https://auth.example", user_code: "ABCD" } } }
+        }
+        if ("LogoutProvider" in request) {
+          return { ProviderLoggedOut: { provider: "codex" } }
+        }
+        if ("TeardownProviderProcesses" in request) {
+          return { ProviderProcessesTornDown: { processes: [process] } }
+        }
+        return { ProviderProcessesListed: { processes: [process] } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", provider: "codex" })
+  const login = await executeShellCommand(parseShellCommand("provider login"), context, { client: fake.client })
+  const logout = await executeShellCommand(parseShellCommand("provider logout codex"), context, { client: fake.client })
+  const reauth = await executeShellCommand(parseShellCommand("provider reauth codex"), context, { client: fake.client })
+  const list = await executeShellCommand(parseShellCommand("provider processes codex"), context, { client: fake.client })
+  const teardown = await executeShellCommand(parseShellCommand("provider processes teardown codex"), context, { client: fake.client })
+  assert.equal(login.ok, true)
+  assert.match(login.message ?? "", /codex login started/)
+  assert.equal(logout.ok, true)
+  assert.equal(reauth.ok, true)
+  assert.match(reauth.message ?? "", /codex reauth started/)
+  assert.equal(list.ok, true)
+  assert.match(list.message ?? "", /process-1 codex/)
+  assert.equal(teardown.ok, true)
+  assert.match(teardown.message ?? "", /tore down 1 provider process/)
+  assert.deepEqual(requests, [
+    { StartProviderLogin: { provider: "codex" } },
+    { LogoutProvider: { provider: "codex" } },
+    { LogoutProvider: { provider: "codex" } },
+    { StartProviderLogin: { provider: "codex" } },
+    { ListProviderProcesses: { provider: "codex" } },
+    { TeardownProviderProcesses: { provider: "codex", force: false } },
+  ])
+})
+
+test("executeShellCommand cancels active prompt through the current session attachment", async () => {
+  const session = makeSession({ attachment_ids: ["attachment-1"] })
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("GetSessionState" in request) {
+          return { SessionState: { session } }
+        }
+        return { PromptCancelled: { cancellation: { prompt: { id: "prompt-1" }, started_next: null } } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("stop"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /prompt prompt-1/)
+  assert.deepEqual(requests, [
+    { GetSessionState: { session_id: "session-1" } },
+    { CancelActivePrompt: { session_id: "session-1", attachment_id: "attachment-1" } },
   ])
 })

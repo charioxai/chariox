@@ -236,10 +236,15 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
   - `workflow endpoint new|alias|bind`
 - Implemented config mutation coverage in the shared executor:
   - `config path|set|unset|managed-io`
-- Remaining command families/actions:
-  - workflow advanced configuration/watchdogs/queue commands
-  - provider login/logout/reauth and process commands
-  - stop/cancel active prompt work
+- Implemented workflow advanced coverage in the shared executor:
+  - `workflow launch-policy|flush-context|max-turns|run-output-schema|intermediate-output-schema`
+  - `workflow node can-complete-run|can-emit-intermediate-output|intermediate-output-schema|max-turns`
+  - `workflow watchdog add|list|enable|disable|remove`
+  - `workflow queue list|flush|remove`
+- Implemented provider and cancellation coverage in the shared executor:
+  - `provider status|login|logout|reauth|processes`
+  - `stop` / `cancel`
+- Remaining command families/actions: none for Slice 6. Future slices may still add richer renderers or additional aliases.
 
 ## Validation
 

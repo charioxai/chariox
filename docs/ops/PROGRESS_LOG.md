@@ -66,6 +66,13 @@ Chronological notes to preserve execution context between contributors/agents.
 - `config managed-io` normalizes `on|off` to `required|unrestricted` and writes the same user-config key as the TUI command, while reporting that shell changes apply on the next provider launch.
 - Covered config path/set/unset/managed-io flows with focused kernel-client executor tests.
 
+
+### M7.5 shell executor Slice 6 closure
+
+- Added remaining shared `arroba-shell` executor coverage for workflow advanced config, node runtime flags, watchdogs, workflow queue management, provider login/logout/reauth/process inspection/teardown, and active prompt cancellation.
+- `stop` and `cancel` resolve the current session attachment from session state before sending `CancelActivePrompt`, matching the kernel authorization model without adding TUI-only state to the shell context.
+- Covered workflow advanced, provider auth/process, and cancellation flows with focused kernel-client executor tests. Slice 6 command-family coverage is now closed.
+
 ### Session/agent git worktree placement
 
 - Added local session and agent placement commands for existing directories and git worktree creation: `/session new [DIR]`, `/session new --worktree DIR --branch BRANCH [--from REF]`, and `/agent spawn ... --worktree DIR --branch BRANCH [--from REF]`.
