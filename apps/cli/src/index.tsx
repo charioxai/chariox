@@ -72,8 +72,8 @@ import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent } from "./hotkeys.js"
 import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
-import { applyShellCommandResult, createDefaultShellContext, parseShellCommand, renderShellCommandResult, type ShellContext } from "@arroba/kernel-client/shell-core"
-import { executeShellCommand } from "@arroba/kernel-client/shell-executor"
+import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
+import { executeShellLine } from "@arroba/kernel-client/shell-script"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import {
@@ -5842,10 +5842,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const context = workspaceShellContext()
-    const parsed = parseShellCommand(command, context)
-    const result = await executeShellCommand(parsed, context, { client })
-    const rendered = renderShellCommandResult(result)
-    const nextContext = applyShellCommandResult(context, result)
+    const output: string[] = []
+    const result = await executeShellLine(command, context, { client }, (text) => output.push(text))
+    const rendered = output.join("").trimEnd()
+    const nextContext = result.context
     setWorkspaceShellContext(nextContext)
     setWorkspaceShellEntries((entries) => appendWorkspaceShellEntry(entries, {
       id: workspaceShellEntryCounter() + 1,
@@ -5864,6 +5864,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           session_id: nextSessionId,
           error: formatError(error),
         })
+      }
+    }
+
+    const nextWorkflowId = nextContext.workflowId ?? null
+    if (result.ok && nextWorkflowId) {
+      const workflowExists = (sessionState().workflows ?? []).some((workflow) => workflow.id === nextWorkflowId)
+      if (workflowExists && selectedWorkflowId() !== nextWorkflowId) {
+        setSelectedWorkflowId(nextWorkflowId)
+        setSelectedWorkflowNodeId(null)
       }
     }
 

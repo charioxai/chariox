@@ -31,6 +31,8 @@ Live drills should own their daemon/session/port/artifact lifecycle and clean up
 
 `live-shell-scriptability-drill.mjs` validates `arroba-shell` against an isolated local kernel with a temporary `HOME`, workspace, daemon socket, ports, and history directory. It does not launch real provider model turns. It creates sessions and dev-stub agents, mutates config, installs/grants/revokes/uninstalls a deterministic MCP and skill, exercises workflow graph/config/watchdog/queue commands, runs `stop`, and verifies `arroba-shell run` seed variables, `source <file>` loading, and `--continue-on-error` line diagnostics.
 
+The embedded workflow-pane shell uses the same script runner. Manual TUI drills should launch the default CLI agent with a non-emitting dev-stub model, then spawn any workflow agents explicitly from the shell script. Do not use a workflow-outputting dev-stub model as the initial CLI model unless the drill is intentionally testing startup output noise.
+
 ```bash
 pnpm --filter @arroba/cli run shell:drill
 ```

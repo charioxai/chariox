@@ -212,6 +212,7 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 ### Slice 4: Script Runner
 
 - Status: implemented in `apps/shell/src/shell.ts` with focused coverage in `apps/shell/src/shell.test.ts`.
+- The reusable script runner now lives in `packages/kernel-client/src/shell-script.ts` so both `arroba-shell` and the embedded workflow-pane shell execute scripts through the same parser, executor, renderer, variable propagation, and nested `source`/`run` logic.
 - Added `arroba-shell run <file>`.
 - Supports comments, blank lines, variables, and stop-on-error execution.
 - Supports seeded variables through repeated `--var NAME=VALUE`.
@@ -229,6 +230,8 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 - Reuses the shared shell parser/executor and result renderer from `packages/kernel-client`.
 - Workflow-screen shell input is submitted through the main prompt with an `@ <command>` prefix so it does not collide with workflow endpoint prompts or slash commands.
 - The pane renders command lines with `@` and prints command output below each input.
+- The embedded shell supports `source <file>` and `run <file>` from the current worktree, using the same shared script runner as `arroba-shell`.
+- Workflow-creating or workflow-selecting shell commands now update the selected workflow in the TUI when the command result context contains a valid workflow id. This keeps the visible workflow pane aligned with `workflow new`, `workflow show`, and loaded workflow scripts.
 - TUI-only commands remain rejected by the shared shell parser/executor.
 
 ### Slice 6: Broaden Command Coverage

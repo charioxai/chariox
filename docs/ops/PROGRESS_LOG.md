@@ -714,3 +714,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Closed live-drill point 4: the remote workflow catalog passes through relay with `opencode,codex`, a home daemon, a worker daemon, worker-machine leased agents, forwarded workflow runtime tools, cyclic progression, validated intermediate output, final workflow output, and clean final workflow projections.
 - Fixed the remote workflow hard center found by the drills: remote entry turns now start and settle leased prompts, forwarded worker runtime-tool calls complete worker-side leased workflow prompts after validated output/final-output submission, and workflow completion can fall back to the last successful `validate_workflow_output` tool payload when a live provider validates but does not emit the final fenced block.
 - Tightened the live cyclic drill scenarios to exercise one deterministic cycle rather than long model-dependent loops, keeping coverage for cyclic handoff, turn budget, intermediate output, and final workflow-output submission without making the gate depend on repeated live-provider instruction compliance.
+
+### M7.5 embedded shell scriptability update
+
+- Moved line-oriented Arroba shell script execution into `packages/kernel-client/src/shell-script.ts`, so standalone `arroba-shell` and the embedded workflow-pane shell share `source`/`run`, nested script loading, variables, line diagnostics, and context propagation.
+- Updated the workflow-pane shell to select the workflow returned in shell context after workflow creation/show/load commands, keeping the visible workflow graph synchronized with shell-driven mutations.
+- Manual TUI drill confirmed direct `@` workflow graph creation and `@ source <file>` graph loading update the workflow pane to the expected node/edge/endpoint counts. Dev-stub workflow execution still fails with `missing_structured_output`; provider-backed runtime behavior remains covered by the workflow runtime drill suite.

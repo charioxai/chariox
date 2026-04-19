@@ -9,7 +9,8 @@
     "./ipc-requests": "./dist/ipc-requests.js",
     "./kernel-types": "./dist/kernel-types.js",
     "./shell-core": "./dist/shell-core.js",
-    "./shell-executor": "./dist/shell-executor.js"
+    "./shell-executor": "./dist/shell-executor.js",
+    "./shell-script": "./dist/shell-script.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {
