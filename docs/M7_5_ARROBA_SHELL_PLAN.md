@@ -234,9 +234,10 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
   - `workflow node add|remove`
   - `workflow edge add|remove`
   - `workflow endpoint new|alias|bind`
+- Implemented config mutation coverage in the shared executor:
+  - `config path|set|unset|managed-io`
 - Remaining command families/actions:
   - workflow advanced configuration/watchdogs/queue commands
-  - config set/unset/managed-io
   - provider login/logout/reauth and process commands
   - stop/cancel active prompt work
 

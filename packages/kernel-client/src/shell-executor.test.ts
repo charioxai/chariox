@@ -304,6 +304,45 @@ test("executeShellCommand shows config and provider auth status", async () => {
   assert.match(providerResult.message ?? "", /version 1.2.3/)
 })
 
+test("executeShellCommand mutates user config", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("GetUserConfig" in request) {
+          return { UserConfig: { path: "/home/.arroba/config.json", config: { version: 1, providers: { default: "codex" } } } }
+        }
+        return {
+          UserConfigUpdated: {
+            path: "/home/.arroba/config.json",
+            config: { version: 1, providers: { managed_io: { codex: "required" } } },
+          },
+        }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const pathResult = await executeShellCommand(parseShellCommand("config path"), context, { client: fake.client })
+  const setResult = await executeShellCommand(parseShellCommand("config set providers.default opencode"), context, { client: fake.client })
+  const unsetResult = await executeShellCommand(parseShellCommand("config unset providers.default"), context, { client: fake.client })
+  const managedIoResult = await executeShellCommand(parseShellCommand("config managed-io codex on"), context, { client: fake.client })
+  assert.equal(pathResult.ok, true)
+  assert.equal(pathResult.message, "/home/.arroba/config.json")
+  assert.equal(setResult.ok, true)
+  assert.match(setResult.message ?? "", /config providers.default set to opencode/)
+  assert.equal(unsetResult.ok, true)
+  assert.match(unsetResult.message ?? "", /config providers.default unset/)
+  assert.equal(managedIoResult.ok, true)
+  assert.match(managedIoResult.message ?? "", /managed I\/O for codex set to required/)
+  assert.deepEqual(requests, [
+    { GetUserConfig: null },
+    { SetUserConfigValue: { path: "providers.default", value: "opencode" } },
+    { UnsetUserConfigValue: { path: "providers.default" } },
+    { SetUserConfigValue: { path: "providers.managed_io.codex", value: "required" } },
+  ])
+})
+
 test("executeShellCommand installs and updates MCP servers", async () => {
   const installed: ArrobaMcpServerConfig = {
     name: "playwright",

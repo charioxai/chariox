@@ -59,6 +59,13 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added graph-management coverage for `workflow node add|remove`, `workflow edge add|remove`, and `workflow endpoint new|alias|bind`, including current workflow context updates and variable binding for created workflows/nodes.
 - Covered workflow list/create/show/alias, run lifecycle, graph, and endpoint flows with focused kernel-client executor tests.
 
+
+### M7.5 shell executor config mutations
+
+- Added shared `arroba-shell` executor support for `config path`, `config set`, `config unset`, and `config managed-io`.
+- `config managed-io` normalizes `on|off` to `required|unrestricted` and writes the same user-config key as the TUI command, while reporting that shell changes apply on the next provider launch.
+- Covered config path/set/unset/managed-io flows with focused kernel-client executor tests.
+
 ### Session/agent git worktree placement
 
 - Added local session and agent placement commands for existing directories and git worktree creation: `/session new [DIR]`, `/session new --worktree DIR --branch BRANCH [--from REF]`, and `/agent spawn ... --worktree DIR --branch BRANCH [--from REF]`.

@@ -59,10 +59,12 @@ import {
   resolveWorkflowRequest,
   resumeWorkflowRunRequest,
   resolveSessionRequest,
+  setUserConfigValueRequest,
   spawnAgentRequest,
   cycleAgentFocusRequest,
   uninstallMcpServerRequest,
   uninstallSkillRequest,
+  unsetUserConfigValueRequest,
   updateMcpServerRequest,
   updateSkillRequest,
 } from "./ipc-requests.js"
@@ -152,7 +154,7 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
           "agent list|spawn|focus|cycle",
           "machine list|kernels",
           "relay status",
-          "config show",
+          "config show|path|set|unset|managed-io",
           "mcp list|show|install|update|uninstall|import|grant|revoke|grants",
           "skill list|show|install|update|uninstall|import|grant|revoke|grants",
           "workflow list|new|show|run|runs|cancel|resume|node|edge|endpoint",
@@ -418,13 +420,51 @@ async function executeConfigCommand(
   parsed: ParsedShellCommand,
   deps: ShellExecutorDeps,
 ): Promise<ShellCommandResult> {
-  const [action] = parsed.args
-  if (action && action !== "show") {
-    return { ok: false, message: "usage: config show" }
+  const [action, keyPath, ...rest] = parsed.args
+  if (!action || action === "show") {
+    const response = await deps.client.send(getUserConfigRequest())
+    const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfig")
+    return { ok: true, message: JSON.stringify(payload.config, null, 2), data: payload, format: "json" }
   }
-  const response = await deps.client.send(getUserConfigRequest())
-  const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfig")
-  return { ok: true, message: JSON.stringify(payload.config, null, 2), data: payload, format: "json" }
+  if (action === "path") {
+    const response = await deps.client.send(getUserConfigRequest())
+    const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfig")
+    return { ok: true, message: payload.path, data: payload }
+  }
+  if (action === "set") {
+    const value = rest.join(" ").trim()
+    if (!keyPath || !value) {
+      return { ok: false, message: "usage: config set <path> <value>" }
+    }
+    const response = await deps.client.send(setUserConfigValueRequest(keyPath, value))
+    const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
+    return { ok: true, message: `config ${keyPath} set to ${value}`, data: payload }
+  }
+  if (action === "unset") {
+    if (!keyPath) {
+      return { ok: false, message: "usage: config unset <path>" }
+    }
+    const response = await deps.client.send(unsetUserConfigValueRequest(keyPath))
+    const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
+    return { ok: true, message: `config ${keyPath} unset`, data: payload }
+  }
+  if (action === "managed-io") {
+    const provider = keyPath ?? "default"
+    const mode = rest[0] ?? "required"
+    if (!["required", "unrestricted", "on", "off"].includes(mode)) {
+      return { ok: false, message: "usage: config managed-io [provider] required|unrestricted|on|off" }
+    }
+    const normalizedMode = mode === "on" ? "required" : mode === "off" ? "unrestricted" : mode
+    const configPath = `providers.managed_io.${provider}`
+    const response = await deps.client.send(setUserConfigValueRequest(configPath, normalizedMode))
+    const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
+    return {
+      ok: true,
+      message: `managed I/O for ${provider} set to ${normalizedMode}; applies on next provider launch`,
+      data: payload,
+    }
+  }
+  return { ok: false, message: "usage: config show|path|set|unset|managed-io" }
 }
 
 async function executeMcpCommand(
