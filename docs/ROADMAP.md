@@ -37,6 +37,7 @@ Current milestone status:
 - M5: Relay and Remote Transport
 - M6: Remote Agents and Machine Membership
 - M7: Arroba-owned MCP and skill management. In progress: MCP/skill registries, slash-command install/list/show/import/grant/revoke/grants, Codex/OpenCode MCP and skill import, per-agent grants, local Codex/OpenCode MCP rendering, granted-skill summary injection, local explicit full skill-body injection, runtime discovery/request tools, and strict local MCP/skill drills are landed; remote materialization remains open.
+- M7.5: Arroba Shell. New milestone for a kernel-facing `arroba-shell` command REPL, script runner, shared command executor, and workspace-pane shell integration. See `docs/M7_5_ARROBA_SHELL_PLAN.md`.
 - M8: Workflow Interconnection
 - M9: Multi-Provider Expansion and Adapter Generalization
 - M10: v1 Stabilization and Launch
@@ -53,6 +54,7 @@ Rollout priority:
 - then add relay-backed remote transport
 - then add remote agents and machine membership on top of relay
 - then add Arroba-owned MCP and skill management with per-agent grants, provider-native MCP rendering, skill prompt injection, and provider import paths; the local registry/grant/rendering baseline is now in progress and partially landed
+- then add `arroba-shell` as a kernel-facing command REPL and scriptable command surface sharing command execution with the TUI slash-command layer
 - then add additional clients on the same daemon/protocol model
 - then add workflow interconnection on top of remote agent connectivity
 - then add additional providers such as Claude Code and Codex plus the more generic provider-adapter/protocol work they require
