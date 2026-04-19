@@ -18,6 +18,7 @@ export type ShellCommandResult = {
   data?: unknown | undefined
   format?: "text" | "table" | "json" | undefined
   bindings?: Record<string, string> | undefined
+  variableRemovals?: string[] | undefined
   contextUpdates?: Partial<Omit<ShellContext, "variables">> | undefined
 }
 
@@ -125,11 +126,15 @@ export function parseShellCommand(input: string, context: Pick<ShellContext, "va
 }
 
 export function applyShellCommandResult(context: ShellContext, result: ShellCommandResult): ShellContext {
+  const variables = { ...context.variables }
+  for (const name of result.variableRemovals ?? []) {
+    delete variables[name]
+  }
   return {
     ...context,
     ...result.contextUpdates,
     variables: {
-      ...context.variables,
+      ...variables,
       ...(result.bindings ?? {}),
     },
   }

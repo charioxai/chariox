@@ -164,14 +164,18 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 
 ### Slice 2: Minimal Shared Executor
 
-- Extract or wrap the existing command-action paths behind a shared command executor where possible.
-- Start with low-risk commands:
+- Status: implemented in `apps/cli/src/shell-executor.ts` with focused coverage in `apps/cli/src/shell-executor.test.ts`.
+- Added a minimal executor that consumes normalized shell commands and returns structured `ShellCommandResult` values.
+- Added shell-local execution for `help`, `set`, `use`, `vars`, `unset`, `exit`, and `quit`.
+- Added low-risk kernel-backed command coverage:
   - `session list`
   - `session new --dir|--worktree`
   - `session attach|use`
   - `agent list`
   - `agent spawn --dir|--worktree|--machine`
-- Existing TUI slash commands should keep working.
+- Also added `agent focus|cycle`.
+- Existing TUI slash commands keep using their current handlers; the shell executor is not yet wired into the TUI.
+- Provider-run launch after `agent spawn` is intentionally not part of this slice. The shell executor creates/manages kernel resources; provider process lifecycle integration is part of the standalone shell/runtime integration slice.
 
 ### Slice 3: Standalone `arroba-shell`
 

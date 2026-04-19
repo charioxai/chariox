@@ -9,6 +9,12 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added the first `arroba-shell` implementation slice: shell command parsing, slash-command normalization, shell context/result types, `as <name>` bindings, variable substitution, TUI-only command classification, and result rendering helpers.
 - Verified the slice with the focused CLI shell-core test path, which also ran the existing CLI TypeScript lint/build/test suite.
 
+### M7.5 minimal shell executor
+
+- Added a minimal `arroba-shell` executor over normalized shell commands, returning structured shell results for shell-local commands and low-risk kernel-backed session/agent commands.
+- Covered `session list`, `session new --dir|--worktree`, `session attach|use`, `agent list`, `agent spawn --dir|--worktree|--machine`, `agent focus`, and `agent cycle`, with variable binding and context update behavior.
+- Verified with the focused CLI shell-core and shell-executor test path, which also ran the existing CLI TypeScript lint/build/test suite.
+
 ### Session/agent git worktree placement
 
 - Added local session and agent placement commands for existing directories and git worktree creation: `/session new [DIR]`, `/session new --worktree DIR --branch BRANCH [--from REF]`, and `/agent spawn ... --worktree DIR --branch BRANCH [--from REF]`.
