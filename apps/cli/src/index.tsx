@@ -1,8 +1,10 @@
 import path from "node:path"
 import process from "node:process"
 import { randomBytes } from "node:crypto"
+import { unlink } from "node:fs/promises"
 import { homedir } from "node:os"
 import { pathToFileURL } from "node:url"
+import { createServer, type Server as NetServer, type Socket as NetSocket } from "node:net"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
@@ -281,6 +283,7 @@ import {
 import {
   appendWorkspaceShellEntry,
   isWorkspaceShellCommand,
+  renderWorkspaceShellTranscript,
   workspaceShellCommandText,
   type WorkspaceShellEntry,
 } from "./workspace-shell.js"
@@ -443,6 +446,25 @@ const DEBUG_LOGS_ENABLED = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() ==
 const OPEN_CONSOLE_ON_ERROR = process.env.ARROBA_OPEN_CONSOLE_ON_ERROR === "1"
 let processLogger: ArrobaLogger | null = null
 let transcriptParsersRegistered = false
+
+type CliAutomationRequest = {
+  id?: unknown
+  action?: unknown
+  command?: unknown
+  screen?: unknown
+  intervalMs?: unknown
+  timeoutMs?: unknown
+  selectedWorkflowAlias?: unknown
+  shellEntryCount?: unknown
+  workflowAlias?: unknown
+}
+
+type CliAutomationResponse = {
+  id: string | number | null
+  ok: boolean
+  data?: unknown
+  error?: string
+}
 
 function getLogger(component: string, fields: Record<string, unknown> = {}) {
   return processLogger?.child(component, fields) ?? null
@@ -5839,7 +5861,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const command = workspaceShellCommandText(rawPrompt)
     if (!command) {
       flashFooter("usage: @ <arroba-shell command>", "error")
-      return
+      return { ok: false, output: "usage: @ <arroba-shell command>", context: workspaceShellContext() }
     }
     const context = workspaceShellContext()
     const output: string[] = []
@@ -5878,6 +5900,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     rebuildTranscript()
     flashFooter(result.ok ? "shell command completed" : (rendered || "shell command failed"), result.ok ? "info" : "error")
+    return { ok: result.ok, output: rendered, context: nextContext }
   }
 
   const submitPrompt = async () => {
@@ -6445,11 +6468,204 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
     }
   }
+
+  const automationSnapshot = () => {
+    const selectedWorkflow = sessionState().workflows?.find((workflow) => workflow.id === selectedWorkflowId()) ?? null
+    return {
+      screen: workspaceScreenMode(),
+      workflowScreenActive: workflowScreenActive(),
+      session: {
+        id: sessionState().id,
+        workspace: sessionState().workspace_id,
+        worktree: sessionState().worktree_id,
+        focusedAgentId: focusedAgentId(),
+        agentCount: sessionState().agents.length,
+      },
+      selectedWorkflowId: selectedWorkflowId(),
+      selectedWorkflowNodeId: selectedWorkflowNodeId(),
+      selectedWorkflow: selectedWorkflow
+        ? {
+          id: selectedWorkflow.id,
+          alias: selectedWorkflow.alias,
+          nodeCount: selectedWorkflow.nodes?.length ?? 0,
+          edgeCount: selectedWorkflow.edges?.length ?? 0,
+          endpointCount: selectedWorkflow.endpoints?.length ?? 0,
+        }
+        : null,
+      workflows: (sessionState().workflows ?? []).map((workflow) => ({
+        id: workflow.id,
+        alias: workflow.alias,
+        nodeCount: workflow.nodes?.length ?? 0,
+        edgeCount: workflow.edges?.length ?? 0,
+        endpointCount: workflow.endpoints?.length ?? 0,
+      })),
+      workflowRuns: (sessionState().workflow_runs ?? []).map((run) => ({
+        id: run.id,
+        workflowId: run.workflow_id,
+        endpointId: run.endpoint_id,
+        status: run.status,
+        nodeRunCount: run.node_runs?.length ?? 0,
+        failureCount: run.failure_events?.length ?? 0,
+        finalOutput: run.final_output ?? null,
+      })),
+      shell: {
+        context: workspaceShellContext(),
+        entries: workspaceShellEntries(),
+        transcript: renderWorkspaceShellTranscript(workspaceShellEntries()),
+      },
+      footer: footerFlash(),
+    }
+  }
+
+  const automationSnapshotMatches = (
+    snapshot: ReturnType<typeof automationSnapshot>,
+    request: CliAutomationRequest,
+  ) => {
+    if (typeof request.screen === "string" && snapshot.screen !== request.screen) {
+      return false
+    }
+    if (typeof request.selectedWorkflowAlias === "string" && snapshot.selectedWorkflow?.alias !== request.selectedWorkflowAlias) {
+      return false
+    }
+    if (typeof request.workflowAlias === "string" && !snapshot.workflows.some((workflow) => workflow.alias === request.workflowAlias)) {
+      return false
+    }
+    if (typeof request.shellEntryCount === "number" && snapshot.shell.entries.length < request.shellEntryCount) {
+      return false
+    }
+    return true
+  }
+
+  const handleAutomationRequest = async (request: CliAutomationRequest): Promise<unknown> => {
+    const action = typeof request.action === "string" ? request.action : ""
+    switch (action) {
+      case "ping":
+        return { status: "ok" }
+      case "switch_screen": {
+        const screen = typeof request.screen === "string" ? request.screen : ""
+        if (screen !== "agents" && screen !== "workflow") {
+          throw new Error("usage: switch_screen screen=agents|workflow")
+        }
+        if (!isAttached()) {
+          throw new Error("cannot switch screen without an attached session")
+        }
+        setWorkspaceScreenMode(screen)
+        rebuildTranscript()
+        applyResponseLayout()
+        return automationSnapshot()
+      }
+      case "workspace_shell_exec": {
+        const command = typeof request.command === "string" ? request.command : ""
+        if (!command.trim()) {
+          throw new Error("usage: workspace_shell_exec command=<arroba-shell command>")
+        }
+        if (!workflowScreenActive()) {
+          showWorkflowScreen()
+        }
+        const result = await submitWorkspaceShellCommand(`@ ${command}`)
+        return { result, snapshot: automationSnapshot() }
+      }
+      case "snapshot":
+        return automationSnapshot()
+      case "wait_for": {
+        const timeoutMs = typeof request.timeoutMs === "number" ? request.timeoutMs : 10_000
+        const intervalMs = typeof request.intervalMs === "number" ? request.intervalMs : 100
+        const deadline = Date.now() + Math.max(1, timeoutMs)
+        let snapshot = automationSnapshot()
+        while (!automationSnapshotMatches(snapshot, request) && Date.now() < deadline) {
+          await sleep(Math.max(10, intervalMs))
+          snapshot = automationSnapshot()
+        }
+        if (!automationSnapshotMatches(snapshot, request)) {
+          throw new Error("timed out waiting for CLI automation condition")
+        }
+        return snapshot
+      }
+      case "exit":
+        void restoreTerminalAndExit(0)
+        return { exiting: true }
+      default:
+        throw new Error(`unknown automation action '${action || String(request.action)}'`)
+    }
+  }
+
+  const sendAutomationResponse = (socket: NetSocket, response: CliAutomationResponse) => {
+    socket.write(`${JSON.stringify(response)}\n`)
+  }
+
+  const startAutomationServer = async (socketPath: string): Promise<NetServer> => {
+    await unlink(socketPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") {
+        throw error
+      }
+    })
+    const server = createServer((socket) => {
+      socket.setEncoding("utf8")
+      let buffer = ""
+      socket.on("data", (chunk) => {
+        buffer += chunk
+        while (buffer.includes("\n")) {
+          const newlineIndex = buffer.indexOf("\n")
+          const line = buffer.slice(0, newlineIndex).trim()
+          buffer = buffer.slice(newlineIndex + 1)
+          if (!line) {
+            continue
+          }
+          let request: CliAutomationRequest
+          try {
+            request = JSON.parse(line) as CliAutomationRequest
+          } catch (error) {
+            sendAutomationResponse(socket, {
+              id: null,
+              ok: false,
+              error: `invalid JSON automation request: ${formatError(error)}`,
+            })
+            continue
+          }
+          const id = typeof request.id === "string" || typeof request.id === "number" ? request.id : null
+          void handleAutomationRequest(request)
+            .then((data) => sendAutomationResponse(socket, { id, ok: true, data }))
+            .catch((error) => sendAutomationResponse(socket, { id, ok: false, error: formatError(error) }))
+        }
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject)
+      server.listen(socketPath, () => {
+        server.off("error", reject)
+        resolve()
+      })
+    })
+    appLogger?.info("cli automation socket listening", { socket_path: socketPath })
+    return server
+  }
+
+  let automationServer: NetServer | null = null
+  if (options.automationSocket) {
+    void startAutomationServer(options.automationSocket)
+      .then((server) => {
+        automationServer = server
+      })
+      .catch((error) => {
+        appLogger?.error("failed to start cli automation socket", {
+          socket_path: options.automationSocket,
+          error: formatError(error),
+        })
+        flashFooter(`automation socket failed: ${formatError(error)}`, "error")
+      })
+  }
   process.on("SIGINT", handleSigint)
   process.stdin.on("data", handleStdinData)
   onCleanup(() => {
     process.off("SIGINT", handleSigint)
     process.stdin.off("data", handleStdinData)
+    if (automationServer) {
+      automationServer.close()
+      automationServer = null
+    }
+    if (options.automationSocket) {
+      void unlink(options.automationSocket).catch(() => {})
+    }
     if (pendingTerminalRecordFlush) {
       clearTimeout(pendingTerminalRecordFlush)
       pendingTerminalRecordFlush = undefined
@@ -7427,6 +7643,9 @@ function parseArgs(args: string[]): CliOptions {
       case "--socket":
         options.socketPath = next()
         break
+      case "--automation-socket":
+        options.automationSocket = path.resolve(next())
+        break
       case "--kernel-url":
         options.kernelUrl = next()
         break
@@ -7859,7 +8078,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [d]      create and attach to a new session, optionally in directory d\n  /session create [d]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m] [--dir d] [--worktree d --branch b] [--machine r] spawn a new local or remote agent\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /machine list         list approved, pending, and offline remote machines\n  /machine kernels <m>  list live kernels for a remote machine\n  /machine approve <m>  approve a pending remote machine for spawning\n  /machine forget <m>   forget a registered remote machine\n  /machine rename <m> <alias> rename and approve a remote machine\n  /config show          show the Arroba user config\n  /config set <p> <v>   update the Arroba user config\n  /config managed-io [p] required|unrestricted set provider managed I/O\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show [r]    show selected workflow or workflow by id/alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run [w] <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes; /workflow add node all adds missing agents\n  /workflow edge ...    add/remove workflow edges; workflow id may be omitted\n  /workflow endpoint ... manage workflow endpoints; workflow id may be omitted\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [d]      create and attach to a new session, optionally in directory d\n  /session create [d]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m] [--dir d] [--worktree d --branch b] [--machine r] spawn a new local or remote agent\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /machine list         list approved, pending, and offline remote machines\n  /machine kernels <m>  list live kernels for a remote machine\n  /machine approve <m>  approve a pending remote machine for spawning\n  /machine forget <m>   forget a registered remote machine\n  /machine rename <m> <alias> rename and approve a remote machine\n  /config show          show the Arroba user config\n  /config set <p> <v>   update the Arroba user config\n  /config managed-io [p] required|unrestricted set provider managed I/O\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show [r]    show selected workflow or workflow by id/alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run [w] <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes; /workflow add node all adds missing agents\n  /workflow edge ...    add/remove workflow edges; workflow id may be omitted\n  /workflow endpoint ... manage workflow endpoints; workflow id may be omitted\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
   )
 }
 

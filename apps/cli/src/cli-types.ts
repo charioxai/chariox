@@ -451,6 +451,7 @@ export type ReadDirectoryTreeResult = {
 export type CliOptions = {
   kernelUrl?: string
   socketPath?: string
+  automationSocket?: string
   relayUrl?: string
   relayToken?: string
   targetDaemonId?: string

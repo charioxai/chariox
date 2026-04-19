@@ -246,6 +246,8 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 - The embedded shell supports `source <file>` and `run <file>` from the current worktree, using the same shared script runner as `arroba-shell`.
 - Workflow-creating or workflow-selecting shell commands now update the selected workflow in the TUI when the command result context contains a valid workflow id. This keeps the visible workflow pane aligned with `workflow new`, `workflow show`, and loaded workflow scripts.
 - TUI-only commands remain rejected by the shared shell parser/executor.
+- Added a CLI automation socket (`--automation-socket <path>`) for reliable embedded-shell drills. The socket accepts JSONL actions (`ping`, `switch_screen`, `workspace_shell_exec`, `snapshot`, `wait_for`, `exit`) and returns structured UI/application snapshots instead of relying on raw PTY keystrokes.
+- The automation snapshot includes the current workspace screen, selected workflow/node, workflow graph counts, workflow run summaries, shell context, shell transcript entries, and footer flash state.
 
 ### Slice 6: Broaden Command Coverage
 
@@ -296,6 +298,7 @@ Each slice must include focused tests and update docs before commit/push. Requir
 - `arroba-shell run <file>` can set up a small workflow using variables.
 - `arroba-shell run <file> --var NAME=VALUE --continue-on-error` can run a validation script, continue past failures, and still return non-zero if anything failed.
 - `pnpm --filter @arroba/cli run shell:drill` passes against an isolated local kernel.
+- `pnpm --filter @arroba/cli run embedded-shell:drill` launches the real CLI under a PTY, drives the embedded workflow shell through the automation socket, and verifies workflow pane state from structured snapshots.
 - TUI workspace pane can run the same shell command executor without duplicating command logic.
 - TUI-only commands are rejected or redirected with clear messages in `arroba-shell`.
 

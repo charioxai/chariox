@@ -726,3 +726,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added shell-local `context` and `pwd` commands for standalone and embedded shells; they render the active workspace, worktree, session, attachment, agent, workflow, provider/model/effort, and shell variables without making a kernel request.
 - Extended parser/executor/shell usage tests plus the live shell scriptability drill to cover `context`/`pwd` and documented the remaining shared-executor command gaps against the TUI slash surface.
 - Revalidated standalone shell scriptability with `pnpm --filter @arroba/cli run shell:drill`. A provider-backed embedded TUI runtime drill was attempted manually, but the PTY input path is still unreliable for slash/workflow-mode automation; the committed validation remains the shared executor tests plus the scriptability drill rather than a flaky TUI automation artifact.
+
+### M7.5 CLI automation drill update
+
+- Added `--automation-socket` to the CLI so live drills can drive embedded UI integration through semantic JSONL actions rather than raw PTY keystrokes.
+- The automation API supports `ping`, `switch_screen`, `workspace_shell_exec`, `snapshot`, `wait_for`, and `exit`, returning structured snapshots for screen mode, selected workflow/node, workflow graph counts, workflow runs, shell context, shell transcript, and footer state.
+- Added `pnpm --filter @arroba/cli run embedded-shell:drill`, which launches the real CLI under a PTY, sources a workflow script through the workflow-pane shell, and validates selected-workflow graph/source updates through automation snapshots.

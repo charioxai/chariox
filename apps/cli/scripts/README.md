@@ -33,8 +33,11 @@ Live drills should own their daemon/session/port/artifact lifecycle and clean up
 
 The embedded workflow-pane shell uses the same script runner. Manual TUI drills should launch the default CLI agent with a non-emitting dev-stub model, then spawn any workflow agents explicitly from the shell script. Do not use a workflow-outputting dev-stub model as the initial CLI model unless the drill is intentionally testing startup output noise.
 
+`live-embedded-shell-automation-drill.mjs` launches the real CLI under a PTY but drives it through `--automation-socket` instead of raw keystrokes. The automation API returns structured snapshots for the current screen, selected workflow, workflow graph counts, workflow runs, shell context, and shell transcript, so embedded-shell drills can assert CLI state without parsing ANSI terminal output. Keep the automation socket path short; Unix socket path limits are strict on macOS.
+
 ```bash
 pnpm --filter @arroba/cli run shell:drill
+pnpm --filter @arroba/cli run embedded-shell:drill
 ```
 
 ## Managed I/O Identity
