@@ -804,3 +804,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added operational-history pruning before a timestamp cutoff, with separate modes for archive-disabled deletion and verified-archive-only deletion.
 - Added session markers that disable legacy JSONL fallback after pruning removes all operational history for a session, preventing deleted retained history from being resurrected by the compatibility store.
 - Tightened session-history fallback so JSONL is used only for truly pre-cutover sessions with no operational rows and no retention marker.
+
+### M8 durable state store foundation
+
+- Added `DurableKernelStateStore`, a WAL-backed SQLite store for kernel state snapshots and append-only state events.
+- Added config path resolution for the durable state database from `[state].path`.
+- Added focused coverage for appending ordered state events, saving a snapshot, reopening the store, and loading the latest snapshot.

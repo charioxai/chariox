@@ -3,6 +3,7 @@ pub mod app;
 pub mod attachment;
 pub mod capability;
 pub mod config;
+pub mod durable_state;
 pub(crate) mod env_lock;
 pub mod error;
 pub mod execution_lease;

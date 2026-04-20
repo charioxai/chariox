@@ -270,6 +270,15 @@ impl DaemonConfig {
             .unwrap_or_else(|| default_state_dir().join("history").join("operational.db"))
     }
 
+    pub fn durable_state_path(&self) -> PathBuf {
+        self.user_config
+            .state
+            .path
+            .as_deref()
+            .map(expand_user_path)
+            .unwrap_or_else(|| default_state_dir().join("state").join("kernel.db"))
+    }
+
     pub fn default_runtime_identity_path() -> PathBuf {
         default_state_dir().join("daemon").join("identity.json")
     }
@@ -1611,5 +1620,15 @@ mod tests {
         assert!(config
             .operational_history_path()
             .ends_with(".arroba/custom/history.db"));
+    }
+
+    #[test]
+    fn durable_state_path_expands_home() {
+        let mut config = DaemonConfig::new("daemon", "machine", "tester");
+        config.user_config.state.path = Some("~/.arroba/custom/state.db".to_string());
+
+        assert!(config
+            .durable_state_path()
+            .ends_with(".arroba/custom/state.db"));
     }
 }
