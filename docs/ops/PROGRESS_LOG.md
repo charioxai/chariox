@@ -792,3 +792,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added a durable `history_archive_outbox` table to the operational SQLite store.
 - The store can idempotently enqueue canonical history events for archive export, reload pending work after reopening, record failed attempts, and mark adapter-accepted events as archived.
 - Extended operational-history store coverage to verify duplicate enqueue handling, retry metadata, acceptance marking, and reopen persistence.
+
+### M8 archive enqueue/exporter update
+
+- External archive mode now enqueues newly appended transcript history events into the durable archive outbox.
+- Added a one-shot `HistoryArchiveExporter` that loads pending outbox events, calls the configured archive adapter, marks accepted events archived, and records failed/rejected attempts for retry.
+- Added focused coverage for archive-mode prompt enqueue and adapter-backed outbox flushing.

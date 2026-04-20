@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{HistoryArchiveMode, UserArchiveHistoryConfig};
 use crate::error::DaemonError;
-use crate::history::HistoryEvent;
+use crate::history::{HistoryEvent, OperationalHistoryStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryArchiveClient {
@@ -50,6 +50,19 @@ pub struct HistoryArchiveRejectedEvent {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryArchiveFlushOutcome {
+    pub attempted_event_ids: Vec<String>,
+    pub accepted_event_ids: Vec<String>,
+    pub rejected_events: Vec<HistoryArchiveRejectedEvent>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoryArchiveExporter {
+    store: OperationalHistoryStore,
+    client: HistoryArchiveClient,
+}
+
 impl Default for HistoryArchiveCapabilities {
     fn default() -> Self {
         Self {
@@ -58,6 +71,61 @@ impl Default for HistoryArchiveCapabilities {
             search: false,
             full_text_search: false,
             blob_refs: false,
+        }
+    }
+}
+
+impl HistoryArchiveExporter {
+    pub fn new(store: OperationalHistoryStore, client: HistoryArchiveClient) -> Self {
+        Self { store, client }
+    }
+
+    pub fn flush_pending_once(
+        &self,
+        limit: usize,
+    ) -> Result<HistoryArchiveFlushOutcome, DaemonError> {
+        let items = self.store.load_pending_archive_events(limit)?;
+        if items.is_empty() {
+            return Ok(HistoryArchiveFlushOutcome {
+                attempted_event_ids: Vec::new(),
+                accepted_event_ids: Vec::new(),
+                rejected_events: Vec::new(),
+            });
+        }
+        let events = items
+            .iter()
+            .map(|item| item.event.clone())
+            .collect::<Vec<_>>();
+        let attempted_event_ids = events
+            .iter()
+            .map(|event| event.event_id.clone())
+            .collect::<Vec<_>>();
+        match self.client.append_events(&events) {
+            Ok(response) => {
+                self.store
+                    .mark_archive_events_accepted(&response.accepted_event_ids)?;
+                let rejected_ids = response
+                    .rejected_events
+                    .iter()
+                    .map(|event| event.event_id.clone())
+                    .collect::<Vec<_>>();
+                if !rejected_ids.is_empty() {
+                    self.store.mark_archive_events_failed(
+                        &rejected_ids,
+                        "archive adapter rejected event",
+                    )?;
+                }
+                Ok(HistoryArchiveFlushOutcome {
+                    attempted_event_ids,
+                    accepted_event_ids: response.accepted_event_ids,
+                    rejected_events: response.rejected_events,
+                })
+            }
+            Err(error) => {
+                self.store
+                    .mark_archive_events_failed(&attempted_event_ids, &error.to_string())?;
+                Err(error)
+            }
         }
     }
 }
@@ -314,6 +382,54 @@ mod tests {
             .to_string()
             .contains("did not durably accept every event"));
         handle.join().expect("server should join");
+    }
+
+    #[test]
+    fn exporter_flushes_pending_events_through_adapter() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-archive-exporter-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let store =
+            OperationalHistoryStore::open(path.clone()).expect("operational store should open");
+        store
+            .enqueue_archive_events(&[test_event("evt-flush")])
+            .expect("event should enqueue");
+        let (base_url, handle) = spawn_archive_server(
+            "POST /arroba/history/events",
+            r#"{"accepted_event_ids":["evt-flush"],"rejected_events":[]}"#,
+        );
+        let config = UserArchiveHistoryConfig {
+            mode: HistoryArchiveMode::External,
+            url: Some(base_url),
+            token_env: None,
+            require_durable_acceptance: Some(true),
+            ..UserArchiveHistoryConfig::default()
+        };
+        let client = HistoryArchiveClient::from_config(&config).expect("client should build");
+        let exporter = HistoryArchiveExporter::new(store.clone(), client);
+
+        let outcome = exporter
+            .flush_pending_once(10)
+            .expect("flush should archive event");
+
+        assert_eq!(outcome.attempted_event_ids, vec!["evt-flush"]);
+        assert_eq!(outcome.accepted_event_ids, vec!["evt-flush"]);
+        assert!(store
+            .load_pending_archive_events(10)
+            .expect("pending events should load")
+            .is_empty());
+        handle.join().expect("server should join");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
     fn test_event(event_id: &str) -> HistoryEvent {

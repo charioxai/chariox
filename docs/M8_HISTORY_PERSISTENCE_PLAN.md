@@ -478,7 +478,7 @@ If multiple agents could have caused a commit, store all candidates and show the
 ### M8.6 Archive Exporter
 
 - Add archive adapter client. **Landed foundation:** disabled and external archive clients now implement the adapter append/capabilities protocol, including durable acceptance validation and optional bearer-token auth from `history.archive.token_env`.
-- Add durable outbox/checkpointing. **Landed store layer:** operational SQLite now includes a `history_archive_outbox` table with idempotent enqueue, pending-load, failed-attempt recording, accepted marking, and reopen-safe checkpoint coverage.
+- Add durable outbox/checkpointing. **Landed:** operational SQLite now includes a `history_archive_outbox` table with idempotent enqueue, pending-load, failed-attempt recording, accepted marking, and reopen-safe checkpoint coverage. External archive mode queues new transcript events, and the one-shot exporter flushes pending events to the adapter while checkpointing accepted/rejected outcomes.
 - Add archive-disabled retention behavior.
 - Add external archive mode with verified acceptance before operational deletion.
 

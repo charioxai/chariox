@@ -29,7 +29,7 @@ use crate::agent::{
     AgentInstance, AgentService, AgentServiceStore, CreateAgentRequest, RemoteAgentBinding,
 };
 use crate::attachment::{AttachmentService, AttachmentServiceStore};
-use crate::config::DaemonConfig;
+use crate::config::{DaemonConfig, HistoryArchiveMode};
 use crate::error::DaemonError;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding};
 use crate::history::{OperationalHistoryStore, SessionHistoryStore};
@@ -385,6 +385,10 @@ impl DaemonApp {
 
     pub(crate) fn operational_history_store(&self) -> OperationalHistoryStore {
         self.operational_history.clone()
+    }
+
+    pub(crate) fn history_archive_enabled(&self) -> bool {
+        self.config.user_config.history.archive.mode == HistoryArchiveMode::External
     }
 
     pub(crate) fn load_session_history_entries(

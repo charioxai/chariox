@@ -144,15 +144,22 @@ impl DaemonApp {
 
     fn append_operational_history_entry(&self, entry: &SessionHistoryEntry) {
         let context = self.history_event_context(entry);
-        if let Err(error) = self.operational_history.append_transcript(entry, context) {
-            crate::logging::warn_with_fields(
-                "daemon.history",
-                "failed to append operational history",
-                serde_json::json!({
-                    "session_id": entry.session_id.as_str(),
-                    "error": error.to_string(),
-                }),
-            );
+        match self.operational_history.append_transcript(entry, context) {
+            Ok(event) => {
+                if self.history_archive_enabled() {
+                    self.enqueue_history_archive_event(&event);
+                }
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to append operational history",
+                    serde_json::json!({
+                        "session_id": entry.session_id.as_str(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
     }
 
@@ -182,6 +189,22 @@ impl DaemonApp {
         }
     }
 
+    fn enqueue_history_archive_event(&self, event: &crate::history::HistoryEvent) {
+        if let Err(error) = self
+            .operational_history
+            .enqueue_archive_events(std::slice::from_ref(event))
+        {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to enqueue history archive event",
+                serde_json::json!({
+                    "session_id": event.session_id.as_deref(),
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
     fn spawn_history_append(
         &self,
         session: crate::session::RuntimeSession,
@@ -189,6 +212,7 @@ impl DaemonApp {
     ) {
         let history = self.history.clone();
         let operational_history = self.operational_history.clone();
+        let archive_enabled = self.history_archive_enabled();
         let history_projection = self.history_projection.clone();
         let context = self.history_event_context(&entry);
         let session_id = session.id().to_string();
@@ -203,15 +227,32 @@ impl DaemonApp {
                     }),
                 );
             } else {
-                if let Err(error) = operational_history.append_transcript(&entry, context) {
-                    crate::logging::warn_with_fields(
-                        "daemon.history",
-                        "failed to append operational history",
-                        serde_json::json!({
-                            "session_id": session_id,
-                            "error": error.to_string(),
-                        }),
-                    );
+                match operational_history.append_transcript(&entry, context) {
+                    Ok(event) => {
+                        if archive_enabled {
+                            if let Err(error) = operational_history.enqueue_archive_events(&[event])
+                            {
+                                crate::logging::warn_with_fields(
+                                    "daemon.history",
+                                    "failed to enqueue history archive event",
+                                    serde_json::json!({
+                                        "session_id": session_id,
+                                        "error": error.to_string(),
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.history",
+                            "failed to append operational history",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
                 }
                 history_projection.append(entry);
             }
@@ -246,6 +287,52 @@ impl DaemonApp {
             None,
             recipient_attachment_ids,
             &bytes,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::config::HistoryArchiveMode;
+    use crate::session::CreateSessionRequest;
+    use crate::{DaemonApp, DaemonConfig};
+
+    #[test]
+    fn user_prompt_history_enqueues_archive_outbox_when_external_archive_enabled() {
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.history.archive.mode = HistoryArchiveMode::External;
+        config.user_config.history.archive.url = Some("http://127.0.0.1:9".to_string());
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "cli-archive-outbox",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should create");
+
+        app.append_user_prompt_history(
+            session.id(),
+            attachment.id(),
+            agent.id(),
+            "archive me",
+            &[],
+        );
+
+        let pending = app
+            .operational_history_store()
+            .load_pending_archive_events(10)
+            .expect("pending archive events should load");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].event.session_id.as_deref(), Some(session.id()));
+        assert_eq!(pending[0].event.agent_id.as_deref(), Some(agent.id()));
+        assert_eq!(
+            pending[0].event.content.as_deref().map(str::trim_end),
+            Some("archive me")
         );
     }
 }

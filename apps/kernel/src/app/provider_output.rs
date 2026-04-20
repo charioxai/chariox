@@ -310,6 +310,7 @@ struct ProviderOutputFanout {
     session_store: SessionStateStore,
     history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
+    archive_enabled: bool,
     history_projection: SessionHistoryProjectionStore,
     terminal: TerminalStreamStore,
 }
@@ -321,6 +322,7 @@ impl ProviderOutputFanout {
             session_store: app.sessions.clone(),
             history_store: app.history_store(),
             operational_history_store: app.operational_history_store(),
+            archive_enabled: app.history_archive_enabled(),
             history_projection: app.session_history_projection_store(),
             terminal: app.terminal.clone(),
         }
@@ -463,18 +465,37 @@ impl ProviderOutputFanout {
                 }),
                 ..HistoryEventTurnContext::default()
             };
-            if let Err(error) = self
+            match self
                 .operational_history_store
                 .append_transcript(&entry, context)
             {
-                crate::logging::warn_with_fields(
-                    "daemon.history",
-                    "failed to append operational history",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "error": error.to_string(),
-                    }),
-                );
+                Ok(event) => {
+                    if self.archive_enabled {
+                        if let Err(error) = self
+                            .operational_history_store
+                            .enqueue_archive_events(std::slice::from_ref(&event))
+                        {
+                            crate::logging::warn_with_fields(
+                                "daemon.history",
+                                "failed to enqueue history archive event",
+                                serde_json::json!({
+                                    "session_id": session_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.history",
+                        "failed to append operational history",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
             }
             self.history_projection.append(entry);
         }
