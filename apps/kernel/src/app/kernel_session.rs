@@ -135,6 +135,35 @@ mod tests {
             "ended sessions should not restore live agents"
         );
     }
+
+    #[test]
+    fn bootstrap_restores_snapshot_then_replays_later_events() {
+        let config = DaemonConfig::for_tests();
+        let (session_id, reviewer_agent_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            app.save_durable_state_snapshot()
+                .expect("snapshot should save");
+            let reviewer = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(CreateAgentRequest::new(session.id(), "codex").with_alias("reviewer"))
+                .expect("post-snapshot agent should spawn");
+            (session.id().to_string(), reviewer.id().to_string())
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+        app.sessions()
+            .get_session(&session_id)
+            .expect("snapshot session should restore");
+        assert_eq!(
+            app.agents
+                .get_agent(&reviewer_agent_id)
+                .expect("post-snapshot event should replay")
+                .session_id(),
+            session_id
+        );
+    }
 }
 
 pub(crate) struct KernelSessionReadService<'a> {

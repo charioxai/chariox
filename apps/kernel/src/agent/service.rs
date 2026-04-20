@@ -359,6 +359,10 @@ impl AgentService {
         self.store.get_by_session(session_id)
     }
 
+    pub fn list_agents(&self) -> Vec<AgentInstance> {
+        self.store.list()
+    }
+
     /// Get focused agent in session
     pub fn get_focused_agent(&self, session_id: &str) -> Option<AgentInstance> {
         self.store.focused_agent(session_id).cloned()
@@ -592,6 +596,10 @@ impl AgentServiceStore {
 
     pub fn get_session_agents(&self, session_id: &str) -> Vec<AgentInstance> {
         self.read().get_session_agents(session_id)
+    }
+
+    pub fn list_agents(&self) -> Vec<AgentInstance> {
+        self.read().list_agents()
     }
 
     pub fn get_focused_agent(&self, session_id: &str) -> Option<AgentInstance> {

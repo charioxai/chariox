@@ -858,3 +858,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Documented the rule that retention, archive export, snapshots, Git observation, and remote reconciliation must not hold the main app lock while doing filesystem, network, Git, archive-adapter, or long-running SQLite work.
 - Moved runtime-state durable event appends off the main `DaemonApp` lock by passing the durable state store into the owned runtime-state facade.
 - Foreground commands still write small durable/operational/outbox rows synchronously, but no longer need the app lock just to append M8 durable agent/session mutation events.
+
+### M8 durable snapshot restore update
+
+- Boot restore now loads the latest durable state snapshot, restores sessions/agents from it, and replays only events after the snapshot sequence.
+- Added an app-level snapshot writer that captures current sessions and agents against the latest durable event sequence; the future scheduler can call this from a background worker.
+- Added focused coverage proving bootstrap restores snapshot state and then replays post-snapshot lifecycle events.

@@ -155,6 +155,21 @@ impl DurableKernelStateStore {
         Ok(events)
     }
 
+    pub fn latest_event_sequence(&self) -> Result<u64, DaemonError> {
+        let connection = self.lock_connection("durable_state.latest_event_sequence")?;
+        let sequence = connection
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM durable_state_events",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.latest_event_sequence",
+                message: error.to_string(),
+            })?;
+        Ok(sequence.max(0) as u64)
+    }
+
     pub fn save_snapshot(
         &self,
         sequence: u64,
@@ -337,6 +352,12 @@ mod tests {
             .expect("snapshot should exist");
         assert_eq!(latest.sequence, second.sequence);
         assert_eq!(latest.payload["sessions"][0], "session-1");
+        assert_eq!(
+            store
+                .latest_event_sequence()
+                .expect("latest event sequence should load"),
+            second.sequence
+        );
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));

@@ -64,6 +64,12 @@ pub(crate) use provider_runtime::{
 };
 pub(crate) use remote_lease::RemoteLeaseRuntime;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct DurableKernelSnapshotPayload {
+    sessions: Vec<RuntimeSession>,
+    agents: Vec<AgentInstance>,
+}
+
 fn decode_durable_payload_field<T>(
     event: &DurableStateEvent,
     field: &'static str,
@@ -353,9 +359,64 @@ impl DaemonApp {
     }
 
     fn restore_durable_state(&mut self) -> Result<(), DaemonError> {
-        for event in self.durable_state.load_events_after(0)? {
+        let replay_after_sequence = match self.durable_state.latest_snapshot()? {
+            Some(snapshot) => {
+                self.restore_durable_state_snapshot(snapshot.payload)?;
+                snapshot.sequence
+            }
+            None => 0,
+        };
+        for event in self
+            .durable_state
+            .load_events_after(replay_after_sequence)?
+        {
             self.restore_durable_state_event(event)?;
         }
+        Ok(())
+    }
+
+    fn restore_durable_state_snapshot(
+        &mut self,
+        payload: serde_json::Value,
+    ) -> Result<(), DaemonError> {
+        let snapshot: DurableKernelSnapshotPayload =
+            serde_json::from_value(payload).map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.restore_snapshot",
+                message: error.to_string(),
+            })?;
+        for session in snapshot.sessions {
+            self.sessions.restore_session(session);
+        }
+        for agent in snapshot.agents {
+            self.agents.restore_agent(agent);
+        }
+        self.refresh_restored_session_projections()?;
+        Ok(())
+    }
+
+    fn refresh_restored_session_projections(&self) -> Result<(), DaemonError> {
+        for mut session in self.sessions.read().store().list() {
+            let agents = self.agents.get_session_agents(session.id());
+            session.set_agents(agents);
+            self.update_session_projection(session);
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn save_durable_state_snapshot(&self) -> Result<(), DaemonError> {
+        let sequence = self.durable_state.latest_event_sequence()?;
+        let payload = DurableKernelSnapshotPayload {
+            sessions: self.sessions.read().store().list(),
+            agents: self.agents.list_agents(),
+        };
+        self.durable_state.save_snapshot(
+            sequence,
+            serde_json::to_value(payload).map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.encode_snapshot_payload",
+                message: error.to_string(),
+            })?,
+        )?;
         Ok(())
     }
 

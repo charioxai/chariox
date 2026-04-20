@@ -70,6 +70,12 @@ impl AgentStore {
         agents
     }
 
+    pub fn list(&self) -> Vec<AgentInstance> {
+        let mut agents = self.agents.values().cloned().collect::<Vec<_>>();
+        agents.sort_by(|left, right| left.id().cmp(right.id()));
+        agents
+    }
+
     pub fn count_by_session(&self, session_id: &str) -> usize {
         self.agents
             .values()
