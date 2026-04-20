@@ -15,6 +15,7 @@
     "local-restart:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-local-restart-drill.mjs",
     "cli-restart:drill": "pnpm run build && node scripts/live-cli-kernel-restart-drill.mjs",
     "remote-restart:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-remote-restart-drill.mjs",
+    "git-observation:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-git-observation-drill.mjs",
     "relay-identity:drill": "node scripts/live-relay-identity-security-drill.mjs",
     "outline:drills": "pnpm run build && node scripts/workflow-outline-drills.mjs",
     "lint": "pnpm --filter @arroba/kernel-client run build && tsc -p tsconfig.json --noEmit",

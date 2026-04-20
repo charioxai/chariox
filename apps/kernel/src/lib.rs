@@ -8,6 +8,7 @@ pub mod durable_state;
 pub(crate) mod env_lock;
 pub mod error;
 pub mod execution_lease;
+pub(crate) mod git_observer;
 pub mod history;
 pub mod history_archive;
 pub mod io;

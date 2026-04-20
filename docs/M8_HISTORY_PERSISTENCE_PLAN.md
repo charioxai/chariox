@@ -523,9 +523,10 @@ If multiple agents could have caused a commit, store all candidates and show the
 
 ### M8.11 Git Observation
 
-- Add pre/post turn Git snapshots.
-- Emit Git history events with provider, model, turn, prompt, and candidate attribution.
-- Add search coverage by commit SHA, subject, changed path, branch, worktree, provider, model, and prompt text.
+- Add pre/post turn Git snapshots. **Landed for local provider turns:** local structured prompt dispatch captures a Git snapshot from the provider run working directory before the prompt is sent, then captures a second snapshot after prompt completion. The Git commands run in blocking background tasks outside the main app lock, and snapshots are keyed by provider run and prompt id.
+- Emit Git history events with provider, model, turn, prompt, and candidate attribution. **Landed for local provider turns:** post-turn observation emits `git_commit_detected`, `git_worktree_changed`, `git_worktree_dirty`, `git_worktree_clean`, and `git_push_detected` events into operational history. Commit events include commit SHA, subject, author, timestamp, changed paths, branch, before/after HEAD, dirty state, prompt summary, provider, model, prompt id, and attribution candidates.
+- Add search coverage by commit SHA, subject, changed path, branch, worktree, provider, model, and prompt text. **Landed:** focused store coverage and `pnpm --filter @arroba/cli run git-observation:drill` verify commit subject/path/provider/model/prompt attribution in operational search.
+- Remote Git observation remains separate: worker kernels own remote worktree Git state, so v1 remote support needs a worker-side observation/forwarding slice rather than home reading local Git.
 
 ## Live Drills
 
@@ -541,6 +542,7 @@ If multiple agents could have caused a commit, store all candidates and show the
 - Git commit detected after an agent turn.
 - Ambiguous commit attribution with two candidate agents.
 - Search finds commit by subject, changed path, agent, provider, model, and prompt text.
+- Local Git observation drill: `pnpm --filter @arroba/cli run git-observation:drill`.
 
 ## V2
 

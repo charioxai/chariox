@@ -61,6 +61,7 @@ struct KernelRuntimeOwnedState {
     workspace_identity_monitor:
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_mcp_continuations: PendingMcpContinuationStore,
+    git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
 }
 
 #[derive(Default)]
@@ -170,6 +171,7 @@ impl KernelRuntimeState {
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::default(),
+                git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             },
         }
     }

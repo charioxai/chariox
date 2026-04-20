@@ -318,6 +318,7 @@ impl<'a> KernelAgentService<'a> {
                     session_id: submitted.admission.session_id.clone(),
                     provider_run_id: provider_run_id.to_string(),
                     agent_id: submitted.admission.target_agent_id.clone(),
+                    prompt_id: prompt.id().to_string(),
                     source_attachment_id: prompt.source_attachment_id().to_string(),
                     prompt: prompt.prompt().to_string(),
                     attachments: prompt.attachments().to_vec(),

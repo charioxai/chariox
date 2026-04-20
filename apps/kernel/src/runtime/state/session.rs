@@ -135,9 +135,7 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
-        if (request.adapter_key == "opencode" || request.adapter_key == "codex")
-            && request.working_directory.is_none()
-        {
+        if request.working_directory.is_none() {
             let agent_worktree = request.agent_id.as_deref().and_then(|agent_id| {
                 self.agent_store
                     .get_agent(agent_id)

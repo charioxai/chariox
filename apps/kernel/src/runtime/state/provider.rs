@@ -271,6 +271,7 @@ impl KernelRuntimeOwnedState {
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
             agent_id: agent_id.to_string(),
+            prompt_id: started_next.id().to_string(),
             source_attachment_id: started_next.source_attachment_id().to_string(),
             prompt: started_next.prompt().to_string(),
             attachments: started_next.attachments().to_vec(),

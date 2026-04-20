@@ -901,3 +901,10 @@ Chronological notes to preserve execution context between contributors/agents.
 - Remote prompt dispatch detects stale or missing worker leases, refreshes the remote agent binding through the live worker kernel, and retries the prompt submit. Relay daemon registration now replaces stale peers for the same daemon id, so worker restarts do not leave home routing requests to an old dead peer handle.
 - Remote prompt completion now treats worker-side `NoActivePrompt` as an already-settled leased prompt and completes the home-side prompt, matching the dev-stub/fast-provider case where the worker finishes before home asks for completion.
 - Verified the live drill passes through baseline prompt, home restart with worker alive, worker restart with stale lease refresh, and both home/worker restart with a final refreshed lease.
+
+### M8 local Git observation update
+
+- Added local provider-turn Git observation for structured prompt dispatch: Arroba captures a pre-turn Git snapshot from the provider working directory, captures a post-turn snapshot after prompt completion, and records operational history events without holding the main app lock during Git commands.
+- Operational history now records `git_commit_detected`, worktree dirty/clean/change, and push-detected events with provider, model, prompt id, branch, worktree, prompt summary, commit SHA, commit subject, author metadata, changed paths, before/after HEAD, and attribution candidates.
+- Added `apps/cli/scripts/live-git-observation-drill.mjs` and `pnpm --filter @arroba/cli run git-observation:drill`; the live drill passed against an isolated local kernel/dev-stub agent by committing `feature.txt` during a dispatched agent turn and verifying the commit event is searchable by subject/path/provider/model/prompt attribution.
+- Remote Git observation is intentionally not covered by this local slice because remote worktree Git state must be observed by the worker kernel and forwarded/reconciled with home.

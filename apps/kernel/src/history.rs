@@ -253,6 +253,48 @@ impl HistoryEvent {
             timestamp_ms: self.timestamp_ms,
         })
     }
+
+    pub fn operational(
+        sequence: u64,
+        kind: HistoryEventKind,
+        role: Option<HistoryEventRole>,
+        content: Option<String>,
+        metadata: BTreeMap<String, serde_json::Value>,
+        context: HistoryEventTurnContext,
+    ) -> Self {
+        let timestamp_ms = unix_epoch_ms();
+        Self {
+            event_id: history_event_id(sequence, timestamp_ms),
+            sequence,
+            timestamp_ms,
+            workspace_id: context.workspace_id,
+            session_id: context.session_id,
+            agent_id: context.agent_id,
+            agent_alias: context.agent_alias,
+            provider: context.provider,
+            model: context.model,
+            turn_id: context.turn_id,
+            prompt_id: context.prompt_id,
+            provider_run_id: context.provider_run_id,
+            provider_session_id: context.provider_session_id,
+            workflow_id: context.workflow_id,
+            workflow_run_id: context.workflow_run_id,
+            workflow_node_id: context.workflow_node_id,
+            machine_id: context.machine_id,
+            repo_root: context.repo_root,
+            worktree_path: context.worktree_path,
+            kind,
+            role,
+            content,
+            content_ref: None,
+            metadata,
+            candidate_agent_ids: Vec::new(),
+            candidate_prompt_ids: Vec::new(),
+            candidate_turn_ids: Vec::new(),
+            attribution_confidence: None,
+            caused_by_event_id: None,
+        }
+    }
 }
 
 impl From<SessionHistoryEntryKind> for HistoryEventKind {
@@ -455,8 +497,26 @@ impl OperationalHistoryStore {
         entry: &SessionHistoryEntry,
         context: HistoryEventTurnContext,
     ) -> Result<HistoryEvent, DaemonError> {
-        let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
+        let sequence = self.reserve_sequence();
         let event = HistoryEvent::transcript(sequence, entry, context);
+        self.append(&event)?;
+        Ok(event)
+    }
+
+    pub fn reserve_sequence(&self) -> u64 {
+        self.next_sequence.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub fn append_operational_event(
+        &self,
+        kind: HistoryEventKind,
+        role: Option<HistoryEventRole>,
+        content: Option<String>,
+        metadata: BTreeMap<String, serde_json::Value>,
+        context: HistoryEventTurnContext,
+    ) -> Result<HistoryEvent, DaemonError> {
+        let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
+        let event = HistoryEvent::operational(sequence, kind, role, content, metadata, context);
         self.append(&event)?;
         Ok(event)
     }

@@ -79,6 +79,16 @@ node apps/cli/scripts/live-kernel-reconnect-drill.mjs
 
 It kills the event subscription lane while a control request is pending and fails unless the control request completes and the event lane resubscribes from the last event id.
 
+## Git Observation Drill
+
+Use this after touching local prompt dispatch, provider working directories, operational history search, or Git observation:
+
+```bash
+pnpm --filter @arroba/cli run git-observation:drill
+```
+
+It launches an isolated local kernel and dev-stub provider inside a temporary Git repo, waits for a prompt to be dispatched, commits a file during the turn, completes the prompt, and fails unless operational history contains a searchable `git_commit_detected` event with the expected commit, path, provider/model, agent, and prompt attribution.
+
 ## Remote Restart Drill
 
 Use this after touching durable remote agents, relay registration, leased prompt dispatch, or remote restart recovery:
