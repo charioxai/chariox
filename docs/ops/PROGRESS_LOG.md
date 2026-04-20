@@ -756,3 +756,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added provider-neutral canonical history event types for transcript, workflow, capability, remote-machine, and Git observation events.
 - Added turn/provider/model/worktree attribution fields plus candidate attribution lists for ambiguous Git and multi-agent cases.
 - Added a compatibility conversion from existing `SessionHistoryEntry` transcript records into canonical `HistoryEvent` records while leaving the current JSONL runtime storage path unchanged.
+
+### M8 operational SQLite store foundation
+
+- Added the first operational history SQLite store behind a new `OperationalHistoryStore` API without cutting over `GetSessionHistory` yet.
+- The store creates its schema, enables SQLite WAL mode, appends canonical events idempotently by `event_id`, and can load ordered events by session with optional agent filtering.
+- Added focused coverage for opening the store, idempotent append, and session/agent event loading.

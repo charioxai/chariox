@@ -2,10 +2,12 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -342,6 +344,179 @@ pub struct SessionHistoryStore {
     read_delay_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct OperationalHistoryStore {
+    path: PathBuf,
+    connection: Arc<Mutex<Connection>>,
+}
+
+impl OperationalHistoryStore {
+    pub fn open(path: PathBuf) -> Result<Self, DaemonError> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: None,
+                operation: "create operational history directory",
+                message: error.to_string(),
+            })?;
+        }
+        let connection =
+            Connection::open(&path).map_err(|error| operational_history_error("open", error))?;
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .map_err(|error| operational_history_error("enable WAL mode", error))?;
+        connection
+            .execute_batch(OPERATIONAL_HISTORY_SCHEMA)
+            .map_err(|error| operational_history_error("migrate schema", error))?;
+        Ok(Self {
+            path,
+            connection: Arc::new(Mutex::new(connection)),
+        })
+    }
+
+    pub fn append(&self, event: &HistoryEvent) -> Result<(), DaemonError> {
+        let event_json =
+            serde_json::to_string(event).map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: event.session_id.clone(),
+                operation: "encode operational history event",
+                message: error.to_string(),
+            })?;
+        let metadata_text = searchable_metadata(event);
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: event.session_id.clone(),
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO history_events (
+                    event_id,
+                    sequence,
+                    timestamp_ms,
+                    kind,
+                    session_id,
+                    agent_id,
+                    provider,
+                    model,
+                    turn_id,
+                    prompt_id,
+                    provider_run_id,
+                    workflow_id,
+                    workflow_run_id,
+                    workflow_node_id,
+                    machine_id,
+                    repo_root,
+                    worktree_path,
+                    content,
+                    content_ref,
+                    metadata_text,
+                    event_json
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                params![
+                    event.event_id.as_str(),
+                    event.sequence as i64,
+                    event.timestamp_ms as i64,
+                    history_event_kind_key(event.kind),
+                    event.session_id.as_deref(),
+                    event.agent_id.as_deref(),
+                    event.provider.as_deref(),
+                    event.model.as_deref(),
+                    event.turn_id.as_deref(),
+                    event.prompt_id.as_deref(),
+                    event.provider_run_id.as_deref(),
+                    event.workflow_id.as_deref(),
+                    event.workflow_run_id.as_deref(),
+                    event.workflow_node_id.as_deref(),
+                    event.machine_id.as_deref(),
+                    event.repo_root.as_deref(),
+                    event.worktree_path.as_deref(),
+                    event.content.as_deref(),
+                    event.content_ref.as_deref(),
+                    metadata_text,
+                    event_json,
+                ],
+            )
+            .map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: event.session_id.clone(),
+                    operation: "append operational history event",
+                    message: error.to_string(),
+                }
+            })?;
+        Ok(())
+    }
+
+    pub fn load_session_events(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+    ) -> Result<Vec<HistoryEvent>, DaemonError> {
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        let sql = if agent_id.is_some() {
+            "SELECT event_json FROM history_events WHERE session_id = ?1 AND agent_id = ?2 ORDER BY sequence ASC"
+        } else {
+            "SELECT event_json FROM history_events WHERE session_id = ?1 ORDER BY sequence ASC"
+        };
+        let mut statement =
+            connection
+                .prepare(sql)
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "prepare operational history load",
+                    message: error.to_string(),
+                })?;
+        let mut rows = if let Some(agent_id) = agent_id {
+            statement.query(params![session_id, agent_id])
+        } else {
+            statement.query(params![session_id])
+        }
+        .map_err(|error| DaemonError::SessionHistoryFailed {
+            session_id: Some(session_id.to_string()),
+            operation: "load operational history events",
+            message: error.to_string(),
+        })?;
+        let mut events = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "read operational history event",
+                message: error.to_string(),
+            })?
+        {
+            let event_json =
+                row.get::<_, String>(0)
+                    .map_err(|error| DaemonError::SessionHistoryFailed {
+                        session_id: Some(session_id.to_string()),
+                        operation: "read operational history event",
+                        message: error.to_string(),
+                    })?;
+            let event = serde_json::from_str::<HistoryEvent>(&event_json).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "decode operational history event",
+                    message: error.to_string(),
+                }
+            })?;
+            events.push(event);
+        }
+        Ok(events)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 impl SessionHistoryStore {
     pub fn new(root: PathBuf) -> Result<Self, DaemonError> {
         Self::new_with_read_delay(root, 0)
@@ -456,6 +631,110 @@ fn history_file_name(session: &RuntimeSession) -> String {
     format!("{}-{}.jsonl", session.id(), session.created_at_ms())
 }
 
+const OPERATIONAL_HISTORY_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS history_events (
+    event_id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL,
+    timestamp_ms INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    session_id TEXT,
+    agent_id TEXT,
+    provider TEXT,
+    model TEXT,
+    turn_id TEXT,
+    prompt_id TEXT,
+    provider_run_id TEXT,
+    workflow_id TEXT,
+    workflow_run_id TEXT,
+    workflow_node_id TEXT,
+    machine_id TEXT,
+    repo_root TEXT,
+    worktree_path TEXT,
+    content TEXT,
+    content_ref TEXT,
+    metadata_text TEXT,
+    event_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_history_events_session_sequence
+    ON history_events(session_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_history_events_agent_sequence
+    ON history_events(agent_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_history_events_provider_model
+    ON history_events(provider, model);
+CREATE INDEX IF NOT EXISTS idx_history_events_kind_timestamp
+    ON history_events(kind, timestamp_ms);
+CREATE INDEX IF NOT EXISTS idx_history_events_workflow
+    ON history_events(workflow_id, workflow_run_id, workflow_node_id);
+CREATE INDEX IF NOT EXISTS idx_history_events_machine
+    ON history_events(machine_id, timestamp_ms);
+CREATE INDEX IF NOT EXISTS idx_history_events_repo
+    ON history_events(repo_root, worktree_path);
+"#;
+
+fn operational_history_error(operation: &'static str, error: rusqlite::Error) -> DaemonError {
+    DaemonError::SessionHistoryFailed {
+        session_id: None,
+        operation,
+        message: error.to_string(),
+    }
+}
+
+fn history_event_kind_key(kind: HistoryEventKind) -> &'static str {
+    match kind {
+        HistoryEventKind::UserPrompt => "user_prompt",
+        HistoryEventKind::ProviderOutput => "provider_output",
+        HistoryEventKind::ProviderReasoning => "provider_reasoning",
+        HistoryEventKind::ProviderTool => "provider_tool",
+        HistoryEventKind::ProviderError => "provider_error",
+        HistoryEventKind::ProviderStatus => "provider_status",
+        HistoryEventKind::Notice => "notice",
+        HistoryEventKind::SessionCreated => "session_created",
+        HistoryEventKind::AgentCreated => "agent_created",
+        HistoryEventKind::AgentMoved => "agent_moved",
+        HistoryEventKind::WorkflowStarted => "workflow_started",
+        HistoryEventKind::WorkflowNodeStarted => "workflow_node_started",
+        HistoryEventKind::WorkflowNodeCompleted => "workflow_node_completed",
+        HistoryEventKind::McpGranted => "mcp_granted",
+        HistoryEventKind::SkillGranted => "skill_granted",
+        HistoryEventKind::RemoteMachineConnected => "remote_machine_connected",
+        HistoryEventKind::RemoteMachineDisconnected => "remote_machine_disconnected",
+        HistoryEventKind::GitCommitDetected => "git_commit_detected",
+        HistoryEventKind::GitWorktreeChanged => "git_worktree_changed",
+        HistoryEventKind::GitWorktreeDirty => "git_worktree_dirty",
+        HistoryEventKind::GitWorktreeClean => "git_worktree_clean",
+        HistoryEventKind::GitPushDetected => "git_push_detected",
+    }
+}
+
+fn searchable_metadata(event: &HistoryEvent) -> String {
+    let mut parts = Vec::new();
+    for value in event.metadata.values() {
+        collect_searchable_json_strings(value, &mut parts);
+    }
+    parts.extend(event.candidate_agent_ids.iter().cloned());
+    parts.extend(event.candidate_prompt_ids.iter().cloned());
+    parts.extend(event.candidate_turn_ids.iter().cloned());
+    parts.join("\n")
+}
+
+fn collect_searchable_json_strings(value: &serde_json::Value, parts: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(value) => parts.push(value.clone()),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_searchable_json_strings(value, parts);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                collect_searchable_json_strings(value, parts);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn unix_epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -471,7 +750,7 @@ mod tests {
 
     use super::{
         HistoryEvent, HistoryEventKind, HistoryEventRole, HistoryEventTurnContext,
-        SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryStore,
+        OperationalHistoryStore, SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryStore,
     };
 
     #[test]
@@ -558,5 +837,54 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("tool:browser")
         );
+    }
+
+    #[test]
+    fn operational_history_store_appends_and_loads_events_idempotently() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-operational-history-{}-{}.db",
+            std::process::id(),
+            super::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+
+        let store = OperationalHistoryStore::open(path.clone())
+            .expect("operational history store should open");
+        let entry = SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hi");
+        let event = HistoryEvent::transcript(
+            1,
+            &entry,
+            HistoryEventTurnContext {
+                provider: Some("opencode".to_string()),
+                model: Some("gpt-5.2".to_string()),
+                ..HistoryEventTurnContext::default()
+            },
+        );
+
+        store
+            .append(&event)
+            .expect("event should append to operational history");
+        store
+            .append(&event)
+            .expect("duplicate event should be ignored");
+
+        let all_events = store
+            .load_session_events("session-1", None)
+            .expect("session events should load");
+        assert_eq!(all_events.len(), 1);
+        assert_eq!(all_events[0].event_id, event.event_id);
+        assert_eq!(all_events[0].kind, HistoryEventKind::UserPrompt);
+        assert_eq!(all_events[0].provider.as_deref(), Some("opencode"));
+
+        let agent_events = store
+            .load_session_events("session-1", Some("agent-1"))
+            .expect("agent events should load");
+        assert_eq!(agent_events.len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 }

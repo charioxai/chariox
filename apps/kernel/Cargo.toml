@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 portable-pty = "0.8.1"
 rand = "0.8"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 toml = "0.8.19"
