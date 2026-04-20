@@ -26,8 +26,10 @@ impl ProviderLaunchCommandExecutor {
     pub(crate) async fn execute(
         &self,
         request: LaunchProviderRunRequest,
+        caller_user_id: String,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (started, runtime_init_delay_ms) = self.store.start_launch(request).await?;
+        let (started, runtime_init_delay_ms) =
+            self.store.start_launch(request, caller_user_id).await?;
         let accepted = started.run.clone();
         let store = self.store.clone();
         tokio::spawn(async move {
@@ -67,8 +69,11 @@ impl ProviderLaunchStore {
     async fn start_launch(
         &self,
         request: LaunchProviderRunRequest,
+        caller_user_id: String,
     ) -> Result<(StartedProviderLaunch, u64), DaemonError> {
-        self.state.start_provider_launch(request).await
+        self.state
+            .start_provider_launch(request, caller_user_id)
+            .await
     }
 
     async fn finish_launch(

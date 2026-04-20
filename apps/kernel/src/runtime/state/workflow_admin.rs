@@ -6,6 +6,113 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    fn deny_owner(
+        user_id: &str,
+        owner_user_id: &str,
+        resource: String,
+        operation: &'static str,
+    ) -> DaemonError {
+        DaemonError::OwnershipAccessDenied {
+            user_id: user_id.to_string(),
+            owner_user_id: owner_user_id.to_string(),
+            resource,
+            operation,
+        }
+    }
+
+    fn ensure_workflow_node_owner(
+        &self,
+        session_id: &str,
+        workflow_ref: &str,
+        node_id: &str,
+        user_id: &str,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(session_id, workflow_ref)?;
+        let node = workflow
+            .node(node_id)
+            .ok_or_else(|| DaemonError::WorkflowNodeNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow.id().to_string(),
+                node_id: node_id.to_string(),
+            })?;
+        if node.owner_user_id() == user_id {
+            Ok(())
+        } else {
+            Err(Self::deny_owner(
+                user_id,
+                node.owner_user_id(),
+                format!("workflow node `{node_id}`"),
+                operation,
+            ))
+        }
+    }
+
+    pub(super) fn ensure_workflow_endpoint_owner(
+        &self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        user_id: &str,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        let endpoint = self.session_store.read().resolve_workflow_endpoint_ref(
+            session_id,
+            workflow_ref,
+            endpoint_ref,
+        )?;
+        if endpoint.owner_user_id() == user_id {
+            Ok(())
+        } else {
+            Err(Self::deny_owner(
+                user_id,
+                endpoint.owner_user_id(),
+                format!("workflow endpoint `{endpoint_ref}`"),
+                operation,
+            ))
+        }
+    }
+
+    fn ensure_workflow_edge_incident_to_owner(
+        &self,
+        session_id: &str,
+        workflow_ref: &str,
+        edge_id: &str,
+        user_id: &str,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(session_id, workflow_ref)?;
+        let edge = workflow
+            .edge(edge_id)
+            .ok_or_else(|| DaemonError::WorkflowEdgeNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow.id().to_string(),
+                edge_id: edge_id.to_string(),
+            })?;
+        let from_owner = workflow
+            .node(edge.from_node_id())
+            .map(|node| node.owner_user_id());
+        let to_owner = workflow
+            .node(edge.to_node_id())
+            .map(|node| node.owner_user_id());
+        if from_owner == Some(user_id) || to_owner == Some(user_id) {
+            Ok(())
+        } else {
+            Err(Self::deny_owner(
+                user_id,
+                edge.created_by_user_id(),
+                format!("workflow edge `{edge_id}`"),
+                operation,
+            ))
+        }
+    }
+
     pub(super) fn workflow_session(
         &self,
         session_id: &str,
@@ -67,6 +174,13 @@ impl KernelRuntimeOwnedState {
         request: crate::local::CreateWorkflowEndpointRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_node_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.entry_node_id,
+            caller_user_id,
+            "create workflow endpoint",
+        )?;
         let endpoint = self.session_store.write().create_workflow_endpoint(
             &request.session_id,
             &request.workflow_ref,
@@ -94,7 +208,15 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_alias_endpoint(
         &self,
         request: crate::local::AliasWorkflowEndpointRequest,
+        caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_endpoint_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+            caller_user_id,
+            "alias workflow endpoint",
+        )?;
         let endpoint = self.session_store.write().assign_workflow_endpoint_alias(
             &request.session_id,
             &request.workflow_ref,
@@ -116,7 +238,22 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_bind_endpoint(
         &self,
         request: crate::local::BindWorkflowEndpointRequest,
+        caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_endpoint_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+            caller_user_id,
+            "bind workflow endpoint",
+        )?;
+        self.ensure_workflow_node_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.entry_node_id,
+            caller_user_id,
+            "bind workflow endpoint",
+        )?;
         let endpoint = self.session_store.write().bind_workflow_endpoint(
             &request.session_id,
             &request.workflow_ref,
@@ -140,15 +277,25 @@ impl KernelRuntimeOwnedState {
         request: crate::local::AddWorkflowNodeRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        if self
+        let agent = if let Some(agent) = self
             .agent_store
             .get_session_agents(&request.session_id)
             .into_iter()
-            .all(|agent| agent.id() != request.agent_id)
+            .find(|agent| agent.id() == request.agent_id)
         {
+            agent
+        } else {
             return Err(DaemonError::AgentNotFound {
                 agent_id: request.agent_id,
             });
+        };
+        if agent.owner_user_id() != caller_user_id {
+            return Err(Self::deny_owner(
+                caller_user_id,
+                agent.owner_user_id(),
+                format!("agent `{}`", request.agent_id),
+                "add workflow node",
+            ));
         }
         let node = self.session_store.write().add_workflow_node_owned(
             &request.session_id,
@@ -172,7 +319,15 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_remove_node(
         &self,
         request: crate::local::RemoveWorkflowNodeRequest,
+        caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_node_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.node_id,
+            caller_user_id,
+            "remove workflow node",
+        )?;
         let node = self.session_store.write().remove_workflow_node(
             &request.session_id,
             &request.workflow_ref,
@@ -193,7 +348,15 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_update_node_instructions(
         &self,
         request: crate::local::UpdateWorkflowNodeInstructionsRequest,
+        caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_node_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.node_id,
+            caller_user_id,
+            "update workflow node instructions",
+        )?;
         let node = self
             .session_store
             .write()
@@ -218,7 +381,15 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_set_node_can_complete_run(
         &self,
         request: crate::local::SetWorkflowNodeCanCompleteRunRequest,
+        caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_node_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.node_id,
+            caller_user_id,
+            "set workflow node completion policy",
+        )?;
         let node = self
             .session_store
             .write()
@@ -243,7 +414,15 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_set_node_can_emit_intermediate_output(
         &self,
         request: crate::local::SetWorkflowNodeCanEmitIntermediateOutputRequest,
+        caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_node_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.node_id,
+            caller_user_id,
+            "set workflow node intermediate output policy",
+        )?;
         let node = self
             .session_store
             .write()
@@ -270,7 +449,15 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_set_node_intermediate_output_schema(
         &self,
         request: crate::local::SetWorkflowNodeIntermediateOutputSchemaRequest,
+        caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_node_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.node_id,
+            caller_user_id,
+            "set workflow node intermediate output schema",
+        )?;
         let node = self
             .session_store
             .write()
@@ -297,7 +484,15 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_set_node_max_turns(
         &self,
         request: crate::local::SetWorkflowNodeMaxTurnsRequest,
+        caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_node_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.node_id,
+            caller_user_id,
+            "set workflow node max turns",
+        )?;
         let node = self.session_store.write().set_workflow_node_max_turns(
             &request.session_id,
             &request.workflow_ref,
@@ -321,6 +516,37 @@ impl KernelRuntimeOwnedState {
         request: crate::local::AddWorkflowEdgeRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let from_owner = workflow
+            .node(&request.from_node_id)
+            .map(|node| node.owner_user_id())
+            .ok_or_else(|| DaemonError::WorkflowNodeNotFound {
+                session_id: request.session_id.clone(),
+                workflow_id: workflow.id().to_string(),
+                node_id: request.from_node_id.clone(),
+            })?;
+        let to_owner = workflow
+            .node(&request.to_node_id)
+            .map(|node| node.owner_user_id())
+            .ok_or_else(|| DaemonError::WorkflowNodeNotFound {
+                session_id: request.session_id.clone(),
+                workflow_id: workflow.id().to_string(),
+                node_id: request.to_node_id.clone(),
+            })?;
+        if from_owner != caller_user_id && to_owner != caller_user_id {
+            return Err(Self::deny_owner(
+                caller_user_id,
+                from_owner,
+                format!(
+                    "workflow edge `{} -> {}`",
+                    request.from_node_id, request.to_node_id
+                ),
+                "add workflow edge",
+            ));
+        }
         let edge = self.session_store.write().add_workflow_edge_owned(
             &request.session_id,
             &request.workflow_ref,
@@ -345,7 +571,15 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_remove_edge(
         &self,
         request: crate::local::RemoveWorkflowEdgeRequest,
+        caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_edge_incident_to_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.edge_id,
+            caller_user_id,
+            "remove workflow edge",
+        )?;
         let edge = self.session_store.write().remove_workflow_edge(
             &request.session_id,
             &request.workflow_ref,

@@ -440,13 +440,14 @@ impl SessionRuntimeStore {
     async fn focus_agent(
         &self,
         request: FocusAgentRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let result = self
             .state
-            .focus_agent(&request.session_id, &request.agent_id)
+            .focus_agent(&request.session_id, &request.agent_id, &caller_user_id)
             .await
             .map(|agent| LocalDaemonResponse::AgentFocused { agent });
         self.with_session_projection_action_result(result).await
@@ -455,13 +456,14 @@ impl SessionRuntimeStore {
     async fn cycle_agent_focus(
         &self,
         request: CycleAgentFocusRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let result = self
             .state
-            .cycle_agent_focus(&request.session_id)
+            .cycle_agent_focus(&request.session_id, &caller_user_id)
             .await
             .map(|agent| LocalDaemonResponse::AgentFocusCycled { agent });
         self.with_session_projection_action_result(result).await
@@ -608,11 +610,16 @@ impl SessionRuntimeStore {
     async fn destroy_agent(
         &self,
         request: DestroyAgentRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = match self.state.destroy_agent(&request.agent_id).await {
+        let result = match self
+            .state
+            .destroy_agent(&request.agent_id, &caller_user_id)
+            .await
+        {
             Ok(agent) => {
                 let session_id = agent.session_id().to_string();
                 self.state
@@ -807,9 +814,11 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::DetachFromSession(request) => {
                 self.store.detach_from_session(request).await
             }
-            LocalDaemonRequest::FocusAgent(request) => self.store.focus_agent(request).await,
+            LocalDaemonRequest::FocusAgent(request) => {
+                self.store.focus_agent(request, caller_user_id).await
+            }
             LocalDaemonRequest::CycleAgentFocus(request) => {
-                self.store.cycle_agent_focus(request).await
+                self.store.cycle_agent_focus(request, caller_user_id).await
             }
             LocalDaemonRequest::ResizeTerminal(request) => {
                 self.store.resize_terminal(request).await
@@ -824,7 +833,9 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::SpawnAgent(request) => {
                 self.store.spawn_agent(request, caller_user_id).await
             }
-            LocalDaemonRequest::DestroyAgent(request) => self.store.destroy_agent(request).await,
+            LocalDaemonRequest::DestroyAgent(request) => {
+                self.store.destroy_agent(request, caller_user_id).await
+            }
             LocalDaemonRequest::EndSession(request) => self.store.end_session(request).await,
             LocalDaemonRequest::DeleteSession(request) => self.store.delete_session(request).await,
             _ => (
@@ -1087,7 +1098,7 @@ mod tests {
         FocusedAgentProjection, SessionProjectionAction, SessionRuntime,
     };
     use crate::runtime::state::KernelRuntimeState;
-    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
+    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome, DEFAULT_LOCAL_USER_ID};
     use crate::terminal::TerminalOutputKind;
     use crate::{DaemonApp, DaemonConfig, DaemonError};
     use std::sync::Arc;
@@ -1814,7 +1825,7 @@ mod tests {
         }
 
         let cycled = state
-            .cycle_agent_focus(&session_id)
+            .cycle_agent_focus(&session_id, DEFAULT_LOCAL_USER_ID)
             .await
             .expect("cycling focus after reattach should not park an already parked run")
             .expect("another agent should be focused");

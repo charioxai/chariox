@@ -413,6 +413,11 @@ Exit criteria:
 
 ### Slice 3. Kernel Authorization
 
+Status: closed in implementation. The kernel now enforces owner-only control for
+freeform agent focus/destroy/capability grants, prompt submit/complete/cancel,
+provider launch, remote-agent move, workflow node mutation, endpoint ownership,
+endpoint invocation, and collaborative edge add/remove rules.
+
 Enforce:
 
 - users control only their own freeform agents and providers
@@ -426,8 +431,9 @@ Enforce:
 Exit criteria:
 
 - unauthorized mutations fail before state changes
-- errors are structured and user-facing
-- tests cover each ownership rule
+- errors are structured and user-facing through `OwnershipAccessDenied`
+- regression coverage pins cross-user agent control, prompt submit, workflow
+  node mutation, endpoint invocation, and collaborative edge authorization
 
 ### Slice 4. Caller-Scoped Projections And Redaction
 

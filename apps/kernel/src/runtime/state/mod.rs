@@ -332,34 +332,41 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent_id: &str,
+        caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.owned.focus_agent(session_id, agent_id)
+        self.owned.focus_agent(session_id, agent_id, caller_user_id)
     }
 
     pub(crate) async fn cycle_agent_focus(
         &self,
         session_id: &str,
+        caller_user_id: &str,
     ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
-        self.owned.cycle_agent_focus(session_id)
+        self.owned.cycle_agent_focus(session_id, caller_user_id)
     }
 
     pub(crate) async fn grant_agent_mcp(
         &self,
         agent_ref: &str,
         name: String,
+        caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let existing = self
             .owned
             .agent_store
             .get_agent(agent_ref)
             .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?;
+        self.owned
+            .ensure_agent_owner(existing.id(), caller_user_id, "grant agent capability")?;
         if existing.remote_execution().is_some() && !existing.mcp_grants().contains(&name) {
             let mut checked = existing.clone();
             checked.grant_mcp(name.clone());
             self.ensure_remote_mcp_availability_for_agent(&checked)
                 .await?;
         }
-        let agent = self.owned.grant_agent_mcp(agent_ref, name.clone())?;
+        let agent = self
+            .owned
+            .grant_agent_mcp(agent_ref, name.clone(), caller_user_id)?;
         self.append_agent_durable_event("agent.mcp_granted", &agent, Some(&name))
             .await?;
         let _ = self.activate_agent_mcp_grants_if_idle(agent.session_id(), agent.id(), &name)?;
@@ -370,8 +377,11 @@ impl KernelRuntimeState {
         &self,
         agent_ref: &str,
         name: &str,
+        caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let agent = self.owned.revoke_agent_mcp(agent_ref, name)?;
+        let agent = self
+            .owned
+            .revoke_agent_mcp(agent_ref, name, caller_user_id)?;
         self.append_agent_durable_event("agent.mcp_revoked", &agent, Some(name))
             .await?;
         Ok(agent)
@@ -381,8 +391,11 @@ impl KernelRuntimeState {
         &self,
         agent_ref: &str,
         name: String,
+        caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let agent = self.owned.grant_agent_skill(agent_ref, name.clone())?;
+        let agent = self
+            .owned
+            .grant_agent_skill(agent_ref, name.clone(), caller_user_id)?;
         self.append_agent_durable_event("agent.skill_granted", &agent, Some(&name))
             .await?;
         self.ensure_remote_skill_packages_for_agent(&agent).await?;
@@ -393,8 +406,11 @@ impl KernelRuntimeState {
         &self,
         agent_ref: &str,
         name: &str,
+        caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let agent = self.owned.revoke_agent_skill(agent_ref, name)?;
+        let agent = self
+            .owned
+            .revoke_agent_skill(agent_ref, name, caller_user_id)?;
         self.append_agent_durable_event("agent.skill_revoked", &agent, Some(name))
             .await?;
         Ok(agent)
@@ -453,6 +469,16 @@ impl KernelRuntimeState {
         self.owned.alias_session(session_id, alias)
     }
 
+    pub(crate) async fn ensure_agent_owner(
+        &self,
+        agent_id: &str,
+        caller_user_id: &str,
+        operation: &'static str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.owned
+            .ensure_agent_owner(agent_id, caller_user_id, operation)
+    }
+
     pub(crate) async fn spawn_agent(
         &self,
         request: crate::agent::CreateAgentRequest,
@@ -471,7 +497,10 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_ref: &str,
         machine_ref: &str,
+        caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.owned
+            .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
         self.with_app_side_effect(|app| {
             app.move_agent_to_remote(session_id, agent_ref, machine_ref)
         })
@@ -481,10 +510,13 @@ impl KernelRuntimeState {
     pub(crate) async fn destroy_agent(
         &self,
         agent_id: &str,
+        caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
+        self.owned
+            .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
         if agent.remote_execution().is_none() {
-            return self.owned.destroy_agent(agent_id);
+            return self.owned.destroy_agent(agent_id, caller_user_id);
         }
         self.with_app_side_effect(|app| {
             crate::app::KernelSessionService::new(app).destroy_agent(agent_id)
@@ -566,12 +598,12 @@ impl KernelRuntimeState {
                 (result, session)
             }
             LocalDaemonRequest::AliasWorkflowEndpoint(request) => {
-                let result = owned.workflow_alias_endpoint(request);
+                let result = owned.workflow_alias_endpoint(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
             LocalDaemonRequest::BindWorkflowEndpoint(request) => {
-                let result = owned.workflow_bind_endpoint(request);
+                let result = owned.workflow_bind_endpoint(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
@@ -581,32 +613,34 @@ impl KernelRuntimeState {
                 (result, session)
             }
             LocalDaemonRequest::RemoveWorkflowNode(request) => {
-                let result = owned.workflow_remove_node(request);
+                let result = owned.workflow_remove_node(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
             LocalDaemonRequest::UpdateWorkflowNodeInstructions(request) => {
-                let result = owned.workflow_update_node_instructions(request);
+                let result = owned.workflow_update_node_instructions(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
             LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(request) => {
-                let result = owned.workflow_set_node_can_complete_run(request);
+                let result = owned.workflow_set_node_can_complete_run(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
             LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(request) => {
-                let result = owned.workflow_set_node_can_emit_intermediate_output(request);
+                let result =
+                    owned.workflow_set_node_can_emit_intermediate_output(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
             LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(request) => {
-                let result = owned.workflow_set_node_intermediate_output_schema(request);
+                let result =
+                    owned.workflow_set_node_intermediate_output_schema(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
             LocalDaemonRequest::SetWorkflowNodeMaxTurns(request) => {
-                let result = owned.workflow_set_node_max_turns(request);
+                let result = owned.workflow_set_node_max_turns(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
@@ -616,7 +650,7 @@ impl KernelRuntimeState {
                 (result, session)
             }
             LocalDaemonRequest::RemoveWorkflowEdge(request) => {
-                let result = owned.workflow_remove_edge(request);
+                let result = owned.workflow_remove_edge(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
@@ -677,12 +711,22 @@ impl KernelRuntimeState {
             }
             LocalDaemonRequest::InvokeWorkflowEndpoint(request) => {
                 let session_id = request.session_id.clone();
-                let result = match owned.workflow_invoke_endpoint_with_admission(
-                    &request.session_id,
-                    &request.workflow_ref,
-                    &request.endpoint_ref,
-                    request.prompt,
-                ) {
+                let result = match owned
+                    .ensure_workflow_endpoint_owner(
+                        &request.session_id,
+                        &request.workflow_ref,
+                        &request.endpoint_ref,
+                        &caller_user_id,
+                        "invoke workflow endpoint",
+                    )
+                    .and_then(|()| {
+                        owned.workflow_invoke_endpoint_with_admission(
+                            &request.session_id,
+                            &request.workflow_ref,
+                            &request.endpoint_ref,
+                            request.prompt,
+                        )
+                    }) {
                     Ok((outcome, dispatches)) => {
                         self.spawn_workflow_prompt_dispatches(dispatches);
                         let session = match owned.session_snapshot(&request.session_id) {

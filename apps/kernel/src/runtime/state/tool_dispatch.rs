@@ -670,8 +670,11 @@ impl KernelRuntimeState {
                             self.ensure_remote_mcp_availability_for_agent(&checked)
                                 .await?;
                         }
-                        let granted_agent =
-                            self.owned.grant_agent_mcp(agent.id(), args.name.clone())?;
+                        let granted_agent = self.owned.grant_agent_mcp(
+                            agent.id(),
+                            args.name.clone(),
+                            agent.owner_user_id(),
+                        )?;
                         self.append_agent_durable_event(
                             "agent.mcp_granted",
                             &granted_agent,
@@ -739,9 +742,11 @@ impl KernelRuntimeState {
                                 "body": body
                             });
                         }
-                        let granted_agent = self
-                            .owned
-                            .grant_agent_skill(agent.id(), args.name.clone())?;
+                        let granted_agent = self.owned.grant_agent_skill(
+                            agent.id(),
+                            args.name.clone(),
+                            agent.owner_user_id(),
+                        )?;
                         self.append_agent_durable_event(
                             "agent.skill_granted",
                             &granted_agent,

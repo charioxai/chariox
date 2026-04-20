@@ -173,6 +173,15 @@ pub enum DaemonError {
     },
     #[error("user `{user_id}` is not a member of session `{session_id}`")]
     SessionAccessDenied { session_id: String, user_id: String },
+    #[error(
+        "user `{user_id}` cannot perform `{operation}` on `{resource}` owned by `{owner_user_id}`"
+    )]
+    OwnershipAccessDenied {
+        user_id: String,
+        owner_user_id: String,
+        resource: String,
+        operation: &'static str,
+    },
     #[error("session-scoped request `{operation}` requires authenticated user identity")]
     MissingSessionCallerIdentity { operation: String },
     #[error("session `{session_id}` has no active prompt")]

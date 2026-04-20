@@ -294,10 +294,22 @@ impl KernelRuntimeState {
     pub(crate) async fn start_provider_launch(
         &self,
         request: crate::local::LaunchProviderRunRequest,
+        caller_user_id: String,
     ) -> Result<(crate::app::StartedProviderLaunch, u64), DaemonError> {
         let launch_request = self.launch_provider_request_from_owned_state(request);
         {
             let owned = &self.owned;
+            if launch_request.owner_user_id != caller_user_id {
+                return Err(DaemonError::OwnershipAccessDenied {
+                    user_id: caller_user_id,
+                    owner_user_id: launch_request.owner_user_id.clone(),
+                    resource: format!(
+                        "provider run for agent `{}`",
+                        launch_request.agent_id.as_deref().unwrap_or("<focused>")
+                    ),
+                    operation: "launch provider run",
+                });
+            }
             let config = owned.config_projection.snapshot();
             let launch_request =
                 owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;

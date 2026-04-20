@@ -15,7 +15,9 @@ use crate::runtime::projection::{
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::session_actor::FocusedAgentProjection;
 use crate::runtime::state::KernelRuntimeState;
-use crate::session::{PromptCompletion, PromptIdAllocator, PromptQueueItem, PromptStatus};
+use crate::session::{
+    PromptCompletion, PromptIdAllocator, PromptQueueItem, PromptStatus, DEFAULT_LOCAL_USER_ID,
+};
 
 const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -245,8 +247,12 @@ impl AgentRuntime {
         command: &crate::runtime::command::KernelCommand,
         mut request: crate::local::SubmitPromptRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let caller_user_id = command_agent_actor_user_id(command);
         let agent_id = self
             .resolve_submit_agent_id(&request.session_id, request.target_agent_id.as_deref())
+            .await?;
+        self.store
+            .ensure_agent_owner(&agent_id, &caller_user_id, "submit prompt")
             .await?;
         request.target_agent_id = Some(agent_id.clone());
         self.dispatch_to_agent(
@@ -263,8 +269,12 @@ impl AgentRuntime {
         command: &crate::runtime::command::KernelCommand,
         request: crate::local::CancelActivePromptRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let caller_user_id = command_agent_actor_user_id(command);
         let agent_id = self
             .resolve_active_prompt_agent_id(&request.session_id)
+            .await?;
+        self.store
+            .ensure_agent_owner(&agent_id, &caller_user_id, "cancel active prompt")
             .await?;
         self.dispatch_to_agent(
             agent_id.clone(),
@@ -283,8 +293,12 @@ impl AgentRuntime {
         command: &crate::runtime::command::KernelCommand,
         request: crate::local::CompletePromptRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let caller_user_id = command_agent_actor_user_id(command);
         let agent_id = self
             .resolve_active_prompt_agent_id(&request.session_id)
+            .await?;
+        self.store
+            .ensure_agent_owner(&agent_id, &caller_user_id, "complete prompt")
             .await?;
         let next_queued_prompt = self
             .session_projection
@@ -540,12 +554,31 @@ impl AgentRuntimeStore {
         self.state.focused_agent_id(session_id).await
     }
 
+    async fn ensure_agent_owner(
+        &self,
+        agent_id: &str,
+        caller_user_id: &str,
+        operation: &'static str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.state
+            .ensure_agent_owner(agent_id, caller_user_id, operation)
+            .await
+    }
+
     fn prompt_command_service(
         &self,
         provider_runtime_lanes: ProviderRunOperationLanes,
     ) -> AgentPromptCommandService {
         AgentPromptCommandService::new(self.state.clone(), provider_runtime_lanes)
     }
+}
+
+fn command_agent_actor_user_id(command: &crate::runtime::command::KernelCommand) -> String {
+    command
+        .caller
+        .user_id
+        .clone()
+        .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
 }
 
 fn active_prompt_agent_id_from_projections(
