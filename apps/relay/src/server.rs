@@ -15,8 +15,8 @@ use crate::auth::{
 };
 use crate::config::RelayConfig;
 use crate::protocol::{
-    ClientTarget, DaemonRegistration, RelayConnectionRole, RelayEnvelope, RelayError,
-    RelayKernelPresence, RelayMachinePresence, RelayMetadataQuery,
+    ClientTarget, DaemonRegistration, RelayCallerIdentity, RelayConnectionRole, RelayEnvelope,
+    RelayError, RelayKernelPresence, RelayMachinePresence, RelayMetadataQuery,
 };
 
 #[derive(Debug, Clone)]
@@ -24,6 +24,7 @@ struct PeerHandle {
     sender: mpsc::UnboundedSender<Message>,
     role: RelayConnectionRole,
     realm_id: Option<String>,
+    identity: Option<RelayCallerIdentity>,
     daemon_registration: Option<DaemonRegistration>,
 }
 
@@ -45,6 +46,7 @@ impl DaemonKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectedPeer {
     pub role: RelayConnectionRole,
+    pub identity: Option<RelayCallerIdentity>,
     pub daemon_registration: Option<DaemonRegistration>,
 }
 
@@ -114,6 +116,7 @@ impl RelayRegistry {
     pub fn connected_peer(&self, peer_addr: &SocketAddr) -> Option<ConnectedPeer> {
         self.peers.get(peer_addr).map(|peer| ConnectedPeer {
             role: peer.role.clone(),
+            identity: peer.identity.clone(),
             daemon_registration: peer.daemon_registration.clone(),
         })
     }
@@ -385,7 +388,8 @@ async fn handle_connection(
                             PeerHandle {
                                 sender: outgoing_tx.clone(),
                                 role: RelayConnectionRole::Daemon,
-                                realm_id: Some(identity.realm_id),
+                                realm_id: Some(identity.realm_id.clone()),
+                                identity: Some(identity.into()),
                                 daemon_registration: Some(registration.clone()),
                             },
                         );
@@ -416,7 +420,8 @@ async fn handle_connection(
                             }
                             let mut guard = registry.write().await;
                             if let Some(peer) = guard.peers.get_mut(&peer_addr) {
-                                peer.realm_id = Some(identity.realm_id);
+                                peer.realm_id = Some(identity.realm_id.clone());
+                                peer.identity = Some(identity.into());
                                 peer.daemon_registration = Some(registration.clone());
                             }
                             guard.daemons.insert(current_daemon_key, registration);
@@ -454,7 +459,8 @@ async fn handle_connection(
                             PeerHandle {
                                 sender: outgoing_tx.clone(),
                                 role: RelayConnectionRole::Client,
-                                realm_id: Some(identity.realm_id),
+                                realm_id: Some(identity.realm_id.clone()),
+                                identity: Some(identity.into()),
                                 daemon_registration: None,
                             },
                         );
@@ -585,6 +591,7 @@ async fn handle_connection(
                             &RelayEnvelope::DaemonIncomingPeerRequest {
                                 relay_request_id,
                                 from_daemon_id: requester_daemon_key.daemon_id,
+                                caller_identity: peer_identity(&registry, peer_addr).await,
                                 encrypted_request,
                             },
                         )?;
@@ -618,6 +625,7 @@ async fn handle_connection(
                                 &daemon_sender,
                                 &RelayEnvelope::DaemonIncomingPeerEvent {
                                     from_daemon_id: requester_daemon_key.daemon_id,
+                                    caller_identity: peer_identity(&registry, peer_addr).await,
                                     encrypted_event,
                                 },
                             )?;
@@ -687,6 +695,7 @@ async fn handle_connection(
                             &daemon_sender,
                             &RelayEnvelope::DaemonRequest {
                                 relay_request_id,
+                                caller_identity: peer_identity(&registry, peer_addr).await,
                                 encrypted_request,
                             },
                         )?;
@@ -762,6 +771,7 @@ async fn handle_connection(
                             &RelayEnvelope::DaemonSubscribe {
                                 relay_request_id,
                                 relay_subscription_id: subscription_id,
+                                caller_identity: peer_identity(&registry, peer_addr).await,
                                 session_id,
                                 attachment_id,
                                 client_public_key,
@@ -835,6 +845,7 @@ async fn handle_connection(
                             &RelayEnvelope::DaemonUnsubscribe {
                                 relay_request_id,
                                 relay_subscription_id: subscription_id,
+                                caller_identity: peer_identity(&registry, peer_addr).await,
                                 client_public_key,
                             },
                         )?;
@@ -1024,6 +1035,18 @@ async fn peer_realm_id(registry: &Arc<RwLock<RelayRegistry>>, peer_addr: SocketA
         .get(&peer_addr)
         .and_then(|peer| peer.realm_id.clone())
         .unwrap_or_else(|| DEFAULT_RELAY_REALM_ID.to_string())
+}
+
+async fn peer_identity(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    peer_addr: SocketAddr,
+) -> Option<RelayCallerIdentity> {
+    registry
+        .read()
+        .await
+        .peers
+        .get(&peer_addr)
+        .and_then(|peer| peer.identity.clone())
 }
 
 fn resolve_daemon_sender_locked(
@@ -1920,9 +1943,16 @@ mod tests {
             RelayEnvelope::DaemonIncomingPeerRequest {
                 relay_request_id,
                 from_daemon_id,
+                caller_identity,
                 encrypted_request: forwarded,
             } => {
                 assert_eq!(from_daemon_id, "daemon-a");
+                assert_eq!(
+                    caller_identity
+                        .as_ref()
+                        .map(|identity| identity.subject.as_str()),
+                    Some("shared-token-bootstrap")
+                );
                 assert_eq!(forwarded, encrypted_request);
                 relay_request_id
             }

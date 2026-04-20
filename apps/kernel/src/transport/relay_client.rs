@@ -9,12 +9,14 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use arroba_relay::protocol::{ClientTarget, EncryptedRelayPayload, RelayEnvelope, RelayError};
+use arroba_relay::protocol::{
+    ClientTarget, EncryptedRelayPayload, RelayCallerIdentity, RelayEnvelope, RelayError,
+};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
-use crate::runtime::command::{KernelCommand, KernelCommandSource};
+use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
 use crate::runtime::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
 use crate::runtime_transport::{
     event_is_relevant_to_attachment, event_session_id, KernelEvent, WatchResult,
@@ -266,10 +268,12 @@ async fn handle_incoming_envelope(
     match envelope {
         RelayEnvelope::DaemonRequest {
             relay_request_id,
+            caller_identity,
             encrypted_request,
         } => {
             let relay_response =
-                handle_daemon_request(router, command_sequence, encrypted_request).await;
+                handle_daemon_request(router, command_sequence, caller_identity, encrypted_request)
+                    .await;
             send_outgoing_envelope(
                 outgoing_tx,
                 RelayEnvelope::DaemonResponse {
@@ -282,6 +286,7 @@ async fn handle_incoming_envelope(
         RelayEnvelope::DaemonIncomingPeerRequest {
             relay_request_id,
             from_daemon_id: _,
+            caller_identity: _,
             encrypted_request,
         } => {
             let relay_response =
@@ -314,6 +319,7 @@ async fn handle_incoming_envelope(
         }
         RelayEnvelope::DaemonIncomingPeerEvent {
             from_daemon_id: _,
+            caller_identity: _,
             encrypted_event,
         } => {
             handle_daemon_peer_event(router, encrypted_event).await?;
@@ -321,6 +327,7 @@ async fn handle_incoming_envelope(
         RelayEnvelope::DaemonSubscribe {
             relay_request_id,
             relay_subscription_id,
+            caller_identity: _,
             session_id,
             attachment_id,
             client_public_key,
@@ -383,6 +390,7 @@ async fn handle_incoming_envelope(
         RelayEnvelope::DaemonUnsubscribe {
             relay_request_id,
             relay_subscription_id,
+            caller_identity: _,
             client_public_key,
         } => {
             let existing = subscription_tasks
@@ -1262,6 +1270,7 @@ async fn resolve_pending_peer_response(
 async fn handle_daemon_request(
     router: &CommandRouter,
     command_sequence: &AtomicU64,
+    caller_identity: Option<RelayCallerIdentity>,
     encrypted_request: EncryptedRelayPayload,
 ) -> RelayRequestOutcome {
     let (request, client_public_key, daemon_private_key) = {
@@ -1298,7 +1307,8 @@ async fn handle_daemon_request(
         (request, decrypted.sender_public_key, daemon_private_key)
     };
 
-    let result = dispatch_relay_client_request(router, command_sequence, request).await;
+    let result =
+        dispatch_relay_client_request(router, command_sequence, caller_identity, request).await;
     match result {
         Ok(response) => {
             let plaintext = match serde_json::to_vec(&response) {
@@ -1343,6 +1353,7 @@ async fn handle_daemon_request(
 async fn dispatch_relay_client_request(
     router: &CommandRouter,
     command_sequence: &AtomicU64,
+    caller_identity: Option<RelayCallerIdentity>,
     request: LocalDaemonRequest,
 ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
     let sequence = command_sequence.fetch_add(1, Ordering::Relaxed);
@@ -1350,9 +1361,12 @@ async fn dispatch_relay_client_request(
         "relay-client-{}-{sequence}",
         crate::session::unix_epoch_ms()
     );
-    let command = KernelCommand::from_local_request_with_source(
+    let command = KernelCommand::from_local_request_with_caller(
         command_id,
         KernelCommandSource::RelayClient,
+        caller_identity
+            .map(KernelCaller::from_relay_identity)
+            .unwrap_or_else(|| KernelCaller::for_source(&KernelCommandSource::RelayClient)),
         None,
         None,
         &request,

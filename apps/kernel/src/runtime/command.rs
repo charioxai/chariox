@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use arroba_relay::auth::RelaySubjectKind;
+use arroba_relay::protocol::RelayCallerIdentity;
+
 use crate::local::LocalDaemonRequest;
 use crate::session::unix_epoch_ms;
 
@@ -12,6 +15,89 @@ pub enum KernelCommandSource {
     RelayClient,
     RelayPeer,
     DaemonBackground,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelCallerKind {
+    LocalClient,
+    RemoteClient,
+    RemoteKernel,
+    HostedService,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelCaller {
+    pub caller_id: String,
+    pub caller_kind: KernelCallerKind,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub machine_id: Option<String>,
+    #[serde(default)]
+    pub realm_id: Option<String>,
+    #[serde(default)]
+    pub public_key_thumbprint: Option<String>,
+}
+
+impl Default for KernelCaller {
+    fn default() -> Self {
+        Self::for_source(&KernelCommandSource::LocalCli)
+    }
+}
+
+impl KernelCaller {
+    pub fn for_source(source: &KernelCommandSource) -> Self {
+        let (caller_id, caller_kind) = match source {
+            KernelCommandSource::LocalCli => ("local-cli", KernelCallerKind::LocalClient),
+            KernelCommandSource::LocalIpc => ("local-ipc", KernelCallerKind::LocalClient),
+            KernelCommandSource::RelayClient => {
+                ("relay-client-unverified", KernelCallerKind::RemoteClient)
+            }
+            KernelCommandSource::RelayPeer => {
+                ("relay-peer-unverified", KernelCallerKind::RemoteKernel)
+            }
+            KernelCommandSource::DaemonBackground => {
+                ("daemon-background", KernelCallerKind::LocalClient)
+            }
+        };
+        Self {
+            caller_id: caller_id.to_string(),
+            caller_kind,
+            user_id: None,
+            client_id: None,
+            machine_id: None,
+            realm_id: None,
+            public_key_thumbprint: None,
+        }
+    }
+
+    pub fn from_relay_identity(identity: RelayCallerIdentity) -> Self {
+        let (caller_kind, client_id, machine_id) = match identity.subject_kind {
+            RelaySubjectKind::Client => (
+                KernelCallerKind::RemoteClient,
+                Some(identity.subject.clone()),
+                None,
+            ),
+            RelaySubjectKind::Kernel | RelaySubjectKind::Machine => (
+                KernelCallerKind::RemoteKernel,
+                None,
+                Some(identity.subject.clone()),
+            ),
+            RelaySubjectKind::Service => (KernelCallerKind::HostedService, None, None),
+        };
+        Self {
+            caller_id: identity.subject,
+            caller_kind,
+            user_id: None,
+            client_id,
+            machine_id,
+            realm_id: Some(identity.realm_id),
+            public_key_thumbprint: identity.public_key_thumbprint,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +114,8 @@ pub struct KernelCommand {
     pub command_type: String,
     pub submitted_at_ms: u64,
     pub source: KernelCommandSource,
+    #[serde(default)]
+    pub caller: KernelCaller,
     pub session_id: Option<String>,
     pub attachment_id: Option<String>,
     pub agent_id: Option<String>,
@@ -64,6 +152,25 @@ impl KernelCommand {
         causation_id: Option<String>,
         request: &LocalDaemonRequest,
     ) -> Self {
+        let caller = KernelCaller::for_source(&source);
+        Self::from_local_request_with_caller(
+            command_id,
+            source,
+            caller,
+            correlation_id,
+            causation_id,
+            request,
+        )
+    }
+
+    pub fn from_local_request_with_caller(
+        command_id: impl Into<String>,
+        source: KernelCommandSource,
+        caller: KernelCaller,
+        correlation_id: Option<String>,
+        causation_id: Option<String>,
+        request: &LocalDaemonRequest,
+    ) -> Self {
         let command_id = command_id.into();
         let payload = serde_json::to_value(request).unwrap_or(Value::Null);
         let metadata = local_request_metadata(request);
@@ -72,6 +179,7 @@ impl KernelCommand {
             command_type: metadata.command_type.to_string(),
             submitted_at_ms: unix_epoch_ms(),
             source,
+            caller,
             session_id: metadata.session_id,
             attachment_id: metadata.attachment_id,
             agent_id: metadata.agent_id,
@@ -370,8 +478,12 @@ mod tests {
         FocusAgentRequest, GetDaemonHealthRequest, LocalDaemonRequest, PollRuntimeNoticesRequest,
         SpawnAgentRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
     };
-    use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
+    use crate::runtime::command::{
+        KernelCaller, KernelCallerKind, KernelCommand, KernelCommandPriority, KernelCommandSource,
+    };
     use crate::session::CreateSessionRequest;
+    use arroba_relay::auth::RelaySubjectKind;
+    use arroba_relay::protocol::RelayCallerIdentity;
 
     #[test]
     fn normalizes_prompt_submit_to_interactive_kernel_command() {
@@ -559,8 +671,39 @@ mod tests {
         );
 
         assert_eq!(command.source, KernelCommandSource::LocalIpc);
+        assert_eq!(command.caller.caller_kind, KernelCallerKind::LocalClient);
+        assert_eq!(command.caller.caller_id, "local-ipc");
         assert_eq!(command.command_type, "prompt.submit");
         assert_eq!(command.priority, KernelCommandPriority::Interactive);
         assert_eq!(command.correlation_id, "ipc-1");
+    }
+
+    #[test]
+    fn relay_identity_becomes_kernel_command_caller() {
+        let request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+        let command = KernelCommand::from_local_request_with_caller(
+            "relay-1",
+            KernelCommandSource::RelayClient,
+            KernelCaller::from_relay_identity(RelayCallerIdentity {
+                realm_id: "realm-1".to_string(),
+                subject: "client-1".to_string(),
+                subject_kind: RelaySubjectKind::Client,
+                token_id: Some("token-1".to_string()),
+                public_key_thumbprint: Some("thumbprint-1".to_string()),
+            }),
+            None,
+            None,
+            &request,
+        );
+
+        assert_eq!(command.source, KernelCommandSource::RelayClient);
+        assert_eq!(command.caller.caller_kind, KernelCallerKind::RemoteClient);
+        assert_eq!(command.caller.caller_id, "client-1");
+        assert_eq!(command.caller.client_id.as_deref(), Some("client-1"));
+        assert_eq!(command.caller.realm_id.as_deref(), Some("realm-1"));
+        assert_eq!(
+            command.caller.public_key_thumbprint.as_deref(),
+            Some("thumbprint-1")
+        );
     }
 }

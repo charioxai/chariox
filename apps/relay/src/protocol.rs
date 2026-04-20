@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::auth::{RelaySubjectKind, VerifiedRelayIdentity};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelayConnectionRole {
@@ -12,6 +14,29 @@ pub struct EncryptedRelayPayload {
     pub sender_public_key: String,
     pub nonce: String,
     pub ciphertext: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayCallerIdentity {
+    pub realm_id: String,
+    pub subject: String,
+    pub subject_kind: RelaySubjectKind,
+    #[serde(default)]
+    pub token_id: Option<String>,
+    #[serde(default)]
+    pub public_key_thumbprint: Option<String>,
+}
+
+impl From<VerifiedRelayIdentity> for RelayCallerIdentity {
+    fn from(identity: VerifiedRelayIdentity) -> Self {
+        Self {
+            realm_id: identity.realm_id,
+            subject: identity.subject,
+            subject_kind: identity.subject_kind,
+            token_id: identity.token_id,
+            public_key_thumbprint: identity.public_key_thumbprint,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +162,8 @@ pub enum RelayEnvelope {
     DaemonIncomingPeerRequest {
         relay_request_id: String,
         from_daemon_id: String,
+        #[serde(default)]
+        caller_identity: Option<RelayCallerIdentity>,
         encrypted_request: EncryptedRelayPayload,
     },
     DaemonIncomingPeerResponse {
@@ -156,6 +183,8 @@ pub enum RelayEnvelope {
     },
     DaemonIncomingPeerEvent {
         from_daemon_id: String,
+        #[serde(default)]
+        caller_identity: Option<RelayCallerIdentity>,
         encrypted_event: EncryptedRelayPayload,
     },
     ClientRequest {
@@ -165,6 +194,8 @@ pub enum RelayEnvelope {
     },
     DaemonRequest {
         relay_request_id: String,
+        #[serde(default)]
+        caller_identity: Option<RelayCallerIdentity>,
         encrypted_request: EncryptedRelayPayload,
     },
     DaemonResponse {
@@ -195,6 +226,8 @@ pub enum RelayEnvelope {
     DaemonSubscribe {
         relay_request_id: String,
         relay_subscription_id: String,
+        #[serde(default)]
+        caller_identity: Option<RelayCallerIdentity>,
         session_id: String,
         attachment_id: String,
         client_public_key: String,
@@ -204,6 +237,8 @@ pub enum RelayEnvelope {
     DaemonUnsubscribe {
         relay_request_id: String,
         relay_subscription_id: String,
+        #[serde(default)]
+        caller_identity: Option<RelayCallerIdentity>,
         client_public_key: String,
     },
     DaemonEvent {

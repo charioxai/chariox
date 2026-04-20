@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub type RelayRealmId = String;
@@ -16,7 +17,8 @@ pub struct RelayRealm {
     pub created_at_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RelaySubjectKind {
     Client,
     Kernel,
@@ -24,7 +26,8 @@ pub enum RelaySubjectKind {
     Service,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RelayAction {
     DaemonRegister,
     DaemonHeartbeat,

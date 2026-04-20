@@ -307,6 +307,16 @@ Kernel protocol changes:
 
 ## Delivery Slices
 
+### Implementation Status
+
+As of 2026-04-20:
+
+- Slices 1-3 are implemented: relay identity vocabulary, verifier abstraction, and realm-scoped relay registry/routing are in place.
+- Slice 4 is partially implemented: kernel-owned paired-machine state is integrated with the existing remote-machine approval registry, and paired-client state can be recorded, listed, and revoked.
+- Slice 5 is partial: shell coverage exists for `client list`, `client record`, and `client revoke`; invite/create/join flows and machine revoke naming still need first-class command coverage.
+- Slice 6 is implemented as a foundation: verified relay caller identity is attached to forwarded relay frames and mapped into `KernelCommand.caller` for relay-originated local API requests. Session and workflow authorization checks remain M6.5 work.
+- Slices 7-8 remain: hosted issuer compatibility docs/tests and live security drills.
+
 ### Slice 1. Token And Realm Types
 
 Add shared domain types for:
