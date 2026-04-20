@@ -1700,8 +1700,11 @@ mod tests {
                 None,
             ),
         );
-        let auth_verifier =
-            RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(claims, Some(10)));
+        let auth_verifier = RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(
+            claims,
+            BTreeMap::new(),
+            Some(10),
+        ));
         let server = RelayServer::with_auth_verifier(
             RelayConfig {
                 host: "127.0.0.1".to_string(),

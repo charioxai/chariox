@@ -315,7 +315,8 @@ As of 2026-04-20:
 - Slice 4 is partially implemented: kernel-owned paired-machine state is integrated with the existing remote-machine approval registry, and paired-client state can be recorded, listed, and revoked.
 - Slice 5 is implemented for the bootstrap path: shell coverage exists for `client invite create`, `client join`, `client list`, `client record`, `client revoke`, `machine invite create`, `machine join`, `machine approve`, `machine rename`, and `machine revoke`. Invite tokens are self-contained bootstrap tokens; one-time invite redemption and signed scoped-token exchange remain slice 7 work.
 - Slice 6 is implemented as a foundation: verified relay caller identity is attached to forwarded relay frames and mapped into `KernelCommand.caller` for relay-originated local API requests. Session and workflow authorization checks remain M6.5 work.
-- Slices 7-8 remain: hosted issuer compatibility docs/tests and live security drills.
+- Slice 7 is implemented for the verifier contract: the relay can verify `arroba-scoped-v1` HMAC-signed tokens against configured issuer metadata supplied by the embedding server/control plane. The open-source relay still defaults to shared-token bootstrap unless constructed with a scoped verifier.
+- Slice 8 remains: live security drills.
 
 ### Slice 1. Token And Realm Types
 
@@ -420,6 +421,15 @@ Exit criteria:
 - relay can verify tokens signed by configured issuer metadata
 - self-hosted issuer remains available
 - docs point hosted-control-plane implementation to the separate `arroba-cloud` repository
+
+Contract shipped in this repository:
+
+- Token format: `arroba-scoped-v1.<claims-base64url>.<signature-base64url>`.
+- Claims payload: JSON-serialized `RelayTokenClaims`.
+- Current verifier algorithm: HMAC-SHA256 over `<claims-base64url>`, using the configured secret for `claims.issuer`.
+- Verifier behavior: after signature verification, the relay enforces expiration, allowed action, and allowed target constraints before admitting or routing.
+- Integration boundary: hosted or self-hosted control planes instantiate `RelayAuthVerifier::scoped_hmac(...)` or an equivalent future verifier and pass it to `RelayServer::with_auth_verifier(...)`.
+- `arroba-cloud` should issue this token shape first, then can migrate to an asymmetric verifier without changing relay/kernel authorization semantics.
 
 ### Slice 8. Live Security Drills
 

@@ -157,9 +157,12 @@ dependencies = [
 name = "arroba-relay"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "futures-util",
+ "hmac",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite",

@@ -1,6 +1,10 @@
 use std::collections::BTreeMap;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use thiserror::Error;
 
 pub type RelayRealmId = String;
@@ -38,7 +42,7 @@ pub enum RelayAction {
     PeerEvent,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayTokenClaims {
     pub issuer: String,
     pub subject: RelaySubjectId,
@@ -129,6 +133,14 @@ impl RelayAuthVerifier {
         Self::SharedToken(SharedTokenVerifier::new(expected_token))
     }
 
+    pub fn scoped_hmac(issuer_secrets: BTreeMap<String, String>, now_ms: Option<u64>) -> Self {
+        Self::ScopedToken(ScopedTokenVerifier::new(
+            BTreeMap::new(),
+            issuer_secrets,
+            now_ms,
+        ))
+    }
+
     pub fn verify(
         &self,
         request: RelayAuthRequest<'_>,
@@ -166,13 +178,19 @@ impl SharedTokenVerifier {
 #[derive(Debug, Clone, Default)]
 pub struct ScopedTokenVerifier {
     accepted_tokens: BTreeMap<String, RelayTokenClaims>,
+    issuer_secrets: BTreeMap<String, String>,
     now_ms: Option<u64>,
 }
 
 impl ScopedTokenVerifier {
-    pub fn new(accepted_tokens: BTreeMap<String, RelayTokenClaims>, now_ms: Option<u64>) -> Self {
+    pub fn new(
+        accepted_tokens: BTreeMap<String, RelayTokenClaims>,
+        issuer_secrets: BTreeMap<String, String>,
+        now_ms: Option<u64>,
+    ) -> Self {
         Self {
             accepted_tokens,
+            issuer_secrets,
             now_ms,
         }
     }
@@ -181,34 +199,129 @@ impl ScopedTokenVerifier {
         &self,
         request: RelayAuthRequest<'_>,
     ) -> Result<VerifiedRelayIdentity, RelayAuthError> {
-        if self.accepted_tokens.is_empty() {
+        if self.accepted_tokens.is_empty() && self.issuer_secrets.is_empty() {
             return Err(RelayAuthError::ScopedTokensUnavailable);
         }
-        let claims = self
-            .accepted_tokens
-            .get(request.token)
-            .ok_or(RelayAuthError::InvalidToken)?;
-        if let Some(now_ms) = self.now_ms {
-            if claims.expires_at_ms <= now_ms {
-                return Err(RelayAuthError::TokenExpired);
-            }
-        }
-        if !claims.allows_action(request.action) {
-            return Err(RelayAuthError::ActionNotAllowed);
-        }
-        if !claims.allows_target(request.target) {
-            return Err(RelayAuthError::TargetNotAllowed);
-        }
-        Ok(VerifiedRelayIdentity {
-            realm_id: claims.realm_id.clone(),
-            subject: claims.subject.clone(),
-            subject_kind: claims.subject_kind,
-            allowed_actions: claims.allowed_actions.clone(),
-            allowed_targets: claims.allowed_targets.clone(),
-            token_id: Some(claims.token_id.clone()),
-            public_key_thumbprint: claims.public_key_thumbprint.clone(),
-        })
+        let claims = match self.accepted_tokens.get(request.token) {
+            Some(claims) => claims.clone(),
+            None => self.verify_signed_token(request.token)?,
+        };
+        validate_claims(&claims, request.action, request.target, self.now_ms)?;
+        Ok(identity_from_claims(claims))
     }
+
+    fn verify_signed_token(&self, token: &str) -> Result<RelayTokenClaims, RelayAuthError> {
+        let signed = decode_scoped_token_parts(token)?;
+        let claims = serde_json::from_slice::<RelayTokenClaims>(&signed.claims_payload)
+            .map_err(|_| RelayAuthError::InvalidToken)?;
+        let secret = self
+            .issuer_secrets
+            .get(&claims.issuer)
+            .ok_or(RelayAuthError::InvalidToken)?;
+        verify_hmac_signature(
+            secret.as_bytes(),
+            signed.signing_input.as_bytes(),
+            &signed.signature,
+        )?;
+        Ok(claims)
+    }
+}
+
+pub fn encode_scoped_hmac_token(
+    claims: &RelayTokenClaims,
+    issuer_secret: &str,
+) -> Result<String, RelayAuthError> {
+    let payload = serde_json::to_vec(claims).map_err(|_| RelayAuthError::InvalidToken)?;
+    let claims_b64 = URL_SAFE_NO_PAD.encode(payload);
+    let signature = sign_hmac(issuer_secret.as_bytes(), claims_b64.as_bytes())?;
+    Ok(format!(
+        "arroba-scoped-v1.{claims_b64}.{}",
+        URL_SAFE_NO_PAD.encode(signature)
+    ))
+}
+
+struct DecodedScopedToken {
+    signing_input: String,
+    claims_payload: Vec<u8>,
+    signature: Vec<u8>,
+}
+
+fn decode_scoped_token_parts(token: &str) -> Result<DecodedScopedToken, RelayAuthError> {
+    let mut parts = token.trim().split('.');
+    let Some(prefix) = parts.next() else {
+        return Err(RelayAuthError::InvalidToken);
+    };
+    let Some(claims_b64) = parts.next() else {
+        return Err(RelayAuthError::InvalidToken);
+    };
+    let Some(signature_b64) = parts.next() else {
+        return Err(RelayAuthError::InvalidToken);
+    };
+    if parts.next().is_some() || prefix != "arroba-scoped-v1" {
+        return Err(RelayAuthError::InvalidToken);
+    }
+    let claims_payload = URL_SAFE_NO_PAD
+        .decode(claims_b64)
+        .map_err(|_| RelayAuthError::InvalidToken)?;
+    let signature = URL_SAFE_NO_PAD
+        .decode(signature_b64)
+        .map_err(|_| RelayAuthError::InvalidToken)?;
+    Ok(DecodedScopedToken {
+        signing_input: claims_b64.to_string(),
+        claims_payload,
+        signature,
+    })
+}
+
+fn validate_claims(
+    claims: &RelayTokenClaims,
+    action: RelayAction,
+    target: Option<&str>,
+    now_ms: Option<u64>,
+) -> Result<(), RelayAuthError> {
+    if let Some(now_ms) = now_ms {
+        if claims.expires_at_ms <= now_ms {
+            return Err(RelayAuthError::TokenExpired);
+        }
+    }
+    if !claims.allows_action(action) {
+        return Err(RelayAuthError::ActionNotAllowed);
+    }
+    if !claims.allows_target(target) {
+        return Err(RelayAuthError::TargetNotAllowed);
+    }
+    Ok(())
+}
+
+fn identity_from_claims(claims: RelayTokenClaims) -> VerifiedRelayIdentity {
+    VerifiedRelayIdentity {
+        realm_id: claims.realm_id,
+        subject: claims.subject,
+        subject_kind: claims.subject_kind,
+        allowed_actions: claims.allowed_actions,
+        allowed_targets: claims.allowed_targets,
+        token_id: Some(claims.token_id),
+        public_key_thumbprint: claims.public_key_thumbprint,
+    }
+}
+
+fn sign_hmac(secret: &[u8], signing_input: &[u8]) -> Result<Vec<u8>, RelayAuthError> {
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret).map_err(|_| RelayAuthError::InvalidToken)?;
+    mac.update(signing_input);
+    Ok(mac.finalize().into_bytes().to_vec())
+}
+
+fn verify_hmac_signature(
+    secret: &[u8],
+    signing_input: &[u8],
+    signature: &[u8],
+) -> Result<(), RelayAuthError> {
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret).map_err(|_| RelayAuthError::InvalidToken)?;
+    mac.update(signing_input);
+    mac.verify_slice(signature)
+        .map_err(|_| RelayAuthError::InvalidToken)
 }
 
 fn subject_kind_for_action(action: RelayAction) -> RelaySubjectKind {
@@ -300,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn scoped_verifier_is_a_non_accepting_skeleton_until_issuer_support_lands() {
+    fn scoped_verifier_fails_closed_without_tokens_or_issuers() {
         let verifier = RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::default());
         let error = verifier
             .verify(RelayAuthRequest {
@@ -308,7 +421,7 @@ mod tests {
                 action: RelayAction::ClientConnect,
                 target: Some("daemon-1"),
             })
-            .expect_err("scoped verifier should fail closed until implemented");
+            .expect_err("scoped verifier should fail closed without issuer metadata");
 
         assert_eq!(error, RelayAuthError::ScopedTokensUnavailable);
     }
@@ -337,7 +450,11 @@ mod tests {
                 entitlements_version: None,
             },
         );
-        let verifier = RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(tokens, Some(15)));
+        let verifier = RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(
+            tokens,
+            BTreeMap::new(),
+            Some(15),
+        ));
 
         let identity = verifier
             .verify(RelayAuthRequest {
@@ -370,5 +487,106 @@ mod tests {
             })
             .expect_err("wrong target should be rejected");
         assert_eq!(target_error, RelayAuthError::TargetNotAllowed);
+    }
+
+    #[test]
+    fn scoped_hmac_verifier_accepts_signed_hosted_issuer_tokens() {
+        let claims = RelayTokenClaims {
+            issuer: "arroba-cloud-test".to_string(),
+            subject: "client-1".to_string(),
+            subject_kind: RelaySubjectKind::Client,
+            realm_id: "realm-1".to_string(),
+            allowed_actions: vec![RelayAction::ClientConnect, RelayAction::ClientMetadataRead],
+            allowed_targets: Some(vec!["daemon-1".to_string()]),
+            issued_at_ms: 10,
+            expires_at_ms: 20,
+            token_id: "token-1".to_string(),
+            account_id: Some("account-1".to_string()),
+            organization_id: None,
+            device_id: Some("device-1".to_string()),
+            machine_id: None,
+            client_id: Some("client-1".to_string()),
+            public_key_thumbprint: Some("thumbprint".to_string()),
+            entitlements_version: Some("entitlements-1".to_string()),
+        };
+        let token =
+            encode_scoped_hmac_token(&claims, "issuer-secret").expect("token should encode");
+        let verifier = RelayAuthVerifier::scoped_hmac(
+            BTreeMap::from([("arroba-cloud-test".to_string(), "issuer-secret".to_string())]),
+            Some(15),
+        );
+
+        let identity = verifier
+            .verify(RelayAuthRequest {
+                token: &token,
+                action: RelayAction::ClientConnect,
+                target: Some("daemon-1"),
+            })
+            .expect("signed hosted issuer token should verify");
+
+        assert_eq!(identity.realm_id, "realm-1");
+        assert_eq!(identity.subject, "client-1");
+        assert_eq!(identity.subject_kind, RelaySubjectKind::Client);
+        assert_eq!(identity.token_id.as_deref(), Some("token-1"));
+        assert_eq!(
+            identity.public_key_thumbprint.as_deref(),
+            Some("thumbprint")
+        );
+    }
+
+    #[test]
+    fn scoped_hmac_verifier_rejects_tampered_or_unknown_issuer_tokens() {
+        let claims = RelayTokenClaims {
+            issuer: "arroba-cloud-test".to_string(),
+            subject: "client-1".to_string(),
+            subject_kind: RelaySubjectKind::Client,
+            realm_id: "realm-1".to_string(),
+            allowed_actions: vec![RelayAction::ClientConnect],
+            allowed_targets: None,
+            issued_at_ms: 10,
+            expires_at_ms: 20,
+            token_id: "token-1".to_string(),
+            account_id: None,
+            organization_id: None,
+            device_id: None,
+            machine_id: None,
+            client_id: Some("client-1".to_string()),
+            public_key_thumbprint: None,
+            entitlements_version: None,
+        };
+        let token =
+            encode_scoped_hmac_token(&claims, "issuer-secret").expect("token should encode");
+        let mut parts = token.split('.').map(str::to_string).collect::<Vec<_>>();
+        parts[2].push('x');
+        let tampered = parts.join(".");
+        let verifier = RelayAuthVerifier::scoped_hmac(
+            BTreeMap::from([("arroba-cloud-test".to_string(), "issuer-secret".to_string())]),
+            Some(15),
+        );
+        let unknown_issuer = RelayAuthVerifier::scoped_hmac(
+            BTreeMap::from([("other-issuer".to_string(), "issuer-secret".to_string())]),
+            Some(15),
+        );
+
+        assert_eq!(
+            verifier
+                .verify(RelayAuthRequest {
+                    token: &tampered,
+                    action: RelayAction::ClientConnect,
+                    target: None,
+                })
+                .expect_err("tampered token should fail"),
+            RelayAuthError::InvalidToken
+        );
+        assert_eq!(
+            unknown_issuer
+                .verify(RelayAuthRequest {
+                    token: &token,
+                    action: RelayAction::ClientConnect,
+                    target: None,
+                })
+                .expect_err("unknown issuer should fail"),
+            RelayAuthError::InvalidToken
+        );
     }
 }
