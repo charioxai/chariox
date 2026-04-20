@@ -744,3 +744,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Closed M7.5 after landing `arroba-shell` as a sibling app to the TUI CLI, shared shell execution in `packages/kernel-client`, line-oriented scripts, embedded workflow-pane shell support, reliable CLI automation snapshots, and freeform prompt submission from shell surfaces.
 - Validated closeout with `pnpm --filter @arroba/kernel-client test`, `pnpm --filter @arroba/shell test`, `pnpm --filter @arroba/cli test -- workspace-shell.test.ts command-actions.test.ts`, `pnpm --filter @arroba/cli run shell:drill`, `pnpm --filter @arroba/cli run embedded-shell:drill`, and `git diff --check`.
 - Deferred remaining shell parity gaps to later hardening: session/agent deletion aliases, machine approval/rename/forget, relay configuration, workflow node instruction editor actions, workflow endpoint removal, and provider-native namespace passthrough.
+
+### M8 history and persistence plan kickoff
+
+- Added the M8 plan for operational transcript history, optional archive adapters, durable kernel state, manual remote restart reconciliation, provider resume descriptors, and Git observation events.
+- Locked in the v1 split: operational history stays Arroba-owned/local for active UX, while archive history is optional and adapter-backed; if archive is disabled, retained operational history remains searchable and expired/deleted transcript content can disappear.
+- Added TOML-backed config structs for history operational policy, archive mode/policy, and durable state policy without changing runtime storage behavior yet.

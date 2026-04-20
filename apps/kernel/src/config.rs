@@ -435,6 +435,10 @@ pub struct ArrobaUserConfig {
     #[serde(default)]
     pub providers: UserProviderConfig,
     #[serde(default)]
+    pub history: UserHistoryConfig,
+    #[serde(default)]
+    pub state: UserStateConfig,
+    #[serde(default)]
     pub ui: UserUiConfig,
     #[serde(default)]
     pub relay: UserRelayConfig,
@@ -447,6 +451,8 @@ impl Default for ArrobaUserConfig {
         Self {
             version: default_user_config_version(),
             providers: UserProviderConfig::default(),
+            history: UserHistoryConfig::default(),
+            state: UserStateConfig::default(),
             ui: UserUiConfig::default(),
             relay: UserRelayConfig::default(),
             kernel: UserKernelConfig::default(),
@@ -457,6 +463,8 @@ impl Default for ArrobaUserConfig {
 impl ArrobaUserConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
         self.providers.managed_io.validate()?;
+        self.history.validate()?;
+        self.state.validate()?;
         Ok(())
     }
 
@@ -508,6 +516,93 @@ impl ArrobaUserConfig {
                 self.relay.accept_remote_leases =
                     Some(parse_config_bool("relay.accept_remote_leases", &value)?)
             }
+            "history.operational.backend" => {
+                self.history.operational.backend =
+                    HistoryOperationalBackend::parse("history.operational.backend", &value)?
+            }
+            "history.operational.path" => {
+                self.history.operational.path =
+                    Some(non_empty_config_string("history.operational.path", value)?)
+            }
+            "history.operational.retention_days" => {
+                self.history.operational.retention_days = Some(parse_config_u32(
+                    "history.operational.retention_days",
+                    &value,
+                    true,
+                )?)
+            }
+            "history.operational.max_size_mb" => {
+                self.history.operational.max_size_mb = Some(parse_config_u32(
+                    "history.operational.max_size_mb",
+                    &value,
+                    true,
+                )?)
+            }
+            "history.operational.keep_pinned_sessions" => {
+                self.history.operational.keep_pinned_sessions = Some(parse_config_bool(
+                    "history.operational.keep_pinned_sessions",
+                    &value,
+                )?)
+            }
+            "history.operational.archive_inactive_after_days" => {
+                self.history.operational.archive_inactive_after_days = Some(parse_config_u32(
+                    "history.operational.archive_inactive_after_days",
+                    &value,
+                    true,
+                )?)
+            }
+            "history.operational.archive_deleted_agents" => {
+                self.history.operational.archive_deleted_agents = Some(parse_config_bool(
+                    "history.operational.archive_deleted_agents",
+                    &value,
+                )?)
+            }
+            "history.archive.mode" => {
+                self.history.archive.mode = HistoryArchiveMode::parse(&value)?
+            }
+            "history.archive.url" => {
+                self.history.archive.url =
+                    Some(non_empty_config_string("history.archive.url", value)?)
+            }
+            "history.archive.token_env" => {
+                self.history.archive.token_env =
+                    Some(non_empty_config_string("history.archive.token_env", value)?)
+            }
+            "history.archive.archive_deleted_agents" => {
+                self.history.archive.archive_deleted_agents = Some(parse_config_bool(
+                    "history.archive.archive_deleted_agents",
+                    &value,
+                )?)
+            }
+            "history.archive.archive_before_delete" => {
+                self.history.archive.archive_before_delete = Some(parse_config_bool(
+                    "history.archive.archive_before_delete",
+                    &value,
+                )?)
+            }
+            "history.archive.delete_operational_after_verified_archive" => {
+                self.history
+                    .archive
+                    .delete_operational_after_verified_archive = Some(parse_config_bool(
+                    "history.archive.delete_operational_after_verified_archive",
+                    &value,
+                )?)
+            }
+            "history.archive.require_durable_acceptance" => {
+                self.history.archive.require_durable_acceptance = Some(parse_config_bool(
+                    "history.archive.require_durable_acceptance",
+                    &value,
+                )?)
+            }
+            "state.backend" => self.state.backend = StateBackend::parse("state.backend", &value)?,
+            "state.path" => self.state.path = Some(non_empty_config_string("state.path", value)?),
+            "state.snapshot_interval_events" => {
+                self.state.snapshot_interval_events = Some(parse_config_u32(
+                    "state.snapshot_interval_events",
+                    &value,
+                    true,
+                )?)
+            }
             "kernel.websocket_host" => {
                 self.kernel.websocket_host =
                     Some(non_empty_config_string("kernel.websocket_host", value)?)
@@ -557,6 +652,49 @@ impl ArrobaUserConfig {
             "ui.max_agents_per_screen" => self.ui.max_agents_per_screen = None,
             "relay.url" => self.relay.url = None,
             "relay.accept_remote_leases" => self.relay.accept_remote_leases = None,
+            "history.operational.backend" => {
+                return Err(DaemonError::InvalidConfig {
+                    field: "history.operational.backend",
+                    message: "operational history backend cannot be unset",
+                });
+            }
+            "history.operational.path" => self.history.operational.path = None,
+            "history.operational.retention_days" => self.history.operational.retention_days = None,
+            "history.operational.max_size_mb" => self.history.operational.max_size_mb = None,
+            "history.operational.keep_pinned_sessions" => {
+                self.history.operational.keep_pinned_sessions = None
+            }
+            "history.operational.archive_inactive_after_days" => {
+                self.history.operational.archive_inactive_after_days = None
+            }
+            "history.operational.archive_deleted_agents" => {
+                self.history.operational.archive_deleted_agents = None
+            }
+            "history.archive.mode" => self.history.archive.mode = HistoryArchiveMode::Disabled,
+            "history.archive.url" => self.history.archive.url = None,
+            "history.archive.token_env" => self.history.archive.token_env = None,
+            "history.archive.archive_deleted_agents" => {
+                self.history.archive.archive_deleted_agents = None
+            }
+            "history.archive.archive_before_delete" => {
+                self.history.archive.archive_before_delete = None
+            }
+            "history.archive.delete_operational_after_verified_archive" => {
+                self.history
+                    .archive
+                    .delete_operational_after_verified_archive = None
+            }
+            "history.archive.require_durable_acceptance" => {
+                self.history.archive.require_durable_acceptance = None
+            }
+            "state.backend" => {
+                return Err(DaemonError::InvalidConfig {
+                    field: "state.backend",
+                    message: "state backend cannot be unset",
+                });
+            }
+            "state.path" => self.state.path = None,
+            "state.snapshot_interval_events" => self.state.snapshot_interval_events = None,
             "kernel.websocket_host" => self.kernel.websocket_host = None,
             "kernel.websocket_port" => self.kernel.websocket_port = None,
             "kernel.runtime_mcp_host" => self.kernel.runtime_mcp_host = None,
@@ -613,6 +751,237 @@ impl Default for UserProviderConfig {
 pub struct ManagedIoConfig {
     #[serde(flatten)]
     pub modes: BTreeMap<String, ManagedIoMode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserHistoryConfig {
+    #[serde(default)]
+    pub operational: UserOperationalHistoryConfig,
+    #[serde(default)]
+    pub archive: UserArchiveHistoryConfig,
+}
+
+impl Default for UserHistoryConfig {
+    fn default() -> Self {
+        Self {
+            operational: UserOperationalHistoryConfig::default(),
+            archive: UserArchiveHistoryConfig::default(),
+        }
+    }
+}
+
+impl UserHistoryConfig {
+    fn validate(&self) -> Result<(), DaemonError> {
+        self.operational.validate()?;
+        self.archive.validate()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserOperationalHistoryConfig {
+    #[serde(default)]
+    pub backend: HistoryOperationalBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_days: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_pinned_sessions: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_inactive_after_days: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_deleted_agents: Option<bool>,
+}
+
+impl Default for UserOperationalHistoryConfig {
+    fn default() -> Self {
+        Self {
+            backend: HistoryOperationalBackend::Sqlite,
+            path: Some("~/.arroba/history/operational.db".to_string()),
+            retention_days: Some(30),
+            max_size_mb: Some(5_000),
+            keep_pinned_sessions: Some(true),
+            archive_inactive_after_days: Some(30),
+            archive_deleted_agents: Some(true),
+        }
+    }
+}
+
+impl UserOperationalHistoryConfig {
+    fn validate(&self) -> Result<(), DaemonError> {
+        if let Some(path) = &self.path {
+            validate_non_empty("history.operational.path", path)?;
+        }
+        validate_optional_nonzero("history.operational.retention_days", self.retention_days)?;
+        validate_optional_nonzero("history.operational.max_size_mb", self.max_size_mb)?;
+        validate_optional_nonzero(
+            "history.operational.archive_inactive_after_days",
+            self.archive_inactive_after_days,
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryOperationalBackend {
+    Sqlite,
+}
+
+impl Default for HistoryOperationalBackend {
+    fn default() -> Self {
+        Self::Sqlite
+    }
+}
+
+impl HistoryOperationalBackend {
+    fn parse(field: &'static str, value: &str) -> Result<Self, DaemonError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "sqlite" => Ok(Self::Sqlite),
+            _ => Err(DaemonError::InvalidConfig {
+                field,
+                message: "value must be `sqlite`",
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserArchiveHistoryConfig {
+    #[serde(default)]
+    pub mode: HistoryArchiveMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_deleted_agents: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_before_delete: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_operational_after_verified_archive: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_durable_acceptance: Option<bool>,
+}
+
+impl Default for UserArchiveHistoryConfig {
+    fn default() -> Self {
+        Self {
+            mode: HistoryArchiveMode::Disabled,
+            url: None,
+            token_env: None,
+            archive_deleted_agents: Some(true),
+            archive_before_delete: Some(true),
+            delete_operational_after_verified_archive: Some(true),
+            require_durable_acceptance: Some(true),
+        }
+    }
+}
+
+impl UserArchiveHistoryConfig {
+    fn validate(&self) -> Result<(), DaemonError> {
+        match self.mode {
+            HistoryArchiveMode::Disabled => Ok(()),
+            HistoryArchiveMode::External => {
+                let Some(url) = self.url.as_deref() else {
+                    return Err(DaemonError::InvalidConfig {
+                        field: "history.archive.url",
+                        message: "value must be set when archive mode is external",
+                    });
+                };
+                validate_non_empty("history.archive.url", url)?;
+                if let Some(token_env) = &self.token_env {
+                    validate_non_empty("history.archive.token_env", token_env)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryArchiveMode {
+    Disabled,
+    External,
+}
+
+impl Default for HistoryArchiveMode {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
+impl HistoryArchiveMode {
+    fn parse(value: &str) -> Result<Self, DaemonError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "disabled" | "off" | "false" | "0" | "none" => Ok(Self::Disabled),
+            "external" => Ok(Self::External),
+            _ => Err(DaemonError::InvalidConfig {
+                field: "history.archive.mode",
+                message: "value must be `disabled` or `external`",
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserStateConfig {
+    #[serde(default)]
+    pub backend: StateBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_interval_events: Option<u32>,
+}
+
+impl Default for UserStateConfig {
+    fn default() -> Self {
+        Self {
+            backend: StateBackend::Sqlite,
+            path: Some("~/.arroba/state/kernel.db".to_string()),
+            snapshot_interval_events: Some(1_000),
+        }
+    }
+}
+
+impl UserStateConfig {
+    fn validate(&self) -> Result<(), DaemonError> {
+        if let Some(path) = &self.path {
+            validate_non_empty("state.path", path)?;
+        }
+        validate_optional_nonzero(
+            "state.snapshot_interval_events",
+            self.snapshot_interval_events,
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateBackend {
+    Sqlite,
+}
+
+impl Default for StateBackend {
+    fn default() -> Self {
+        Self::Sqlite
+    }
+}
+
+impl StateBackend {
+    fn parse(field: &'static str, value: &str) -> Result<Self, DaemonError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "sqlite" => Ok(Self::Sqlite),
+            _ => Err(DaemonError::InvalidConfig {
+                field,
+                message: "value must be `sqlite`",
+            }),
+        }
+    }
 }
 
 impl Default for ManagedIoConfig {
@@ -884,6 +1253,26 @@ fn parse_config_port(field: &'static str, value: &str) -> Result<u16, DaemonErro
     Ok(port)
 }
 
+fn parse_config_u32(
+    field: &'static str,
+    value: &str,
+    require_nonzero: bool,
+) -> Result<u32, DaemonError> {
+    let parsed = value
+        .parse::<u32>()
+        .map_err(|_| DaemonError::InvalidConfig {
+            field,
+            message: "value must be an unsigned integer",
+        })?;
+    if require_nonzero && parsed == 0 {
+        return Err(DaemonError::InvalidConfig {
+            field,
+            message: "value must not be zero",
+        });
+    }
+    Ok(parsed)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct RuntimeIdentity {
     daemon_id: String,
@@ -1012,6 +1401,16 @@ fn validate_non_empty(field: &'static str, value: &str) -> Result<(), DaemonErro
     Ok(())
 }
 
+fn validate_optional_nonzero(field: &'static str, value: Option<u32>) -> Result<(), DaemonError> {
+    if value == Some(0) {
+        return Err(DaemonError::InvalidConfig {
+            field,
+            message: "value must not be zero",
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1075,6 +1474,87 @@ mod tests {
             loaded.providers.managed_io.mode_for("opencode"),
             ManagedIoMode::Unrestricted
         );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn history_and_state_config_defaults_are_available() {
+        let config = DaemonConfig::new("daemon", "machine", "tester");
+
+        assert_eq!(
+            config.user_config.history.operational.backend,
+            HistoryOperationalBackend::Sqlite
+        );
+        assert_eq!(
+            config.user_config.history.operational.retention_days,
+            Some(30)
+        );
+        assert_eq!(
+            config.user_config.history.archive.mode,
+            HistoryArchiveMode::Disabled
+        );
+        assert_eq!(config.user_config.state.backend, StateBackend::Sqlite);
+        assert_eq!(
+            config.user_config.state.snapshot_interval_events,
+            Some(1_000)
+        );
+    }
+
+    #[test]
+    fn history_archive_external_requires_url() {
+        let mut config = DaemonConfig::new("daemon", "machine", "tester");
+
+        let error = config
+            .set_user_config_value("history.archive.mode", "external")
+            .expect_err("external archive without a URL should be rejected");
+
+        match error {
+            DaemonError::InvalidConfig { field, .. } => {
+                assert_eq!(field, "history.archive.url");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn history_and_state_config_can_be_changed_and_persisted() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-history-config-test-{}-{}.toml",
+            std::process::id(),
+            generate_identity_suffix()
+        ));
+        let mut config = DaemonConfig::new("daemon", "machine", "tester");
+        config.user_config_path = path.clone();
+
+        config
+            .set_user_config_value("history.operational.path", "~/.arroba/custom/history.db")
+            .expect("operational history path should update");
+        config
+            .set_user_config_value("history.operational.retention_days", "10")
+            .expect("retention should update");
+        config
+            .set_user_config_value("history.archive.url", "http://127.0.0.1:49300")
+            .expect("archive URL should update");
+        config
+            .set_user_config_value("history.archive.mode", "external")
+            .expect("archive mode should update after URL is set");
+        config
+            .set_user_config_value("state.snapshot_interval_events", "250")
+            .expect("state snapshot interval should update");
+
+        let loaded = load_user_config_from_path(&path);
+        assert_eq!(
+            loaded.history.operational.path.as_deref(),
+            Some("~/.arroba/custom/history.db")
+        );
+        assert_eq!(loaded.history.operational.retention_days, Some(10));
+        assert_eq!(loaded.history.archive.mode, HistoryArchiveMode::External);
+        assert_eq!(
+            loaded.history.archive.url.as_deref(),
+            Some("http://127.0.0.1:49300")
+        );
+        assert_eq!(loaded.state.snapshot_interval_events, Some(250));
 
         let _ = std::fs::remove_file(path);
     }

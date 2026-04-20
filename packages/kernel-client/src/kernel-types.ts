@@ -83,6 +83,31 @@ export type ArrobaUserConfig = {
     effort?: string
     managed_io?: Record<string, "required" | "unrestricted">
   }
+  history?: {
+    operational?: {
+      backend?: "sqlite"
+      path?: string
+      retention_days?: number
+      max_size_mb?: number
+      keep_pinned_sessions?: boolean
+      archive_inactive_after_days?: number
+      archive_deleted_agents?: boolean
+    }
+    archive?: {
+      mode?: "disabled" | "external"
+      url?: string
+      token_env?: string
+      archive_deleted_agents?: boolean
+      archive_before_delete?: boolean
+      delete_operational_after_verified_archive?: boolean
+      require_durable_acceptance?: boolean
+    }
+  }
+  state?: {
+    backend?: "sqlite"
+    path?: string
+    snapshot_interval_events?: number
+  }
   ui?: Record<string, unknown>
   relay?: Record<string, unknown>
   kernel?: Record<string, unknown>
