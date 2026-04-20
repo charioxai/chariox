@@ -130,15 +130,23 @@ export async function bootstrapSession(
       model: options.model,
       effort: options.effort,
     }, createdSession)
-    providerRun = await deps.launchProviderRun(
-      client,
-      session.id,
-      resolvedLaunch.provider,
-      options.accountProfile,
-      resolvedLaunch.model,
-      resolvedLaunch.effort,
-      attachedSession.focused_agent_id,
-    )
+    const launchTargetAgentId = resolveLaunchTargetAgentId(attachedSession)
+    if (attachedSession.agents.length === 0 && !createdSession) {
+      deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
+        session_id: session.id,
+        focused_agent_id: attachedSession.focused_agent_id,
+      })
+    } else {
+      providerRun = await deps.launchProviderRun(
+        client,
+        session.id,
+        resolvedLaunch.provider,
+        options.accountProfile,
+        resolvedLaunch.model,
+        resolvedLaunch.effort,
+        launchTargetAgentId,
+      )
+    }
   } else {
     providerRun = await deps.tryGetProviderRun(client, attachedSession.active_provider_run_id, deps.logger)
   }
@@ -226,6 +234,13 @@ async function loadSessionPromptHistory(
     }
   }
   return promptHistoryEntries
+}
+
+function resolveLaunchTargetAgentId(session: RuntimeSession): string | null {
+  if (session.focused_agent_id && session.agents.some((agent) => agent.id === session.focused_agent_id)) {
+    return session.focused_agent_id
+  }
+  return session.agents[0]?.id ?? null
 }
 
 function resolveStoredAgentLaunch(

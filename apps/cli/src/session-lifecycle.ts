@@ -259,25 +259,34 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         deps.cliOptions.provider = resolvedLaunch.provider
         deps.cliOptions.model = resolvedLaunch.model
         deps.cliOptions.effort = resolvedLaunch.effort
-        const run = await deps.launchProviderRun(
-          session.id,
-          resolvedLaunch.provider,
-          deps.cliOptions.accountProfile,
-          resolvedLaunch.model,
-          resolvedLaunch.effort,
-          attachedSession.focused_agent_id,
-        )
-        deps.logAttachedProviderRun?.("launched", run, {
-          session_id: session.id,
-          requested_model: resolvedLaunch.model,
-          requested_variant: resolvedLaunch.effort,
-        })
-        deps.setProviderRunState(run)
-        deps.syncCliProviderSelection({
-          provider: run.provider,
-          model: run.model,
-          effort: run.variant ?? resolvedLaunch.effort,
-        })
+        const launchTargetAgentId = resolveLaunchTargetAgentId(attachedSession)
+        if (attachedSession.agents.length === 0 && !createdSession) {
+          deps.logWarning?.("skipping provider launch because no agents are visible to this client", {
+            session_id: session.id,
+            focused_agent_id: attachedSession.focused_agent_id,
+          })
+          deps.setProviderRunState(null)
+        } else {
+          const run = await deps.launchProviderRun(
+            session.id,
+            resolvedLaunch.provider,
+            deps.cliOptions.accountProfile,
+            resolvedLaunch.model,
+            resolvedLaunch.effort,
+            launchTargetAgentId,
+          )
+          deps.logAttachedProviderRun?.("launched", run, {
+            session_id: session.id,
+            requested_model: resolvedLaunch.model,
+            requested_variant: resolvedLaunch.effort,
+          })
+          deps.setProviderRunState(run)
+          deps.syncCliProviderSelection({
+            provider: run.provider,
+            model: run.model,
+            effort: run.variant ?? resolvedLaunch.effort,
+          })
+        }
       } else {
         const run = await deps.tryGetProviderRun(attachedSession.active_provider_run_id)
         deps.logAttachedProviderRun?.("loaded", run, {
@@ -361,6 +370,13 @@ function isCompleteSessionSnapshot(
     && typeof session.max_agents === "number"
     && typeof session.config_state === "object"
     && session.config_state !== null
+}
+
+function resolveLaunchTargetAgentId(session: RuntimeSession): string | null {
+  if (session.focused_agent_id && session.agents.some((agent) => agent.id === session.focused_agent_id)) {
+    return session.focused_agent_id
+  }
+  return session.agents[0]?.id ?? null
 }
 
 function resolveStoredAgentLaunch(
