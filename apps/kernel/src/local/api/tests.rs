@@ -20,18 +20,20 @@ use arroba_relay::{protocol::DaemonRegistration, RelayConfig, RelayServer};
 use super::{
     AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasSessionRequest,
     AliasWorkflowEndpointRequest, AliasWorkflowRequest, AttachToSessionRequest,
-    CancelActivePromptRequest, CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest,
-    CompletePromptRequest, CreateSessionInviteRequest, CreateWorkflowEndpointRequest,
-    CreateWorkflowRequest, CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
-    EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
-    GetSessionStateRequest, GetWorkflowRunRequest, InspectGitCapabilityRequest,
-    InvokeWorkflowEndpointRequest, JoinSessionInviteRequest, LaunchProviderRunRequest,
-    ListAgentsRequest, ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
-    ListSessionMembersRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-    ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
-    RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
-    ResumeWorkflowRunRequest, RevokeSessionInviteRequest, RunShellCapabilityRequest,
+    AttachWorkspaceLinkRequest, CancelActivePromptRequest, CancelWorkflowRunRequest,
+    CaptureScreenshotCapabilityRequest, CompletePromptRequest, CreateSessionInviteRequest,
+    CreateWorkflowEndpointRequest, CreateWorkflowRequest, CreateWorkspaceLinkRequest,
+    CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
+    DetachWorkspaceLinkRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
+    GetDaemonHealthRequest, GetSessionStateRequest, GetWorkflowRunRequest,
+    InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest, JoinSessionInviteRequest,
+    LaunchProviderRunRequest, ListAgentsRequest, ListRemoteMachineKernelsRequest,
+    ListRemoteMachinesRequest, ListSessionMembersRequest, ListSessionsRequest,
+    ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceLinksRequest, LocalDaemonRequest,
+    LocalDaemonResponse, PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest,
+    ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
+    ResolveSessionRequest, ResolveWorkflowRequest, ResumeWorkflowRunRequest,
+    RevokeSessionInviteRequest, RunShellCapabilityRequest, ShowWorkspaceLinkRequest,
     SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
     UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
 };
@@ -436,6 +438,119 @@ fn local_request_api_manages_session_invites_and_members() {
         _ => panic!("unexpected local response"),
     };
     assert!(revoked.is_revoked());
+}
+
+#[test]
+fn local_request_api_manages_session_workspace_links() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "/tmp/arroba-worktree-a"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let session_id = session.id().to_string();
+
+    let denied = harness.dispatch_as_user(
+        "stranger",
+        LocalDaemonRequest::ListWorkspaceLinks(ListWorkspaceLinksRequest {
+            session_id: session_id.clone(),
+        }),
+    );
+    assert!(matches!(
+        denied,
+        Err(DaemonError::SessionAccessDenied { .. })
+    ));
+
+    let link = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkspaceLink(
+            CreateWorkspaceLinkRequest {
+                session_id: session_id.clone(),
+                name: "shared-repo".to_string(),
+            },
+        ))
+        .expect("workspace link create should succeed")
+    {
+        LocalDaemonResponse::WorkspaceLinkCreated { link, session } => {
+            assert_eq!(session.workspace_links().len(), 1);
+            link
+        }
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(link.name(), "shared-repo");
+
+    let attached = match harness
+        .dispatch(LocalDaemonRequest::AttachWorkspaceLink(
+            AttachWorkspaceLinkRequest {
+                session_id: session_id.clone(),
+                link_ref: "shared".to_string(),
+                repo_root: Some("/tmp/arroba-worktree-a".to_string()),
+                branch: Some("main".to_string()),
+                repo_fingerprint: Some("fingerprint-a".to_string()),
+            },
+        ))
+        .expect("workspace link attach should succeed")
+    {
+        LocalDaemonResponse::WorkspaceLinkAttached {
+            link,
+            attachment,
+            session,
+        } => {
+            assert_eq!(session.workspace_links()[0].attachments().len(), 1);
+            assert_eq!(attachment.repo_root(), "/tmp/arroba-worktree-a");
+            link
+        }
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(attached.attachments().len(), 1);
+
+    let shown = match harness
+        .dispatch(LocalDaemonRequest::ShowWorkspaceLink(
+            ShowWorkspaceLinkRequest {
+                session_id: session_id.clone(),
+                link_ref: link.link_id().to_string(),
+            },
+        ))
+        .expect("workspace link show should succeed")
+    {
+        LocalDaemonResponse::WorkspaceLinkShown { link } => link,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(shown.attachments().len(), 1);
+
+    let listed = match harness
+        .dispatch(LocalDaemonRequest::ListWorkspaceLinks(
+            ListWorkspaceLinksRequest {
+                session_id: session_id.clone(),
+            },
+        ))
+        .expect("workspace links list should succeed")
+    {
+        LocalDaemonResponse::WorkspaceLinksListed { links } => links,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(listed.len(), 1);
+
+    let detached = match harness
+        .dispatch(LocalDaemonRequest::DetachWorkspaceLink(
+            DetachWorkspaceLinkRequest {
+                session_id,
+                link_ref: "shared-repo".to_string(),
+                repo_root: Some("/tmp/arroba-worktree-a".to_string()),
+            },
+        ))
+        .expect("workspace link detach should succeed")
+    {
+        LocalDaemonResponse::WorkspaceLinkDetached { link, detached, .. } => {
+            assert!(link.attachments().is_empty());
+            detached
+        }
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(detached.len(), 1);
 }
 
 #[test]

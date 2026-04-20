@@ -47,6 +47,7 @@ import type {
   TerminalOutputRecord,
   TranscriptEntry,
   WorkflowDefinition,
+  WorkspaceLinkDefinition,
 } from "./cli-types.js"
 import {
   createCommandActionHandlers,
@@ -80,16 +81,19 @@ import { KernelEvent, LocalIpcClient } from "./ipc.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import {
   attachToSessionRequest,
+  attachWorkspaceLinkRequest,
   approveRemoteMachineRequest,
   cancelActivePromptRequest,
   configureRelayRequest,
   captureScreenshotRequest,
   aliasSessionRequest,
   createSessionRequest,
+  createWorkspaceLinkRequest,
   cycleAgentFocusRequest,
   deleteSessionRequest,
   destroyAgentRequest,
   detachFromSessionRequest,
+  detachWorkspaceLinkRequest,
   endSessionRequest,
   forgetRemoteMachineRequest,
   focusAgentRequest,
@@ -111,6 +115,7 @@ import {
   listMcpServersRequest,
   listProviderProcessesRequest,
   listSkillsRequest,
+  listWorkspaceLinksRequest,
   listRemoteMachineKernelsRequest,
   listRemoteMachinesRequest,
   relayStatusRequest,
@@ -123,6 +128,7 @@ import {
   renameRemoteMachineRequest,
   resolveSessionRequest,
   setUserConfigValueRequest,
+  showWorkspaceLinkRequest,
   spawnAgentRequest,
   startProviderLoginRequest,
   storeTransferredFileRequest,
@@ -5344,6 +5350,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleMachineCommand,
     handleRelayCommand,
     handleConfigCommand,
+    handleWorkspaceCommand,
     handleWorkflowCommand,
     handleMcpCommand,
     handleSkillCommand,
@@ -5514,6 +5521,36 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       updateSessionConfig(client, sessionId, attachmentId, values, requiresIdle),
     applySessionState,
     refreshAgentPanes,
+    createWorkspaceLink: async (name) => {
+      const response = await client.send<Record<string, unknown>>(
+        createWorkspaceLinkRequest(sessionState().id, name),
+      )
+      return expectVariant(response, "WorkspaceLinkCreated")
+    },
+    listWorkspaceLinks: async () => {
+      const response = await client.send<Record<string, unknown>>(
+        listWorkspaceLinksRequest(sessionState().id),
+      )
+      return expectVariant<{ links: WorkspaceLinkDefinition[] }>(response, "WorkspaceLinksListed").links
+    },
+    showWorkspaceLink: async (linkRef) => {
+      const response = await client.send<Record<string, unknown>>(
+        showWorkspaceLinkRequest(sessionState().id, linkRef),
+      )
+      return expectVariant<{ link: WorkspaceLinkDefinition }>(response, "WorkspaceLinkShown").link
+    },
+    attachWorkspaceLink: async (linkRef, repoRoot) => {
+      const response = await client.send<Record<string, unknown>>(
+        attachWorkspaceLinkRequest(sessionState().id, linkRef, repoRoot ?? null),
+      )
+      return expectVariant(response, "WorkspaceLinkAttached")
+    },
+    detachWorkspaceLink: async (linkRef, repoRoot) => {
+      const response = await client.send<Record<string, unknown>>(
+        detachWorkspaceLinkRequest(sessionState().id, linkRef, repoRoot ?? null),
+      )
+      return expectVariant(response, "WorkspaceLinkDetached")
+    },
     openWorkflowNodeInstructionsEditor,
     closeWorkflowNodeInstructionsEditor,
     getWorkflowNodeInstructionsDraft,
@@ -5711,6 +5748,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onConfig: async (command) => {
         try {
           await handleConfigCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onWorkspace: async (command) => {
+        try {
+          await handleWorkspaceCommand(command)
         } catch (error) {
           flashFooter(formatError(error), "error")
         }
@@ -6029,6 +6073,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onConfig: async (command) => {
         try {
           await handleConfigCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onWorkspace: async (command) => {
+        try {
+          await handleWorkspaceCommand(command)
         } catch (error) {
           flashFooter(formatError(error), "error")
         }

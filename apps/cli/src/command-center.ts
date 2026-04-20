@@ -189,6 +189,19 @@ const COMMAND_TREE: CommandNode[] = [
     ],
   },
   {
+    id: "workspace",
+    label: "/workspace",
+    description: "Link worktrees for shared managed I/O coordination",
+    value: "/workspace ",
+    children: [
+      { id: "workspace-link-create", label: "link create", description: "Create a session workspace link", value: "/workspace link create " },
+      { id: "workspace-link-list", label: "link list", description: "List session workspace links", value: "/workspace link list" },
+      { id: "workspace-link-show", label: "link show", description: "Show workspace link attachments", value: "/workspace link show " },
+      { id: "workspace-link-attach", label: "link attach", description: "Attach the current worktree to a link", value: "/workspace link attach " },
+      { id: "workspace-link-detach", label: "link detach", description: "Detach the current worktree from a link", value: "/workspace link detach " },
+    ],
+  },
+  {
     id: "provider",
     label: "/provider",
     description: "Change provider and manage auth",

@@ -1,4 +1,5 @@
 use super::*;
+use std::path::Path;
 
 impl SessionService {
     pub fn new(config: &DaemonConfig) -> Self {
@@ -16,6 +17,7 @@ impl SessionService {
             next_workflow_message_number: 0,
             next_workflow_watchdog_number: 0,
             next_queued_workflow_launch_number: 0,
+            next_workspace_link_number: 0,
         }
     }
 
@@ -63,6 +65,138 @@ impl SessionService {
     ) -> Result<(Vec<SessionMember>, Vec<SessionInvite>), DaemonError> {
         let session = self.get_session(session_id)?;
         Ok((session.members().to_vec(), session.invites().to_vec()))
+    }
+
+    pub fn create_workspace_link(
+        &mut self,
+        session_id: &str,
+        name: String,
+        created_by_user_id: String,
+    ) -> Result<(RuntimeSession, WorkspaceLinkDefinition), DaemonError> {
+        let normalized_name = normalize_workspace_link_name(&name)?;
+        let link_id = self.next_workspace_link_id();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        ensure_workspace_link_name_available(session, &normalized_name)?;
+        let link = WorkspaceLinkDefinition::new(
+            link_id,
+            session_id.to_string(),
+            normalized_name,
+            created_by_user_id,
+        );
+        let link = session.create_workspace_link(link);
+        session.touch();
+        Ok((session.clone(), link))
+    }
+
+    pub fn list_workspace_links(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<WorkspaceLinkDefinition>, DaemonError> {
+        Ok(self.get_session(session_id)?.workspace_links().to_vec())
+    }
+
+    pub fn resolve_workspace_link_ref(
+        &self,
+        session_id: &str,
+        link_ref: &str,
+    ) -> Result<WorkspaceLinkDefinition, DaemonError> {
+        let session = self.get_session(session_id)?;
+        resolve_workspace_link_ref_in_session(&session, link_ref).cloned()
+    }
+
+    pub fn attach_workspace_link(
+        &mut self,
+        session_id: &str,
+        link_ref: &str,
+        user_id: String,
+        machine_id: String,
+        kernel_id: String,
+        repo_root: String,
+        branch: Option<String>,
+        repo_fingerprint: Option<String>,
+    ) -> Result<
+        (
+            RuntimeSession,
+            WorkspaceLinkDefinition,
+            WorkspaceLinkAttachment,
+        ),
+        DaemonError,
+    > {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let link_id = resolve_workspace_link_ref_in_session(session, link_ref)?
+            .link_id()
+            .to_string();
+        let attachment = WorkspaceLinkAttachment::new(
+            link_id.clone(),
+            user_id,
+            machine_id,
+            kernel_id,
+            repo_root,
+            branch,
+            repo_fingerprint,
+        );
+        let link =
+            session
+                .workspace_link_mut(&link_id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "attach workspace link",
+                    message: format!("workspace link `{link_ref}` was not found"),
+                })?;
+        let attachment = link.attach(attachment);
+        let link = link.clone();
+        session.touch();
+        Ok((session.clone(), link, attachment))
+    }
+
+    pub fn detach_workspace_link(
+        &mut self,
+        session_id: &str,
+        link_ref: &str,
+        user_id: String,
+        repo_root: Option<&Path>,
+    ) -> Result<
+        (
+            RuntimeSession,
+            WorkspaceLinkDefinition,
+            Vec<WorkspaceLinkAttachment>,
+        ),
+        DaemonError,
+    > {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let link_id = resolve_workspace_link_ref_in_session(session, link_ref)?
+            .link_id()
+            .to_string();
+        let link =
+            session
+                .workspace_link_mut(&link_id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "detach workspace link",
+                    message: format!("workspace link `{link_ref}` was not found"),
+                })?;
+        let detached = link.detach(&user_id, repo_root);
+        let link = link.clone();
+        session.touch();
+        Ok((session.clone(), link, detached))
+    }
+
+    fn next_workspace_link_id(&mut self) -> String {
+        self.next_workspace_link_number += 1;
+        format!("workspace-link-{}", self.next_workspace_link_number)
     }
 
     pub fn create_session_invite(
@@ -518,5 +652,82 @@ impl SessionService {
             reference: queue_item_ref.to_string(),
             message: "queued workflow launch was not found",
         })
+    }
+}
+
+fn normalize_workspace_link_name(name: &str) -> Result<String, DaemonError> {
+    let normalized = name.trim().to_lowercase();
+    if normalized.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "create workspace link",
+            message: "workspace link name cannot be empty".to_string(),
+        });
+    }
+    if !normalized
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "create workspace link",
+            message: "workspace link name may only contain letters, numbers, '-', '_' or '.'"
+                .to_string(),
+        });
+    }
+    Ok(normalized)
+}
+
+fn ensure_workspace_link_name_available(
+    session: &RuntimeSession,
+    name: &str,
+) -> Result<(), DaemonError> {
+    if session
+        .workspace_links()
+        .iter()
+        .any(|link| link.name() == name)
+    {
+        Err(DaemonError::LocalTransport {
+            operation: "create workspace link",
+            message: format!("workspace link `{name}` already exists"),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn resolve_workspace_link_ref_in_session<'a>(
+    session: &'a RuntimeSession,
+    link_ref: &str,
+) -> Result<&'a WorkspaceLinkDefinition, DaemonError> {
+    let normalized_ref = link_ref.trim().to_lowercase();
+    if normalized_ref.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "resolve workspace link",
+            message: "workspace link reference cannot be empty".to_string(),
+        });
+    }
+    if let Some(link) = session
+        .workspace_links()
+        .iter()
+        .find(|link| link.link_id() == normalized_ref || link.name() == normalized_ref)
+    {
+        return Ok(link);
+    }
+    let matches = session
+        .workspace_links()
+        .iter()
+        .filter(|link| {
+            link.link_id().starts_with(&normalized_ref) || link.name().starts_with(&normalized_ref)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [link] => Ok(*link),
+        [] => Err(DaemonError::LocalTransport {
+            operation: "resolve workspace link",
+            message: format!("workspace link `{normalized_ref}` was not found"),
+        }),
+        _ => Err(DaemonError::LocalTransport {
+            operation: "resolve workspace link",
+            message: format!("workspace link `{normalized_ref}` is ambiguous"),
+        }),
     }
 }

@@ -10,6 +10,7 @@ import type {
   WorkflowWatchdogDefinition,
   WorkflowDefinition,
   WorkflowRun,
+  WorkspaceLinkDefinition,
 } from "./kernel-types.js"
 import { applyShellCommandResult, createDefaultShellContext, parseShellCommand } from "./shell-core.js"
 import { executeShellCommand } from "./shell-executor.js"
@@ -440,6 +441,75 @@ test("executeShellCommand manages session invites and members", async () => {
     { AttachToSession: { session_id: "session-1", client_id: "shell-ana", capability_level: "FullTerminal" } },
     { ListSessionMembers: { session_id: "session-1" } },
     { RevokeSessionInvite: { session_id: "session-1", invite_ref: "invite-1" } },
+  ])
+})
+
+test("executeShellCommand manages workspace links", async () => {
+  const session = makeSession({ id: "session-1" })
+  const link: WorkspaceLinkDefinition = {
+    link_id: "workspace-link-1",
+    session_id: "session-1",
+    name: "shared-repo",
+    created_by_user_id: "local",
+    created_at_ms: 100,
+    attachments: [],
+  }
+  const attached = {
+    ...link,
+    attachments: [{
+      link_id: link.link_id,
+      user_id: "local",
+      machine_id: "machine-1",
+      kernel_id: "kernel-1",
+      repo_root: "/repo",
+      branch: null,
+      repo_fingerprint: null,
+      attached_at_ms: 200,
+    }],
+  }
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("CreateWorkspaceLink" in request) {
+          return { WorkspaceLinkCreated: { link, session } }
+        }
+        if ("ListWorkspaceLinks" in request) {
+          return { WorkspaceLinksListed: { links: [attached] } }
+        }
+        if ("ShowWorkspaceLink" in request) {
+          return { WorkspaceLinkShown: { link: attached } }
+        }
+        if ("AttachWorkspaceLink" in request) {
+          return { WorkspaceLinkAttached: { link: attached, attachment: attached.attachments[0], session } }
+        }
+        if ("DetachWorkspaceLink" in request) {
+          return { WorkspaceLinkDetached: { link, detached: attached.attachments, session } }
+        }
+        throw new Error("unexpected request")
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+
+  const createResult = await executeShellCommand(parseShellCommand("workspace link create shared-repo"), context, { client: fake.client })
+  const listResult = await executeShellCommand(parseShellCommand("workspace link list"), context, { client: fake.client })
+  const showResult = await executeShellCommand(parseShellCommand("workspace link show shared-repo"), context, { client: fake.client })
+  const attachResult = await executeShellCommand(parseShellCommand("workspace link attach shared-repo"), context, { client: fake.client })
+  const detachResult = await executeShellCommand(parseShellCommand("workspace link detach shared-repo"), context, { client: fake.client })
+
+  assert.match(createResult.message ?? "", /created workspace link shared-repo/)
+  assert.match(listResult.message ?? "", /attachments=1/)
+  assert.match(showResult.message ?? "", /workspace link shared-repo/)
+  assert.match(attachResult.message ?? "", /attached \/repo/)
+  assert.match(detachResult.message ?? "", /detached 1 workspace link attachment/)
+  assert.deepEqual(requests, [
+    { CreateWorkspaceLink: { session_id: "session-1", name: "shared-repo" } },
+    { ListWorkspaceLinks: { session_id: "session-1" } },
+    { ShowWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo" } },
+    { AttachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo", branch: null, repo_fingerprint: null } },
+    { DetachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo" } },
   ])
 })
 

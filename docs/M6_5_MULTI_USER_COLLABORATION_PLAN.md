@@ -471,6 +471,14 @@ Exit criteria:
 
 ### Slice 6. Workspace Links
 
+Status: closed in implementation. Sessions now carry session-scoped workspace
+links with per-user/per-machine attachments. Members can create, list, show,
+attach, and detach links through kernel API, TUI slash commands, and
+`arroba-shell`. Managed I/O preserves existing unlinked behavior, but when a
+provider run's worktree is attached to a workspace link, coordination uses
+`workspace_link:<link-id>` as the logical repository id so explicitly linked
+worktrees/forks share edit reservations and artifact snapshots.
+
 Add session-scoped workspace links and shell/TUI commands.
 
 Exit criteria:
@@ -481,6 +489,14 @@ Exit criteria:
 - shell command coverage matches TUI/slash command coverage
 
 ### Slice 7. Relay Collaboration Drills
+
+Status: closed for local relay-caller and live relay identity paths. Regression
+drills cover remote caller membership, caller-scoped session listing, remote
+ownership authorization, projection redaction, remote managed-I/O identity
+matching, stale workflow revision rejection, and remote-machine prompt paths.
+The live relay identity security drill also passes. Physical remote provider
+CLI drills remain an operational follow-up because they require a second
+machine/provider environment, not additional M6.5 implementation.
 
 Run live collaboration drills through local and relay-backed paths.
 

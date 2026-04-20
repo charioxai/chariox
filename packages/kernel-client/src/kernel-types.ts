@@ -64,6 +64,27 @@ export type RuntimeSession = {
   queued_workflow_launches?: QueuedWorkflowLaunch[]
   workflow_watchdogs?: WorkflowWatchdogDefinition[]
   workflow_consoles?: WorkflowConsole[]
+  workspace_links?: WorkspaceLinkDefinition[]
+}
+
+export type WorkspaceLinkAttachment = {
+  link_id: string
+  user_id: string
+  machine_id: string
+  kernel_id: string
+  repo_root: string
+  branch?: string | null
+  repo_fingerprint?: string | null
+  attached_at_ms: number
+}
+
+export type WorkspaceLinkDefinition = {
+  link_id: string
+  session_id: string
+  name: string
+  created_by_user_id: string
+  created_at_ms: number
+  attachments?: WorkspaceLinkAttachment[]
 }
 
 export type SessionMember = {

@@ -1239,6 +1239,8 @@ impl KernelRuntimeState {
             .cloned()
             .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
         let identity = workspace_identity_for_root_off_thread(workspace_root.clone()).await?;
+        let identity =
+            managed_io_identity_for_session_workspace_link(identity, &session, &workspace_root);
         let snapshot = self.owned.workspace_identity_monitor.observe_provider_run(
             provider_run.id(),
             workspace_root.clone(),

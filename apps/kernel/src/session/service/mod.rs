@@ -21,7 +21,8 @@ use super::{
     WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
     WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
     WorkflowTurnEnvelope, WorkflowTurnRuntimeState, WorkflowWatchdogDefinition,
-    WorkflowWatchdogPolicy, DEFAULT_LOCAL_USER_ID,
+    WorkflowWatchdogPolicy, WorkspaceLinkAttachment, WorkspaceLinkDefinition,
+    DEFAULT_LOCAL_USER_ID,
 };
 #[cfg(test)]
 use super::{PromptAttachment, PromptSubmissionOutcome};
@@ -100,6 +101,7 @@ pub struct SessionService {
     next_workflow_message_number: u64,
     next_workflow_watchdog_number: u64,
     next_queued_workflow_launch_number: u64,
+    next_workspace_link_number: u64,
 }
 
 mod core;

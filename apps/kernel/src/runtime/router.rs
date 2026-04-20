@@ -22,21 +22,22 @@ use crate::local::provider_requests::{
     PROVIDER_CATALOG_CACHE_TTL,
 };
 use crate::local::{
-    AgentGrantKind, ApproveRemoteMachineRequest, ConfigureRelayRequest, CreatePairingInviteRequest,
-    CreateSessionInviteRequest, ForgetRemoteMachineRequest, GetMcpServerRequest,
+    AgentGrantKind, ApproveRemoteMachineRequest, AttachWorkspaceLinkRequest, ConfigureRelayRequest,
+    CreatePairingInviteRequest, CreateSessionInviteRequest, CreateWorkspaceLinkRequest,
+    DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GetMcpServerRequest,
     GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
     GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GrantAgentCapabilityRequest,
     ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
     JoinPairingInviteRequest, JoinSessionInviteRequest, ListAgentsRequest, ListMcpServersRequest,
     ListProviderProcessesRequest, ListSessionMembersRequest, ListSessionsRequest,
-    ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
-    MoveAgentToRemoteRequest, PairedClientRecord, PairingInviteIntent, PairingInviteRecord,
-    PairingJoinRecord, PumpTerminalOutputRequest, QueryHistoryRequest, RecordPairedClientRequest,
-    RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
-    RevokePairedClientRequest, RevokeSessionInviteRequest, SearchHistoryRequest,
-    SessionInviteRecord, SetUserConfigValueRequest, StartProviderLoginRequest,
-    TeardownProviderProcessesRequest, UninstallMcpServerRequest, UninstallSkillRequest,
-    UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
+    ListSkillsRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
+    LogoutProviderRequest, MoveAgentToRemoteRequest, PairedClientRecord, PairingInviteIntent,
+    PairingInviteRecord, PairingJoinRecord, PumpTerminalOutputRequest, QueryHistoryRequest,
+    RecordPairedClientRequest, RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest,
+    RevokeAgentCapabilityRequest, RevokePairedClientRequest, RevokeSessionInviteRequest,
+    SearchHistoryRequest, SessionInviteRecord, SetUserConfigValueRequest, ShowWorkspaceLinkRequest,
+    StartProviderLoginRequest, TeardownProviderProcessesRequest, UninstallMcpServerRequest,
+    UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -954,6 +955,24 @@ impl CommandRouter {
             LocalDaemonRequest::RevokeSessionInvite(request) => {
                 self.execute_revoke_session_invite_request(request).await
             }
+            LocalDaemonRequest::CreateWorkspaceLink(request) => {
+                self.execute_create_workspace_link_request(&command, request)
+                    .await
+            }
+            LocalDaemonRequest::ListWorkspaceLinks(request) => {
+                self.execute_list_workspace_links_request(request).await
+            }
+            LocalDaemonRequest::ShowWorkspaceLink(request) => {
+                self.execute_show_workspace_link_request(request).await
+            }
+            LocalDaemonRequest::AttachWorkspaceLink(request) => {
+                self.execute_attach_workspace_link_request(&command, request)
+                    .await
+            }
+            LocalDaemonRequest::DetachWorkspaceLink(request) => {
+                self.execute_detach_workspace_link_request(&command, request)
+                    .await
+            }
             LocalDaemonRequest::CreatePairingInvite(request) => {
                 self.execute_create_pairing_invite_request(request).await
             }
@@ -1060,6 +1079,30 @@ impl CommandRouter {
                     session: session.redacted_for_user(caller_user_id),
                 }
             }
+            LocalDaemonResponse::WorkspaceLinkCreated { link, session } => {
+                LocalDaemonResponse::WorkspaceLinkCreated {
+                    link,
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::WorkspaceLinkAttached {
+                link,
+                attachment,
+                session,
+            } => LocalDaemonResponse::WorkspaceLinkAttached {
+                link,
+                attachment,
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkspaceLinkDetached {
+                link,
+                detached,
+                session,
+            } => LocalDaemonResponse::WorkspaceLinkDetached {
+                link,
+                detached,
+                session: session.redacted_for_user(caller_user_id),
+            },
             LocalDaemonResponse::PromptSubmitted { outcome, session } => {
                 LocalDaemonResponse::PromptSubmitted {
                     outcome,
@@ -1896,6 +1939,114 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::SessionInviteRevoked { invite, session })
     }
 
+    async fn execute_create_workspace_link_request(
+        &self,
+        command: &KernelCommand,
+        request: CreateWorkspaceLinkRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let created_by_user_id = command_caller_user_id(command);
+        let (session, link) = {
+            let app = self.app.lock().await;
+            let result = app.sessions_mut().create_workspace_link(
+                &request.session_id,
+                request.name,
+                created_by_user_id,
+            )?;
+            result
+        };
+        self.session_projection.update(session.clone());
+        Ok(LocalDaemonResponse::WorkspaceLinkCreated { link, session })
+    }
+
+    async fn execute_list_workspace_links_request(
+        &self,
+        request: ListWorkspaceLinksRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let app = self.app.lock().await;
+        let links = app.sessions().list_workspace_links(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkspaceLinksListed { links })
+    }
+
+    async fn execute_show_workspace_link_request(
+        &self,
+        request: ShowWorkspaceLinkRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let app = self.app.lock().await;
+        let link = app
+            .sessions()
+            .resolve_workspace_link_ref(&request.session_id, &request.link_ref)?;
+        Ok(LocalDaemonResponse::WorkspaceLinkShown { link })
+    }
+
+    async fn execute_attach_workspace_link_request(
+        &self,
+        command: &KernelCommand,
+        request: AttachWorkspaceLinkRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let user_id = command_caller_user_id(command);
+        let config = self.config_projection.snapshot();
+        let machine_id = command
+            .caller
+            .machine_id
+            .clone()
+            .unwrap_or(config.host_machine_id);
+        let kernel_id = config.daemon_id;
+        let repo_root = if let Some(repo_root) = request.repo_root {
+            repo_root
+        } else {
+            let app = self.app.lock().await;
+            app.sessions()
+                .get_session(&request.session_id)?
+                .worktree_id()
+                .to_string()
+        };
+        let (session, link, attachment) = {
+            let app = self.app.lock().await;
+            let result = app.sessions_mut().attach_workspace_link(
+                &request.session_id,
+                &request.link_ref,
+                user_id,
+                machine_id,
+                kernel_id,
+                repo_root,
+                request.branch,
+                request.repo_fingerprint,
+            )?;
+            result
+        };
+        self.session_projection.update(session.clone());
+        Ok(LocalDaemonResponse::WorkspaceLinkAttached {
+            link,
+            attachment,
+            session,
+        })
+    }
+
+    async fn execute_detach_workspace_link_request(
+        &self,
+        command: &KernelCommand,
+        request: DetachWorkspaceLinkRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let user_id = command_caller_user_id(command);
+        let repo_root = request.repo_root.as_deref().map(std::path::Path::new);
+        let (session, link, detached) = {
+            let app = self.app.lock().await;
+            let result = app.sessions_mut().detach_workspace_link(
+                &request.session_id,
+                &request.link_ref,
+                user_id,
+                repo_root,
+            )?;
+            result
+        };
+        self.session_projection.update(session.clone());
+        Ok(LocalDaemonResponse::WorkspaceLinkDetached {
+            link,
+            detached,
+            session,
+        })
+    }
+
     async fn execute_create_pairing_invite_request(
         &self,
         request: CreatePairingInviteRequest,
@@ -2528,6 +2679,24 @@ impl CommandRouter {
             }
             LocalDaemonRequest::RevokeSessionInvite(request) => {
                 self.execute_revoke_session_invite_request(request).await
+            }
+            LocalDaemonRequest::CreateWorkspaceLink(request) => {
+                self.execute_create_workspace_link_request(&command, request)
+                    .await
+            }
+            LocalDaemonRequest::ListWorkspaceLinks(request) => {
+                self.execute_list_workspace_links_request(request).await
+            }
+            LocalDaemonRequest::ShowWorkspaceLink(request) => {
+                self.execute_show_workspace_link_request(request).await
+            }
+            LocalDaemonRequest::AttachWorkspaceLink(request) => {
+                self.execute_attach_workspace_link_request(&command, request)
+                    .await
+            }
+            LocalDaemonRequest::DetachWorkspaceLink(request) => {
+                self.execute_detach_workspace_link_request(&command, request)
+                    .await
             }
             LocalDaemonRequest::CreatePairingInvite(request) => {
                 self.execute_create_pairing_invite_request(request).await
@@ -3580,6 +3749,21 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
         LocalDaemonRequest::RevokeSessionInvite(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::CreateWorkspaceLink(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkspaceLinks(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ShowWorkspaceLink(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::AttachWorkspaceLink(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::DetachWorkspaceLink(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::SubmitPrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -3855,6 +4039,9 @@ fn response_sessions(response: &LocalDaemonResponse) -> Vec<crate::session::Runt
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
         | LocalDaemonResponse::SessionEnded { session }
         | LocalDaemonResponse::SessionAliased { session }
+        | LocalDaemonResponse::WorkspaceLinkCreated { session, .. }
+        | LocalDaemonResponse::WorkspaceLinkAttached { session, .. }
+        | LocalDaemonResponse::WorkspaceLinkDetached { session, .. }
         | LocalDaemonResponse::WorkflowCreated { session, .. }
         | LocalDaemonResponse::WorkflowAliased { session, .. }
         | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }

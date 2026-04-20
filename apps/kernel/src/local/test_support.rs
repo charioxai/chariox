@@ -6,7 +6,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
 use crate::agent::AgentInstance;
-use crate::runtime::command::KernelCommand;
+use crate::runtime::command::{KernelCaller, KernelCommand};
 use crate::runtime::router::CommandRouter;
 use crate::session::{WorkflowNodeDefinition, WorkflowRun};
 use crate::{DaemonApp, DaemonConfig, DaemonError};
@@ -54,11 +54,36 @@ impl LocalRouterTestHarness {
         &self,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.dispatch_with_caller(request, KernelCaller::default())
+    }
+
+    pub(crate) fn dispatch_as_user(
+        &self,
+        user_id: &str,
+        request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut caller = KernelCaller::default();
+        caller.user_id = Some(user_id.to_string());
+        self.dispatch_with_caller(request, caller)
+    }
+
+    pub(crate) fn dispatch_with_caller(
+        &self,
+        request: LocalDaemonRequest,
+        caller: KernelCaller,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         let command_id = format!(
             "local-router-test-{}",
             LOCAL_ROUTER_TEST_COMMAND_ID.fetch_add(1, Ordering::SeqCst)
         );
-        let command = KernelCommand::from_local_request(&command_id, None, None, &request);
+        let command = KernelCommand::from_local_request_with_caller(
+            &command_id,
+            crate::runtime::command::KernelCommandSource::LocalCli,
+            caller,
+            None,
+            None,
+            &request,
+        );
         self.runtime
             .block_on(self.router.dispatch(command, request))
     }

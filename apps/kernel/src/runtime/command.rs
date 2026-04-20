@@ -261,6 +261,21 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
             LocalRequestMetadata::new("session.detach", Interactive)
                 .attachment(&request.attachment_id)
         }
+        LocalDaemonRequest::CreateWorkspaceLink(request) => {
+            LocalRequestMetadata::new("workspace_link.create", Normal).session(&request.session_id)
+        }
+        LocalDaemonRequest::ListWorkspaceLinks(request) => {
+            LocalRequestMetadata::new("workspace_link.list", Normal).session(&request.session_id)
+        }
+        LocalDaemonRequest::ShowWorkspaceLink(request) => {
+            LocalRequestMetadata::new("workspace_link.show", Normal).session(&request.session_id)
+        }
+        LocalDaemonRequest::AttachWorkspaceLink(request) => {
+            LocalRequestMetadata::new("workspace_link.attach", Normal).session(&request.session_id)
+        }
+        LocalDaemonRequest::DetachWorkspaceLink(request) => {
+            LocalRequestMetadata::new("workspace_link.detach", Normal).session(&request.session_id)
+        }
         LocalDaemonRequest::SubmitPrompt(request) => {
             let mut metadata = LocalRequestMetadata::new("prompt.submit", Interactive)
                 .session(&request.session_id)
@@ -358,6 +373,11 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateSessionInvite(_) => "session.invite.create",
         LocalDaemonRequest::JoinSessionInvite(_) => "session.invite.join",
         LocalDaemonRequest::RevokeSessionInvite(_) => "session.invite.revoke",
+        LocalDaemonRequest::CreateWorkspaceLink(_) => "workspace_link.create",
+        LocalDaemonRequest::ListWorkspaceLinks(_) => "workspace_link.list",
+        LocalDaemonRequest::ShowWorkspaceLink(_) => "workspace_link.show",
+        LocalDaemonRequest::AttachWorkspaceLink(_) => "workspace_link.attach",
+        LocalDaemonRequest::DetachWorkspaceLink(_) => "workspace_link.detach",
         LocalDaemonRequest::ListSessions(_) => "session.list",
         LocalDaemonRequest::ResolveSession(_) => "session.resolve",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",

@@ -72,6 +72,21 @@ pub(super) fn managed_io_workspace_identities_match(
     home.worktree_root_fingerprint == worker.worktree_root_fingerprint
 }
 
+pub(super) fn managed_io_identity_for_session_workspace_link(
+    mut identity: crate::io::WorkspaceIdentity,
+    session: &crate::session::RuntimeSession,
+    workspace_root: &Path,
+) -> crate::io::WorkspaceIdentity {
+    let Some(link) = session.workspace_link_for_repo_root(workspace_root) else {
+        return identity;
+    };
+    identity.repo_id = Some(format!("workspace_link:{}", link.link_id()));
+    identity.repo_url = None;
+    identity.branch = None;
+    identity.head_commit = None;
+    identity
+}
+
 pub(super) fn normalize_managed_io_repo_url(value: &str) -> String {
     value.trim().trim_end_matches(".git").to_ascii_lowercase()
 }
@@ -338,6 +353,66 @@ pub(super) fn git_output(workspace_root: &PathBuf, args: &[&str]) -> Option<Stri
 
 pub(super) fn non_empty_owned(value: &str) -> Option<String> {
     (!value.trim().is_empty()).then(|| value.trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_link_attachment_overrides_managed_io_coordination_identity() {
+        let mut session = crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "/tmp/worktree-a",
+            "machine-1",
+            "kernel-1",
+        );
+        let link = crate::session::WorkspaceLinkDefinition::new(
+            "workspace-link-1",
+            "session-1",
+            "shared",
+            "local",
+        );
+        session.create_workspace_link(link);
+        let link = session
+            .workspace_link_mut("workspace-link-1")
+            .expect("link should exist");
+        link.attach(crate::session::WorkspaceLinkAttachment::new(
+            "workspace-link-1",
+            "local",
+            "machine-1",
+            "kernel-1",
+            "/tmp/worktree-a",
+            Some("main".to_string()),
+            None,
+        ));
+
+        let identity = crate::io::WorkspaceIdentity {
+            vcs_provider: Some("git".to_string()),
+            repo_id: Some("physical-repo".to_string()),
+            repo_url: Some("https://example.test/repo.git".to_string()),
+            branch: Some("feature".to_string()),
+            head_commit: Some("abc123".to_string()),
+            worktree_root_fingerprint: "fingerprint-a".to_string(),
+        };
+
+        let identity = managed_io_identity_for_session_workspace_link(
+            identity,
+            &session,
+            Path::new("/tmp/worktree-a"),
+        );
+
+        assert_eq!(
+            identity.repo_id.as_deref(),
+            Some("workspace_link:workspace-link-1")
+        );
+        assert_eq!(identity.repo_url, None);
+        assert_eq!(identity.branch, None);
+        assert_eq!(identity.head_commit, None);
+        assert_eq!(identity.worktree_root_fingerprint, "fingerprint-a");
+    }
 }
 
 mod payload;

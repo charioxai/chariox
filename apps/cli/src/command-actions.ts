@@ -19,6 +19,7 @@ import type {
   WorkflowNodeDefinition,
   WorkflowRun,
   WorkflowWatchdogDefinition,
+  WorkspaceLinkDefinition,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { MultiAgentResponseLayout, UiPreferences } from "./preferences.js"
@@ -127,6 +128,11 @@ type WorkflowWatchdogPayload = {
   workflow?: WorkflowDefinition
   endpoint?: WorkflowEndpointDefinition
   session: RuntimeSession
+}
+
+type WorkspaceLinkPayload = {
+  link: WorkspaceLinkDefinition
+  session?: RuntimeSession
 }
 
 type CommandActionDeps = {
@@ -257,6 +263,11 @@ type CommandActionDeps = {
   ) => Promise<{ session: RuntimeSession; config: SessionConfigState }>
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>
+  createWorkspaceLink?: (name: string) => Promise<WorkspaceLinkPayload>
+  listWorkspaceLinks?: () => Promise<WorkspaceLinkDefinition[]>
+  showWorkspaceLink?: (linkRef: string) => Promise<WorkspaceLinkDefinition>
+  attachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload>
+  detachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload & { detached: unknown[] }>
   saveUiPreferences: (prefs: UiPreferences) => Promise<void>
   getUserConfig?: () => Promise<ArrobaUserConfigPayload>
   setUserConfigValue?: (path: string, value: string) => Promise<ArrobaUserConfigPayload>
@@ -561,6 +572,26 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const formatSkillSummary = (skill: ArrobaSkillMetadata): string => {
     const summary = skill.short_description ?? skill.description
     return `${skill.name}: ${summary}`
+  }
+  const formatWorkspaceLinks = (links: WorkspaceLinkDefinition[]): string => {
+    if (links.length === 0) {
+      return "No workspace links in this session."
+    }
+    return links.map((link) => (
+      `${link.name} (${link.link_id}) attachments=${link.attachments?.length ?? 0}`
+    )).join("\n")
+  }
+  const formatWorkspaceLinkDetails = (link: WorkspaceLinkDefinition): string => {
+    const lines = [
+      `Workspace link ${link.name} (${link.link_id})`,
+      `created_by=${link.created_by_user_id}`,
+      `attachments=${link.attachments?.length ?? 0}`,
+    ]
+    for (const attachment of link.attachments ?? []) {
+      const branch = attachment.branch ? ` branch=${attachment.branch}` : ""
+      lines.push(`- ${attachment.user_id} ${attachment.repo_root}${branch}`)
+    }
+    return lines.join("\n")
   }
   const formatMcpImportOutcome = (outcome: McpImportOutcome): string => {
     const lines: string[] = []
@@ -1903,6 +1934,77 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     deps.flashFooter("usage: /skill list | /skill show <name> | /skill install <path> | /skill update <path> | /skill uninstall <name> | /skill import <codex|opencode> [name] | /skill grant <agent-ref> <name> | /skill revoke <agent-ref> <name> | /skill grants <agent-ref>", "error")
   }
 
+  const handleWorkspaceCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "workspace" }>,
+  ): Promise<void> => {
+    if (!deps.isAttached()) {
+      deps.flashFooter("attach to a session before managing workspace links", "error")
+      return
+    }
+    const [resource, action, ...args] = command.args
+    if (resource !== "link") {
+      deps.flashFooter("usage: /workspace link create|list|show|attach|detach", "error")
+      return
+    }
+    if (action === "create" || action === "new") {
+      const name = args[0]
+      if (!name || !deps.createWorkspaceLink) {
+        deps.flashFooter("usage: /workspace link create <name>", "error")
+        return
+      }
+      const payload = await deps.createWorkspaceLink(name)
+      if (payload.session) deps.applySessionState(payload.session)
+      deps.flashFooter(`created workspace link ${payload.link.name}`, "info")
+      return
+    }
+    if (!action || action === "list" || action === "ls") {
+      if (!deps.listWorkspaceLinks) {
+        deps.flashFooter("workspace links are not available", "error")
+        return
+      }
+      const links = await deps.listWorkspaceLinks()
+      deps.appendNotice(formatWorkspaceLinks(links))
+      deps.flashFooter(`listed ${links.length} workspace link${links.length === 1 ? "" : "s"}`, "info")
+      return
+    }
+    if (action === "show") {
+      const linkRef = args[0]
+      if (!linkRef || !deps.showWorkspaceLink) {
+        deps.flashFooter("usage: /workspace link show <name-or-id>", "error")
+        return
+      }
+      const link = await deps.showWorkspaceLink(linkRef)
+      deps.appendNotice(formatWorkspaceLinkDetails(link))
+      deps.flashFooter(`showing workspace link ${link.name}`, "info")
+      return
+    }
+    if (action === "attach") {
+      const linkRef = args[0]
+      const repoRoot = args[1] ? resolvePath(deps.worktree, args[1]) : deps.worktree
+      if (!linkRef || !deps.attachWorkspaceLink) {
+        deps.flashFooter("usage: /workspace link attach <name-or-id> [repo-root]", "error")
+        return
+      }
+      const payload = await deps.attachWorkspaceLink(linkRef, repoRoot)
+      if (payload.session) deps.applySessionState(payload.session)
+      deps.flashFooter(`attached ${repoRoot} to workspace link ${payload.link.name}`, "info")
+      return
+    }
+    if (action === "detach") {
+      const linkRef = args[0]
+      const repoRoot = args[1] ? resolvePath(deps.worktree, args[1]) : deps.worktree
+      if (!linkRef || !deps.detachWorkspaceLink) {
+        deps.flashFooter("usage: /workspace link detach <name-or-id> [repo-root]", "error")
+        return
+      }
+      const payload = await deps.detachWorkspaceLink(linkRef, repoRoot)
+      if (payload.session) deps.applySessionState(payload.session)
+      deps.flashFooter(`detached ${payload.detached.length} workspace link attachment${payload.detached.length === 1 ? "" : "s"} from ${payload.link.name}`, "info")
+      return
+    }
+    deps.flashFooter("usage: /workspace link create|list|show|attach|detach", "error")
+  }
+
   const handleWorkflowCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "workflow" }>,
   ): Promise<void> => {
@@ -2845,6 +2947,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleMachineCommand,
     handleRelayCommand,
     handleConfigCommand,
+    handleWorkspaceCommand,
     handleWorkflowCommand,
     handleMcpCommand,
     handleSkillCommand,

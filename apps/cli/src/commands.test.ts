@@ -32,6 +32,14 @@ test("parseSlashCommand parses workflow commands and args", () => {
   })
 })
 
+test("parseSlashCommand parses workspace link commands and args", () => {
+  assert.deepEqual(parseSlashCommand("/workspace link attach shared"), {
+    kind: "workspace",
+    raw: "/workspace link attach shared",
+    args: ["link", "attach", "shared"],
+  })
+})
+
 test("shouldClearCommandCenterForSlashCommand only clears selector-backed commands", () => {
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/model openai/gpt-5")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/session list")!), false)
@@ -54,6 +62,7 @@ test("executeSlashCommand dispatches to the matching handler", async () => {
     onMachine: () => calls.push("machine"),
     onRelay: () => calls.push("relay"),
     onConfig: () => calls.push("config"),
+    onWorkspace: () => calls.push("workspace"),
     onWorkflow: () => calls.push("workflow"),
     onMcp: () => calls.push("mcp"),
     onSkill: () => calls.push("skill"),
@@ -82,6 +91,7 @@ test("executeSlashCommand returns null for non-command input", async () => {
     onMachine: () => undefined,
     onRelay: () => undefined,
     onConfig: () => undefined,
+    onWorkspace: () => undefined,
     onWorkflow: () => undefined,
     onMcp: () => undefined,
     onSkill: () => undefined,

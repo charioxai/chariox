@@ -53,6 +53,43 @@ pub struct RevokeSessionInviteRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkspaceLinkRequest {
+    pub session_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkspaceLinksRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShowWorkspaceLinkRequest {
+    pub session_id: String,
+    pub link_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachWorkspaceLinkRequest {
+    pub session_id: String,
+    pub link_ref: String,
+    #[serde(default)]
+    pub repo_root: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub repo_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetachWorkspaceLinkRequest {
+    pub session_id: String,
+    pub link_ref: String,
+    #[serde(default)]
+    pub repo_root: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInviteRecord {
     pub invite: SessionInvite,
     pub invite_token: String,
@@ -863,6 +900,11 @@ pub enum LocalDaemonRequest {
     CreateSessionInvite(CreateSessionInviteRequest),
     JoinSessionInvite(JoinSessionInviteRequest),
     RevokeSessionInvite(RevokeSessionInviteRequest),
+    CreateWorkspaceLink(CreateWorkspaceLinkRequest),
+    ListWorkspaceLinks(ListWorkspaceLinksRequest),
+    ShowWorkspaceLink(ShowWorkspaceLinkRequest),
+    AttachWorkspaceLink(AttachWorkspaceLinkRequest),
+    DetachWorkspaceLink(DetachWorkspaceLinkRequest),
     LaunchProviderRun(LaunchProviderRunRequest),
     ListSessions(ListSessionsRequest),
     ResolveSession(ResolveSessionRequest),
@@ -993,6 +1035,26 @@ pub enum LocalDaemonResponse {
     },
     SessionInviteRevoked {
         invite: SessionInvite,
+        session: RuntimeSession,
+    },
+    WorkspaceLinkCreated {
+        link: WorkspaceLinkDefinition,
+        session: RuntimeSession,
+    },
+    WorkspaceLinksListed {
+        links: Vec<WorkspaceLinkDefinition>,
+    },
+    WorkspaceLinkShown {
+        link: WorkspaceLinkDefinition,
+    },
+    WorkspaceLinkAttached {
+        link: WorkspaceLinkDefinition,
+        attachment: WorkspaceLinkAttachment,
+        session: RuntimeSession,
+    },
+    WorkspaceLinkDetached {
+        link: WorkspaceLinkDefinition,
+        detached: Vec<WorkspaceLinkAttachment>,
         session: RuntimeSession,
     },
     ProviderRunLaunched {

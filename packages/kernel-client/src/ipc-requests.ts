@@ -81,6 +81,60 @@ export function revokeSessionInviteRequest(sessionId: string, inviteRef: string)
   }
 }
 
+export function createWorkspaceLinkRequest(sessionId: string, name: string) {
+  return {
+    CreateWorkspaceLink: {
+      session_id: sessionId,
+      name,
+    },
+  }
+}
+
+export function listWorkspaceLinksRequest(sessionId: string) {
+  return {
+    ListWorkspaceLinks: {
+      session_id: sessionId,
+    },
+  }
+}
+
+export function showWorkspaceLinkRequest(sessionId: string, linkRef: string) {
+  return {
+    ShowWorkspaceLink: {
+      session_id: sessionId,
+      link_ref: linkRef,
+    },
+  }
+}
+
+export function attachWorkspaceLinkRequest(
+  sessionId: string,
+  linkRef: string,
+  repoRoot?: string | null,
+  branch?: string | null,
+  repoFingerprint?: string | null,
+) {
+  return {
+    AttachWorkspaceLink: {
+      session_id: sessionId,
+      link_ref: linkRef,
+      repo_root: repoRoot ?? null,
+      branch: branch ?? null,
+      repo_fingerprint: repoFingerprint ?? null,
+    },
+  }
+}
+
+export function detachWorkspaceLinkRequest(sessionId: string, linkRef: string, repoRoot?: string | null) {
+  return {
+    DetachWorkspaceLink: {
+      session_id: sessionId,
+      link_ref: linkRef,
+      repo_root: repoRoot ?? null,
+    },
+  }
+}
+
 export function endSessionRequest(sessionId: string) {
   return {
     EndSession: {
