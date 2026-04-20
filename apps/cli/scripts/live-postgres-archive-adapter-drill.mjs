@@ -55,6 +55,11 @@ function jsonSql(value) {
   return `${sqlString(JSON.stringify(value))}::jsonb`
 }
 
+function pushSqlFilter(clauses, field, value) {
+  if (value == null || String(value).trim() === '') return
+  clauses.push(`${field} = ${sqlString(value)}`)
+}
+
 async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -240,7 +245,9 @@ function startAdapter({ container, port, token }) {
   const state = {
     failNextAppend: false,
     rejectNextAppend: false,
+    searchEnabled: false,
     appendRequests: 0,
+    searchRequests: 0,
     rejectedEventIds: [],
   }
   const server = http.createServer(async (request, response) => {
@@ -255,9 +262,54 @@ function startAdapter({ container, port, token }) {
         response.end(JSON.stringify({
           append: true,
           query: false,
-          search: false,
-          full_text_search: false,
+          search: state.searchEnabled,
+          full_text_search: state.searchEnabled,
           blob_refs: false,
+        }))
+        return
+      }
+      if (request.method === 'POST' && request.url === '/arroba/history/search') {
+        state.searchRequests += 1
+        if (!state.searchEnabled) {
+          response.writeHead(404, { 'content-type': 'application/json' })
+          response.end(JSON.stringify({ error: 'archive search disabled' }))
+          return
+        }
+        let body = ''
+        for await (const chunk of request) body += chunk.toString()
+        const payload = JSON.parse(body)
+        const query = payload.query ?? {}
+        const clauses = ['1 = 1']
+        pushSqlFilter(clauses, 'session_id', query.session_id)
+        pushSqlFilter(clauses, 'agent_id', query.agent_id)
+        pushSqlFilter(clauses, 'provider', query.provider)
+        pushSqlFilter(clauses, 'model', query.model)
+        pushSqlFilter(clauses, "payload->>'workflow_id'", query.workflow_id)
+        pushSqlFilter(clauses, "payload->>'machine_id'", query.machine_id)
+        pushSqlFilter(clauses, "payload->>'repo_root'", query.repo_root)
+        pushSqlFilter(clauses, "payload->>'worktree_path'", query.worktree_path)
+        pushSqlFilter(clauses, 'kind', query.kind)
+        if (query.after_sequence != null) clauses.push(`sequence > ${Number(query.after_sequence)}`)
+        if (query.text != null && String(query.text).trim() !== '') {
+          clauses.push(`(content ILIKE ${sqlString(`%${query.text}%`)} OR payload::text ILIKE ${sqlString(`%${query.text}%`)})`)
+        }
+        const limit = Math.max(1, Math.min(500, Number(query.limit ?? 100)))
+        const result = await psql(container, `
+SELECT payload::text
+FROM archive_events
+WHERE ${clauses.join(' AND ')}
+ORDER BY sequence ASC, event_id ASC
+LIMIT ${limit};
+`, { tuplesOnly: true })
+        const events = result.stdout
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => JSON.parse(line))
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({
+          events,
+          next_sequence: events.length === limit ? events[events.length - 1].sequence : null,
         }))
         return
       }
@@ -341,6 +393,10 @@ async function sqliteTextRows(dbPath, sql) {
 async function sqliteJsonRows(dbPath, sql) {
   const result = await mustRun('sqlite3', ['-json', dbPath, sql])
   return JSON.parse(result.stdout.trim() || '[]')
+}
+
+async function sqliteExec(dbPath, sql) {
+  await mustRun('sqlite3', [dbPath, sql])
 }
 
 async function writeConfig({ configHome, historyPath, statePath, adapterUrl, requireDurableAcceptance }) {
@@ -583,10 +639,35 @@ async function main() {
     })), 'HistoryEvents').events
     if (historyAfterArchive.length === 0) throw new Error('operational history search should still work with externally managed archive search disabled')
 
+    await sqliteExec(
+      historyPath,
+      `DELETE FROM history_events WHERE session_id = ${sqlString(session.id)} AND (content LIKE ${sqlString(`%${markerA}%`)} OR metadata_text LIKE ${sqlString(`%${markerA}%`)});`,
+    )
+    const operationalOnlyAfterDelete = variant(await client.send(searchHistoryRequest(markerA, {
+      session_id: session.id,
+      provider: 'dev-stub',
+      model: 'archive-drill-model',
+      limit: 10,
+    })), 'HistoryEvents').events
+    if (operationalOnlyAfterDelete.length !== 0) {
+      throw new Error(`expected operational-only search to miss deleted local event, got ${JSON.stringify(operationalOnlyAfterDelete)}`)
+    }
+    adapter.state.searchEnabled = true
+    const archiveSearch = variant(await client.send(searchHistoryRequest(markerA, {
+      session_id: session.id,
+      provider: 'dev-stub',
+      model: 'archive-drill-model',
+      limit: 10,
+    })), 'HistoryEvents').events
+    if (archiveSearch.length === 0 || !archiveSearch.some((event) => String(event.content ?? '').includes(markerA))) {
+      throw new Error(`expected Arroba search to return deleted local event from Postgres archive, got ${JSON.stringify(archiveSearch)}`)
+    }
+
     log('passed', {
       archivedEvents: ids.length,
       adapterAppendRequests: adapter.state.appendRequests,
-      searchMode: 'operational-only',
+      adapterSearchRequests: adapter.state.searchRequests,
+      searchMode: 'operational-and-postgres-archive',
     })
   } finally {
     if (client) await client.close().catch(() => {})

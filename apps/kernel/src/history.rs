@@ -154,7 +154,7 @@ pub struct HistoryEvent {
     pub caused_by_event_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HistoryEventQuery {
     pub session_id: Option<String>,
     pub agent_id: Option<String>,

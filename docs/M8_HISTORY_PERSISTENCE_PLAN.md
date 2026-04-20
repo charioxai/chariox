@@ -222,7 +222,7 @@ Capabilities response:
 }
 ```
 
-For v1, external archive adapters are not primary transcript stores. Operational history remains the active transcript source.
+For v1, external archive adapters are not primary transcript stores. Operational history remains the active transcript source. If an external adapter advertises `search = true`, Arroba also sends `POST /arroba/history/search` with the same history query fields used by local `QueryHistory`/`SearchHistory`, expects canonical `HistoryEvent` rows back, deduplicates by `event_id`, and returns the merged `HistoryEvents` response.
 
 ## Session And Agent Lifecycle
 
@@ -545,7 +545,7 @@ If multiple agents could have caused a commit, store all candidates and show the
 - Search finds commit by subject, changed path, agent, provider, model, and prompt text.
 - Local Git observation drill: `pnpm --filter @arroba/cli run git-observation:drill`.
 - Remote Git observation drill: launch isolated relay/home/worker kernels, spawn a remote dev-stub agent in a worker Git repo, commit during the remote turn, complete the turn, then verify home operational history finds the commit by subject, changed path, repo/worktree, provider, model, and home prompt id.
-- Postgres archive adapter drill: `pnpm --filter @arroba/cli run postgres-archive:drill` launches a real ephemeral `postgres:16-alpine` container and an HTTP adapter, creates transcript events through an isolated dev-stub kernel, flushes Arroba's archive outbox through `arroba-history-archive-flush`, and verifies bearer-token auth, adapter capabilities, append idempotency, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, final retry acceptance, and operational-only history search when external archive search is disabled.
+- Postgres archive adapter drill: `pnpm --filter @arroba/cli run postgres-archive:drill` launches a real ephemeral `postgres:16-alpine` container and an HTTP adapter, creates transcript events through an isolated dev-stub kernel, flushes Arroba's archive outbox through `arroba-history-archive-flush`, and verifies bearer-token auth, adapter capabilities, append idempotency, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, final retry acceptance, operational-only history search when external archive search is disabled, and Postgres-backed archive search through Arroba after deleting the matching operational row.
 
 ## V2
 

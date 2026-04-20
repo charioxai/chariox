@@ -15,6 +15,7 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::history::SessionHistoryStore;
 use crate::history::{HistoryEventQuery, OperationalHistoryStore};
+use crate::history_archive::HistoryArchiveClient;
 use crate::local::provider_requests::{
     forgotten_machine_record, load_provider_catalog, logout_provider_response,
     provider_auth_status_response, provider_command_catalogs_response, record_for_machine_id,
@@ -2386,8 +2387,30 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let requested_limit = query.limit.unwrap_or(100).clamp(1, 500);
         let history = self.operational_history_store.clone();
+        let archive_config = self
+            .config_projection
+            .snapshot()
+            .user_config
+            .history
+            .archive;
         tokio::task::spawn_blocking(move || {
-            let events = history.query_events(query)?;
+            let mut events = history.query_events(query.clone())?;
+            let archive_client = HistoryArchiveClient::from_config(&archive_config)?;
+            let archive_capabilities = archive_client.capabilities().ok();
+            if archive_capabilities
+                .as_ref()
+                .map(|capabilities| capabilities.search)
+                .unwrap_or(false)
+            {
+                let archive_response = archive_client.search_events(query.clone())?;
+                merge_history_events(&mut events, archive_response.events);
+            }
+            events.sort_by(|left, right| {
+                left.sequence
+                    .cmp(&right.sequence)
+                    .then_with(|| left.event_id.cmp(&right.event_id))
+            });
+            events.truncate(requested_limit);
             let next_sequence = if events.len() == requested_limit {
                 events.last().map(|event| event.sequence)
             } else {
@@ -4008,6 +4031,21 @@ fn history_query_from_search_request(request: SearchHistoryRequest) -> HistoryEv
         text: Some(request.query),
         after_sequence: request.after_sequence,
         limit: request.limit,
+    }
+}
+
+fn merge_history_events(
+    events: &mut Vec<crate::history::HistoryEvent>,
+    archive_events: Vec<crate::history::HistoryEvent>,
+) {
+    let mut seen = events
+        .iter()
+        .map(|event| event.event_id.clone())
+        .collect::<HashSet<_>>();
+    for event in archive_events {
+        if seen.insert(event.event_id.clone()) {
+            events.push(event);
+        }
     }
 }
 

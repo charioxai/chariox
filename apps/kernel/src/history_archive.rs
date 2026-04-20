@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{HistoryArchiveMode, UserArchiveHistoryConfig};
 use crate::error::DaemonError;
-use crate::history::{HistoryEvent, OperationalHistoryStore};
+use crate::history::{HistoryEvent, HistoryEventQuery, OperationalHistoryStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryArchiveClient {
@@ -42,6 +42,19 @@ pub struct HistoryArchiveAppendResponse {
     pub accepted_event_ids: Vec<String>,
     #[serde(default)]
     pub rejected_events: Vec<HistoryArchiveRejectedEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryArchiveSearchRequest {
+    pub query: HistoryEventQuery,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryArchiveSearchResponse {
+    #[serde(default)]
+    pub events: Vec<HistoryEvent>,
+    #[serde(default)]
+    pub next_sequence: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +198,19 @@ impl HistoryArchiveClient {
             Self::External(client) => client.append_events(events),
         }
     }
+
+    pub fn search_events(
+        &self,
+        query: HistoryEventQuery,
+    ) -> Result<HistoryArchiveSearchResponse, DaemonError> {
+        match self {
+            Self::Disabled => Ok(HistoryArchiveSearchResponse {
+                events: Vec::new(),
+                next_sequence: None,
+            }),
+            Self::External(client) => client.search_events(query),
+        }
+    }
 }
 
 impl ExternalHistoryArchiveClient {
@@ -225,6 +251,27 @@ impl ExternalHistoryArchiveClient {
             require_all_events_accepted(events, &archive_response)?;
         }
         Ok(archive_response)
+    }
+
+    fn search_events(
+        &self,
+        query: HistoryEventQuery,
+    ) -> Result<HistoryArchiveSearchResponse, DaemonError> {
+        let request_body = HistoryArchiveSearchRequest { query };
+        let payload = serde_json::to_string(&request_body).map_err(|error| {
+            DaemonError::SessionHistoryFailed {
+                session_id: None,
+                operation: "encode history archive search request",
+                message: error.to_string(),
+            }
+        })?;
+        let request = self
+            .authorized_request(ureq::post(&self.endpoint("/arroba/history/search")))?
+            .set("content-type", "application/json");
+        let response = request
+            .send_string(&payload)
+            .map_err(|error| archive_http_error("search", error))?;
+        decode_response_json::<HistoryArchiveSearchResponse>(response, "history.archive.search")
     }
 
     fn endpoint(&self, path: &str) -> String {
