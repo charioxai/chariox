@@ -91,7 +91,9 @@ impl SessionService {
                 node_id: node_id.to_string(),
             })?;
         node.set_instructions(instructions);
-        Ok(node.clone())
+        let node = node.clone();
+        workflow.bump_revision();
+        Ok(node)
     }
 
     pub fn set_workflow_node_can_complete_run(
@@ -126,7 +128,9 @@ impl SessionService {
                 node_id: node_id.to_string(),
             })?;
         node.set_can_complete_workflow_run(value);
-        Ok(node.clone())
+        let node = node.clone();
+        workflow.bump_revision();
+        Ok(node)
     }
 
     pub fn set_workflow_node_can_emit_intermediate_output(
@@ -161,7 +165,9 @@ impl SessionService {
                 node_id: node_id.to_string(),
             })?;
         node.set_can_emit_intermediate_run_output(value);
-        Ok(node.clone())
+        let node = node.clone();
+        workflow.bump_revision();
+        Ok(node)
     }
 
     pub fn set_workflow_node_intermediate_output_schema_ref(
@@ -196,7 +202,9 @@ impl SessionService {
                 node_id: node_id.to_string(),
             })?;
         node.set_intermediate_output_schema_ref(value);
-        Ok(node.clone())
+        let node = node.clone();
+        workflow.bump_revision();
+        Ok(node)
     }
 
     pub fn set_workflow_node_max_turns(
@@ -231,7 +239,9 @@ impl SessionService {
                 node_id: node_id.to_string(),
             })?;
         node.set_max_turns(value);
-        Ok(node.clone())
+        let node = node.clone();
+        workflow.bump_revision();
+        Ok(node)
     }
 
     pub fn remove_workflow_node(
@@ -468,7 +478,9 @@ impl SessionService {
             }
         })?;
         endpoint.set_owner_user_id(owner_user_id);
-        Ok(endpoint.clone())
+        let endpoint = endpoint.clone();
+        workflow.bump_revision();
+        Ok(endpoint)
     }
 
     pub fn assign_workflow_endpoint_alias(
@@ -519,7 +531,9 @@ impl SessionService {
             }
         })?;
         endpoint.set_alias(Some(alias));
-        Ok(endpoint.clone())
+        let endpoint = endpoint.clone();
+        workflow.bump_revision();
+        Ok(endpoint)
     }
 
     pub fn bind_workflow_endpoint(
@@ -566,6 +580,8 @@ impl SessionService {
             }
         })?;
         endpoint.set_entry_node_id(entry_node_id.to_string());
-        Ok(endpoint.clone())
+        let endpoint = endpoint.clone();
+        workflow.bump_revision();
+        Ok(endpoint)
     }
 }

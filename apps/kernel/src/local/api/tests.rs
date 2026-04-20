@@ -674,6 +674,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 agent_id: agent.id().to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect("first workflow node should be added")
@@ -688,6 +689,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 agent_id: agent.id().to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect_err("duplicate workflow node should be rejected");
@@ -703,6 +705,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
                 workflow_ref: workflow.id().to_string(),
                 node_id: node_a.id().to_string(),
                 instructions: Some("You are the reviewer.".to_string()),
+                expected_workflow_revision: None,
             },
         ))
         .expect("workflow node instructions should update")
@@ -736,6 +739,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 agent_id: spawned.id().to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect("second workflow node should be added")
@@ -751,6 +755,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
                 workflow_ref: workflow.id().to_string(),
                 entry_node_id: node_a.id().to_string(),
                 alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
             },
         ))
         .expect("workflow endpoint should be created")
@@ -765,6 +770,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             session_id: session.id().to_string(),
             workflow_ref: workflow.id().to_string(),
             alias: "qa".to_string(),
+            expected_workflow_revision: None,
         }))
         .expect("workflow alias should succeed")
     {
@@ -780,6 +786,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
                 workflow_ref: workflow.id().to_string(),
                 endpoint_ref: endpoint.id().to_string(),
                 alias: "start".to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect("workflow endpoint alias should succeed")
@@ -798,6 +805,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
                 to_node_id: node_b.id().to_string(),
                 output_schema_ref: None,
                 validation_policy: None,
+                expected_workflow_revision: None,
             },
         ))
         .expect("workflow edge should be added")
@@ -812,6 +820,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 edge_id: edge.id().to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect("workflow edge should be removed")
@@ -826,6 +835,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 node_id: node_a.id().to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect("workflow node should be removed")
@@ -882,6 +892,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 agent_id: agent.id().to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect("workflow node should be added")
@@ -897,6 +908,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
                 workflow_ref: workflow.id().to_string(),
                 entry_node_id: node.id().to_string(),
                 alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
             },
         ))
         .expect("workflow endpoint should be created")
@@ -1088,6 +1100,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 agent_id: first_agent.id().to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect("first workflow node should be added")
@@ -1102,6 +1115,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 agent_id: second_agent.id().to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect("second workflow node should be added")
@@ -1119,6 +1133,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
                 to_node_id: second_node.id().to_string(),
                 output_schema_ref: None,
                 validation_policy: None,
+                expected_workflow_revision: None,
             },
         ))
         .expect("workflow edge should be added")
@@ -1134,6 +1149,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
                 workflow_ref: workflow.id().to_string(),
                 entry_node_id: first_node.id().to_string(),
                 alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
             },
         ))
         .expect("workflow endpoint should be created")
@@ -1336,6 +1352,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 agent_id: first_agent.id().to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect("first node should be added")
@@ -1349,6 +1366,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 agent_id: second_agent.id().to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect("second node should be added")
@@ -1363,6 +1381,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
                 workflow_ref: workflow.id().to_string(),
                 node_id: first_node.id().to_string(),
                 instructions: Some("# First node\nProduce a tiny JSON payload.\n".to_string()),
+                expected_workflow_revision: None,
             },
         ))
         .expect("first node instructions should be updated");
@@ -1373,6 +1392,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
                 workflow_ref: workflow.id().to_string(),
                 node_id: second_node.id().to_string(),
                 instructions: Some("# Second node\nSummarize the handoff.\n".to_string()),
+                expected_workflow_revision: None,
             },
         ))
         .expect("second node instructions should be updated");
@@ -1385,6 +1405,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
                 to_node_id: second_node.id().to_string(),
                 output_schema_ref: None,
                 validation_policy: None,
+                expected_workflow_revision: None,
             },
         ))
         .expect("edge should be added");
@@ -1395,6 +1416,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
                 workflow_ref: workflow.id().to_string(),
                 entry_node_id: first_node.id().to_string(),
                 alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
             },
         ))
         .expect("endpoint should be created")
@@ -1608,6 +1630,7 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 agent_id: first_agent.id().to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect("first node should be added")
@@ -1621,6 +1644,7 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 agent_id: second_agent.id().to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect("second node should be added")
@@ -1646,6 +1670,7 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
                 to_node_id: second_node.id().to_string(),
                 output_schema_ref: Some(schema_path.to_string_lossy().to_string()),
                 validation_policy: Some(WorkflowOutputValidationPolicy::Warn),
+                expected_workflow_revision: None,
             },
         ))
         .expect("first edge should be added");
@@ -1658,6 +1683,7 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
                 to_node_id: first_node.id().to_string(),
                 output_schema_ref: None,
                 validation_policy: None,
+                expected_workflow_revision: None,
             },
         ))
         .expect("second edge should be added");
@@ -1668,6 +1694,7 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
                 workflow_ref: workflow.id().to_string(),
                 entry_node_id: first_node.id().to_string(),
                 alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
             },
         ))
         .expect("endpoint should be created")
@@ -1868,6 +1895,7 @@ fn local_request_api_resumes_stopped_active_workflow_node_runs() {
                 workflow_ref: workflow.id().to_string(),
                 entry_node_id: node.id().to_string(),
                 alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
             },
         ))
         .expect("endpoint should be created")
@@ -2034,6 +2062,7 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
                 workflow_ref: workflow.id().to_string(),
                 entry_node_id: node.id().to_string(),
                 alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
             },
         ))
         .expect("endpoint create should succeed")
@@ -2125,6 +2154,7 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
                 workflow_ref: workflow.id().to_string(),
                 entry_node_id: entry_node.id().to_string(),
                 alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
             },
         ))
         .expect("workflow endpoint should be created")
@@ -3737,6 +3767,7 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
                 session_id: workflow_session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 agent_id: workflow_agent.id().to_string(),
+                expected_workflow_revision: None,
             },
         ))
         .expect("workflow node should be added")
@@ -3751,6 +3782,7 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
                 workflow_ref: workflow.id().to_string(),
                 entry_node_id: node.id().to_string(),
                 alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
             },
         ))
         .expect("workflow endpoint should be created")

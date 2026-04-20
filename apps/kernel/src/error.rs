@@ -94,6 +94,13 @@ pub enum DaemonError {
         from_node_id: String,
         to_node_id: String,
     },
+    #[error("workflow `{workflow_id}` in session `{session_id}` has revision {current_revision}, expected {expected_revision}; refresh and retry")]
+    WorkflowRevisionConflict {
+        session_id: String,
+        workflow_id: String,
+        expected_revision: u64,
+        current_revision: u64,
+    },
     #[error("workflow alias `{alias}` is invalid: {message}")]
     InvalidWorkflowAlias {
         alias: String,

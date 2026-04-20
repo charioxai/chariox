@@ -456,6 +456,11 @@ Exit criteria:
 
 ### Slice 5. Workflow Revision Conflicts
 
+Status: closed in implementation. Workflow definitions now carry a monotonically
+increasing `revision`. Graph, endpoint, and workflow-definition mutations accept
+`expected_workflow_revision`; stale values fail with `WorkflowRevisionConflict`
+before mutating state, including the current revision for refresh/retry.
+
 Add optimistic workflow revision checks to graph and endpoint mutations.
 
 Exit criteria:

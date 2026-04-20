@@ -684,6 +684,8 @@ impl WorkflowConsole {
 pub struct WorkflowDefinition {
     id: String,
     alias: Option<String>,
+    #[serde(default)]
+    revision: u64,
     #[serde(default = "default_workflow_flush_agent_context_before_run")]
     flush_agent_context_before_run: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -700,6 +702,7 @@ impl WorkflowDefinition {
         Self {
             id: id.into(),
             alias,
+            revision: 0,
             flush_agent_context_before_run: default_workflow_flush_agent_context_before_run(),
             run_output_schema_ref: None,
             intermediate_output_schema_ref: None,
@@ -715,6 +718,14 @@ impl WorkflowDefinition {
 
     pub fn alias(&self) -> Option<&str> {
         self.alias.as_deref()
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn bump_revision(&mut self) {
+        self.revision = self.revision.saturating_add(1);
     }
 
     pub fn flush_agent_context_before_run(&self) -> bool {
@@ -743,22 +754,27 @@ impl WorkflowDefinition {
 
     pub fn set_alias(&mut self, alias: Option<String>) {
         self.alias = alias;
+        self.bump_revision();
     }
 
     pub fn set_flush_agent_context_before_run(&mut self, value: bool) {
         self.flush_agent_context_before_run = value;
+        self.bump_revision();
     }
 
     pub fn set_run_output_schema_ref(&mut self, value: Option<String>) {
         self.run_output_schema_ref = value;
+        self.bump_revision();
     }
 
     pub fn set_intermediate_output_schema_ref(&mut self, value: Option<String>) {
         self.intermediate_output_schema_ref = value;
+        self.bump_revision();
     }
 
     pub fn add_node(&mut self, node: WorkflowNodeDefinition) -> WorkflowNodeDefinition {
         self.nodes.push(node.clone());
+        self.bump_revision();
         node
     }
 
@@ -777,11 +793,13 @@ impl WorkflowDefinition {
             .retain(|edge| edge.from_node_id() != node_id && edge.to_node_id() != node_id);
         self.endpoints
             .retain(|endpoint| endpoint.entry_node_id() != node_id);
+        self.bump_revision();
         Some(removed)
     }
 
     pub fn add_edge(&mut self, edge: WorkflowEdgeDefinition) -> WorkflowEdgeDefinition {
         self.edges.push(edge.clone());
+        self.bump_revision();
         edge
     }
 
@@ -797,7 +815,9 @@ impl WorkflowDefinition {
 
     pub fn remove_edge(&mut self, edge_id: &str) -> Option<WorkflowEdgeDefinition> {
         let index = self.edges.iter().position(|edge| edge.id() == edge_id)?;
-        Some(self.edges.remove(index))
+        let edge = self.edges.remove(index);
+        self.bump_revision();
+        Some(edge)
     }
 
     pub fn add_endpoint(
@@ -805,6 +825,7 @@ impl WorkflowDefinition {
         endpoint: WorkflowEndpointDefinition,
     ) -> WorkflowEndpointDefinition {
         self.endpoints.push(endpoint.clone());
+        self.bump_revision();
         endpoint
     }
 
@@ -825,7 +846,9 @@ impl WorkflowDefinition {
             .endpoints
             .iter()
             .position(|endpoint| endpoint.id() == endpoint_id)?;
-        Some(self.endpoints.remove(index))
+        let endpoint = self.endpoints.remove(index);
+        self.bump_revision();
+        Some(endpoint)
     }
 
     pub fn redacted_for_user(mut self, user_id: &str) -> Self {

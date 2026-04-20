@@ -76,6 +76,32 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    fn ensure_workflow_revision(
+        &self,
+        session_id: &str,
+        workflow_ref: &str,
+        expected_revision: Option<u64>,
+    ) -> Result<(), DaemonError> {
+        let Some(expected_revision) = expected_revision else {
+            return Ok(());
+        };
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(session_id, workflow_ref)?;
+        let current_revision = workflow.revision();
+        if current_revision == expected_revision {
+            Ok(())
+        } else {
+            Err(DaemonError::WorkflowRevisionConflict {
+                session_id: session_id.to_string(),
+                workflow_id: workflow.id().to_string(),
+                expected_revision,
+                current_revision,
+            })
+        }
+    }
+
     fn ensure_workflow_edge_incident_to_owner(
         &self,
         session_id: &str,
@@ -136,6 +162,11 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::AliasWorkflowRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         let workflow = self.session_store.write().assign_workflow_alias(
             &request.session_id,
             &request.workflow_ref,
@@ -174,6 +205,11 @@ impl KernelRuntimeOwnedState {
         request: crate::local::CreateWorkflowEndpointRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         self.ensure_workflow_node_owner(
             &request.session_id,
             &request.workflow_ref,
@@ -210,6 +246,11 @@ impl KernelRuntimeOwnedState {
         request: crate::local::AliasWorkflowEndpointRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         self.ensure_workflow_endpoint_owner(
             &request.session_id,
             &request.workflow_ref,
@@ -240,6 +281,11 @@ impl KernelRuntimeOwnedState {
         request: crate::local::BindWorkflowEndpointRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         self.ensure_workflow_endpoint_owner(
             &request.session_id,
             &request.workflow_ref,
@@ -277,6 +323,11 @@ impl KernelRuntimeOwnedState {
         request: crate::local::AddWorkflowNodeRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         let agent = if let Some(agent) = self
             .agent_store
             .get_session_agents(&request.session_id)
@@ -321,6 +372,11 @@ impl KernelRuntimeOwnedState {
         request: crate::local::RemoveWorkflowNodeRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         self.ensure_workflow_node_owner(
             &request.session_id,
             &request.workflow_ref,
@@ -350,6 +406,11 @@ impl KernelRuntimeOwnedState {
         request: crate::local::UpdateWorkflowNodeInstructionsRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         self.ensure_workflow_node_owner(
             &request.session_id,
             &request.workflow_ref,
@@ -383,6 +444,11 @@ impl KernelRuntimeOwnedState {
         request: crate::local::SetWorkflowNodeCanCompleteRunRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         self.ensure_workflow_node_owner(
             &request.session_id,
             &request.workflow_ref,
@@ -416,6 +482,11 @@ impl KernelRuntimeOwnedState {
         request: crate::local::SetWorkflowNodeCanEmitIntermediateOutputRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         self.ensure_workflow_node_owner(
             &request.session_id,
             &request.workflow_ref,
@@ -451,6 +522,11 @@ impl KernelRuntimeOwnedState {
         request: crate::local::SetWorkflowNodeIntermediateOutputSchemaRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         self.ensure_workflow_node_owner(
             &request.session_id,
             &request.workflow_ref,
@@ -486,6 +562,11 @@ impl KernelRuntimeOwnedState {
         request: crate::local::SetWorkflowNodeMaxTurnsRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         self.ensure_workflow_node_owner(
             &request.session_id,
             &request.workflow_ref,
@@ -516,6 +597,11 @@ impl KernelRuntimeOwnedState {
         request: crate::local::AddWorkflowEdgeRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         let workflow = self
             .session_store
             .read()
@@ -573,6 +659,11 @@ impl KernelRuntimeOwnedState {
         request: crate::local::RemoveWorkflowEdgeRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         self.ensure_workflow_edge_incident_to_owner(
             &request.session_id,
             &request.workflow_ref,
@@ -601,6 +692,11 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::SetWorkflowFlushContextRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         let workflow = self
             .session_store
             .write()
@@ -617,6 +713,11 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::SetWorkflowRunOutputSchemaRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         let workflow = self
             .session_store
             .write()
@@ -633,6 +734,11 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::SetWorkflowIntermediateOutputSchemaRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_workflow_revision(
+            &request.session_id,
+            &request.workflow_ref,
+            request.expected_workflow_revision,
+        )?;
         let workflow = self
             .session_store
             .write()

@@ -770,6 +770,7 @@ mod tests {
                     session_id: session.id().to_string(),
                     workflow_ref: workflow.id().to_string(),
                     agent_id: agent.id().to_string(),
+                    expected_workflow_revision: None,
                 },
             ))
             .expect("workflow node add should succeed")
@@ -785,6 +786,7 @@ mod tests {
                     workflow_ref: workflow.id().to_string(),
                     entry_node_id: node.id().to_string(),
                     alias: Some("entry".to_string()),
+                    expected_workflow_revision: None,
                 },
             ))
             .expect("workflow endpoint create should succeed")
@@ -993,6 +995,7 @@ mod tests {
                     session_id: session.id().to_string(),
                     workflow_ref: workflow.id().to_string(),
                     agent_id: first_agent.id().to_string(),
+                    expected_workflow_revision: None,
                 },
             ))
             .expect("first workflow node add should succeed")
@@ -1007,6 +1010,7 @@ mod tests {
                     session_id: session.id().to_string(),
                     workflow_ref: workflow.id().to_string(),
                     agent_id: first_agent.id().to_string(),
+                    expected_workflow_revision: None,
                 },
             ))
             .expect_err("duplicate workflow node add should be rejected");
@@ -1022,6 +1026,7 @@ mod tests {
                     session_id: session.id().to_string(),
                     workflow_ref: workflow.id().to_string(),
                     agent_id: second_agent.id().to_string(),
+                    expected_workflow_revision: None,
                 },
             ))
             .expect("second workflow node add should succeed")
@@ -1039,6 +1044,7 @@ mod tests {
                     to_node_id: second_node.id().to_string(),
                     output_schema_ref: None,
                     validation_policy: None,
+                    expected_workflow_revision: None,
                 },
             ))
             .expect("workflow edge add should succeed")
@@ -1054,6 +1060,7 @@ mod tests {
                     workflow_ref: workflow.id().to_string(),
                     entry_node_id: first_node.id().to_string(),
                     alias: Some("entry".to_string()),
+                    expected_workflow_revision: None,
                 },
             ))
             .expect("workflow endpoint create should succeed")

@@ -104,6 +104,7 @@ impl LocalRouterTestHarness {
                     session_id: session_id.to_string(),
                     workflow_ref: workflow_id.to_string(),
                     agent_id: agent_id.to_string(),
+                    expected_workflow_revision: None,
                 },
             ))
             .expect("workflow test node should be added")
@@ -129,6 +130,7 @@ impl LocalRouterTestHarness {
                     to_node_id: to_node_id.to_string(),
                     output_schema_ref: None,
                     validation_policy: None,
+                    expected_workflow_revision: None,
                 },
             ))
             .expect("workflow test edge should be added")

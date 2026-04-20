@@ -584,6 +584,8 @@ pub struct AliasWorkflowRequest {
     pub session_id: String,
     pub workflow_ref: String,
     pub alias: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -603,6 +605,8 @@ pub struct CreateWorkflowEndpointRequest {
     pub workflow_ref: String,
     pub entry_node_id: String,
     pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -611,6 +615,8 @@ pub struct AliasWorkflowEndpointRequest {
     pub workflow_ref: String,
     pub endpoint_ref: String,
     pub alias: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -619,6 +625,8 @@ pub struct BindWorkflowEndpointRequest {
     pub workflow_ref: String,
     pub endpoint_ref: String,
     pub entry_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -626,6 +634,8 @@ pub struct AddWorkflowNodeRequest {
     pub session_id: String,
     pub workflow_ref: String,
     pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -633,6 +643,8 @@ pub struct RemoveWorkflowNodeRequest {
     pub session_id: String,
     pub workflow_ref: String,
     pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -642,6 +654,8 @@ pub struct UpdateWorkflowNodeInstructionsRequest {
     pub node_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -650,6 +664,8 @@ pub struct SetWorkflowNodeCanCompleteRunRequest {
     pub workflow_ref: String,
     pub node_id: String,
     pub can_complete_workflow_run: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -658,6 +674,8 @@ pub struct SetWorkflowNodeCanEmitIntermediateOutputRequest {
     pub workflow_ref: String,
     pub node_id: String,
     pub can_emit_intermediate_workflow_run_output: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -667,6 +685,8 @@ pub struct SetWorkflowNodeIntermediateOutputSchemaRequest {
     pub node_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intermediate_output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -676,6 +696,8 @@ pub struct SetWorkflowNodeMaxTurnsRequest {
     pub node_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -688,6 +710,8 @@ pub struct AddWorkflowEdgeRequest {
     pub output_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation_policy: Option<crate::session::WorkflowOutputValidationPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -712,6 +736,8 @@ pub struct RemoveWorkflowEdgeRequest {
     pub session_id: String,
     pub workflow_ref: String,
     pub edge_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -782,6 +808,8 @@ pub struct SetWorkflowFlushContextRequest {
     pub session_id: String,
     pub workflow_ref: String,
     pub flush_agent_context_before_run: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -790,6 +818,8 @@ pub struct SetWorkflowRunOutputSchemaRequest {
     pub workflow_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -798,6 +828,8 @@ pub struct SetWorkflowIntermediateOutputSchemaRequest {
     pub workflow_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intermediate_output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
