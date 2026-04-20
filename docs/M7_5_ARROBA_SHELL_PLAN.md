@@ -1,5 +1,9 @@
 # M7.5 Arroba Shell Plan
 
+Status: closed on 2026-04-20.
+
+M7.5 delivered `arroba-shell` as a sibling app to the TUI CLI, a shared shell executor in `packages/kernel-client`, line-oriented scriptability, embedded workflow-pane shell support, reliable CLI automation snapshots for drills, and freeform prompt submission from both standalone and embedded shells.
+
 ## Goal
 
 Add `arroba-shell` as a kernel-facing command shell independent from the TUI while reusing the same command executor as CLI slash commands. The shell provides a bash-like interaction model for Arroba domain commands: an `@` prompt for input, command output printed below without the prompt marker, stateful context, and a path to scriptable command files.
@@ -264,7 +268,7 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 
 ### Slice 6: Broaden Command Coverage
 
-- Status: in progress.
+- Status: implemented for the M7.5 scope. Remaining command/action gaps are deferred to later shell hardening because they are either editor-coupled, policy/config-coupled, or provider-native passthrough surfaces rather than required v1 shell primitives.
 - Implemented read/status/show coverage in the shared executor for:
   - `machine list|kernels`
   - `relay status`
@@ -296,7 +300,7 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
   - `prompt [agent-ref] <prompt> [--wait] [--show-reply|--show-summary]`
   - no-wait mode returns the prompt id immediately
   - wait/show modes poll prompt completion, read session history, and render prompt-id-headed blobs for captured output
-- Remaining command/action gaps compared with the TUI slash surface:
+- Deferred command/action gaps compared with the TUI slash surface:
   - `session alias|delete`
   - `agent delete|destroy`
   - `machine approve|forget|rename`
@@ -308,15 +312,24 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 
 ## Validation
 
-Each slice must include focused tests and update docs before commit/push. Required validation by the end of the milestone:
+Each slice included focused tests and docs updates before commit/push. M7.5 closeout validation:
 
-- CLI slash commands still pass existing command-action tests.
+- `pnpm --filter @arroba/kernel-client test`
+- `pnpm --filter @arroba/shell test`
+- `pnpm --filter @arroba/cli test -- workspace-shell.test.ts command-actions.test.ts`
+- `pnpm --filter @arroba/cli run shell:drill`
+- `pnpm --filter @arroba/cli run embedded-shell:drill`
+- `git diff --check`
+
+Validated behavior:
+
+- CLI slash commands still pass command-action coverage for the shared surfaces touched by the shell work.
 - `arroba-shell` can create a session, spawn an agent, list sessions/agents, and update context.
 - `arroba-shell run <file>` can set up a small workflow using variables.
 - `arroba-shell run <file> --var NAME=VALUE --continue-on-error` can run a validation script, continue past failures, and still return non-zero if anything failed.
-- `pnpm --filter @arroba/cli run shell:drill` passes against an isolated local kernel.
-- `pnpm --filter @arroba/cli run embedded-shell:drill` launches the real CLI under a PTY, drives the embedded workflow shell through the automation socket, and verifies workflow pane state from structured snapshots.
-- TUI workspace pane can run the same shell command executor without duplicating command logic.
+- The embedded workflow shell launches inside the real CLI under a PTY, is driven through `--automation-socket`, and updates selected workflow graph/source state from structured snapshots.
+- Freeform `prompt` submission returns a prompt id immediately in no-wait mode, shows busy state through `context`, and can wait/render prompt-id-headed summary or reply blobs.
+- TUI workspace pane runs the same shell command executor without duplicating command logic.
 - TUI-only commands are rejected or redirected with clear messages in `arroba-shell`.
 
 ## Deferred

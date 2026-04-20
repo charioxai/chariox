@@ -738,3 +738,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added shared shell `prompt [agent-ref] <prompt> [--wait] [--show-reply|--show-summary]` support for standalone `arroba-shell` and the embedded workflow-pane shell.
 - No-wait prompt submission returns the prompt id immediately; wait/show modes poll prompt completion, read session history, and render prompt-id-headed output blobs with aligned content.
 - Changed `context` from a purely local shell command into a kernel-aware shared command when a session is set, so it can show the current agent as `(busy)` after a no-wait shell prompt.
+
+### M7.5 Arroba Shell milestone closure
+
+- Closed M7.5 after landing `arroba-shell` as a sibling app to the TUI CLI, shared shell execution in `packages/kernel-client`, line-oriented scripts, embedded workflow-pane shell support, reliable CLI automation snapshots, and freeform prompt submission from shell surfaces.
+- Validated closeout with `pnpm --filter @arroba/kernel-client test`, `pnpm --filter @arroba/shell test`, `pnpm --filter @arroba/cli test -- workspace-shell.test.ts command-actions.test.ts`, `pnpm --filter @arroba/cli run shell:drill`, `pnpm --filter @arroba/cli run embedded-shell:drill`, and `git diff --check`.
+- Deferred remaining shell parity gaps to later hardening: session/agent deletion aliases, machine approval/rename/forget, relay configuration, workflow node instruction editor actions, workflow endpoint removal, and provider-native namespace passthrough.
