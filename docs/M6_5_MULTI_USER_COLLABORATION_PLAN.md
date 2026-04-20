@@ -532,6 +532,16 @@ M6.5 is complete when:
 - relay-backed collaboration behaves the same as local collaboration
 - shell commands exist for every new collaboration command family
 
+## Current Status
+
+As of 2026-04-20, the collaboration foundation has live-drill coverage for the core local/scoped-relay paths:
+
+- `pnpm --filter @arroba/cli run multi-user-workflow:drill` passes against an isolated scoped relay and kernel with three relay callers. It verifies session invites, caller-owned session creation, per-user agent visibility, node ownership, cross-owner edge authorization, unrelated edge-removal denial, stale revision rejection, endpoint-owner invocation denial, incident-edge removal, and non-owner node-instruction redaction.
+- `pnpm --filter @arroba/cli run multi-user-cli-workflow:drill` passes with two real PTY-hosted CLIs over scoped relay. It verifies shared-session attach, hidden-agent startup safety, user-owned node creation from each CLI, graph add/remove live refresh in both workflow screens, endpoint creation live refresh, endpoint-owner-only invocation, owner invocation, and workflow-run visibility in both CLIs.
+- `pnpm --filter @arroba/cli run multi-user-freeform-relay:drill` passes against an isolated scoped relay and kernel. It verifies that freeform projections remain caller-scoped: each user sees only their own agents, owned-agent prompt submission succeeds, cross-user prompt submission is rejected, and other-user agents are redacted from session state.
+
+The remaining M6.5 validation gap is physical remote-machine/provider-CLI coverage through relay. That is intentionally deferred until the operator can run from a suitable non-remote environment. The cloud-service work does not change the kernel ownership boundary: hosted relay should issue scoped credentials and route packets, while session membership, workflow authorization, provider ownership, and projection redaction remain kernel-owned.
+
 ## Open Questions
 
 - Should session member display names be user-chosen aliases, machine-derived labels, or both?
