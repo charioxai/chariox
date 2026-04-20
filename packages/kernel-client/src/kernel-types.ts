@@ -181,6 +181,14 @@ export type RemoteMachineRecord = {
   available_providers?: string[]
 }
 
+export type PairedClientRecord = {
+  client_id: string
+  alias?: string | null
+  public_key_thumbprint: string
+  paired_at_ms: number
+  revoked: boolean
+}
+
 export type RelayKernelPresence = {
   kernel_id: string
   machine_id: string

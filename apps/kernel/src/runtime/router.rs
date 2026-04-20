@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
@@ -22,12 +23,12 @@ use crate::local::{
     GrantAgentCapabilityRequest, ImportMcpServersRequest, ImportSkillsRequest,
     InstallMcpServerRequest, InstallSkillRequest, ListAgentsRequest, ListMcpServersRequest,
     ListProviderProcessesRequest, ListSessionsRequest, ListSkillsRequest, LocalDaemonRequest,
-    LocalDaemonResponse, LogoutProviderRequest, MoveAgentToRemoteRequest,
-    PumpTerminalOutputRequest, QueryHistoryRequest, RelayStatus, RenameRemoteMachineRequest,
-    ResolveSessionRequest, RevokeAgentCapabilityRequest, SearchHistoryRequest,
-    SetUserConfigValueRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
-    UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
-    UpdateMcpServerRequest, UpdateSkillRequest,
+    LocalDaemonResponse, LogoutProviderRequest, MoveAgentToRemoteRequest, PairedClientRecord,
+    PumpTerminalOutputRequest, QueryHistoryRequest, RecordPairedClientRequest, RelayStatus,
+    RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
+    RevokePairedClientRequest, SearchHistoryRequest, SetUserConfigValueRequest,
+    StartProviderLoginRequest, TeardownProviderProcessesRequest, UninstallMcpServerRequest,
+    UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -868,6 +869,15 @@ impl CommandRouter {
             LocalDaemonRequest::RenameRemoteMachine(request) => {
                 self.execute_rename_remote_machine_request(request).await
             }
+            LocalDaemonRequest::ListPairedClients(_) => {
+                self.execute_list_paired_clients_request().await
+            }
+            LocalDaemonRequest::RecordPairedClient(request) => {
+                self.execute_record_paired_client_request(request).await
+            }
+            LocalDaemonRequest::RevokePairedClient(request) => {
+                self.execute_revoke_paired_client_request(request).await
+            }
             LocalDaemonRequest::GetSessionHistory(request) => {
                 self.execute_session_history_request(request).await
             }
@@ -1297,6 +1307,42 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::RemoteMachineRenamed { machine })
     }
 
+    async fn execute_list_paired_clients_request(
+        &self,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let clients = crate::config::DaemonConfig::client_pairing_entries()
+            .into_iter()
+            .map(paired_client_record)
+            .collect();
+        Ok(LocalDaemonResponse::PairedClientsListed { clients })
+    }
+
+    async fn execute_record_paired_client_request(
+        &self,
+        request: RecordPairedClientRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let paired_at_ms = request.paired_at_ms.unwrap_or_else(current_unix_ms);
+        let client = crate::config::DaemonConfig::record_paired_client(
+            request.client_id,
+            request.public_key_thumbprint,
+            request.alias,
+            paired_at_ms,
+        )?;
+        Ok(LocalDaemonResponse::PairedClientRecorded {
+            client: paired_client_record(client),
+        })
+    }
+
+    async fn execute_revoke_paired_client_request(
+        &self,
+        request: RevokePairedClientRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let client = crate::config::DaemonConfig::revoke_paired_client(request.client_id)?;
+        Ok(LocalDaemonResponse::PairedClientRevoked {
+            client: paired_client_record(client),
+        })
+    }
+
     async fn projected_provider_catalog_response(
         &self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -1653,6 +1699,15 @@ impl CommandRouter {
             }
             LocalDaemonRequest::RenameRemoteMachine(request) => {
                 self.execute_rename_remote_machine_request(request).await
+            }
+            LocalDaemonRequest::ListPairedClients(_) => {
+                self.execute_list_paired_clients_request().await
+            }
+            LocalDaemonRequest::RecordPairedClient(request) => {
+                self.execute_record_paired_client_request(request).await
+            }
+            LocalDaemonRequest::RevokePairedClient(request) => {
+                self.execute_revoke_paired_client_request(request).await
             }
             LocalDaemonRequest::GetProviderAuthStatus(request) => {
                 Self::execute_get_provider_auth_status_request(request).await
@@ -2263,6 +2318,23 @@ impl CommandRouter {
         let run = self.provider_run_projection.get(provider_run_id)?;
         Some(run.state() == ProviderRunState::Starting)
     }
+}
+
+fn paired_client_record(client: crate::config::PersistedClientPairing) -> PairedClientRecord {
+    PairedClientRecord {
+        client_id: client.client_id,
+        alias: client.alias,
+        public_key_thumbprint: client.public_key_thumbprint,
+        paired_at_ms: client.paired_at_ms,
+        revoked: client.revoked,
+    }
+}
+
+fn current_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn projected_workflow_id(

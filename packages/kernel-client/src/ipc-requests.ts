@@ -726,6 +726,34 @@ export function renameRemoteMachineRequest(machineRef: string, alias: string) {
   }
 }
 
+export function listPairedClientsRequest() {
+  return { ListPairedClients: null }
+}
+
+export function recordPairedClientRequest(
+  clientId: string,
+  publicKeyThumbprint: string,
+  alias: string | null = null,
+  pairedAtMs: number | null = null,
+) {
+  return {
+    RecordPairedClient: {
+      client_id: clientId,
+      public_key_thumbprint: publicKeyThumbprint,
+      alias,
+      paired_at_ms: pairedAtMs,
+    },
+  }
+}
+
+export function revokePairedClientRequest(clientId: string) {
+  return {
+    RevokePairedClient: {
+      client_id: clientId,
+    },
+  }
+}
+
 export function getProviderCommandCatalogsRequest() {
   return { GetProviderCommandCatalogs: null }
 }

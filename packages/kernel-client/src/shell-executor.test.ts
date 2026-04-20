@@ -468,6 +468,81 @@ test("executeShellCommand lists remote machines", async () => {
   assert.match(result.message ?? "", /mini id=machine-1/)
 })
 
+test("executeShellCommand manages paired clients", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("ListPairedClients" in request) {
+          return {
+            PairedClientsListed: {
+              clients: [{
+                client_id: "client-1",
+                alias: "desk",
+                public_key_thumbprint: "thumbprint-1",
+                paired_at_ms: 42,
+                revoked: false,
+              }],
+            },
+          }
+        }
+        if ("RecordPairedClient" in request) {
+          return {
+            PairedClientRecorded: {
+              client: {
+                client_id: "client-2",
+                alias: "laptop",
+                public_key_thumbprint: "thumbprint-2",
+                paired_at_ms: 84,
+                revoked: false,
+              },
+            },
+          }
+        }
+        if ("RevokePairedClient" in request) {
+          return {
+            PairedClientRevoked: {
+              client: {
+                client_id: "client-2",
+                alias: "laptop",
+                public_key_thumbprint: "thumbprint-2",
+                paired_at_ms: 84,
+                revoked: true,
+              },
+            },
+          }
+        }
+        return {}
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+
+  const listResult = await executeShellCommand(parseShellCommand("client list"), context, { client: fake.client })
+  const recordResult = await executeShellCommand(parseShellCommand("client record client-2 thumbprint-2 laptop"), context, { client: fake.client })
+  const revokeResult = await executeShellCommand(parseShellCommand("client revoke client-2"), context, { client: fake.client })
+
+  assert.equal(listResult.ok, true)
+  assert.match(listResult.message ?? "", /desk id=client-1 thumbprint=thumbprint-1 paired_at_ms=42/)
+  assert.equal(recordResult.ok, true)
+  assert.match(recordResult.message ?? "", /paired client laptop id=client-2/)
+  assert.equal(revokeResult.ok, true)
+  assert.match(revokeResult.message ?? "", /revoked client laptop id=client-2/)
+  assert.deepEqual(requests, [
+    { ListPairedClients: null },
+    {
+      RecordPairedClient: {
+        client_id: "client-2",
+        public_key_thumbprint: "thumbprint-2",
+        alias: "laptop",
+        paired_at_ms: null,
+      },
+    },
+    { RevokePairedClient: { client_id: "client-2" } },
+  ])
+})
+
 test("executeShellCommand reports relay status", async () => {
   const fake = fakeClient((request) => {
     assert.deepEqual(request, { RelayStatus: null })

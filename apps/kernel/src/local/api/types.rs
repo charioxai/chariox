@@ -99,6 +99,34 @@ pub struct RenameRemoteMachineRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListPairedClientsRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordPairedClientRequest {
+    pub client_id: String,
+    pub public_key_thumbprint: String,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub paired_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevokePairedClientRequest {
+    pub client_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairedClientRecord {
+    pub client_id: String,
+    #[serde(default)]
+    pub alias: Option<String>,
+    pub public_key_thumbprint: String,
+    pub paired_at_ms: u64,
+    pub revoked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteMachineTrustStatus {
     Approved,
@@ -745,6 +773,9 @@ pub enum LocalDaemonRequest {
     ApproveRemoteMachine(ApproveRemoteMachineRequest),
     ForgetRemoteMachine(ForgetRemoteMachineRequest),
     RenameRemoteMachine(RenameRemoteMachineRequest),
+    ListPairedClients(ListPairedClientsRequest),
+    RecordPairedClient(RecordPairedClientRequest),
+    RevokePairedClient(RevokePairedClientRequest),
     GetProviderAuthStatus(GetProviderAuthStatusRequest),
     StartProviderLogin(StartProviderLoginRequest),
     LogoutProvider(LogoutProviderRequest),
@@ -924,6 +955,15 @@ pub enum LocalDaemonResponse {
     },
     RemoteMachineRenamed {
         machine: RemoteMachineRecord,
+    },
+    PairedClientsListed {
+        clients: Vec<PairedClientRecord>,
+    },
+    PairedClientRecorded {
+        client: PairedClientRecord,
+    },
+    PairedClientRevoked {
+        client: PairedClientRecord,
     },
     ProviderAuthStatus {
         status: ProviderAuthStatus,

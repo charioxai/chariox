@@ -14,6 +14,7 @@ import type {
   ProviderProcessInfo,
   PromptQueueItem,
   PromptSubmittedPayload,
+  PairedClientRecord,
   QueuedWorkflowLaunch,
   RelayKernelPresence,
   RelayStatus,
@@ -60,6 +61,7 @@ import {
   getUserConfigRequest,
   listAgentsRequest,
   listMcpServersRequest,
+  listPairedClientsRequest,
   listProviderProcessesRequest,
   listQueuedWorkflowLaunchesRequest,
   listRemoteMachineKernelsRequest,
@@ -72,11 +74,13 @@ import {
   logoutProviderRequest,
   pumpTerminalOutputRequest,
   relayStatusRequest,
+  recordPairedClientRequest,
   removeQueuedWorkflowLaunchRequest,
   removeWorkflowEdgeRequest,
   removeWorkflowNodeRequest,
   removeWorkflowWatchdogRequest,
   revokeAgentCapabilityRequest,
+  revokePairedClientRequest,
   resolveWorkflowRequest,
   resumeWorkflowRunRequest,
   resolveSessionRequest,
@@ -155,6 +159,8 @@ export async function executeShellCommand(
       return executeSessionCommand(parsed, context, deps)
     case "agent":
       return executeAgentCommand(parsed, context, deps)
+    case "client":
+      return executeClientCommand(parsed, deps)
     case "machine":
       return executeMachineCommand(parsed, deps)
     case "relay":
@@ -194,6 +200,7 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
           "arroba-shell commands:",
           "session list|new|attach|use",
           "agent list|spawn|focus|cycle",
+          "client list|record|revoke",
           "machine list|kernels",
           "relay status",
           "config show|path|set|unset|managed-io",
@@ -616,6 +623,39 @@ function normalizeShellFlag(value: string): string {
   return value.startsWith("—") ? `--${value.slice(1)}` : value
 }
 
+async function executeClientCommand(
+  parsed: ParsedShellCommand,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const [action, clientId, publicKeyThumbprint, ...rest] = parsed.args
+  switch (action) {
+    case "list":
+    case "ls": {
+      const response = await deps.client.send(listPairedClientsRequest())
+      const clients = expectVariant<{ clients: PairedClientRecord[] }>(response, "PairedClientsListed").clients
+      return { ok: true, message: formatPairedClients(clients), data: { clients } }
+    }
+    case "record": {
+      if (!clientId || !publicKeyThumbprint) {
+        return { ok: false, message: "usage: client record <client-id> <public-key-thumbprint> [alias]" }
+      }
+      const alias = rest.length > 0 ? rest.join(" ") : null
+      const response = await deps.client.send(recordPairedClientRequest(clientId, publicKeyThumbprint, alias))
+      const payload = expectVariant<{ client: PairedClientRecord }>(response, "PairedClientRecorded")
+      return { ok: true, message: `paired client ${formatPairedClientLabel(payload.client)}`, data: payload }
+    }
+    case "revoke": {
+      if (!clientId) {
+        return { ok: false, message: "usage: client revoke <client-id>" }
+      }
+      const response = await deps.client.send(revokePairedClientRequest(clientId))
+      const payload = expectVariant<{ client: PairedClientRecord }>(response, "PairedClientRevoked")
+      return { ok: true, message: `revoked client ${formatPairedClientLabel(payload.client)}`, data: payload }
+    }
+    default:
+      return { ok: false, message: "usage: client list|record|revoke" }
+  }
+}
 
 async function executeMachineCommand(
   parsed: ParsedShellCommand,
@@ -1754,6 +1794,21 @@ function formatRemoteMachines(machines: RemoteMachineRecord[]): string {
     const offline = machine.online ? "" : ",offline"
     return `${name} id=${machine.machine_id} status=${machine.trust_status}${offline} kernels=${machine.kernel_count} providers=${providers}`
   }).join("\n")
+}
+
+function formatPairedClients(clients: PairedClientRecord[]): string {
+  if (clients.length === 0) {
+    return "no paired clients"
+  }
+  return clients.map((client) => {
+    const label = formatPairedClientLabel(client)
+    const revoked = client.revoked ? " revoked=true" : ""
+    return `${label} thumbprint=${client.public_key_thumbprint} paired_at_ms=${client.paired_at_ms}${revoked}`
+  }).join("\n")
+}
+
+function formatPairedClientLabel(client: PairedClientRecord): string {
+  return client.alias ? `${client.alias} id=${client.client_id}` : client.client_id
 }
 
 function formatRemoteKernels(kernels: RelayKernelPresence[], machineRef: string): string {
