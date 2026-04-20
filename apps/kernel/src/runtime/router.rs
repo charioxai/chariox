@@ -4120,10 +4120,11 @@ mod tests {
         FocusAgentRequest, GetDaemonHealthRequest, GetProviderAuthStatusRequest,
         GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderRunRequest,
         GetSessionHistoryRequest, GetSessionStateRequest, InvokeWorkflowEndpointRequest,
-        LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
-        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
-        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-        PumpTerminalOutputRequest, QueryHistoryRequest, RelayStatusRequest,
+        LaunchProviderRunRequest, ListAgentsRequest,
+        ListProviderProcessesRequest, ListSessionsRequest, ListWorkflowRunsRequest,
+        ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest,
+        LocalDaemonResponse, PollRuntimeNoticesRequest, PumpTerminalOutputRequest,
+        QueryHistoryRequest, RelayStatusRequest,
         RemoveWorkflowEdgeRequest, ResizeTerminalRequest, ResolveSessionRequest,
         ResolveWorkflowRequest, RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
         TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
@@ -4287,6 +4288,27 @@ mod tests {
         assert!(restored_agent
             .skill_grants()
             .contains(&"review".to_string()));
+    }
+
+    #[tokio::test]
+    async fn runtime_agent_capability_grants_accept_agent_id_or_public_ref() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let agent_id = agent.id().to_string();
+        let agent_ref = agent.agent_ref().to_string();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 2);
+
+        for (agent_ref, skill_name) in [(agent_id, "by-id"), (agent_ref, "by-ref")] {
+            let agent = router
+                .runtime_state
+                .grant_agent_skill(&agent_ref, skill_name.to_string(), DEFAULT_LOCAL_USER_ID)
+                .await
+                .expect("grant should succeed");
+            assert_eq!(agent.session_id(), session.id());
+            assert!(agent.skill_grants().contains(&skill_name.to_string()));
+        }
     }
 
     #[tokio::test]

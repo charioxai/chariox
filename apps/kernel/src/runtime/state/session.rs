@@ -311,7 +311,10 @@ impl KernelRuntimeOwnedState {
         user_id: &str,
         operation: &'static str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let agent = self.agent_store.get_agent_by_ref(agent_ref)?;
+        let agent = self
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.agent_store.get_agent_by_ref(agent_ref))?;
         if agent.owner_user_id() == user_id {
             Ok(agent)
         } else {

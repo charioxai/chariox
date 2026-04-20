@@ -144,7 +144,6 @@ function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
   if (explicit) return explicit
   if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
-  if (provider === 'codex' && !options.model.includes('/')) return opencodeCodexModel(options.model)
   return options.model
 }
 
@@ -622,12 +621,14 @@ function buildConditionalBranchSubsetScenario(providers, model) {
           'It must have `bucket` equal to `even` and `values` equal to `[2]`.',
           'Emit normal workflow output.message JSON with exactly `{"bucket":"even","values":[2]}`.',
           'Your summary should be `even branch received 1 value`.',
+          workflowOutput('even branch received 1 value', JSON.stringify({ bucket: 'even', values: [2] })),
         ].join('\n\n')
       }
       if (index === 2) {
         return [
           'This branch should not receive a handoff in this drill.',
           'If you are invoked, emit output.message JSON with exactly `{"bucket":"large","values":[]}`.',
+          workflowOutput('large branch should not run', JSON.stringify({ bucket: 'large', values: [] })),
         ].join('\n\n')
       }
       throw new Error(`unexpected conditional branch node index ${index}`)

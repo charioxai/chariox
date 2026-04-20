@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { createHmac } from 'node:crypto'
 import { access, mkdir, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -47,6 +48,41 @@ const DEFAULT_WORKSPACE = repoRoot
 const DEFAULT_WORKTREE = repoRoot
 const DEFAULT_TIMEOUT_MS = 180_000
 const DEFAULT_POLL_MS = 1_000
+const RELAY_ISSUER = 'arroba-relay-runtime-drill'
+const RELAY_SECRET = 'arroba-relay-runtime-drill-secret'
+const RELAY_REALM = 'relay-runtime-drill'
+
+function base64url(input) {
+  return Buffer.from(input).toString('base64url')
+}
+
+function signRelayToken(claims) {
+  const claimsPayload = base64url(JSON.stringify(claims))
+  const signature = createHmac('sha256', RELAY_SECRET).update(claimsPayload).digest('base64url')
+  return `arroba-scoped-v1.${claimsPayload}.${signature}`
+}
+
+function relayClaims({ subject, subjectKind, actions, userId = null, targets = null }) {
+  return {
+    issuer: RELAY_ISSUER,
+    subject,
+    subject_kind: subjectKind,
+    realm_id: RELAY_REALM,
+    allowed_actions: actions,
+    allowed_targets: targets,
+    issued_at_ms: Date.now(),
+    expires_at_ms: Date.now() + 10 * 60_000,
+    token_id: `${subject}-${Date.now()}`,
+    account_id: 'relay-runtime-drill-account',
+    organization_id: null,
+    user_id: userId,
+    device_id: subject,
+    machine_id: subjectKind === 'kernel' || subjectKind === 'machine' ? subject : null,
+    client_id: subjectKind === 'client' ? subject : null,
+    public_key_thumbprint: `${subject}-thumbprint`,
+    entitlements_version: 'drill',
+  }
+}
 
 function parseArgs(argv) {
   const options = {
@@ -102,16 +138,28 @@ function makePorts() {
 function makeChildrenEnv(ports, rootDir) {
   const daemonId = `relay-drill-daemon-${process.pid}-${Date.now()}`
   const daemonAlias = `relay-drill-${process.pid}`
-  const relayToken = `relay-token-${process.pid}-${Date.now()}`
+  const daemonRelayToken = signRelayToken(relayClaims({
+    subject: daemonId,
+    subjectKind: 'kernel',
+    actions: ['daemon_register', 'daemon_heartbeat', 'peer_request', 'peer_event'],
+    userId: 'local',
+  }))
+  const clientRelayToken = signRelayToken(relayClaims({
+    subject: `relay-drill-client-${process.pid}`,
+    subjectKind: 'client',
+    actions: ['client_connect', 'client_metadata_read', 'packet_route'],
+    userId: 'local',
+  }))
   return {
-    relayToken,
+    relayToken: clientRelayToken,
     daemonId,
     daemonAlias,
     relayEnv: {
       ...process.env,
       ARROBA_RELAY_HOST: '127.0.0.1',
       ARROBA_RELAY_PORT: String(ports.relayPort),
-      ARROBA_RELAY_TOKEN: relayToken,
+      ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
+      ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
     },
     daemonEnv: {
       ...process.env,
@@ -120,7 +168,7 @@ function makeChildrenEnv(ports, rootDir) {
       ARROBA_OPENCODE_PORT: String(ports.opencodePort),
       ARROBA_CODEX_PORT: String(ports.codexPort),
       ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
-      ARROBA_RELAY_TOKEN: relayToken,
+      ARROBA_RELAY_TOKEN: daemonRelayToken,
       ARROBA_DAEMON_ID: daemonId,
       ARROBA_DAEMON_ALIAS: daemonAlias,
       ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
