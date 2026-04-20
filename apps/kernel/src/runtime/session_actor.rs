@@ -1094,6 +1094,7 @@ mod tests {
             app_locked.provider_run_projection_store(),
             app_locked.history_store(),
             app_locked.operational_history_store(),
+            app_locked.durable_state_store(),
             app_locked.session_history_projection_store(),
             app_locked.prompt_state_owner(),
             app_locked.prompt_activity_store(),

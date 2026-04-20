@@ -124,6 +124,7 @@ impl CommandRouter {
             prompt_idle_timeout,
             prompt_workspace_claims,
             structured_output_records,
+            durable_state_store,
             relay_state,
             terminal_health,
             terminal_stream,
@@ -143,6 +144,7 @@ impl CommandRouter {
             provider_run_projection.clone(),
             history_store.clone(),
             operational_history_store.clone(),
+            durable_state_store.clone(),
             history_projection.clone(),
             prompt_state_owner.clone(),
             prompt_activity.clone(),
@@ -253,6 +255,7 @@ impl CommandRouter {
             prompt_idle_timeout,
             prompt_workspace_claims,
             structured_output_records,
+            durable_state_store,
             relay_state,
             terminal_health,
             terminal_stream,
@@ -272,6 +275,7 @@ impl CommandRouter {
             provider_run_projection.clone(),
             history_store.clone(),
             operational_history_store.clone(),
+            durable_state_store.clone(),
             history_projection.clone(),
             prompt_state_owner.clone(),
             prompt_activity.clone(),
@@ -2366,6 +2370,7 @@ fn router_projection_stores(
     std::time::Duration,
     crate::app::PromptWorkspaceClaimStore,
     crate::app::provider_output::StructuredOutputRecordStore,
+    crate::durable_state::DurableKernelStateStore,
     Arc<RwLock<RelayClientState>>,
     TerminalStreamHealthStore,
     TerminalStreamStore,
@@ -2402,6 +2407,7 @@ fn router_projection_stores(
         app.prompt_idle_timeout(),
         app.prompt_workspace_claim_store(),
         app.structured_output_record_store(),
+        app.durable_state_store(),
         app.relay_client_state(),
         app.terminal_health_store(),
         app.terminal_stream_store(),
@@ -2963,13 +2969,17 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.append_user_prompt_history(
-            &session_id,
-            attachment.id(),
-            &agent_id,
-            "slow history entry",
-            &[],
-        );
+        app.history_store()
+            .append(
+                &session,
+                &crate::history::SessionHistoryEntry::user_prompt(
+                    &session_id,
+                    attachment.id(),
+                    &agent_id,
+                    "slow history entry",
+                ),
+            )
+            .expect("legacy-only history should append");
         launch_test_provider(
             &mut app,
             &session_id,

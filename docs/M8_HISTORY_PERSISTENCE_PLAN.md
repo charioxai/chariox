@@ -17,6 +17,18 @@ Make Arroba own the operational history and durable runtime state needed to stop
 - Git remains the source of truth for Git objects. Arroba stores commit pointers and searchable summaries, not full diffs.
 - A small local archive index is v2. V1 does not keep a separate local search index for transcript content removed from operational history.
 
+## Background Lifecycle Invariant
+
+Retention, archive export, snapshot creation, Git observation, and remote reconciliation must not hold the main app lock while doing filesystem, network, Git, archive-adapter, or long-running database work.
+
+Foreground commands may synchronously append small durable state events, operational history events, and archive outbox rows. Bulk work must run in background workers using retryable checkpoints and short lock windows:
+
+- take a small state/store snapshot when needed
+- release the app lock before filesystem, network, Git, archive adapter, or large SQLite work
+- publish final state, projections, notices, or durable checkpoints through short writes only
+
+Normal prompts, sessions, workflows, and shell commands must not wait for archive lifecycle. Explicit delete/archive operations may wait only for their own policy requirement, such as `archive_before_delete = true`; they must not block unrelated kernel interaction.
+
 ## Storage Model
 
 ### Operational History

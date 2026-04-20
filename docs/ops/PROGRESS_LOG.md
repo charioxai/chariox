@@ -852,3 +852,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Runtime-state session end now appends `session.ended`, closing the CLI-facing lifecycle path in addition to the app service path.
 - Runtime-state session deletion now appends `session.deleted`, and boot restore replays it by removing the session and clearing any live agents/projections.
 - Added focused restart coverage for runtime end/delete paths to verify ended sessions stay ended and deleted sessions stay absent after reboot.
+
+### M8 background lifecycle invariant update
+
+- Documented the rule that retention, archive export, snapshots, Git observation, and remote reconciliation must not hold the main app lock while doing filesystem, network, Git, archive-adapter, or long-running SQLite work.
+- Moved runtime-state durable event appends off the main `DaemonApp` lock by passing the durable state store into the owned runtime-state facade.
+- Foreground commands still write small durable/operational/outbox rows synchronously, but no longer need the app lock just to append M8 durable agent/session mutation events.

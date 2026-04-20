@@ -17,6 +17,7 @@ use crate::app::{
     DaemonApp, PromptActivityStore, PromptWorkspaceClaimStore, ProviderProcessTrackingStore,
 };
 use crate::attachment::AttachmentServiceStore;
+use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
 use crate::history::{OperationalHistoryStore, SessionHistoryEntry, SessionHistoryStore};
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
@@ -46,6 +47,7 @@ struct KernelRuntimeOwnedState {
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
     history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
+    durable_state_store: DurableKernelStateStore,
     history_projection: crate::runtime::projection::SessionHistoryProjectionStore,
     prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
     prompt_activity: PromptActivityStore,
@@ -129,6 +131,7 @@ impl KernelRuntimeState {
         provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
         history_store: SessionHistoryStore,
         operational_history_store: OperationalHistoryStore,
+        durable_state_store: DurableKernelStateStore,
         history_projection: crate::runtime::projection::SessionHistoryProjectionStore,
         prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
         prompt_activity: PromptActivityStore,
@@ -151,6 +154,7 @@ impl KernelRuntimeState {
                 provider_run_projection,
                 history_store,
                 operational_history_store,
+                durable_state_store,
                 history_projection,
                 prompt_state_owner,
                 prompt_activity,
@@ -209,17 +213,14 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let agent = agent.clone();
         let capability_name = capability_name.map(str::to_string);
-        self.with_app_side_effect(move |app| {
-            app.durable_state_store().append_event(
-                kind,
-                Some(agent.id().to_string()),
-                serde_json::json!({
-                    "agent": &agent,
-                    "capability_name": capability_name,
-                }),
-            )
-        })
-        .await?;
+        self.owned.durable_state_store.append_event(
+            kind,
+            Some(agent.id().to_string()),
+            serde_json::json!({
+                "agent": &agent,
+                "capability_name": capability_name,
+            }),
+        )?;
         Ok(())
     }
 
@@ -230,17 +231,14 @@ impl KernelRuntimeState {
         reason: &'static str,
     ) -> Result<(), DaemonError> {
         let session = session.clone();
-        self.with_app_side_effect(move |app| {
-            app.durable_state_store().append_event(
-                kind,
-                Some(session.id().to_string()),
-                serde_json::json!({
-                    "session": &session,
-                    "reason": reason,
-                }),
-            )
-        })
-        .await?;
+        self.owned.durable_state_store.append_event(
+            kind,
+            Some(session.id().to_string()),
+            serde_json::json!({
+                "session": &session,
+                "reason": reason,
+            }),
+        )?;
         Ok(())
     }
 
