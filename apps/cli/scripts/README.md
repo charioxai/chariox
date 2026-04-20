@@ -92,6 +92,16 @@ It launches an isolated local kernel and dev-stub provider inside a temporary Gi
 
 The remote variant launches isolated relay/home/worker kernels, spawns a remote dev-stub agent in a worker Git repo, commits a file on the worker worktree during the remote turn, completes the prompt through home, and fails unless home operational history contains the commit with home agent/prompt ids plus worker machine/repo/worktree metadata.
 
+## Postgres Archive Adapter Drill
+
+Use this after touching operational history archive export, outbox checkpointing, archive adapter auth, or external archive protocol handling:
+
+```bash
+pnpm --filter @arroba/cli run postgres-archive:drill
+```
+
+It launches an isolated kernel plus a real `postgres:16-alpine` container, runs a small HTTP archive adapter in front of Postgres, creates transcript events through a dev-stub provider, and flushes Arroba's durable archive outbox through `arroba-history-archive-flush`. The drill validates bearer-token auth, `GET /arroba/history/capabilities`, `POST /arroba/history/events`, adapter idempotency by `event_id`, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, retry to acceptance, and operational-only history search when external archive search is disabled.
+
 ## Remote Restart Drill
 
 Use this after touching durable remote agents, relay registration, leased prompt dispatch, or remote restart recovery:
