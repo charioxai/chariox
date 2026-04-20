@@ -10,6 +10,7 @@ use crate::capability::{
     ReadFileResult, RunShellCommandResult, StoredTransferArtifact,
 };
 use crate::config::ArrobaUserConfig;
+use crate::history::HistoryEvent;
 use crate::mcp::{ArrobaMcpServerConfig, McpImportOutcome};
 use crate::provider::{
     OpenCodeProviderCatalog, ProviderAuthStatus, ProviderCommandCatalog, ProviderLoginStart,

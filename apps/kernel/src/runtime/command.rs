@@ -278,6 +278,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::LogoutProvider(_) => "provider.logout",
         LocalDaemonRequest::ListProviderProcesses(_) => "provider_process.list",
         LocalDaemonRequest::TeardownProviderProcesses(_) => "provider_process.teardown",
+        LocalDaemonRequest::QueryHistory(_) => "history.query",
+        LocalDaemonRequest::SearchHistory(_) => "history.search",
         LocalDaemonRequest::PollRuntimeNotices(_) => "runtime_notice.poll",
         LocalDaemonRequest::CompletePrompt(_) => "prompt.complete",
         LocalDaemonRequest::UpdateSessionConfig(_) => "session.config.update",

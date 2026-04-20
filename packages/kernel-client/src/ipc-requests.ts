@@ -1,4 +1,4 @@
-import type { PromptAttachmentPart, SessionHistoryCursor } from "./kernel-types.js"
+import type { HistoryQueryPayload, PromptAttachmentPart, SessionHistoryCursor } from "./kernel-types.js"
 
 export function createSessionRequest(workspaceId: string, worktreeId: string, alias?: string) {
   return {
@@ -780,6 +780,44 @@ export function getSessionHistoryRequest(
       max_chars: maxChars,
       before_entry_index: cursor?.before_entry_index ?? null,
       before_entry_char_offset: cursor?.before_entry_char_offset ?? null,
+    },
+  }
+}
+
+export function queryHistoryRequest(query: HistoryQueryPayload) {
+  return {
+    QueryHistory: {
+      session_id: query.session_id ?? null,
+      agent_id: query.agent_id ?? null,
+      provider: query.provider ?? null,
+      model: query.model ?? null,
+      workflow_id: query.workflow_id ?? null,
+      machine_id: query.machine_id ?? null,
+      repo_root: query.repo_root ?? null,
+      worktree_path: query.worktree_path ?? null,
+      kind: query.kind ?? null,
+      text: query.text ?? null,
+      after_sequence: query.after_sequence ?? null,
+      limit: query.limit ?? null,
+    },
+  }
+}
+
+export function searchHistoryRequest(query: string, filters: Omit<HistoryQueryPayload, "text"> = {}) {
+  return {
+    SearchHistory: {
+      query,
+      session_id: filters.session_id ?? null,
+      agent_id: filters.agent_id ?? null,
+      provider: filters.provider ?? null,
+      model: filters.model ?? null,
+      workflow_id: filters.workflow_id ?? null,
+      machine_id: filters.machine_id ?? null,
+      repo_root: filters.repo_root ?? null,
+      worktree_path: filters.worktree_path ?? null,
+      kind: filters.kind ?? null,
+      after_sequence: filters.after_sequence ?? null,
+      limit: filters.limit ?? null,
     },
   }
 }

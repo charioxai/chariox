@@ -7,8 +7,8 @@ use tokio::time::{sleep, Duration};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
+use crate::history::{HistoryEventQuery, OperationalHistoryStore};
 use crate::local::provider_requests::{
     forgotten_machine_record, load_provider_catalog, logout_provider_response,
     provider_auth_status_response, provider_command_catalogs_response, record_for_machine_id,
@@ -23,10 +23,11 @@ use crate::local::{
     InstallMcpServerRequest, InstallSkillRequest, ListAgentsRequest, ListMcpServersRequest,
     ListProviderProcessesRequest, ListSessionsRequest, ListSkillsRequest, LocalDaemonRequest,
     LocalDaemonResponse, LogoutProviderRequest, MoveAgentToRemoteRequest,
-    PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest,
-    RevokeAgentCapabilityRequest, SetUserConfigValueRequest, StartProviderLoginRequest,
-    TeardownProviderProcessesRequest, UninstallMcpServerRequest, UninstallSkillRequest,
-    UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
+    PumpTerminalOutputRequest, QueryHistoryRequest, RelayStatus, RenameRemoteMachineRequest,
+    ResolveSessionRequest, RevokeAgentCapabilityRequest, SearchHistoryRequest,
+    SetUserConfigValueRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
+    UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
+    UpdateMcpServerRequest, UpdateSkillRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -866,6 +867,14 @@ impl CommandRouter {
             LocalDaemonRequest::GetSessionHistory(request) => {
                 self.execute_session_history_request(request).await
             }
+            LocalDaemonRequest::QueryHistory(request) => {
+                self.execute_query_history_request(history_query_from_request(request))
+                    .await
+            }
+            LocalDaemonRequest::SearchHistory(request) => {
+                self.execute_query_history_request(history_query_from_search_request(request))
+                    .await
+            }
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 self.execute_terminal_output_request(request).await
             }
@@ -1360,6 +1369,31 @@ impl CommandRouter {
             .await
     }
 
+    async fn execute_query_history_request(
+        &self,
+        query: HistoryEventQuery,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let requested_limit = query.limit.unwrap_or(100).clamp(1, 500);
+        let history = self.operational_history_store.clone();
+        tokio::task::spawn_blocking(move || {
+            let events = history.query_events(query)?;
+            let next_sequence = if events.len() == requested_limit {
+                events.last().map(|event| event.sequence)
+            } else {
+                None
+            };
+            Ok(LocalDaemonResponse::HistoryEvents {
+                events,
+                next_sequence,
+            })
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "query history",
+            message: error.to_string(),
+        })?
+    }
+
     async fn execute_terminal_output_request(
         &self,
         request: PumpTerminalOutputRequest,
@@ -1631,6 +1665,14 @@ impl CommandRouter {
             }
             LocalDaemonRequest::GetSessionHistory(request) => {
                 self.execute_session_history_request(request).await
+            }
+            LocalDaemonRequest::QueryHistory(request) => {
+                self.execute_query_history_request(history_query_from_request(request))
+                    .await
+            }
+            LocalDaemonRequest::SearchHistory(request) => {
+                self.execute_query_history_request(history_query_from_search_request(request))
+                    .await
             }
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 self.execute_terminal_output_request(request).await
@@ -2438,6 +2480,40 @@ impl SessionProjectionRefresh {
     }
 }
 
+fn history_query_from_request(request: QueryHistoryRequest) -> HistoryEventQuery {
+    HistoryEventQuery {
+        session_id: request.session_id,
+        agent_id: request.agent_id,
+        provider: request.provider,
+        model: request.model,
+        workflow_id: request.workflow_id,
+        machine_id: request.machine_id,
+        repo_root: request.repo_root,
+        worktree_path: request.worktree_path,
+        kind: request.kind,
+        text: request.text,
+        after_sequence: request.after_sequence,
+        limit: request.limit,
+    }
+}
+
+fn history_query_from_search_request(request: SearchHistoryRequest) -> HistoryEventQuery {
+    HistoryEventQuery {
+        session_id: request.session_id,
+        agent_id: request.agent_id,
+        provider: request.provider,
+        model: request.model,
+        workflow_id: request.workflow_id,
+        machine_id: request.machine_id,
+        repo_root: request.repo_root,
+        worktree_path: request.worktree_path,
+        kind: request.kind,
+        text: Some(request.query),
+        after_sequence: request.after_sequence,
+        limit: request.limit,
+    }
+}
+
 fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjectionRefresh {
     match request {
         LocalDaemonRequest::AttachToSession(_)
@@ -2546,8 +2622,8 @@ mod tests {
         ListProviderProcessesRequest, ListSessionsRequest, ListWorkflowRunsRequest,
         ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest,
         LocalDaemonResponse, PollRuntimeNoticesRequest, PumpTerminalOutputRequest,
-        RelayStatusRequest, ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
-        RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
+        QueryHistoryRequest, RelayStatusRequest, ResizeTerminalRequest, ResolveSessionRequest,
+        ResolveWorkflowRequest, RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
         TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
     };
     use crate::provider::{
@@ -5177,6 +5253,64 @@ mod tests {
                 assert_eq!(entries[0].entry.text.trim_end(), "history from disk");
             }
             _ => panic!("unexpected history response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn query_history_reads_operational_events() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-history-query",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.append_user_prompt_history(
+            &session_id,
+            attachment.id(),
+            &agent_id,
+            "find this history event",
+            &[],
+        );
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let history_request = LocalDaemonRequest::QueryHistory(QueryHistoryRequest {
+            session_id: Some(session_id.clone()),
+            agent_id: Some(agent_id.clone()),
+            text: Some("history event".to_string()),
+            limit: Some(5),
+            ..QueryHistoryRequest::default()
+        });
+        let history_command =
+            KernelCommand::from_local_request("cmd-history-query", None, None, &history_request);
+
+        let response = router
+            .dispatch(history_command, history_request)
+            .await
+            .expect("history query should resolve");
+
+        match response {
+            LocalDaemonResponse::HistoryEvents {
+                events,
+                next_sequence,
+            } => {
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0].session_id.as_deref(), Some(session_id.as_str()));
+                assert_eq!(events[0].agent_id.as_deref(), Some(agent_id.as_str()));
+                assert_eq!(
+                    events[0].content.as_deref().map(str::trim_end),
+                    Some("find this history event")
+                );
+                assert!(next_sequence.is_none());
+            }
+            _ => panic!("unexpected history query response"),
         }
     }
 

@@ -302,6 +302,38 @@ pub struct GetSessionHistoryRequest {
     pub before_entry_char_offset: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QueryHistoryRequest {
+    pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub workflow_id: Option<String>,
+    pub machine_id: Option<String>,
+    pub repo_root: Option<String>,
+    pub worktree_path: Option<String>,
+    pub kind: Option<String>,
+    pub text: Option<String>,
+    pub after_sequence: Option<u64>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchHistoryRequest {
+    pub query: String,
+    pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub workflow_id: Option<String>,
+    pub machine_id: Option<String>,
+    pub repo_root: Option<String>,
+    pub worktree_path: Option<String>,
+    pub kind: Option<String>,
+    pub after_sequence: Option<u64>,
+    pub limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PollRuntimeNoticesRequest {
     pub session_id: String,
@@ -719,6 +751,8 @@ pub enum LocalDaemonRequest {
     ListProviderProcesses(ListProviderProcessesRequest),
     TeardownProviderProcesses(TeardownProviderProcessesRequest),
     GetSessionHistory(GetSessionHistoryRequest),
+    QueryHistory(QueryHistoryRequest),
+    SearchHistory(SearchHistoryRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
     SubmitPrompt(SubmitPromptRequest),
     CompletePrompt(CompletePromptRequest),
@@ -909,6 +943,10 @@ pub enum LocalDaemonResponse {
     SessionHistory {
         entries: Vec<SessionHistoryPageEntry>,
         next_cursor: Option<SessionHistoryCursor>,
+    },
+    HistoryEvents {
+        events: Vec<HistoryEvent>,
+        next_sequence: Option<u64>,
     },
     RuntimeNotices {
         notices: Vec<RuntimeNoticeRecord>,

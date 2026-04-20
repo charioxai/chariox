@@ -471,7 +471,7 @@ If multiple agents could have caused a commit, store all candidates and show the
 
 ### M8.5 History Query/Search API
 
-- Add kernel query/search requests.
+- Add kernel query/search requests. **Landed:** `QueryHistory` and `SearchHistory` return canonical `HistoryEvent` rows from operational history with filters for session, agent, provider, model, workflow, machine, repo/worktree, event kind, text, sequence cursor, and bounded limits.
 - Add shell/CLI `history` commands.
 - Search retained operational history; include archive search only if adapter supports it.
 

@@ -774,3 +774,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Changed app and router session-history reads to prefer operational history and fall back to legacy JSONL only when no operational entries exist for a pre-cutover session.
 - Added canonical-event to `SessionHistoryEntry` conversion so existing transcript pagination and CLI rendering can continue while reading from operational history.
 - Added focused coverage proving `session_history_page` reads transcript entries from the operational store.
+
+### M8 history query/search API update
+
+- Added kernel `QueryHistory` and `SearchHistory` requests backed by the operational SQLite store.
+- The query path returns canonical `HistoryEvent` rows with filters for session, agent, provider, model, workflow, machine, repo/worktree, event kind, text, sequence cursor, and bounded limits.
+- Added TypeScript kernel-client history event/query types and request builders, plus focused store and router coverage for operational history queries.

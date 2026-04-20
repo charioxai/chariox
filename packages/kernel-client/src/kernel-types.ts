@@ -312,6 +312,86 @@ export type SessionHistoryEntry = {
   text: string
 }
 
+export type HistoryEventKind =
+  | "user_prompt"
+  | "provider_output"
+  | "provider_reasoning"
+  | "provider_tool"
+  | "provider_error"
+  | "provider_status"
+  | "notice"
+  | "session_created"
+  | "agent_created"
+  | "agent_moved"
+  | "workflow_started"
+  | "workflow_node_started"
+  | "workflow_node_completed"
+  | "mcp_granted"
+  | "skill_granted"
+  | "remote_machine_connected"
+  | "remote_machine_disconnected"
+  | "git_commit_detected"
+  | "git_worktree_changed"
+  | "git_worktree_dirty"
+  | "git_worktree_clean"
+  | "git_push_detected"
+
+export type HistoryEventRole = "user" | "assistant" | "tool" | "system"
+
+export type HistoryAttributionConfidence = "definite" | "likely" | "ambiguous" | "unattributed"
+
+export type HistoryEvent = {
+  event_id: string
+  sequence: number
+  timestamp_ms: number
+  workspace_id?: string | null
+  session_id?: string | null
+  agent_id?: string | null
+  agent_alias?: string | null
+  provider?: string | null
+  model?: string | null
+  turn_id?: string | null
+  prompt_id?: string | null
+  provider_run_id?: string | null
+  provider_session_id?: string | null
+  workflow_id?: string | null
+  workflow_run_id?: string | null
+  workflow_node_id?: string | null
+  machine_id?: string | null
+  repo_root?: string | null
+  worktree_path?: string | null
+  kind: HistoryEventKind
+  role?: HistoryEventRole | null
+  content?: string | null
+  content_ref?: string | null
+  metadata?: Record<string, unknown>
+  candidate_agent_ids?: string[]
+  candidate_prompt_ids?: string[]
+  candidate_turn_ids?: string[]
+  attribution_confidence?: HistoryAttributionConfidence | null
+  caused_by_event_id?: string | null
+}
+
+export type HistoryQueryPayload = {
+  session_id?: string | null
+  agent_id?: string | null
+  provider?: string | null
+  model?: string | null
+  workflow_id?: string | null
+  machine_id?: string | null
+  repo_root?: string | null
+  worktree_path?: string | null
+  kind?: HistoryEventKind | string | null
+  text?: string | null
+  after_sequence?: number | null
+  limit?: number | null
+}
+
+export type HistoryEventsPayload = {
+  events: HistoryEvent[]
+  next_sequence: number | null
+}
+
 export type TranscriptEntry = {
   id: number
   role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "notice" | "turn_toggle"
