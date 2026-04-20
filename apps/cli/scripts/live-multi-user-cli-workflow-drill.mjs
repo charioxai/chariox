@@ -280,6 +280,21 @@ function startCli({ cliPath, env, relayUrl, relayToken, daemonAlias, socketPath,
   return { child, stdout: () => stdout, stderr: () => stderr }
 }
 
+async function waitForWorkflowGraph(automation, workflowId, alias, expectedNodes, expectedEdges, label) {
+  const deadline = Date.now() + 10_000
+  let lastSnapshot = null
+  while (Date.now() < deadline) {
+    const snapshot = await automation.send('snapshot')
+    lastSnapshot = snapshot
+    const workflow = snapshot.workflows?.find((entry) => entry.id === workflowId || entry.alias === alias)
+    if (workflow?.nodeCount === expectedNodes && workflow?.edgeCount === expectedEdges) {
+      return { snapshot, workflow }
+    }
+    await sleep(100)
+  }
+  assert(false, `${label} did not observe workflow graph ${expectedNodes} nodes/${expectedEdges} edges`, lastSnapshot)
+}
+
 async function main() {
   const rootDir = path.join(os.tmpdir(), `arroba-multi-user-cli-workflow-${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
@@ -401,6 +416,8 @@ async function main() {
     assert(node2Id, 'user-2 node id missing', node2)
     const edge = await auto2.send('workspace_shell_exec', { command: `workflow edge add ${workflowId} ${node1Id} ${node2Id}` })
     assert(edge.result?.ok === true, 'user-2 CLI failed to add cross-owner edge', edge)
+    const edgeId = edge.result?.data?.edge?.id ?? edge.result?.output?.match(/added workflow edge\s+(\S+)/)?.[1] ?? null
+    assert(edgeId, 'edge id missing after user-2 cross-owner edge add', edge)
 
     const user1Api = new LocalIpcClient(envs.relayUrl, {
       relayAuthToken: clientToken('user-1'),
@@ -416,15 +433,13 @@ async function main() {
       edges: user1ApiWorkflow?.edges?.length ?? 0,
     })
 
-    const refreshUser1Workflow = await auto1.send('workspace_shell_exec', { command: `workflow show ${workflowId}` })
-    assert(refreshUser1Workflow.result?.ok === true, 'user-1 CLI failed to refresh shared workflow through shell', refreshUser1Workflow)
-    await auto1.send('wait_for', { selectedWorkflowAlias: 'two-cli-flow', timeoutMs: 5_000 }).catch(() => {})
-    const final1 = await auto1.send('snapshot')
-    const final2 = await auto2.send('snapshot')
-    const wf1 = final1.workflows?.find((entry) => entry.id === workflowId || entry.alias === 'two-cli-flow')
-    const wf2 = final2.workflows?.find((entry) => entry.id === workflowId || entry.alias === 'two-cli-flow')
-    assert(wf1?.nodeCount === 2 && wf1?.edgeCount === 1, 'user-1 CLI did not observe shared workflow graph', final1)
-    assert(wf2?.nodeCount === 2 && wf2?.edgeCount === 1, 'user-2 CLI did not observe shared workflow graph', final2)
+    const { snapshot: final1 } = await waitForWorkflowGraph(auto1, workflowId, 'two-cli-flow', 2, 1, 'user-1 CLI')
+    const { snapshot: final2 } = await waitForWorkflowGraph(auto2, workflowId, 'two-cli-flow', 2, 1, 'user-2 CLI')
+
+    const removeEdge = await auto1.send('workspace_shell_exec', { command: `workflow edge remove ${workflowId} ${edgeId}` })
+    assert(removeEdge.result?.ok === true, 'user-1 CLI failed to remove edge incident to its node', removeEdge)
+    await waitForWorkflowGraph(auto1, workflowId, 'two-cli-flow', 2, 0, 'user-1 CLI after edge removal')
+    await waitForWorkflowGraph(auto2, workflowId, 'two-cli-flow', 2, 0, 'user-2 CLI after edge removal')
 
     apiClient = new LocalIpcClient(envs.relayUrl, {
       relayAuthToken: clientToken('user-2'),
@@ -434,7 +449,7 @@ async function main() {
     })
     const state = unwrap(await apiClient.send(requests.getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState').session
     const resolved = state.workflows?.find((entry) => entry.id === workflowId)
-    assert(resolved?.nodes?.length === 2 && resolved?.edges?.length === 1, 'API projection did not match CLI-created graph', state)
+    assert(resolved?.nodes?.length === 2 && resolved?.edges?.length === 0, 'API projection did not match CLI-created graph after edge removal', state)
 
     console.log(JSON.stringify({
       status: 'ok',
@@ -444,12 +459,14 @@ async function main() {
       sessionId,
       workflowId,
       nodeIds: [node1Id, node2Id],
+      removedEdgeId: edgeId,
       assertions: [
         'two TUI clients connected through scoped relay',
         'user-1 created session and invite from embedded shell',
         'user-2 joined the invited session over scoped relay',
         'each user added only its own agent as workflow node',
-        'cross-owner edge is visible from both workflow screens after refresh',
+        'cross-owner edge add live-updates both workflow screens without manual refresh',
+        'cross-owner edge removal live-updates both workflow screens without manual refresh',
       ],
     }, null, 2))
   } finally {
