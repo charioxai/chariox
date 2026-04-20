@@ -878,3 +878,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Restored sessions now clear stale active provider run ids, interrupt active prompts, and mark in-flight workflow runs stopped with a `RunStopped` failure event explaining the kernel restart interruption.
 - Fixed the restore/projection loops to materialize session lists before write-back, avoiding session read-lock retention across reconciliation writes.
 - Added focused restart coverage that snapshots stale active provider, prompt, and workflow state, then verifies rebooted state is idle/stopped with the interruption surfaced on the workflow run.
+
+### M8 local restart drill update
+
+- Added `apps/cli/scripts/live-local-restart-drill.mjs` and `pnpm --filter @arroba/cli run local-restart:drill`.
+- The drill rebuilds the kernel, runs an isolated daemon/home/config/state/history/workspace, creates durable session, spawned-agent, MCP-grant, skill-grant, provider-profile, completed-history, and active-workflow state, restarts the daemon, then verifies restored state and boot reconciliation end to end.
+- Verified the live drill passes with stale active provider/prompt state cleared, the interrupted workflow run marked `Stopped` with the kernel-restart failure event, and the completed prompt marker available through both transcript paging and operational history search.
