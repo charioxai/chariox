@@ -213,6 +213,30 @@ impl HistoryEvent {
             caused_by_event_id: None,
         }
     }
+
+    pub fn to_session_history_entry(&self) -> Option<SessionHistoryEntry> {
+        let kind = SessionHistoryEntryKind::try_from(self.kind).ok()?;
+        let session_id = self.session_id.clone()?;
+        let source_attachment_id = self
+            .metadata
+            .get("source_attachment_id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        Some(SessionHistoryEntry {
+            session_id,
+            provider_run_id: self.provider_run_id.clone(),
+            agent_id: self.agent_id.clone(),
+            source_attachment_id,
+            kind,
+            merge_key: self
+                .metadata
+                .get("merge_key")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            text: self.content.clone().unwrap_or_default(),
+            timestamp_ms: self.timestamp_ms,
+        })
+    }
 }
 
 impl From<SessionHistoryEntryKind> for HistoryEventKind {
@@ -225,6 +249,23 @@ impl From<SessionHistoryEntryKind> for HistoryEventKind {
             SessionHistoryEntryKind::ProviderError => Self::ProviderError,
             SessionHistoryEntryKind::ProviderStatus => Self::ProviderStatus,
             SessionHistoryEntryKind::Notice => Self::Notice,
+        }
+    }
+}
+
+impl TryFrom<HistoryEventKind> for SessionHistoryEntryKind {
+    type Error = ();
+
+    fn try_from(kind: HistoryEventKind) -> Result<Self, Self::Error> {
+        match kind {
+            HistoryEventKind::UserPrompt => Ok(Self::UserPrompt),
+            HistoryEventKind::ProviderOutput => Ok(Self::ProviderOutput),
+            HistoryEventKind::ProviderReasoning => Ok(Self::ProviderReasoning),
+            HistoryEventKind::ProviderTool => Ok(Self::ProviderTool),
+            HistoryEventKind::ProviderError => Ok(Self::ProviderError),
+            HistoryEventKind::ProviderStatus => Ok(Self::ProviderStatus),
+            HistoryEventKind::Notice => Ok(Self::Notice),
+            _ => Err(()),
         }
     }
 }
@@ -532,6 +573,18 @@ impl OperationalHistoryStore {
             events.push(event);
         }
         Ok(events)
+    }
+
+    pub fn load_session_history_entries(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+    ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
+        let events = self.load_session_events(session_id, agent_id)?;
+        Ok(events
+            .into_iter()
+            .filter_map(|event| event.to_session_history_entry())
+            .collect())
     }
 
     pub fn path(&self) -> &Path {
@@ -859,6 +912,12 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("tool:browser")
         );
+        let round_tripped = event
+            .to_session_history_entry()
+            .expect("transcript event should convert back");
+        assert_eq!(round_tripped.kind, SessionHistoryEntryKind::ProviderTool);
+        assert_eq!(round_tripped.text, "called browser");
+        assert_eq!(round_tripped.merge_key.as_deref(), Some("tool:browser"));
     }
 
     #[test]

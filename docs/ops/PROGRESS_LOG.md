@@ -768,3 +768,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Wired the operational history store into `DaemonApp` and owned runtime state while keeping the existing JSONL session history path as the read source.
 - Prompt, provider-output, and notice transcript appends now dual-write canonical operational history events after the legacy append succeeds.
 - Test configs now use isolated operational history database paths, and session history preservation coverage verifies the operational store receives restored prompt transcript events.
+
+### M8 session history read cutover update
+
+- Changed app and router session-history reads to prefer operational history and fall back to legacy JSONL only when no operational entries exist for a pre-cutover session.
+- Added canonical-event to `SessionHistoryEntry` conversion so existing transcript pagination and CLI rendering can continue while reading from operational history.
+- Added focused coverage proving `session_history_page` reads transcript entries from the operational store.

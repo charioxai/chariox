@@ -387,6 +387,27 @@ impl DaemonApp {
         self.operational_history.clone()
     }
 
+    pub(crate) fn load_session_history_entries(
+        &self,
+        session: &RuntimeSession,
+        agent_id: Option<&str>,
+    ) -> Result<Vec<crate::history::SessionHistoryEntry>, DaemonError> {
+        let operational_entries = self
+            .operational_history
+            .load_session_history_entries(session.id(), agent_id)?;
+        if !operational_entries.is_empty() {
+            return Ok(operational_entries);
+        }
+        let legacy_entries = self.history.load(session)?;
+        Ok(match agent_id {
+            Some(agent_id) => legacy_entries
+                .into_iter()
+                .filter(|entry| entry.agent_id.as_deref() == Some(agent_id))
+                .collect(),
+            None => legacy_entries,
+        })
+    }
+
     pub(crate) fn session_state_projection_store(&self) -> SessionStateProjectionStore {
         self.session_projection.clone()
     }
@@ -693,7 +714,7 @@ impl DaemonApp {
         before_entry_char_offset: Option<usize>,
     ) -> Result<crate::session_history_page::SessionHistoryPage, DaemonError> {
         let session = self.sessions().get_session(session_id)?;
-        let entries = self.history_store().load(&session)?;
+        let entries = self.load_session_history_entries(&session, agent_id)?;
         self.session_history_projection_store()
             .update_entries(session.id(), entries.clone());
         Ok(crate::runtime::projection::page_history_entries(

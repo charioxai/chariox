@@ -65,6 +65,7 @@ pub(crate) struct CommandRouter {
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     history_store: SessionHistoryStore,
+    operational_history_store: OperationalHistoryStore,
     history_projection: SessionHistoryProjectionStore,
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
@@ -193,6 +194,7 @@ impl CommandRouter {
             session_projection,
             agent_runtime_projection,
             history_store,
+            operational_history_store,
             history_projection,
             provider_catalog_projection,
             provider_run_projection,
@@ -321,6 +323,7 @@ impl CommandRouter {
             session_projection,
             agent_runtime_projection,
             history_store,
+            operational_history_store,
             history_projection,
             provider_catalog_projection,
             provider_run_projection,
@@ -1400,9 +1403,23 @@ impl CommandRouter {
         request: GetSessionHistoryRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let history = self.history_store.clone();
+        let operational_history = self.operational_history_store.clone();
         let history_projection = self.history_projection.clone();
         tokio::task::spawn_blocking(move || {
-            let entries = history.load(&session)?;
+            let operational_entries = operational_history
+                .load_session_history_entries(session.id(), request.agent_id.as_deref())?;
+            let entries = if operational_entries.is_empty() {
+                let legacy_entries = history.load(&session)?;
+                match request.agent_id.as_deref() {
+                    Some(agent_id) => legacy_entries
+                        .into_iter()
+                        .filter(|entry| entry.agent_id.as_deref() == Some(agent_id))
+                        .collect(),
+                    None => legacy_entries,
+                }
+            } else {
+                operational_entries
+            };
             history_projection.update_entries(session.id(), entries.clone());
             let page = page_history_entries(
                 entries,

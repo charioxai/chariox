@@ -939,6 +939,31 @@ mod tests {
     }
 
     #[test]
+    fn session_history_page_reads_operational_history() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let entry = crate::history::SessionHistoryEntry::user_prompt(
+            session.id(),
+            "attachment-1",
+            agent.id(),
+            "from operational history",
+        );
+        app.operational_history_store()
+            .append_transcript(&entry, crate::history::HistoryEventTurnContext::default())
+            .expect("operational event should append");
+
+        let page = app
+            .session_history_page(session.id(), Some(agent.id()), None, None, None, None)
+            .expect("history page should load");
+
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].entry.text, "from operational history");
+    }
+
+    #[test]
     fn deleted_sessions_cannot_be_reattached() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
