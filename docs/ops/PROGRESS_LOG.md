@@ -780,3 +780,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added kernel `QueryHistory` and `SearchHistory` requests backed by the operational SQLite store.
 - The query path returns canonical `HistoryEvent` rows with filters for session, agent, provider, model, workflow, machine, repo/worktree, event kind, text, sequence cursor, and bounded limits.
 - Added TypeScript kernel-client history event/query types and request builders, plus focused store and router coverage for operational history queries.
+
+### M8 archive adapter client foundation
+
+- Added a history archive adapter client for disabled and external archive modes.
+- External adapters can now receive canonical `HistoryEvent` batches at `/arroba/history/events`, expose `/arroba/history/capabilities`, and optionally require bearer-token auth through the configured token environment variable.
+- Archive append responses are validated for durable acceptance of every event before callers can treat the archive write as successful.
