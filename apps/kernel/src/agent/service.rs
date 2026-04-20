@@ -62,7 +62,7 @@ impl AgentService {
 
         // Create agent
         let agent_ref = generate_agent_ref();
-        let agent = AgentInstance::new(
+        let mut agent = AgentInstance::new(
             self.store.next_agent_id(),
             agent_ref,
             request.session_id,
@@ -73,6 +73,7 @@ impl AgentService {
             request.worktree_id,
             position,
         );
+        agent.set_owner_user_id(request.owner_user_id);
         let agent_id = agent.id().to_string();
         let session_id = agent.session_id().to_string();
 

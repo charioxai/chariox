@@ -264,7 +264,13 @@ pub(crate) fn launch_provider_request_from_local(
             .ok()
             .and_then(|session| session.focused_agent_id().map(str::to_string))
     }) {
-        launch_request = launch_request.with_agent_id(agent_id);
+        launch_request = if let Ok(agent) = app.agents().get_agent(&agent_id) {
+            launch_request
+                .with_agent_id(agent_id)
+                .with_owner_user_id(agent.owner_user_id().to_string())
+        } else {
+            launch_request.with_agent_id(agent_id)
+        };
     }
     launch_request
 }

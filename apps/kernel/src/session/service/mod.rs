@@ -21,7 +21,7 @@ use super::{
     WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
     WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
     WorkflowTurnEnvelope, WorkflowTurnRuntimeState, WorkflowWatchdogDefinition,
-    WorkflowWatchdogPolicy,
+    WorkflowWatchdogPolicy, DEFAULT_LOCAL_USER_ID,
 };
 #[cfg(test)]
 use super::{PromptAttachment, PromptSubmissionOutcome};

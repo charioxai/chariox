@@ -768,7 +768,7 @@ impl CommandRouter {
                     .collect();
                 return Ok(LocalDaemonResponse::SessionsListed { sessions });
             }
-            let sessions = {
+            let sessions: Vec<_> = {
                 let app = self.app.lock().await;
                 app.sessions()
                     .list_sessions()
@@ -776,6 +776,7 @@ impl CommandRouter {
                     .filter(|session| session.has_member(&caller_user_id))
                     .collect()
             };
+            self.session_projection.update_list(sessions.clone());
             return Ok(LocalDaemonResponse::SessionsListed { sessions });
         }
         match &request {
@@ -1646,6 +1647,9 @@ impl CommandRouter {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Result<String, DaemonError> {
+        if is_implicit_local_session_caller(command) {
+            return Ok(DEFAULT_LOCAL_USER_ID.to_string());
+        }
         if matches!(
             request,
             LocalDaemonRequest::CreateSession(_) | LocalDaemonRequest::JoinSessionInvite(_)
@@ -3072,6 +3076,11 @@ fn command_session_user_id(command: &KernelCommand) -> Option<String> {
     }
 }
 
+fn is_implicit_local_session_caller(command: &KernelCommand) -> bool {
+    matches!(command.caller.caller_kind, KernelCallerKind::LocalClient)
+        && command.caller.user_id.is_none()
+}
+
 fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembershipScope> {
     match request {
         LocalDaemonRequest::ListSessions(_) => Some(SessionMembershipScope::AllSessions),
@@ -3455,15 +3464,16 @@ mod tests {
     use crate::agent::CreateAgentRequest;
     use crate::attachment::ClientCapabilityLevel;
     use crate::local::{
-        AddWorkflowNodeRequest, AliasSessionRequest, AttachToSessionRequest,
-        CancelActivePromptRequest, CompletePromptRequest, CreateWorkflowRequest,
-        CycleAgentFocusRequest, DeleteSessionRequest, DestroyAgentRequest,
-        DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
-        GetProviderAuthStatusRequest, GetProviderCatalogRequest, GetProviderCommandCatalogsRequest,
-        GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
-        LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
-        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
-        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasSessionRequest,
+        AttachToSessionRequest, CancelActivePromptRequest, CompletePromptRequest,
+        CreateWorkflowEndpointRequest, CreateWorkflowRequest, CycleAgentFocusRequest,
+        DeleteSessionRequest, DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest,
+        FocusAgentRequest, GetDaemonHealthRequest, GetProviderAuthStatusRequest,
+        GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderRunRequest,
+        GetSessionHistoryRequest, GetSessionStateRequest, LaunchProviderRunRequest,
+        ListAgentsRequest, ListProviderProcessesRequest, ListSessionsRequest,
+        ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest, ListWorkflowsRequest,
+        LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
         PumpTerminalOutputRequest, QueryHistoryRequest, RelayStatusRequest, ResizeTerminalRequest,
         ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest,
         SpawnAgentRequest, SubmitPromptRequest, TeardownProviderProcessesRequest,
@@ -3641,12 +3651,13 @@ mod tests {
             let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
             let (created, _) = router
                 .runtime_state
-                .execute_workflow_request(LocalDaemonRequest::CreateWorkflow(
-                    CreateWorkflowRequest {
+                .execute_workflow_request(
+                    LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
                         session_id: session.id().to_string(),
                         alias: Some("review".to_string()),
-                    },
-                ))
+                    }),
+                    DEFAULT_LOCAL_USER_ID.to_string(),
+                )
                 .await;
             let workflow_id = match created.expect("workflow should create") {
                 LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow.id().to_string(),
@@ -3654,13 +3665,14 @@ mod tests {
             };
             let (added, _) = router
                 .runtime_state
-                .execute_workflow_request(LocalDaemonRequest::AddWorkflowNode(
-                    AddWorkflowNodeRequest {
+                .execute_workflow_request(
+                    LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
                         session_id: session.id().to_string(),
                         workflow_ref: workflow_id.clone(),
                         agent_id: agent.id().to_string(),
-                    },
-                ))
+                    }),
+                    DEFAULT_LOCAL_USER_ID.to_string(),
+                )
                 .await;
             added.expect("workflow node should add");
             (
@@ -8157,6 +8169,175 @@ mod tests {
             }
             _ => panic!("unexpected list response"),
         }
+    }
+
+    #[tokio::test]
+    async fn remote_owned_session_objects_record_caller_user() {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new(
+                "workspace-ownership",
+                "worktree-ownership",
+            ))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let (_, invite) = app
+            .sessions_mut()
+            .create_session_invite(
+                &session_id,
+                "invite-user-2".to_string(),
+                DEFAULT_LOCAL_USER_ID.to_string(),
+                None,
+                Some(1),
+            )
+            .expect("invite should be created");
+        app.sessions_mut()
+            .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
+            .expect("user should join session");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+        let spawn_one = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session_id.clone(),
+            alias: Some("owned-a".to_string()),
+            provider: "dev-stub".to_string(),
+            model: None,
+            effort: None,
+            worktree_id: None,
+            machine_ref: None,
+            worktree_placement: None,
+        });
+        let agent_one = match router
+            .dispatch(
+                remote_command_for_request(&spawn_one, Some("user-2")),
+                spawn_one,
+            )
+            .await
+            .expect("agent should spawn")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            other => panic!("unexpected spawn response: {other:?}"),
+        };
+        assert_eq!(agent_one.owner_user_id(), "user-2");
+
+        let spawn_two = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session_id.clone(),
+            alias: Some("owned-b".to_string()),
+            provider: "dev-stub".to_string(),
+            model: None,
+            effort: None,
+            worktree_id: None,
+            machine_ref: None,
+            worktree_placement: None,
+        });
+        let agent_two = match router
+            .dispatch(
+                remote_command_for_request(&spawn_two, Some("user-2")),
+                spawn_two,
+            )
+            .await
+            .expect("second agent should spawn")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            other => panic!("unexpected spawn response: {other:?}"),
+        };
+        assert_eq!(agent_two.owner_user_id(), "user-2");
+
+        let create_workflow = LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: session_id.clone(),
+            alias: Some("owned-flow".to_string()),
+        });
+        let workflow_id = match router
+            .dispatch(
+                remote_command_for_request(&create_workflow, Some("user-2")),
+                create_workflow,
+            )
+            .await
+            .expect("workflow should create")
+        {
+            LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow.id().to_string(),
+            other => panic!("unexpected workflow response: {other:?}"),
+        };
+
+        let add_first_node = LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
+            session_id: session_id.clone(),
+            workflow_ref: workflow_id.clone(),
+            agent_id: agent_one.id().to_string(),
+        });
+        let first_node = match router
+            .dispatch(
+                remote_command_for_request(&add_first_node, Some("user-2")),
+                add_first_node,
+            )
+            .await
+            .expect("first node should add")
+        {
+            LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+            other => panic!("unexpected node response: {other:?}"),
+        };
+        assert_eq!(first_node.owner_user_id(), "user-2");
+        assert_eq!(first_node.public_label(), agent_one.id());
+
+        let add_second_node = LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
+            session_id: session_id.clone(),
+            workflow_ref: workflow_id.clone(),
+            agent_id: agent_two.id().to_string(),
+        });
+        let second_node = match router
+            .dispatch(
+                remote_command_for_request(&add_second_node, Some("user-2")),
+                add_second_node,
+            )
+            .await
+            .expect("second node should add")
+        {
+            LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+            other => panic!("unexpected node response: {other:?}"),
+        };
+        assert_eq!(second_node.owner_user_id(), "user-2");
+
+        let create_endpoint =
+            LocalDaemonRequest::CreateWorkflowEndpoint(CreateWorkflowEndpointRequest {
+                session_id: session_id.clone(),
+                workflow_ref: workflow_id.clone(),
+                entry_node_id: first_node.id().to_string(),
+                alias: Some("owned-entry".to_string()),
+            });
+        let endpoint = match router
+            .dispatch(
+                remote_command_for_request(&create_endpoint, Some("user-2")),
+                create_endpoint,
+            )
+            .await
+            .expect("endpoint should create")
+        {
+            LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+            other => panic!("unexpected endpoint response: {other:?}"),
+        };
+        assert_eq!(endpoint.owner_user_id(), "user-2");
+
+        let add_edge = LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
+            session_id,
+            workflow_ref: workflow_id,
+            from_node_id: first_node.id().to_string(),
+            to_node_id: second_node.id().to_string(),
+            output_schema_ref: None,
+            validation_policy: None,
+        });
+        let edge = match router
+            .dispatch(
+                remote_command_for_request(&add_edge, Some("user-2")),
+                add_edge,
+            )
+            .await
+            .expect("edge should add")
+        {
+            LocalDaemonResponse::WorkflowEdgeAdded { edge, .. } => edge,
+            other => panic!("unexpected edge response: {other:?}"),
+        };
+        assert_eq!(edge.created_by_user_id(), "user-2");
     }
 
     fn attach_request(session_id: &str, client_id: &str) -> LocalDaemonRequest {

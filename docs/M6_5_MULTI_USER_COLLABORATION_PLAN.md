@@ -373,8 +373,9 @@ The shell executor must share the same kernel authorization path as the TUI. It 
 As of 2026-04-20:
 
 - Slice 1 is closed: sessions now persist an implicit local owner, member records, and session invite records with migration defaults for existing sessions. Kernel API and shell command coverage exists for `session members`, `session invite create`, `session join`, and `session revoke-invite`. Scoped relay claims can carry `user_id` into `KernelCommand.caller.user_id`, and the kernel router now performs a central session-membership preflight for session-scoped requests before state changes. `ListSessions` is filtered to the caller's memberships.
-- Remaining ownership, privacy, and workflow-collaboration behavior belongs to Slices 2-7.
-- Slices 2-7 have not started.
+- Slice 2 is closed: agents, workflow nodes, workflow endpoints, workflow edges, launch provider requests, and runtime provider runs now carry durable ownership/creator metadata with defaults for restored single-user data. Spawned agents and workflow nodes/endpoints/edges are assigned from the caller user at the session/workflow runtime boundary. Workflow nodes also carry a public label independent of provider/model configuration.
+- Remaining authorization, privacy, conflict handling, workspace links, and relay drills belong to Slices 3-7.
+- Slices 3-7 have not started.
 
 ### Slice 1. Session Identity And Membership
 

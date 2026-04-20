@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::provider::ProviderResumeState;
+use crate::session::DEFAULT_LOCAL_USER_ID;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteAgentBinding {
@@ -49,6 +50,8 @@ pub struct AgentInstance {
     id: String,
     agent_ref: String,
     session_id: String,
+    #[serde(default = "default_agent_owner_user_id")]
+    owner_user_id: String,
     alias: Option<String>,
     provider: String,
     model: Option<String>,
@@ -87,6 +90,7 @@ impl AgentInstance {
             id: id.into(),
             agent_ref: agent_ref.into(),
             session_id: session_id.into(),
+            owner_user_id: default_agent_owner_user_id(),
             alias,
             provider: provider.into(),
             model,
@@ -114,6 +118,10 @@ impl AgentInstance {
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    pub fn owner_user_id(&self) -> &str {
+        &self.owner_user_id
     }
 
     pub fn alias(&self) -> Option<&str> {
@@ -190,6 +198,10 @@ impl AgentInstance {
         self.alias = alias;
     }
 
+    pub fn set_owner_user_id(&mut self, owner_user_id: impl Into<String>) {
+        self.owner_user_id = owner_user_id.into();
+    }
+
     pub fn set_model(&mut self, model: Option<String>) {
         self.model = model;
     }
@@ -238,6 +250,8 @@ impl AgentInstance {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateAgentRequest {
     pub session_id: String,
+    #[serde(default = "default_agent_owner_user_id")]
+    pub owner_user_id: String,
     pub alias: Option<String>,
     pub provider: String,
     pub model: Option<String>,
@@ -251,6 +265,7 @@ impl CreateAgentRequest {
     pub fn new(session_id: impl Into<String>, provider: impl Into<String>) -> Self {
         Self {
             session_id: session_id.into(),
+            owner_user_id: default_agent_owner_user_id(),
             alias: None,
             provider: provider.into(),
             model: None,
@@ -263,6 +278,11 @@ impl CreateAgentRequest {
 
     pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
         self.alias = Some(alias.into());
+        self
+    }
+
+    pub fn with_owner_user_id(mut self, owner_user_id: impl Into<String>) -> Self {
+        self.owner_user_id = owner_user_id.into();
         self
     }
 
@@ -290,6 +310,10 @@ impl CreateAgentRequest {
         self.worktree_placement = Some(placement);
         self
     }
+}
+
+fn default_agent_owner_user_id() -> String {
+    DEFAULT_LOCAL_USER_ID.to_string()
 }
 
 /// Calculates grid layout for agents based on count.

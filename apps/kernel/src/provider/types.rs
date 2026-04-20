@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::mcp::ArrobaMcpServerConfig;
-use crate::session::unix_epoch_ms;
+use crate::session::{unix_epoch_ms, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::TerminalOutputKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +70,10 @@ pub(crate) fn provider_requires_managed_io_by_default(
     config: &crate::config::DaemonConfig,
 ) -> bool {
     config.provider_requires_managed_io(provider)
+}
+
+fn default_provider_owner_user_id() -> String {
+    DEFAULT_LOCAL_USER_ID.to_string()
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,6 +214,8 @@ impl ProviderResumeState {
 pub struct LaunchProviderRequest {
     pub session_id: String,
     pub agent_id: Option<String>,
+    #[serde(default = "default_provider_owner_user_id")]
+    pub owner_user_id: String,
     pub adapter_key: String,
     pub provider: String,
     pub account_profile: String,
@@ -257,6 +263,7 @@ impl LaunchProviderRequest {
         Self {
             session_id: session_id.into(),
             agent_id: None,
+            owner_user_id: default_provider_owner_user_id(),
             adapter_key: adapter_key.into(),
             provider: provider.into(),
             account_profile: account_profile.into(),
@@ -280,6 +287,11 @@ impl LaunchProviderRequest {
 
     pub fn with_agent_id(mut self, agent_id: impl Into<String>) -> Self {
         self.agent_id = Some(agent_id.into());
+        self
+    }
+
+    pub fn with_owner_user_id(mut self, owner_user_id: impl Into<String>) -> Self {
+        self.owner_user_id = owner_user_id.into();
         self
     }
 
@@ -345,6 +357,8 @@ pub struct RuntimeProviderRun {
     id: String,
     session_id: String,
     agent_instance_id: Option<String>,
+    #[serde(default = "default_provider_owner_user_id")]
+    owner_user_id: String,
     adapter_key: String,
     provider: String,
     account_profile: String,
@@ -393,6 +407,7 @@ impl RuntimeProviderRun {
             id: id.into(),
             session_id: request.session_id.clone(),
             agent_instance_id: request.agent_id.clone(),
+            owner_user_id: request.owner_user_id.clone(),
             adapter_key: request.adapter_key.clone(),
             provider: request.provider.clone(),
             account_profile: request.account_profile.clone(),
@@ -451,6 +466,7 @@ impl RuntimeProviderRun {
             id: id.into(),
             session_id,
             agent_instance_id,
+            owner_user_id: default_provider_owner_user_id(),
             adapter_key: adapter_key.clone(),
             provider: adapter_key.clone(),
             account_profile: "default".to_string(),
@@ -492,6 +508,9 @@ impl RuntimeProviderRun {
     }
     pub fn agent_instance_id(&self) -> Option<&str> {
         self.agent_instance_id.as_deref()
+    }
+    pub fn owner_user_id(&self) -> &str {
+        &self.owner_user_id
     }
     pub fn adapter_key(&self) -> &str {
         &self.adapter_key

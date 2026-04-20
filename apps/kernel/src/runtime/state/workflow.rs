@@ -78,6 +78,7 @@ impl KernelRuntimeOwnedState {
             agent.model().unwrap_or("default"),
         )
         .with_agent_id(agent.id().to_string())
+        .with_owner_user_id(agent.owner_user_id().to_string())
         .with_variant(agent.effort().map(str::to_string));
         let config = self.config_projection.snapshot();
         if crate::provider::provider_requires_managed_io_by_default(provider, &config) {

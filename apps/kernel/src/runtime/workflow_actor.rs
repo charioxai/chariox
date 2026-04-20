@@ -5,10 +5,12 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+use crate::runtime::command::{KernelCallerKind, KernelCommand};
 use crate::runtime::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
 use crate::runtime::state::KernelRuntimeState;
+use crate::session::DEFAULT_LOCAL_USER_ID;
 
 pub(crate) const WORKFLOW_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -16,6 +18,7 @@ pub(crate) const WORKFLOW_COMMAND_QUEUE_LIMIT: usize = 128;
 struct WorkflowCommandEnvelope {
     command_id: String,
     command_type: String,
+    caller_user_id: String,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -58,15 +61,17 @@ impl WorkflowRuntime {
 
     pub(crate) async fn dispatch_workflow_command(
         &self,
-        command: crate::runtime::command::KernelCommand,
+        command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let session_id = self.resolve_workflow_lane_key(&request)?;
         let lane = self.workflow_lane(&session_id).await;
         let (result_tx, result_rx) = oneshot::channel();
+        let caller_user_id = command_workflow_actor_user_id(&command);
         lane.try_send(WorkflowCommandEnvelope {
             command_id: command.command_id,
             command_type: command.command_type,
+            caller_user_id,
             request,
             result_tx,
         })
@@ -161,8 +166,11 @@ impl WorkflowRuntimeStore {
     async fn execute_workflow_request(
         &self,
         request: LocalDaemonRequest,
+        caller_user_id: String,
     ) -> WorkflowStoreExecutionResult {
-        self.state.execute_workflow_request(request).await
+        self.state
+            .execute_workflow_request(request, caller_user_id)
+            .await
     }
 }
 
@@ -185,7 +193,9 @@ async fn run_workflow_command_lane(
                 "command_type": envelope.command_type,
             }),
         );
-        let result = executor.execute(envelope.request).await;
+        let result = executor
+            .execute(envelope.request, envelope.caller_user_id)
+            .await;
         let _ = envelope.result_tx.send(result);
     }
 }
@@ -213,13 +223,34 @@ impl WorkflowRuntimeCommandExecutor {
     async fn execute(
         &self,
         request: LocalDaemonRequest,
+        caller_user_id: String,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (result, projected_session) = self.store.execute_workflow_request(request).await;
+        let (result, projected_session) = self
+            .store
+            .execute_workflow_request(request, caller_user_id)
+            .await;
         if let Some(session) = projected_session {
             self.agent_runtime_projection.update_session(&session);
             self.session_projection.update(session);
         }
         result
+    }
+}
+
+fn command_workflow_actor_user_id(command: &KernelCommand) -> String {
+    match command.caller.caller_kind {
+        KernelCallerKind::LocalClient => command
+            .caller
+            .user_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()),
+        KernelCallerKind::RemoteClient
+        | KernelCallerKind::RemoteKernel
+        | KernelCallerKind::HostedService => command
+            .caller
+            .user_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()),
     }
 }
 

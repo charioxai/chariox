@@ -38,9 +38,19 @@ fn default_session_invite_max_uses() -> Option<u32> {
     Some(1)
 }
 
+fn default_workflow_owner_user_id() -> String {
+    DEFAULT_LOCAL_USER_ID.to_string()
+}
+
+fn default_workflow_node_public_label() -> String {
+    "agent".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowEndpointDefinition {
     id: String,
+    #[serde(default = "default_workflow_owner_user_id")]
+    owner_user_id: String,
     alias: Option<String>,
     entry_node_id: String,
 }
@@ -53,6 +63,7 @@ impl WorkflowEndpointDefinition {
     ) -> Self {
         Self {
             id: id.into(),
+            owner_user_id: default_workflow_owner_user_id(),
             alias,
             entry_node_id: entry_node_id.into(),
         }
@@ -66,8 +77,16 @@ impl WorkflowEndpointDefinition {
         self.alias.as_deref()
     }
 
+    pub fn owner_user_id(&self) -> &str {
+        &self.owner_user_id
+    }
+
     pub fn entry_node_id(&self) -> &str {
         &self.entry_node_id
+    }
+
+    pub fn set_owner_user_id(&mut self, owner_user_id: impl Into<String>) {
+        self.owner_user_id = owner_user_id.into();
     }
 
     pub fn set_alias(&mut self, alias: Option<String>) {
@@ -317,6 +336,10 @@ impl WorkflowWatchdogDefinition {
 pub struct WorkflowNodeDefinition {
     id: String,
     agent_id: String,
+    #[serde(default = "default_workflow_owner_user_id")]
+    owner_user_id: String,
+    #[serde(default = "default_workflow_node_public_label")]
+    public_label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     instructions: Option<String>,
     #[serde(default = "default_workflow_node_can_complete_workflow_run")]
@@ -331,9 +354,12 @@ pub struct WorkflowNodeDefinition {
 
 impl WorkflowNodeDefinition {
     pub fn new(id: impl Into<String>, agent_id: impl Into<String>) -> Self {
+        let agent_id = agent_id.into();
         Self {
             id: id.into(),
-            agent_id: agent_id.into(),
+            public_label: agent_id.clone(),
+            agent_id,
+            owner_user_id: default_workflow_owner_user_id(),
             instructions: None,
             can_complete_workflow_run: default_workflow_node_can_complete_workflow_run(),
             can_emit_intermediate_run_output:
@@ -349,6 +375,22 @@ impl WorkflowNodeDefinition {
 
     pub fn agent_id(&self) -> &str {
         &self.agent_id
+    }
+
+    pub fn owner_user_id(&self) -> &str {
+        &self.owner_user_id
+    }
+
+    pub fn public_label(&self) -> &str {
+        &self.public_label
+    }
+
+    pub fn set_owner_user_id(&mut self, owner_user_id: impl Into<String>) {
+        self.owner_user_id = owner_user_id.into();
+    }
+
+    pub fn set_public_label(&mut self, public_label: impl Into<String>) {
+        self.public_label = public_label.into();
     }
 
     pub fn instructions(&self) -> Option<&str> {
@@ -397,6 +439,8 @@ pub struct WorkflowEdgeDefinition {
     id: String,
     from_node_id: String,
     to_node_id: String,
+    #[serde(default = "default_workflow_owner_user_id")]
+    created_by_user_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     output_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -415,6 +459,7 @@ impl WorkflowEdgeDefinition {
             id: id.into(),
             from_node_id: from_node_id.into(),
             to_node_id: to_node_id.into(),
+            created_by_user_id: default_workflow_owner_user_id(),
             output_schema_ref,
             validation_policy,
         }
@@ -430,6 +475,14 @@ impl WorkflowEdgeDefinition {
 
     pub fn to_node_id(&self) -> &str {
         &self.to_node_id
+    }
+
+    pub fn created_by_user_id(&self) -> &str {
+        &self.created_by_user_id
+    }
+
+    pub fn set_created_by_user_id(&mut self, created_by_user_id: impl Into<String>) {
+        self.created_by_user_id = created_by_user_id.into();
     }
 
     pub fn output_schema_ref(&self) -> Option<&str> {

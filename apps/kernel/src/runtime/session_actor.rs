@@ -11,11 +11,12 @@ use crate::local::{
     LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest,
     SpawnAgentRequest, UpdateSessionConfigRequest,
 };
+use crate::runtime::command::{KernelCallerKind, KernelCommand};
 use crate::runtime::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
 use crate::runtime::state::KernelRuntimeState;
-use crate::session::CreateSessionRequest;
+use crate::session::{CreateSessionRequest, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::TerminalStreamStore;
 
 pub(crate) const SESSION_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -52,6 +53,7 @@ impl FocusedAgentProjection {
 struct SessionCommandEnvelope {
     command_id: String,
     command_type: String,
+    caller_user_id: String,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -107,15 +109,17 @@ impl SessionRuntime {
 
     pub(crate) async fn dispatch_session_command(
         &self,
-        command: crate::runtime::command::KernelCommand,
+        command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let session_id = self.resolve_session_lane_key(&request).await?;
         let lane = self.session_lane(&session_id).await;
         let (result_tx, result_rx) = oneshot::channel();
+        let caller_user_id = command_session_actor_user_id(&command);
         lane.try_send(SessionCommandEnvelope {
             command_id: command.command_id,
             command_type: command.command_type,
+            caller_user_id,
             request,
             result_tx,
         })
@@ -326,6 +330,7 @@ impl SessionRuntime {
         lane.try_send(SessionCommandEnvelope {
             command_id: command_id.into(),
             command_type: command_type.into(),
+            caller_user_id: DEFAULT_LOCAL_USER_ID.to_string(),
             request,
             result_tx,
         })
@@ -550,11 +555,13 @@ impl SessionRuntimeStore {
     async fn spawn_agent(
         &self,
         request: SpawnAgentRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let create_request = CreateAgentRequest::new(&request.session_id, &request.provider);
+        let create_request = CreateAgentRequest::new(&request.session_id, &request.provider)
+            .with_owner_user_id(caller_user_id);
         let create_request = if let Some(alias) = request.alias {
             create_request.with_alias(alias)
         } else {
@@ -676,7 +683,9 @@ async fn run_session_command_lane(
                 "command_type": envelope.command_type,
             }),
         );
-        let result = executor.execute(envelope.request).await;
+        let result = executor
+            .execute(envelope.request, envelope.caller_user_id)
+            .await;
         let _ = envelope.result_tx.send(result);
     }
 }
@@ -713,6 +722,7 @@ impl SessionRuntimeCommandExecutor {
     async fn execute(
         &self,
         request: LocalDaemonRequest,
+        caller_user_id: String,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let (result, projection_action) = if let Some(result) = projected_runtime_notices_response(
             &self.session_projection,
@@ -747,7 +757,7 @@ impl SessionRuntimeCommandExecutor {
         {
             (result, None)
         } else {
-            self.execute_store_request(request).await
+            self.execute_store_request(request, caller_user_id).await
         };
         let projected_session = match projection_action {
             Some(SessionProjectionAction::Update(session)) => {
@@ -784,6 +794,7 @@ impl SessionRuntimeCommandExecutor {
     async fn execute_store_request(
         &self,
         request: LocalDaemonRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -810,7 +821,9 @@ impl SessionRuntimeCommandExecutor {
                 self.store.update_session_config(request).await
             }
             LocalDaemonRequest::AliasSession(request) => self.store.alias_session(request).await,
-            LocalDaemonRequest::SpawnAgent(request) => self.store.spawn_agent(request).await,
+            LocalDaemonRequest::SpawnAgent(request) => {
+                self.store.spawn_agent(request, caller_user_id).await
+            }
             LocalDaemonRequest::DestroyAgent(request) => self.store.destroy_agent(request).await,
             LocalDaemonRequest::EndSession(request) => self.store.end_session(request).await,
             LocalDaemonRequest::DeleteSession(request) => self.store.delete_session(request).await,
@@ -828,6 +841,23 @@ impl SessionRuntimeCommandExecutor {
 enum SessionProjectionAction {
     Update(crate::session::RuntimeSession),
     Remove { session_id: String },
+}
+
+fn command_session_actor_user_id(command: &KernelCommand) -> String {
+    match command.caller.caller_kind {
+        KernelCallerKind::LocalClient => command
+            .caller
+            .user_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()),
+        KernelCallerKind::RemoteClient
+        | KernelCallerKind::RemoteKernel
+        | KernelCallerKind::HostedService => command
+            .caller
+            .user_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()),
+    }
 }
 
 async fn update_focus_projection_after_session_command(

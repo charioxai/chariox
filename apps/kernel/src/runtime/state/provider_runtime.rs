@@ -53,6 +53,7 @@ impl KernelRuntimeState {
                 run.model(),
             )
             .with_agent_id(agent_id)
+            .with_owner_user_id(run.owner_user_id().to_string())
             .with_variant(run.variant().map(str::to_string))
             .with_resume_state(run.resume_state().clone());
             let launch_request = if run.requires_managed_io() {
@@ -424,7 +425,13 @@ impl KernelRuntimeState {
                         .map(|agent| agent.id().to_string())
                 })
         }) {
-            launch_request = launch_request.with_agent_id(agent_id);
+            launch_request = if let Ok(agent) = self.owned.agent_store.get_agent(&agent_id) {
+                launch_request
+                    .with_agent_id(agent_id)
+                    .with_owner_user_id(agent.owner_user_id().to_string())
+            } else {
+                launch_request.with_agent_id(agent_id)
+            };
         }
         launch_request
     }

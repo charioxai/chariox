@@ -7,6 +7,23 @@ impl SessionService {
         workflow_ref: &str,
         agent_id: &str,
     ) -> Result<WorkflowNodeDefinition, DaemonError> {
+        self.add_workflow_node_owned(
+            session_id,
+            workflow_ref,
+            agent_id,
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            agent_id.to_string(),
+        )
+    }
+
+    pub fn add_workflow_node_owned(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        agent_id: &str,
+        owner_user_id: String,
+        public_label: String,
+    ) -> Result<WorkflowNodeDefinition, DaemonError> {
         let workflow_id = self
             .resolve_workflow_ref(session_id, workflow_ref)?
             .id()
@@ -36,7 +53,9 @@ impl SessionService {
                 agent_id: agent_id.to_string(),
             });
         }
-        let node = WorkflowNodeDefinition::new(next_node_id, agent_id.to_string());
+        let mut node = WorkflowNodeDefinition::new(next_node_id, agent_id.to_string());
+        node.set_owner_user_id(owner_user_id);
+        node.set_public_label(public_label);
         Ok(workflow.add_node(node))
     }
 
@@ -256,17 +275,39 @@ impl SessionService {
         output_schema_ref: Option<String>,
         validation_policy: Option<WorkflowOutputValidationPolicy>,
     ) -> Result<WorkflowEdgeDefinition, DaemonError> {
+        self.add_workflow_edge_owned(
+            session_id,
+            workflow_ref,
+            from_node_id,
+            to_node_id,
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            output_schema_ref,
+            validation_policy,
+        )
+    }
+
+    pub fn add_workflow_edge_owned(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        from_node_id: &str,
+        to_node_id: &str,
+        created_by_user_id: String,
+        output_schema_ref: Option<String>,
+        validation_policy: Option<WorkflowOutputValidationPolicy>,
+    ) -> Result<WorkflowEdgeDefinition, DaemonError> {
         let workflow_id = self
             .resolve_workflow_ref(session_id, workflow_ref)?
             .id()
             .to_string();
-        let edge = WorkflowEdgeDefinition::new(
+        let mut edge = WorkflowEdgeDefinition::new(
             self.next_workflow_edge_id(),
             from_node_id.to_string(),
             to_node_id.to_string(),
             output_schema_ref,
             validation_policy,
         );
+        edge.set_created_by_user_id(created_by_user_id);
         let session =
             self.store
                 .get_mut(session_id)
@@ -389,6 +430,45 @@ impl SessionService {
             });
         }
         Ok(workflow.add_endpoint(endpoint))
+    }
+
+    pub fn set_workflow_endpoint_owner(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        owner_user_id: String,
+    ) -> Result<WorkflowEndpointDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let endpoint_id = self
+            .resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
+        let endpoint = workflow.endpoint_mut(&endpoint_id).ok_or_else(|| {
+            DaemonError::WorkflowEndpointNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                endpoint_id: endpoint_id.clone(),
+            }
+        })?;
+        endpoint.set_owner_user_id(owner_user_id);
+        Ok(endpoint.clone())
     }
 
     pub fn assign_workflow_endpoint_alias(

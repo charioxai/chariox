@@ -65,12 +65,19 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_create_endpoint(
         &self,
         request: crate::local::CreateWorkflowEndpointRequest,
+        caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let endpoint = self.session_store.write().create_workflow_endpoint(
             &request.session_id,
             &request.workflow_ref,
             &request.entry_node_id,
             request.alias,
+        )?;
+        let endpoint = self.session_store.write().set_workflow_endpoint_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            endpoint.id(),
+            caller_user_id.to_string(),
         )?;
         let workflow = self
             .session_store
@@ -131,6 +138,7 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_add_node(
         &self,
         request: crate::local::AddWorkflowNodeRequest,
+        caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         if self
             .agent_store
@@ -142,10 +150,12 @@ impl KernelRuntimeOwnedState {
                 agent_id: request.agent_id,
             });
         }
-        let node = self.session_store.write().add_workflow_node(
+        let node = self.session_store.write().add_workflow_node_owned(
             &request.session_id,
             &request.workflow_ref,
             &request.agent_id,
+            caller_user_id.to_string(),
+            request.agent_id.clone(),
         )?;
         let workflow = self
             .session_store
@@ -309,12 +319,14 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_add_edge(
         &self,
         request: crate::local::AddWorkflowEdgeRequest,
+        caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let edge = self.session_store.write().add_workflow_edge(
+        let edge = self.session_store.write().add_workflow_edge_owned(
             &request.session_id,
             &request.workflow_ref,
             &request.from_node_id,
             &request.to_node_id,
+            caller_user_id.to_string(),
             request.output_schema_ref,
             request.validation_policy,
         )?;

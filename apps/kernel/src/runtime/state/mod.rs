@@ -536,6 +536,7 @@ impl KernelRuntimeState {
     pub(crate) async fn execute_workflow_request(
         &self,
         request: LocalDaemonRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
@@ -560,7 +561,7 @@ impl KernelRuntimeState {
                 (owned.workflow_resolve_workflow(request), None)
             }
             LocalDaemonRequest::CreateWorkflowEndpoint(request) => {
-                let result = owned.workflow_create_endpoint(request);
+                let result = owned.workflow_create_endpoint(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
@@ -575,7 +576,7 @@ impl KernelRuntimeState {
                 (result, session)
             }
             LocalDaemonRequest::AddWorkflowNode(request) => {
-                let result = owned.workflow_add_node(request);
+                let result = owned.workflow_add_node(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
@@ -610,7 +611,7 @@ impl KernelRuntimeState {
                 (result, session)
             }
             LocalDaemonRequest::AddWorkflowEdge(request) => {
-                let result = owned.workflow_add_edge(request);
+                let result = owned.workflow_add_edge(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
