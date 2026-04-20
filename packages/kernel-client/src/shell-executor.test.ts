@@ -468,6 +468,55 @@ test("executeShellCommand lists remote machines", async () => {
   assert.match(result.message ?? "", /mini id=machine-1/)
 })
 
+test("executeShellCommand manages remote machine trust", async () => {
+  const machine = {
+    machine_id: "machine-1",
+    machine_alias: "mini",
+    registry_alias: "mini",
+    display_name: "mini",
+    trust_status: "approved",
+    online: true,
+    pending: false,
+    kernel_count: 1,
+    available_providers: ["codex"],
+  }
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("ApproveRemoteMachine" in request) {
+          return { RemoteMachineApproved: { machine } }
+        }
+        if ("RenameRemoteMachine" in request) {
+          return { RemoteMachineRenamed: { machine: { ...machine, registry_alias: "builder" } } }
+        }
+        if ("ForgetRemoteMachine" in request) {
+          return { RemoteMachineForgotten: { machine: { ...machine, trust_status: "forgotten" } } }
+        }
+        return {}
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+
+  const approveResult = await executeShellCommand(parseShellCommand("machine approve machine-1"), context, { client: fake.client })
+  const renameResult = await executeShellCommand(parseShellCommand("machine rename machine-1 builder"), context, { client: fake.client })
+  const revokeResult = await executeShellCommand(parseShellCommand("machine revoke machine-1"), context, { client: fake.client })
+
+  assert.equal(approveResult.ok, true)
+  assert.match(approveResult.message ?? "", /approved machine mini/)
+  assert.equal(renameResult.ok, true)
+  assert.match(renameResult.message ?? "", /renamed machine mini/)
+  assert.equal(revokeResult.ok, true)
+  assert.match(revokeResult.message ?? "", /revoked machine mini/)
+  assert.deepEqual(requests, [
+    { ApproveRemoteMachine: { machine_ref: "machine-1" } },
+    { RenameRemoteMachine: { machine_ref: "machine-1", alias: "builder" } },
+    { ForgetRemoteMachine: { machine_ref: "machine-1" } },
+  ])
+})
+
 test("executeShellCommand manages paired clients", async () => {
   const requests: Record<string, unknown>[] = []
   const fake = {

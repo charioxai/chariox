@@ -41,6 +41,7 @@ import {
   cancelActivePromptRequest,
   cancelWorkflowRunRequest,
   clearQueuedWorkflowLaunchesRequest,
+  approveRemoteMachineRequest,
   createWorkflowEndpointRequest,
   createWorkflowRequest,
   createWorkflowWatchdogRequest,
@@ -79,6 +80,8 @@ import {
   removeWorkflowEdgeRequest,
   removeWorkflowNodeRequest,
   removeWorkflowWatchdogRequest,
+  forgetRemoteMachineRequest,
+  renameRemoteMachineRequest,
   revokeAgentCapabilityRequest,
   revokePairedClientRequest,
   resolveWorkflowRequest,
@@ -201,7 +204,7 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
           "session list|new|attach|use",
           "agent list|spawn|focus|cycle",
           "client list|record|revoke",
-          "machine list|kernels",
+          "machine list|kernels|approve|rename|revoke",
           "relay status",
           "config show|path|set|unset|managed-io",
           "mcp list|show|install|update|uninstall|import|grant|revoke|grants",
@@ -661,7 +664,7 @@ async function executeMachineCommand(
   parsed: ParsedShellCommand,
   deps: ShellExecutorDeps,
 ): Promise<ShellCommandResult> {
-  const [action, machineRef] = parsed.args
+  const [action, machineRef, ...rest] = parsed.args
   switch (action) {
     case "list":
     case "ls": {
@@ -677,8 +680,34 @@ async function executeMachineCommand(
       const payload = expectVariant<{ kernels: RelayKernelPresence[] }>(response, "RemoteMachineKernelsListed")
       return { ok: true, message: formatRemoteKernels(payload.kernels, machineRef), data: payload }
     }
+    case "approve": {
+      if (!machineRef) {
+        return { ok: false, message: "usage: machine approve <machine-ref>" }
+      }
+      const response = await deps.client.send(approveRemoteMachineRequest(machineRef))
+      const payload = expectVariant<{ machine: RemoteMachineRecord }>(response, "RemoteMachineApproved")
+      return { ok: true, message: `approved machine ${formatRemoteMachineLabel(payload.machine)}`, data: payload }
+    }
+    case "rename": {
+      if (!machineRef || rest.length === 0) {
+        return { ok: false, message: "usage: machine rename <machine-ref> <alias>" }
+      }
+      const alias = rest.join(" ")
+      const response = await deps.client.send(renameRemoteMachineRequest(machineRef, alias))
+      const payload = expectVariant<{ machine: RemoteMachineRecord }>(response, "RemoteMachineRenamed")
+      return { ok: true, message: `renamed machine ${formatRemoteMachineLabel(payload.machine)}`, data: payload }
+    }
+    case "forget":
+    case "revoke": {
+      if (!machineRef) {
+        return { ok: false, message: "usage: machine revoke <machine-ref>" }
+      }
+      const response = await deps.client.send(forgetRemoteMachineRequest(machineRef))
+      const payload = expectVariant<{ machine: RemoteMachineRecord }>(response, "RemoteMachineForgotten")
+      return { ok: true, message: `revoked machine ${formatRemoteMachineLabel(payload.machine)}`, data: payload }
+    }
     default:
-      return { ok: false, message: "usage: machine list|kernels" }
+      return { ok: false, message: "usage: machine list|kernels|approve|rename|revoke" }
   }
 }
 
@@ -1789,11 +1818,15 @@ function formatRemoteMachines(machines: RemoteMachineRecord[]): string {
     return "no remote machines"
   }
   return machines.map((machine) => {
-    const name = machine.display_name || machine.machine_alias || machine.registry_alias || machine.machine_id
+    const name = formatRemoteMachineLabel(machine)
     const providers = (machine.available_providers ?? []).join(",") || "-"
     const offline = machine.online ? "" : ",offline"
     return `${name} id=${machine.machine_id} status=${machine.trust_status}${offline} kernels=${machine.kernel_count} providers=${providers}`
   }).join("\n")
+}
+
+function formatRemoteMachineLabel(machine: RemoteMachineRecord): string {
+  return machine.display_name || machine.machine_alias || machine.registry_alias || machine.machine_id
 }
 
 function formatPairedClients(clients: PairedClientRecord[]): string {
