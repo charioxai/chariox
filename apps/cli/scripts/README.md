@@ -78,3 +78,13 @@ node apps/cli/scripts/live-kernel-reconnect-drill.mjs
 ```
 
 It kills the event subscription lane while a control request is pending and fails unless the control request completes and the event lane resubscribes from the last event id.
+
+## Remote Restart Drill
+
+Use this after touching durable remote agents, relay registration, leased prompt dispatch, or remote restart recovery:
+
+```bash
+pnpm --filter @arroba/cli run remote-restart:drill
+```
+
+It launches isolated relay, home, and worker kernels, spawns a remote dev-stub agent, prompts it, restarts home, restarts worker, restarts both, and fails unless the home kernel restores the durable remote agent and refreshes stale worker leases. Pass `--keep-artifacts-on-failure` to preserve the isolated logs.

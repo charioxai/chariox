@@ -516,8 +516,10 @@ If multiple agents could have caused a commit, store all candidates and show the
 ### M8.10 Remote Restart/Reconcile
 
 - Add worker WAL and home dedupe for forwarded events.
-- Reconcile manually restarted workers.
-- Validate home restart, worker restart, and both restart drills.
+- Reconcile manually restarted workers. **Landed:** remote agent spawn now records durable agent snapshots on home. After restart, home restores the remote agent identity from durable state and, when a worker lease is stale or missing, refreshes the worker binding at prompt dispatch time before retrying the remote submit.
+- Replace stale relay peers after daemon restart. **Landed:** relay registration for the same realm and daemon id now replaces the previous peer handle, preventing home from routing remote requests to a dead worker connection after manual worker relaunch.
+- Handle already-settled remote completions. **Landed:** when the worker-side leased prompt has already settled before home asks for completion, home treats the worker `NoActivePrompt` completion response as settled and completes the home-side prompt instead of leaving the agent running.
+- Validate home restart, worker restart, and both restart drills. **Landed:** `pnpm --filter @arroba/cli run remote-restart:drill` launches isolated relay/home/worker kernels, spawns a remote dev-stub agent, verifies a baseline prompt, restarts home with worker alive, restarts worker with home alive and observes a refreshed leased agent id, then restarts both kernels and verifies the remote agent can prompt again.
 
 ### M8.11 Git Observation
 

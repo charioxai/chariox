@@ -453,7 +453,15 @@ impl<'a> KernelSessionService<'a> {
         request: CreateAgentRequest,
     ) -> Result<AgentInstance, DaemonError> {
         if let Some(machine_ref) = request.machine_ref.clone() {
-            return self.app.spawn_remote_agent(request, &machine_ref);
+            let agent = self.app.spawn_remote_agent(request, &machine_ref)?;
+            self.app.durable_state_store().append_event(
+                "agent.created",
+                Some(agent.id().to_string()),
+                serde_json::json!({
+                    "agent": &agent,
+                }),
+            )?;
+            return Ok(agent);
         }
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();

@@ -82,6 +82,13 @@ impl AgentPromptCommandService {
             .await
     }
 
+    pub(crate) async fn session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.state.session_snapshot(session_id).await
+    }
+
     pub(crate) fn spawn_prompt_dispatch(&self, dispatch: KernelPromptDispatch) {
         self.dispatch_context().spawn_prompt_dispatch(dispatch);
     }

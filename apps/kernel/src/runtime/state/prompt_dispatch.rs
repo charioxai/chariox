@@ -181,7 +181,7 @@ impl KernelRuntimeState {
                 .remote_execution()
                 .cloned()
             {
-                let (remote_provider_run_id, provider_diagnostic) = match self
+                let completion_response = self
                     .with_app_side_effect(|app| {
                         app.block_on_relay_future(
                             crate::transport::relay_client::send_peer_request_via_temporary_connection(
@@ -196,18 +196,38 @@ impl KernelRuntimeState {
                             ),
                         )
                     })
-                    .await?
-                {
-                    RelayPeerResponse::LeasedPromptCompleted {
+                    .await;
+                let (remote_provider_run_id, provider_diagnostic) = match completion_response {
+                    Ok(RelayPeerResponse::LeasedPromptCompleted {
                         provider_run_id,
                         provider_diagnostic,
                         ..
-                    } => (
+                    }) => (
                         provider_run_id
                             .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
                         provider_diagnostic,
                     ),
-                    other => {
+                    Err(error) if remote_prompt_completion_should_treat_as_settled(&error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.remote_prompt_dispatch",
+                            "remote prompt completion already settled on worker",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "agent_id": target_agent_id,
+                                "worker_kernel_id": remote_execution.worker_kernel_id,
+                                "leased_agent_id": remote_execution.leased_agent_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                        (
+                            owned_provider_run_id
+                                .clone()
+                                .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
+                            None,
+                        )
+                    }
+                    Err(error) => return Err(error),
+                    Ok(other) => {
                         return Err(DaemonError::LocalTransport {
                             operation: "complete remote prompt",
                             message: format!(
@@ -714,10 +734,21 @@ impl KernelRuntimeState {
 
     pub(crate) fn spawn_remote_prompt_dispatch(
         &self,
-        dispatch: crate::app::KernelRemotePromptDispatch,
+        mut dispatch: crate::app::KernelRemotePromptDispatch,
     ) {
         let state = self.clone();
         tokio::spawn(async move {
+            crate::logging::info_with_fields(
+                "daemon.remote_prompt_dispatch",
+                "remote prompt dispatch starting",
+                serde_json::json!({
+                    "session_id": dispatch.session_id,
+                    "agent_id": dispatch.agent_id,
+                    "worker_kernel_id": dispatch.worker_kernel_id,
+                    "leased_agent_id": dispatch.leased_agent_id,
+                    "source_attachment_id": dispatch.source_attachment_id,
+                }),
+            );
             let agent = match state.owned.agent_store.get_agent(&dispatch.agent_id) {
                 Ok(agent) => agent,
                 Err(error) => {
@@ -771,36 +802,140 @@ impl KernelRuntimeState {
                     message: error.to_string(),
                 }),
             };
-            let result = match serialized_attachments {
-                Ok(attachments) => {
-                    match crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                        &config,
-                        ClientTarget {
-                            daemon_id: Some(dispatch.worker_kernel_id.clone()),
-                            daemon_alias: None,
-                        },
-                        RelayPeerRequest::SubmitLeasedPrompt {
-                            leased_agent_id: dispatch.leased_agent_id.clone(),
-                            prompt: prompt.clone(),
-                            attachments,
-                            workflow_context: dispatch.workflow_context.clone(),
-                            required_mcps,
-                        },
-                    )
-                    .await
-                    {
-                        Ok(RelayPeerResponse::LeasedPromptSubmitted {
-                            provider_run_id, ..
-                        }) => Ok(provider_run_id),
-                        Ok(other) => Err(DaemonError::LocalTransport {
-                            operation: "submit remote prepared prompt",
-                            message: format!("unexpected remote prompt response: {other:?}"),
-                        }),
-                        Err(error) => Err(error),
-                    }
+            let attachments = match serialized_attachments {
+                Ok(attachments) => attachments,
+                Err(error) => {
+                    let _ = state
+                        .finish_remote_prompt_dispatch(dispatch, Err(error))
+                        .await;
+                    return;
                 }
-                Err(error) => Err(error),
             };
+            let result = match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &config,
+                    ClientTarget {
+                        daemon_id: Some(dispatch.worker_kernel_id.clone()),
+                        daemon_alias: None,
+                    },
+                    RelayPeerRequest::SubmitLeasedPrompt {
+                        leased_agent_id: dispatch.leased_agent_id.clone(),
+                        prompt: prompt.clone(),
+                        attachments: attachments.clone(),
+                        workflow_context: dispatch.workflow_context.clone(),
+                        required_mcps: required_mcps.clone(),
+                    },
+                ),
+            )
+            .await
+            {
+                Ok(response) => match response {
+                    Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                        provider_run_id, ..
+                    }) => Ok(provider_run_id),
+                    Ok(other) => Err(DaemonError::LocalTransport {
+                        operation: "submit remote prepared prompt",
+                        message: format!("unexpected remote prompt response: {other:?}"),
+                    }),
+                    Err(error) => Err(error),
+                },
+                Err(_) => Err(DaemonError::LocalTransport {
+                    operation: "submit remote prepared prompt",
+                    message: "remote prompt dispatch timed out waiting for worker response"
+                        .to_string(),
+                }),
+            };
+            let result = if remote_prompt_dispatch_should_refresh_binding(&result) {
+                crate::logging::warn_with_fields(
+                    "daemon.remote_prompt_dispatch",
+                    "remote prompt lease stale; refreshing binding",
+                    serde_json::json!({
+                        "session_id": dispatch.session_id,
+                        "agent_id": dispatch.agent_id,
+                        "worker_kernel_id": dispatch.worker_kernel_id,
+                        "leased_agent_id": dispatch.leased_agent_id,
+                    }),
+                );
+                match state
+                    .with_app_side_effect(|app| {
+                        app.refresh_remote_agent_binding(&dispatch.agent_id)
+                    })
+                    .await
+                {
+                    Ok(agent) => match agent.remote_execution().cloned() {
+                        Some(remote_execution) => {
+                            dispatch.worker_kernel_id = remote_execution.worker_kernel_id;
+                            dispatch.leased_agent_id = remote_execution.leased_agent_id;
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                                &config,
+                                ClientTarget {
+                                    daemon_id: Some(dispatch.worker_kernel_id.clone()),
+                                    daemon_alias: None,
+                                },
+                                RelayPeerRequest::SubmitLeasedPrompt {
+                                    leased_agent_id: dispatch.leased_agent_id.clone(),
+                                    prompt,
+                                    attachments,
+                                    workflow_context: dispatch.workflow_context.clone(),
+                                    required_mcps,
+                                },
+                            ))
+                            .await
+                            {
+                                Ok(Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                                    provider_run_id, ..
+                                })) => Ok(provider_run_id),
+                                Ok(Ok(other)) => Err(DaemonError::LocalTransport {
+                                    operation: "submit remote prepared prompt",
+                                    message: format!("unexpected remote prompt response after binding refresh: {other:?}"),
+                                }),
+                                Ok(Err(error)) => Err(error),
+                                Err(_) => Err(DaemonError::LocalTransport {
+                                    operation: "submit remote prepared prompt",
+                                    message: "remote prompt dispatch timed out after binding refresh".to_string(),
+                                }),
+                            }
+                        }
+                        None => Err(DaemonError::LocalTransport {
+                            operation: "refresh remote prompt binding",
+                            message: format!(
+                                "agent `{}` did not have remote execution after binding refresh",
+                                dispatch.agent_id
+                            ),
+                        }),
+                    },
+                    Err(error) => Err(error),
+                }
+            } else {
+                result
+            };
+            match &result {
+                Ok(provider_run_id) => crate::logging::info_with_fields(
+                    "daemon.remote_prompt_dispatch",
+                    "remote prompt dispatch submitted",
+                    serde_json::json!({
+                        "session_id": dispatch.session_id,
+                        "agent_id": dispatch.agent_id,
+                        "worker_kernel_id": dispatch.worker_kernel_id,
+                        "leased_agent_id": dispatch.leased_agent_id,
+                        "remote_provider_run_id": provider_run_id,
+                    }),
+                ),
+                Err(error) => crate::logging::warn_with_fields(
+                    "daemon.remote_prompt_dispatch",
+                    "remote prompt dispatch failed",
+                    serde_json::json!({
+                        "session_id": dispatch.session_id,
+                        "agent_id": dispatch.agent_id,
+                        "worker_kernel_id": dispatch.worker_kernel_id,
+                        "leased_agent_id": dispatch.leased_agent_id,
+                        "error": error.to_string(),
+                    }),
+                ),
+            }
             let _ = state.finish_remote_prompt_dispatch(dispatch, result).await;
         });
     }
@@ -838,6 +973,37 @@ impl KernelRuntimeState {
                 }
             }
         });
+    }
+}
+
+fn remote_prompt_dispatch_should_refresh_binding(result: &Result<String, DaemonError>) -> bool {
+    let Err(error) = result else {
+        return false;
+    };
+    match error {
+        DaemonError::LeasedAgentNotFound { .. } | DaemonError::ExecutionLeaseNotFound { .. } => {
+            true
+        }
+        DaemonError::LocalTransport { message, .. } => {
+            message.contains("leased agent") && message.contains("was not found")
+                || message.contains("execution lease") && message.contains("was not found")
+                || message.contains("leased_agent_not_found")
+                || message.contains("execution_lease_not_found")
+                || message.contains("timed out waiting for worker response")
+        }
+        _ => false,
+    }
+}
+
+fn remote_prompt_completion_should_treat_as_settled(error: &DaemonError) -> bool {
+    match error {
+        DaemonError::NoActivePrompt { .. } => true,
+        DaemonError::LocalTransport { message, .. } => {
+            message.contains("no active prompt")
+                || message.contains("NoActivePrompt")
+                || message.contains("no_active_prompt")
+        }
+        _ => false,
     }
 }
 

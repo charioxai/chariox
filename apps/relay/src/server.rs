@@ -383,6 +383,15 @@ async fn handle_connection(
                         );
                         registered_daemon_key = Some(daemon_key.clone());
                         let mut guard = registry.write().await;
+                        guard.peers.retain(|_, peer| {
+                            !(peer.role == RelayConnectionRole::Daemon
+                                && peer.realm_id.as_deref() == Some(identity.realm_id.as_str())
+                                && peer
+                                    .daemon_registration
+                                    .as_ref()
+                                    .map(|candidate| candidate.daemon_id.as_str())
+                                    == Some(registration.daemon_id.as_str()))
+                        });
                         guard.peers.insert(
                             peer_addr,
                             PeerHandle {

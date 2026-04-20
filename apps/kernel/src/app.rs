@@ -1071,6 +1071,36 @@ impl DaemonApp {
         Ok(bound)
     }
 
+    pub(crate) fn refresh_remote_agent_binding(
+        &mut self,
+        agent_id: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self.agents.get_agent(agent_id)?;
+        let Some(remote_execution) = agent.remote_execution().cloned() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "refresh remote agent binding",
+                message: format!("agent `{agent_id}` is not remote-backed"),
+            });
+        };
+        let worker_kernel = self.select_remote_kernel_for_machine(
+            &remote_execution.worker_machine_id,
+            agent.provider(),
+        )?;
+        let rebound = self.bind_remote_agent_to_worker(&agent, &worker_kernel, None)?;
+        self.durable_state_store().append_event(
+            "agent.updated",
+            Some(rebound.id().to_string()),
+            serde_json::json!({
+                "agent": &rebound,
+                "source": "remote_agent_binding_refreshed",
+            }),
+        )?;
+        if let Ok(session) = self.sessions.get_session(rebound.session_id()) {
+            self.update_session_projection(session);
+        }
+        Ok(rebound)
+    }
+
     pub(crate) fn move_agent_to_remote(
         &mut self,
         session_id: &str,

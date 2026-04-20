@@ -169,11 +169,9 @@ impl AgentRuntimeCommandExecutor {
             )
             .await?;
         let session = self
-            .session_projection
-            .get(&request.session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: request.session_id.clone(),
-            })?;
+            .prompt_commands
+            .session_snapshot(&request.session_id)
+            .await?;
         self.session_projection.update(session.clone());
         debug_assert!(
             completion_started_next_is_compatible(next_queued_prompt.as_ref(), &completion),

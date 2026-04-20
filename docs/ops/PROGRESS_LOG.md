@@ -893,3 +893,11 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added CLI recovery for full kernel restarts: on transport close, an attached CLI polls for the previous session, creates a fresh attachment, resubscribes to kernel events, refreshes panes, clears the disconnected state, and keeps the restored agent visible.
 - Hardened `session_unavailable` handling during reconnect by verifying the session state before transitioning to no-session, avoiding stale replay events from hiding a successfully restored session.
 - Verified the live drill passes with a real PTY-hosted CLI: the CLI shows `Lost connection to the Arroba kernel.` after daemon stop, then reconnects after daemon restart and returns to the restored session with its agent present.
+
+### M8 remote restart/reconcile drill update
+
+- Added `apps/cli/scripts/live-remote-restart-drill.mjs` and `pnpm --filter @arroba/cli run remote-restart:drill`.
+- Remote agent spawn now writes durable home-side agent snapshots, so home can restore remote agents after a kernel reboot.
+- Remote prompt dispatch detects stale or missing worker leases, refreshes the remote agent binding through the live worker kernel, and retries the prompt submit. Relay daemon registration now replaces stale peers for the same daemon id, so worker restarts do not leave home routing requests to an old dead peer handle.
+- Remote prompt completion now treats worker-side `NoActivePrompt` as an already-settled leased prompt and completes the home-side prompt, matching the dev-stub/fast-provider case where the worker finishes before home asks for completion.
+- Verified the live drill passes through baseline prompt, home restart with worker alive, worker restart with stale lease refresh, and both home/worker restart with a final refreshed lease.
