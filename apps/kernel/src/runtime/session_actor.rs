@@ -394,11 +394,15 @@ impl SessionRuntimeStore {
     async fn create_session(
         &self,
         request: CreateSessionRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = self.state.create_session_response(request).await;
+        let result = self
+            .state
+            .create_session_response(request.with_owner_user_id(caller_user_id))
+            .await;
         self.with_session_projection_action_result(result).await
     }
 
@@ -807,7 +811,9 @@ impl SessionRuntimeCommandExecutor {
         Option<SessionProjectionAction>,
     ) {
         match request {
-            LocalDaemonRequest::CreateSession(request) => self.store.create_session(request).await,
+            LocalDaemonRequest::CreateSession(request) => {
+                self.store.create_session(request, caller_user_id).await
+            }
             LocalDaemonRequest::AttachToSession(request) => {
                 self.store.attach_to_session(request).await
             }

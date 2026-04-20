@@ -1979,6 +1979,8 @@ pub struct CreateSessionRequest {
     pub alias: Option<String>,
     #[serde(default)]
     pub hidden: bool,
+    #[serde(default = "default_session_owner_user_id")]
+    pub owner_user_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2115,6 +2117,7 @@ impl CreateSessionRequest {
             worktree_id: worktree_id.into(),
             alias: None,
             hidden: false,
+            owner_user_id: default_session_owner_user_id(),
         }
     }
 
@@ -2125,6 +2128,11 @@ impl CreateSessionRequest {
 
     pub fn with_hidden(mut self, hidden: bool) -> Self {
         self.hidden = hidden;
+        self
+    }
+
+    pub fn with_owner_user_id(mut self, owner_user_id: impl Into<String>) -> Self {
+        self.owner_user_id = owner_user_id.into();
         self
     }
 }
@@ -2552,6 +2560,11 @@ impl RuntimeSession {
     }
     pub fn owner_user_id(&self) -> &str {
         &self.owner_user_id
+    }
+    pub fn set_owner_user_id(&mut self, owner_user_id: impl Into<String>) {
+        let owner_user_id = owner_user_id.into();
+        self.owner_user_id = owner_user_id.clone();
+        self.members = vec![SessionMember::new(owner_user_id, 0, None)];
     }
     pub fn members(&self) -> &[SessionMember] {
         &self.members

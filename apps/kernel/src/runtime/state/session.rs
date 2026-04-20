@@ -216,6 +216,7 @@ impl KernelRuntimeOwnedState {
         let mut session =
             SessionStateOwner::new(self.session_store.clone()).create_session(request)?;
         let agent_request = crate::agent::CreateAgentRequest::new(session.id(), "default")
+            .with_owner_user_id(session.owner_user_id().to_string())
             .with_worktree(session.worktree_id());
         let mut sessions = self.session_store.write();
         let agent = self

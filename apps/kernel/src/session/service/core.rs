@@ -37,6 +37,7 @@ impl SessionService {
             self.host_machine_id.clone(),
             self.host_daemon_id.clone(),
         );
+        session.set_owner_user_id(request.owner_user_id);
         session.set_hidden(request.hidden);
 
         Ok(self.store.insert(session))

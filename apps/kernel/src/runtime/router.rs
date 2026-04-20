@@ -9017,6 +9017,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_created_session_records_caller_as_owner_and_default_agent_owner() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+        let create_session = LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+            "workspace-remote-session-owner",
+            "worktree-remote-session-owner",
+        ));
+
+        let (session, agent) = match router
+            .dispatch(
+                remote_command_for_request(&create_session, Some("user-2")),
+                create_session,
+            )
+            .await
+            .expect("remote create session should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+            other => panic!("unexpected create session response: {other:?}"),
+        };
+
+        assert_eq!(session.owner_user_id(), "user-2");
+        assert!(session.has_member("user-2"));
+        assert!(!session.has_member(DEFAULT_LOCAL_USER_ID));
+        assert_eq!(agent.owner_user_id(), "user-2");
+    }
+
+    #[tokio::test]
     async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let session = app
