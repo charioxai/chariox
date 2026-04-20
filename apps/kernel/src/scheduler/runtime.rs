@@ -558,6 +558,16 @@ fn dispatch_workflow_prompt(
                 prompt: prompt.prompt().to_string(),
                 attachments: app.serialize_remote_prompt_attachments(prompt.attachments())?,
                 workflow_context: Some(workflow_context),
+                git_context: Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                    home_session_id: session_id.to_string(),
+                    home_agent_id: target_agent_id.to_string(),
+                    home_prompt_id: prompt.id().to_string(),
+                    home_turn_id: prompt.id().to_string(),
+                    prompt_summary: crate::prompt_transcript::render_prompt_transcript(
+                        prompt.prompt(),
+                        prompt.attachments(),
+                    ),
+                }),
                 required_mcps: Vec::new(),
             },
         ));

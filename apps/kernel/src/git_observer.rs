@@ -10,6 +10,7 @@ use crate::history::{
     HistoryAttributionConfidence, HistoryEvent, HistoryEventKind, HistoryEventRole,
     HistoryEventTurnContext, OperationalHistoryStore,
 };
+use crate::transport::relay_peer::RemoteGitObservation;
 
 #[derive(Debug, Clone)]
 pub(crate) struct GitTurnContext {
@@ -77,6 +78,15 @@ impl GitTurnSnapshotStore {
             .lock()
             .expect("git turn snapshot mutex poisoned")
             .remove(&Self::key(provider_run_id, prompt_id))
+    }
+
+    pub(crate) fn remove_for_provider_run(&self, provider_run_id: &str) -> Option<GitTurnSnapshot> {
+        let mut guard = self.inner.lock().expect("git turn snapshot mutex poisoned");
+        let key = guard
+            .keys()
+            .find(|key| key.starts_with(&format!("{provider_run_id}:")))
+            .cloned()?;
+        guard.remove(&key)
     }
 
     pub(crate) fn candidates_for(&self, snapshot: &GitTurnSnapshot) -> GitAttributionCandidates {
@@ -185,73 +195,98 @@ pub(crate) fn observe_after_turn(
     candidates: GitAttributionCandidates,
     history: &OperationalHistoryStore,
 ) -> Result<Vec<HistoryEvent>, DaemonError> {
+    append_observations(history, observations_after_turn(before, after, candidates))
+}
+
+pub(crate) fn observations_after_turn(
+    before: GitTurnSnapshot,
+    after: GitTurnSnapshot,
+    candidates: GitAttributionCandidates,
+) -> Vec<RemoteGitObservation> {
     let mut events = Vec::new();
     for commit in commits_between(&before, &after) {
-        let mut event = append_git_event(
-            history,
+        events.push(git_observation(
             HistoryEventKind::GitCommitDetected,
             Some(git_commit_content(&commit)),
             git_commit_metadata(&before, &after, &commit),
             &before,
             &candidates,
-        )?;
-        event.caused_by_event_id = None;
-        events.push(event);
+        ));
     }
 
     if before.status_fingerprint != after.status_fingerprint {
-        events.push(append_git_event(
-            history,
+        events.push(git_observation(
             HistoryEventKind::GitWorktreeChanged,
             Some("Git worktree changed during agent turn.".to_string()),
             git_worktree_metadata(&before, &after),
             &before,
             &candidates,
-        )?);
+        ));
     }
     if !before.is_dirty && after.is_dirty {
-        events.push(append_git_event(
-            history,
+        events.push(git_observation(
             HistoryEventKind::GitWorktreeDirty,
             Some("Git worktree became dirty during agent turn.".to_string()),
             git_worktree_metadata(&before, &after),
             &before,
             &candidates,
-        )?);
+        ));
     } else if before.is_dirty && !after.is_dirty {
-        events.push(append_git_event(
-            history,
+        events.push(git_observation(
             HistoryEventKind::GitWorktreeClean,
             Some("Git worktree became clean during agent turn.".to_string()),
             git_worktree_metadata(&before, &after),
             &before,
             &candidates,
-        )?);
+        ));
     }
     if before.ahead_count.unwrap_or_default() > 0
         && after.ahead_count == Some(0)
         && before.upstream_ref == after.upstream_ref
     {
-        events.push(append_git_event(
-            history,
+        events.push(git_observation(
             HistoryEventKind::GitPushDetected,
             Some("Git push detected during agent turn.".to_string()),
             git_worktree_metadata(&before, &after),
             &before,
             &candidates,
-        )?);
+        ));
+    }
+    events
+}
+
+pub(crate) fn append_observations(
+    history: &OperationalHistoryStore,
+    observations: Vec<RemoteGitObservation>,
+) -> Result<Vec<HistoryEvent>, DaemonError> {
+    let mut events = Vec::new();
+    for observation in observations {
+        let sequence = history.reserve_sequence();
+        let mut event = HistoryEvent::operational(
+            sequence,
+            observation.kind,
+            Some(HistoryEventRole::System),
+            observation.content,
+            observation.metadata,
+            observation.context,
+        );
+        event.candidate_agent_ids = observation.candidate_agent_ids;
+        event.candidate_prompt_ids = observation.candidate_prompt_ids;
+        event.candidate_turn_ids = observation.candidate_turn_ids;
+        event.attribution_confidence = observation.attribution_confidence;
+        history.append(&event)?;
+        events.push(event);
     }
     Ok(events)
 }
 
-fn append_git_event(
-    history: &OperationalHistoryStore,
+fn git_observation(
     kind: HistoryEventKind,
     content: Option<String>,
     metadata: BTreeMap<String, serde_json::Value>,
     before: &GitTurnSnapshot,
     candidates: &GitAttributionCandidates,
-) -> Result<HistoryEvent, DaemonError> {
+) -> RemoteGitObservation {
     let context = HistoryEventTurnContext {
         session_id: Some(before.session_id.clone()),
         agent_id: Some(before.agent_id.clone()),
@@ -266,21 +301,16 @@ fn append_git_event(
         worktree_path: Some(before.worktree_path.clone()),
         ..HistoryEventTurnContext::default()
     };
-    let sequence = history.reserve_sequence();
-    let mut event = HistoryEvent::operational(
-        sequence,
+    RemoteGitObservation {
         kind,
-        Some(HistoryEventRole::System),
         content,
         metadata,
         context,
-    );
-    event.candidate_agent_ids = candidates.agent_ids.clone();
-    event.candidate_prompt_ids = candidates.prompt_ids.clone();
-    event.candidate_turn_ids = candidates.turn_ids.clone();
-    event.attribution_confidence = Some(candidates.confidence());
-    history.append(&event)?;
-    Ok(event)
+        candidate_agent_ids: candidates.agent_ids.clone(),
+        candidate_prompt_ids: candidates.prompt_ids.clone(),
+        candidate_turn_ids: candidates.turn_ids.clone(),
+        attribution_confidence: Some(candidates.confidence()),
+    }
 }
 
 fn commits_between(before: &GitTurnSnapshot, after: &GitTurnSnapshot) -> Vec<GitCommitSummary> {

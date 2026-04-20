@@ -673,6 +673,7 @@ impl KernelRuntimeOwnedState {
                 Some(crate::app::KernelRemotePromptDispatch {
                     session_id: session_id.clone(),
                     agent_id: target_agent_id,
+                    prompt_id: prompt.id().to_string(),
                     worker_kernel_id: remote_execution.worker_kernel_id,
                     leased_agent_id: remote_execution.leased_agent_id,
                     source_attachment_id: prompt.source_attachment_id().to_string(),

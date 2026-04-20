@@ -650,6 +650,7 @@ async fn handle_daemon_peer_request(
             prompt,
             attachments,
             workflow_context,
+            git_context,
             required_mcps,
         } => {
             let submitted = router
@@ -658,6 +659,7 @@ async fn handle_daemon_peer_request(
                     &prompt,
                     attachments,
                     workflow_context,
+                    git_context,
                     required_mcps,
                 )
                 .await;
@@ -714,9 +716,19 @@ async fn handle_daemon_peer_request(
                         } else {
                             None
                         };
+                    let git_observations = if let Some(provider_run_id) = provider_run_id.as_deref()
+                    {
+                        router
+                            .relay_observe_leased_git_after(&leased_agent_id, provider_run_id)
+                            .await
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
                     RelayPeerResponse::LeasedPromptCompleted {
                         provider_run_id,
                         provider_diagnostic,
+                        git_observations,
                         completion,
                     }
                 }

@@ -125,6 +125,7 @@ pub struct DaemonApp {
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
     leased_workflow_turns: BTreeMap<String, LeasedWorkflowTurnBinding>,
+    remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     next_execution_lease_number: u64,
     next_leased_agent_number: u64,
 }
@@ -343,6 +344,7 @@ impl DaemonApp {
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
             leased_workflow_turns: BTreeMap::new(),
+            remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             next_execution_lease_number: 0,
             next_leased_agent_number: 0,
             started_at_ms: crate::session::unix_epoch_ms(),

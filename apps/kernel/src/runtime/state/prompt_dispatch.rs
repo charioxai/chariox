@@ -201,12 +201,29 @@ impl KernelRuntimeState {
                     Ok(RelayPeerResponse::LeasedPromptCompleted {
                         provider_run_id,
                         provider_diagnostic,
+                        git_observations,
                         ..
-                    }) => (
-                        provider_run_id
-                            .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
-                        provider_diagnostic,
-                    ),
+                    }) => {
+                        if let Err(error) = crate::git_observer::append_observations(
+                            &owned.operational_history_store,
+                            git_observations,
+                        ) {
+                            crate::logging::warn_with_fields(
+                                "daemon.git_observer",
+                                "failed to append remote git observations",
+                                serde_json::json!({
+                                    "session_id": session_id,
+                                    "agent_id": target_agent_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
+                        (
+                            provider_run_id
+                                .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
+                            provider_diagnostic,
+                        )
+                    }
                     Err(error) if remote_prompt_completion_should_treat_as_settled(&error) => {
                         crate::logging::warn_with_fields(
                             "daemon.remote_prompt_dispatch",
@@ -304,6 +321,11 @@ impl KernelRuntimeState {
                                         prompt: remote_prompt,
                                         attachments,
                                         workflow_context,
+                                        git_context: Some(remote_git_turn_context_for_prompt(
+                                            session_id,
+                                            target_agent_id,
+                                            started_next,
+                                        )),
                                         required_mcps: Vec::new(),
                                     },
                                 ),
@@ -959,6 +981,7 @@ impl KernelRuntimeState {
                         prompt: prompt.clone(),
                         attachments: attachments.clone(),
                         workflow_context: dispatch.workflow_context.clone(),
+                        git_context: Some(remote_git_turn_context(&dispatch)),
                         required_mcps: required_mcps.clone(),
                     },
                 ),
@@ -1015,6 +1038,7 @@ impl KernelRuntimeState {
                                     prompt,
                                     attachments,
                                     workflow_context: dispatch.workflow_context.clone(),
+                                    git_context: Some(remote_git_turn_context(&dispatch)),
                                     required_mcps,
                                 },
                             ))
@@ -1139,6 +1163,38 @@ fn remote_prompt_completion_should_treat_as_settled(error: &DaemonError) -> bool
                 || message.contains("no_active_prompt")
         }
         _ => false,
+    }
+}
+
+fn remote_git_turn_context(
+    dispatch: &crate::app::KernelRemotePromptDispatch,
+) -> crate::transport::relay_peer::RemoteGitTurnContext {
+    crate::transport::relay_peer::RemoteGitTurnContext {
+        home_session_id: dispatch.session_id.clone(),
+        home_agent_id: dispatch.agent_id.clone(),
+        home_prompt_id: dispatch.prompt_id.clone(),
+        home_turn_id: dispatch.prompt_id.clone(),
+        prompt_summary: crate::prompt_transcript::render_prompt_transcript(
+            &dispatch.prompt,
+            &dispatch.attachments,
+        ),
+    }
+}
+
+fn remote_git_turn_context_for_prompt(
+    session_id: &str,
+    agent_id: &str,
+    prompt: &crate::session::PromptQueueItem,
+) -> crate::transport::relay_peer::RemoteGitTurnContext {
+    crate::transport::relay_peer::RemoteGitTurnContext {
+        home_session_id: session_id.to_string(),
+        home_agent_id: agent_id.to_string(),
+        home_prompt_id: prompt.id().to_string(),
+        home_turn_id: prompt.id().to_string(),
+        prompt_summary: crate::prompt_transcript::render_prompt_transcript(
+            prompt.prompt(),
+            prompt.attachments(),
+        ),
     }
 }
 

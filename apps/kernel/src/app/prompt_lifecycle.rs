@@ -170,6 +170,7 @@ pub(crate) struct KernelPromptDispatch {
 pub(crate) struct KernelRemotePromptDispatch {
     pub(crate) session_id: String,
     pub(crate) agent_id: String,
+    pub(crate) prompt_id: String,
     pub(crate) worker_kernel_id: String,
     pub(crate) leased_agent_id: String,
     pub(crate) source_attachment_id: String,

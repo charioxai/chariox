@@ -85,9 +85,12 @@ Use this after touching local prompt dispatch, provider working directories, ope
 
 ```bash
 pnpm --filter @arroba/cli run git-observation:drill
+pnpm --filter @arroba/cli run remote-git-observation:drill
 ```
 
 It launches an isolated local kernel and dev-stub provider inside a temporary Git repo, waits for a prompt to be dispatched, commits a file during the turn, completes the prompt, and fails unless operational history contains a searchable `git_commit_detected` event with the expected commit, path, provider/model, agent, and prompt attribution.
+
+The remote variant launches isolated relay/home/worker kernels, spawns a remote dev-stub agent in a worker Git repo, commits a file on the worker worktree during the remote turn, completes the prompt through home, and fails unless home operational history contains the commit with home agent/prompt ids plus worker machine/repo/worktree metadata.
 
 ## Remote Restart Drill
 

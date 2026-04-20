@@ -30,6 +30,38 @@ enum KernelPromptCompletionAdmission {
     },
 }
 
+fn remote_git_turn_context(
+    dispatch: &KernelRemotePromptDispatch,
+) -> crate::transport::relay_peer::RemoteGitTurnContext {
+    crate::transport::relay_peer::RemoteGitTurnContext {
+        home_session_id: dispatch.session_id.clone(),
+        home_agent_id: dispatch.agent_id.clone(),
+        home_prompt_id: dispatch.prompt_id.clone(),
+        home_turn_id: dispatch.prompt_id.clone(),
+        prompt_summary: crate::prompt_transcript::render_prompt_transcript(
+            &dispatch.prompt,
+            &dispatch.attachments,
+        ),
+    }
+}
+
+fn remote_git_turn_context_for_prompt(
+    session_id: &str,
+    agent_id: &str,
+    prompt: &PromptQueueItem,
+) -> crate::transport::relay_peer::RemoteGitTurnContext {
+    crate::transport::relay_peer::RemoteGitTurnContext {
+        home_session_id: session_id.to_string(),
+        home_agent_id: agent_id.to_string(),
+        home_prompt_id: prompt.id().to_string(),
+        home_turn_id: prompt.id().to_string(),
+        prompt_summary: crate::prompt_transcript::render_prompt_transcript(
+            prompt.prompt(),
+            prompt.attachments(),
+        ),
+    }
+}
+
 struct KernelPromptOwnerCompletion {
     session_id: String,
     agent_id: String,
@@ -138,6 +170,7 @@ impl<'a> KernelAgentService<'a> {
                         prompt: dispatch.prompt.clone(),
                         attachments,
                         workflow_context: dispatch.workflow_context.clone(),
+                        git_context: Some(remote_git_turn_context(&dispatch)),
                         required_mcps: Vec::new(),
                     },
                 )) {
@@ -262,6 +295,7 @@ impl<'a> KernelAgentService<'a> {
             remote_dispatch = Some(KernelRemotePromptDispatch {
                 session_id: submitted.admission.session_id.clone(),
                 agent_id: submitted.admission.target_agent_id.clone(),
+                prompt_id: prompt.id().to_string(),
                 worker_kernel_id: remote_execution.worker_kernel_id.clone(),
                 leased_agent_id: remote_execution.leased_agent_id.clone(),
                 source_attachment_id: prompt.source_attachment_id().to_string(),
@@ -453,8 +487,16 @@ impl<'a> KernelAgentService<'a> {
                     },
                 ))? {
                 RelayPeerResponse::LeasedPromptCompleted {
-                    provider_run_id, ..
-                } => provider_run_id,
+                    provider_run_id,
+                    git_observations,
+                    ..
+                } => {
+                    let _ = crate::git_observer::append_observations(
+                        &self.app.operational_history_store(),
+                        git_observations,
+                    )?;
+                    provider_run_id
+                }
                 other => {
                     return Err(DaemonError::LocalTransport {
                         operation: "complete remote prompt",
@@ -930,6 +972,9 @@ impl<'a> KernelAgentService<'a> {
                             } else {
                                 None
                             },
+                            git_context: Some(remote_git_turn_context_for_prompt(
+                                session_id, agent_id, &peeked,
+                            )),
                             required_mcps: Vec::new(),
                         },
                     ));

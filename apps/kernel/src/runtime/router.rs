@@ -513,6 +513,7 @@ impl CommandRouter {
         prompt: &str,
         attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
         workflow_context: Option<crate::execution_lease::RemoteWorkflowTurnContext>,
+        git_context: Option<crate::transport::relay_peer::RemoteGitTurnContext>,
         required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let mut app = self.app.lock().await;
@@ -521,6 +522,7 @@ impl CommandRouter {
             prompt,
             attachments,
             workflow_context,
+            git_context,
             required_mcps,
         )
     }
@@ -551,6 +553,16 @@ impl CommandRouter {
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
         let mut app = self.app.lock().await;
         crate::app::RemoteLeaseRuntime::new(&mut app).complete_leased_prompt(leased_agent_id)
+    }
+
+    pub(crate) async fn relay_observe_leased_git_after(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<Vec<crate::transport::relay_peer::RemoteGitObservation>, DaemonError> {
+        let mut app = self.app.lock().await;
+        crate::app::RemoteLeaseRuntime::new(&mut app)
+            .observe_leased_git_after(leased_agent_id, provider_run_id)
     }
 
     pub(crate) async fn relay_cancel_leased_prompt(

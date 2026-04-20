@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::GitWorktreePlacement;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
+use crate::history::{HistoryAttributionConfidence, HistoryEventKind, HistoryEventTurnContext};
 use crate::io::WorkspaceIdentity;
 use crate::mcp::ArrobaMcpServerConfig;
 use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutcome};
@@ -65,6 +66,33 @@ pub struct RemoteMcpAvailability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteGitTurnContext {
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub home_prompt_id: String,
+    pub home_turn_id: String,
+    pub prompt_summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteGitObservation {
+    pub kind: HistoryEventKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub metadata: std::collections::BTreeMap<String, serde_json::Value>,
+    pub context: HistoryEventTurnContext,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_agent_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_prompt_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_turn_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution_confidence: Option<HistoryAttributionConfidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum RemoteMcpAvailabilityStatus {
     Available,
@@ -121,6 +149,8 @@ pub enum RelayPeerRequest {
         attachments: Vec<RelayPromptAttachment>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workflow_context: Option<RemoteWorkflowTurnContext>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        git_context: Option<RemoteGitTurnContext>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
     },
@@ -187,6 +217,8 @@ pub enum RelayPeerResponse {
         provider_run_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_diagnostic: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        git_observations: Vec<RemoteGitObservation>,
         completion: PromptCompletion,
     },
     LeasedPromptCancelled {
