@@ -816,3 +816,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Wired `DurableKernelStateStore` into `DaemonApp` using the configured `[state].path`.
 - Session creation now writes a `session.created` durable state event containing the created session and default agent payload.
 - Added focused coverage that creates a session through `KernelSessionService` and verifies the durable event is written.
+
+### M8 durable lifecycle event update
+
+- Local agent spawn now writes an `agent.created` durable state event.
+- Session end now writes a `session.ended` durable state event with removed attachments, terminated provider run ids, and removed agent references.
+- Added focused coverage for session create, agent spawn, and session end event ordering in the durable state journal.

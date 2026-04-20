@@ -492,7 +492,7 @@ If multiple agents could have caused a commit, store all candidates and show the
 ### M8.8 Durable Kernel State Store
 
 - Add persistent state snapshots and state event log. **Landed foundation:** `DurableKernelStateStore` opens the configured SQLite path with WAL mode, appends ordered state events, saves snapshots, reloads events after a sequence, and loads the latest snapshot after reopening.
-- Persist sessions, agents, workflows, grants, machines, queues, and provider resume descriptors. **Started:** `DaemonApp` now owns the durable state store and session creation records a `session.created` event with the default agent payload.
+- Persist sessions, agents, workflows, grants, machines, queues, and provider resume descriptors. **Started:** `DaemonApp` now owns the durable state store. Session creation records `session.created` with the default agent payload, local agent spawn records `agent.created`, and session end records `session.ended`.
 
 ### M8.9 Boot Restore
 

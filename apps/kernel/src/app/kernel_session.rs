@@ -17,6 +17,7 @@ pub(crate) struct KernelSessionService<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::agent::CreateAgentRequest;
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
 
@@ -36,6 +37,34 @@ mod tests {
         assert_eq!(events[0].subject_id.as_deref(), Some(session.id()));
         assert_eq!(events[0].payload["session"]["id"], session.id());
         assert_eq!(events[0].payload["default_agent"]["id"], agent.id());
+    }
+
+    #[test]
+    fn spawn_agent_and_end_session_write_durable_state_events() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let spawned = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "codex").with_alias("reviewer"))
+            .expect("agent should spawn");
+        crate::app::KernelSessionService::new(&mut app)
+            .end_session(session.id())
+            .expect("session should end");
+
+        let events = app
+            .durable_state_store()
+            .load_events_after(0)
+            .expect("durable state events should load");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["session.created", "agent.created", "session.ended"]
+        );
+        assert_eq!(events[1].subject_id.as_deref(), Some(spawned.id()));
+        assert_eq!(events[2].subject_id.as_deref(), Some(session.id()));
     }
 }
 
@@ -243,7 +272,16 @@ impl<'a> KernelSessionService<'a> {
         }
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();
-        self.app.agents.create_agent(request, &mut sessions)
+        let agent = self.app.agents.create_agent(request, &mut sessions)?;
+        drop(sessions);
+        self.app.durable_state_store().append_event(
+            "agent.created",
+            Some(agent.id().to_string()),
+            serde_json::json!({
+                "agent": &agent,
+            }),
+        )?;
+        Ok(agent)
     }
 
     pub(crate) fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
@@ -385,7 +423,17 @@ impl<'a> KernelSessionService<'a> {
 
         if session.status() == SessionStatus::Ended {
             self.app.prompt_owner_remove_session(session_id);
-            return SessionStateOwner::new(self.app.session_state_store()).end_session(session_id);
+            let ended =
+                SessionStateOwner::new(self.app.session_state_store()).end_session(session_id)?;
+            self.app.durable_state_store().append_event(
+                "session.ended",
+                Some(ended.id().to_string()),
+                serde_json::json!({
+                    "session": &ended,
+                    "already_ended": true,
+                }),
+            )?;
+            return Ok(ended);
         }
 
         let removed_attachments = self.app.attachments.remove_session_attachments(session_id);
@@ -439,6 +487,19 @@ impl<'a> KernelSessionService<'a> {
                 "removed_agents": removed_agent_ids,
             }),
         );
+        self.app.durable_state_store().append_event(
+            "session.ended",
+            Some(ended.id().to_string()),
+            serde_json::json!({
+                "session": &ended,
+                "removed_attachment_ids": removed_attachments
+                    .iter()
+                    .map(|attachment| attachment.id().to_string())
+                    .collect::<Vec<_>>(),
+                "terminated_provider_run_ids": terminated_run_ids,
+                "removed_agents": removed_agent_ids,
+            }),
+        )?;
         Ok(ended)
     }
 
