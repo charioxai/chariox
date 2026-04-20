@@ -41,6 +41,46 @@ export function detachFromSessionRequest(attachmentId: string) {
   }
 }
 
+export function listSessionMembersRequest(sessionId: string) {
+  return {
+    ListSessionMembers: {
+      session_id: sessionId,
+    },
+  }
+}
+
+export function createSessionInviteRequest(
+  sessionId: string,
+  expiresInMs: number | null = null,
+  maxUses: number | null = null,
+) {
+  return {
+    CreateSessionInvite: {
+      session_id: sessionId,
+      expires_in_ms: expiresInMs,
+      max_uses: maxUses,
+    },
+  }
+}
+
+export function joinSessionInviteRequest(inviteToken: string, userId: string) {
+  return {
+    JoinSessionInvite: {
+      invite_token: inviteToken,
+      user_id: userId,
+    },
+  }
+}
+
+export function revokeSessionInviteRequest(sessionId: string, inviteRef: string) {
+  return {
+    RevokeSessionInvite: {
+      session_id: sessionId,
+      invite_ref: inviteRef,
+    },
+  }
+}
+
 export function endSessionRequest(sessionId: string) {
   return {
     EndSession: {

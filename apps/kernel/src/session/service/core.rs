@@ -57,6 +57,125 @@ impl SessionService {
             })
     }
 
+    pub fn list_session_members(
+        &self,
+        session_id: &str,
+    ) -> Result<(Vec<SessionMember>, Vec<SessionInvite>), DaemonError> {
+        let session = self.get_session(session_id)?;
+        Ok((session.members().to_vec(), session.invites().to_vec()))
+    }
+
+    pub fn create_session_invite(
+        &mut self,
+        session_id: &str,
+        invite_id: String,
+        created_by_user_id: String,
+        expires_at_ms: Option<u64>,
+        max_uses: Option<u32>,
+    ) -> Result<(RuntimeSession, SessionInvite), DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        if !session.has_member(&created_by_user_id) {
+            return Err(DaemonError::LocalTransport {
+                operation: "create session invite",
+                message: format!(
+                    "user `{created_by_user_id}` is not a member of session `{session_id}`"
+                ),
+            });
+        }
+        let invite = SessionInvite::new(
+            invite_id,
+            session_id,
+            created_by_user_id,
+            unix_epoch_ms(),
+            expires_at_ms,
+            max_uses,
+        );
+        let invite = session.add_invite(invite);
+        session.touch();
+        Ok((session.clone(), invite))
+    }
+
+    pub fn join_session_invite(
+        &mut self,
+        session_id: &str,
+        invite_id: &str,
+        user_id: String,
+        now_ms: u64,
+    ) -> Result<(RuntimeSession, SessionMember), DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let invited_by_user_id = {
+            let invite =
+                session
+                    .invite_mut(invite_id)
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "join session invite",
+                        message: format!("session invite `{invite_id}` was not found"),
+                    })?;
+            if invite.session_id() != session_id {
+                return Err(DaemonError::LocalTransport {
+                    operation: "join session invite",
+                    message: "session invite target does not match the local session".to_string(),
+                });
+            }
+            if invite.is_revoked() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "join session invite",
+                    message: "session invite is revoked".to_string(),
+                });
+            }
+            if invite.is_expired(now_ms) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "join session invite",
+                    message: "session invite is expired".to_string(),
+                });
+            }
+            if invite.is_exhausted() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "join session invite",
+                    message: "session invite has no uses remaining".to_string(),
+                });
+            }
+            invite.mark_used();
+            Some(invite.created_by_user_id().to_string())
+        };
+        let member = session.add_member(user_id, invited_by_user_id);
+        session.touch();
+        Ok((session.clone(), member))
+    }
+
+    pub fn revoke_session_invite(
+        &mut self,
+        session_id: &str,
+        invite_id: &str,
+    ) -> Result<(RuntimeSession, SessionInvite), DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let invite = session
+            .invite_mut(invite_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "revoke session invite",
+                message: format!("session invite `{invite_id}` was not found"),
+            })?;
+        invite.revoke(unix_epoch_ms());
+        let invite = invite.clone();
+        session.touch();
+        Ok((session.clone(), invite))
+    }
+
     pub fn list_sessions(&self) -> Vec<RuntimeSession> {
         self.store.visible_non_ended_sessions().cloned().collect()
     }

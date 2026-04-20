@@ -12,6 +12,7 @@ pub const DEFAULT_SESSION_MAX_AGENTS: i32 = 64;
 pub const DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS: u64 = 100;
 pub const DEFAULT_WORKFLOW_LAUNCH_POLICY: WorkflowLaunchPolicy = WorkflowLaunchPolicy::Reject;
 pub const DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT: usize = 128;
+pub const DEFAULT_LOCAL_USER_ID: &str = "local";
 
 fn default_workflow_flush_agent_context_before_run() -> bool {
     true
@@ -23,6 +24,18 @@ fn default_workflow_node_can_complete_workflow_run() -> bool {
 
 fn default_workflow_node_can_emit_intermediate_run_output() -> bool {
     false
+}
+
+fn default_session_owner_user_id() -> String {
+    DEFAULT_LOCAL_USER_ID.to_string()
+}
+
+fn default_session_members() -> Vec<SessionMember> {
+    vec![SessionMember::local()]
+}
+
+fn default_session_invite_max_uses() -> Option<u32> {
+    Some(1)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1691,6 +1704,133 @@ pub struct CreateSessionRequest {
     pub hidden: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionMember {
+    user_id: String,
+    joined_at_ms: u64,
+    invited_by_user_id: Option<String>,
+}
+
+impl SessionMember {
+    pub fn new(
+        user_id: impl Into<String>,
+        joined_at_ms: u64,
+        invited_by_user_id: Option<String>,
+    ) -> Self {
+        Self {
+            user_id: user_id.into(),
+            joined_at_ms,
+            invited_by_user_id,
+        }
+    }
+
+    pub fn local() -> Self {
+        Self::new(DEFAULT_LOCAL_USER_ID, 0, None)
+    }
+
+    pub fn user_id(&self) -> &str {
+        &self.user_id
+    }
+
+    pub fn joined_at_ms(&self) -> u64 {
+        self.joined_at_ms
+    }
+
+    pub fn invited_by_user_id(&self) -> Option<&str> {
+        self.invited_by_user_id.as_deref()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInvite {
+    invite_id: String,
+    session_id: String,
+    created_by_user_id: String,
+    created_at_ms: u64,
+    expires_at_ms: Option<u64>,
+    #[serde(default = "default_session_invite_max_uses")]
+    max_uses: Option<u32>,
+    #[serde(default)]
+    used_count: u32,
+    revoked_at_ms: Option<u64>,
+}
+
+impl SessionInvite {
+    pub fn new(
+        invite_id: impl Into<String>,
+        session_id: impl Into<String>,
+        created_by_user_id: impl Into<String>,
+        created_at_ms: u64,
+        expires_at_ms: Option<u64>,
+        max_uses: Option<u32>,
+    ) -> Self {
+        Self {
+            invite_id: invite_id.into(),
+            session_id: session_id.into(),
+            created_by_user_id: created_by_user_id.into(),
+            created_at_ms,
+            expires_at_ms,
+            max_uses,
+            used_count: 0,
+            revoked_at_ms: None,
+        }
+    }
+
+    pub fn invite_id(&self) -> &str {
+        &self.invite_id
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn created_by_user_id(&self) -> &str {
+        &self.created_by_user_id
+    }
+
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+
+    pub fn expires_at_ms(&self) -> Option<u64> {
+        self.expires_at_ms
+    }
+
+    pub fn max_uses(&self) -> Option<u32> {
+        self.max_uses
+    }
+
+    pub fn used_count(&self) -> u32 {
+        self.used_count
+    }
+
+    pub fn revoked_at_ms(&self) -> Option<u64> {
+        self.revoked_at_ms
+    }
+
+    pub fn is_revoked(&self) -> bool {
+        self.revoked_at_ms.is_some()
+    }
+
+    pub fn is_expired(&self, now_ms: u64) -> bool {
+        self.expires_at_ms
+            .is_some_and(|expires_at_ms| expires_at_ms <= now_ms)
+    }
+
+    pub fn is_exhausted(&self) -> bool {
+        self.max_uses
+            .is_some_and(|max_uses| self.used_count >= max_uses)
+    }
+
+    pub fn mark_used(&mut self) {
+        self.used_count = self.used_count.saturating_add(1);
+    }
+
+    pub fn revoke(&mut self, revoked_at_ms: u64) {
+        self.revoked_at_ms = Some(revoked_at_ms);
+    }
+}
+
 impl CreateSessionRequest {
     pub fn new(workspace_id: impl Into<String>, worktree_id: impl Into<String>) -> Self {
         Self {
@@ -2030,6 +2170,12 @@ pub struct RuntimeSession {
     alias: Option<String>,
     workspace_id: String,
     worktree_id: String,
+    #[serde(default = "default_session_owner_user_id")]
+    owner_user_id: String,
+    #[serde(default = "default_session_members")]
+    members: Vec<SessionMember>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    invites: Vec<SessionInvite>,
     host_machine_id: String,
     host_daemon_id: String,
     created_at_ms: u64,
@@ -2077,6 +2223,9 @@ impl RuntimeSession {
             alias,
             workspace_id: workspace_id.into(),
             worktree_id: worktree_id.clone(),
+            owner_user_id: default_session_owner_user_id(),
+            members: default_session_members(),
+            invites: Vec::new(),
             host_machine_id: host_machine_id.into(),
             host_daemon_id: host_daemon_id.into(),
             created_at_ms: now,
@@ -2120,6 +2269,52 @@ impl RuntimeSession {
     }
     pub fn worktree_id(&self) -> &str {
         &self.worktree_id
+    }
+    pub fn owner_user_id(&self) -> &str {
+        &self.owner_user_id
+    }
+    pub fn members(&self) -> &[SessionMember] {
+        &self.members
+    }
+    pub fn invites(&self) -> &[SessionInvite] {
+        &self.invites
+    }
+    pub fn has_member(&self, user_id: &str) -> bool {
+        self.members
+            .iter()
+            .any(|member| member.user_id() == user_id)
+    }
+    pub fn add_member(
+        &mut self,
+        user_id: impl Into<String>,
+        invited_by_user_id: Option<String>,
+    ) -> SessionMember {
+        let user_id = user_id.into();
+        if let Some(member) = self
+            .members
+            .iter()
+            .find(|member| member.user_id() == user_id)
+            .cloned()
+        {
+            return member;
+        }
+        let member = SessionMember::new(user_id, unix_epoch_ms(), invited_by_user_id);
+        self.members.push(member.clone());
+        member
+    }
+    pub fn add_invite(&mut self, invite: SessionInvite) -> SessionInvite {
+        self.invites.push(invite.clone());
+        invite
+    }
+    pub fn invite_mut(&mut self, invite_id: &str) -> Option<&mut SessionInvite> {
+        self.invites
+            .iter_mut()
+            .find(|invite| invite.invite_id() == invite_id)
+    }
+    pub fn invite(&self, invite_id: &str) -> Option<&SessionInvite> {
+        self.invites
+            .iter()
+            .find(|invite| invite.invite_id() == invite_id)
     }
     pub fn host_machine_id(&self) -> &str {
         &self.host_machine_id

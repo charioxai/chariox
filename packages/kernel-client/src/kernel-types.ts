@@ -43,6 +43,9 @@ export type RuntimeSession = {
   alias?: string | null
   workspace_id: string
   worktree_id: string
+  owner_user_id?: string
+  members?: SessionMember[]
+  invites?: SessionInvite[]
   created_at_ms: number
   last_used_at_ms?: number | null
   status: string
@@ -61,6 +64,23 @@ export type RuntimeSession = {
   queued_workflow_launches?: QueuedWorkflowLaunch[]
   workflow_watchdogs?: WorkflowWatchdogDefinition[]
   workflow_consoles?: WorkflowConsole[]
+}
+
+export type SessionMember = {
+  user_id: string
+  joined_at_ms: number
+  invited_by_user_id?: string | null
+}
+
+export type SessionInvite = {
+  invite_id: string
+  session_id: string
+  created_by_user_id: string
+  created_at_ms: number
+  expires_at_ms?: number | null
+  max_uses?: number | null
+  used_count: number
+  revoked_at_ms?: number | null
 }
 
 export type AgentPromptState = {

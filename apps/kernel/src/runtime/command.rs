@@ -354,6 +354,10 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::LaunchProviderRun(_) => "provider_run.launch",
+        LocalDaemonRequest::ListSessionMembers(_) => "session.members.list",
+        LocalDaemonRequest::CreateSessionInvite(_) => "session.invite.create",
+        LocalDaemonRequest::JoinSessionInvite(_) => "session.invite.join",
+        LocalDaemonRequest::RevokeSessionInvite(_) => "session.invite.revoke",
         LocalDaemonRequest::ListSessions(_) => "session.list",
         LocalDaemonRequest::ResolveSession(_) => "session.resolve",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",

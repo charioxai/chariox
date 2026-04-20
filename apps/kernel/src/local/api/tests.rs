@@ -21,18 +21,19 @@ use super::{
     AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasSessionRequest,
     AliasWorkflowEndpointRequest, AliasWorkflowRequest, AttachToSessionRequest,
     CancelActivePromptRequest, CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest,
-    CompletePromptRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
-    CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
+    CompletePromptRequest, CreateSessionInviteRequest, CreateWorkflowEndpointRequest,
+    CreateWorkflowRequest, CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
     EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
     GetSessionStateRequest, GetWorkflowRunRequest, InspectGitCapabilityRequest,
-    InvokeWorkflowEndpointRequest, LaunchProviderRunRequest, ListAgentsRequest,
-    ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, ListSessionsRequest,
-    ListWorkflowRunsRequest, ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse,
-    PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
-    RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, ResolveSessionRequest,
-    ResolveWorkflowRequest, ResumeWorkflowRunRequest, RunShellCapabilityRequest, SpawnAgentRequest,
-    StoreTransferredFileCapabilityRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
-    UpdateWorkflowNodeInstructionsRequest,
+    InvokeWorkflowEndpointRequest, JoinSessionInviteRequest, LaunchProviderRunRequest,
+    ListAgentsRequest, ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
+    ListSessionMembersRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
+    LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+    ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
+    RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
+    ResumeWorkflowRunRequest, RevokeSessionInviteRequest, RunShellCapabilityRequest,
+    SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
+    UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
 };
 use futures_util::SinkExt;
 use tokio::sync::oneshot;
@@ -357,6 +358,84 @@ fn local_request_api_resolves_and_deletes_sessions_by_ref() {
         _ => panic!("unexpected local response"),
     };
     assert!(listed.is_empty());
+}
+
+#[test]
+fn local_request_api_manages_session_invites_and_members() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    let session_id = session.id().to_string();
+    let invite_record = match harness
+        .dispatch(LocalDaemonRequest::CreateSessionInvite(
+            CreateSessionInviteRequest {
+                session_id: session_id.clone(),
+                expires_in_ms: None,
+                max_uses: Some(1),
+            },
+        ))
+        .expect("session invite create should succeed")
+    {
+        LocalDaemonResponse::SessionInviteCreated { invite, session } => {
+            assert_eq!(session.id(), session_id);
+            invite
+        }
+        _ => panic!("unexpected local response"),
+    };
+
+    let joined = match harness
+        .dispatch(LocalDaemonRequest::JoinSessionInvite(
+            JoinSessionInviteRequest {
+                invite_token: invite_record.invite_token.clone(),
+                user_id: "user-2".to_string(),
+            },
+        ))
+        .expect("session invite join should succeed")
+    {
+        LocalDaemonResponse::SessionInviteJoined { member, session } => {
+            assert!(session.has_member("user-2"));
+            member
+        }
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(joined.user_id(), "user-2");
+
+    let (members, invites) = match harness
+        .dispatch(LocalDaemonRequest::ListSessionMembers(
+            ListSessionMembersRequest {
+                session_id: session_id.clone(),
+            },
+        ))
+        .expect("session members should list")
+    {
+        LocalDaemonResponse::SessionMembersListed { members, invites } => (members, invites),
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(members.len(), 2);
+    assert_eq!(invites.len(), 1);
+    assert_eq!(invites[0].used_count(), 1);
+
+    let revoked = match harness
+        .dispatch(LocalDaemonRequest::RevokeSessionInvite(
+            RevokeSessionInviteRequest {
+                session_id,
+                invite_ref: invite_record.invite.invite_id().to_string(),
+            },
+        ))
+        .expect("session invite revoke should succeed")
+    {
+        LocalDaemonResponse::SessionInviteRevoked { invite, .. } => invite,
+        _ => panic!("unexpected local response"),
+    };
+    assert!(revoked.is_revoked());
 }
 
 #[test]

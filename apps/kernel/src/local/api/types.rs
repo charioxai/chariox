@@ -27,6 +27,38 @@ pub struct DetachFromSessionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListSessionMembersRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateSessionInviteRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub expires_in_ms: Option<u64>,
+    #[serde(default)]
+    pub max_uses: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JoinSessionInviteRequest {
+    pub invite_token: String,
+    pub user_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevokeSessionInviteRequest {
+    pub session_id: String,
+    pub invite_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInviteRecord {
+    pub invite: SessionInvite,
+    pub invite_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmitPromptRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -795,6 +827,10 @@ pub enum LocalDaemonRequest {
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
     DetachFromSession(DetachFromSessionRequest),
+    ListSessionMembers(ListSessionMembersRequest),
+    CreateSessionInvite(CreateSessionInviteRequest),
+    JoinSessionInvite(JoinSessionInviteRequest),
+    RevokeSessionInvite(RevokeSessionInviteRequest),
     LaunchProviderRun(LaunchProviderRunRequest),
     ListSessions(ListSessionsRequest),
     ResolveSession(ResolveSessionRequest),
@@ -910,6 +946,22 @@ pub enum LocalDaemonResponse {
     },
     SessionDetached {
         attachment: RuntimeAttachment,
+    },
+    SessionMembersListed {
+        members: Vec<SessionMember>,
+        invites: Vec<SessionInvite>,
+    },
+    SessionInviteCreated {
+        invite: SessionInviteRecord,
+        session: RuntimeSession,
+    },
+    SessionInviteJoined {
+        member: SessionMember,
+        session: RuntimeSession,
+    },
+    SessionInviteRevoked {
+        invite: SessionInvite,
+        session: RuntimeSession,
     },
     ProviderRunLaunched {
         provider_run: RuntimeProviderRun,

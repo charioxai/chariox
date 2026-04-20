@@ -6,7 +6,7 @@ use crate::session::{
     unix_epoch_ms, CreateSessionRequest, PromptSubmissionOutcome, QueuedWorkflowLaunchSource,
     SchedulerState, SessionStatus, WorkflowCompletionSnapshot, WorkflowHandoffPayload,
     WorkflowLaunchAdmission, WorkflowLaunchPolicy, WorkflowNodeRunStatus, WorkflowRunStatus,
-    WorkflowWatchdogPolicy, WorktreeIsolationMode,
+    WorkflowWatchdogPolicy, WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID,
 };
 use std::collections::BTreeMap;
 
@@ -47,6 +47,61 @@ fn creates_gets_and_lists_sessions() {
         .expect("lookup should succeed");
     assert_eq!(fetched, created);
     assert_eq!(service.list_sessions(), vec![created]);
+}
+
+#[test]
+fn manages_session_membership_invites() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+
+    assert_eq!(session.owner_user_id(), DEFAULT_LOCAL_USER_ID);
+    assert_eq!(session.members().len(), 1);
+    assert!(session.has_member(DEFAULT_LOCAL_USER_ID));
+
+    let (session, invite) = service
+        .create_session_invite(
+            session.id(),
+            "invite-1".to_string(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            None,
+            Some(1),
+        )
+        .expect("member should create invite");
+    assert_eq!(session.invites().len(), 1);
+    assert_eq!(invite.used_count(), 0);
+
+    let (session, member) = service
+        .join_session_invite(
+            session.id(),
+            invite.invite_id(),
+            "user-2".to_string(),
+            unix_epoch_ms(),
+        )
+        .expect("invite should be joinable");
+    assert_eq!(member.user_id(), "user-2");
+    assert_eq!(member.invited_by_user_id(), Some(DEFAULT_LOCAL_USER_ID));
+    assert!(session.has_member("user-2"));
+    assert_eq!(session.invites()[0].used_count(), 1);
+
+    let exhausted = service
+        .join_session_invite(
+            session.id(),
+            invite.invite_id(),
+            "user-3".to_string(),
+            unix_epoch_ms(),
+        )
+        .expect_err("single-use invite should be exhausted");
+    assert!(exhausted.to_string().contains("no uses remaining"));
+
+    let (session, revoked) = service
+        .revoke_session_invite(session.id(), invite.invite_id())
+        .expect("invite should revoke");
+    assert!(revoked.is_revoked());
+    assert!(session
+        .invite(invite.invite_id())
+        .is_some_and(|invite| invite.is_revoked()));
 }
 
 #[test]

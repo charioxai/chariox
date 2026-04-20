@@ -22,9 +22,11 @@ import type {
   RelayStatus,
   RemoteMachineRecord,
   RuntimeSession,
+  SessionInvite,
   SessionHistoryPage,
   SessionHistoryPageEntry,
   SessionConfigState,
+  SessionMember,
   SkillImportOutcome,
   WorkflowDefinition,
   WorkflowEdgeDefinition,
@@ -44,6 +46,7 @@ import {
   cancelWorkflowRunRequest,
   clearQueuedWorkflowLaunchesRequest,
   approveRemoteMachineRequest,
+  createSessionInviteRequest,
   createPairingInviteRequest,
   createWorkflowEndpointRequest,
   createWorkflowRequest,
@@ -63,6 +66,7 @@ import {
   installMcpServerRequest,
   installSkillRequest,
   joinPairingInviteRequest,
+  joinSessionInviteRequest,
   getUserConfigRequest,
   listAgentsRequest,
   listMcpServersRequest,
@@ -71,6 +75,7 @@ import {
   listQueuedWorkflowLaunchesRequest,
   listRemoteMachineKernelsRequest,
   listRemoteMachinesRequest,
+  listSessionMembersRequest,
   listSessionsRequest,
   listSkillsRequest,
   listWorkflowWatchdogsRequest,
@@ -88,6 +93,7 @@ import {
   renameRemoteMachineRequest,
   revokeAgentCapabilityRequest,
   revokePairedClientRequest,
+  revokeSessionInviteRequest,
   resolveWorkflowRequest,
   resumeWorkflowRunRequest,
   resolveSessionRequest,
@@ -205,7 +211,7 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
         ok: true,
         message: [
           "arroba-shell commands:",
-          "session list|new|attach|use",
+          "session list|new|attach|use|members|invite|join",
           "agent list|spawn|focus|cycle",
           "client invite create|join|list|record|revoke",
           "machine invite create|join|list|kernels|approve|rename|revoke",
@@ -410,8 +416,73 @@ async function executeSessionCommand(
         { session },
       )
     }
+    case "members": {
+      const sessionId = args[0] ?? context.sessionId
+      if (!sessionId) {
+        return { ok: false, message: "usage: session members [session-ref]" }
+      }
+      const response = await deps.client.send(listSessionMembersRequest(sessionId))
+      const payload = expectVariant<{ members: SessionMember[]; invites: SessionInvite[] }>(response, "SessionMembersListed")
+      return { ok: true, message: formatSessionMembers(payload.members, payload.invites), data: payload }
+    }
+    case "invite": {
+      const [inviteAction, maxUsesRaw] = args
+      if (inviteAction !== "create") {
+        return { ok: false, message: "usage: session invite create [max-uses]" }
+      }
+      if (!context.sessionId) {
+        return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
+      }
+      const maxUses = maxUsesRaw ? Number.parseInt(maxUsesRaw, 10) : 1
+      if (!Number.isFinite(maxUses) || maxUses <= 0) {
+        return { ok: false, message: "usage: session invite create [max-uses]" }
+      }
+      const response = await deps.client.send(createSessionInviteRequest(context.sessionId, null, maxUses))
+      const payload = expectVariant<{ invite: { invite: SessionInvite; invite_token: string }; session: RuntimeSession }>(response, "SessionInviteCreated")
+      return {
+        ok: true,
+        message: formatSessionInvite(payload.invite.invite, payload.invite.invite_token),
+        data: payload,
+        contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+      }
+    }
+    case "join": {
+      const [inviteToken, userId] = args
+      if (!inviteToken || !userId) {
+        return { ok: false, message: "usage: session join <invite-token> <user-id>" }
+      }
+      const response = await deps.client.send(joinSessionInviteRequest(inviteToken, userId))
+      const payload = expectVariant<{ member: SessionMember; session: RuntimeSession }>(response, "SessionInviteJoined")
+      const attachmentId = await attachShellSession(payload.session.id, deps)
+      return {
+        ok: true,
+        message: `joined session ${payload.session.alias ?? payload.session.id} as ${payload.member.user_id}`,
+        data: payload,
+        contextUpdates: {
+          sessionId: payload.session.id,
+          ...(attachmentId ? { attachmentId } : {}),
+          agentId: payload.session.focused_agent_id ?? undefined,
+          workspace: payload.session.workspace_id,
+          worktree: payload.session.worktree_id,
+        },
+      }
+    }
+    case "revoke-invite": {
+      const inviteRef = args[0]
+      if (!context.sessionId || !inviteRef) {
+        return { ok: false, message: "usage: session revoke-invite <invite-id>" }
+      }
+      const response = await deps.client.send(revokeSessionInviteRequest(context.sessionId, inviteRef))
+      const payload = expectVariant<{ invite: SessionInvite; session: RuntimeSession }>(response, "SessionInviteRevoked")
+      return {
+        ok: true,
+        message: `revoked session invite ${payload.invite.invite_id}`,
+        data: payload,
+        contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+      }
+    }
     default:
-      return { ok: false, message: "usage: session list|new|attach|use" }
+      return { ok: false, message: "usage: session list|new|attach|use|members|invite|join|revoke-invite" }
   }
 }
 
@@ -2076,6 +2147,35 @@ function formatSessionList(sessions: RuntimeSession[], currentSessionId?: string
       return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${current}`
     }),
   ].join("\n")
+}
+
+function formatSessionMembers(members: SessionMember[], invites: SessionInvite[]): string {
+  const lines = ["Session members"]
+  if (members.length === 0) {
+    lines.push("- none")
+  } else {
+    for (const member of members) {
+      const inviter = member.invited_by_user_id ? ` invited_by=${member.invited_by_user_id}` : ""
+      lines.push(`- ${member.user_id}${inviter}`)
+    }
+  }
+  lines.push("Session invites")
+  const activeInvites = invites.filter((invite) => !invite.revoked_at_ms)
+  if (activeInvites.length === 0) {
+    lines.push("- none")
+  } else {
+    for (const invite of activeInvites) {
+      const maxUses = invite.max_uses ?? "unlimited"
+      lines.push(`- ${invite.invite_id} uses=${invite.used_count}/${maxUses}`)
+    }
+  }
+  return lines.join("\n")
+}
+
+function formatSessionInvite(invite: SessionInvite, inviteToken: string): string {
+  const maxUses = invite.max_uses ?? "unlimited"
+  const expires = invite.expires_at_ms ? ` expires_at=${invite.expires_at_ms}` : ""
+  return `session invite ${invite.invite_id} uses=0/${maxUses}${expires}\n${inviteToken}`
 }
 
 function formatAgentListSummary(agents: AgentInstance[]): string {

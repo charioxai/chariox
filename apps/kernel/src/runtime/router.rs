@@ -23,18 +23,20 @@ use crate::local::provider_requests::{
 };
 use crate::local::{
     AgentGrantKind, ApproveRemoteMachineRequest, ConfigureRelayRequest, CreatePairingInviteRequest,
-    ForgetRemoteMachineRequest, GetMcpServerRequest, GetProviderAuthStatusRequest,
-    GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest,
-    GetUserConfigRequest, GrantAgentCapabilityRequest, ImportMcpServersRequest,
-    ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest, JoinPairingInviteRequest,
-    ListAgentsRequest, ListMcpServersRequest, ListProviderProcessesRequest, ListSessionsRequest,
+    CreateSessionInviteRequest, ForgetRemoteMachineRequest, GetMcpServerRequest,
+    GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+    GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GrantAgentCapabilityRequest,
+    ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
+    JoinPairingInviteRequest, JoinSessionInviteRequest, ListAgentsRequest, ListMcpServersRequest,
+    ListProviderProcessesRequest, ListSessionMembersRequest, ListSessionsRequest,
     ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
     MoveAgentToRemoteRequest, PairedClientRecord, PairingInviteIntent, PairingInviteRecord,
     PairingJoinRecord, PumpTerminalOutputRequest, QueryHistoryRequest, RecordPairedClientRequest,
     RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
-    RevokePairedClientRequest, SearchHistoryRequest, SetUserConfigValueRequest,
-    StartProviderLoginRequest, TeardownProviderProcessesRequest, UninstallMcpServerRequest,
-    UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
+    RevokePairedClientRequest, RevokeSessionInviteRequest, SearchHistoryRequest,
+    SessionInviteRecord, SetUserConfigValueRequest, StartProviderLoginRequest,
+    TeardownProviderProcessesRequest, UninstallMcpServerRequest, UninstallSkillRequest,
+    UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -55,7 +57,7 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
-use crate::session::PromptIdAllocator;
+use crate::session::{PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
 
@@ -875,6 +877,19 @@ impl CommandRouter {
             LocalDaemonRequest::RenameRemoteMachine(request) => {
                 self.execute_rename_remote_machine_request(request).await
             }
+            LocalDaemonRequest::ListSessionMembers(request) => {
+                self.execute_list_session_members_request(request).await
+            }
+            LocalDaemonRequest::CreateSessionInvite(request) => {
+                self.execute_create_session_invite_request(&command, request)
+                    .await
+            }
+            LocalDaemonRequest::JoinSessionInvite(request) => {
+                self.execute_join_session_invite_request(request).await
+            }
+            LocalDaemonRequest::RevokeSessionInvite(request) => {
+                self.execute_revoke_session_invite_request(request).await
+            }
             LocalDaemonRequest::CreatePairingInvite(request) => {
                 self.execute_create_pairing_invite_request(request).await
             }
@@ -1317,6 +1332,100 @@ impl CommandRouter {
         self.invalidate_provider_catalog_caches().await;
         let machine = record_for_machine_id(machine, live, &config.host_machine_id)?;
         Ok(LocalDaemonResponse::RemoteMachineRenamed { machine })
+    }
+
+    async fn execute_list_session_members_request(
+        &self,
+        request: ListSessionMembersRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let app = self.app.lock().await;
+        let (members, invites) = app.sessions().list_session_members(&request.session_id)?;
+        Ok(LocalDaemonResponse::SessionMembersListed { members, invites })
+    }
+
+    async fn execute_create_session_invite_request(
+        &self,
+        command: &KernelCommand,
+        request: CreateSessionInviteRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let now_ms = current_unix_ms();
+        let expires_at_ms = request
+            .expires_in_ms
+            .map(|expires_in_ms| now_ms.saturating_add(expires_in_ms));
+        let invite_id = random_hex_id();
+        let created_by_user_id = command_caller_user_id(command);
+        let (session, invite) = {
+            let app = self.app.lock().await;
+            let result = app.sessions_mut().create_session_invite(
+                &request.session_id,
+                invite_id,
+                created_by_user_id,
+                expires_at_ms,
+                request.max_uses.or(Some(1)),
+            )?;
+            result
+        };
+        let invite_token = encode_session_invite_token(&SessionInviteToken {
+            version: 1,
+            session_id: session.id().to_string(),
+            invite_id: invite.invite_id().to_string(),
+            created_by_user_id: invite.created_by_user_id().to_string(),
+            issued_at_ms: invite.created_at_ms(),
+            expires_at_ms: invite.expires_at_ms(),
+            max_uses: invite.max_uses(),
+        })?;
+        self.session_projection.update(session.clone());
+        Ok(LocalDaemonResponse::SessionInviteCreated {
+            invite: SessionInviteRecord {
+                invite,
+                invite_token,
+            },
+            session,
+        })
+    }
+
+    async fn execute_join_session_invite_request(
+        &self,
+        request: JoinSessionInviteRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let token = decode_session_invite_token(&request.invite_token)?;
+        let now_ms = current_unix_ms();
+        if token
+            .expires_at_ms
+            .is_some_and(|expires_at_ms| expires_at_ms <= now_ms)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "join session invite",
+                message: "session invite is expired".to_string(),
+            });
+        }
+        let (session, member) = {
+            let app = self.app.lock().await;
+            let result = app.sessions_mut().join_session_invite(
+                &token.session_id,
+                &token.invite_id,
+                request.user_id,
+                now_ms,
+            )?;
+            result
+        };
+        self.session_projection.update(session.clone());
+        Ok(LocalDaemonResponse::SessionInviteJoined { member, session })
+    }
+
+    async fn execute_revoke_session_invite_request(
+        &self,
+        request: RevokeSessionInviteRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let (session, invite) = {
+            let app = self.app.lock().await;
+            let result = app
+                .sessions_mut()
+                .revoke_session_invite(&request.session_id, &request.invite_ref)?;
+            result
+        };
+        self.session_projection.update(session.clone());
+        Ok(LocalDaemonResponse::SessionInviteRevoked { invite, session })
     }
 
     async fn execute_create_pairing_invite_request(
@@ -1818,6 +1927,19 @@ impl CommandRouter {
             }
             LocalDaemonRequest::RenameRemoteMachine(request) => {
                 self.execute_rename_remote_machine_request(request).await
+            }
+            LocalDaemonRequest::ListSessionMembers(request) => {
+                self.execute_list_session_members_request(request).await
+            }
+            LocalDaemonRequest::CreateSessionInvite(request) => {
+                self.execute_create_session_invite_request(&command, request)
+                    .await
+            }
+            LocalDaemonRequest::JoinSessionInvite(request) => {
+                self.execute_join_session_invite_request(request).await
+            }
+            LocalDaemonRequest::RevokeSessionInvite(request) => {
+                self.execute_revoke_session_invite_request(request).await
             }
             LocalDaemonRequest::CreatePairingInvite(request) => {
                 self.execute_create_pairing_invite_request(request).await
@@ -2453,6 +2575,67 @@ fn paired_client_record(client: crate::config::PersistedClientPairing) -> Paired
         paired_at_ms: client.paired_at_ms,
         revoked: client.revoked,
     }
+}
+
+fn command_caller_user_id(command: &KernelCommand) -> String {
+    command
+        .caller
+        .user_id
+        .clone()
+        .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionInviteToken {
+    version: u8,
+    session_id: String,
+    invite_id: String,
+    created_by_user_id: String,
+    issued_at_ms: u64,
+    #[serde(default)]
+    expires_at_ms: Option<u64>,
+    #[serde(default)]
+    max_uses: Option<u32>,
+}
+
+fn encode_session_invite_token(token: &SessionInviteToken) -> Result<String, DaemonError> {
+    let payload = serde_json::to_vec(token).map_err(|error| DaemonError::LocalTransport {
+        operation: "encode session invite",
+        message: error.to_string(),
+    })?;
+    Ok(format!(
+        "arroba-session-invite-v1.{}",
+        URL_SAFE_NO_PAD.encode(payload)
+    ))
+}
+
+fn decode_session_invite_token(token: &str) -> Result<SessionInviteToken, DaemonError> {
+    let payload = token
+        .trim()
+        .strip_prefix("arroba-session-invite-v1.")
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "decode session invite",
+            message: "session invite token has an unsupported format".to_string(),
+        })?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "decode session invite",
+            message: error.to_string(),
+        })?;
+    let decoded = serde_json::from_slice::<SessionInviteToken>(&bytes).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "decode session invite",
+            message: error.to_string(),
+        }
+    })?;
+    if decoded.version != 1 {
+        return Err(DaemonError::LocalTransport {
+            operation: "decode session invite",
+            message: format!("unsupported session invite version {}", decoded.version),
+        });
+    }
+    Ok(decoded)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
