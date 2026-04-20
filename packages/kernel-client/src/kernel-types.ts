@@ -189,6 +189,29 @@ export type PairedClientRecord = {
   revoked: boolean
 }
 
+export type PairingInviteIntent = "client" | "machine"
+
+export type PairingInviteRecord = {
+  intent: PairingInviteIntent
+  invite_id: string
+  invite_token: string
+  relay_url: string
+  target_daemon_id: string
+  target_daemon_alias?: string | null
+  issued_at_ms: number
+  expires_at_ms: number
+}
+
+export type PairingJoinRecord = {
+  intent: PairingInviteIntent
+  subject_id: string
+  relay_url: string
+  target_daemon_id: string
+  alias?: string | null
+  public_key_thumbprint: string
+  paired_at_ms: number
+}
+
 export type RelayKernelPresence = {
   kernel_id: string
   machine_id: string

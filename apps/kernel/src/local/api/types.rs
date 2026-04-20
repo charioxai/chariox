@@ -98,6 +98,58 @@ pub struct RenameRemoteMachineRequest {
     pub alias: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PairingInviteIntent {
+    Client,
+    Machine,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatePairingInviteRequest {
+    pub intent: PairingInviteIntent,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub expires_in_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JoinPairingInviteRequest {
+    pub invite_token: String,
+    #[serde(default)]
+    pub subject_id: Option<String>,
+    #[serde(default)]
+    pub public_key_thumbprint: Option<String>,
+    #[serde(default)]
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingInviteRecord {
+    pub intent: PairingInviteIntent,
+    pub invite_id: String,
+    pub invite_token: String,
+    pub relay_url: String,
+    pub target_daemon_id: String,
+    #[serde(default)]
+    pub target_daemon_alias: Option<String>,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingJoinRecord {
+    pub intent: PairingInviteIntent,
+    pub subject_id: String,
+    pub relay_url: String,
+    pub target_daemon_id: String,
+    #[serde(default)]
+    pub alias: Option<String>,
+    pub public_key_thumbprint: String,
+    pub paired_at_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListPairedClientsRequest;
 
@@ -773,6 +825,8 @@ pub enum LocalDaemonRequest {
     ApproveRemoteMachine(ApproveRemoteMachineRequest),
     ForgetRemoteMachine(ForgetRemoteMachineRequest),
     RenameRemoteMachine(RenameRemoteMachineRequest),
+    CreatePairingInvite(CreatePairingInviteRequest),
+    JoinPairingInvite(JoinPairingInviteRequest),
     ListPairedClients(ListPairedClientsRequest),
     RecordPairedClient(RecordPairedClientRequest),
     RevokePairedClient(RevokePairedClientRequest),
@@ -955,6 +1009,12 @@ pub enum LocalDaemonResponse {
     },
     RemoteMachineRenamed {
         machine: RemoteMachineRecord,
+    },
+    PairingInviteCreated {
+        invite: PairingInviteRecord,
+    },
+    PairingInviteJoined {
+        pairing: PairingJoinRecord,
     },
     PairedClientsListed {
         clients: Vec<PairedClientRecord>,

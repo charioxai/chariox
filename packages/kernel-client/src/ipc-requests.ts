@@ -726,6 +726,36 @@ export function renameRemoteMachineRequest(machineRef: string, alias: string) {
   }
 }
 
+export function createPairingInviteRequest(
+  intent: "client" | "machine",
+  alias: string | null = null,
+  expiresInMs: number | null = null,
+) {
+  return {
+    CreatePairingInvite: {
+      intent,
+      alias,
+      expires_in_ms: expiresInMs,
+    },
+  }
+}
+
+export function joinPairingInviteRequest(
+  inviteToken: string,
+  subjectId: string | null = null,
+  publicKeyThumbprint: string | null = null,
+  alias: string | null = null,
+) {
+  return {
+    JoinPairingInvite: {
+      invite_token: inviteToken,
+      subject_id: subjectId,
+      public_key_thumbprint: publicKeyThumbprint,
+      alias,
+    },
+  }
+}
+
 export function listPairedClientsRequest() {
   return { ListPairedClients: null }
 }

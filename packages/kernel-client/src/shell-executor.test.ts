@@ -517,6 +517,70 @@ test("executeShellCommand manages remote machine trust", async () => {
   ])
 })
 
+test("executeShellCommand creates and joins machine invites", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("CreatePairingInvite" in request) {
+          return {
+            PairingInviteCreated: {
+              invite: {
+                intent: "machine",
+                invite_id: "invite-1",
+                invite_token: "arroba-invite-v1.machine",
+                relay_url: "ws://relay",
+                target_daemon_id: "daemon-1",
+                target_daemon_alias: null,
+                issued_at_ms: 1,
+                expires_at_ms: 2,
+              },
+            },
+          }
+        }
+        if ("JoinPairingInvite" in request) {
+          return {
+            PairingInviteJoined: {
+              pairing: {
+                intent: "machine",
+                subject_id: "machine-2",
+                relay_url: "ws://relay",
+                target_daemon_id: "daemon-1",
+                alias: "worker",
+                public_key_thumbprint: "thumbprint-2",
+                paired_at_ms: 3,
+              },
+            },
+          }
+        }
+        return {}
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+
+  const inviteResult = await executeShellCommand(parseShellCommand("machine invite create worker"), context, { client: fake.client })
+  const joinResult = await executeShellCommand(parseShellCommand("machine join arroba-invite-v1.machine machine-2 worker"), context, { client: fake.client })
+
+  assert.equal(inviteResult.ok, true)
+  assert.match(inviteResult.message ?? "", /machine invite invite-1/)
+  assert.match(inviteResult.message ?? "", /token=arroba-invite-v1\.machine/)
+  assert.equal(joinResult.ok, true)
+  assert.match(joinResult.message ?? "", /joined machine machine-2 alias=worker/)
+  assert.deepEqual(requests, [
+    { CreatePairingInvite: { intent: "machine", alias: "worker", expires_in_ms: null } },
+    {
+      JoinPairingInvite: {
+        invite_token: "arroba-invite-v1.machine",
+        subject_id: "machine-2",
+        public_key_thumbprint: null,
+        alias: "worker",
+      },
+    },
+  ])
+})
+
 test("executeShellCommand manages paired clients", async () => {
   const requests: Record<string, unknown>[] = []
   const fake = {
@@ -589,6 +653,69 @@ test("executeShellCommand manages paired clients", async () => {
       },
     },
     { RevokePairedClient: { client_id: "client-2" } },
+  ])
+})
+
+test("executeShellCommand creates and joins client invites", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("CreatePairingInvite" in request) {
+          return {
+            PairingInviteCreated: {
+              invite: {
+                intent: "client",
+                invite_id: "invite-client",
+                invite_token: "arroba-invite-v1.client",
+                relay_url: "ws://relay",
+                target_daemon_id: "daemon-1",
+                target_daemon_alias: "home",
+                issued_at_ms: 1,
+                expires_at_ms: 2,
+              },
+            },
+          }
+        }
+        if ("JoinPairingInvite" in request) {
+          return {
+            PairingInviteJoined: {
+              pairing: {
+                intent: "client",
+                subject_id: "client-2",
+                relay_url: "ws://relay",
+                target_daemon_id: "daemon-1",
+                alias: "desk",
+                public_key_thumbprint: "thumbprint-client",
+                paired_at_ms: 3,
+              },
+            },
+          }
+        }
+        return {}
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+
+  const inviteResult = await executeShellCommand(parseShellCommand("client invite create desk"), context, { client: fake.client })
+  const joinResult = await executeShellCommand(parseShellCommand("client join arroba-invite-v1.client client-2 desk"), context, { client: fake.client })
+
+  assert.equal(inviteResult.ok, true)
+  assert.match(inviteResult.message ?? "", /client invite invite-client/)
+  assert.equal(joinResult.ok, true)
+  assert.match(joinResult.message ?? "", /joined client client-2 alias=desk/)
+  assert.deepEqual(requests, [
+    { CreatePairingInvite: { intent: "client", alias: "desk", expires_in_ms: null } },
+    {
+      JoinPairingInvite: {
+        invite_token: "arroba-invite-v1.client",
+        subject_id: "client-2",
+        public_key_thumbprint: null,
+        alias: "desk",
+      },
+    },
   ])
 })
 

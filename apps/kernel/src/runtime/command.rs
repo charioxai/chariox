@@ -381,6 +381,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ApproveRemoteMachine(_) => "remote_machine.approve",
         LocalDaemonRequest::ForgetRemoteMachine(_) => "remote_machine.forget",
         LocalDaemonRequest::RenameRemoteMachine(_) => "remote_machine.rename",
+        LocalDaemonRequest::CreatePairingInvite(_) => "pairing_invite.create",
+        LocalDaemonRequest::JoinPairingInvite(_) => "pairing_invite.join",
         LocalDaemonRequest::ListPairedClients(_) => "paired_client.list",
         LocalDaemonRequest::RecordPairedClient(_) => "paired_client.record",
         LocalDaemonRequest::RevokePairedClient(_) => "paired_client.revoke",

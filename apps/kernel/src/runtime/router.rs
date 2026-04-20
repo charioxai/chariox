@@ -2,6 +2,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
@@ -17,15 +22,16 @@ use crate::local::provider_requests::{
     PROVIDER_CATALOG_CACHE_TTL,
 };
 use crate::local::{
-    AgentGrantKind, ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
-    GetMcpServerRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
-    GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest,
-    GrantAgentCapabilityRequest, ImportMcpServersRequest, ImportSkillsRequest,
-    InstallMcpServerRequest, InstallSkillRequest, ListAgentsRequest, ListMcpServersRequest,
-    ListProviderProcessesRequest, ListSessionsRequest, ListSkillsRequest, LocalDaemonRequest,
-    LocalDaemonResponse, LogoutProviderRequest, MoveAgentToRemoteRequest, PairedClientRecord,
-    PumpTerminalOutputRequest, QueryHistoryRequest, RecordPairedClientRequest, RelayStatus,
-    RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
+    AgentGrantKind, ApproveRemoteMachineRequest, ConfigureRelayRequest, CreatePairingInviteRequest,
+    ForgetRemoteMachineRequest, GetMcpServerRequest, GetProviderAuthStatusRequest,
+    GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest,
+    GetUserConfigRequest, GrantAgentCapabilityRequest, ImportMcpServersRequest,
+    ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest, JoinPairingInviteRequest,
+    ListAgentsRequest, ListMcpServersRequest, ListProviderProcessesRequest, ListSessionsRequest,
+    ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
+    MoveAgentToRemoteRequest, PairedClientRecord, PairingInviteIntent, PairingInviteRecord,
+    PairingJoinRecord, PumpTerminalOutputRequest, QueryHistoryRequest, RecordPairedClientRequest,
+    RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
     RevokePairedClientRequest, SearchHistoryRequest, SetUserConfigValueRequest,
     StartProviderLoginRequest, TeardownProviderProcessesRequest, UninstallMcpServerRequest,
     UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
@@ -869,6 +875,12 @@ impl CommandRouter {
             LocalDaemonRequest::RenameRemoteMachine(request) => {
                 self.execute_rename_remote_machine_request(request).await
             }
+            LocalDaemonRequest::CreatePairingInvite(request) => {
+                self.execute_create_pairing_invite_request(request).await
+            }
+            LocalDaemonRequest::JoinPairingInvite(request) => {
+                self.execute_join_pairing_invite_request(request).await
+            }
             LocalDaemonRequest::ListPairedClients(_) => {
                 self.execute_list_paired_clients_request().await
             }
@@ -1307,6 +1319,113 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::RemoteMachineRenamed { machine })
     }
 
+    async fn execute_create_pairing_invite_request(
+        &self,
+        request: CreatePairingInviteRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = self.config_projection.snapshot();
+        let relay_url = config
+            .relay_url
+            .clone()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "create pairing invite",
+                message: "relay URL must be configured before creating an invite".to_string(),
+            })?;
+        let relay_token =
+            config
+                .relay_token
+                .clone()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "create pairing invite",
+                    message: "relay token must be configured before creating an invite".to_string(),
+                })?;
+        let issued_at_ms = current_unix_ms();
+        let expires_at_ms =
+            issued_at_ms.saturating_add(request.expires_in_ms.unwrap_or(15 * 60 * 1000));
+        let invite_id = random_hex_id();
+        let token = PairingInviteToken {
+            version: 1,
+            intent: request.intent,
+            invite_id: invite_id.clone(),
+            relay_url: relay_url.clone(),
+            relay_token,
+            target_daemon_id: config.daemon_id.clone(),
+            target_daemon_alias: config.daemon_alias.clone().or(request.alias),
+            issuer_machine_id: config.host_machine_id,
+            issued_at_ms,
+            expires_at_ms,
+        };
+        let invite_token = encode_pairing_invite_token(&token)?;
+        Ok(LocalDaemonResponse::PairingInviteCreated {
+            invite: PairingInviteRecord {
+                intent: token.intent,
+                invite_id,
+                invite_token,
+                relay_url,
+                target_daemon_id: token.target_daemon_id,
+                target_daemon_alias: token.target_daemon_alias,
+                issued_at_ms,
+                expires_at_ms,
+            },
+        })
+    }
+
+    async fn execute_join_pairing_invite_request(
+        &self,
+        request: JoinPairingInviteRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let token = decode_pairing_invite_token(&request.invite_token)?;
+        let now_ms = current_unix_ms();
+        if token.expires_at_ms <= now_ms {
+            return Err(DaemonError::LocalTransport {
+                operation: "join pairing invite",
+                message: "pairing invite is expired".to_string(),
+            });
+        }
+        let config = self.config_projection.snapshot();
+        let subject_id = request.subject_id.unwrap_or_else(|| match token.intent {
+            PairingInviteIntent::Client => format!("client-{}", random_hex_id()),
+            PairingInviteIntent::Machine => config.host_machine_id.clone(),
+        });
+        let public_key_thumbprint = request
+            .public_key_thumbprint
+            .unwrap_or_else(|| public_key_thumbprint(&config.relay_public_key));
+        match token.intent {
+            PairingInviteIntent::Client => {
+                crate::config::DaemonConfig::record_paired_client(
+                    subject_id.clone(),
+                    public_key_thumbprint.clone(),
+                    request.alias.clone(),
+                    now_ms,
+                )?;
+            }
+            PairingInviteIntent::Machine => {
+                crate::config::DaemonConfig::pair_remote_machine(
+                    subject_id.clone(),
+                    public_key_thumbprint.clone(),
+                    now_ms,
+                )?;
+                {
+                    let mut app = self.app.lock().await;
+                    app.configure_relay(Some(token.relay_url.clone()), Some(token.relay_token))?;
+                    app.invalidate_provider_catalog_cache();
+                }
+                self.provider_catalog_projection.invalidate();
+            }
+        }
+        Ok(LocalDaemonResponse::PairingInviteJoined {
+            pairing: PairingJoinRecord {
+                intent: token.intent,
+                subject_id,
+                relay_url: token.relay_url,
+                target_daemon_id: token.target_daemon_id,
+                alias: request.alias,
+                public_key_thumbprint,
+                paired_at_ms: now_ms,
+            },
+        })
+    }
+
     async fn execute_list_paired_clients_request(
         &self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -1699,6 +1818,12 @@ impl CommandRouter {
             }
             LocalDaemonRequest::RenameRemoteMachine(request) => {
                 self.execute_rename_remote_machine_request(request).await
+            }
+            LocalDaemonRequest::CreatePairingInvite(request) => {
+                self.execute_create_pairing_invite_request(request).await
+            }
+            LocalDaemonRequest::JoinPairingInvite(request) => {
+                self.execute_join_pairing_invite_request(request).await
             }
             LocalDaemonRequest::ListPairedClients(_) => {
                 self.execute_list_paired_clients_request().await
@@ -2328,6 +2453,75 @@ fn paired_client_record(client: crate::config::PersistedClientPairing) -> Paired
         paired_at_ms: client.paired_at_ms,
         revoked: client.revoked,
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PairingInviteToken {
+    version: u8,
+    intent: PairingInviteIntent,
+    invite_id: String,
+    relay_url: String,
+    relay_token: String,
+    target_daemon_id: String,
+    #[serde(default)]
+    target_daemon_alias: Option<String>,
+    issuer_machine_id: String,
+    issued_at_ms: u64,
+    expires_at_ms: u64,
+}
+
+fn encode_pairing_invite_token(token: &PairingInviteToken) -> Result<String, DaemonError> {
+    let payload = serde_json::to_vec(token).map_err(|error| DaemonError::LocalTransport {
+        operation: "encode pairing invite",
+        message: error.to_string(),
+    })?;
+    Ok(format!(
+        "arroba-invite-v1.{}",
+        URL_SAFE_NO_PAD.encode(payload)
+    ))
+}
+
+fn decode_pairing_invite_token(token: &str) -> Result<PairingInviteToken, DaemonError> {
+    let payload = token
+        .trim()
+        .strip_prefix("arroba-invite-v1.")
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "decode pairing invite",
+            message: "pairing invite token has an unsupported format".to_string(),
+        })?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "decode pairing invite",
+            message: error.to_string(),
+        })?;
+    let decoded = serde_json::from_slice::<PairingInviteToken>(&bytes).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "decode pairing invite",
+            message: error.to_string(),
+        }
+    })?;
+    if decoded.version != 1 {
+        return Err(DaemonError::LocalTransport {
+            operation: "decode pairing invite",
+            message: format!("unsupported pairing invite version {}", decoded.version),
+        });
+    }
+    Ok(decoded)
+}
+
+fn random_hex_id() -> String {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn public_key_thumbprint(public_key: &str) -> String {
+    let digest = Sha256::digest(public_key.as_bytes());
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 fn current_unix_ms() -> u64 {

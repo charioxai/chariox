@@ -15,6 +15,8 @@ import type {
   PromptQueueItem,
   PromptSubmittedPayload,
   PairedClientRecord,
+  PairingInviteRecord,
+  PairingJoinRecord,
   QueuedWorkflowLaunch,
   RelayKernelPresence,
   RelayStatus,
@@ -42,6 +44,7 @@ import {
   cancelWorkflowRunRequest,
   clearQueuedWorkflowLaunchesRequest,
   approveRemoteMachineRequest,
+  createPairingInviteRequest,
   createWorkflowEndpointRequest,
   createWorkflowRequest,
   createWorkflowWatchdogRequest,
@@ -59,6 +62,7 @@ import {
   invokeWorkflowEndpointRequest,
   installMcpServerRequest,
   installSkillRequest,
+  joinPairingInviteRequest,
   getUserConfigRequest,
   listAgentsRequest,
   listMcpServersRequest,
@@ -203,8 +207,8 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
           "arroba-shell commands:",
           "session list|new|attach|use",
           "agent list|spawn|focus|cycle",
-          "client list|record|revoke",
-          "machine list|kernels|approve|rename|revoke",
+          "client invite create|join|list|record|revoke",
+          "machine invite create|join|list|kernels|approve|rename|revoke",
           "relay status",
           "config show|path|set|unset|managed-io",
           "mcp list|show|install|update|uninstall|import|grant|revoke|grants",
@@ -632,6 +636,24 @@ async function executeClientCommand(
 ): Promise<ShellCommandResult> {
   const [action, clientId, publicKeyThumbprint, ...rest] = parsed.args
   switch (action) {
+    case "invite": {
+      if (clientId !== "create") {
+        return { ok: false, message: "usage: client invite create [alias]" }
+      }
+      const alias = publicKeyThumbprint ? [publicKeyThumbprint, ...rest].join(" ") : null
+      const response = await deps.client.send(createPairingInviteRequest("client", alias))
+      const payload = expectVariant<{ invite: PairingInviteRecord }>(response, "PairingInviteCreated")
+      return { ok: true, message: formatPairingInvite(payload.invite), data: payload }
+    }
+    case "join": {
+      if (!clientId) {
+        return { ok: false, message: "usage: client join <invite-token> [client-id] [alias]" }
+      }
+      const alias = rest.length > 0 ? rest.join(" ") : null
+      const response = await deps.client.send(joinPairingInviteRequest(clientId, publicKeyThumbprint ?? null, null, alias))
+      const payload = expectVariant<{ pairing: PairingJoinRecord }>(response, "PairingInviteJoined")
+      return { ok: true, message: formatPairingJoin(payload.pairing), data: payload }
+    }
     case "list":
     case "ls": {
       const response = await deps.client.send(listPairedClientsRequest())
@@ -656,7 +678,7 @@ async function executeClientCommand(
       return { ok: true, message: `revoked client ${formatPairedClientLabel(payload.client)}`, data: payload }
     }
     default:
-      return { ok: false, message: "usage: client list|record|revoke" }
+      return { ok: false, message: "usage: client invite create|join|list|record|revoke" }
   }
 }
 
@@ -666,6 +688,25 @@ async function executeMachineCommand(
 ): Promise<ShellCommandResult> {
   const [action, machineRef, ...rest] = parsed.args
   switch (action) {
+    case "invite": {
+      if (machineRef !== "create") {
+        return { ok: false, message: "usage: machine invite create [alias]" }
+      }
+      const alias = rest.length > 0 ? rest.join(" ") : null
+      const response = await deps.client.send(createPairingInviteRequest("machine", alias))
+      const payload = expectVariant<{ invite: PairingInviteRecord }>(response, "PairingInviteCreated")
+      return { ok: true, message: formatPairingInvite(payload.invite), data: payload }
+    }
+    case "join": {
+      if (!machineRef) {
+        return { ok: false, message: "usage: machine join <invite-token> [machine-id] [alias]" }
+      }
+      const subjectId = rest[0] ?? null
+      const alias = rest.length > 1 ? rest.slice(1).join(" ") : null
+      const response = await deps.client.send(joinPairingInviteRequest(machineRef, subjectId, null, alias))
+      const payload = expectVariant<{ pairing: PairingJoinRecord }>(response, "PairingInviteJoined")
+      return { ok: true, message: formatPairingJoin(payload.pairing), data: payload }
+    }
     case "list":
     case "ls": {
       const response = await deps.client.send(listRemoteMachinesRequest())
@@ -707,7 +748,7 @@ async function executeMachineCommand(
       return { ok: true, message: `revoked machine ${formatRemoteMachineLabel(payload.machine)}`, data: payload }
     }
     default:
-      return { ok: false, message: "usage: machine list|kernels|approve|rename|revoke" }
+      return { ok: false, message: "usage: machine invite create|join|list|kernels|approve|rename|revoke" }
   }
 }
 
@@ -1842,6 +1883,21 @@ function formatPairedClients(clients: PairedClientRecord[]): string {
 
 function formatPairedClientLabel(client: PairedClientRecord): string {
   return client.alias ? `${client.alias} id=${client.client_id}` : client.client_id
+}
+
+function formatPairingInvite(invite: PairingInviteRecord): string {
+  return [
+    `${invite.intent} invite ${invite.invite_id}`,
+    `target=${invite.target_daemon_alias ?? invite.target_daemon_id}`,
+    `relay=${invite.relay_url}`,
+    `expires_at_ms=${invite.expires_at_ms}`,
+    `token=${invite.invite_token}`,
+  ].join("\n")
+}
+
+function formatPairingJoin(pairing: PairingJoinRecord): string {
+  const alias = pairing.alias ? ` alias=${pairing.alias}` : ""
+  return `joined ${pairing.intent} ${pairing.subject_id}${alias} target=${pairing.target_daemon_id} thumbprint=${pairing.public_key_thumbprint}`
 }
 
 function formatRemoteKernels(kernels: RelayKernelPresence[], machineRef: string): string {
