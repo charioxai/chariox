@@ -231,6 +231,16 @@ impl PromptRuntimeState {
         self.scheduler_state = SchedulerState::Idle;
     }
 
+    pub(in crate::session) fn retain_agent_ids(
+        &mut self,
+        agent_ids: &std::collections::BTreeSet<String>,
+        focused_agent_id: Option<&str>,
+    ) {
+        self.prompt_states
+            .retain(|agent_id, _| agent_ids.contains(agent_id));
+        self.refresh_after_mutation(focused_agent_id);
+    }
+
     pub(in crate::session) fn interrupt_active_prompts(
         &mut self,
         focused_agent_id: Option<&str>,

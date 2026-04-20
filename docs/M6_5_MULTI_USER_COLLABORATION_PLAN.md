@@ -437,6 +437,13 @@ Exit criteria:
 
 ### Slice 4. Caller-Scoped Projections And Redaction
 
+Status: closed in implementation. Kernel responses are redacted at the
+protocol boundary while internal projections remain full-fidelity. Session and
+agent listings expose only the caller's freeform agents; workflow graph and run
+status stay visible; non-owner workflow node instructions, workflow invocation
+prompts, transient turn inputs, provider runs, and provider processes are hidden
+or rejected.
+
 Implement projection filtering at the kernel/protocol boundary.
 
 Exit criteria:

@@ -728,7 +728,9 @@ impl CommandRouter {
                             user_id: caller_user_id.clone(),
                         });
                     }
-                    return Ok(LocalDaemonResponse::SessionState { session });
+                    return Ok(LocalDaemonResponse::SessionState {
+                        session: session.redacted_for_user(&caller_user_id),
+                    });
                 }
                 if self.session_projection.has_warmed_list() {
                     return Err(DaemonError::SessionNotFound {
@@ -748,7 +750,9 @@ impl CommandRouter {
                         user_id: caller_user_id.clone(),
                     });
                 }
-                return Ok(LocalDaemonResponse::SessionResolved { session });
+                return Ok(LocalDaemonResponse::SessionResolved {
+                    session: session.redacted_for_user(&caller_user_id),
+                });
             }
             if let Some(result) = self
                 .session_projection
@@ -769,7 +773,9 @@ impl CommandRouter {
                         user_id: caller_user_id.clone(),
                     });
                 }
-                return Ok(LocalDaemonResponse::SessionResolved { session });
+                return Ok(LocalDaemonResponse::SessionResolved {
+                    session: session.redacted_for_user(&caller_user_id),
+                });
             }
         }
         if matches!(request, LocalDaemonRequest::ListSessions(_)) {
@@ -777,6 +783,7 @@ impl CommandRouter {
                 let sessions = sessions
                     .into_iter()
                     .filter(|session| session.has_member(&caller_user_id))
+                    .map(|session| session.redacted_for_user(&caller_user_id))
                     .collect();
                 return Ok(LocalDaemonResponse::SessionsListed { sessions });
             }
@@ -789,7 +796,12 @@ impl CommandRouter {
                     .collect()
             };
             self.session_projection.update_list(sessions.clone());
-            return Ok(LocalDaemonResponse::SessionsListed { sessions });
+            return Ok(LocalDaemonResponse::SessionsListed {
+                sessions: sessions
+                    .into_iter()
+                    .map(|session| session.redacted_for_user(&caller_user_id))
+                    .collect(),
+            });
         }
         match &request {
             LocalDaemonRequest::RelayStatus(_) => {
@@ -852,7 +864,9 @@ impl CommandRouter {
             }
             _ => {}
         }
-        if let Some(response) = self.projected_session_inspection_response(&request) {
+        if let Some(response) =
+            self.projected_session_inspection_response(&request, &caller_user_id)
+        {
             return response;
         }
         if let LocalDaemonRequest::PumpTerminalOutput(request) = &request {
@@ -879,6 +893,7 @@ impl CommandRouter {
         }
         if let LocalDaemonRequest::GetProviderRun(request) = &request {
             if let Some(provider_run) = self.provider_run_projection.get(&request.provider_run_id) {
+                ensure_provider_run_visible_to_user(&provider_run, &caller_user_id)?;
                 if provider_run.adapter_key() != "opencode" {
                     return Ok(LocalDaemonResponse::ProviderRun { provider_run });
                 }
@@ -889,7 +904,9 @@ impl CommandRouter {
                 .provider_process_projection
                 .list(request.provider.as_deref())
             {
-                return Ok(LocalDaemonResponse::ProviderProcessesListed { processes });
+                return Ok(LocalDaemonResponse::ProviderProcessesListed {
+                    processes: self.provider_processes_visible_to_user(processes, &caller_user_id),
+                });
             }
         }
         if matches!(request, LocalDaemonRequest::GetProviderCatalog(_)) {
@@ -986,12 +1003,384 @@ impl CommandRouter {
         self.apply_provider_run_projection_refresh(&result).await;
         self.apply_provider_launch_projection_state(&result).await;
         self.apply_agent_lane_cleanup(&result).await;
-        result
+        self.redact_result_for_user(result, &caller_user_id)
+    }
+
+    fn redact_result_for_user(
+        &self,
+        result: Result<LocalDaemonResponse, DaemonError>,
+        caller_user_id: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        result.and_then(|response| self.redact_response_for_user(response, caller_user_id))
+    }
+
+    fn redact_response_for_user(
+        &self,
+        response: LocalDaemonResponse,
+        caller_user_id: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(match response {
+            LocalDaemonResponse::SessionCreated { session, agent } => {
+                LocalDaemonResponse::SessionCreated {
+                    session: session.redacted_for_user(caller_user_id),
+                    agent,
+                }
+            }
+            LocalDaemonResponse::SessionResolved { session } => {
+                LocalDaemonResponse::SessionResolved {
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::SessionState { session } => LocalDaemonResponse::SessionState {
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::SessionsListed { sessions } => {
+                LocalDaemonResponse::SessionsListed {
+                    sessions: sessions
+                        .into_iter()
+                        .map(|session| session.redacted_for_user(caller_user_id))
+                        .collect(),
+                }
+            }
+            LocalDaemonResponse::SessionInviteCreated { invite, session } => {
+                LocalDaemonResponse::SessionInviteCreated {
+                    invite,
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::SessionInviteJoined { member, session } => {
+                LocalDaemonResponse::SessionInviteJoined {
+                    member,
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::SessionInviteRevoked { invite, session } => {
+                LocalDaemonResponse::SessionInviteRevoked {
+                    invite,
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::PromptSubmitted { outcome, session } => {
+                LocalDaemonResponse::PromptSubmitted {
+                    outcome,
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::SessionConfigUpdated { config, session } => {
+                LocalDaemonResponse::SessionConfigUpdated {
+                    config,
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::SessionEnded { session } => LocalDaemonResponse::SessionEnded {
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::SessionDeleted { session } => {
+                LocalDaemonResponse::SessionDeleted {
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::SessionAliased { session } => {
+                LocalDaemonResponse::SessionAliased {
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::AgentsListed { agents } => LocalDaemonResponse::AgentsListed {
+                agents: agents
+                    .into_iter()
+                    .filter(|agent| agent.owner_user_id() == caller_user_id)
+                    .collect(),
+            },
+            LocalDaemonResponse::ProviderRun { provider_run } => {
+                ensure_provider_run_visible_to_user(&provider_run, caller_user_id)?;
+                LocalDaemonResponse::ProviderRun { provider_run }
+            }
+            LocalDaemonResponse::ProviderProcessesListed { processes } => {
+                LocalDaemonResponse::ProviderProcessesListed {
+                    processes: self.provider_processes_visible_to_user(processes, caller_user_id),
+                }
+            }
+            LocalDaemonResponse::ProviderProcessesTornDown { processes } => {
+                LocalDaemonResponse::ProviderProcessesTornDown {
+                    processes: self.provider_processes_visible_to_user(processes, caller_user_id),
+                }
+            }
+            LocalDaemonResponse::WorkflowCreated { workflow, session } => {
+                LocalDaemonResponse::WorkflowCreated {
+                    workflow: workflow.redacted_for_user(caller_user_id),
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::WorkflowAliased { workflow, session } => {
+                LocalDaemonResponse::WorkflowAliased {
+                    workflow: workflow.redacted_for_user(caller_user_id),
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::WorkflowsListed { workflows } => {
+                LocalDaemonResponse::WorkflowsListed {
+                    workflows: workflows
+                        .into_iter()
+                        .map(|workflow| workflow.redacted_for_user(caller_user_id))
+                        .collect(),
+                }
+            }
+            LocalDaemonResponse::WorkflowResolved { workflow } => {
+                LocalDaemonResponse::WorkflowResolved {
+                    workflow: workflow.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::WorkflowEndpointCreated {
+                endpoint,
+                workflow,
+                session,
+            } => LocalDaemonResponse::WorkflowEndpointCreated {
+                endpoint,
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowEndpointAliased {
+                endpoint,
+                workflow,
+                session,
+            } => LocalDaemonResponse::WorkflowEndpointAliased {
+                endpoint,
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowEndpointBound {
+                endpoint,
+                workflow,
+                session,
+            } => LocalDaemonResponse::WorkflowEndpointBound {
+                endpoint,
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowNodeAdded {
+                node,
+                workflow,
+                session,
+            } => LocalDaemonResponse::WorkflowNodeAdded {
+                node: node.redacted_for_user(caller_user_id),
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowNodeRemoved {
+                node,
+                workflow,
+                session,
+            } => LocalDaemonResponse::WorkflowNodeRemoved {
+                node: node.redacted_for_user(caller_user_id),
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowNodeInstructionsUpdated {
+                node,
+                workflow,
+                session,
+            } => LocalDaemonResponse::WorkflowNodeInstructionsUpdated {
+                node: node.redacted_for_user(caller_user_id),
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated {
+                node,
+                workflow,
+                session,
+            } => LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated {
+                node: node.redacted_for_user(caller_user_id),
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated {
+                node,
+                workflow,
+                session,
+            } => LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated {
+                node: node.redacted_for_user(caller_user_id),
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated {
+                node,
+                workflow,
+                session,
+            } => LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated {
+                node: node.redacted_for_user(caller_user_id),
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated {
+                node,
+                workflow,
+                session,
+            } => LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated {
+                node: node.redacted_for_user(caller_user_id),
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowEdgeAdded {
+                edge,
+                workflow,
+                session,
+            } => LocalDaemonResponse::WorkflowEdgeAdded {
+                edge,
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowEdgeRemoved {
+                edge,
+                workflow,
+                session,
+            } => LocalDaemonResponse::WorkflowEdgeRemoved {
+                edge,
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowRunInvoked {
+                workflow_run,
+                workflow,
+                endpoint,
+                session,
+            } => LocalDaemonResponse::WorkflowRunInvoked {
+                workflow_run: workflow_run.redacted_for_user(Some(&workflow), caller_user_id),
+                workflow: workflow.redacted_for_user(caller_user_id),
+                endpoint,
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowRunQueued {
+                queued_launch,
+                workflow,
+                endpoint,
+                session,
+            } => LocalDaemonResponse::WorkflowRunQueued {
+                queued_launch,
+                workflow: workflow.redacted_for_user(caller_user_id),
+                endpoint,
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => {
+                LocalDaemonResponse::WorkflowRunsListed {
+                    workflow_runs: workflow_runs
+                        .into_iter()
+                        .map(|workflow_run| workflow_run.redacted_for_user(None, caller_user_id))
+                        .collect(),
+                }
+            }
+            LocalDaemonResponse::WorkflowRun { workflow_run } => LocalDaemonResponse::WorkflowRun {
+                workflow_run: workflow_run.redacted_for_user(None, caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowRunCancelled {
+                workflow_run,
+                session,
+            } => {
+                let redacted_run = {
+                    let workflow = session
+                        .workflows()
+                        .iter()
+                        .find(|workflow| workflow.id() == workflow_run.workflow_id());
+                    workflow_run.redacted_for_user(workflow, caller_user_id)
+                };
+                LocalDaemonResponse::WorkflowRunCancelled {
+                    workflow_run: redacted_run,
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::WorkflowRunResumed {
+                workflow_run,
+                session,
+            } => {
+                let redacted_run = {
+                    let workflow = session
+                        .workflows()
+                        .iter()
+                        .find(|workflow| workflow.id() == workflow_run.workflow_id());
+                    workflow_run.redacted_for_user(workflow, caller_user_id)
+                };
+                LocalDaemonResponse::WorkflowRunResumed {
+                    workflow_run: redacted_run,
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::WorkflowFlushContextUpdated { workflow, session } => {
+                LocalDaemonResponse::WorkflowFlushContextUpdated {
+                    workflow: workflow.redacted_for_user(caller_user_id),
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { workflow, session } => {
+                LocalDaemonResponse::WorkflowRunOutputSchemaUpdated {
+                    workflow: workflow.redacted_for_user(caller_user_id),
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { workflow, session } => {
+                LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated {
+                    workflow: workflow.redacted_for_user(caller_user_id),
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session } => {
+                LocalDaemonResponse::WorkflowLaunchPolicyUpdated {
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::QueuedWorkflowLaunchRemoved {
+                queued_launch,
+                session,
+            } => LocalDaemonResponse::QueuedWorkflowLaunchRemoved {
+                queued_launch,
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::QueuedWorkflowLaunchesCleared {
+                queued_launches,
+                session,
+            } => LocalDaemonResponse::QueuedWorkflowLaunchesCleared {
+                queued_launches,
+                session: session.redacted_for_user(caller_user_id),
+            },
+            LocalDaemonResponse::WorkflowTurnAcknowledged {
+                workflow_run,
+                session,
+            } => {
+                let redacted_run = {
+                    let workflow = session
+                        .workflows()
+                        .iter()
+                        .find(|workflow| workflow.id() == workflow_run.workflow_id());
+                    workflow_run.redacted_for_user(workflow, caller_user_id)
+                };
+                LocalDaemonResponse::WorkflowTurnAcknowledged {
+                    workflow_run: redacted_run,
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            other => other,
+        })
+    }
+
+    fn provider_processes_visible_to_user(
+        &self,
+        processes: Vec<crate::provider::ProviderProcessInfo>,
+        caller_user_id: &str,
+    ) -> Vec<crate::provider::ProviderProcessInfo> {
+        processes
+            .into_iter()
+            .filter(|process| {
+                process.owner_provider_run_ids.iter().any(|run_id| {
+                    self.provider_run_projection
+                        .get(run_id)
+                        .is_some_and(|run| run.owned_by(caller_user_id))
+                })
+            })
+            .collect()
     }
 
     fn projected_session_inspection_response(
         &self,
         request: &LocalDaemonRequest,
+        caller_user_id: &str,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
         match request {
             LocalDaemonRequest::ListAgents(request) => {
@@ -1000,7 +1389,12 @@ impl CommandRouter {
                     Err(error) => return Some(Err(error)),
                 };
                 Some(Ok(LocalDaemonResponse::AgentsListed {
-                    agents: session.agents().to_vec(),
+                    agents: session
+                        .agents()
+                        .iter()
+                        .filter(|agent| agent.owner_user_id() == caller_user_id)
+                        .cloned()
+                        .collect(),
                 }))
             }
             LocalDaemonRequest::ListWorkflows(request) => {
@@ -1009,7 +1403,12 @@ impl CommandRouter {
                     Err(error) => return Some(Err(error)),
                 };
                 Some(Ok(LocalDaemonResponse::WorkflowsListed {
-                    workflows: session.workflows().to_vec(),
+                    workflows: session
+                        .workflows()
+                        .iter()
+                        .cloned()
+                        .map(|workflow| workflow.redacted_for_user(caller_user_id))
+                        .collect(),
                 }))
             }
             LocalDaemonRequest::ResolveWorkflow(request) => {
@@ -1018,8 +1417,11 @@ impl CommandRouter {
                     Err(error) => return Some(Err(error)),
                 };
                 Some(
-                    projected_resolve_workflow(&session, &request.workflow_ref)
-                        .map(|workflow| LocalDaemonResponse::WorkflowResolved { workflow }),
+                    projected_resolve_workflow(&session, &request.workflow_ref).map(|workflow| {
+                        LocalDaemonResponse::WorkflowResolved {
+                            workflow: workflow.redacted_for_user(caller_user_id),
+                        }
+                    }),
                 )
             }
             LocalDaemonRequest::ListWorkflowRuns(request) => {
@@ -1039,6 +1441,15 @@ impl CommandRouter {
                                         .is_none_or(|id| workflow_run.workflow_id() == id)
                                 })
                                 .cloned()
+                                .map(|workflow_run| {
+                                    let workflow = workflow_id.as_deref().and_then(|id| {
+                                        session
+                                            .workflows()
+                                            .iter()
+                                            .find(|workflow| workflow.id() == id)
+                                    });
+                                    workflow_run.redacted_for_user(workflow, caller_user_id)
+                                })
                                 .collect();
                             LocalDaemonResponse::WorkflowRunsListed { workflow_runs }
                         },
@@ -1051,8 +1462,18 @@ impl CommandRouter {
                     Err(error) => return Some(Err(error)),
                 };
                 Some(
-                    projected_resolve_workflow_run(&session, &request.workflow_run_ref)
-                        .map(|workflow_run| LocalDaemonResponse::WorkflowRun { workflow_run }),
+                    projected_resolve_workflow_run(&session, &request.workflow_run_ref).map(
+                        |workflow_run| {
+                            let workflow = session
+                                .workflows()
+                                .iter()
+                                .find(|workflow| workflow.id() == workflow_run.workflow_id());
+                            LocalDaemonResponse::WorkflowRun {
+                                workflow_run: workflow_run
+                                    .redacted_for_user(workflow, caller_user_id),
+                            }
+                        },
+                    ),
                 )
             }
             LocalDaemonRequest::ListWorkflowWatchdogs(request) => {
@@ -2757,6 +3178,22 @@ fn command_caller_user_id(command: &KernelCommand) -> String {
         .user_id
         .clone()
         .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
+}
+
+fn ensure_provider_run_visible_to_user(
+    provider_run: &crate::provider::RuntimeProviderRun,
+    caller_user_id: &str,
+) -> Result<(), DaemonError> {
+    if provider_run.owned_by(caller_user_id) {
+        Ok(())
+    } else {
+        Err(DaemonError::OwnershipAccessDenied {
+            user_id: caller_user_id.to_string(),
+            owner_user_id: provider_run.owner_user_id().to_string(),
+            resource: format!("provider run `{}`", provider_run.id()),
+            operation: "read provider run",
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -8564,6 +9001,159 @@ mod tests {
                 .expect_err("unrelated user should not remove edge"),
             "user-3",
             "user-2",
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_session_projection_redacts_other_users_private_agent_and_workflow_state() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new(
+                "workspace-redaction",
+                "worktree-redaction",
+            ))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let (_, invite) = app
+            .sessions_mut()
+            .create_session_invite(
+                &session_id,
+                "invite-user-2".to_string(),
+                DEFAULT_LOCAL_USER_ID.to_string(),
+                None,
+                Some(1),
+            )
+            .expect("invite should be created");
+        app.sessions_mut()
+            .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
+            .expect("user should join session");
+        let local_agent = spawn_test_agent(&mut app, &session_id, "local-owned", "dev-stub");
+        let user_two_agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(&session_id, "dev-stub")
+                    .with_alias("user-two-owned")
+                    .with_owner_user_id("user-2"),
+            )
+            .expect("user two agent should be created");
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(&session_id, Some("redaction-flow".to_string()))
+            .expect("workflow should be created");
+        let workflow_id = workflow.id().to_string();
+        let local_node = app
+            .sessions_mut()
+            .add_workflow_node_owned(
+                &session_id,
+                &workflow_id,
+                local_agent.id(),
+                DEFAULT_LOCAL_USER_ID.to_string(),
+                "local public".to_string(),
+            )
+            .expect("local node should be created");
+        app.sessions_mut()
+            .update_workflow_node_instructions(
+                &session_id,
+                &workflow_id,
+                local_node.id(),
+                Some("local private prompt".to_string()),
+            )
+            .expect("local node instructions should update");
+        let user_two_node = app
+            .sessions_mut()
+            .add_workflow_node_owned(
+                &session_id,
+                &workflow_id,
+                user_two_agent.id(),
+                "user-2".to_string(),
+                "user two public".to_string(),
+            )
+            .expect("user two node should be created");
+        app.sessions_mut()
+            .update_workflow_node_instructions(
+                &session_id,
+                &workflow_id,
+                user_two_node.id(),
+                Some("user two private prompt".to_string()),
+            )
+            .expect("user two node instructions should update");
+        let provider_run = launch_test_provider(
+            &mut app,
+            &session_id,
+            local_agent.id(),
+            "dev-stub",
+            "dev-stub",
+            "redaction-model",
+        );
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let redacted_session = match router
+            .dispatch(
+                remote_command_for_request(&state_request, Some("user-2")),
+                state_request,
+            )
+            .await
+            .expect("member should read redacted session state")
+        {
+            LocalDaemonResponse::SessionState { session } => session,
+            other => panic!("unexpected session response: {other:?}"),
+        };
+        assert_eq!(redacted_session.agents().len(), 1);
+        assert_eq!(redacted_session.agents()[0].id(), user_two_agent.id());
+        let redacted_workflow = redacted_session
+            .workflows()
+            .iter()
+            .find(|workflow| workflow.id() == workflow_id)
+            .expect("workflow graph should remain visible");
+        assert_eq!(redacted_workflow.nodes().len(), 2);
+        let redacted_local_node = redacted_workflow
+            .node(local_node.id())
+            .expect("other user's node should remain visible");
+        assert_eq!(redacted_local_node.public_label(), "local public");
+        assert_eq!(redacted_local_node.instructions(), None);
+        let visible_user_two_node = redacted_workflow
+            .node(user_two_node.id())
+            .expect("own node should remain visible");
+        assert_eq!(
+            visible_user_two_node.instructions(),
+            Some("user two private prompt")
+        );
+
+        let list_agents = LocalDaemonRequest::ListAgents(ListAgentsRequest {
+            session_id: session_id.clone(),
+        });
+        match router
+            .dispatch(
+                remote_command_for_request(&list_agents, Some("user-2")),
+                list_agents,
+            )
+            .await
+            .expect("member should list own agents")
+        {
+            LocalDaemonResponse::AgentsListed { agents } => {
+                assert_eq!(agents.len(), 1);
+                assert_eq!(agents[0].id(), user_two_agent.id());
+            }
+            other => panic!("unexpected agents response: {other:?}"),
+        }
+
+        let provider_request = LocalDaemonRequest::GetProviderRun(GetProviderRunRequest {
+            provider_run_id: provider_run.id().to_string(),
+        });
+        assert_ownership_denied(
+            router
+                .dispatch(
+                    remote_command_for_request(&provider_request, Some("user-2")),
+                    provider_request,
+                )
+                .await
+                .expect_err("other user should not read provider run"),
+            "user-2",
+            DEFAULT_LOCAL_USER_ID,
         );
     }
 

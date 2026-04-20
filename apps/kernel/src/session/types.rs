@@ -432,6 +432,13 @@ impl WorkflowNodeDefinition {
     pub fn set_max_turns(&mut self, value: Option<u32>) {
         self.max_turns = value;
     }
+
+    pub fn redacted_for_user(mut self, user_id: &str) -> Self {
+        if self.owner_user_id != user_id {
+            self.instructions = None;
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -820,6 +827,15 @@ impl WorkflowDefinition {
             .position(|endpoint| endpoint.id() == endpoint_id)?;
         Some(self.endpoints.remove(index))
     }
+
+    pub fn redacted_for_user(mut self, user_id: &str) -> Self {
+        self.nodes = self
+            .nodes
+            .into_iter()
+            .map(|node| node.redacted_for_user(user_id))
+            .collect();
+        self
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1053,6 +1069,11 @@ impl WorkflowTurnEnvelope {
         self.rendered_prompt = None;
         self.mailbox_content = None;
         self.handoff_payloads_json = None;
+    }
+
+    pub fn redacted_private_inputs(mut self) -> Self {
+        self.clear_transient_inputs();
+        self
     }
 }
 
@@ -1537,6 +1558,15 @@ impl WorkflowNodeRun {
         self.status = WorkflowNodeRunStatus::Ready;
         self.completed_at_ms = None;
     }
+
+    pub fn redacted_for_node_owner(mut self, owner_user_id: Option<&str>, user_id: &str) -> Self {
+        if owner_user_id != Some(user_id) {
+            self.turn_envelope = self
+                .turn_envelope
+                .map(WorkflowTurnEnvelope::redacted_private_inputs);
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1644,6 +1674,30 @@ impl WorkflowRun {
 
     pub fn messages(&self) -> &[WorkflowMessage] {
         &self.messages
+    }
+
+    pub fn redacted_for_user(
+        mut self,
+        workflow: Option<&WorkflowDefinition>,
+        user_id: &str,
+    ) -> Self {
+        let endpoint_owner = workflow
+            .and_then(|workflow| workflow.endpoint(&self.endpoint_id))
+            .map(WorkflowEndpointDefinition::owner_user_id);
+        if endpoint_owner != Some(user_id) {
+            self.invocation_prompt = None;
+        }
+        self.node_runs = self
+            .node_runs
+            .into_iter()
+            .map(|node_run| {
+                let node_owner = workflow
+                    .and_then(|workflow| workflow.node(node_run.node_id()))
+                    .map(WorkflowNodeDefinition::owner_user_id);
+                node_run.redacted_for_node_owner(node_owner, user_id)
+            })
+            .collect();
+        self
     }
 
     pub fn failure_events(&self) -> &[WorkflowFailureEvent] {
@@ -2407,6 +2461,32 @@ impl RuntimeSession {
     }
     pub fn set_agents(&mut self, agents: Vec<AgentInstance>) {
         self.agents = agents;
+    }
+
+    pub fn redacted_for_user(mut self, user_id: &str) -> Self {
+        let owned_agent_ids = self
+            .agents
+            .iter()
+            .filter(|agent| agent.owner_user_id() == user_id)
+            .map(|agent| agent.id().to_string())
+            .collect::<BTreeSet<_>>();
+        self.agents.retain(|agent| agent.owner_user_id() == user_id);
+        if self
+            .focused_agent_id
+            .as_ref()
+            .is_some_and(|agent_id| !owned_agent_ids.contains(agent_id))
+        {
+            self.focused_agent_id = None;
+        }
+        self.active_provider_run_id = None;
+        self.prompt_runtime
+            .retain_agent_ids(&owned_agent_ids, self.focused_agent_id.as_deref());
+        self.workflows = self
+            .workflows
+            .into_iter()
+            .map(|workflow| workflow.redacted_for_user(user_id))
+            .collect();
+        self
     }
     pub fn attachment_ids(&self) -> &BTreeSet<String> {
         &self.attachment_ids

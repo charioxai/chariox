@@ -663,6 +663,10 @@ impl RuntimeProviderRun {
     pub fn mark_ended(&mut self) {
         self.state = ProviderRunState::Ended;
     }
+
+    pub fn owned_by(&self, user_id: &str) -> bool {
+        self.owner_user_id == user_id
+    }
 }
 
 fn default_control_capabilities(
