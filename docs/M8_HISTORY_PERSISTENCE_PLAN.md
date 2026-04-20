@@ -496,9 +496,9 @@ If multiple agents could have caused a commit, store all candidates and show the
 
 ### M8.9 Boot Restore
 
-- Rebuild projections from durable state.
+- Rebuild projections from durable state. **Started:** bootstrap now replays `session.created`, `agent.created`, and `session.ended` durable events, restores session/agent stores, clears live agents for ended sessions, and refreshes session projections.
 - Mark interrupted/recovering work correctly.
-- Validate local restart drills.
+- Validate local restart drills. **Started:** focused restart coverage verifies created sessions, default agents, spawned agents, and ended sessions survive a kernel restart through the durable journal.
 
 ### M8.10 Remote Restart/Reconcile
 

@@ -30,7 +30,7 @@ use crate::agent::{
 };
 use crate::attachment::{AttachmentService, AttachmentServiceStore};
 use crate::config::{DaemonConfig, HistoryArchiveMode};
-use crate::durable_state::DurableKernelStateStore;
+use crate::durable_state::{DurableKernelStateStore, DurableStateEvent};
 use crate::error::DaemonError;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding};
 use crate::history::{OperationalHistoryStore, SessionHistoryStore};
@@ -63,6 +63,34 @@ pub(crate) use provider_runtime::{
     StartedProviderLaunch,
 };
 pub(crate) use remote_lease::RemoteLeaseRuntime;
+
+fn decode_durable_payload_field<T>(
+    event: &DurableStateEvent,
+    field: &'static str,
+    operation: &'static str,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let value = event
+        .payload
+        .get(field)
+        .cloned()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "durable state event {} ({}) missing payload field {field}",
+                event.event_id, event.kind
+            ),
+        })?;
+    serde_json::from_value(value).map_err(|error| DaemonError::LocalTransport {
+        operation,
+        message: format!(
+            "durable state event {} ({}) has invalid payload field {field}: {error}",
+            event.event_id, event.kind
+        ),
+    })
+}
 
 pub struct DaemonApp {
     config: DaemonConfig,
@@ -281,7 +309,7 @@ impl DaemonApp {
     pub fn bootstrap(config: DaemonConfig) -> Result<Self, DaemonError> {
         config.validate()?;
 
-        Ok(Self {
+        let mut app = Self {
             agents: AgentServiceStore::new(AgentService::new()),
             attachments: AttachmentServiceStore::new(AttachmentService::new()),
             pty: PtyManager::new(),
@@ -319,7 +347,54 @@ impl DaemonApp {
             started_at_ms: crate::session::unix_epoch_ms(),
             relay_client_state: Arc::new(tokio::sync::RwLock::new(RelayClientState::default())),
             config,
-        })
+        };
+        app.restore_durable_state()?;
+        Ok(app)
+    }
+
+    fn restore_durable_state(&mut self) -> Result<(), DaemonError> {
+        for event in self.durable_state.load_events_after(0)? {
+            self.restore_durable_state_event(event)?;
+        }
+        Ok(())
+    }
+
+    fn restore_durable_state_event(&mut self, event: DurableStateEvent) -> Result<(), DaemonError> {
+        match event.kind.as_str() {
+            "session.created" => {
+                let session: RuntimeSession = decode_durable_payload_field(
+                    &event,
+                    "session",
+                    "durable_state.restore_session",
+                )?;
+                let default_agent: AgentInstance = decode_durable_payload_field(
+                    &event,
+                    "default_agent",
+                    "durable_state.restore_default_agent",
+                )?;
+                self.sessions.restore_session(session.clone());
+                self.agents.restore_agent(default_agent);
+                self.update_session_projection(session);
+            }
+            "agent.created" => {
+                let agent: AgentInstance =
+                    decode_durable_payload_field(&event, "agent", "durable_state.restore_agent")?;
+                self.agents.restore_agent(agent);
+            }
+            "session.ended" => {
+                let mut session: RuntimeSession = decode_durable_payload_field(
+                    &event,
+                    "session",
+                    "durable_state.restore_ended_session",
+                )?;
+                self.agents.remove_session_agents(session.id());
+                session.set_agents(Vec::new());
+                self.sessions.restore_session(session.clone());
+                self.update_session_projection(session);
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     pub(crate) fn provider_run_operation_lanes(&self) -> ProviderRunOperationLanes {

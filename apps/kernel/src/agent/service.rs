@@ -109,6 +109,10 @@ impl AgentService {
             .expect("new agent should be stored"))
     }
 
+    pub(crate) fn restore_agent(&mut self, agent: AgentInstance) -> AgentInstance {
+        self.store.insert_restored(agent)
+    }
+
     /// Create default agent for a new session
     pub fn create_default_agent(
         &mut self,
@@ -499,6 +503,10 @@ impl AgentServiceStore {
         sessions: &mut SessionService,
     ) -> Result<AgentInstance, DaemonError> {
         self.write().create_agent(request, sessions)
+    }
+
+    pub(crate) fn restore_agent(&self, agent: AgentInstance) -> AgentInstance {
+        self.write().restore_agent(agent)
     }
 
     pub fn create_default_agent(

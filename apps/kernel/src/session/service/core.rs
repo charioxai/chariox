@@ -40,6 +40,10 @@ impl SessionService {
         Ok(self.store.insert(session))
     }
 
+    pub(crate) fn restore_session(&mut self, session: RuntimeSession) -> RuntimeSession {
+        self.store.insert(session)
+    }
+
     pub fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.store
             .get(session_id)

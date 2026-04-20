@@ -55,6 +55,10 @@ impl SessionStateStore {
         self.write().create_session(request)
     }
 
+    pub(crate) fn restore_session(&self, session: RuntimeSession) -> RuntimeSession {
+        self.write().restore_session(session)
+    }
+
     pub(crate) fn end_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.write().end_session(session_id)
     }

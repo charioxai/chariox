@@ -23,6 +23,17 @@ impl AgentStore {
         agent
     }
 
+    pub fn insert_restored(&mut self, agent: AgentInstance) -> AgentInstance {
+        if let Some(number) = agent
+            .id()
+            .strip_prefix("agent-")
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            self.next_id = self.next_id.max(number);
+        }
+        self.insert(agent)
+    }
+
     pub fn get(&self, agent_id: &str) -> Option<&AgentInstance> {
         self.agents.get(agent_id)
     }

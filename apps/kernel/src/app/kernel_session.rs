@@ -18,7 +18,7 @@ pub(crate) struct KernelSessionService<'a> {
 #[cfg(test)]
 mod tests {
     use crate::agent::CreateAgentRequest;
-    use crate::session::CreateSessionRequest;
+    use crate::session::{CreateSessionRequest, SessionStatus};
     use crate::{DaemonApp, DaemonConfig};
 
     #[test]
@@ -65,6 +65,75 @@ mod tests {
         );
         assert_eq!(events[1].subject_id.as_deref(), Some(spawned.id()));
         assert_eq!(events[2].subject_id.as_deref(), Some(session.id()));
+    }
+
+    #[test]
+    fn bootstrap_restores_created_session_and_agents_from_durable_state() {
+        let config = DaemonConfig::for_tests();
+        let (session_id, default_agent_id, reviewer_agent_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            let reviewer = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(CreateAgentRequest::new(session.id(), "codex").with_alias("reviewer"))
+                .expect("agent should spawn");
+            (
+                session.id().to_string(),
+                default_agent.id().to_string(),
+                reviewer.id().to_string(),
+            )
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+        let restored_session = app
+            .sessions()
+            .get_session(&session_id)
+            .expect("session should restore");
+        assert_eq!(restored_session.id(), session_id);
+        assert_eq!(
+            app.agents
+                .get_agent(&default_agent_id)
+                .expect("default agent should restore")
+                .session_id(),
+            session_id
+        );
+        assert_eq!(
+            app.agents
+                .get_agent(&reviewer_agent_id)
+                .expect("spawned agent should restore")
+                .session_id(),
+            session_id
+        );
+    }
+
+    #[test]
+    fn bootstrap_restores_ended_session_without_live_agents() {
+        let config = DaemonConfig::for_tests();
+        let session_id = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(CreateAgentRequest::new(session.id(), "codex").with_alias("reviewer"))
+                .expect("agent should spawn");
+            crate::app::KernelSessionService::new(&mut app)
+                .end_session(session.id())
+                .expect("session should end");
+            session.id().to_string()
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+        let restored_session = app
+            .sessions()
+            .get_session(&session_id)
+            .expect("ended session should restore");
+        assert_eq!(restored_session.status(), SessionStatus::Ended);
+        assert!(
+            app.agents.get_session_agents(&session_id).is_empty(),
+            "ended sessions should not restore live agents"
+        );
     }
 }
 

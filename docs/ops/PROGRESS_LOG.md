@@ -822,3 +822,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Local agent spawn now writes an `agent.created` durable state event.
 - Session end now writes a `session.ended` durable state event with removed attachments, terminated provider run ids, and removed agent references.
 - Added focused coverage for session create, agent spawn, and session end event ordering in the durable state journal.
+
+### M8 durable boot restore update
+
+- Kernel bootstrap now replays the durable state journal for the lifecycle events currently emitted by the app: `session.created`, `agent.created`, and `session.ended`.
+- Restored sessions and agents are inserted without writing new durable events; ended-session replay clears live agents so ended sessions do not come back with runnable agents.
+- Added focused restart coverage for created sessions, default agents, spawned agents, and ended sessions restored from the durable journal.
