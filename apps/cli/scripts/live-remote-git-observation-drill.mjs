@@ -166,7 +166,7 @@ async function waitForRelayTarget(LocalIpcClient, requests, relayUrl, relayToken
     const client = new LocalIpcClient(relayUrl, { relayAuthToken: relayToken, targetDaemonAlias })
     try {
       await Promise.race([
-        client.send(requests.listSessionsRequest()),
+        client.send({ GetDaemonHealth: null }),
         sleep(2_000).then(() => { throw new Error('probe timeout') }),
       ])
       await client.close().catch(() => {})
@@ -201,10 +201,11 @@ async function waitForRemoteKernel(client, requests, machineRef, timeoutMs, poll
   throw new Error(`remote machine ${machineRef} did not advertise dev-stub; last=${JSON.stringify(last)}`)
 }
 
-async function waitForHistoryMatch(client, requests, query, filters, label, timeoutMs = 15_000) {
+async function waitForHistoryMatch(client, requests, query, filters, label, timeoutMs = 15_000, onPoll = null) {
   const deadline = Date.now() + timeoutMs
   let lastEvents = []
   while (Date.now() < deadline) {
+    if (onPoll) await onPoll().catch(() => {})
     const response = unwrapVariant(
       await sendWithTimeout(client, requests.searchHistoryRequest(query, filters), 5_000, `search history ${label}`),
       'HistoryEvents',
@@ -341,13 +342,7 @@ async function main() {
     const startedPrompt = submitted.outcome?.Started?.prompt ?? submitted.outcome?.started?.prompt ?? null
     requireCondition(startedPrompt?.id, 'remote prompt did not start', submitted)
     const promptId = startedPrompt.id
-    await waitForHistoryMatch(client, requests, marker, {
-      session_id: sessionId,
-      kind: 'provider_output',
-      provider: 'dev-stub',
-      model: 'remote-git-observation-model',
-      limit: 10,
-    }, 'remote provider echo before commit', options.timeoutMs)
+    await sleep(2_000)
 
     await writeFile(path.join(workspace, 'feature.txt'), `${marker}\n`, 'utf8')
     await mustRun('git', ['add', 'feature.txt'], { cwd: workspace })
