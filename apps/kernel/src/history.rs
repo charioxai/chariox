@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -10,6 +11,239 @@ use serde::{Deserialize, Serialize};
 use crate::error::DaemonError;
 use crate::session::RuntimeSession;
 use crate::terminal::TerminalOutputKind;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryEventKind {
+    UserPrompt,
+    ProviderOutput,
+    ProviderReasoning,
+    ProviderTool,
+    ProviderError,
+    ProviderStatus,
+    Notice,
+    SessionCreated,
+    AgentCreated,
+    AgentMoved,
+    WorkflowStarted,
+    WorkflowNodeStarted,
+    WorkflowNodeCompleted,
+    McpGranted,
+    SkillGranted,
+    RemoteMachineConnected,
+    RemoteMachineDisconnected,
+    GitCommitDetected,
+    GitWorktreeChanged,
+    GitWorktreeDirty,
+    GitWorktreeClean,
+    GitPushDetected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryEventRole {
+    User,
+    Assistant,
+    Tool,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryAttributionConfidence {
+    Definite,
+    Likely,
+    Ambiguous,
+    Unattributed,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryEventTurnContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryEvent {
+    pub event_id: String,
+    pub sequence: u64,
+    pub timestamp_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    pub kind: HistoryEventKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<HistoryEventRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_agent_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_prompt_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_turn_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution_confidence: Option<HistoryAttributionConfidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caused_by_event_id: Option<String>,
+}
+
+impl HistoryEvent {
+    pub fn transcript(
+        sequence: u64,
+        entry: &SessionHistoryEntry,
+        context: HistoryEventTurnContext,
+    ) -> Self {
+        let kind = HistoryEventKind::from(entry.kind);
+        let role = HistoryEventRole::from_session_history_kind(entry.kind);
+        let timestamp_ms = entry.timestamp_ms;
+        let event_id = history_event_id(sequence, timestamp_ms);
+        let mut metadata = BTreeMap::new();
+        if let Some(merge_key) = entry.merge_key.clone() {
+            metadata.insert(
+                "merge_key".to_string(),
+                serde_json::Value::String(merge_key),
+            );
+        }
+        if let Some(source_attachment_id) = entry.source_attachment_id.clone() {
+            metadata.insert(
+                "source_attachment_id".to_string(),
+                serde_json::Value::String(source_attachment_id),
+            );
+        }
+        Self {
+            event_id,
+            sequence,
+            timestamp_ms,
+            workspace_id: context.workspace_id,
+            session_id: context
+                .session_id
+                .or_else(|| Some(entry.session_id.clone())),
+            agent_id: context.agent_id.or_else(|| entry.agent_id.clone()),
+            agent_alias: context.agent_alias,
+            provider: context.provider,
+            model: context.model,
+            turn_id: context.turn_id,
+            prompt_id: context.prompt_id,
+            provider_run_id: context
+                .provider_run_id
+                .or_else(|| entry.provider_run_id.clone()),
+            provider_session_id: context.provider_session_id,
+            workflow_id: context.workflow_id,
+            workflow_run_id: context.workflow_run_id,
+            workflow_node_id: context.workflow_node_id,
+            machine_id: context.machine_id,
+            repo_root: context.repo_root,
+            worktree_path: context.worktree_path,
+            kind,
+            role: Some(role),
+            content: Some(entry.text.clone()),
+            content_ref: None,
+            metadata,
+            candidate_agent_ids: Vec::new(),
+            candidate_prompt_ids: Vec::new(),
+            candidate_turn_ids: Vec::new(),
+            attribution_confidence: None,
+            caused_by_event_id: None,
+        }
+    }
+}
+
+impl From<SessionHistoryEntryKind> for HistoryEventKind {
+    fn from(kind: SessionHistoryEntryKind) -> Self {
+        match kind {
+            SessionHistoryEntryKind::UserPrompt => Self::UserPrompt,
+            SessionHistoryEntryKind::ProviderOutput => Self::ProviderOutput,
+            SessionHistoryEntryKind::ProviderReasoning => Self::ProviderReasoning,
+            SessionHistoryEntryKind::ProviderTool => Self::ProviderTool,
+            SessionHistoryEntryKind::ProviderError => Self::ProviderError,
+            SessionHistoryEntryKind::ProviderStatus => Self::ProviderStatus,
+            SessionHistoryEntryKind::Notice => Self::Notice,
+        }
+    }
+}
+
+impl HistoryEventRole {
+    fn from_session_history_kind(kind: SessionHistoryEntryKind) -> Self {
+        match kind {
+            SessionHistoryEntryKind::UserPrompt => Self::User,
+            SessionHistoryEntryKind::ProviderOutput
+            | SessionHistoryEntryKind::ProviderReasoning
+            | SessionHistoryEntryKind::ProviderError => Self::Assistant,
+            SessionHistoryEntryKind::ProviderTool => Self::Tool,
+            SessionHistoryEntryKind::ProviderStatus | SessionHistoryEntryKind::Notice => {
+                Self::System
+            }
+        }
+    }
+}
+
+fn history_event_id(sequence: u64, timestamp_ms: u64) -> String {
+    format!("evt_{timestamp_ms}_{sequence}")
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -235,7 +469,10 @@ mod tests {
     use crate::session::{CreateSessionRequest, SessionService};
     use crate::terminal::TerminalOutputKind;
 
-    use super::{SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryStore};
+    use super::{
+        HistoryEvent, HistoryEventKind, HistoryEventRole, HistoryEventTurnContext,
+        SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryStore,
+    };
 
     #[test]
     fn appends_and_loads_session_history() {
@@ -276,5 +513,50 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].kind, SessionHistoryEntryKind::UserPrompt);
         assert_eq!(entries[1].kind, SessionHistoryEntryKind::ProviderOutput);
+    }
+
+    #[test]
+    fn converts_session_history_entry_to_canonical_history_event() {
+        let entry = SessionHistoryEntry::provider_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderTool,
+            Some("tool:browser".to_string()),
+            "called browser",
+        );
+        let event = HistoryEvent::transcript(
+            7,
+            &entry,
+            HistoryEventTurnContext {
+                provider: Some("codex".to_string()),
+                model: Some("gpt-5.2".to_string()),
+                turn_id: Some("turn-1".to_string()),
+                prompt_id: Some("prompt-1".to_string()),
+                worktree_path: Some("/repo".to_string()),
+                ..HistoryEventTurnContext::default()
+            },
+        );
+
+        assert_eq!(event.event_id, format!("evt_{}_7", entry.timestamp_ms));
+        assert_eq!(event.sequence, 7);
+        assert_eq!(event.session_id.as_deref(), Some("session-1"));
+        assert_eq!(event.agent_id.as_deref(), Some("agent-1"));
+        assert_eq!(event.provider.as_deref(), Some("codex"));
+        assert_eq!(event.model.as_deref(), Some("gpt-5.2"));
+        assert_eq!(event.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(event.prompt_id.as_deref(), Some("prompt-1"));
+        assert_eq!(event.provider_run_id.as_deref(), Some("provider-run-1"));
+        assert_eq!(event.worktree_path.as_deref(), Some("/repo"));
+        assert_eq!(event.kind, HistoryEventKind::ProviderTool);
+        assert_eq!(event.role, Some(HistoryEventRole::Tool));
+        assert_eq!(event.content.as_deref(), Some("called browser"));
+        assert_eq!(
+            event
+                .metadata
+                .get("merge_key")
+                .and_then(|value| value.as_str()),
+            Some("tool:browser")
+        );
     }
 }

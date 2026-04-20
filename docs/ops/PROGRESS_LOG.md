@@ -750,3 +750,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added the M8 plan for operational transcript history, optional archive adapters, durable kernel state, manual remote restart reconciliation, provider resume descriptors, and Git observation events.
 - Locked in the v1 split: operational history stays Arroba-owned/local for active UX, while archive history is optional and adapter-backed; if archive is disabled, retained operational history remains searchable and expired/deleted transcript content can disappear.
 - Added TOML-backed config structs for history operational policy, archive mode/policy, and durable state policy without changing runtime storage behavior yet.
+
+### M8 canonical history event model update
+
+- Added provider-neutral canonical history event types for transcript, workflow, capability, remote-machine, and Git observation events.
+- Added turn/provider/model/worktree attribution fields plus candidate attribution lists for ambiguous Git and multi-agent cases.
+- Added a compatibility conversion from existing `SessionHistoryEntry` transcript records into canonical `HistoryEvent` records while leaving the current JSONL runtime storage path unchanged.
