@@ -59,6 +59,10 @@ impl SessionStateStore {
         self.write().restore_session(session)
     }
 
+    pub(crate) fn remove_restored_session(&self, session_id: &str) -> Option<RuntimeSession> {
+        self.write().remove_restored_session(session_id)
+    }
+
     pub(crate) fn end_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.write().end_session(session_id)
     }

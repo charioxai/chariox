@@ -496,6 +496,8 @@ impl KernelRuntimeState {
                 .unwrap_or((false, None));
             owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
+        self.append_session_durable_event("session.ended", &session, "runtime_end_session")
+            .await?;
         Ok(session)
     }
 
@@ -515,6 +517,8 @@ impl KernelRuntimeState {
                 .unwrap_or((false, None));
             owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
+        self.append_session_durable_event("session.deleted", &session, "runtime_delete_session")
+            .await?;
         Ok(session)
     }
 

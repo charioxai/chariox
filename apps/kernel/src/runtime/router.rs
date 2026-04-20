@@ -2635,7 +2635,9 @@ mod tests {
     };
     use crate::runtime::command::KernelCommand;
     use crate::runtime::router::CommandRouter;
-    use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
+    use crate::session::{
+        CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus,
+    };
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
     fn spawn_test_agent(
@@ -2817,6 +2819,52 @@ mod tests {
         assert_eq!(workflow.alias(), Some("review"));
         assert_eq!(workflow.nodes().len(), 1);
         assert_eq!(workflow.nodes()[0].agent_id(), agent_id);
+    }
+
+    #[tokio::test]
+    async fn runtime_end_and_delete_session_survive_kernel_restart() {
+        let end_config = DaemonConfig::for_tests();
+        let ended_session_id = {
+            let mut app = DaemonApp::bootstrap(end_config.clone()).expect("daemon should boot");
+            let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+            router
+                .runtime_state
+                .end_session(session.id())
+                .await
+                .expect("session should end");
+            session.id().to_string()
+        };
+        let app = DaemonApp::bootstrap(end_config).expect("daemon should reboot");
+        let restored = app
+            .sessions()
+            .get_session(&ended_session_id)
+            .expect("ended session should restore");
+        assert_eq!(restored.status(), SessionStatus::Ended);
+        assert!(app.agents.get_session_agents(&ended_session_id).is_empty());
+
+        let delete_config = DaemonConfig::for_tests();
+        let deleted_session_id = {
+            let mut app = DaemonApp::bootstrap(delete_config.clone()).expect("daemon should boot");
+            let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+            router
+                .runtime_state
+                .delete_session_ref(session.id(), None)
+                .await
+                .expect("session should delete");
+            session.id().to_string()
+        };
+        let app = DaemonApp::bootstrap(delete_config).expect("daemon should reboot");
+        assert!(app.sessions().get_session(&deleted_session_id).is_err());
+        assert!(app
+            .agents
+            .get_session_agents(&deleted_session_id)
+            .is_empty());
     }
 
     #[tokio::test]

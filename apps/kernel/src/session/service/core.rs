@@ -44,6 +44,10 @@ impl SessionService {
         self.store.insert(session)
     }
 
+    pub(crate) fn remove_restored_session(&mut self, session_id: &str) -> Option<RuntimeSession> {
+        self.store.remove(session_id)
+    }
+
     pub fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.store
             .get(session_id)

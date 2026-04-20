@@ -846,3 +846,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Provider launch success now appends a durable `agent.runtime_profile_updated` snapshot after updating an agent's provider/model/effort/resume state.
 - Boot restore replays provider profile updates as agent snapshots so provider resume descriptors survive kernel restart.
 - Added focused restart coverage using the `dev-stub` provider to verify provider/model profile restoration after a kernel restart.
+
+### M8 runtime lifecycle durability update
+
+- Runtime-state session end now appends `session.ended`, closing the CLI-facing lifecycle path in addition to the app service path.
+- Runtime-state session deletion now appends `session.deleted`, and boot restore replays it by removing the session and clearing any live agents/projections.
+- Added focused restart coverage for runtime end/delete paths to verify ended sessions stay ended and deleted sessions stay absent after reboot.

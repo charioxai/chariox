@@ -414,6 +414,19 @@ impl DaemonApp {
                 self.sessions.restore_session(session.clone());
                 self.update_session_projection(session);
             }
+            "session.deleted" => {
+                let mut session: RuntimeSession = decode_durable_payload_field(
+                    &event,
+                    "session",
+                    "durable_state.restore_deleted_session",
+                )?;
+                self.agents.remove_session_agents(session.id());
+                session.set_agents(Vec::new());
+                self.sessions.remove_restored_session(session.id());
+                self.session_projection.remove(session.id());
+                self.history_projection.remove(session.id());
+                self.agent_runtime_projection.update_session(&session);
+            }
             _ => {}
         }
         Ok(())
