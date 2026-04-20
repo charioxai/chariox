@@ -732,3 +732,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added `--automation-socket` to the CLI so live drills can drive embedded UI integration through semantic JSONL actions rather than raw PTY keystrokes.
 - The automation API supports `ping`, `switch_screen`, `workspace_shell_exec`, `snapshot`, `wait_for`, and `exit`, returning structured snapshots for screen mode, selected workflow/node, workflow graph counts, workflow runs, shell context, shell transcript, and footer state.
 - Added `pnpm --filter @arroba/cli run embedded-shell:drill`, which launches the real CLI under a PTY, sources a workflow script through the workflow-pane shell, and validates selected-workflow graph/source updates through automation snapshots.
+
+### M7.5 shell prompt command update
+
+- Added shared shell `prompt [agent-ref] <prompt> [--wait] [--show-reply|--show-summary]` support for standalone `arroba-shell` and the embedded workflow-pane shell.
+- No-wait prompt submission returns the prompt id immediately; wait/show modes poll prompt completion, read session history, and render prompt-id-headed output blobs with aligned content.
+- Changed `context` from a purely local shell command into a kernel-aware shared command when a session is set, so it can show the current agent as `(busy)` after a no-wait shell prompt.

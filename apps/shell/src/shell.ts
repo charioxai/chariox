@@ -130,6 +130,7 @@ export function shellUsage(): string {
     "  @ session new --dir ../qa as s",
     "  @ session use $s",
     "  @ agent spawn reviewer gpt-5.2 as reviewer",
+    "  @ prompt $reviewer \"Summarize the repo\" --wait --show-summary",
     "  @ mcp list",
     "  @ skill list",
     "  @ machine list",

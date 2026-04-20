@@ -157,8 +157,21 @@ pwd
 ```
 
 - `context` prints the current workspace, worktree, session, attachment, agent, workflow, provider, model, effort, and shell variables.
+- When a current session is available, `context` refreshes session state and marks the current agent as `(busy)` if it has an active or queued prompt.
 - `pwd` prints the current shell worktree.
-- Both commands are shell-local and do not call the kernel.
+- `pwd` is shell-local; `context` calls the kernel only when a current session is set.
+
+Prompt submission:
+
+```text
+prompt [agent-ref] <prompt> [--wait] [--show-reply|--show-summary]
+```
+
+- Submits a freeform prompt to the current agent, or to `agent-ref` when provided.
+- Without `--wait`, returns immediately with the prompt id.
+- `--show-reply` implies wait and prints all prompt history emitted after the user prompt.
+- `--show-summary` implies wait and prints only final provider output entries.
+- Multi-line prompt output is rendered as an aligned blob headed by the prompt id, for example `prompt-1 summary`.
 
 Example script:
 
@@ -279,6 +292,10 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 - Implemented provider and cancellation coverage in the shared executor:
   - `provider status|login|logout|reauth|processes`
   - `stop` / `cancel`
+- Implemented freeform prompt submission in the shared executor:
+  - `prompt [agent-ref] <prompt> [--wait] [--show-reply|--show-summary]`
+  - no-wait mode returns the prompt id immediately
+  - wait/show modes poll prompt completion, read session history, and render prompt-id-headed blobs for captured output
 - Remaining command/action gaps compared with the TUI slash surface:
   - `session alias|delete`
   - `agent delete|destroy`

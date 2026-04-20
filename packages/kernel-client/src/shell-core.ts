@@ -48,7 +48,6 @@ const SHELL_LOCAL_COMMANDS = new Set([
   "exit",
   "quit",
   "help",
-  "context",
   "pwd",
   "set",
   "use",

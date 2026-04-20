@@ -137,7 +137,29 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
     effort: "low",
     variables: { wf: "workflow-1" },
   })
-  const fake = fakeClient(() => ({}))
+  const fake = fakeClient((request) => {
+    if ("GetSessionState" in request) {
+      return {
+        SessionState: {
+          session: makeSession({
+            prompt_states: {
+              "agent-1": {
+                active_prompt: {
+                  id: "prompt-1",
+                  source_attachment_id: "attach-1",
+                  target_agent_id: "agent-1",
+                  prompt: "hi",
+                  status: "Running",
+                },
+                queued_prompts: [],
+              },
+            },
+          }),
+        },
+      }
+    }
+    return {}
+  })
   const contextResult = await executeShellCommand(parseShellCommand("context"), context, { client: fake.client })
   const pwdResult = await executeShellCommand(parseShellCommand("pwd"), context, { client: fake.client })
 
@@ -145,12 +167,156 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.match(contextResult.message ?? "", /workspace: \/repo/)
   assert.match(contextResult.message ?? "", /worktree: \/repo\/worktree/)
   assert.match(contextResult.message ?? "", /session: session-1/)
-  assert.match(contextResult.message ?? "", /agent: agent-1/)
+  assert.match(contextResult.message ?? "", /agent: agent-1 \(busy\)/)
   assert.match(contextResult.message ?? "", /workflow: workflow-1/)
   assert.match(contextResult.message ?? "", /provider: codex/)
   assert.match(contextResult.message ?? "", /\$wf = workflow-1/)
   assert.equal(pwdResult.message, "/repo/worktree")
-  assert.equal(fake.requests.length, 0)
+  assert.equal(fake.requests.length, 1)
+})
+
+test("executeShellCommand submits prompt without waiting", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    attachmentId: "attach-1",
+    agentId: "agent-1",
+  })
+  const fake = fakeClient((request) => {
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [makeAgent()] } }
+    }
+    if ("SubmitPrompt" in request) {
+      return {
+        PromptSubmitted: {
+          outcome: {
+            Started: {
+              prompt: {
+                id: "prompt-1",
+                source_attachment_id: "attach-1",
+                target_agent_id: "agent-1",
+                prompt: "hello\n",
+                status: "Running",
+              },
+            },
+          },
+          session: makeSession({
+            prompt_states: {
+              "agent-1": {
+                active_prompt: {
+                  id: "prompt-1",
+                  source_attachment_id: "attach-1",
+                  target_agent_id: "agent-1",
+                  prompt: "hello\n",
+                  status: "Running",
+                },
+                queued_prompts: [],
+              },
+            },
+          }),
+        },
+      }
+    }
+    return {}
+  })
+
+  const result = await executeShellCommand(parseShellCommand("prompt hello"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /prompt prompt-1 submitted/)
+  assert.deepEqual(result.contextUpdates, { agentId: "agent-1" })
+  assert.deepEqual(fake.requests.map((request) => Object.keys(request)[0]), ["ListAgents", "SubmitPrompt"])
+})
+
+test("executeShellCommand waits for prompt and renders summary blob", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    attachmentId: "attach-1",
+    agentId: "agent-1",
+  })
+  let stateCalls = 0
+  const fake = fakeClient((request) => {
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [makeAgent()] } }
+    }
+    if ("SubmitPrompt" in request) {
+      return {
+        PromptSubmitted: {
+          outcome: {
+            Started: {
+              prompt: {
+                id: "prompt-1",
+                source_attachment_id: "attach-1",
+                target_agent_id: "agent-1",
+                prompt: "hello\n",
+                status: "Running",
+              },
+            },
+          },
+          session: makeSession(),
+        },
+      }
+    }
+    if ("PumpTerminalOutput" in request) {
+      return { TerminalOutputPumped: { records: [] } }
+    }
+    if ("GetSessionState" in request) {
+      stateCalls += 1
+      return {
+        SessionState: {
+          session: makeSession({
+            prompt_states: {
+              "agent-1": {
+                active_prompt: stateCalls === 1
+                  ? {
+                      id: "prompt-1",
+                      source_attachment_id: "attach-1",
+                      target_agent_id: "agent-1",
+                      prompt: "hello\n",
+                      status: "Running",
+                    }
+                  : null,
+                queued_prompts: [],
+              },
+            },
+          }),
+        },
+      }
+    }
+    if ("GetSessionHistory" in request) {
+      return {
+        SessionHistory: {
+          next_cursor: null,
+          entries: [
+            {
+              entry_index: 1,
+              fragment_start: 0,
+              fragment_end: 5,
+              total_chars: 5,
+              entry: { agent_id: "agent-1", kind: "user_prompt", text: "hello\n" },
+            },
+            {
+              entry_index: 2,
+              fragment_start: 0,
+              fragment_end: 7,
+              total_chars: 7,
+              entry: { agent_id: "agent-1", kind: "provider_output", text: "done ok" },
+            },
+          ],
+        },
+      }
+    }
+    return {}
+  })
+
+  const result = await executeShellCommand(parseShellCommand("prompt hello --wait --show-summary"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /prompt prompt-1 completed/)
+  assert.match(result.message ?? "", /prompt-1 summary\n {24}done ok/)
 })
 
 test("executeShellCommand removes shell-local variables", async () => {
