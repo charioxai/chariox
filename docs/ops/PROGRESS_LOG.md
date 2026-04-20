@@ -810,3 +810,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added `DurableKernelStateStore`, a WAL-backed SQLite store for kernel state snapshots and append-only state events.
 - Added config path resolution for the durable state database from `[state].path`.
 - Added focused coverage for appending ordered state events, saving a snapshot, reopening the store, and loading the latest snapshot.
+
+### M8 durable state app wiring update
+
+- Wired `DurableKernelStateStore` into `DaemonApp` using the configured `[state].path`.
+- Session creation now writes a `session.created` durable state event containing the created session and default agent payload.
+- Added focused coverage that creates a session through `KernelSessionService` and verifies the durable event is written.

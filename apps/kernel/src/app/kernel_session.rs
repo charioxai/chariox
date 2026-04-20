@@ -15,6 +15,30 @@ pub(crate) struct KernelSessionService<'a> {
     app: &'a mut DaemonApp,
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::session::CreateSessionRequest;
+    use crate::{DaemonApp, DaemonConfig};
+
+    #[test]
+    fn create_session_writes_durable_state_event() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+
+        let events = app
+            .durable_state_store()
+            .load_events_after(0)
+            .expect("durable state events should load");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "session.created");
+        assert_eq!(events[0].subject_id.as_deref(), Some(session.id()));
+        assert_eq!(events[0].payload["session"]["id"], session.id());
+        assert_eq!(events[0].payload["default_agent"]["id"], agent.id());
+    }
+}
+
 pub(crate) struct KernelSessionReadService<'a> {
     app: &'a DaemonApp,
 }
@@ -124,6 +148,14 @@ impl<'a> KernelSessionService<'a> {
         drop(sessions);
         let session =
             SessionStateReader::new(self.app.session_state_store()).get_session(session.id())?;
+        self.app.durable_state_store().append_event(
+            "session.created",
+            Some(session.id().to_string()),
+            serde_json::json!({
+                "session": &session,
+                "default_agent": &agent,
+            }),
+        )?;
 
         crate::logging::info_with_fields(
             "daemon.session",

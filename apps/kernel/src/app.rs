@@ -30,6 +30,7 @@ use crate::agent::{
 };
 use crate::attachment::{AttachmentService, AttachmentServiceStore};
 use crate::config::{DaemonConfig, HistoryArchiveMode};
+use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding};
 use crate::history::{OperationalHistoryStore, SessionHistoryStore};
@@ -80,6 +81,7 @@ pub struct DaemonApp {
     pub(crate) sessions: SessionStateStore,
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
+    durable_state: DurableKernelStateStore,
     config_projection: DaemonConfigProjectionStore,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
@@ -296,6 +298,7 @@ impl DaemonApp {
                 config.session_history_read_delay_ms,
             )?,
             operational_history: OperationalHistoryStore::open(config.operational_history_path())?,
+            durable_state: DurableKernelStateStore::open(config.durable_state_path())?,
             config_projection: DaemonConfigProjectionStore::new(config.clone()),
             session_projection: SessionStateProjectionStore::default(),
             agent_runtime_projection: AgentRuntimeProjectionStore::default(),
@@ -385,6 +388,10 @@ impl DaemonApp {
 
     pub(crate) fn operational_history_store(&self) -> OperationalHistoryStore {
         self.operational_history.clone()
+    }
+
+    pub(crate) fn durable_state_store(&self) -> DurableKernelStateStore {
+        self.durable_state.clone()
     }
 
     pub(crate) fn history_archive_enabled(&self) -> bool {
