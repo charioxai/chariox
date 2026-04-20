@@ -4,7 +4,9 @@ use std::time::Instant;
 
 use crate::app::{DaemonApp, PromptActivityStore};
 use crate::error::DaemonError;
-use crate::history::{SessionHistoryEntry, SessionHistoryStore};
+use crate::history::{
+    HistoryEventTurnContext, OperationalHistoryStore, SessionHistoryEntry, SessionHistoryStore,
+};
 use crate::provider::{
     classify_provider_terminal_failure_text, ProviderPromptSignalBatch, RuntimeProviderRun,
 };
@@ -307,6 +309,7 @@ struct ProviderOutputFanout {
     provider_store: ProviderProcessServiceStore,
     session_store: SessionStateStore,
     history_store: SessionHistoryStore,
+    operational_history_store: OperationalHistoryStore,
     history_projection: SessionHistoryProjectionStore,
     terminal: TerminalStreamStore,
 }
@@ -317,6 +320,7 @@ impl ProviderOutputFanout {
             provider_store: app.providers.clone(),
             session_store: app.sessions.clone(),
             history_store: app.history_store(),
+            operational_history_store: app.operational_history_store(),
             history_projection: app.session_history_projection_store(),
             terminal: app.terminal.clone(),
         }
@@ -331,10 +335,9 @@ impl ProviderOutputFanout {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
-        let agent_id = self
-            .provider_store
-            .get_run(provider_run_id)
-            .ok()
+        let provider_run = self.provider_store.get_run(provider_run_id).ok();
+        let agent_id = provider_run
+            .as_ref()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
         let record = self.terminal.fan_out_output(
             session_id,
@@ -437,6 +440,42 @@ impl ProviderOutputFanout {
                 }),
             );
         } else {
+            let provider_run = entry
+                .provider_run_id
+                .as_deref()
+                .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok());
+            let context = HistoryEventTurnContext {
+                session_id: Some(entry.session_id.clone()),
+                agent_id: entry.agent_id.clone().or_else(|| {
+                    provider_run
+                        .as_ref()
+                        .and_then(|run| run.agent_instance_id().map(str::to_string))
+                }),
+                provider: provider_run.as_ref().map(|run| run.provider().to_string()),
+                model: provider_run.as_ref().map(|run| run.model().to_string()),
+                provider_run_id: entry.provider_run_id.clone(),
+                provider_session_id: provider_run
+                    .as_ref()
+                    .and_then(|run| run.provider_session_id().map(str::to_string)),
+                worktree_path: provider_run.as_ref().and_then(|run| {
+                    run.working_directory()
+                        .map(|path| path.display().to_string())
+                }),
+                ..HistoryEventTurnContext::default()
+            };
+            if let Err(error) = self
+                .operational_history_store
+                .append_transcript(&entry, context)
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to append operational history",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
             self.history_projection.append(entry);
         }
     }

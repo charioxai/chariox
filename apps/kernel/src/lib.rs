@@ -918,6 +918,10 @@ mod tests {
         let history = crate::app::KernelSessionReadService::new(&app)
             .session_history(session.id())
             .expect("history should still load");
+        let operational_history = app
+            .operational_history_store()
+            .load_session_events(session.id(), None)
+            .expect("operational history should load");
 
         assert_eq!(reopened.session_id(), session.id());
         assert_eq!(
@@ -928,6 +932,10 @@ mod tests {
         assert!(history
             .iter()
             .any(|entry| entry.text.contains("restore me")));
+        assert!(operational_history.iter().any(|entry| entry
+            .content
+            .as_deref()
+            .is_some_and(|text| text.contains("restore me"))));
     }
 
     #[test]

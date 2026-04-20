@@ -18,7 +18,7 @@ use crate::app::{
 };
 use crate::attachment::AttachmentServiceStore;
 use crate::error::DaemonError;
-use crate::history::{SessionHistoryEntry, SessionHistoryStore};
+use crate::history::{OperationalHistoryStore, SessionHistoryEntry, SessionHistoryStore};
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::{ProviderProcessServiceStore, ProviderRunOperationLanes};
 use crate::session::{SessionStateOwner, SessionStateStore};
@@ -45,6 +45,7 @@ struct KernelRuntimeOwnedState {
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
     history_store: SessionHistoryStore,
+    operational_history_store: OperationalHistoryStore,
     history_projection: crate::runtime::projection::SessionHistoryProjectionStore,
     prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
     prompt_activity: PromptActivityStore,
@@ -127,6 +128,7 @@ impl KernelRuntimeState {
         session_projection: crate::runtime::projection::SessionStateProjectionStore,
         provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
         history_store: SessionHistoryStore,
+        operational_history_store: OperationalHistoryStore,
         history_projection: crate::runtime::projection::SessionHistoryProjectionStore,
         prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
         prompt_activity: PromptActivityStore,
@@ -148,6 +150,7 @@ impl KernelRuntimeState {
                 session_projection,
                 provider_run_projection,
                 history_store,
+                operational_history_store,
                 history_projection,
                 prompt_state_owner,
                 prompt_activity,

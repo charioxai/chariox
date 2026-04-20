@@ -996,7 +996,50 @@ impl KernelRuntimeOwnedState {
                 }),
             );
         } else {
+            self.append_operational_history_entry(&entry);
             self.history_projection.append(entry);
+        }
+    }
+
+    pub(super) fn append_operational_history_entry(
+        &self,
+        entry: &crate::history::SessionHistoryEntry,
+    ) {
+        let provider_run = entry
+            .provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok());
+        let context = crate::history::HistoryEventTurnContext {
+            session_id: Some(entry.session_id.clone()),
+            agent_id: entry.agent_id.clone().or_else(|| {
+                provider_run
+                    .as_ref()
+                    .and_then(|run| run.agent_instance_id().map(str::to_string))
+            }),
+            provider: provider_run.as_ref().map(|run| run.provider().to_string()),
+            model: provider_run.as_ref().map(|run| run.model().to_string()),
+            provider_run_id: entry.provider_run_id.clone(),
+            provider_session_id: provider_run
+                .as_ref()
+                .and_then(|run| run.provider_session_id().map(str::to_string)),
+            worktree_path: provider_run.as_ref().and_then(|run| {
+                run.working_directory()
+                    .map(|path| path.display().to_string())
+            }),
+            ..crate::history::HistoryEventTurnContext::default()
+        };
+        if let Err(error) = self
+            .operational_history_store
+            .append_transcript(entry, context)
+        {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to append operational history",
+                serde_json::json!({
+                    "session_id": entry.session_id.as_str(),
+                    "error": error.to_string(),
+                }),
+            );
         }
     }
 
@@ -1148,6 +1191,7 @@ impl KernelRuntimeOwnedState {
             crate::prompt_transcript::render_prompt_transcript(prompt, attachments),
         );
         self.history_store.append(&session, &entry)?;
+        self.append_operational_history_entry(&entry);
         self.history_projection.append(entry);
         Ok(())
     }

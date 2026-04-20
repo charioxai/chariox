@@ -1,5 +1,5 @@
 use crate::app::DaemonApp;
-use crate::history::SessionHistoryEntry;
+use crate::history::{HistoryEventTurnContext, SessionHistoryEntry};
 use crate::prompt_transcript::render_prompt_transcript;
 use crate::session::PromptAttachment;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
@@ -137,7 +137,48 @@ impl DaemonApp {
                 }),
             );
         } else {
+            self.append_operational_history_entry(&entry);
             self.history_projection.append(entry);
+        }
+    }
+
+    fn append_operational_history_entry(&self, entry: &SessionHistoryEntry) {
+        let context = self.history_event_context(entry);
+        if let Err(error) = self.operational_history.append_transcript(entry, context) {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to append operational history",
+                serde_json::json!({
+                    "session_id": entry.session_id.as_str(),
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
+    fn history_event_context(&self, entry: &SessionHistoryEntry) -> HistoryEventTurnContext {
+        let provider_run = entry
+            .provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| self.providers.get_run(provider_run_id).ok());
+        HistoryEventTurnContext {
+            session_id: Some(entry.session_id.clone()),
+            agent_id: entry.agent_id.clone().or_else(|| {
+                provider_run
+                    .as_ref()
+                    .and_then(|run| run.agent_instance_id().map(str::to_string))
+            }),
+            provider: provider_run.as_ref().map(|run| run.provider().to_string()),
+            model: provider_run.as_ref().map(|run| run.model().to_string()),
+            provider_run_id: entry.provider_run_id.clone(),
+            provider_session_id: provider_run
+                .as_ref()
+                .and_then(|run| run.provider_session_id().map(str::to_string)),
+            worktree_path: provider_run.as_ref().and_then(|run| {
+                run.working_directory()
+                    .map(|path| path.display().to_string())
+            }),
+            ..HistoryEventTurnContext::default()
         }
     }
 
@@ -147,7 +188,9 @@ impl DaemonApp {
         entry: SessionHistoryEntry,
     ) {
         let history = self.history.clone();
+        let operational_history = self.operational_history.clone();
         let history_projection = self.history_projection.clone();
+        let context = self.history_event_context(&entry);
         let session_id = session.id().to_string();
         let append = move || {
             if let Err(error) = history.append(&session, &entry) {
@@ -160,6 +203,16 @@ impl DaemonApp {
                     }),
                 );
             } else {
+                if let Err(error) = operational_history.append_transcript(&entry, context) {
+                    crate::logging::warn_with_fields(
+                        "daemon.history",
+                        "failed to append operational history",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
                 history_projection.append(entry);
             }
         };

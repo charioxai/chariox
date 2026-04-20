@@ -762,3 +762,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added the first operational history SQLite store behind a new `OperationalHistoryStore` API without cutting over `GetSessionHistory` yet.
 - The store creates its schema, enables SQLite WAL mode, appends canonical events idempotently by `event_id`, and can load ordered events by session with optional agent filtering.
 - Added focused coverage for opening the store, idempotent append, and session/agent event loading.
+
+### M8 operational history dual-write update
+
+- Wired the operational history store into `DaemonApp` and owned runtime state while keeping the existing JSONL session history path as the read source.
+- Prompt, provider-output, and notice transcript appends now dual-write canonical operational history events after the legacy append succeeds.
+- Test configs now use isolated operational history database paths, and session history preservation coverage verifies the operational store receives restored prompt transcript events.

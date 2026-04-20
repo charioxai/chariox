@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -348,6 +349,7 @@ pub struct SessionHistoryStore {
 pub struct OperationalHistoryStore {
     path: PathBuf,
     connection: Arc<Mutex<Connection>>,
+    next_sequence: Arc<AtomicU64>,
 }
 
 impl OperationalHistoryStore {
@@ -367,10 +369,30 @@ impl OperationalHistoryStore {
         connection
             .execute_batch(OPERATIONAL_HISTORY_SCHEMA)
             .map_err(|error| operational_history_error("migrate schema", error))?;
+        let max_sequence: u64 = connection
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM history_events",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|value| value.max(0) as u64)
+            .map_err(|error| operational_history_error("load max sequence", error))?;
         Ok(Self {
             path,
             connection: Arc::new(Mutex::new(connection)),
+            next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),
         })
+    }
+
+    pub fn append_transcript(
+        &self,
+        entry: &SessionHistoryEntry,
+        context: HistoryEventTurnContext,
+    ) -> Result<HistoryEvent, DaemonError> {
+        let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
+        let event = HistoryEvent::transcript(sequence, entry, context);
+        self.append(&event)?;
+        Ok(event)
     }
 
     pub fn append(&self, event: &HistoryEvent) -> Result<(), DaemonError> {

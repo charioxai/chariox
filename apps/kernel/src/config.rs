@@ -207,6 +207,24 @@ impl DaemonConfig {
             std::process::id(),
             index
         ));
+        config.user_config.history.operational.path = Some(
+            std::env::temp_dir()
+                .join("arroba-tests")
+                .join(format!(
+                    "operational-history-{}-{}.db",
+                    std::process::id(),
+                    index
+                ))
+                .display()
+                .to_string(),
+        );
+        config.user_config.state.path = Some(
+            std::env::temp_dir()
+                .join("arroba-tests")
+                .join(format!("kernel-state-{}-{}.db", std::process::id(), index))
+                .display()
+                .to_string(),
+        );
         config
     }
 
@@ -240,6 +258,16 @@ impl DaemonConfig {
 
     pub fn default_session_history_root() -> PathBuf {
         default_state_dir().join("sessions")
+    }
+
+    pub fn operational_history_path(&self) -> PathBuf {
+        self.user_config
+            .history
+            .operational
+            .path
+            .as_deref()
+            .map(expand_user_path)
+            .unwrap_or_else(|| default_state_dir().join("history").join("operational.db"))
     }
 
     pub fn default_runtime_identity_path() -> PathBuf {
@@ -1379,6 +1407,21 @@ fn default_runtime_dir() -> PathBuf {
     std::env::temp_dir().join("arroba")
 }
 
+fn expand_user_path(value: &str) -> PathBuf {
+    let value = value.trim();
+    if value == "~" {
+        return env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(value));
+    }
+    if let Some(suffix) = value.strip_prefix("~/") {
+        if let Some(home_dir) = env::var_os("HOME").map(PathBuf::from) {
+            return home_dir.join(suffix);
+        }
+    }
+    PathBuf::from(value)
+}
+
 fn default_os_name() -> String {
     match std::env::consts::OS {
         "macos" => "macOS".to_string(),
@@ -1557,5 +1600,16 @@ mod tests {
         assert_eq!(loaded.state.snapshot_interval_events, Some(250));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn operational_history_path_expands_home() {
+        let mut config = DaemonConfig::new("daemon", "machine", "tester");
+        config.user_config.history.operational.path =
+            Some("~/.arroba/custom/history.db".to_string());
+
+        assert!(config
+            .operational_history_path()
+            .ends_with(".arroba/custom/history.db"));
     }
 }

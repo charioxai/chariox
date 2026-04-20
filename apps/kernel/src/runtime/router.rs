@@ -7,6 +7,7 @@ use tokio::time::{sleep, Duration};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
 use crate::local::provider_requests::{
     forgotten_machine_record, load_provider_catalog, logout_provider_response,
@@ -104,6 +105,7 @@ impl CommandRouter {
         let focus_projection = FocusedAgentProjection::default();
         let (
             history_store,
+            operational_history_store,
             session_projection,
             history_projection,
             provider_catalog_projection,
@@ -138,6 +140,7 @@ impl CommandRouter {
             session_projection.clone(),
             provider_run_projection.clone(),
             history_store.clone(),
+            operational_history_store.clone(),
             history_projection.clone(),
             prompt_state_owner.clone(),
             prompt_activity.clone(),
@@ -230,6 +233,7 @@ impl CommandRouter {
         let focus_projection = FocusedAgentProjection::default();
         let (
             history_store,
+            operational_history_store,
             session_projection,
             history_projection,
             provider_catalog_projection,
@@ -264,6 +268,7 @@ impl CommandRouter {
             session_projection.clone(),
             provider_run_projection.clone(),
             history_store.clone(),
+            operational_history_store.clone(),
             history_projection.clone(),
             prompt_state_owner.clone(),
             prompt_activity.clone(),
@@ -2282,6 +2287,7 @@ fn router_projection_stores(
     app: &Arc<Mutex<DaemonApp>>,
 ) -> (
     SessionHistoryStore,
+    OperationalHistoryStore,
     SessionStateProjectionStore,
     SessionHistoryProjectionStore,
     ProviderCatalogProjectionStore,
@@ -2317,6 +2323,7 @@ fn router_projection_stores(
     };
     (
         app.history_store(),
+        app.operational_history_store(),
         app.session_state_projection_store(),
         app.session_history_projection_store(),
         app.provider_catalog_projection_store(),

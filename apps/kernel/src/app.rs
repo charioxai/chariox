@@ -32,7 +32,7 @@ use crate::attachment::{AttachmentService, AttachmentServiceStore};
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding};
-use crate::history::SessionHistoryStore;
+use crate::history::{OperationalHistoryStore, SessionHistoryStore};
 use crate::provider::{
     OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
     ProviderProcessServiceStore, ProviderRunOperationLanes, RuntimeProviderRun,
@@ -79,6 +79,7 @@ pub struct DaemonApp {
     prompt_state_owner: PromptStateOwner,
     pub(crate) sessions: SessionStateStore,
     history: SessionHistoryStore,
+    operational_history: OperationalHistoryStore,
     config_projection: DaemonConfigProjectionStore,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
@@ -294,6 +295,7 @@ impl DaemonApp {
                 config.session_history_root.clone(),
                 config.session_history_read_delay_ms,
             )?,
+            operational_history: OperationalHistoryStore::open(config.operational_history_path())?,
             config_projection: DaemonConfigProjectionStore::new(config.clone()),
             session_projection: SessionStateProjectionStore::default(),
             agent_runtime_projection: AgentRuntimeProjectionStore::default(),
@@ -379,6 +381,10 @@ impl DaemonApp {
 
     pub(crate) fn history_store(&self) -> SessionHistoryStore {
         self.history.clone()
+    }
+
+    pub(crate) fn operational_history_store(&self) -> OperationalHistoryStore {
+        self.operational_history.clone()
     }
 
     pub(crate) fn session_state_projection_store(&self) -> SessionStateProjectionStore {
