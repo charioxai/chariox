@@ -510,7 +510,7 @@ If multiple agents could have caused a commit, store all candidates and show the
 ### M8.9 Boot Restore
 
 - Rebuild projections from durable state. **Started:** bootstrap now loads the latest durable snapshot when present, then replays later events. It replays `session.created`, `session.updated`, `agent.created`, `session.ended`, `session.deleted`, agent MCP/skill grant mutation events, and provider runtime-profile update events, restores session/agent stores, clears live agents for ended sessions, removes deleted sessions, and refreshes session projections.
-- Mark interrupted/recovering work correctly.
+- Mark interrupted/recovering work correctly. **Started:** after durable restore, bootstrap now reconciles runtime-only work that cannot survive a kernel process restart. Stale active provider run ids are cleared, active prompts are cancelled and removed from the running slot, and in-flight workflow runs are marked `Stopped` with a failure event explaining that the run was interrupted by kernel restart. The reconciliation updates session and agent projections without holding session read locks across write-back.
 - Validate local restart drills. **Started:** focused restart coverage verifies created sessions, default agents, spawned agents, and ended sessions survive a kernel restart through the durable journal.
 
 ### M8.10 Remote Restart/Reconcile

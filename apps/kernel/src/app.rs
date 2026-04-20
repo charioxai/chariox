@@ -367,6 +367,7 @@ impl DaemonApp {
         {
             self.restore_durable_state_event(event)?;
         }
+        self.reconcile_restored_runtime_state_after_restart()?;
         Ok(())
     }
 
@@ -390,10 +391,36 @@ impl DaemonApp {
     }
 
     fn refresh_restored_session_projections(&self) -> Result<(), DaemonError> {
-        for mut session in self.sessions.read().store().list() {
+        let sessions = self.sessions.read().store().list();
+        for mut session in sessions {
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);
             self.update_session_projection(session);
+        }
+        Ok(())
+    }
+
+    fn reconcile_restored_runtime_state_after_restart(&self) -> Result<(), DaemonError> {
+        let sessions = self.sessions.read().store().list();
+        for mut session in sessions {
+            let reconciliation = session.reconcile_after_kernel_restart();
+            if !reconciliation.changed() {
+                continue;
+            }
+            let agents = self.agents.get_session_agents(session.id());
+            session.set_agents(agents);
+            self.sessions.restore_session(session.clone());
+            self.update_session_projection(session.clone());
+            crate::logging::info_with_fields(
+                "durable_state.restore",
+                "reconciled runtime state after kernel restart",
+                serde_json::json!({
+                    "session_id": session.id(),
+                    "cleared_active_provider_run": reconciliation.cleared_active_provider_run,
+                    "interrupted_prompt_count": reconciliation.interrupted_prompt_count,
+                    "stopped_workflow_run_count": reconciliation.stopped_workflow_run_count,
+                }),
+            );
         }
         Ok(())
     }

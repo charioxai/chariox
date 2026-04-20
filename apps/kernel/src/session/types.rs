@@ -1743,6 +1743,21 @@ pub enum SchedulerState {
     Waiting,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KernelRestartReconciliation {
+    pub cleared_active_provider_run: bool,
+    pub interrupted_prompt_count: usize,
+    pub stopped_workflow_run_count: usize,
+}
+
+impl KernelRestartReconciliation {
+    pub fn changed(&self) -> bool {
+        self.cleared_active_provider_run
+            || self.interrupted_prompt_count > 0
+            || self.stopped_workflow_run_count > 0
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorktreeIsolationMode {
     SharedSession,
@@ -2297,6 +2312,85 @@ impl RuntimeSession {
                     | WorkflowRunStatus::Waiting
             )
         })
+    }
+
+    pub fn reconcile_after_kernel_restart(&mut self) -> KernelRestartReconciliation {
+        let mut reconciliation = KernelRestartReconciliation::default();
+        if self.active_provider_run_id.take().is_some() {
+            reconciliation.cleared_active_provider_run = true;
+        }
+
+        reconciliation.interrupted_prompt_count = self
+            .prompt_runtime
+            .interrupt_active_prompts(self.focused_agent_id.as_deref())
+            .len();
+
+        for workflow_run in &mut self.workflow_runs {
+            let should_stop = matches!(
+                workflow_run.status(),
+                WorkflowRunStatus::Running | WorkflowRunStatus::Completing
+            ) || workflow_run
+                .active_node_run_id()
+                .and_then(|active_node_run_id| {
+                    workflow_run
+                        .node_runs()
+                        .iter()
+                        .find(|node_run| node_run.id() == active_node_run_id)
+                })
+                .is_some_and(|node_run| {
+                    matches!(
+                        node_run.status(),
+                        WorkflowNodeRunStatus::Running | WorkflowNodeRunStatus::Waiting
+                    )
+                });
+            if !should_stop {
+                continue;
+            }
+
+            let source_node_run_id = workflow_run
+                .active_node_run_id()
+                .map(str::to_string)
+                .or_else(|| {
+                    workflow_run
+                        .node_runs()
+                        .iter()
+                        .find(|node_run| {
+                            !matches!(
+                                node_run.status(),
+                                WorkflowNodeRunStatus::Completed
+                                    | WorkflowNodeRunStatus::Failed
+                                    | WorkflowNodeRunStatus::Stopped
+                            )
+                        })
+                        .map(|node_run| node_run.id().to_string())
+                })
+                .unwrap_or_else(|| workflow_run.id().to_string());
+
+            for node_run in workflow_run.node_runs_mut() {
+                if !matches!(
+                    node_run.status(),
+                    WorkflowNodeRunStatus::Completed
+                        | WorkflowNodeRunStatus::Failed
+                        | WorkflowNodeRunStatus::Stopped
+                ) {
+                    node_run.set_status(WorkflowNodeRunStatus::Stopped);
+                    if let Some(envelope) = node_run.turn_envelope_mut() {
+                        envelope.mark_cancelled();
+                    }
+                }
+            }
+            workflow_run.clear_active_node_run();
+            workflow_run.add_failure_event(WorkflowFailureEvent::new(
+                WorkflowFailureKind::RunStopped,
+                source_node_run_id,
+                Vec::new(),
+                "workflow run was interrupted by kernel restart; relaunch or resume it explicitly",
+            ));
+            workflow_run.set_status(WorkflowRunStatus::Stopped);
+            reconciliation.stopped_workflow_run_count += 1;
+        }
+
+        reconciliation
     }
 
     pub fn set_workflow_launch_policy(&mut self, policy: WorkflowLaunchPolicy) {

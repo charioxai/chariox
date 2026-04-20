@@ -231,6 +231,25 @@ impl PromptRuntimeState {
         self.scheduler_state = SchedulerState::Idle;
     }
 
+    pub(in crate::session) fn interrupt_active_prompts(
+        &mut self,
+        focused_agent_id: Option<&str>,
+    ) -> Vec<PromptQueueItem> {
+        let agent_ids = self.prompt_states.keys().cloned().collect::<Vec<_>>();
+        let mut interrupted = Vec::new();
+        for agent_id in agent_ids {
+            if let Some(prompt_state) = self.prompt_states.get_mut(&agent_id) {
+                if let Some(mut active_prompt) = prompt_state.active_prompt.take() {
+                    active_prompt.set_status(super::types::PromptStatus::Cancelled);
+                    interrupted.push(active_prompt);
+                }
+            }
+            self.drop_empty_prompt_state(&agent_id);
+        }
+        self.refresh_after_mutation(focused_agent_id);
+        interrupted
+    }
+
     pub(in crate::session) fn refresh_after_focus_change(
         &mut self,
         focused_agent_id: Option<&str>,

@@ -18,7 +18,11 @@ pub(crate) struct KernelSessionService<'a> {
 #[cfg(test)]
 mod tests {
     use crate::agent::CreateAgentRequest;
-    use crate::session::{CreateSessionRequest, SessionStatus};
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::session::{
+        CreateSessionRequest, SchedulerState, SessionStatus, WorkflowNodeRun,
+        WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
+    };
     use crate::{DaemonApp, DaemonConfig};
 
     #[test]
@@ -163,6 +167,89 @@ mod tests {
                 .session_id(),
             session_id
         );
+    }
+
+    #[test]
+    fn bootstrap_reconciles_stale_runtime_work_after_restart() {
+        let config = DaemonConfig::for_tests();
+        let (session_id, workflow_run_id, workflow_node_run_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            let attachment = crate::app::KernelSessionService::new(&mut app)
+                .attach(AttachRequest::new(
+                    session.id(),
+                    "client-a",
+                    ClientCapabilityLevel::FullTerminal,
+                ))
+                .expect("attachment should attach");
+            app.sessions_mut()
+                .submit_prompt(
+                    session.id(),
+                    attachment.id(),
+                    agent.id(),
+                    "still running when the kernel stops",
+                    Vec::new(),
+                )
+                .expect("prompt should start");
+
+            let mut session = app
+                .sessions()
+                .get_session(session.id())
+                .expect("session should still exist");
+            let session_id = session.id().to_string();
+            session.set_active_provider_run(Some("provider-run-stale".to_string()));
+            let node_run = WorkflowNodeRun::new(
+                "node-run-stale",
+                "node-1",
+                agent.id(),
+                WorkflowNodeRunStatus::Running,
+            );
+            let mut workflow_run = WorkflowRun::new(
+                "workflow-run-stale",
+                "workflow-1",
+                "endpoint-1",
+                "node-1",
+                Some("invoke".to_string()),
+                vec![node_run],
+                Vec::new(),
+            );
+            workflow_run.set_active_node_run("node-run-stale");
+            workflow_run.set_status(WorkflowRunStatus::Running);
+            session.create_workflow_run(workflow_run);
+            app.sessions.restore_session(session);
+            app.save_durable_state_snapshot()
+                .expect("snapshot should save stale runtime state");
+            (
+                session_id,
+                "workflow-run-stale".to_string(),
+                "node-run-stale".to_string(),
+            )
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+        let restored = app
+            .sessions()
+            .get_session(&session_id)
+            .expect("session should restore");
+        assert_eq!(restored.active_provider_run_id(), None);
+        assert!(restored.active_prompt().is_none());
+        assert_eq!(restored.scheduler_state(), SchedulerState::Idle);
+        let workflow_run = restored
+            .workflow_run(&workflow_run_id)
+            .expect("workflow run should restore");
+        assert_eq!(workflow_run.status(), WorkflowRunStatus::Stopped);
+        assert_eq!(workflow_run.active_node_run_id(), None);
+        assert_eq!(
+            workflow_run.node_runs()[0].status(),
+            WorkflowNodeRunStatus::Stopped
+        );
+        assert_eq!(workflow_run.node_runs()[0].id(), workflow_node_run_id);
+        assert!(workflow_run
+            .failure_events()
+            .iter()
+            .any(|event| { event.message().contains("interrupted by kernel restart") }));
     }
 }
 

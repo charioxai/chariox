@@ -871,3 +871,10 @@ Chronological notes to preserve execution context between contributors/agents.
 - The scheduler reads event/snapshot sequence checkpoints, captures sessions and agents through cloneable stores under short store locks, then writes the SQLite snapshot outside the main `DaemonApp` lock.
 - Snapshot write failures are logged and retried on later ticks without failing foreground kernel commands.
 - Added focused coverage for interval gating, checkpointed snapshot writes, and no-main-app-lock snapshot ticks.
+
+### M8 boot recovery reconciliation update
+
+- Added boot-time reconciliation after durable snapshot/event replay so runtime-only work that cannot survive a kernel process restart is not shown as still running.
+- Restored sessions now clear stale active provider run ids, interrupt active prompts, and mark in-flight workflow runs stopped with a `RunStopped` failure event explaining the kernel restart interruption.
+- Fixed the restore/projection loops to materialize session lists before write-back, avoiding session read-lock retention across reconciliation writes.
+- Added focused restart coverage that snapshots stale active provider, prompt, and workflow state, then verifies rebooted state is idle/stopped with the interruption surfaced on the workflow run.
