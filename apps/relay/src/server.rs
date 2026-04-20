@@ -1276,6 +1276,7 @@ mod tests {
             token_id: token_id.to_string(),
             account_id: None,
             organization_id: None,
+            user_id: None,
             device_id: None,
             machine_id: None,
             client_id: None,

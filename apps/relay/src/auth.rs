@@ -56,6 +56,7 @@ pub struct RelayTokenClaims {
     pub token_id: String,
     pub account_id: Option<String>,
     pub organization_id: Option<String>,
+    pub user_id: Option<String>,
     pub device_id: Option<String>,
     pub machine_id: Option<String>,
     pub client_id: Option<String>,
@@ -85,6 +86,7 @@ pub struct VerifiedRelayIdentity {
     pub allowed_actions: Vec<RelayAction>,
     pub allowed_targets: Option<Vec<String>>,
     pub token_id: Option<String>,
+    pub user_id: Option<String>,
     pub public_key_thumbprint: Option<String>,
 }
 
@@ -97,6 +99,7 @@ impl VerifiedRelayIdentity {
             allowed_actions: vec![action],
             allowed_targets: None,
             token_id: None,
+            user_id: None,
             public_key_thumbprint: None,
         }
     }
@@ -307,6 +310,7 @@ fn identity_from_claims(claims: RelayTokenClaims) -> VerifiedRelayIdentity {
         allowed_actions: claims.allowed_actions,
         allowed_targets: claims.allowed_targets,
         token_id: Some(claims.token_id),
+        user_id: claims.user_id,
         public_key_thumbprint: claims.public_key_thumbprint,
     }
 }
@@ -411,6 +415,7 @@ mod tests {
             token_id: "token-1".to_string(),
             account_id: None,
             organization_id: None,
+            user_id: None,
             device_id: None,
             machine_id: None,
             client_id: Some("client-1".to_string()),
@@ -456,6 +461,7 @@ mod tests {
                 token_id: "token-1".to_string(),
                 account_id: None,
                 organization_id: None,
+                user_id: Some("user-1".to_string()),
                 device_id: None,
                 machine_id: None,
                 client_id: Some("client-1".to_string()),
@@ -516,6 +522,7 @@ mod tests {
             token_id: "token-1".to_string(),
             account_id: Some("account-1".to_string()),
             organization_id: None,
+            user_id: Some("user-1".to_string()),
             device_id: Some("device-1".to_string()),
             machine_id: None,
             client_id: Some("client-1".to_string()),
@@ -541,6 +548,7 @@ mod tests {
         assert_eq!(identity.subject, "client-1");
         assert_eq!(identity.subject_kind, RelaySubjectKind::Client);
         assert_eq!(identity.token_id.as_deref(), Some("token-1"));
+        assert_eq!(identity.user_id.as_deref(), Some("user-1"));
         assert_eq!(
             identity.public_key_thumbprint.as_deref(),
             Some("thumbprint")
@@ -561,6 +569,7 @@ mod tests {
             token_id: "token-1".to_string(),
             account_id: None,
             organization_id: None,
+            user_id: None,
             device_id: None,
             machine_id: None,
             client_id: Some("client-1".to_string()),

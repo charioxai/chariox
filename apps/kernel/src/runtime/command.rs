@@ -91,7 +91,7 @@ impl KernelCaller {
         Self {
             caller_id: identity.subject,
             caller_kind,
-            user_id: None,
+            user_id: identity.user_id,
             client_id,
             machine_id,
             realm_id: Some(identity.realm_id),
@@ -695,6 +695,7 @@ mod tests {
                 subject: "client-1".to_string(),
                 subject_kind: RelaySubjectKind::Client,
                 token_id: Some("token-1".to_string()),
+                user_id: Some("user-1".to_string()),
                 public_key_thumbprint: Some("thumbprint-1".to_string()),
             }),
             None,
@@ -705,6 +706,7 @@ mod tests {
         assert_eq!(command.source, KernelCommandSource::RelayClient);
         assert_eq!(command.caller.caller_kind, KernelCallerKind::RemoteClient);
         assert_eq!(command.caller.caller_id, "client-1");
+        assert_eq!(command.caller.user_id.as_deref(), Some("user-1"));
         assert_eq!(command.caller.client_id.as_deref(), Some("client-1"));
         assert_eq!(command.caller.realm_id.as_deref(), Some("realm-1"));
         assert_eq!(

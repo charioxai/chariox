@@ -24,6 +24,8 @@ pub struct RelayCallerIdentity {
     #[serde(default)]
     pub token_id: Option<String>,
     #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
     pub public_key_thumbprint: Option<String>,
 }
 
@@ -34,6 +36,7 @@ impl From<VerifiedRelayIdentity> for RelayCallerIdentity {
             subject: identity.subject,
             subject_kind: identity.subject_kind,
             token_id: identity.token_id,
+            user_id: identity.user_id,
             public_key_thumbprint: identity.public_key_thumbprint,
         }
     }

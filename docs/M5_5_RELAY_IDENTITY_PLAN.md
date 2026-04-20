@@ -447,6 +447,7 @@ Contract shipped in this repository:
 - Claims payload: JSON-serialized `RelayTokenClaims`.
 - Current verifier algorithm: HMAC-SHA256 over `<claims-base64url>`, using the configured secret for `claims.issuer`.
 - Verifier behavior: after signature verification, the relay enforces expiration, allowed action, and allowed target constraints before admitting or routing.
+- User identity hook: scoped claims may include `user_id`; when present, the relay forwards it as caller identity and the kernel maps it into `KernelCommand.caller.user_id` for M6.5 membership checks.
 - Integration boundary: hosted or self-hosted control planes instantiate `RelayAuthVerifier::scoped_hmac(...)` or an equivalent future verifier and pass it to `RelayServer::with_auth_verifier(...)`.
 - `arroba-cloud` should issue this token shape first, then can migrate to an asymmetric verifier without changing relay/kernel authorization semantics.
 

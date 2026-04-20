@@ -372,7 +372,7 @@ The shell executor must share the same kernel authorization path as the TUI. It 
 
 As of 2026-04-20:
 
-- Slice 1 is in progress: sessions now persist an implicit local owner, member records, and session invite records with migration defaults for existing sessions. Kernel API and shell command coverage exists for `session members`, `session invite create`, `session join`, and `session revoke-invite`.
+- Slice 1 is in progress: sessions now persist an implicit local owner, member records, and session invite records with migration defaults for existing sessions. Kernel API and shell command coverage exists for `session members`, `session invite create`, `session join`, and `session revoke-invite`. Scoped relay claims can now carry `user_id` into `KernelCommand.caller.user_id`.
 - Remaining Slice 1 work: wire caller-to-user resolution into the session command boundary and reject non-member access for all session-scoped requests before state changes.
 - Slices 2-7 have not started.
 
