@@ -312,11 +312,30 @@ Kernel protocol changes:
 As of 2026-04-20:
 
 - Slices 1-3 are implemented: relay identity vocabulary, verifier abstraction, and realm-scoped relay registry/routing are in place.
-- Slice 4 is partially implemented: kernel-owned paired-machine state is integrated with the existing remote-machine approval registry, and paired-client state can be recorded, listed, and revoked.
-- Slice 5 is implemented for the bootstrap path: shell coverage exists for `client invite create`, `client join`, `client list`, `client record`, `client revoke`, `machine invite create`, `machine join`, `machine approve`, `machine rename`, and `machine revoke`. Invite tokens are self-contained bootstrap tokens; one-time invite redemption and signed scoped-token exchange remain slice 7 work.
+- Slice 4 is implemented for M5.5: kernel-owned paired-machine state is integrated with the existing remote-machine approval registry, and paired-client state can be recorded, listed, and revoked.
+- Slice 5 is implemented for M5.5: shell coverage exists for `client invite create`, `client join`, `client list`, `client record`, `client revoke`, `machine invite create`, `machine join`, `machine approve`, `machine rename`, and `machine revoke`. Invite tokens are self-contained bootstrap tokens in the open-source kernel path.
 - Slice 6 is implemented as a foundation: verified relay caller identity is attached to forwarded relay frames and mapped into `KernelCommand.caller` for relay-originated local API requests. Session and workflow authorization checks remain M6.5 work.
 - Slice 7 is implemented for the verifier contract: the relay can verify `arroba-scoped-v1` HMAC-signed tokens against configured issuer metadata supplied by the embedding server/control plane. The open-source relay still defaults to shared-token bootstrap unless constructed with a scoped verifier.
 - Slice 8 is implemented for the relay identity surface: `live-relay-identity-security-drill.mjs` starts a real scoped-token relay and verifies paired/unpaired client and machine admission, action constraints, and cross-realm metadata/routing isolation. Full remote-provider CLI/machine drills still depend on physical remote machines.
+
+### Closed Scope And Follow-Ups
+
+M5.5 is closed for the open-source relay/kernel identity foundation:
+
+- the relay has a scoped-token verifier contract and realm-scoped routing semantics
+- the kernel has durable paired-client and paired-machine state
+- local and relay-originated kernel commands carry caller identity
+- shell commands cover client and machine invite/join/list/revoke/approval flows
+- the live scoped-token relay drill proves admission, action constraints, and realm isolation
+
+The following items are intentionally outside M5.5's closed scope:
+
+- Arroba Cloud issuing production runtime tokens; the contract is documented here and implemented in the separate `arroba-cloud` project
+- one-time hosted invite redemption; open-source invites are self-contained bootstrap tokens
+- physical remote-provider CLI and remote-machine drills; these require available remote machines and belong to the live-drill track
+- M6.5 user/session membership and workflow ownership checks; those build on `KernelCommand.caller`
+
+Invariant after M5.5: the relay admits and routes scoped connections, but it is not the session, workflow, provider, or workspace authority. The kernel remains the runtime and authorization authority.
 
 ### Slice 1. Token And Realm Types
 
