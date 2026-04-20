@@ -171,6 +171,10 @@ pub enum DaemonError {
         status: SessionStatus,
         operation: &'static str,
     },
+    #[error("user `{user_id}` is not a member of session `{session_id}`")]
+    SessionAccessDenied { session_id: String, user_id: String },
+    #[error("session-scoped request `{operation}` requires authenticated user identity")]
+    MissingSessionCallerIdentity { operation: String },
     #[error("session `{session_id}` has no active prompt")]
     NoActivePrompt { session_id: String },
     #[error("session `{session_id}` rejected the config change while a prompt is running")]

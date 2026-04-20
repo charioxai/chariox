@@ -43,7 +43,7 @@ use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::capability_executor::{
     execute_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
 };
-use crate::runtime::command::{KernelCommand, KernelCommandPriority};
+use crate::runtime::command::{KernelCallerKind, KernelCommand, KernelCommandPriority};
 use crate::runtime::projection::{
     page_history_entries, AgentRuntimeProjectionStore, DaemonConfigProjectionStore,
     DaemonHealthProjection, ProviderCatalogProjectionStore, ProviderProcessProjectionStore,
@@ -701,12 +701,21 @@ impl CommandRouter {
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let focus_refresh = focus_projection_refresh(&request);
+        let caller_user_id = self
+            .authorize_session_membership(&command, &request)
+            .await?;
         if let LocalDaemonRequest::GetSessionState(request) = &request {
             if !self
                 .has_unsettled_pending_provider_launch(&request.session_id)
                 .await
             {
                 if let Some(session) = self.session_projection.get(&request.session_id) {
+                    if !session.has_member(&caller_user_id) {
+                        return Err(DaemonError::SessionAccessDenied {
+                            session_id: session.id().to_string(),
+                            user_id: caller_user_id.clone(),
+                        });
+                    }
                     return Ok(LocalDaemonResponse::SessionState { session });
                 }
                 if self.session_projection.has_warmed_list() {
@@ -721,6 +730,12 @@ impl CommandRouter {
                 .session_projection
                 .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())
             {
+                if !session.has_member(&caller_user_id) {
+                    return Err(DaemonError::SessionAccessDenied {
+                        session_id: session.id().to_string(),
+                        user_id: caller_user_id.clone(),
+                    });
+                }
                 return Ok(LocalDaemonResponse::SessionResolved { session });
             }
             if let Some(result) = self
@@ -736,13 +751,32 @@ impl CommandRouter {
                         session_id: session_id.clone(),
                     }
                 })?;
+                if !session.has_member(&caller_user_id) {
+                    return Err(DaemonError::SessionAccessDenied {
+                        session_id: session.id().to_string(),
+                        user_id: caller_user_id.clone(),
+                    });
+                }
                 return Ok(LocalDaemonResponse::SessionResolved { session });
             }
         }
         if matches!(request, LocalDaemonRequest::ListSessions(_)) {
             if let Some(sessions) = self.session_projection.list() {
+                let sessions = sessions
+                    .into_iter()
+                    .filter(|session| session.has_member(&caller_user_id))
+                    .collect();
                 return Ok(LocalDaemonResponse::SessionsListed { sessions });
             }
+            let sessions = {
+                let app = self.app.lock().await;
+                app.sessions()
+                    .list_sessions()
+                    .into_iter()
+                    .filter(|session| session.has_member(&caller_user_id))
+                    .collect()
+            };
+            return Ok(LocalDaemonResponse::SessionsListed { sessions });
         }
         match &request {
             LocalDaemonRequest::RelayStatus(_) => {
@@ -1605,6 +1639,117 @@ impl CommandRouter {
             }));
         }
         None
+    }
+
+    async fn authorize_session_membership(
+        &self,
+        command: &KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Result<String, DaemonError> {
+        if matches!(
+            request,
+            LocalDaemonRequest::CreateSession(_) | LocalDaemonRequest::JoinSessionInvite(_)
+        ) {
+            return Ok(command_session_user_id(command)
+                .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()));
+        }
+
+        let Some(scope) = request_session_scope(request) else {
+            return Ok(command_session_user_id(command)
+                .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()));
+        };
+        let user_id = command_session_user_id(command).ok_or_else(|| {
+            DaemonError::MissingSessionCallerIdentity {
+                operation: command.command_type.clone(),
+            }
+        })?;
+
+        match scope {
+            SessionMembershipScope::AllSessions => Ok(user_id),
+            SessionMembershipScope::SessionId(session_id) => {
+                self.ensure_session_member(&session_id, &user_id).await?;
+                Ok(user_id)
+            }
+            SessionMembershipScope::SessionRef {
+                session_ref,
+                workspace_id,
+            } => {
+                let session = self
+                    .resolve_session_for_membership(&session_ref, workspace_id.as_deref())
+                    .await?;
+                if !session.has_member(&user_id) {
+                    return Err(DaemonError::SessionAccessDenied {
+                        session_id: session.id().to_string(),
+                        user_id,
+                    });
+                }
+                Ok(user_id)
+            }
+            SessionMembershipScope::AttachmentId(attachment_id) => {
+                let session_id = if let Some(session_id) = self
+                    .session_projection
+                    .session_id_for_attachment(&attachment_id)
+                {
+                    session_id
+                } else {
+                    let app = self.app.lock().await;
+                    app.sessions()
+                        .list_sessions()
+                        .into_iter()
+                        .find(|session| session.has_attachment(&attachment_id))
+                        .map(|session| session.id().to_string())
+                        .ok_or_else(|| DaemonError::AttachmentNotFound {
+                            attachment_id: attachment_id.clone(),
+                        })?
+                };
+                self.ensure_session_member(&session_id, &user_id).await?;
+                Ok(user_id)
+            }
+        }
+    }
+
+    async fn ensure_session_member(
+        &self,
+        session_id: &str,
+        user_id: &str,
+    ) -> Result<(), DaemonError> {
+        if let Some(session) = self.session_projection.get(session_id) {
+            if session.has_member(user_id) {
+                return Ok(());
+            }
+            return Err(DaemonError::SessionAccessDenied {
+                session_id: session.id().to_string(),
+                user_id: user_id.to_string(),
+            });
+        }
+        let session = {
+            let app = self.app.lock().await;
+            app.sessions().get_session(session_id)?
+        };
+        if session.has_member(user_id) {
+            Ok(())
+        } else {
+            Err(DaemonError::SessionAccessDenied {
+                session_id: session.id().to_string(),
+                user_id: user_id.to_string(),
+            })
+        }
+    }
+
+    async fn resolve_session_for_membership(
+        &self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        if let Some(session) = self
+            .session_projection
+            .resolve_session_ref(session_ref, workspace_id)
+        {
+            return Ok(session);
+        }
+        let app = self.app.lock().await;
+        app.sessions()
+            .resolve_session_ref(session_ref, workspace_id)
     }
 
     async fn projected_session_history_response(
@@ -2903,6 +3048,245 @@ fn registry_workspace_root(workspace_id: Option<&str>) -> Result<std::path::Path
     }
 }
 
+#[derive(Debug, Clone)]
+enum SessionMembershipScope {
+    AllSessions,
+    SessionId(String),
+    SessionRef {
+        session_ref: String,
+        workspace_id: Option<String>,
+    },
+    AttachmentId(String),
+}
+
+fn command_session_user_id(command: &KernelCommand) -> Option<String> {
+    match command.caller.caller_kind {
+        KernelCallerKind::LocalClient => command
+            .caller
+            .user_id
+            .clone()
+            .or_else(|| Some(DEFAULT_LOCAL_USER_ID.to_string())),
+        KernelCallerKind::RemoteClient
+        | KernelCallerKind::RemoteKernel
+        | KernelCallerKind::HostedService => command.caller.user_id.clone(),
+    }
+}
+
+fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembershipScope> {
+    match request {
+        LocalDaemonRequest::ListSessions(_) => Some(SessionMembershipScope::AllSessions),
+        LocalDaemonRequest::ResolveSession(request) => Some(SessionMembershipScope::SessionRef {
+            session_ref: request.session_ref.clone(),
+            workspace_id: request.workspace_id.clone(),
+        }),
+        LocalDaemonRequest::DeleteSession(request) => Some(SessionMembershipScope::SessionRef {
+            session_ref: request.session_ref.clone(),
+            workspace_id: request.workspace_id.clone(),
+        }),
+        LocalDaemonRequest::DetachFromSession(request) => Some(
+            SessionMembershipScope::AttachmentId(request.attachment_id.clone()),
+        ),
+        LocalDaemonRequest::QueryHistory(request) => request
+            .session_id
+            .as_ref()
+            .map(|session_id| SessionMembershipScope::SessionId(session_id.clone())),
+        LocalDaemonRequest::SearchHistory(request) => request
+            .session_id
+            .as_ref()
+            .map(|session_id| SessionMembershipScope::SessionId(session_id.clone())),
+        LocalDaemonRequest::AttachToSession(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::LaunchProviderRun(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ListSessionMembers(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CreateSessionInvite(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RevokeSessionInvite(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SubmitPrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CompletePrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CancelActivePrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::UpdateSessionConfig(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetSessionState(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::AliasSession(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::GetSessionHistory(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::PollRuntimeNotices(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ResizeTerminal(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::PumpTerminalOutput(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::EndSession(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::RunShellCommand(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ReadDirectoryTree(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ReadFile(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::EditFile(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::InspectGit(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CaptureScreenshot(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::StoreTransferredFile(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SpawnAgent(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::MoveAgentToRemote(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::DestroyAgent(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::FocusAgent(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CycleAgentFocus(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ListAgents(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CreateWorkflow(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::AliasWorkflow(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ListWorkflows(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ResolveWorkflow(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CreateWorkflowEndpoint(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::AliasWorkflowEndpoint(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::BindWorkflowEndpoint(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::AddWorkflowNode(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::RemoveWorkflowNode(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::UpdateWorkflowNodeInstructions(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowNodeMaxTurns(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::AddWorkflowEdge(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ValidateWorkflowOutput(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::AckWorkflowTurn(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::RemoveWorkflowEdge(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::InvokeWorkflowEndpoint(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkflowRuns(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::GetWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CancelWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ResumeWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CreateWorkflowWatchdog(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkflowWatchdogs(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowWatchdogEnabled(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RemoveWorkflowWatchdog(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowFlushContext(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowRunOutputSchema(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowLaunchPolicy(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListQueuedWorkflowLaunches(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RemoveQueuedWorkflowLaunch(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ClearQueuedWorkflowLaunches(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        _ => None,
+    }
+}
+
 fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusProjectionRefresh {
     match request {
         LocalDaemonRequest::SpawnAgent(_) => FocusProjectionRefresh::AgentSpawn,
@@ -3088,10 +3472,13 @@ mod tests {
     use crate::provider::{
         LaunchProviderRequest, OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun,
     };
-    use crate::runtime::command::KernelCommand;
+    use crate::runtime::command::{
+        KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource,
+    };
     use crate::runtime::router::CommandRouter;
     use crate::session::{
         CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus,
+        DEFAULT_LOCAL_USER_ID,
     };
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
@@ -3122,6 +3509,28 @@ mod tests {
             .expect("provider run should launch");
         app.update_provider_run_projection(provider_run.clone());
         provider_run
+    }
+
+    fn remote_command_for_request(
+        request: &LocalDaemonRequest,
+        user_id: Option<&str>,
+    ) -> KernelCommand {
+        KernelCommand::from_local_request_with_caller(
+            "remote-command",
+            KernelCommandSource::RelayClient,
+            KernelCaller {
+                caller_id: "client-remote".to_string(),
+                caller_kind: KernelCallerKind::RemoteClient,
+                user_id: user_id.map(str::to_string),
+                client_id: Some("client-remote".to_string()),
+                machine_id: None,
+                realm_id: Some("realm-1".to_string()),
+                public_key_thumbprint: Some("thumbprint-remote".to_string()),
+            },
+            None,
+            None,
+            request,
+        )
     }
 
     fn focus_test_agent(app: &mut DaemonApp, session_id: &str, agent_id: &str) {
@@ -7649,6 +8058,102 @@ mod tests {
         match list_response {
             LocalDaemonResponse::SessionsListed { sessions } => {
                 assert!(sessions.is_empty());
+            }
+            _ => panic!("unexpected list response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_session_requests_require_membership() {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new(
+                "workspace-membership",
+                "worktree-a",
+            ))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let denied = router
+            .dispatch(
+                remote_command_for_request(&request, Some("user-2")),
+                request,
+            )
+            .await
+            .expect_err("non-member should be rejected");
+        assert!(matches!(
+            denied,
+            DaemonError::SessionAccessDenied {
+                session_id: denied_session,
+                user_id
+            } if denied_session == session_id && user_id == "user-2"
+        ));
+
+        let request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest { session_id });
+        let missing = router
+            .dispatch(remote_command_for_request(&request, None), request)
+            .await
+            .expect_err("remote session request without user id should be rejected");
+        assert!(matches!(
+            missing,
+            DaemonError::MissingSessionCallerIdentity { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn remote_session_list_is_filtered_to_memberships() {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let session_a = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new(
+                "workspace-membership",
+                "worktree-a",
+            ))
+            .expect("session a should be created");
+        let session_b = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new(
+                "workspace-membership",
+                "worktree-b",
+            ))
+            .expect("session b should be created");
+        let session_a_id = session_a.id().to_string();
+        let session_b_id = session_b.id().to_string();
+        let (_, invite) = app
+            .sessions_mut()
+            .create_session_invite(
+                &session_b_id,
+                "invite-user-2".to_string(),
+                DEFAULT_LOCAL_USER_ID.to_string(),
+                None,
+                Some(1),
+            )
+            .expect("invite should be created");
+        app.sessions_mut()
+            .join_session_invite(&session_b_id, invite.invite_id(), "user-2".to_string(), 1)
+            .expect("user should join session b");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let response = router
+            .dispatch(
+                remote_command_for_request(&request, Some("user-2")),
+                request,
+            )
+            .await
+            .expect("member list should succeed");
+        match response {
+            LocalDaemonResponse::SessionsListed { sessions } => {
+                assert_eq!(sessions.len(), 1);
+                assert_eq!(sessions[0].id(), session_b_id);
+                assert_ne!(sessions[0].id(), session_a_id);
             }
             _ => panic!("unexpected list response"),
         }
