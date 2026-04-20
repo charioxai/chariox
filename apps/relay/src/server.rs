@@ -9,6 +9,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
+use crate::auth::{RelayAction, RelayAuthError, RelayAuthRequest, RelayAuthVerifier};
 use crate::config::RelayConfig;
 use crate::protocol::{
     ClientTarget, DaemonRegistration, RelayConnectionRole, RelayEnvelope, RelayError,
@@ -220,11 +221,13 @@ pub struct RelayServer {
     config: RelayConfig,
     registry: Arc<RwLock<RelayRegistry>>,
     relay_request_counter: Arc<AtomicU64>,
+    auth_verifier: RelayAuthVerifier,
 }
 
 impl RelayServer {
     pub fn new(config: RelayConfig) -> Self {
         Self {
+            auth_verifier: RelayAuthVerifier::shared(config.shared_token.clone()),
             config,
             registry: Arc::new(RwLock::new(RelayRegistry::default())),
             relay_request_counter: Arc::new(AtomicU64::new(0)),
@@ -255,10 +258,10 @@ impl RelayServer {
                 accept = listener.accept() => {
                     let (stream, peer_addr) = accept?;
                     let registry = Arc::clone(&self.registry);
-                    let shared_token = self.config.shared_token.clone();
+                    let auth_verifier = self.auth_verifier.clone();
                     let relay_request_counter = Arc::clone(&self.relay_request_counter);
                     tokio::spawn(async move {
-                        let _ = handle_connection(stream, peer_addr, registry, shared_token, relay_request_counter).await;
+                        let _ = handle_connection(stream, peer_addr, registry, auth_verifier, relay_request_counter).await;
                     });
                 }
             }
@@ -278,7 +281,7 @@ async fn handle_connection(
     stream: TcpStream,
     peer_addr: SocketAddr,
     registry: Arc<RwLock<RelayRegistry>>,
-    shared_token: Option<String>,
+    auth_verifier: RelayAuthVerifier,
     relay_request_counter: Arc<AtomicU64>,
 ) -> Result<(), std::io::Error> {
     let socket = accept_async(stream)
@@ -304,7 +307,12 @@ async fn handle_connection(
                 })?;
                 match envelope {
                     RelayEnvelope::DaemonRegister { registration } => {
-                        validate_shared_token(shared_token.as_deref(), &registration.auth_token)?;
+                        verify_relay_token(
+                            &auth_verifier,
+                            &registration.auth_token,
+                            RelayAction::DaemonRegister,
+                            None,
+                        )?;
                         registered_daemon_id = Some(registration.daemon_id.clone());
                         let mut guard = registry.write().await;
                         guard.peers.insert(
@@ -327,9 +335,11 @@ async fn handle_connection(
                             break;
                         }
                         if let Some(registration) = registration {
-                            validate_shared_token(
-                                shared_token.as_deref(),
+                            verify_relay_token(
+                                &auth_verifier,
                                 &registration.auth_token,
+                                RelayAction::DaemonHeartbeat,
+                                Some(daemon_id.as_str()),
                             )?;
                             if registration.daemon_id != daemon_id {
                                 break;
@@ -342,7 +352,15 @@ async fn handle_connection(
                         }
                     }
                     RelayEnvelope::ClientConnect { auth_token, target } => {
-                        validate_shared_token(shared_token.as_deref(), &auth_token)?;
+                        verify_relay_token(
+                            &auth_verifier,
+                            &auth_token,
+                            RelayAction::ClientConnect,
+                            target
+                                .daemon_id
+                                .as_deref()
+                                .or(target.daemon_alias.as_deref()),
+                        )?;
                         let Some(daemon_id) = resolve_target_daemon_id(&registry, &target).await
                         else {
                             send_close(
@@ -380,7 +398,12 @@ async fn handle_connection(
                         auth_token,
                         query,
                     } => {
-                        validate_shared_token(shared_token.as_deref(), &auth_token)?;
+                        verify_relay_token(
+                            &auth_verifier,
+                            &auth_token,
+                            RelayAction::ClientMetadataRead,
+                            None,
+                        )?;
                         let guard = registry.read().await;
                         let (machines, kernels, kernel) = match query {
                             RelayMetadataQuery::ListLiveMachines => {
@@ -990,16 +1013,30 @@ async fn remove_peer(
     (Vec::new(), Vec::new())
 }
 
-fn validate_shared_token(expected: Option<&str>, provided: &str) -> Result<(), std::io::Error> {
-    if let Some(expected) = expected {
-        if expected != provided {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "invalid relay token",
-            ));
-        }
-    }
-    Ok(())
+fn verify_relay_token(
+    verifier: &RelayAuthVerifier,
+    token: &str,
+    action: RelayAction,
+    target: Option<&str>,
+) -> Result<(), std::io::Error> {
+    verifier
+        .verify(RelayAuthRequest {
+            token,
+            action,
+            target,
+        })
+        .map(|_| ())
+        .map_err(relay_auth_error)
+}
+
+fn relay_auth_error(error: RelayAuthError) -> std::io::Error {
+    let kind = match error {
+        RelayAuthError::InvalidToken
+        | RelayAuthError::ActionNotAllowed
+        | RelayAuthError::TargetNotAllowed
+        | RelayAuthError::ScopedTokensUnavailable => std::io::ErrorKind::PermissionDenied,
+    };
+    std::io::Error::new(kind, error.to_string())
 }
 
 fn send_envelope(
