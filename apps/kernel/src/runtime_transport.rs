@@ -36,6 +36,7 @@ pub(crate) const WATCH_INTERVAL_MS: u64 = 50;
 const STATE_INTERVAL_TICKS: u64 = 4;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RELAY_DISCOVERY_INTERVAL_TICKS: u64 = 100;
+const DURABLE_SNAPSHOT_POLL_INTERVAL_MS: u64 = 5_000;
 const WEBSOCKET_PING_INTERVAL_MS: u64 = 5_000;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
 pub(crate) const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
@@ -297,9 +298,12 @@ where
     F: Future<Output = ()>,
 {
     let pump_app = Arc::clone(&app);
-    let transport_health = {
+    let (transport_health, durable_snapshot_scheduler) = {
         let app = app.lock().await;
-        app.transport_health_store()
+        (
+            app.transport_health_store(),
+            app.durable_snapshot_scheduler(),
+        )
     };
     let runtime = Arc::new(KernelTransportRuntime::new(transport_health.clone()));
     let router = Arc::new(
@@ -323,6 +327,9 @@ where
             sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
         }
     });
+    let mut durable_snapshot_task = durable_snapshot_scheduler.map(|scheduler| {
+        tokio::spawn(scheduler.run(Duration::from_millis(DURABLE_SNAPSHOT_POLL_INTERVAL_MS)))
+    });
 
     let mcp_router = Arc::clone(&router);
     let mcp_task = tokio::spawn(async move {
@@ -333,6 +340,9 @@ where
         tokio::select! {
             _ = &mut shutdown => {
                 pump_task.abort();
+                if let Some(task) = durable_snapshot_task.take() {
+                    task.abort();
+                }
                 mcp_task.abort();
                 let mut app = app.lock().await;
                 let _ = app.shutdown_cleanup();

@@ -170,6 +170,21 @@ impl DurableKernelStateStore {
         Ok(sequence.max(0) as u64)
     }
 
+    pub fn latest_snapshot_sequence(&self) -> Result<u64, DaemonError> {
+        let connection = self.lock_connection("durable_state.latest_snapshot_sequence")?;
+        let sequence = connection
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM durable_state_snapshots",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.latest_snapshot_sequence",
+                message: error.to_string(),
+            })?;
+        Ok(sequence.max(0) as u64)
+    }
+
     pub fn save_snapshot(
         &self,
         sequence: u64,
@@ -356,6 +371,12 @@ mod tests {
             store
                 .latest_event_sequence()
                 .expect("latest event sequence should load"),
+            second.sequence
+        );
+        assert_eq!(
+            store
+                .latest_snapshot_sequence()
+                .expect("latest snapshot sequence should load"),
             second.sequence
         );
 

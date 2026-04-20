@@ -26,6 +26,7 @@ use super::{LocalDaemonRequest, LocalDaemonResponse};
 
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_IPC_FRAME_BYTES: usize = 1024 * 1024;
+const DURABLE_SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct LocalIpcClient {
@@ -67,6 +68,12 @@ where
     harden_socket_permissions(&socket_path)?;
     let provider_runtime_lanes = app.provider_run_operation_lanes();
     let app = Arc::new(Mutex::new(app));
+    let durable_snapshot_scheduler = {
+        let app = app.lock().await;
+        app.durable_snapshot_scheduler()
+    };
+    let mut durable_snapshot_task = durable_snapshot_scheduler
+        .map(|scheduler| tokio::spawn(scheduler.run(DURABLE_SNAPSHOT_POLL_INTERVAL)));
     let router = Arc::new(CommandRouter::with_interactive_capacity_and_provider_lanes(
         Arc::clone(&app),
         crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
@@ -79,6 +86,9 @@ where
     let result = loop {
         tokio::select! {
             _ = &mut shutdown => {
+                if let Some(task) = durable_snapshot_task.take() {
+                    task.abort();
+                }
                 let mut app = app.lock().await;
                 let _ = app.shutdown_cleanup();
                 break Ok(());

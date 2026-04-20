@@ -864,3 +864,10 @@ Chronological notes to preserve execution context between contributors/agents.
 - Boot restore now loads the latest durable state snapshot, restores sessions/agents from it, and replays only events after the snapshot sequence.
 - Added an app-level snapshot writer that captures current sessions and agents against the latest durable event sequence; the future scheduler can call this from a background worker.
 - Added focused coverage proving bootstrap restores snapshot state and then replays post-snapshot lifecycle events.
+
+### M8 durable snapshot scheduler update
+
+- Added a background durable snapshot scheduler for websocket and local IPC daemon lifetimes, controlled by `[state].snapshot_interval_events`.
+- The scheduler reads event/snapshot sequence checkpoints, captures sessions and agents through cloneable stores under short store locks, then writes the SQLite snapshot outside the main `DaemonApp` lock.
+- Snapshot write failures are logged and retried on later ticks without failing foreground kernel commands.
+- Added focused coverage for interval gating, checkpointed snapshot writes, and no-main-app-lock snapshot ticks.

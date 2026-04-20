@@ -30,6 +30,7 @@ use crate::agent::{
 };
 use crate::attachment::{AttachmentService, AttachmentServiceStore};
 use crate::config::{DaemonConfig, HistoryArchiveMode};
+use crate::durable_snapshot::{DurableKernelSnapshotPayload, DurableSnapshotScheduler};
 use crate::durable_state::{DurableKernelStateStore, DurableStateEvent};
 use crate::error::DaemonError;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding};
@@ -63,12 +64,6 @@ pub(crate) use provider_runtime::{
     StartedProviderLaunch,
 };
 pub(crate) use remote_lease::RemoteLeaseRuntime;
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct DurableKernelSnapshotPayload {
-    sessions: Vec<RuntimeSession>,
-    agents: Vec<AgentInstance>,
-}
 
 fn decode_durable_payload_field<T>(
     event: &DurableStateEvent,
@@ -406,10 +401,7 @@ impl DaemonApp {
     #[allow(dead_code)]
     pub(crate) fn save_durable_state_snapshot(&self) -> Result<(), DaemonError> {
         let sequence = self.durable_state.latest_event_sequence()?;
-        let payload = DurableKernelSnapshotPayload {
-            sessions: self.sessions.read().store().list(),
-            agents: self.agents.list_agents(),
-        };
+        let payload = DurableKernelSnapshotPayload::capture(&self.sessions, &self.agents);
         self.durable_state.save_snapshot(
             sequence,
             serde_json::to_value(payload).map_err(|error| DaemonError::LocalTransport {
@@ -418,6 +410,16 @@ impl DaemonApp {
             })?,
         )?;
         Ok(())
+    }
+
+    pub(crate) fn durable_snapshot_scheduler(&self) -> Option<DurableSnapshotScheduler> {
+        let interval_events = self.config.user_config.state.snapshot_interval_events? as u64;
+        Some(DurableSnapshotScheduler::new(
+            self.durable_state_store(),
+            self.session_state_store(),
+            self.agents.clone(),
+            interval_events,
+        ))
     }
 
     fn restore_durable_state_event(&mut self, event: DurableStateEvent) -> Result<(), DaemonError> {

@@ -505,6 +505,7 @@ If multiple agents could have caused a commit, store all candidates and show the
 
 - Add persistent state snapshots and state event log. **Landed foundation:** `DurableKernelStateStore` opens the configured SQLite path with WAL mode, appends ordered state events, saves snapshots, reloads events after a sequence, loads the latest snapshot after reopening, and exposes the latest event sequence for checkpointed snapshots.
 - Persist sessions, agents, workflows, grants, machines, queues, and provider resume descriptors. **Started:** `DaemonApp` now owns the durable state store. Session creation records `session.created` with the default agent payload, local agent spawn records `agent.created`, session end records `session.ended`, runtime session deletion records `session.deleted`, user- or agent-triggered MCP/skill grant mutations record full agent snapshots, provider launch/runtime-profile updates record full agent snapshots, and workflow commands record full session snapshots through `session.updated`.
+- Run checkpointed snapshots in the background. **Landed:** websocket and local IPC daemon lifetimes now start a durable snapshot scheduler when `[state].snapshot_interval_events` is set. The worker checks event lag, captures sessions/agents through their cloneable stores under short locks, releases those locks, then writes the SQLite snapshot without holding the main `DaemonApp` lock. Snapshot failures are logged and retried on the next tick; foreground prompts, sessions, workflows, and shell commands continue normally.
 
 ### M8.9 Boot Restore
 
