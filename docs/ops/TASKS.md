@@ -12,6 +12,10 @@ A lightweight, repo-native task board so contributors and future agents can cont
 
 ## In Progress
 
+- [ ] **M5.5-001** Add relay realms, pairing, and scoped tokens
+  - Note: Build the M5.5 plan in `docs/M5_5_RELAY_IDENTITY_PLAN.md`.
+  - Scope: realm-scoped relay registry, scoped relay token verifier, remote CLI pairing, remote machine pairing, caller identity propagation, self-hosted issuer compatibility, hosted issuer compatibility, and security drills.
+  - Next: Start with token/realm domain types and a relay verifier abstraction, then move the relay registry to realm-scoped daemon and metadata resolution.
 - [ ] **M6.5-001** Add multi-user collaboration
   - Note: Build the M6.5 plan in `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`.
   - Scope: session-scoped invites, user-owned providers/agents/workflow nodes/endpoints, caller-scoped redaction, workflow ownership rules, endpoint-owner execution, optimistic workflow edit rejection, session-scoped workspace links, and matching shell command coverage.

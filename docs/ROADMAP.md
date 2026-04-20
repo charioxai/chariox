@@ -13,6 +13,7 @@ Current milestone status:
 - M4 is now the OpenCode-first local-runtime completion phase: the first manual multi-agent runtime slice and workflow runtime are landed, while local stabilization, immediate CLI responsiveness, and workflow polish remain open
 - M4.5 is now the kernel runtime refactor phase: the daemon implementation is actively moving from a global `DaemonApp` lock toward an actor/event/projection kernel before relay scale-out
 - M5 is now the relay and remote-transport phase: relay infrastructure, remote terminal attachment, and daemon identity are the next major delivery target
+- M5.5 is the relay identity hardening phase: relay realms, pairing, scoped tokens, caller identity propagation, and hosted issuer compatibility are planned in `docs/M5_5_RELAY_IDENTITY_PLAN.md`
 - M6.5 is the multi-user collaboration phase: session-scoped invites, user-owned agents/providers, shared workflow graph collaboration, endpoint ownership, caller-scoped redaction, workflow edit conflict rejection, and workspace links are planned in `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`
 
 ## 1. Roadmap Goals
@@ -36,6 +37,7 @@ Current milestone status:
 - M4: OpenCode Local Runtime Completion
 - M4.5: Kernel Runtime Refactor
 - M5: Relay and Remote Transport
+- M5.5: Relay Realms, Pairing, and Scoped Tokens. See `docs/M5_5_RELAY_IDENTITY_PLAN.md`.
 - M6: Remote Agents and Machine Membership
 - M6.5: Multi-User Collaboration. See `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`.
 - M7: Arroba-owned MCP and skill management. In progress: MCP/skill registries, slash-command install/list/show/import/grant/revoke/grants, Codex/OpenCode MCP and skill import, per-agent grants, local Codex/OpenCode MCP rendering, granted-skill summary injection, local explicit full skill-body injection, runtime discovery/request tools, and strict local MCP/skill drills are landed; remote materialization remains open.
@@ -54,6 +56,7 @@ Rollout priority:
 - then close the OpenCode-first local cycle with capabilities, agent harnessing behavior, workflow runtime behavior, and local hardening
 - then remove the daemon hot-path dependency on one shared `DaemonApp` lock by introducing actor-owned mutation, command routing, ordered kernel events, and query projections
 - then add relay-backed remote transport
+- then harden relay identity with realms, pairing, scoped tokens, and caller identity propagation
 - then add remote agents and machine membership on top of relay
 - then add session-scoped multi-user collaboration on top of the shared session and relay model
 - then add Arroba-owned MCP and skill management with per-agent grants, provider-native MCP rendering, skill prompt injection, and provider import paths; the local registry/grant/rendering baseline is now in progress and partially landed

@@ -39,7 +39,7 @@ Mandatory privacy rule:
   - optional daemon alias
 - one daemon uses one active relay connection at a time in v1
 - multiple relay endpoints may be configurable later, but simultaneous multi-relay presence is out of scope for the first slice
-- self-hosted relay mode uses static/shared credentials
+- self-hosted relay mode initially uses static/shared credentials for bootstrap and drills; M5.5 replaces runtime reliance on shared credentials with relay realms, pairing, and scoped tokens
 - self-hosted relay mode still requires end-to-end encrypted user payloads; trusted deployment ownership does not change the transport model
 - any later managed identity/discovery service remains outside this repository and must integrate cleanly with the same transport boundaries
 
@@ -48,7 +48,7 @@ Mandatory privacy rule:
 - remote workflow interconnection
 - remote agent hosting across machines
 - multi-relay active fanout for one daemon
-- hosted account/auth/discovery service details
+- hosted account/auth/discovery service details beyond the issuer contract introduced by M5.5
 - durable event storage in relay
 - making relay the workspace or workflow authority
 
@@ -165,6 +165,17 @@ Later, an external service may provide:
 That service is intentionally outside this repository.
 
 The relay protocol and daemon/CLI transport model should not depend on that service existing.
+
+M5.5 defines the compatibility boundary for that future service:
+
+- relay realms
+- scoped relay token claims
+- self-hosted and hosted token issuers
+- remote CLI pairing
+- remote machine pairing
+- caller identity propagation into the kernel
+
+See `docs/M5_5_RELAY_IDENTITY_PLAN.md`.
 
 ## Protocol Shape
 
