@@ -884,3 +884,12 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added `apps/cli/scripts/live-local-restart-drill.mjs` and `pnpm --filter @arroba/cli run local-restart:drill`.
 - The drill rebuilds the kernel, runs an isolated daemon/home/config/state/history/workspace, creates durable session, spawned-agent, MCP-grant, skill-grant, provider-profile, completed-history, and active-workflow state, restarts the daemon, then verifies restored state and boot reconciliation end to end.
 - Verified the live drill passes with stale active provider/prompt state cleared, the interrupted workflow run marked `Stopped` with the kernel-restart failure event, and the completed prompt marker available through both transcript paging and operational history search.
+
+### M8 CLI restart/reconnect drill update
+
+- Added `apps/cli/scripts/live-cli-kernel-restart-drill.mjs` and `pnpm --filter @arroba/cli run cli-restart:drill`.
+- Extended CLI automation snapshots with `daemonDisconnected`, `statusLine`, and `sessionId` checks so PTY-hosted drills can assert restart UX instead of scraping terminal pixels.
+- Fixed the runtime actor create-session path to append `session.created`; CLI-created sessions now restore after a kernel process restart instead of only sessions created through the app service path.
+- Added CLI recovery for full kernel restarts: on transport close, an attached CLI polls for the previous session, creates a fresh attachment, resubscribes to kernel events, refreshes panes, clears the disconnected state, and keeps the restored agent visible.
+- Hardened `session_unavailable` handling during reconnect by verifying the session state before transitioning to no-session, avoiding stale replay events from hiding a successfully restored session.
+- Verified the live drill passes with a real PTY-hosted CLI: the CLI shows `Lost connection to the Arroba kernel.` after daemon stop, then reconnects after daemon restart and returns to the restored session with its agent present.

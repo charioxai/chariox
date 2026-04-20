@@ -298,7 +298,18 @@ impl KernelRuntimeState {
         &self,
         request: crate::session::CreateSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.owned.create_session_response(request)
+        let response = self.owned.create_session_response(request)?;
+        if let LocalDaemonResponse::SessionCreated { session, agent } = &response {
+            self.owned.durable_state_store.append_event(
+                "session.created",
+                Some(session.id().to_string()),
+                serde_json::json!({
+                    "session": session,
+                    "default_agent": agent,
+                }),
+            )?;
+        }
+        Ok(response)
     }
 
     pub(crate) async fn attach(

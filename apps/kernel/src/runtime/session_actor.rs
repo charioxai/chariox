@@ -1191,6 +1191,10 @@ mod tests {
             let app_locked = app.lock().await;
             app_locked.terminal_stream_store()
         };
+        let durable_state_store = {
+            let app_locked = app.lock().await;
+            app_locked.durable_state_store()
+        };
         let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
             owned_runtime_state(&app).await,
             1,
@@ -1206,7 +1210,7 @@ mod tests {
         ));
         let command =
             KernelCommand::from_local_request("owned-session-create", None, None, &request);
-        let _locked_app = app.lock().await;
+        let locked_app = app.lock().await;
         let response = timeout(
             Duration::from_millis(100),
             runtime.dispatch_session_command(command, request),
@@ -1221,6 +1225,23 @@ mod tests {
         assert_eq!(session.workspace_id(), "owned-workspace");
         assert_eq!(agent.session_id(), session.id());
         assert_eq!(session.focused_agent_id(), Some(agent.id()));
+        drop(locked_app);
+        let durable_events = durable_state_store
+            .load_events_after(0)
+            .expect("durable state events should load");
+        assert!(
+            durable_events.iter().any(|event| {
+                event.kind == "session.created"
+                    && event.subject_id.as_deref() == Some(session.id())
+                    && event
+                        .payload
+                        .get("default_agent")
+                        .and_then(|agent| agent.get("id"))
+                        .and_then(|id| id.as_str())
+                        == Some(agent.id())
+            }),
+            "owned runtime create-session path should persist the session.created durable event"
+        );
         assert!(session_projection.get(session.id()).is_some());
         assert!(
             agent_runtime_projection
