@@ -402,6 +402,13 @@ impl DaemonApp {
         if !operational_entries.is_empty() {
             return Ok(operational_entries);
         }
+        if self.operational_history.has_session_events(session.id())?
+            || self
+                .operational_history
+                .legacy_fallback_disabled(session.id())?
+        {
+            return Ok(Vec::new());
+        }
         let legacy_entries = self.history.load(session)?;
         Ok(match agent_id {
             Some(agent_id) => legacy_entries

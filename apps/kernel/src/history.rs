@@ -612,6 +612,161 @@ impl OperationalHistoryStore {
             .collect())
     }
 
+    pub fn has_session_events(&self, session_id: &str) -> Result<bool, DaemonError> {
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM history_events WHERE session_id = ?1 LIMIT 1)",
+                params![session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|value| value != 0)
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "check operational session history",
+                message: error.to_string(),
+            })
+    }
+
+    pub fn legacy_fallback_disabled(&self, session_id: &str) -> Result<bool, DaemonError> {
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        connection
+            .query_row(
+                "SELECT legacy_fallback_disabled_at_ms IS NOT NULL
+                 FROM history_session_markers
+                 WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|value| value != 0)
+            .or_else(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => Ok(false),
+                error => Err(DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "check legacy history fallback marker",
+                    message: error.to_string(),
+                }),
+            })
+    }
+
+    pub fn prune_events_before(
+        &self,
+        cutoff_timestamp_ms: u64,
+        allow_unarchived_delete: bool,
+    ) -> Result<usize, DaemonError> {
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: None,
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        let mut session_statement = connection
+            .prepare(
+                "SELECT DISTINCT session_id
+                 FROM history_events
+                 WHERE timestamp_ms < ?1 AND session_id IS NOT NULL",
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: None,
+                operation: "prepare operational history prune session scan",
+                message: error.to_string(),
+            })?;
+        let session_ids = session_statement
+            .query_map(params![cutoff_timestamp_ms as i64], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: None,
+                operation: "scan operational history prune sessions",
+                message: error.to_string(),
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: None,
+                operation: "read operational history prune sessions",
+                message: error.to_string(),
+            })?;
+        drop(session_statement);
+
+        let deleted = if allow_unarchived_delete {
+            connection
+                .execute(
+                    "DELETE FROM history_events WHERE timestamp_ms < ?1",
+                    params![cutoff_timestamp_ms as i64],
+                )
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: None,
+                    operation: "prune operational history events",
+                    message: error.to_string(),
+                })?
+        } else {
+            connection
+                .execute(
+                    "DELETE FROM history_events
+                     WHERE timestamp_ms < ?1
+                       AND event_id IN (
+                         SELECT event_id
+                         FROM history_archive_outbox
+                         WHERE archived_at_ms IS NOT NULL
+                       )",
+                    params![cutoff_timestamp_ms as i64],
+                )
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: None,
+                    operation: "prune archived operational history events",
+                    message: error.to_string(),
+                })?
+        };
+        let now = unix_epoch_ms();
+        for session_id in session_ids {
+            let remaining = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM history_events WHERE session_id = ?1 LIMIT 1)",
+                    params![session_id.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.clone()),
+                    operation: "check operational history after prune",
+                    message: error.to_string(),
+                })?;
+            if remaining == 0 {
+                connection
+                    .execute(
+                        "INSERT INTO history_session_markers (
+                            session_id,
+                            legacy_fallback_disabled_at_ms
+                         ) VALUES (?1, ?2)
+                         ON CONFLICT(session_id) DO UPDATE SET
+                            legacy_fallback_disabled_at_ms = excluded.legacy_fallback_disabled_at_ms",
+                        params![session_id.as_str(), now as i64],
+                    )
+                    .map_err(|error| DaemonError::SessionHistoryFailed {
+                        session_id: Some(session_id.clone()),
+                        operation: "mark legacy history fallback disabled",
+                        message: error.to_string(),
+                    })?;
+            }
+        }
+        Ok(deleted)
+    }
+
     pub fn query_events(&self, query: HistoryEventQuery) -> Result<Vec<HistoryEvent>, DaemonError> {
         let connection =
             self.connection
@@ -1033,6 +1188,11 @@ CREATE TABLE IF NOT EXISTS history_archive_outbox (
 
 CREATE INDEX IF NOT EXISTS idx_history_archive_outbox_pending
     ON history_archive_outbox(archived_at_ms, created_at_ms);
+
+CREATE TABLE IF NOT EXISTS history_session_markers (
+    session_id TEXT PRIMARY KEY,
+    legacy_fallback_disabled_at_ms INTEGER
+);
 "#;
 
 fn operational_history_error(operation: &'static str, error: rusqlite::Error) -> DaemonError {
@@ -1326,6 +1486,19 @@ mod tests {
                 .expect("pending outbox should load")
                 .is_empty(),
             "accepted outbox item should stop being pending"
+        );
+        let deleted = store
+            .prune_events_before(i64::MAX as u64, false)
+            .expect("archived events should prune");
+        assert_eq!(deleted, 1);
+        assert!(!store
+            .has_session_events("session-1")
+            .expect("session event presence should load"));
+        assert!(
+            store
+                .legacy_fallback_disabled("session-1")
+                .expect("legacy fallback marker should load"),
+            "pruned sessions should not fall back to legacy JSONL"
         );
 
         let _ = std::fs::remove_file(&path);

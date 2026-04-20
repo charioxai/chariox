@@ -479,7 +479,7 @@ If multiple agents could have caused a commit, store all candidates and show the
 
 - Add archive adapter client. **Landed foundation:** disabled and external archive clients now implement the adapter append/capabilities protocol, including durable acceptance validation and optional bearer-token auth from `history.archive.token_env`.
 - Add durable outbox/checkpointing. **Landed:** operational SQLite now includes a `history_archive_outbox` table with idempotent enqueue, pending-load, failed-attempt recording, accepted marking, and reopen-safe checkpoint coverage. External archive mode queues new transcript events, and the one-shot exporter flushes pending events to the adapter while checkpointing accepted/rejected outcomes.
-- Add archive-disabled retention behavior.
+- Add archive-disabled retention behavior. **Landed store safety layer:** operational history can prune rows before a cutoff, either allowing unarchived deletion for disabled archive mode or requiring verified archive acceptance. Pruned-empty sessions get a marker that disables legacy JSONL fallback, preventing deleted history from reappearing through compatibility reads.
 - Add external archive mode with verified acceptance before operational deletion.
 
 ### M8.7 Agent/Session Archival Lifecycle

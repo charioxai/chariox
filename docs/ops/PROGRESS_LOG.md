@@ -798,3 +798,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - External archive mode now enqueues newly appended transcript history events into the durable archive outbox.
 - Added a one-shot `HistoryArchiveExporter` that loads pending outbox events, calls the configured archive adapter, marks accepted events archived, and records failed/rejected attempts for retry.
 - Added focused coverage for archive-mode prompt enqueue and adapter-backed outbox flushing.
+
+### M8 retention prune safety update
+
+- Added operational-history pruning before a timestamp cutoff, with separate modes for archive-disabled deletion and verified-archive-only deletion.
+- Added session markers that disable legacy JSONL fallback after pruning removes all operational history for a session, preventing deleted retained history from being resurrected by the compatibility store.
+- Tightened session-history fallback so JSONL is used only for truly pre-cutover sessions with no operational rows and no retention marker.

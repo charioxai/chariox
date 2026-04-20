@@ -1442,7 +1442,10 @@ impl CommandRouter {
         tokio::task::spawn_blocking(move || {
             let operational_entries = operational_history
                 .load_session_history_entries(session.id(), request.agent_id.as_deref())?;
-            let entries = if operational_entries.is_empty() {
+            let entries = if operational_entries.is_empty()
+                && !operational_history.has_session_events(session.id())?
+                && !operational_history.legacy_fallback_disabled(session.id())?
+            {
                 let legacy_entries = history.load(&session)?;
                 match request.agent_id.as_deref() {
                     Some(agent_id) => legacy_entries
