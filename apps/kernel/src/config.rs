@@ -334,6 +334,10 @@ impl DaemonConfig {
         load_persisted_daemon_config().machines
     }
 
+    pub fn client_pairing_entries() -> Vec<PersistedClientPairing> {
+        load_persisted_daemon_config().clients
+    }
+
     pub fn approve_remote_machine(
         machine_id: impl Into<String>,
         alias: Option<String>,
@@ -348,6 +352,59 @@ impl DaemonConfig {
         entry.forgotten = false;
         let saved = entry.clone();
         persist_daemon_config(&persisted, "persist machine approval")?;
+        Ok(saved)
+    }
+
+    pub fn pair_remote_machine(
+        machine_id: impl Into<String>,
+        public_key_thumbprint: impl Into<String>,
+        paired_at_ms: u64,
+    ) -> Result<PersistedMachineRegistration, DaemonError> {
+        let machine_id = machine_id.into();
+        let public_key_thumbprint = public_key_thumbprint.into().trim().to_string();
+        validate_non_empty("machine_id", &machine_id)?;
+        validate_non_empty("public_key_thumbprint", &public_key_thumbprint)?;
+        let mut persisted = load_persisted_daemon_config();
+        let entry = upsert_machine_registration(&mut persisted.machines, &machine_id);
+        entry.public_key_thumbprint = Some(public_key_thumbprint);
+        entry.paired_at_ms = Some(paired_at_ms);
+        entry.forgotten = false;
+        let saved = entry.clone();
+        persist_daemon_config(&persisted, "persist machine pairing")?;
+        Ok(saved)
+    }
+
+    pub fn record_paired_client(
+        client_id: impl Into<String>,
+        public_key_thumbprint: impl Into<String>,
+        alias: Option<String>,
+        paired_at_ms: u64,
+    ) -> Result<PersistedClientPairing, DaemonError> {
+        let client_id = client_id.into();
+        let public_key_thumbprint = public_key_thumbprint.into().trim().to_string();
+        validate_non_empty("client_id", &client_id)?;
+        validate_non_empty("public_key_thumbprint", &public_key_thumbprint)?;
+        let mut persisted = load_persisted_daemon_config();
+        let entry = upsert_client_pairing(&mut persisted.clients, &client_id);
+        entry.alias = normalized_optional(alias).or_else(|| entry.alias.clone());
+        entry.public_key_thumbprint = public_key_thumbprint;
+        entry.paired_at_ms = paired_at_ms;
+        entry.revoked = false;
+        let saved = entry.clone();
+        persist_daemon_config(&persisted, "persist client pairing")?;
+        Ok(saved)
+    }
+
+    pub fn revoke_paired_client(
+        client_id: impl Into<String>,
+    ) -> Result<PersistedClientPairing, DaemonError> {
+        let client_id = client_id.into();
+        validate_non_empty("client_id", &client_id)?;
+        let mut persisted = load_persisted_daemon_config();
+        let entry = upsert_client_pairing(&mut persisted.clients, &client_id);
+        entry.revoked = true;
+        let saved = entry.clone();
+        persist_daemon_config(&persisted, "persist client revocation")?;
         Ok(saved)
     }
 
@@ -1131,6 +1188,8 @@ struct PersistedDaemonConfig {
     relay_token: Option<String>,
     #[serde(default)]
     machines: Vec<PersistedMachineRegistration>,
+    #[serde(default)]
+    clients: Vec<PersistedClientPairing>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1139,9 +1198,26 @@ pub struct PersistedMachineRegistration {
     #[serde(default)]
     pub alias: Option<String>,
     #[serde(default)]
+    pub public_key_thumbprint: Option<String>,
+    #[serde(default)]
+    pub paired_at_ms: Option<u64>,
+    #[serde(default)]
     pub approved: bool,
     #[serde(default)]
     pub forgotten: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedClientPairing {
+    pub client_id: String,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub public_key_thumbprint: String,
+    #[serde(default)]
+    pub paired_at_ms: u64,
+    #[serde(default)]
+    pub revoked: bool,
 }
 
 fn load_persisted_relay_config() -> Option<PersistedDaemonConfig> {
@@ -1213,12 +1289,36 @@ fn upsert_machine_registration<'a>(
     entries.push(PersistedMachineRegistration {
         machine_id: machine_id.to_string(),
         alias: None,
+        public_key_thumbprint: None,
+        paired_at_ms: None,
         approved: false,
         forgotten: false,
     });
     entries
         .last_mut()
         .expect("entry was just inserted into machine registry")
+}
+
+fn upsert_client_pairing<'a>(
+    entries: &'a mut Vec<PersistedClientPairing>,
+    client_id: &str,
+) -> &'a mut PersistedClientPairing {
+    if let Some(index) = entries
+        .iter()
+        .position(|entry| entry.client_id == client_id)
+    {
+        return &mut entries[index];
+    }
+    entries.push(PersistedClientPairing {
+        client_id: client_id.to_string(),
+        alias: None,
+        public_key_thumbprint: String::new(),
+        paired_at_ms: 0,
+        revoked: false,
+    });
+    entries
+        .last_mut()
+        .expect("entry was just inserted into client pairing registry")
 }
 
 fn normalized_optional(value: Option<String>) -> Option<String> {
@@ -1493,6 +1593,84 @@ mod tests {
         assert!(identity.machine_id.starts_with("machine-"));
         assert!(identity.daemon_id.len() > "daemon-".len());
         assert!(identity.machine_id.len() > "machine-".len());
+    }
+
+    #[test]
+    fn machine_pairing_metadata_preserves_approval_state() {
+        let mut entries = Vec::new();
+        {
+            let entry = upsert_machine_registration(&mut entries, "machine-1");
+            entry.approved = true;
+            entry.alias = Some("worker".to_string());
+        }
+        {
+            let entry = upsert_machine_registration(&mut entries, "machine-1");
+            entry.public_key_thumbprint = Some("thumbprint-1".to_string());
+            entry.paired_at_ms = Some(42);
+        }
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].machine_id, "machine-1");
+        assert_eq!(entries[0].alias.as_deref(), Some("worker"));
+        assert_eq!(
+            entries[0].public_key_thumbprint.as_deref(),
+            Some("thumbprint-1")
+        );
+        assert_eq!(entries[0].paired_at_ms, Some(42));
+        assert!(entries[0].approved);
+        assert!(!entries[0].forgotten);
+    }
+
+    #[test]
+    fn client_pairing_upsert_reopens_revoked_client() {
+        let mut entries = Vec::new();
+        {
+            let entry = upsert_client_pairing(&mut entries, "client-1");
+            entry.alias = Some("laptop".to_string());
+            entry.public_key_thumbprint = "old-thumbprint".to_string();
+            entry.paired_at_ms = 10;
+            entry.revoked = true;
+        }
+        {
+            let entry = upsert_client_pairing(&mut entries, "client-1");
+            entry.public_key_thumbprint = "new-thumbprint".to_string();
+            entry.paired_at_ms = 20;
+            entry.revoked = false;
+        }
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].client_id, "client-1");
+        assert_eq!(entries[0].alias.as_deref(), Some("laptop"));
+        assert_eq!(entries[0].public_key_thumbprint, "new-thumbprint");
+        assert_eq!(entries[0].paired_at_ms, 20);
+        assert!(!entries[0].revoked);
+    }
+
+    #[test]
+    fn persisted_daemon_config_loads_legacy_machine_registry_without_pairing_fields() {
+        let payload = r#"{
+          "relay_url": "ws://relay",
+          "relay_token": "secret",
+          "machines": [
+            {
+              "machine_id": "machine-1",
+              "alias": "worker",
+              "approved": true,
+              "forgotten": false
+            }
+          ]
+        }"#;
+
+        let persisted = serde_json::from_str::<PersistedDaemonConfig>(payload)
+            .expect("legacy daemon config should decode");
+
+        assert_eq!(persisted.clients, Vec::<PersistedClientPairing>::new());
+        assert_eq!(persisted.machines.len(), 1);
+        assert_eq!(persisted.machines[0].machine_id, "machine-1");
+        assert_eq!(persisted.machines[0].alias.as_deref(), Some("worker"));
+        assert_eq!(persisted.machines[0].public_key_thumbprint, None);
+        assert_eq!(persisted.machines[0].paired_at_ms, None);
+        assert!(persisted.machines[0].approved);
     }
 
     #[test]
