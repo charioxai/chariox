@@ -316,7 +316,7 @@ As of 2026-04-20:
 - Slice 5 is implemented for the bootstrap path: shell coverage exists for `client invite create`, `client join`, `client list`, `client record`, `client revoke`, `machine invite create`, `machine join`, `machine approve`, `machine rename`, and `machine revoke`. Invite tokens are self-contained bootstrap tokens; one-time invite redemption and signed scoped-token exchange remain slice 7 work.
 - Slice 6 is implemented as a foundation: verified relay caller identity is attached to forwarded relay frames and mapped into `KernelCommand.caller` for relay-originated local API requests. Session and workflow authorization checks remain M6.5 work.
 - Slice 7 is implemented for the verifier contract: the relay can verify `arroba-scoped-v1` HMAC-signed tokens against configured issuer metadata supplied by the embedding server/control plane. The open-source relay still defaults to shared-token bootstrap unless constructed with a scoped verifier.
-- Slice 8 remains: live security drills.
+- Slice 8 is implemented for the relay identity surface: `live-relay-identity-security-drill.mjs` starts a real scoped-token relay and verifies paired/unpaired client and machine admission, action constraints, and cross-realm metadata/routing isolation. Full remote-provider CLI/machine drills still depend on physical remote machines.
 
 ### Slice 1. Token And Realm Types
 

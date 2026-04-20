@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -206,7 +207,12 @@ impl ScopedTokenVerifier {
             Some(claims) => claims.clone(),
             None => self.verify_signed_token(request.token)?,
         };
-        validate_claims(&claims, request.action, request.target, self.now_ms)?;
+        validate_claims(
+            &claims,
+            request.action,
+            request.target,
+            Some(self.now_ms.unwrap_or_else(current_unix_ms)),
+        )?;
         Ok(identity_from_claims(claims))
     }
 
@@ -322,6 +328,13 @@ fn verify_hmac_signature(
     mac.update(signing_input);
     mac.verify_slice(signature)
         .map_err(|_| RelayAuthError::InvalidToken)
+}
+
+fn current_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn subject_kind_for_action(action: RelayAction) -> RelaySubjectKind {
