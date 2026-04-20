@@ -2735,6 +2735,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_agent_skill_grant_survives_kernel_restart() {
+        let config = DaemonConfig::for_tests();
+        let (session_id, agent_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+            let granted = router
+                .runtime_state
+                .grant_agent_skill(agent.id(), "review".to_string())
+                .await
+                .expect("skill grant should persist");
+            assert!(granted.skill_grants().contains(&"review".to_string()));
+            (session.id().to_string(), agent.id().to_string())
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+        let restored_agent = app
+            .agents
+            .get_agent(&agent_id)
+            .expect("agent should restore");
+        assert_eq!(restored_agent.session_id(), session_id);
+        assert!(restored_agent
+            .skill_grants()
+            .contains(&"review".to_string()));
+    }
+
+    #[tokio::test]
     async fn rejects_session_commands_when_bounded_lane_is_full() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app)

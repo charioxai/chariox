@@ -672,6 +672,12 @@ impl KernelRuntimeState {
                         }
                         let granted_agent =
                             self.owned.grant_agent_mcp(agent.id(), args.name.clone())?;
+                        self.append_agent_durable_event(
+                            "agent.mcp_granted",
+                            &granted_agent,
+                            Some(&args.name),
+                        )
+                        .await?;
                         let (source_attachment_id, previous_prompt) = self
                             .owned
                             .session_store
@@ -733,12 +739,16 @@ impl KernelRuntimeState {
                                 "body": body
                             });
                         }
-                        (
-                            self.owned
-                                .grant_agent_skill(agent.id(), args.name.clone())?,
-                            "now",
-                            false,
+                        let granted_agent = self
+                            .owned
+                            .grant_agent_skill(agent.id(), args.name.clone())?;
+                        self.append_agent_durable_event(
+                            "agent.skill_granted",
+                            &granted_agent,
+                            Some(&args.name),
                         )
+                        .await?;
+                        (granted_agent, "now", false)
                     }
                     _ => {
                         return Ok((

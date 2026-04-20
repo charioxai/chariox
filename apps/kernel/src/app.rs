@@ -381,6 +381,18 @@ impl DaemonApp {
                     decode_durable_payload_field(&event, "agent", "durable_state.restore_agent")?;
                 self.agents.restore_agent(agent);
             }
+            "agent.mcp_granted"
+            | "agent.mcp_revoked"
+            | "agent.skill_granted"
+            | "agent.skill_revoked"
+            | "agent.updated" => {
+                let agent: AgentInstance = decode_durable_payload_field(
+                    &event,
+                    "agent",
+                    "durable_state.restore_agent_update",
+                )?;
+                self.agents.restore_agent(agent);
+            }
             "session.ended" => {
                 let mut session: RuntimeSession = decode_durable_payload_field(
                     &event,

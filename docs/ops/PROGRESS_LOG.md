@@ -828,3 +828,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Kernel bootstrap now replays the durable state journal for the lifecycle events currently emitted by the app: `session.created`, `agent.created`, and `session.ended`.
 - Restored sessions and agents are inserted without writing new durable events; ended-session replay clears live agents so ended sessions do not come back with runnable agents.
 - Added focused restart coverage for created sessions, default agents, spawned agents, and ended sessions restored from the durable journal.
+
+### M8 durable grant persistence update
+
+- User-triggered MCP/skill grants and revokes now append durable agent mutation events with full agent snapshots.
+- Agent-triggered capability requests through the runtime MCP tool path now append the same durable grant events, so discovered grants survive restart too.
+- Boot restore replays those grant mutation events by restoring the latest agent snapshot, and focused coverage verifies a skill grant survives kernel restart.

@@ -201,6 +201,28 @@ impl KernelRuntimeState {
         operation(&mut app)
     }
 
+    async fn append_agent_durable_event(
+        &self,
+        kind: &'static str,
+        agent: &crate::agent::AgentInstance,
+        capability_name: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let agent = agent.clone();
+        let capability_name = capability_name.map(str::to_string);
+        self.with_app_side_effect(move |app| {
+            app.durable_state_store().append_event(
+                kind,
+                Some(agent.id().to_string()),
+                serde_json::json!({
+                    "agent": &agent,
+                    "capability_name": capability_name,
+                }),
+            )
+        })
+        .await?;
+        Ok(())
+    }
+
     pub(crate) async fn active_prompt_agent_id(
         &self,
         session_id: &str,
@@ -306,6 +328,8 @@ impl KernelRuntimeState {
                 .await?;
         }
         let agent = self.owned.grant_agent_mcp(agent_ref, name.clone())?;
+        self.append_agent_durable_event("agent.mcp_granted", &agent, Some(&name))
+            .await?;
         let _ = self.activate_agent_mcp_grants_if_idle(agent.session_id(), agent.id(), &name)?;
         Ok(agent)
     }
@@ -315,7 +339,10 @@ impl KernelRuntimeState {
         agent_ref: &str,
         name: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.owned.revoke_agent_mcp(agent_ref, name)
+        let agent = self.owned.revoke_agent_mcp(agent_ref, name)?;
+        self.append_agent_durable_event("agent.mcp_revoked", &agent, Some(name))
+            .await?;
+        Ok(agent)
     }
 
     pub(crate) async fn grant_agent_skill(
@@ -323,7 +350,9 @@ impl KernelRuntimeState {
         agent_ref: &str,
         name: String,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let agent = self.owned.grant_agent_skill(agent_ref, name)?;
+        let agent = self.owned.grant_agent_skill(agent_ref, name.clone())?;
+        self.append_agent_durable_event("agent.skill_granted", &agent, Some(&name))
+            .await?;
         self.ensure_remote_skill_packages_for_agent(&agent).await?;
         Ok(agent)
     }
@@ -333,7 +362,10 @@ impl KernelRuntimeState {
         agent_ref: &str,
         name: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.owned.revoke_agent_skill(agent_ref, name)
+        let agent = self.owned.revoke_agent_skill(agent_ref, name)?;
+        self.append_agent_durable_event("agent.skill_revoked", &agent, Some(name))
+            .await?;
+        Ok(agent)
     }
 
     pub(crate) async fn resize_terminal(
