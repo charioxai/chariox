@@ -840,3 +840,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Workflow runtime commands that return a changed session now append a durable `session.updated` snapshot.
 - Boot restore replays `session.updated` snapshots so workflow definitions, nodes, endpoints, run state, queues, and watchdog/session workflow fields can be recovered from the latest session snapshot.
 - Added focused restart coverage that creates a workflow, adds a node, restarts the kernel, and verifies the workflow definition is restored.
+
+### M8 durable provider profile update
+
+- Provider launch success now appends a durable `agent.runtime_profile_updated` snapshot after updating an agent's provider/model/effort/resume state.
+- Boot restore replays provider profile updates as agent snapshots so provider resume descriptors survive kernel restart.
+- Added focused restart coverage using the `dev-stub` provider to verify provider/model profile restoration after a kernel restart.

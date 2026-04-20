@@ -1031,12 +1031,20 @@ impl DaemonApp {
         );
         let _ = self.providers.record_run_activity(run.id());
         if let Some(agent_id) = run.agent_instance_id() {
-            let _ = self.agents.set_agent_runtime_profile(
+            let agent = self.agents.set_agent_runtime_profile(
                 agent_id,
                 run.provider(),
                 Some(run.model().to_string()),
                 run.variant().map(str::to_string),
                 run.resume_state().clone(),
+            )?;
+            self.durable_state_store().append_event(
+                "agent.runtime_profile_updated",
+                Some(agent.id().to_string()),
+                serde_json::json!({
+                    "agent": &agent,
+                    "provider_run_id": run.id(),
+                }),
             )?;
             let _ = self.advance_next_queued_prompt(run.session_id(), agent_id)?;
             crate::app::KernelSessionReadService::new(self).session_snapshot(run.session_id())?;
@@ -1140,12 +1148,20 @@ impl DaemonApp {
         let run = self.providers.get_run(run.id())?;
         let _ = self.providers.record_run_activity(run.id());
         if let Some(agent_id) = run.agent_instance_id() {
-            let _ = self.agents.set_agent_runtime_profile(
+            let agent = self.agents.set_agent_runtime_profile(
                 agent_id,
                 run.provider(),
                 Some(run.model().to_string()),
                 run.variant().map(str::to_string),
                 run.resume_state().clone(),
+            )?;
+            self.durable_state_store().append_event(
+                "agent.runtime_profile_updated",
+                Some(agent.id().to_string()),
+                serde_json::json!({
+                    "agent": &agent,
+                    "provider_run_id": run.id(),
+                }),
             )?;
         }
         self.update_provider_run_projection(run.clone());
@@ -1544,6 +1560,40 @@ mod tests {
             .snapshot()
             .run_processes
             .is_empty());
+    }
+
+    #[test]
+    fn provider_launch_runtime_profile_survives_kernel_restart() {
+        let config = DaemonConfig::for_tests();
+        let (agent_id, run_model) = {
+            let mut app =
+                DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+                .expect("session create should succeed");
+            let run = app
+                .launch_provider(
+                    LaunchProviderRequest::new(
+                        session.id(),
+                        "dev-stub",
+                        "claude-code",
+                        "default",
+                        "sonnet",
+                    )
+                    .with_agent_id(agent.id()),
+                )
+                .expect("provider launch should succeed");
+            (agent.id().to_string(), run.model().to_string())
+        };
+
+        let app =
+            DaemonApp::bootstrap(config).expect("daemon bootstrap after restart should succeed");
+        let restored_agent = app
+            .agents
+            .get_agent(&agent_id)
+            .expect("agent should restore");
+        assert_eq!(restored_agent.provider(), "claude-code");
+        assert_eq!(restored_agent.model(), Some(run_model.as_str()));
     }
 
     #[test]

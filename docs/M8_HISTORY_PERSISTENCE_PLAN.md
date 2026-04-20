@@ -492,11 +492,11 @@ If multiple agents could have caused a commit, store all candidates and show the
 ### M8.8 Durable Kernel State Store
 
 - Add persistent state snapshots and state event log. **Landed foundation:** `DurableKernelStateStore` opens the configured SQLite path with WAL mode, appends ordered state events, saves snapshots, reloads events after a sequence, and loads the latest snapshot after reopening.
-- Persist sessions, agents, workflows, grants, machines, queues, and provider resume descriptors. **Started:** `DaemonApp` now owns the durable state store. Session creation records `session.created` with the default agent payload, local agent spawn records `agent.created`, session end records `session.ended`, user- or agent-triggered MCP/skill grant mutations record full agent snapshots, and workflow commands record full session snapshots through `session.updated`.
+- Persist sessions, agents, workflows, grants, machines, queues, and provider resume descriptors. **Started:** `DaemonApp` now owns the durable state store. Session creation records `session.created` with the default agent payload, local agent spawn records `agent.created`, session end records `session.ended`, user- or agent-triggered MCP/skill grant mutations record full agent snapshots, provider launch/runtime-profile updates record full agent snapshots, and workflow commands record full session snapshots through `session.updated`.
 
 ### M8.9 Boot Restore
 
-- Rebuild projections from durable state. **Started:** bootstrap now replays `session.created`, `session.updated`, `agent.created`, `session.ended`, and agent MCP/skill grant mutation events, restores session/agent stores, clears live agents for ended sessions, and refreshes session projections.
+- Rebuild projections from durable state. **Started:** bootstrap now replays `session.created`, `session.updated`, `agent.created`, `session.ended`, agent MCP/skill grant mutation events, and provider runtime-profile update events, restores session/agent stores, clears live agents for ended sessions, and refreshes session projections.
 - Mark interrupted/recovering work correctly.
 - Validate local restart drills. **Started:** focused restart coverage verifies created sessions, default agents, spawned agents, and ended sessions survive a kernel restart through the durable journal.
 

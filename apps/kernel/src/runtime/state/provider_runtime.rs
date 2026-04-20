@@ -434,12 +434,14 @@ impl KernelRuntimeState {
         started: &crate::app::StartedProviderLaunch,
         binding: Option<crate::provider::ProviderRuntimeBinding>,
     ) {
+        let mut durable_agent_update = None;
         {
             let owned = &self.owned;
             let result = owned.finish_provider_launch_success(started, binding);
             match result {
                 Ok(run) => {
                     if let Some(agent_id) = run.agent_instance_id() {
+                        durable_agent_update = owned.agent_store.get_agent(agent_id).ok();
                         match owned.advance_next_queued_prompt_dispatch(
                             run.session_id(),
                             agent_id,
@@ -462,6 +464,14 @@ impl KernelRuntimeState {
                 Err(error) => {
                     self.fail_provider_launch(started, &error).await;
                 }
+            }
+        }
+        if let Some(agent) = durable_agent_update {
+            if let Err(error) = self
+                .append_agent_durable_event("agent.runtime_profile_updated", &agent, None)
+                .await
+            {
+                self.fail_provider_launch(started, &error).await;
             }
         }
     }
