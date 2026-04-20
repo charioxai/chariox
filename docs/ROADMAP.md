@@ -13,6 +13,7 @@ Current milestone status:
 - M4 is now the OpenCode-first local-runtime completion phase: the first manual multi-agent runtime slice and workflow runtime are landed, while local stabilization, immediate CLI responsiveness, and workflow polish remain open
 - M4.5 is now the kernel runtime refactor phase: the daemon implementation is actively moving from a global `DaemonApp` lock toward an actor/event/projection kernel before relay scale-out
 - M5 is now the relay and remote-transport phase: relay infrastructure, remote terminal attachment, and daemon identity are the next major delivery target
+- M6.5 is the multi-user collaboration phase: session-scoped invites, user-owned agents/providers, shared workflow graph collaboration, endpoint ownership, caller-scoped redaction, workflow edit conflict rejection, and workspace links are planned in `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`
 
 ## 1. Roadmap Goals
 
@@ -36,6 +37,7 @@ Current milestone status:
 - M4.5: Kernel Runtime Refactor
 - M5: Relay and Remote Transport
 - M6: Remote Agents and Machine Membership
+- M6.5: Multi-User Collaboration. See `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`.
 - M7: Arroba-owned MCP and skill management. In progress: MCP/skill registries, slash-command install/list/show/import/grant/revoke/grants, Codex/OpenCode MCP and skill import, per-agent grants, local Codex/OpenCode MCP rendering, granted-skill summary injection, local explicit full skill-body injection, runtime discovery/request tools, and strict local MCP/skill drills are landed; remote materialization remains open.
 - M7.5: Arroba Shell. New milestone for a kernel-facing `arroba-shell` command REPL, script runner, shared command executor, and workspace-pane shell integration. See `docs/M7_5_ARROBA_SHELL_PLAN.md`.
 - M8: Workflow Interconnection
@@ -53,6 +55,7 @@ Rollout priority:
 - then remove the daemon hot-path dependency on one shared `DaemonApp` lock by introducing actor-owned mutation, command routing, ordered kernel events, and query projections
 - then add relay-backed remote transport
 - then add remote agents and machine membership on top of relay
+- then add session-scoped multi-user collaboration on top of the shared session and relay model
 - then add Arroba-owned MCP and skill management with per-agent grants, provider-native MCP rendering, skill prompt injection, and provider import paths; the local registry/grant/rendering baseline is now in progress and partially landed
 - then add `arroba-shell` as a kernel-facing command REPL and scriptable command surface sharing command execution with the TUI slash-command layer
 - then add additional clients on the same daemon/protocol model
@@ -388,6 +391,42 @@ Exit criteria:
 - daemon and machine identity are strong enough for remote resume/reassignment
 - remote agent lifecycle is observable and debuggable through the same kernel-owned model
 - remote agents feel the same as local agents in the CLI once spawned, aside from explicit machine placement metadata
+
+## M6.5 - Multi-User Collaboration
+
+Implementation plan:
+
+- `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`
+
+Outcomes:
+
+- session-scoped invites and explicit session membership
+- user-owned agents, providers, workflow nodes, and workflow endpoints
+- freeform privacy: users see and control only their own providers and agents
+- workflow collaboration: users can see shared workflow graph structure, public node labels, endpoint aliases, workflow run status, and workflow node status
+- no external-agent marker; public node labels identify other users' workflow nodes
+- fixed ownership rules rather than a generalized ACL system
+- users can add workflow edges when at least one endpoint node is theirs
+- users can remove any edge incident to one of their own nodes
+- users can add endpoints only to their own nodes
+- only endpoint owners can run their endpoints
+- node-level prompts and endpoint prompts are redacted from non-owners
+- caller-scoped protocol projections redact provider/model/private agent configuration before data reaches clients
+- optimistic workflow revision checks reject stale simultaneous workflow edits with a clear refresh/retry message
+- session-scoped workspace links let users explicitly coordinate managed I/O across separate worktrees, forks, branches, or repositories
+- `arroba-shell` supports the same collaboration and workspace-link command families as the TUI/slash-command surface
+
+Exit criteria:
+
+- two users can join one session through a session invite
+- each user can use only their own providers and freeform agents
+- a shared workflow can contain nodes owned by multiple users
+- workflow node/run status is visible during workflow execution without exposing freeform agent status elsewhere
+- endpoint ownership is enforced for creation, binding, and execution
+- private node and endpoint prompts remain hidden from non-owners
+- stale concurrent workflow mutations are rejected rather than merged or silently overwritten
+- workspace links coordinate managed I/O across explicitly linked repositories/worktrees
+- local and relay-backed collaboration drills pass with the same authorization and redaction behavior
 
 ## M7 - Additional Clients
 
