@@ -280,19 +280,49 @@ function startCli({ cliPath, env, relayUrl, relayToken, daemonAlias, socketPath,
   return { child, stdout: () => stdout, stderr: () => stderr }
 }
 
-async function waitForWorkflowGraph(automation, workflowId, alias, expectedNodes, expectedEdges, label) {
+async function waitForWorkflowGraph(automation, workflowId, alias, expectedNodes, expectedEdges, label, expectedEndpoints = null) {
   const deadline = Date.now() + 10_000
   let lastSnapshot = null
   while (Date.now() < deadline) {
     const snapshot = await automation.send('snapshot')
     lastSnapshot = snapshot
     const workflow = snapshot.workflows?.find((entry) => entry.id === workflowId || entry.alias === alias)
-    if (workflow?.nodeCount === expectedNodes && workflow?.edgeCount === expectedEdges) {
+    const endpointsMatch = expectedEndpoints == null || workflow?.endpointCount === expectedEndpoints
+    if (workflow?.nodeCount === expectedNodes && workflow?.edgeCount === expectedEdges && endpointsMatch) {
       return { snapshot, workflow }
     }
     await sleep(100)
   }
-  assert(false, `${label} did not observe workflow graph ${expectedNodes} nodes/${expectedEdges} edges`, lastSnapshot)
+  const endpointText = expectedEndpoints == null ? '' : `/${expectedEndpoints} endpoints`
+  assert(false, `${label} did not observe workflow graph ${expectedNodes} nodes/${expectedEdges} edges${endpointText}`, lastSnapshot)
+}
+
+async function waitForWorkflowRun(automation, workflowId, label) {
+  const deadline = Date.now() + 10_000
+  let lastSnapshot = null
+  while (Date.now() < deadline) {
+    const snapshot = await automation.send('snapshot')
+    lastSnapshot = snapshot
+    const run = snapshot.workflowRuns?.find((entry) => entry.workflowId === workflowId)
+    if (run) {
+      return { snapshot, run }
+    }
+    await sleep(100)
+  }
+  assert(false, `${label} did not observe workflow run for ${workflowId}`, lastSnapshot)
+}
+
+async function expectAutomationReject(promise, label, expectedText) {
+  try {
+    await promise
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (expectedText && !message.includes(expectedText)) {
+      throw new Error(`${label} rejected with unexpected error: ${message}`)
+    }
+    return message
+  }
+  throw new Error(`${label} unexpectedly succeeded`)
 }
 
 async function main() {
@@ -441,6 +471,26 @@ async function main() {
     await waitForWorkflowGraph(auto1, workflowId, 'two-cli-flow', 2, 0, 'user-1 CLI after edge removal')
     await waitForWorkflowGraph(auto2, workflowId, 'two-cli-flow', 2, 0, 'user-2 CLI after edge removal')
 
+    const endpoint = await auto1.send('workspace_shell_exec', { command: `workflow endpoint new ${workflowId} ${node1Id} user-one-entry` })
+    assert(endpoint.result?.ok === true, 'user-1 CLI failed to create endpoint on its own node', endpoint)
+    const endpointId = endpoint.result?.data?.endpoint?.id ?? endpoint.result?.output?.match(/created workflow endpoint\s+(\S+)/)?.[1] ?? null
+    assert(endpointId, 'endpoint id missing after user-1 endpoint create', endpoint)
+    await waitForWorkflowGraph(auto1, workflowId, 'two-cli-flow', 2, 0, 'user-1 CLI after endpoint create', 1)
+    await waitForWorkflowGraph(auto2, workflowId, 'two-cli-flow', 2, 0, 'user-2 CLI after endpoint create', 1)
+
+    await expectAutomationReject(
+      auto2.send('workspace_shell_exec', { command: `workflow run ${workflowId} ${endpointId} denied-from-user-2` }),
+      'user-2 invoking user-1 endpoint',
+      'owned by `user-1`',
+    )
+
+    const run = await auto1.send('workspace_shell_exec', { command: `workflow run ${workflowId} ${endpointId} live-run-from-user-1` })
+    assert(run.result?.ok === true, 'user-1 CLI failed to invoke its endpoint', run)
+    const workflowRunId = run.result?.data?.workflow_run?.id ?? run.result?.output?.match(/started workflow run\s+(\S+)/)?.[1] ?? null
+    assert(workflowRunId, 'workflow run id missing after endpoint invocation', run)
+    await waitForWorkflowRun(auto1, workflowId, 'user-1 CLI')
+    await waitForWorkflowRun(auto2, workflowId, 'user-2 CLI')
+
     apiClient = new LocalIpcClient(envs.relayUrl, {
       relayAuthToken: clientToken('user-2'),
       targetDaemonAlias: envs.daemonAlias,
@@ -460,6 +510,8 @@ async function main() {
       workflowId,
       nodeIds: [node1Id, node2Id],
       removedEdgeId: edgeId,
+      endpointId,
+      workflowRunId,
       assertions: [
         'two TUI clients connected through scoped relay',
         'user-1 created session and invite from embedded shell',
@@ -467,6 +519,9 @@ async function main() {
         'each user added only its own agent as workflow node',
         'cross-owner edge add live-updates both workflow screens without manual refresh',
         'cross-owner edge removal live-updates both workflow screens without manual refresh',
+        'endpoint creation live-updates both workflow screens',
+        'non-owner endpoint invocation is denied from the other CLI',
+        'endpoint owner invocation live-updates workflow run visibility in both CLIs',
       ],
     }, null, 2))
   } finally {
