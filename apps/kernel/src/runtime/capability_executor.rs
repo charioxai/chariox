@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -5,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::app::DaemonApp;
+use crate::artifacts::{OperationalArtifactStore, StoreArtifactRequest};
 use crate::capability::{
     CaptureScreenshotRequest, DirectoryTreeService, EditFileRequest, FileCapabilityService,
     FileTransferService, GitCapabilityService, InspectGitRequest, ReadDirectoryTreeRequest,
@@ -12,6 +14,7 @@ use crate::capability::{
     StoreTransferredFileRequest,
 };
 use crate::error::DaemonError;
+use crate::history::{HistoryEventKind, HistoryEventRole, HistoryEventTurnContext};
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::state::KernelRuntimeState;
 use serde::{Deserialize, Serialize};
@@ -244,16 +247,84 @@ pub(crate) async fn execute_capability_request(
                             "transfer_store",
                         )?;
                         let artifact_root = context.artifact_root("transfers");
-                        FileTransferService::new()
-                            .store_file(StoreTransferredFileRequest::new(
-                                request.session_id,
-                                request.attachment_id,
-                                context.worktree_root,
+                        let result = FileTransferService::new().store_file(
+                            StoreTransferredFileRequest::new(
+                                request.session_id.clone(),
+                                request.attachment_id.clone(),
+                                context.worktree_root.clone(),
                                 artifact_root,
                                 request.source_path,
                                 request.display_name,
-                            ))
-                            .map(|result| LocalDaemonResponse::FileTransferred { result })
+                            ),
+                        )?;
+                        let artifact_store = OperationalArtifactStore::open(
+                            context.operational_artifact_root,
+                            context.operational_artifact_index_path,
+                        )?;
+                        let mut metadata = BTreeMap::new();
+                        metadata.insert(
+                            "transfer_artifact_id".to_string(),
+                            serde_json::Value::String(result.artifact_id.clone()),
+                        );
+                        metadata.insert(
+                            "stored_path".to_string(),
+                            serde_json::Value::String(result.stored_path.display().to_string()),
+                        );
+                        metadata.insert(
+                            "stored_name".to_string(),
+                            serde_json::Value::String(result.stored_name.clone()),
+                        );
+                        let artifact_record =
+                            artifact_store.store_existing_file(StoreArtifactRequest {
+                                source_path: result.stored_path.clone(),
+                                display_name: result.display_name.clone(),
+                                source_kind: "transfer".to_string(),
+                                session_id: Some(request.session_id.clone()),
+                                attachment_id: Some(request.attachment_id.clone()),
+                                workspace_id: Some(context.workspace_id.clone()),
+                                worktree_path: Some(context.worktree_root.display().to_string()),
+                                metadata: metadata.clone(),
+                            })?;
+                        metadata.insert(
+                            "artifact_id".to_string(),
+                            serde_json::Value::String(artifact_record.artifact_id.clone()),
+                        );
+                        metadata.insert(
+                            "sha256".to_string(),
+                            serde_json::Value::String(artifact_record.sha256.clone()),
+                        );
+                        metadata.insert(
+                            "size_bytes".to_string(),
+                            serde_json::Value::Number(serde_json::Number::from(
+                                artifact_record.size_bytes,
+                            )),
+                        );
+                        let sequence = context.operational_history_store.reserve_sequence();
+                        let mut event = crate::history::HistoryEvent::operational(
+                            sequence,
+                            HistoryEventKind::ArtifactStored,
+                            Some(HistoryEventRole::System),
+                            Some(format!(
+                                "stored artifact `{}` ({})",
+                                artifact_record.display_name, artifact_record.artifact_id
+                            )),
+                            metadata,
+                            HistoryEventTurnContext {
+                                workspace_id: Some(context.workspace_id.clone()),
+                                session_id: Some(request.session_id.clone()),
+                                worktree_path: Some(context.worktree_root.display().to_string()),
+                                ..HistoryEventTurnContext::default()
+                            },
+                        );
+                        event.content_ref =
+                            Some(format!("artifact://sha256/{}", artifact_record.sha256));
+                        context.operational_history_store.append(&event)?;
+                        if context.history_archive_enabled {
+                            context
+                                .operational_history_store
+                                .enqueue_archive_events(&[event])?;
+                        }
+                        Ok(LocalDaemonResponse::FileTransferred { result })
                     })
                     .await
                 }
@@ -271,6 +342,10 @@ struct CapabilityContext {
     workspace_id: String,
     worktree_root: PathBuf,
     workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
+    operational_history_store: crate::history::OperationalHistoryStore,
+    operational_artifact_root: PathBuf,
+    operational_artifact_index_path: PathBuf,
+    history_archive_enabled: bool,
 }
 
 impl CapabilityContext {
@@ -305,6 +380,10 @@ impl CapabilityRuntimeStore {
             workspace_id: snapshot.workspace_id,
             worktree_root: snapshot.worktree_root,
             workspace_coordinator: snapshot.workspace_coordinator,
+            operational_history_store: snapshot.operational_history_store,
+            operational_artifact_root: snapshot.operational_artifact_root,
+            operational_artifact_index_path: snapshot.operational_artifact_index_path,
+            history_archive_enabled: snapshot.history_archive_enabled,
         })
     }
 }

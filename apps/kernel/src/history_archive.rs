@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::config::{HistoryArchiveMode, UserArchiveHistoryConfig};
+use std::path::Path;
+
+use crate::artifacts::{ArtifactArchiveOutboxItem, ArtifactRecord, OperationalArtifactStore};
+use crate::config::{HistoryArchiveMode, UserArchiveArtifactsConfig, UserArchiveHistoryConfig};
 use crate::error::DaemonError;
 use crate::history::{HistoryEvent, HistoryEventQuery, OperationalHistoryStore};
 
@@ -63,6 +66,25 @@ pub struct HistoryArchiveRejectedEvent {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactArchiveManifestRequest {
+    pub artifacts: Vec<ArtifactRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactArchiveManifestResponse {
+    #[serde(default)]
+    pub accepted_artifact_ids: Vec<String>,
+    #[serde(default)]
+    pub rejected_artifacts: Vec<ArtifactArchiveRejectedArtifact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactArchiveRejectedArtifact {
+    pub artifact_id: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryArchiveFlushOutcome {
     pub attempted_event_ids: Vec<String>,
@@ -70,9 +92,22 @@ pub struct HistoryArchiveFlushOutcome {
     pub rejected_events: Vec<HistoryArchiveRejectedEvent>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactArchiveFlushOutcome {
+    pub attempted_artifact_ids: Vec<String>,
+    pub accepted_artifact_ids: Vec<String>,
+    pub rejected_artifacts: Vec<ArtifactArchiveRejectedArtifact>,
+}
+
 #[derive(Debug, Clone)]
 pub struct HistoryArchiveExporter {
     store: OperationalHistoryStore,
+    client: HistoryArchiveClient,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArtifactArchiveExporter {
+    store: OperationalArtifactStore,
     client: HistoryArchiveClient,
 }
 
@@ -143,6 +178,57 @@ impl HistoryArchiveExporter {
     }
 }
 
+impl ArtifactArchiveExporter {
+    pub fn new(store: OperationalArtifactStore, client: HistoryArchiveClient) -> Self {
+        Self { store, client }
+    }
+
+    pub fn flush_pending_once(
+        &self,
+        limit: usize,
+    ) -> Result<ArtifactArchiveFlushOutcome, DaemonError> {
+        let items = self.store.load_pending_archive_artifacts(limit)?;
+        if items.is_empty() {
+            return Ok(ArtifactArchiveFlushOutcome {
+                attempted_artifact_ids: Vec::new(),
+                accepted_artifact_ids: Vec::new(),
+                rejected_artifacts: Vec::new(),
+            });
+        }
+        let attempted_artifact_ids = items
+            .iter()
+            .map(|item| item.record.artifact_id.clone())
+            .collect::<Vec<_>>();
+        match self.client.append_artifacts(&items) {
+            Ok(response) => {
+                self.store
+                    .mark_archive_artifacts_accepted(&response.accepted_artifact_ids)?;
+                let rejected_ids = response
+                    .rejected_artifacts
+                    .iter()
+                    .map(|artifact| artifact.artifact_id.clone())
+                    .collect::<Vec<_>>();
+                if !rejected_ids.is_empty() {
+                    self.store.mark_archive_artifacts_failed(
+                        &rejected_ids,
+                        "archive adapter rejected artifact",
+                    )?;
+                }
+                Ok(ArtifactArchiveFlushOutcome {
+                    attempted_artifact_ids,
+                    accepted_artifact_ids: response.accepted_artifact_ids,
+                    rejected_artifacts: response.rejected_artifacts,
+                })
+            }
+            Err(error) => {
+                self.store
+                    .mark_archive_artifacts_failed(&attempted_artifact_ids, &error.to_string())?;
+                Err(error)
+            }
+        }
+    }
+}
+
 impl HistoryArchiveClient {
     pub fn from_config(config: &UserArchiveHistoryConfig) -> Result<Self, DaemonError> {
         match config.mode {
@@ -161,6 +247,35 @@ impl HistoryArchiveClient {
                 if base_url.is_empty() {
                     return Err(DaemonError::InvalidConfig {
                         field: "history.archive.url",
+                        message: "value must not be empty",
+                    });
+                }
+                Ok(Self::External(ExternalHistoryArchiveClient {
+                    base_url,
+                    token_env: config.token_env.clone(),
+                    require_durable_acceptance: config.require_durable_acceptance.unwrap_or(true),
+                }))
+            }
+        }
+    }
+
+    pub fn from_artifact_config(config: &UserArchiveArtifactsConfig) -> Result<Self, DaemonError> {
+        match config.mode {
+            HistoryArchiveMode::Disabled => Ok(Self::Disabled),
+            HistoryArchiveMode::External => {
+                let base_url = config
+                    .url
+                    .as_deref()
+                    .ok_or_else(|| DaemonError::InvalidConfig {
+                        field: "artifacts.archive.url",
+                        message: "value must be set when artifact archive mode is external",
+                    })?
+                    .trim()
+                    .trim_end_matches('/')
+                    .to_string();
+                if base_url.is_empty() {
+                    return Err(DaemonError::InvalidConfig {
+                        field: "artifacts.archive.url",
                         message: "value must not be empty",
                     });
                 }
@@ -209,6 +324,25 @@ impl HistoryArchiveClient {
                 next_sequence: None,
             }),
             Self::External(client) => client.search_events(query),
+        }
+    }
+
+    pub fn append_artifacts(
+        &self,
+        artifacts: &[ArtifactArchiveOutboxItem],
+    ) -> Result<ArtifactArchiveManifestResponse, DaemonError> {
+        match self {
+            Self::Disabled => Ok(ArtifactArchiveManifestResponse {
+                accepted_artifact_ids: Vec::new(),
+                rejected_artifacts: artifacts
+                    .iter()
+                    .map(|artifact| ArtifactArchiveRejectedArtifact {
+                        artifact_id: artifact.record.artifact_id.clone(),
+                        reason: "artifact archive is disabled".to_string(),
+                    })
+                    .collect(),
+            }),
+            Self::External(client) => client.append_artifacts(artifacts),
         }
     }
 }
@@ -274,6 +408,71 @@ impl ExternalHistoryArchiveClient {
         decode_response_json::<HistoryArchiveSearchResponse>(response, "history.archive.search")
     }
 
+    fn append_artifacts(
+        &self,
+        artifacts: &[ArtifactArchiveOutboxItem],
+    ) -> Result<ArtifactArchiveManifestResponse, DaemonError> {
+        for artifact in artifacts {
+            self.put_artifact_blob(&artifact.record, &artifact.record.operational_path)?;
+        }
+        let records = artifacts
+            .iter()
+            .map(|artifact| artifact.record.clone())
+            .collect::<Vec<_>>();
+        let request_body = ArtifactArchiveManifestRequest {
+            artifacts: records.clone(),
+        };
+        let payload = serde_json::to_string(&request_body).map_err(|error| {
+            DaemonError::SessionHistoryFailed {
+                session_id: None,
+                operation: "encode artifact archive manifest request",
+                message: error.to_string(),
+            }
+        })?;
+        let request = self
+            .authorized_request(ureq::post(&self.endpoint("/arroba/artifacts/manifest")))?
+            .set("content-type", "application/json");
+        let response = request
+            .send_string(&payload)
+            .map_err(|error| archive_http_error("artifact manifest", error))?;
+        let archive_response = decode_response_json::<ArtifactArchiveManifestResponse>(
+            response,
+            "artifacts.archive.manifest",
+        )?;
+        if self.require_durable_acceptance {
+            require_all_artifacts_accepted(&records, &archive_response)?;
+        }
+        Ok(archive_response)
+    }
+
+    fn put_artifact_blob(&self, record: &ArtifactRecord, path: &Path) -> Result<(), DaemonError> {
+        let bytes = std::fs::read(path).map_err(|error| DaemonError::SessionHistoryFailed {
+            session_id: record.session_id.clone(),
+            operation: "read artifact archive blob",
+            message: error.to_string(),
+        })?;
+        let request = self
+            .authorized_request(ureq::put(
+                &self.endpoint(&format!("/arroba/artifacts/blobs/{}", record.artifact_id)),
+            ))?
+            .set("content-type", "application/octet-stream")
+            .set("x-arroba-sha256", &record.sha256)
+            .set("x-arroba-size-bytes", &record.size_bytes.to_string());
+        let response = request
+            .send_bytes(&bytes)
+            .map_err(|error| archive_http_error("artifact blob", error))?;
+        if !(200..300).contains(&response.status()) {
+            return Err(DaemonError::LocalTransport {
+                operation: "artifacts.archive.blob",
+                message: format!(
+                    "artifact blob upload failed with HTTP {}",
+                    response.status()
+                ),
+            });
+        }
+        Ok(())
+    }
+
     fn endpoint(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
@@ -324,6 +523,40 @@ fn require_all_events_accepted(
         operation: "verify history archive acceptance",
         message: format!(
             "archive adapter did not durably accept every event; missing=[{}], rejected=[{}]",
+            missing.join(", "),
+            rejected
+        ),
+    })
+}
+
+fn require_all_artifacts_accepted(
+    artifacts: &[ArtifactRecord],
+    response: &ArtifactArchiveManifestResponse,
+) -> Result<(), DaemonError> {
+    let accepted = response
+        .accepted_artifact_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let missing = artifacts
+        .iter()
+        .filter(|artifact| !accepted.contains(artifact.artifact_id.as_str()))
+        .map(|artifact| artifact.artifact_id.clone())
+        .collect::<Vec<_>>();
+    if missing.is_empty() && response.rejected_artifacts.is_empty() {
+        return Ok(());
+    }
+    let rejected = response
+        .rejected_artifacts
+        .iter()
+        .map(|artifact| format!("{}: {}", artifact.artifact_id, artifact.reason))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(DaemonError::SessionHistoryFailed {
+        session_id: None,
+        operation: "verify artifact archive acceptance",
+        message: format!(
+            "archive adapter did not durably accept every artifact; missing=[{}], rejected=[{}]",
             missing.join(", "),
             rejected
         ),

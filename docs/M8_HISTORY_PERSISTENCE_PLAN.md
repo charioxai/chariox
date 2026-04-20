@@ -45,6 +45,31 @@ Default v1 backend:
 
 Operational history stores canonical Arroba events and is the backing source for `GetSessionHistory`.
 
+### Artifact Storage
+
+Artifacts are retained in both operational storage and archive storage for v1. There is no hybrid mode where history is archived but artifacts are only best-effort local files: operational artifacts may be deleted by retention only after the configured artifact archive accepts them, or immediately after retention if artifact archive is disabled and the user accepts that the artifact disappears.
+
+Operational artifacts are Arroba-owned and local:
+
+```toml
+[artifacts.operational]
+backend = "filesystem"
+root = "~/.arroba/artifacts"
+index_path = "~/.arroba/artifacts/index.db"
+retention_days = 30
+```
+
+The filesystem stores content-addressed blobs by SHA-256. The SQLite index stores artifact metadata, session/attachment/workspace pointers, operational blob path, archive status, and a retryable artifact archive outbox. This keeps active UX local and fast while allowing large blobs to move to archive storage asynchronously.
+
+Archive artifacts are optional and adapter-backed:
+
+```toml
+[artifacts.archive]
+mode = "disabled" # disabled | external
+```
+
+External artifact archive uses the same adapter boundary as history, but separate endpoints. The adapter may store metadata in Postgres and blobs in S3/MinIO, or use any equivalent production system behind the protocol.
+
 ### Archive History
 
 Archive history is optional and adapter-backed.
@@ -97,6 +122,15 @@ archive_deleted_agents = true
 [history.archive]
 mode = "disabled"
 
+[artifacts.operational]
+backend = "filesystem"
+root = "~/.arroba/artifacts"
+index_path = "~/.arroba/artifacts/index.db"
+retention_days = 30
+
+[artifacts.archive]
+mode = "disabled"
+
 [state]
 backend = "sqlite"
 path = "~/.arroba/state/kernel.db"
@@ -113,6 +147,12 @@ token_env = "ARROBA_HISTORY_TOKEN"
 archive_deleted_agents = true
 archive_before_delete = true
 delete_operational_after_verified_archive = true
+require_durable_acceptance = true
+
+[artifacts.archive]
+mode = "external"
+url = "http://127.0.0.1:49300"
+token_env = "ARROBA_HISTORY_TOKEN"
 require_durable_acceptance = true
 ```
 
@@ -223,6 +263,15 @@ Capabilities response:
 ```
 
 For v1, external archive adapters are not primary transcript stores. Operational history remains the active transcript source. If an external adapter advertises `search = true`, Arroba also sends `POST /arroba/history/search` with the same history query fields used by local `QueryHistory`/`SearchHistory`, expects canonical `HistoryEvent` rows back, deduplicates by `event_id`, and returns the merged `HistoryEvents` response.
+
+Artifact archive endpoints:
+
+```http
+PUT  /arroba/artifacts/blobs/:artifact_id
+POST /arroba/artifacts/manifest
+```
+
+Blob uploads are raw bytes with `x-arroba-sha256` and `x-arroba-size-bytes` headers. The manifest contains canonical artifact records, including `artifact_id`, `sha256`, `size_bytes`, `display_name`, source kind, session/attachment/workspace pointers, and metadata. The adapter must durably store the blob and manifest before returning the artifact id as accepted. Arroba uploads blobs before the manifest and marks the operational artifact archive outbox accepted only after manifest acceptance.
 
 ## Session And Agent Lifecycle
 
@@ -494,6 +543,7 @@ If multiple agents could have caused a commit, store all candidates and show the
 - Add an ops flush entrypoint. **Landed:** `arroba-history-archive-flush [--limit N]` loads the same Arroba config as the kernel, opens the configured operational SQLite store, sends pending outbox events through the configured archive adapter, and prints attempted/accepted/rejected event ids as JSON. This is intentionally outside the interactive CLI/shell command set.
 - Add archive-disabled retention behavior. **Landed store safety layer:** operational history can prune rows before a cutoff, either allowing unarchived deletion for disabled archive mode or requiring verified archive acceptance. Pruned-empty sessions get a marker that disables legacy JSONL fallback, preventing deleted history from reappearing through compatibility reads.
 - Add external archive mode with verified acceptance before operational deletion.
+- Add artifact operational store and archive protocol. **Landed foundation:** transferred files are registered into a filesystem-backed operational blob store with a SQLite artifact index/outbox, an `artifact_stored` canonical history event is emitted with an `artifact://sha256/...` reference, and `arroba-history-archive-flush` flushes pending artifact blobs/manifests through external artifact archive endpoints before flushing history events.
 
 ### M8.7 Agent/Session Archival Lifecycle
 
@@ -545,7 +595,7 @@ If multiple agents could have caused a commit, store all candidates and show the
 - Search finds commit by subject, changed path, agent, provider, model, and prompt text.
 - Local Git observation drill: `pnpm --filter @arroba/cli run git-observation:drill`.
 - Remote Git observation drill: launch isolated relay/home/worker kernels, spawn a remote dev-stub agent in a worker Git repo, commit during the remote turn, complete the turn, then verify home operational history finds the commit by subject, changed path, repo/worktree, provider, model, and home prompt id.
-- Postgres archive adapter drill: `pnpm --filter @arroba/cli run postgres-archive:drill` launches a real ephemeral `postgres:16-alpine` container and an HTTP adapter, creates transcript events through an isolated dev-stub kernel, flushes Arroba's archive outbox through `arroba-history-archive-flush`, and verifies bearer-token auth, adapter capabilities, append idempotency, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, final retry acceptance, operational-only history search when external archive search is disabled, and Postgres-backed archive search through Arroba after deleting the matching operational row.
+- Postgres + MinIO archive adapter drill: `pnpm --filter @arroba/cli run postgres-archive:drill` launches real ephemeral `postgres:16-alpine`, `minio/minio`, and `minio/mc` containers behind an HTTP adapter. It creates transcript events through an isolated dev-stub kernel, flushes Arroba's archive outbox through `arroba-history-archive-flush`, and verifies bearer-token auth, adapter capabilities, append idempotency, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, final retry acceptance, operational-only history search when external archive search is disabled, Postgres-backed archive search through Arroba after deleting the matching operational row, transferred-artifact operational indexing, artifact blob upload to MinIO/S3-compatible storage, artifact manifest storage in Postgres, and artifact history-event archiving.
 
 ## V2
 

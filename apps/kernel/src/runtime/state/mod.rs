@@ -915,6 +915,10 @@ pub(crate) struct CapabilityRuntimeSnapshot {
     pub(crate) workspace_id: String,
     pub(crate) worktree_root: std::path::PathBuf,
     pub(crate) workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
+    pub(crate) operational_history_store: crate::history::OperationalHistoryStore,
+    pub(crate) operational_artifact_root: std::path::PathBuf,
+    pub(crate) operational_artifact_index_path: std::path::PathBuf,
+    pub(crate) history_archive_enabled: bool,
 }
 
 fn workflow_response_session(

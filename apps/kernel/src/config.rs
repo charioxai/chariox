@@ -218,6 +218,28 @@ impl DaemonConfig {
                 .display()
                 .to_string(),
         );
+        config.user_config.artifacts.operational.root = Some(
+            std::env::temp_dir()
+                .join("arroba-tests")
+                .join(format!(
+                    "operational-artifacts-{}-{}",
+                    std::process::id(),
+                    index
+                ))
+                .display()
+                .to_string(),
+        );
+        config.user_config.artifacts.operational.index_path = Some(
+            std::env::temp_dir()
+                .join("arroba-tests")
+                .join(format!(
+                    "operational-artifacts-{}-{}.db",
+                    std::process::id(),
+                    index
+                ))
+                .display()
+                .to_string(),
+        );
         config.user_config.state.path = Some(
             std::env::temp_dir()
                 .join("arroba-tests")
@@ -268,6 +290,26 @@ impl DaemonConfig {
             .as_deref()
             .map(expand_user_path)
             .unwrap_or_else(|| default_state_dir().join("history").join("operational.db"))
+    }
+
+    pub fn operational_artifact_root(&self) -> PathBuf {
+        self.user_config
+            .artifacts
+            .operational
+            .root
+            .as_deref()
+            .map(expand_user_path)
+            .unwrap_or_else(|| default_state_dir().join("artifacts"))
+    }
+
+    pub fn operational_artifact_index_path(&self) -> PathBuf {
+        self.user_config
+            .artifacts
+            .operational
+            .index_path
+            .as_deref()
+            .map(expand_user_path)
+            .unwrap_or_else(|| self.operational_artifact_root().join("index.db"))
     }
 
     pub fn durable_state_path(&self) -> PathBuf {
@@ -531,6 +573,8 @@ pub struct ArrobaUserConfig {
     #[serde(default)]
     pub history: UserHistoryConfig,
     #[serde(default)]
+    pub artifacts: UserArtifactsConfig,
+    #[serde(default)]
     pub state: UserStateConfig,
     #[serde(default)]
     pub ui: UserUiConfig,
@@ -546,6 +590,7 @@ impl Default for ArrobaUserConfig {
             version: default_user_config_version(),
             providers: UserProviderConfig::default(),
             history: UserHistoryConfig::default(),
+            artifacts: UserArtifactsConfig::default(),
             state: UserStateConfig::default(),
             ui: UserUiConfig::default(),
             relay: UserRelayConfig::default(),
@@ -558,6 +603,7 @@ impl ArrobaUserConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
         self.providers.managed_io.validate()?;
         self.history.validate()?;
+        self.artifacts.validate()?;
         self.state.validate()?;
         Ok(())
     }
@@ -688,6 +734,48 @@ impl ArrobaUserConfig {
                     &value,
                 )?)
             }
+            "artifacts.operational.backend" => {
+                self.artifacts.operational.backend =
+                    ArtifactOperationalBackend::parse("artifacts.operational.backend", &value)?
+            }
+            "artifacts.operational.root" => {
+                self.artifacts.operational.root = Some(non_empty_config_string(
+                    "artifacts.operational.root",
+                    value,
+                )?)
+            }
+            "artifacts.operational.index_path" => {
+                self.artifacts.operational.index_path = Some(non_empty_config_string(
+                    "artifacts.operational.index_path",
+                    value,
+                )?)
+            }
+            "artifacts.operational.retention_days" => {
+                self.artifacts.operational.retention_days = Some(parse_config_u32(
+                    "artifacts.operational.retention_days",
+                    &value,
+                    true,
+                )?)
+            }
+            "artifacts.archive.mode" => {
+                self.artifacts.archive.mode = HistoryArchiveMode::parse(&value)?
+            }
+            "artifacts.archive.url" => {
+                self.artifacts.archive.url =
+                    Some(non_empty_config_string("artifacts.archive.url", value)?)
+            }
+            "artifacts.archive.token_env" => {
+                self.artifacts.archive.token_env = Some(non_empty_config_string(
+                    "artifacts.archive.token_env",
+                    value,
+                )?)
+            }
+            "artifacts.archive.require_durable_acceptance" => {
+                self.artifacts.archive.require_durable_acceptance = Some(parse_config_bool(
+                    "artifacts.archive.require_durable_acceptance",
+                    &value,
+                )?)
+            }
             "state.backend" => self.state.backend = StateBackend::parse("state.backend", &value)?,
             "state.path" => self.state.path = Some(non_empty_config_string("state.path", value)?),
             "state.snapshot_interval_events" => {
@@ -780,6 +868,23 @@ impl ArrobaUserConfig {
             }
             "history.archive.require_durable_acceptance" => {
                 self.history.archive.require_durable_acceptance = None
+            }
+            "artifacts.operational.backend" => {
+                return Err(DaemonError::InvalidConfig {
+                    field: "artifacts.operational.backend",
+                    message: "operational artifact backend cannot be unset",
+                });
+            }
+            "artifacts.operational.root" => self.artifacts.operational.root = None,
+            "artifacts.operational.index_path" => self.artifacts.operational.index_path = None,
+            "artifacts.operational.retention_days" => {
+                self.artifacts.operational.retention_days = None
+            }
+            "artifacts.archive.mode" => self.artifacts.archive.mode = HistoryArchiveMode::Disabled,
+            "artifacts.archive.url" => self.artifacts.archive.url = None,
+            "artifacts.archive.token_env" => self.artifacts.archive.token_env = None,
+            "artifacts.archive.require_durable_acceptance" => {
+                self.artifacts.archive.require_durable_acceptance = None
             }
             "state.backend" => {
                 return Err(DaemonError::InvalidConfig {
@@ -1017,6 +1122,134 @@ impl HistoryArchiveMode {
                 field: "history.archive.mode",
                 message: "value must be `disabled` or `external`",
             }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserArtifactsConfig {
+    #[serde(default)]
+    pub operational: UserOperationalArtifactsConfig,
+    #[serde(default)]
+    pub archive: UserArchiveArtifactsConfig,
+}
+
+impl Default for UserArtifactsConfig {
+    fn default() -> Self {
+        Self {
+            operational: UserOperationalArtifactsConfig::default(),
+            archive: UserArchiveArtifactsConfig::default(),
+        }
+    }
+}
+
+impl UserArtifactsConfig {
+    fn validate(&self) -> Result<(), DaemonError> {
+        self.operational.validate()?;
+        self.archive.validate()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserOperationalArtifactsConfig {
+    #[serde(default)]
+    pub backend: ArtifactOperationalBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_days: Option<u32>,
+}
+
+impl Default for UserOperationalArtifactsConfig {
+    fn default() -> Self {
+        Self {
+            backend: ArtifactOperationalBackend::Filesystem,
+            root: Some("~/.arroba/artifacts".to_string()),
+            index_path: Some("~/.arroba/artifacts/index.db".to_string()),
+            retention_days: Some(30),
+        }
+    }
+}
+
+impl UserOperationalArtifactsConfig {
+    fn validate(&self) -> Result<(), DaemonError> {
+        if let Some(root) = &self.root {
+            validate_non_empty("artifacts.operational.root", root)?;
+        }
+        if let Some(index_path) = &self.index_path {
+            validate_non_empty("artifacts.operational.index_path", index_path)?;
+        }
+        validate_optional_nonzero("artifacts.operational.retention_days", self.retention_days)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactOperationalBackend {
+    Filesystem,
+}
+
+impl Default for ArtifactOperationalBackend {
+    fn default() -> Self {
+        Self::Filesystem
+    }
+}
+
+impl ArtifactOperationalBackend {
+    fn parse(field: &'static str, value: &str) -> Result<Self, DaemonError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "filesystem" => Ok(Self::Filesystem),
+            _ => Err(DaemonError::InvalidConfig {
+                field,
+                message: "value must be `filesystem`",
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserArchiveArtifactsConfig {
+    #[serde(default)]
+    pub mode: HistoryArchiveMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_durable_acceptance: Option<bool>,
+}
+
+impl Default for UserArchiveArtifactsConfig {
+    fn default() -> Self {
+        Self {
+            mode: HistoryArchiveMode::Disabled,
+            url: None,
+            token_env: None,
+            require_durable_acceptance: Some(true),
+        }
+    }
+}
+
+impl UserArchiveArtifactsConfig {
+    fn validate(&self) -> Result<(), DaemonError> {
+        match self.mode {
+            HistoryArchiveMode::Disabled => Ok(()),
+            HistoryArchiveMode::External => {
+                let Some(url) = self.url.as_deref() else {
+                    return Err(DaemonError::InvalidConfig {
+                        field: "artifacts.archive.url",
+                        message: "value must be set when artifact archive mode is external",
+                    });
+                };
+                validate_non_empty("artifacts.archive.url", url)?;
+                if let Some(token_env) = &self.token_env {
+                    validate_non_empty("artifacts.archive.token_env", token_env)?;
+                }
+                Ok(())
+            }
         }
     }
 }

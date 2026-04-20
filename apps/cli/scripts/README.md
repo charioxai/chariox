@@ -110,7 +110,7 @@ Use this after touching operational history archive export, outbox checkpointing
 pnpm --filter @arroba/cli run postgres-archive:drill
 ```
 
-It launches an isolated kernel plus a real `postgres:16-alpine` container, runs a small HTTP archive adapter in front of Postgres, creates transcript events through a dev-stub provider, and flushes Arroba's durable archive outbox through `arroba-history-archive-flush`. The drill validates bearer-token auth, `GET /arroba/history/capabilities`, `POST /arroba/history/events`, adapter idempotency by `event_id`, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, retry to acceptance, and operational-only history search when external archive search is disabled.
+It launches an isolated kernel plus real `postgres:16-alpine`, `minio/minio`, and `minio/mc` containers, runs a small HTTP archive adapter in front of Postgres and MinIO, creates transcript events and a transferred artifact through a dev-stub provider/session, and flushes Arroba's durable archive outboxes through `arroba-history-archive-flush`. The drill validates bearer-token auth, `GET /arroba/history/capabilities`, `POST /arroba/history/events`, `POST /arroba/history/search`, `PUT /arroba/artifacts/blobs/:artifact_id`, `POST /arroba/artifacts/manifest`, adapter idempotency by `event_id`, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, retry to acceptance, operational-only history search when external archive search is disabled, Postgres-backed archive search after deleting the matching operational row, artifact blob storage in MinIO, and artifact manifest storage in Postgres.
 
 ## Remote Restart Drill
 

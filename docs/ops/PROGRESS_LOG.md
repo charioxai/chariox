@@ -915,3 +915,10 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added `arroba-history-archive-flush [--limit N]`, an ops binary that loads Arroba config, opens operational SQLite, flushes pending archive outbox events through the configured archive adapter, and prints attempted/accepted/rejected ids as JSON.
 - Added `apps/cli/scripts/live-postgres-archive-adapter-drill.mjs` and `pnpm --filter @arroba/cli run postgres-archive:drill`.
 - The drill runs a real ephemeral `postgres:16-alpine` container behind an HTTP adapter, creates transcript events through an isolated dev-stub kernel, and validates bearer-token auth, capabilities, append idempotency, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, final retry acceptance, operational-only search when external archive search is disabled, and Postgres-backed archive search through Arroba once the matching operational row is deleted.
+
+### M8 artifact archive store update
+
+- Added a filesystem-backed operational artifact store with a SQLite artifact index/outbox. Transferred files are now registered as content-addressed SHA-256 blobs, emit an `artifact_stored` canonical history event, and can be flushed to external archive storage.
+- Extended the archive adapter protocol with `PUT /arroba/artifacts/blobs/:artifact_id` for raw blob upload and `POST /arroba/artifacts/manifest` for durable artifact metadata acceptance.
+- Extended `arroba-history-archive-flush` to flush pending artifact blobs/manifests before history events. The JSON output now has separate `artifacts` and `history` sections.
+- Extended the Postgres archive drill to use production-shaped archive storage: Postgres stores events/artifact manifests/searchable metadata and MinIO stores S3-compatible artifact blobs. Verified `pnpm --filter @arroba/cli run postgres-archive:drill` passes with one archived transferred artifact and four archived transcript events.

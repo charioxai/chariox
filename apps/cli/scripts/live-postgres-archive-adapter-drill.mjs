@@ -19,6 +19,7 @@ const {
   submitPromptRequest,
   completePromptRequest,
   searchHistoryRequest,
+  storeTransferredFileRequest,
 } = requests
 
 function parseArgs(argv) {
@@ -178,12 +179,27 @@ async function waitForHistoryMatch(client, query, filters, label, timeoutMs = 10
   throw new Error(`timed out waiting for history match ${label}; last=${JSON.stringify(lastEvents)}`)
 }
 
-async function startPostgres() {
+async function createDockerNetwork() {
+  const name = `arroba-archive-net-${process.pid}-${Date.now()}`
+  const created = await run('docker', ['network', 'create', name])
+  if (created.code !== 0) {
+    throw new Error(`failed to create Docker network. Start Docker/Colima first, then rerun the drill.\nstdout:\n${created.stdout}\nstderr:\n${created.stderr}`)
+  }
+  return name
+}
+
+async function removeDockerNetwork(name) {
+  if (name) await run('docker', ['network', 'rm', name]).catch(() => {})
+}
+
+async function startPostgres(network) {
   const name = `arroba-archive-pg-${process.pid}-${Date.now()}`
   const started = await run('docker', [
     'run',
     '--name',
     name,
+    '--network',
+    network,
     '-e',
     'POSTGRES_PASSWORD=arroba',
     '-e',
@@ -200,6 +216,44 @@ async function startPostgres() {
     await sleep(500)
   }
   throw new Error(`Postgres container did not become ready: ${name}`)
+}
+
+async function startMinio(network) {
+  const suffix = `${process.pid}-${Date.now()}`
+  const minio = `arroba-archive-minio-${suffix}`
+  const mc = `arroba-archive-mc-${suffix}`
+  const minioStarted = await run('docker', [
+    'run',
+    '--name',
+    minio,
+    '--network',
+    network,
+    '-e',
+    'MINIO_ROOT_USER=arroba',
+    '-e',
+    'MINIO_ROOT_PASSWORD=arroba-secret',
+    '-d',
+    'minio/minio:latest',
+    'server',
+    '/data',
+  ])
+  if (minioStarted.code !== 0) throw new Error(`failed to start MinIO\nstdout:\n${minioStarted.stdout}\nstderr:\n${minioStarted.stderr}`)
+  const mcStarted = await run('docker', ['run', '--name', mc, '--network', network, '--entrypoint', 'sleep', '-d', 'minio/mc:latest', 'infinity'])
+  if (mcStarted.code !== 0) throw new Error(`failed to start MinIO client\nstdout:\n${mcStarted.stdout}\nstderr:\n${mcStarted.stderr}`)
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const alias = await run('docker', ['exec', mc, 'mc', 'alias', 'set', 'local', `http://${minio}:9000`, 'arroba', 'arroba-secret'])
+    if (alias.code === 0) {
+      await mustRun('docker', ['exec', mc, 'mc', 'mb', '--ignore-existing', 'local/arroba-artifacts'])
+      return { minio, mc }
+    }
+    await sleep(500)
+  }
+  throw new Error(`MinIO did not become ready: ${minio}`)
+}
+
+async function stopMinio(stack) {
+  if (stack?.mc) await run('docker', ['rm', '-f', stack.mc]).catch(() => {})
+  if (stack?.minio) await run('docker', ['rm', '-f', stack.minio]).catch(() => {})
 }
 
 async function stopPostgres(name) {
@@ -228,6 +282,19 @@ CREATE TABLE IF NOT EXISTS archive_events (
   payload JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS archive_artifacts (
+  artifact_id TEXT PRIMARY KEY,
+  sha256 TEXT NOT NULL,
+  size_bytes BIGINT NOT NULL,
+  display_name TEXT NOT NULL,
+  source_kind TEXT NOT NULL,
+  session_id TEXT,
+  attachment_id TEXT,
+  object_key TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `)
 }
 
@@ -241,13 +308,20 @@ async function postgresEventIds(container) {
   return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean)
 }
 
-function startAdapter({ container, port, token }) {
+async function postgresArtifactRows(container) {
+  const result = await psql(container, 'SELECT artifact_id || \'|\' || sha256 || \'|\' || object_key FROM archive_artifacts ORDER BY artifact_id;', { tuplesOnly: true })
+  return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean)
+}
+
+function startAdapter({ container, minioClientContainer, port, token }) {
   const state = {
     failNextAppend: false,
     rejectNextAppend: false,
     searchEnabled: false,
     appendRequests: 0,
     searchRequests: 0,
+    artifactBlobUploads: 0,
+    artifactManifestRequests: 0,
     rejectedEventIds: [],
   }
   const server = http.createServer(async (request, response) => {
@@ -266,6 +340,61 @@ function startAdapter({ container, port, token }) {
           full_text_search: state.searchEnabled,
           blob_refs: false,
         }))
+        return
+      }
+      if (request.method === 'PUT' && request.url?.startsWith('/arroba/artifacts/blobs/')) {
+        state.artifactBlobUploads += 1
+        const artifactId = decodeURIComponent(request.url.split('/').pop() ?? '')
+        if (!/^[A-Za-z0-9_.:-]+$/.test(artifactId)) {
+          response.writeHead(400, { 'content-type': 'application/json' })
+          response.end(JSON.stringify({ error: 'invalid artifact id' }))
+          return
+        }
+        const chunks = []
+        for await (const chunk of request) chunks.push(Buffer.from(chunk))
+        const body = Buffer.concat(chunks)
+        await mustRun('docker', [
+          'exec',
+          '-i',
+          minioClientContainer,
+          'sh',
+          '-c',
+          `cat > /tmp/blob && mc cp /tmp/blob local/arroba-artifacts/${artifactId}`,
+        ], { input: body })
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ artifact_id: artifactId }))
+        return
+      }
+      if (request.method === 'POST' && request.url === '/arroba/artifacts/manifest') {
+        state.artifactManifestRequests += 1
+        let body = ''
+        for await (const chunk of request) body += chunk.toString()
+        const payload = JSON.parse(body)
+        const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts : []
+        const accepted = []
+        for (const artifact of artifacts) {
+          const artifactId = String(artifact.artifact_id)
+          await psql(container, `
+INSERT INTO archive_artifacts (
+  artifact_id, sha256, size_bytes, display_name, source_kind,
+  session_id, attachment_id, object_key, payload
+) VALUES (
+  ${sqlString(artifactId)},
+  ${sqlString(artifact.sha256)},
+  ${Number(artifact.size_bytes ?? 0)},
+  ${sqlString(artifact.display_name)},
+  ${sqlString(artifact.source_kind)},
+  ${sqlString(artifact.session_id)},
+  ${sqlString(artifact.attachment_id)},
+  ${sqlString(`s3://arroba-artifacts/${artifactId}`)},
+  ${jsonSql(artifact)}
+)
+ON CONFLICT (artifact_id) DO NOTHING;
+`)
+          accepted.push(artifactId)
+        }
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ accepted_artifact_ids: accepted, rejected_artifacts: [] }))
         return
       }
       if (request.method === 'POST' && request.url === '/arroba/history/search') {
@@ -399,7 +528,7 @@ async function sqliteExec(dbPath, sql) {
   await mustRun('sqlite3', [dbPath, sql])
 }
 
-async function writeConfig({ configHome, historyPath, statePath, adapterUrl, requireDurableAcceptance }) {
+async function writeConfig({ configHome, historyPath, artifactRoot, artifactIndexPath, statePath, adapterUrl, requireDurableAcceptance }) {
   await writeFile(
     path.join(configHome, 'arroba', 'config.toml'),
     `version = 1
@@ -415,6 +544,16 @@ archive_deleted_agents = true
 archive_before_delete = true
 delete_operational_after_verified_archive = true
 require_durable_acceptance = ${requireDurableAcceptance ? 'true' : 'false'}
+
+[artifacts.operational]
+root = "${tomlString(artifactRoot)}"
+index_path = "${tomlString(artifactIndexPath)}"
+
+[artifacts.archive]
+mode = "external"
+url = "${tomlString(adapterUrl)}"
+token_env = "ARROBA_ARCHIVE_DRILL_TOKEN"
+require_durable_acceptance = true
 
 [state]
 path = "${tomlString(statePath)}"
@@ -470,9 +609,13 @@ async function main() {
   const workspace = path.join(root, 'workspace')
   const statePath = path.join(root, 'state.db')
   const historyPath = path.join(root, 'history.db')
+  const artifactRoot = path.join(root, 'artifacts')
+  const artifactIndexPath = path.join(root, 'artifacts.db')
   const token = `archive-token-${process.pid}-${Date.now()}`
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   let container = null
+  let network = null
+  let minio = null
   let adapter = null
   let daemon = null
   let client = null
@@ -482,10 +625,13 @@ async function main() {
     await mkdir(home, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
 
-    container = await startPostgres()
+    network = await createDockerNetwork()
+    container = await startPostgres(network)
+    minio = await startMinio(network)
     await initPostgres(container)
     adapter = await startAdapter({
       container,
+      minioClientContainer: minio.mc,
       port: ports.adapterPort,
       token,
     })
@@ -493,6 +639,8 @@ async function main() {
     await writeConfig({
       configHome,
       historyPath,
+      artifactRoot,
+      artifactIndexPath,
       statePath,
       adapterUrl,
       requireDurableAcceptance: true,
@@ -602,6 +750,8 @@ async function main() {
     await writeConfig({
       configHome,
       historyPath,
+      artifactRoot,
+      artifactIndexPath,
       statePath,
       adapterUrl,
       requireDurableAcceptance: false,
@@ -617,13 +767,13 @@ async function main() {
       throw new Error(`expected non-durable rejection flush to succeed with rejected outcome\nstdout=${rejectedNonDurableFlush.stdout}\nstderr=${rejectedNonDurableFlush.stderr}`)
     }
     const rejectedOutcome = JSON.parse(rejectedNonDurableFlush.stdout.trim())
-    if (rejectedOutcome.rejected_events.length !== 1) throw new Error(`expected one rejected event, got ${rejectedNonDurableFlush.stdout}`)
+    if (rejectedOutcome.history.rejected_events.length !== 1) throw new Error(`expected one rejected event, got ${rejectedNonDurableFlush.stdout}`)
     await assertPending(historyPath, 1, 'after non-durable rejection')
     const rejectedPending = await sqliteJsonRows(historyPath, 'SELECT attempts, last_error FROM history_archive_outbox WHERE archived_at_ms IS NULL;')
     if (rejectedPending.length !== 1 || Number(rejectedPending[0].attempts) < 1 || !String(rejectedPending[0].last_error ?? '').includes('rejected')) {
       throw new Error(`expected rejected row to remain retryable, got ${JSON.stringify(rejectedPending)}`)
     }
-    log('non-durable-rejection-partial-checkpoint-ok', { rejectedEventId: rejectedOutcome.rejected_events[0].event_id })
+    log('non-durable-rejection-partial-checkpoint-ok', { rejectedEventId: rejectedOutcome.history.rejected_events[0].event_id })
 
     const finalFlush = await runFlush(binaries.archiveFlush, env)
     if (finalFlush.code !== 0) throw new Error(`expected final rejected-row retry to succeed\nstdout=${finalFlush.stdout}\nstderr=${finalFlush.stderr}`)
@@ -663,10 +813,43 @@ async function main() {
       throw new Error(`expected Arroba search to return deleted local event from Postgres archive, got ${JSON.stringify(archiveSearch)}`)
     }
 
+    const sourceArtifact = path.join(workspace, 'archive-artifact.txt')
+    const artifactMarker = `ARTIFACT_ARCHIVE_${process.pid}_${Date.now()}`
+    await writeFile(sourceArtifact, `artifact drill ${artifactMarker}\n`, 'utf8')
+    const transfer = variant(
+      await client.send(storeTransferredFileRequest(session.id, attachment.id, sourceArtifact, 'archive-artifact.txt')),
+      'FileTransferred',
+    ).result
+    if (!transfer?.artifact_id) throw new Error(`expected transferred artifact result, got ${JSON.stringify(transfer)}`)
+    const pendingArtifacts = await sqliteScalar(artifactIndexPath, 'SELECT count(*) FROM artifact_archive_outbox WHERE archived_at_ms IS NULL;')
+    if (pendingArtifacts !== 1) throw new Error(`expected one pending artifact archive row, got ${pendingArtifacts}`)
+    const pendingArtifactEvents = await sqliteScalar(historyPath, "SELECT count(*) FROM history_archive_outbox WHERE archived_at_ms IS NULL AND event_json LIKE '%artifact_stored%';")
+    if (pendingArtifactEvents !== 1) throw new Error(`expected one pending artifact_stored history event, got ${pendingArtifactEvents}`)
+
+    const artifactFlush = await runFlush(binaries.archiveFlush, env)
+    if (artifactFlush.code !== 0) throw new Error(`expected artifact flush to succeed\nstdout=${artifactFlush.stdout}\nstderr=${artifactFlush.stderr}`)
+    const artifactOutcome = JSON.parse(artifactFlush.stdout.trim())
+    if (artifactOutcome.artifacts.accepted_artifact_ids.length !== 1) throw new Error(`expected one accepted artifact, got ${artifactFlush.stdout}`)
+    if (artifactOutcome.history.accepted_event_ids.length < 1) throw new Error(`expected artifact history event to archive, got ${artifactFlush.stdout}`)
+    const archivedArtifactRows = await postgresArtifactRows(container)
+    if (archivedArtifactRows.length !== 1 || !archivedArtifactRows[0].includes('s3://arroba-artifacts/')) {
+      throw new Error(`expected artifact metadata in Postgres with S3 object key, got ${JSON.stringify(archivedArtifactRows)}`)
+    }
+    const minioStat = await run('docker', ['exec', minio.mc, 'mc', 'stat', `local/arroba-artifacts/${artifactOutcome.artifacts.accepted_artifact_ids[0]}`])
+    if (minioStat.code !== 0) throw new Error(`expected artifact blob in MinIO\nstdout=${minioStat.stdout}\nstderr=${minioStat.stderr}`)
+    log('artifact-archive-ok', {
+      acceptedArtifactId: artifactOutcome.artifacts.accepted_artifact_ids[0],
+      blobStore: 'minio-s3',
+      metadataStore: 'postgres',
+    })
+
     log('passed', {
       archivedEvents: ids.length,
+      archivedArtifacts: archivedArtifactRows.length,
       adapterAppendRequests: adapter.state.appendRequests,
       adapterSearchRequests: adapter.state.searchRequests,
+      artifactBlobUploads: adapter.state.artifactBlobUploads,
+      artifactManifestRequests: adapter.state.artifactManifestRequests,
       searchMode: 'operational-and-postgres-archive',
     })
   } finally {
@@ -674,6 +857,8 @@ async function main() {
     if (daemon && daemon.exitCode === null && daemon.signalCode === null) daemon.kill('SIGTERM')
     if (adapter) await adapter.close().catch(() => {})
     await stopPostgres(container)
+    await stopMinio(minio)
+    await removeDockerNetwork(network)
     if (!options.keepArtifactsOnFailure) {
       await rm(root, { recursive: true, force: true }).catch(() => {})
     } else {

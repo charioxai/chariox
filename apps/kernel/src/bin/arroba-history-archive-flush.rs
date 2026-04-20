@@ -1,9 +1,13 @@
 use std::env;
 use std::process::ExitCode;
 
+use arroba_kernel::artifacts::OperationalArtifactStore;
 use arroba_kernel::config::DaemonConfig;
+use arroba_kernel::config::HistoryArchiveMode;
 use arroba_kernel::history::OperationalHistoryStore;
-use arroba_kernel::history_archive::{HistoryArchiveClient, HistoryArchiveExporter};
+use arroba_kernel::history_archive::{
+    ArtifactArchiveExporter, HistoryArchiveClient, HistoryArchiveExporter,
+};
 
 fn main() -> ExitCode {
     let _ = arroba_kernel::logging::init_process_logger("history-archive-flush");
@@ -55,16 +59,41 @@ fn run() -> Result<(), arroba_kernel::DaemonError> {
     }
 
     let config = DaemonConfig::load_from_env();
-    let store = OperationalHistoryStore::open(config.operational_history_path())?;
-    let client = HistoryArchiveClient::from_config(&config.user_config.history.archive)?;
-    let exporter = HistoryArchiveExporter::new(store, client);
-    let outcome = exporter.flush_pending_once(limit)?;
+    let artifact_outcome =
+        if config.user_config.artifacts.archive.mode == HistoryArchiveMode::External {
+            let artifact_store = OperationalArtifactStore::open(
+                config.operational_artifact_root(),
+                config.operational_artifact_index_path(),
+            )?;
+            let artifact_client =
+                HistoryArchiveClient::from_artifact_config(&config.user_config.artifacts.archive)?;
+            let artifact_exporter = ArtifactArchiveExporter::new(artifact_store, artifact_client);
+            artifact_exporter.flush_pending_once(limit)?
+        } else {
+            arroba_kernel::history_archive::ArtifactArchiveFlushOutcome {
+                attempted_artifact_ids: Vec::new(),
+                accepted_artifact_ids: Vec::new(),
+                rejected_artifacts: Vec::new(),
+            }
+        };
+
+    let history_store = OperationalHistoryStore::open(config.operational_history_path())?;
+    let history_client = HistoryArchiveClient::from_config(&config.user_config.history.archive)?;
+    let history_exporter = HistoryArchiveExporter::new(history_store, history_client);
+    let history_outcome = history_exporter.flush_pending_once(limit)?;
     println!(
         "{}",
         serde_json::json!({
-            "attempted_event_ids": outcome.attempted_event_ids,
-            "accepted_event_ids": outcome.accepted_event_ids,
-            "rejected_events": outcome.rejected_events,
+            "artifacts": {
+                "attempted_artifact_ids": artifact_outcome.attempted_artifact_ids,
+                "accepted_artifact_ids": artifact_outcome.accepted_artifact_ids,
+                "rejected_artifacts": artifact_outcome.rejected_artifacts,
+            },
+            "history": {
+                "attempted_event_ids": history_outcome.attempted_event_ids,
+                "accepted_event_ids": history_outcome.accepted_event_ids,
+                "rejected_events": history_outcome.rejected_events,
+            },
         })
     );
     Ok(())

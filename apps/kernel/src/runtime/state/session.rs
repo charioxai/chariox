@@ -90,6 +90,23 @@ impl KernelRuntimeOwnedState {
             workspace_id: session.workspace_id().to_string(),
             worktree_root: std::path::PathBuf::from(session.worktree_id()),
             workspace_coordinator: self.workspace_coordinator.clone(),
+            operational_history_store: self.operational_history_store.clone(),
+            operational_artifact_root: self
+                .config_projection
+                .snapshot()
+                .operational_artifact_root(),
+            operational_artifact_index_path: self
+                .config_projection
+                .snapshot()
+                .operational_artifact_index_path(),
+            history_archive_enabled: self
+                .config_projection
+                .snapshot()
+                .user_config
+                .history
+                .archive
+                .mode
+                == crate::config::HistoryArchiveMode::External,
         })
     }
 
