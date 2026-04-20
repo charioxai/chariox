@@ -2616,18 +2616,19 @@ mod tests {
     use crate::agent::CreateAgentRequest;
     use crate::attachment::ClientCapabilityLevel;
     use crate::local::{
-        AliasSessionRequest, AttachToSessionRequest, CancelActivePromptRequest,
-        CompletePromptRequest, CreateWorkflowRequest, CycleAgentFocusRequest, DeleteSessionRequest,
-        DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest,
-        GetDaemonHealthRequest, GetProviderAuthStatusRequest, GetProviderCatalogRequest,
-        GetProviderCommandCatalogsRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-        GetSessionStateRequest, LaunchProviderRunRequest, ListAgentsRequest,
-        ListProviderProcessesRequest, ListSessionsRequest, ListWorkflowRunsRequest,
-        ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest,
-        LocalDaemonResponse, PollRuntimeNoticesRequest, PumpTerminalOutputRequest,
-        QueryHistoryRequest, RelayStatusRequest, ResizeTerminalRequest, ResolveSessionRequest,
-        ResolveWorkflowRequest, RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
-        TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
+        AddWorkflowNodeRequest, AliasSessionRequest, AttachToSessionRequest,
+        CancelActivePromptRequest, CompletePromptRequest, CreateWorkflowRequest,
+        CycleAgentFocusRequest, DeleteSessionRequest, DestroyAgentRequest,
+        DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
+        GetProviderAuthStatusRequest, GetProviderCatalogRequest, GetProviderCommandCatalogsRequest,
+        GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
+        LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
+        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
+        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        PumpTerminalOutputRequest, QueryHistoryRequest, RelayStatusRequest, ResizeTerminalRequest,
+        ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest,
+        SpawnAgentRequest, SubmitPromptRequest, TeardownProviderProcessesRequest,
+        UpdateSessionConfigRequest,
     };
     use crate::provider::{
         LaunchProviderRequest, OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun,
@@ -2761,6 +2762,61 @@ mod tests {
         assert!(restored_agent
             .skill_grants()
             .contains(&"review".to_string()));
+    }
+
+    #[tokio::test]
+    async fn workflow_definition_survives_kernel_restart() {
+        let config = DaemonConfig::for_tests();
+        let (session_id, agent_id, workflow_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+            let (created, _) = router
+                .runtime_state
+                .execute_workflow_request(LocalDaemonRequest::CreateWorkflow(
+                    CreateWorkflowRequest {
+                        session_id: session.id().to_string(),
+                        alias: Some("review".to_string()),
+                    },
+                ))
+                .await;
+            let workflow_id = match created.expect("workflow should create") {
+                LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow.id().to_string(),
+                other => panic!("unexpected response: {other:?}"),
+            };
+            let (added, _) = router
+                .runtime_state
+                .execute_workflow_request(LocalDaemonRequest::AddWorkflowNode(
+                    AddWorkflowNodeRequest {
+                        session_id: session.id().to_string(),
+                        workflow_ref: workflow_id.clone(),
+                        agent_id: agent.id().to_string(),
+                    },
+                ))
+                .await;
+            added.expect("workflow node should add");
+            (
+                session.id().to_string(),
+                agent.id().to_string(),
+                workflow_id,
+            )
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+        let restored_session = app
+            .sessions()
+            .get_session(&session_id)
+            .expect("session should restore");
+        let workflow = restored_session
+            .workflows()
+            .iter()
+            .find(|workflow| workflow.id() == workflow_id)
+            .expect("workflow should restore");
+        assert_eq!(workflow.alias(), Some("review"));
+        assert_eq!(workflow.nodes().len(), 1);
+        assert_eq!(workflow.nodes()[0].agent_id(), agent_id);
     }
 
     #[tokio::test]

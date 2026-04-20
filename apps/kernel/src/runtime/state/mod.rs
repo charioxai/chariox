@@ -223,6 +223,27 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    async fn append_session_durable_event(
+        &self,
+        kind: &'static str,
+        session: &crate::session::RuntimeSession,
+        reason: &'static str,
+    ) -> Result<(), DaemonError> {
+        let session = session.clone();
+        self.with_app_side_effect(move |app| {
+            app.durable_state_store().append_event(
+                kind,
+                Some(session.id().to_string()),
+                serde_json::json!({
+                    "session": &session,
+                    "reason": reason,
+                }),
+            )
+        })
+        .await?;
+        Ok(())
+    }
+
     pub(crate) async fn active_prompt_agent_id(
         &self,
         session_id: &str,
@@ -506,7 +527,7 @@ impl KernelRuntimeState {
     ) {
         let owned = &self.owned;
 
-        match request {
+        let outcome = match request {
             LocalDaemonRequest::CreateWorkflow(request) => {
                 let result = owned.workflow_create_workflow(request);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
@@ -805,7 +826,18 @@ impl KernelRuntimeState {
                 }),
                 None,
             ),
+        };
+        if outcome.0.is_ok() {
+            if let Some(session) = outcome.1.as_ref() {
+                if let Err(error) = self
+                    .append_session_durable_event("session.updated", session, "workflow")
+                    .await
+                {
+                    return (Err(error), outcome.1);
+                }
+            }
         }
+        outcome
     }
 
     pub(crate) async fn capability_context(

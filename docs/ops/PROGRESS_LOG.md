@@ -834,3 +834,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - User-triggered MCP/skill grants and revokes now append durable agent mutation events with full agent snapshots.
 - Agent-triggered capability requests through the runtime MCP tool path now append the same durable grant events, so discovered grants survive restart too.
 - Boot restore replays those grant mutation events by restoring the latest agent snapshot, and focused coverage verifies a skill grant survives kernel restart.
+
+### M8 durable workflow state update
+
+- Workflow runtime commands that return a changed session now append a durable `session.updated` snapshot.
+- Boot restore replays `session.updated` snapshots so workflow definitions, nodes, endpoints, run state, queues, and watchdog/session workflow fields can be recovered from the latest session snapshot.
+- Added focused restart coverage that creates a workflow, adds a node, restarts the kernel, and verifies the workflow definition is restored.

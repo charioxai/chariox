@@ -376,6 +376,15 @@ impl DaemonApp {
                 self.agents.restore_agent(default_agent);
                 self.update_session_projection(session);
             }
+            "session.updated" => {
+                let session: RuntimeSession = decode_durable_payload_field(
+                    &event,
+                    "session",
+                    "durable_state.restore_session_update",
+                )?;
+                self.sessions.restore_session(session.clone());
+                self.update_session_projection(session);
+            }
             "agent.created" => {
                 let agent: AgentInstance =
                     decode_durable_payload_field(&event, "agent", "durable_state.restore_agent")?;
