@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use thiserror::Error;
 
 pub type RelayRealmId = String;
@@ -107,6 +109,8 @@ pub enum RelayAuthError {
     ActionNotAllowed,
     #[error("relay token does not allow requested target")]
     TargetNotAllowed,
+    #[error("relay token is expired")]
+    TokenExpired,
     #[error("scoped relay tokens are not enabled")]
     ScopedTokensUnavailable,
 }
@@ -157,14 +161,50 @@ impl SharedTokenVerifier {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ScopedTokenVerifier;
+pub struct ScopedTokenVerifier {
+    accepted_tokens: BTreeMap<String, RelayTokenClaims>,
+    now_ms: Option<u64>,
+}
 
 impl ScopedTokenVerifier {
+    pub fn new(accepted_tokens: BTreeMap<String, RelayTokenClaims>, now_ms: Option<u64>) -> Self {
+        Self {
+            accepted_tokens,
+            now_ms,
+        }
+    }
+
     pub fn verify(
         &self,
-        _request: RelayAuthRequest<'_>,
+        request: RelayAuthRequest<'_>,
     ) -> Result<VerifiedRelayIdentity, RelayAuthError> {
-        Err(RelayAuthError::ScopedTokensUnavailable)
+        if self.accepted_tokens.is_empty() {
+            return Err(RelayAuthError::ScopedTokensUnavailable);
+        }
+        let claims = self
+            .accepted_tokens
+            .get(request.token)
+            .ok_or(RelayAuthError::InvalidToken)?;
+        if let Some(now_ms) = self.now_ms {
+            if claims.expires_at_ms <= now_ms {
+                return Err(RelayAuthError::TokenExpired);
+            }
+        }
+        if !claims.allows_action(request.action) {
+            return Err(RelayAuthError::ActionNotAllowed);
+        }
+        if !claims.allows_target(request.target) {
+            return Err(RelayAuthError::TargetNotAllowed);
+        }
+        Ok(VerifiedRelayIdentity {
+            realm_id: claims.realm_id.clone(),
+            subject: claims.subject.clone(),
+            subject_kind: claims.subject_kind,
+            allowed_actions: claims.allowed_actions.clone(),
+            allowed_targets: claims.allowed_targets.clone(),
+            token_id: Some(claims.token_id.clone()),
+            public_key_thumbprint: claims.public_key_thumbprint.clone(),
+        })
     }
 }
 
@@ -258,7 +298,7 @@ mod tests {
 
     #[test]
     fn scoped_verifier_is_a_non_accepting_skeleton_until_issuer_support_lands() {
-        let verifier = RelayAuthVerifier::ScopedToken(ScopedTokenVerifier);
+        let verifier = RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::default());
         let error = verifier
             .verify(RelayAuthRequest {
                 token: "scoped-token",
@@ -268,5 +308,64 @@ mod tests {
             .expect_err("scoped verifier should fail closed until implemented");
 
         assert_eq!(error, RelayAuthError::ScopedTokensUnavailable);
+    }
+
+    #[test]
+    fn scoped_verifier_checks_action_target_and_expiration() {
+        let mut tokens = BTreeMap::new();
+        tokens.insert(
+            "client-token".to_string(),
+            RelayTokenClaims {
+                issuer: "issuer".to_string(),
+                subject: "client-1".to_string(),
+                subject_kind: RelaySubjectKind::Client,
+                realm_id: "realm-1".to_string(),
+                allowed_actions: vec![RelayAction::ClientConnect],
+                allowed_targets: Some(vec!["daemon-1".to_string()]),
+                issued_at_ms: 10,
+                expires_at_ms: 20,
+                token_id: "token-1".to_string(),
+                account_id: None,
+                organization_id: None,
+                device_id: None,
+                machine_id: None,
+                client_id: Some("client-1".to_string()),
+                public_key_thumbprint: Some("thumbprint".to_string()),
+                entitlements_version: None,
+            },
+        );
+        let verifier = RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(tokens, Some(15)));
+
+        let identity = verifier
+            .verify(RelayAuthRequest {
+                token: "client-token",
+                action: RelayAction::ClientConnect,
+                target: Some("daemon-1"),
+            })
+            .expect("valid scoped token should verify");
+        assert_eq!(identity.realm_id, "realm-1");
+        assert_eq!(identity.token_id.as_deref(), Some("token-1"));
+        assert_eq!(
+            identity.public_key_thumbprint.as_deref(),
+            Some("thumbprint")
+        );
+
+        let action_error = verifier
+            .verify(RelayAuthRequest {
+                token: "client-token",
+                action: RelayAction::DaemonRegister,
+                target: Some("daemon-1"),
+            })
+            .expect_err("wrong action should be rejected");
+        assert_eq!(action_error, RelayAuthError::ActionNotAllowed);
+
+        let target_error = verifier
+            .verify(RelayAuthRequest {
+                token: "client-token",
+                action: RelayAction::ClientConnect,
+                target: Some("daemon-2"),
+            })
+            .expect_err("wrong target should be rejected");
+        assert_eq!(target_error, RelayAuthError::TargetNotAllowed);
     }
 }

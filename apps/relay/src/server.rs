@@ -9,7 +9,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-use crate::auth::{RelayAction, RelayAuthError, RelayAuthRequest, RelayAuthVerifier};
+use crate::auth::{
+    RelayAction, RelayAuthError, RelayAuthRequest, RelayAuthVerifier, VerifiedRelayIdentity,
+    DEFAULT_RELAY_REALM_ID,
+};
 use crate::config::RelayConfig;
 use crate::protocol::{
     ClientTarget, DaemonRegistration, RelayConnectionRole, RelayEnvelope, RelayError,
@@ -20,7 +23,23 @@ use crate::protocol::{
 struct PeerHandle {
     sender: mpsc::UnboundedSender<Message>,
     role: RelayConnectionRole,
+    realm_id: Option<String>,
     daemon_registration: Option<DaemonRegistration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct DaemonKey {
+    realm_id: String,
+    daemon_id: String,
+}
+
+impl DaemonKey {
+    fn new(realm_id: impl Into<String>, daemon_id: impl Into<String>) -> Self {
+        Self {
+            realm_id: realm_id.into(),
+            daemon_id: daemon_id.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,15 +52,15 @@ pub struct ConnectedPeer {
 struct PendingClientRequest {
     client_addr: SocketAddr,
     client_request_id: String,
-    daemon_id: String,
+    daemon_key: DaemonKey,
     kind: PendingRequestKind,
 }
 
 #[derive(Debug, Clone)]
 struct PendingDaemonPeerRequest {
-    requester_daemon_id: String,
+    requester_daemon_key: DaemonKey,
     requester_request_id: String,
-    target_daemon_id: String,
+    target_daemon_key: DaemonKey,
 }
 
 #[derive(Debug, Clone)]
@@ -54,13 +73,13 @@ enum PendingRequestKind {
 #[derive(Debug, Clone)]
 struct ActiveSubscription {
     client_addr: SocketAddr,
-    daemon_id: String,
+    daemon_key: DaemonKey,
 }
 
 #[derive(Debug, Default)]
 pub struct RelayRegistry {
     peers: BTreeMap<SocketAddr, PeerHandle>,
-    daemons: BTreeMap<String, DaemonRegistration>,
+    daemons: BTreeMap<DaemonKey, DaemonRegistration>,
     pending_requests: BTreeMap<String, PendingClientRequest>,
     pending_daemon_peer_requests: BTreeMap<String, PendingDaemonPeerRequest>,
     subscriptions: BTreeMap<String, ActiveSubscription>,
@@ -76,7 +95,12 @@ impl RelayRegistry {
     }
 
     pub fn daemon(&self, daemon_id: &str) -> Option<&DaemonRegistration> {
-        self.daemons.get(daemon_id)
+        self.daemon_in_realm(DEFAULT_RELAY_REALM_ID, daemon_id)
+    }
+
+    pub fn daemon_in_realm(&self, realm_id: &str, daemon_id: &str) -> Option<&DaemonRegistration> {
+        self.daemons
+            .get(&DaemonKey::new(realm_id.to_string(), daemon_id.to_string()))
     }
 
     pub fn pending_request_count(&self) -> usize {
@@ -95,9 +119,13 @@ impl RelayRegistry {
     }
 
     pub fn live_machines(&self) -> Vec<RelayMachinePresence> {
-        let relay_aliases = self.relay_kernel_aliases();
+        self.live_machines_in_realm(DEFAULT_RELAY_REALM_ID)
+    }
+
+    fn live_machines_in_realm(&self, realm_id: &str) -> Vec<RelayMachinePresence> {
+        let relay_aliases = self.relay_kernel_aliases(realm_id);
         let mut grouped = BTreeMap::<String, Vec<&DaemonRegistration>>::new();
-        for registration in self.daemons.values() {
+        for registration in self.daemon_registrations_in_realm(realm_id) {
             grouped
                 .entry(registration.machine_id.clone())
                 .or_default()
@@ -128,9 +156,16 @@ impl RelayRegistry {
     }
 
     pub fn live_kernels_for_machine(&self, machine_ref: &str) -> Vec<RelayKernelPresence> {
-        let relay_aliases = self.relay_kernel_aliases();
-        self.daemons
-            .values()
+        self.live_kernels_for_machine_in_realm(DEFAULT_RELAY_REALM_ID, machine_ref)
+    }
+
+    fn live_kernels_for_machine_in_realm(
+        &self,
+        realm_id: &str,
+        machine_ref: &str,
+    ) -> Vec<RelayKernelPresence> {
+        let relay_aliases = self.relay_kernel_aliases(realm_id);
+        self.daemon_registrations_in_realm(realm_id)
             .filter(|registration| {
                 registration.machine_id == machine_ref
                     || relay_aliases
@@ -144,9 +179,16 @@ impl RelayRegistry {
     }
 
     pub fn live_kernel(&self, kernel_ref: &str) -> Option<RelayKernelPresence> {
-        let relay_aliases = self.relay_kernel_aliases();
-        self.daemons
-            .values()
+        self.live_kernel_in_realm(DEFAULT_RELAY_REALM_ID, kernel_ref)
+    }
+
+    fn live_kernel_in_realm(
+        &self,
+        realm_id: &str,
+        kernel_ref: &str,
+    ) -> Option<RelayKernelPresence> {
+        let relay_aliases = self.relay_kernel_aliases(realm_id);
+        self.daemon_registrations_in_realm(realm_id)
             .find(|registration| {
                 registration.daemon_id == kernel_ref
                     || registration.daemon_alias.as_deref() == Some(kernel_ref)
@@ -182,8 +224,20 @@ impl RelayRegistry {
         }
     }
 
-    fn relay_kernel_aliases(&self) -> BTreeMap<String, String> {
-        let mut registrations = self.daemons.values().collect::<Vec<_>>();
+    fn daemon_registrations_in_realm<'a>(
+        &'a self,
+        realm_id: &'a str,
+    ) -> impl Iterator<Item = &'a DaemonRegistration> + 'a {
+        self.daemons
+            .iter()
+            .filter(move |(key, _)| key.realm_id == realm_id)
+            .map(|(_, registration)| registration)
+    }
+
+    fn relay_kernel_aliases(&self, realm_id: &str) -> BTreeMap<String, String> {
+        let mut registrations = self
+            .daemon_registrations_in_realm(realm_id)
+            .collect::<Vec<_>>();
         registrations.sort_by(|left, right| {
             normalized_kernel_started_at_ms(left)
                 .cmp(&normalized_kernel_started_at_ms(right))
@@ -226,8 +280,15 @@ pub struct RelayServer {
 
 impl RelayServer {
     pub fn new(config: RelayConfig) -> Self {
+        Self::with_auth_verifier(
+            config.clone(),
+            RelayAuthVerifier::shared(config.shared_token.clone()),
+        )
+    }
+
+    pub fn with_auth_verifier(config: RelayConfig, auth_verifier: RelayAuthVerifier) -> Self {
         Self {
-            auth_verifier: RelayAuthVerifier::shared(config.shared_token.clone()),
+            auth_verifier,
             config,
             registry: Arc::new(RwLock::new(RelayRegistry::default())),
             relay_request_counter: Arc::new(AtomicU64::new(0)),
@@ -296,7 +357,7 @@ async fn handle_connection(
             }
         }
     });
-    let mut registered_daemon_id: Option<String> = None;
+    let mut registered_daemon_key: Option<DaemonKey> = None;
 
     while let Some(message) = reader.next().await {
         let message = message.map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -307,52 +368,62 @@ async fn handle_connection(
                 })?;
                 match envelope {
                     RelayEnvelope::DaemonRegister { registration } => {
-                        verify_relay_token(
+                        let identity = verify_relay_token(
                             &auth_verifier,
                             &registration.auth_token,
                             RelayAction::DaemonRegister,
                             None,
                         )?;
-                        registered_daemon_id = Some(registration.daemon_id.clone());
+                        let daemon_key = DaemonKey::new(
+                            identity.realm_id.clone(),
+                            registration.daemon_id.clone(),
+                        );
+                        registered_daemon_key = Some(daemon_key.clone());
                         let mut guard = registry.write().await;
                         guard.peers.insert(
                             peer_addr,
                             PeerHandle {
                                 sender: outgoing_tx.clone(),
                                 role: RelayConnectionRole::Daemon,
+                                realm_id: Some(identity.realm_id),
                                 daemon_registration: Some(registration.clone()),
                             },
                         );
-                        guard
-                            .daemons
-                            .insert(registration.daemon_id.clone(), registration);
+                        guard.daemons.insert(daemon_key, registration);
                     }
                     RelayEnvelope::DaemonHeartbeat {
                         daemon_id,
                         registration,
                     } => {
-                        if registered_daemon_id.as_deref() != Some(daemon_id.as_str()) {
+                        let Some(current_daemon_key) = registered_daemon_key.clone() else {
+                            break;
+                        };
+                        if current_daemon_key.daemon_id != daemon_id {
                             break;
                         }
                         if let Some(registration) = registration {
-                            verify_relay_token(
+                            let identity = verify_relay_token(
                                 &auth_verifier,
                                 &registration.auth_token,
                                 RelayAction::DaemonHeartbeat,
                                 Some(daemon_id.as_str()),
                             )?;
+                            if identity.realm_id != current_daemon_key.realm_id {
+                                break;
+                            }
                             if registration.daemon_id != daemon_id {
                                 break;
                             }
                             let mut guard = registry.write().await;
                             if let Some(peer) = guard.peers.get_mut(&peer_addr) {
+                                peer.realm_id = Some(identity.realm_id);
                                 peer.daemon_registration = Some(registration.clone());
                             }
-                            guard.daemons.insert(daemon_id, registration);
+                            guard.daemons.insert(current_daemon_key, registration);
                         }
                     }
                     RelayEnvelope::ClientConnect { auth_token, target } => {
-                        verify_relay_token(
+                        let identity = verify_relay_token(
                             &auth_verifier,
                             &auth_token,
                             RelayAction::ClientConnect,
@@ -361,7 +432,8 @@ async fn handle_connection(
                                 .as_deref()
                                 .or(target.daemon_alias.as_deref()),
                         )?;
-                        let Some(daemon_id) = resolve_target_daemon_id(&registry, &target).await
+                        let Some(daemon_key) =
+                            resolve_target_daemon_key(&registry, &identity.realm_id, &target).await
                         else {
                             send_close(
                                 &outgoing_tx,
@@ -373,7 +445,7 @@ async fn handle_connection(
                             let guard = registry.read().await;
                             guard
                                 .daemons
-                                .get(&daemon_id)
+                                .get(&daemon_key)
                                 .map(|registration| registration.public_key.clone())
                         };
                         let mut guard = registry.write().await;
@@ -382,6 +454,7 @@ async fn handle_connection(
                             PeerHandle {
                                 sender: outgoing_tx.clone(),
                                 role: RelayConnectionRole::Client,
+                                realm_id: Some(identity.realm_id),
                                 daemon_registration: None,
                             },
                         );
@@ -398,7 +471,7 @@ async fn handle_connection(
                         auth_token,
                         query,
                     } => {
-                        verify_relay_token(
+                        let identity = verify_relay_token(
                             &auth_verifier,
                             &auth_token,
                             RelayAction::ClientMetadataRead,
@@ -406,17 +479,24 @@ async fn handle_connection(
                         )?;
                         let guard = registry.read().await;
                         let (machines, kernels, kernel) = match query {
-                            RelayMetadataQuery::ListLiveMachines => {
-                                (Some(guard.live_machines()), None, None)
-                            }
-                            RelayMetadataQuery::ListLiveKernelsForMachine { machine_ref } => (
+                            RelayMetadataQuery::ListLiveMachines => (
+                                Some(guard.live_machines_in_realm(&identity.realm_id)),
                                 None,
-                                Some(guard.live_kernels_for_machine(&machine_ref)),
                                 None,
                             ),
-                            RelayMetadataQuery::GetLiveKernel { kernel_ref } => {
-                                (None, None, guard.live_kernel(&kernel_ref))
-                            }
+                            RelayMetadataQuery::ListLiveKernelsForMachine { machine_ref } => (
+                                None,
+                                Some(guard.live_kernels_for_machine_in_realm(
+                                    &identity.realm_id,
+                                    &machine_ref,
+                                )),
+                                None,
+                            ),
+                            RelayMetadataQuery::GetLiveKernel { kernel_ref } => (
+                                None,
+                                None,
+                                guard.live_kernel_in_realm(&identity.realm_id, &kernel_ref),
+                            ),
                         };
                         send_envelope(
                             &outgoing_tx,
@@ -434,15 +514,19 @@ async fn handle_connection(
                         target,
                         encrypted_request,
                     } => {
-                        let Some(requester_daemon_id) = registered_daemon_id.clone() else {
+                        let Some(requester_daemon_key) = registered_daemon_key.clone() else {
                             send_close(
                                 &outgoing_tx,
                                 "daemon must register before sending peer requests".to_string(),
                             );
                             break;
                         };
-                        let Some(target_daemon_id) =
-                            resolve_target_daemon_id(&registry, &target).await
+                        let Some(target_daemon_key) = resolve_target_daemon_key(
+                            &registry,
+                            &requester_daemon_key.realm_id,
+                            &target,
+                        )
+                        .await
                         else {
                             send_envelope(
                                 &outgoing_tx,
@@ -468,12 +552,12 @@ async fn handle_connection(
                             guard.pending_daemon_peer_requests.insert(
                                 relay_request_id.clone(),
                                 PendingDaemonPeerRequest {
-                                    requester_daemon_id: requester_daemon_id.clone(),
+                                    requester_daemon_key: requester_daemon_key.clone(),
                                     requester_request_id: request_id.clone(),
-                                    target_daemon_id: target_daemon_id.clone(),
+                                    target_daemon_key: target_daemon_key.clone(),
                                 },
                             );
-                            resolve_daemon_sender_locked(&guard, &target_daemon_id)
+                            resolve_daemon_sender_locked(&guard, &target_daemon_key)
                         };
                         let Some(daemon_sender) = daemon_sender else {
                             registry
@@ -485,7 +569,7 @@ async fn handle_connection(
                                 &outgoing_tx,
                                 &RelayEnvelope::DaemonPeerResponse {
                                     request_id,
-                                    from_daemon_id: target_daemon_id,
+                                    from_daemon_id: target_daemon_key.daemon_id,
                                     encrypted_response: None,
                                     error: Some(relay_error(
                                         "target_not_connected",
@@ -500,7 +584,7 @@ async fn handle_connection(
                             &daemon_sender,
                             &RelayEnvelope::DaemonIncomingPeerRequest {
                                 relay_request_id,
-                                from_daemon_id: requester_daemon_id,
+                                from_daemon_id: requester_daemon_key.daemon_id,
                                 encrypted_request,
                             },
                         )?;
@@ -509,27 +593,31 @@ async fn handle_connection(
                         target,
                         encrypted_event,
                     } => {
-                        let Some(requester_daemon_id) = registered_daemon_id.clone() else {
+                        let Some(requester_daemon_key) = registered_daemon_key.clone() else {
                             send_close(
                                 &outgoing_tx,
                                 "daemon must register before sending peer events".to_string(),
                             );
                             break;
                         };
-                        let Some(target_daemon_id) =
-                            resolve_target_daemon_id(&registry, &target).await
+                        let Some(target_daemon_key) = resolve_target_daemon_key(
+                            &registry,
+                            &requester_daemon_key.realm_id,
+                            &target,
+                        )
+                        .await
                         else {
                             continue;
                         };
                         let daemon_sender = {
                             let guard = registry.read().await;
-                            resolve_daemon_sender_locked(&guard, &target_daemon_id)
+                            resolve_daemon_sender_locked(&guard, &target_daemon_key)
                         };
                         if let Some(daemon_sender) = daemon_sender {
                             send_envelope(
                                 &daemon_sender,
                                 &RelayEnvelope::DaemonIncomingPeerEvent {
-                                    from_daemon_id: requester_daemon_id,
+                                    from_daemon_id: requester_daemon_key.daemon_id,
                                     encrypted_event,
                                 },
                             )?;
@@ -540,7 +628,9 @@ async fn handle_connection(
                         target,
                         encrypted_request,
                     } => {
-                        let Some(daemon_id) = resolve_target_daemon_id(&registry, &target).await
+                        let realm_id = peer_realm_id(&registry, peer_addr).await;
+                        let Some(daemon_key) =
+                            resolve_target_daemon_key(&registry, &realm_id, &target).await
                         else {
                             send_envelope(
                                 &outgoing_tx,
@@ -567,11 +657,11 @@ async fn handle_connection(
                                 PendingClientRequest {
                                     client_addr: peer_addr,
                                     client_request_id: request_id.clone(),
-                                    daemon_id: daemon_id.clone(),
+                                    daemon_key: daemon_key.clone(),
                                     kind: PendingRequestKind::Request,
                                 },
                             );
-                            resolve_daemon_sender_locked(&guard, &daemon_id)
+                            resolve_daemon_sender_locked(&guard, &daemon_key)
                         };
                         let Some(daemon_sender) = daemon_sender else {
                             registry
@@ -610,7 +700,9 @@ async fn handle_connection(
                         client_public_key,
                         resume_from_event_id,
                     } => {
-                        let Some(daemon_id) = resolve_target_daemon_id(&registry, &target).await
+                        let realm_id = peer_realm_id(&registry, peer_addr).await;
+                        let Some(daemon_key) =
+                            resolve_target_daemon_key(&registry, &realm_id, &target).await
                         else {
                             send_envelope(
                                 &outgoing_tx,
@@ -637,13 +729,13 @@ async fn handle_connection(
                                 PendingClientRequest {
                                     client_addr: peer_addr,
                                     client_request_id: request_id.clone(),
-                                    daemon_id: daemon_id.clone(),
+                                    daemon_key: daemon_key.clone(),
                                     kind: PendingRequestKind::Subscribe {
                                         subscription_id: subscription_id.clone(),
                                     },
                                 },
                             );
-                            resolve_daemon_sender_locked(&guard, &daemon_id)
+                            resolve_daemon_sender_locked(&guard, &daemon_key)
                         };
                         let Some(daemon_sender) = daemon_sender else {
                             registry
@@ -710,13 +802,13 @@ async fn handle_connection(
                                 PendingClientRequest {
                                     client_addr: peer_addr,
                                     client_request_id: request_id.clone(),
-                                    daemon_id: active.daemon_id.clone(),
+                                    daemon_key: active.daemon_key.clone(),
                                     kind: PendingRequestKind::Unsubscribe {
                                         subscription_id: subscription_id.clone(),
                                     },
                                 },
                             );
-                            resolve_daemon_sender_locked(&guard, &active.daemon_id)
+                            resolve_daemon_sender_locked(&guard, &active.daemon_key)
                         };
                         let Some(daemon_sender) = daemon_sender else {
                             registry
@@ -763,7 +855,7 @@ async fn handle_connection(
                                                 subscription_id.clone(),
                                                 ActiveSubscription {
                                                     client_addr: pending.client_addr,
-                                                    daemon_id: pending.daemon_id.clone(),
+                                                    daemon_key: pending.daemon_key.clone(),
                                                 },
                                             );
                                         }
@@ -800,12 +892,12 @@ async fn handle_connection(
                             let pending =
                                 guard.pending_daemon_peer_requests.remove(&relay_request_id);
                             pending.and_then(|pending| {
-                                resolve_daemon_sender_locked(&guard, &pending.requester_daemon_id)
+                                resolve_daemon_sender_locked(&guard, &pending.requester_daemon_key)
                                     .map(|sender| {
                                         (
                                             sender,
                                             pending.requester_request_id,
-                                            pending.target_daemon_id,
+                                            pending.target_daemon_key.daemon_id,
                                         )
                                     })
                             })
@@ -870,7 +962,7 @@ async fn handle_connection(
     }
 
     let (disconnect_errors, disconnect_peer_errors) =
-        remove_peer(&registry, peer_addr, registered_daemon_id.as_deref()).await;
+        remove_peer(&registry, peer_addr, registered_daemon_key.as_ref()).await;
     for (sender, request_id) in disconnect_errors {
         let _ = send_envelope(
             &sender,
@@ -904,32 +996,47 @@ async fn handle_connection(
     Ok(())
 }
 
-async fn resolve_target_daemon_id(
+async fn resolve_target_daemon_key(
     registry: &Arc<RwLock<RelayRegistry>>,
+    realm_id: &str,
     target: &ClientTarget,
-) -> Option<String> {
+) -> Option<DaemonKey> {
     let guard = registry.read().await;
     if let Some(daemon_id) = target.daemon_id.as_ref() {
-        return guard.daemons.get(daemon_id).map(|_| daemon_id.clone());
+        let key = DaemonKey::new(realm_id.to_string(), daemon_id.clone());
+        return guard.daemons.get(&key).map(|_| key);
     }
     let alias = target.daemon_alias.as_ref()?;
     guard
         .daemons
         .iter()
-        .find(|(_, registration)| registration.daemon_alias.as_ref() == Some(alias))
-        .map(|(daemon_id, _)| daemon_id.clone())
+        .find(|(key, registration)| {
+            key.realm_id == realm_id && registration.daemon_alias.as_ref() == Some(alias)
+        })
+        .map(|(key, _)| key.clone())
+}
+
+async fn peer_realm_id(registry: &Arc<RwLock<RelayRegistry>>, peer_addr: SocketAddr) -> String {
+    registry
+        .read()
+        .await
+        .peers
+        .get(&peer_addr)
+        .and_then(|peer| peer.realm_id.clone())
+        .unwrap_or_else(|| DEFAULT_RELAY_REALM_ID.to_string())
 }
 
 fn resolve_daemon_sender_locked(
     registry: &RelayRegistry,
-    daemon_id: &str,
+    daemon_key: &DaemonKey,
 ) -> Option<mpsc::UnboundedSender<Message>> {
-    let registration = registry.daemons.get(daemon_id)?;
+    let registration = registry.daemons.get(daemon_key)?;
     registry
         .peers
         .values()
         .find(|peer| {
             peer.role == RelayConnectionRole::Daemon
+                && peer.realm_id.as_deref() == Some(daemon_key.realm_id.as_str())
                 && peer
                     .daemon_registration
                     .as_ref()
@@ -942,7 +1049,7 @@ fn resolve_daemon_sender_locked(
 async fn remove_peer(
     registry: &Arc<RwLock<RelayRegistry>>,
     peer_addr: SocketAddr,
-    daemon_id: Option<&str>,
+    daemon_key: Option<&DaemonKey>,
 ) -> (
     Vec<(mpsc::UnboundedSender<Message>, String)>,
     Vec<(mpsc::UnboundedSender<Message>, String, String)>,
@@ -958,12 +1065,12 @@ async fn remove_peer(
     for subscription_id in client_subscription_ids {
         guard.subscriptions.remove(&subscription_id);
     }
-    if let Some(daemon_id) = daemon_id {
-        guard.daemons.remove(daemon_id);
+    if let Some(daemon_key) = daemon_key {
+        guard.daemons.remove(daemon_key);
         let daemon_subscription_ids = guard
             .subscriptions
             .iter()
-            .filter(|(_, active)| active.daemon_id == daemon_id)
+            .filter(|(_, active)| &active.daemon_key == daemon_key)
             .map(|(subscription_id, _)| subscription_id.clone())
             .collect::<Vec<_>>();
         for subscription_id in daemon_subscription_ids {
@@ -972,7 +1079,7 @@ async fn remove_peer(
         let doomed_request_ids = guard
             .pending_requests
             .iter()
-            .filter(|(_, pending)| pending.daemon_id == daemon_id)
+            .filter(|(_, pending)| &pending.daemon_key == daemon_key)
             .map(|(relay_request_id, _)| relay_request_id.clone())
             .collect::<Vec<_>>();
         let mut client_errors = Vec::new();
@@ -987,23 +1094,24 @@ async fn remove_peer(
             .pending_daemon_peer_requests
             .iter()
             .filter(|(_, pending)| {
-                pending.target_daemon_id == daemon_id || pending.requester_daemon_id == daemon_id
+                &pending.target_daemon_key == daemon_key
+                    || &pending.requester_daemon_key == daemon_key
             })
             .map(|(relay_request_id, _)| relay_request_id.clone())
             .collect::<Vec<_>>();
         let mut daemon_errors = Vec::new();
         for relay_request_id in doomed_peer_request_ids {
             if let Some(pending) = guard.pending_daemon_peer_requests.remove(&relay_request_id) {
-                if pending.requester_daemon_id == daemon_id {
+                if &pending.requester_daemon_key == daemon_key {
                     continue;
                 }
                 if let Some(sender) =
-                    resolve_daemon_sender_locked(&guard, &pending.requester_daemon_id)
+                    resolve_daemon_sender_locked(&guard, &pending.requester_daemon_key)
                 {
                     daemon_errors.push((
                         sender,
                         pending.requester_request_id,
-                        pending.target_daemon_id,
+                        pending.target_daemon_key.daemon_id,
                     ));
                 }
             }
@@ -1018,14 +1126,13 @@ fn verify_relay_token(
     token: &str,
     action: RelayAction,
     target: Option<&str>,
-) -> Result<(), std::io::Error> {
+) -> Result<VerifiedRelayIdentity, std::io::Error> {
     verifier
         .verify(RelayAuthRequest {
             token,
             action,
             target,
         })
-        .map(|_| ())
         .map_err(relay_auth_error)
 }
 
@@ -1034,6 +1141,7 @@ fn relay_auth_error(error: RelayAuthError) -> std::io::Error {
         RelayAuthError::InvalidToken
         | RelayAuthError::ActionNotAllowed
         | RelayAuthError::TargetNotAllowed
+        | RelayAuthError::TokenExpired
         | RelayAuthError::ScopedTokensUnavailable => std::io::ErrorKind::PermissionDenied,
     };
     std::io::Error::new(kind, error.to_string())
@@ -1066,6 +1174,7 @@ fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
 mod tests {
     use super::*;
 
+    use crate::auth::{RelaySubjectKind, RelayTokenClaims, ScopedTokenVerifier};
     use crate::protocol::EncryptedRelayPayload;
     use tokio::time::{sleep, Duration};
     use tokio_tungstenite::connect_async;
@@ -1076,8 +1185,24 @@ mod tests {
         os_name: &str,
         kernel_started_at_ms: u64,
     ) -> DaemonRegistration {
+        test_registration_with_token(
+            daemon_id,
+            machine_id,
+            os_name,
+            kernel_started_at_ms,
+            "secret",
+        )
+    }
+
+    fn test_registration_with_token(
+        daemon_id: &str,
+        machine_id: &str,
+        os_name: &str,
+        kernel_started_at_ms: u64,
+        auth_token: &str,
+    ) -> DaemonRegistration {
         DaemonRegistration {
-            auth_token: "secret".to_string(),
+            auth_token: auth_token.to_string(),
             daemon_id: daemon_id.to_string(),
             machine_id: machine_id.to_string(),
             machine_alias: None,
@@ -1091,6 +1216,39 @@ mod tests {
             accepting_remote_leases: true,
             leased_agent_count: 0,
             local_session_count: 0,
+        }
+    }
+
+    fn scoped_claim(
+        token_id: &str,
+        subject: &str,
+        subject_kind: RelaySubjectKind,
+        realm_id: &str,
+        actions: Vec<RelayAction>,
+        targets: Option<Vec<&str>>,
+    ) -> RelayTokenClaims {
+        RelayTokenClaims {
+            issuer: "test-issuer".to_string(),
+            subject: subject.to_string(),
+            subject_kind,
+            realm_id: realm_id.to_string(),
+            allowed_actions: actions,
+            allowed_targets: targets.map(|values| {
+                values
+                    .into_iter()
+                    .map(std::string::ToString::to_string)
+                    .collect()
+            }),
+            issued_at_ms: 1,
+            expires_at_ms: 100,
+            token_id: token_id.to_string(),
+            account_id: None,
+            organization_id: None,
+            device_id: None,
+            machine_id: None,
+            client_id: None,
+            public_key_thumbprint: None,
+            entitlements_version: None,
         }
     }
 
@@ -1115,11 +1273,11 @@ mod tests {
     fn relay_aliases_differentiate_kernels_on_same_machine() {
         let mut registry = RelayRegistry::default();
         registry.daemons.insert(
-            "daemon-a".to_string(),
+            DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-a"),
             test_registration("daemon-a", "shared-machine", "macOS", 10),
         );
         registry.daemons.insert(
-            "daemon-b".to_string(),
+            DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-b"),
             test_registration("daemon-b", "shared-machine", "macOS", 20),
         );
 
@@ -1148,6 +1306,51 @@ mod tests {
                 .expect("relay alias should resolve to a kernel")
                 .kernel_id,
             "daemon-b"
+        );
+    }
+
+    #[test]
+    fn relay_registry_scopes_metadata_and_aliases_by_realm() {
+        let mut registry = RelayRegistry::default();
+        let mut realm_a = test_registration("daemon-a", "machine-a", "Linux", 10);
+        realm_a.daemon_alias = Some("shared".to_string());
+        realm_a.public_key = "public-key-a".to_string();
+        let mut realm_b = test_registration("daemon-b", "machine-b", "Linux", 10);
+        realm_b.daemon_alias = Some("shared".to_string());
+        realm_b.public_key = "public-key-b".to_string();
+
+        registry
+            .daemons
+            .insert(DaemonKey::new("realm-a", "daemon-a"), realm_a);
+        registry
+            .daemons
+            .insert(DaemonKey::new("realm-b", "daemon-b"), realm_b);
+
+        assert_eq!(registry.daemon_count(), 2);
+        assert_eq!(registry.live_machines_in_realm("realm-a").len(), 1);
+        assert_eq!(
+            registry.live_machines_in_realm("realm-a")[0].machine_id,
+            "machine-a"
+        );
+        assert_eq!(registry.live_machines_in_realm("realm-b").len(), 1);
+        assert_eq!(
+            registry.live_machines_in_realm("realm-b")[0].machine_id,
+            "machine-b"
+        );
+
+        assert_eq!(
+            registry
+                .live_kernel_in_realm("realm-a", "shared")
+                .expect("realm A alias should resolve")
+                .public_key,
+            "public-key-a"
+        );
+        assert_eq!(
+            registry
+                .live_kernel_in_realm("realm-b", "shared")
+                .expect("realm B alias should resolve")
+                .public_key,
+            "public-key-b"
         );
     }
 
@@ -1417,6 +1620,205 @@ mod tests {
         let _ = shutdown_tx.send(());
         server_task.await.expect("server task should join");
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scoped_tokens_route_and_list_only_within_their_realm() {
+        let mut claims = BTreeMap::new();
+        claims.insert(
+            "daemon-a-token".to_string(),
+            scoped_claim(
+                "daemon-a-token",
+                "daemon-a",
+                RelaySubjectKind::Kernel,
+                "realm-a",
+                vec![RelayAction::DaemonRegister],
+                None,
+            ),
+        );
+        claims.insert(
+            "daemon-b-token".to_string(),
+            scoped_claim(
+                "daemon-b-token",
+                "daemon-b",
+                RelaySubjectKind::Kernel,
+                "realm-b",
+                vec![RelayAction::DaemonRegister],
+                None,
+            ),
+        );
+        claims.insert(
+            "client-a-token".to_string(),
+            scoped_claim(
+                "client-a-token",
+                "client-a",
+                RelaySubjectKind::Client,
+                "realm-a",
+                vec![RelayAction::ClientConnect, RelayAction::ClientMetadataRead],
+                None,
+            ),
+        );
+        claims.insert(
+            "client-b-token".to_string(),
+            scoped_claim(
+                "client-b-token",
+                "client-b",
+                RelaySubjectKind::Client,
+                "realm-b",
+                vec![RelayAction::ClientConnect, RelayAction::ClientMetadataRead],
+                None,
+            ),
+        );
+        let auth_verifier =
+            RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(claims, Some(10)));
+        let server = RelayServer::with_auth_verifier(
+            RelayConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+                shared_token: None,
+            },
+            auth_verifier,
+        );
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let auth_verifier = server.auth_verifier.clone();
+        let server = RelayServer::with_auth_verifier(
+            RelayConfig {
+                host: addr.ip().to_string(),
+                port: addr.port(),
+                shared_token: None,
+            },
+            auth_verifier,
+        );
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_until(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_a, _) = connect_async(&url).await.expect("daemon A should connect");
+        let (mut daemon_b, _) = connect_async(&url).await.expect("daemon B should connect");
+        let mut registration_a =
+            test_registration_with_token("daemon-a", "machine-a", "Linux", 10, "daemon-a-token");
+        registration_a.daemon_alias = Some("shared".to_string());
+        registration_a.public_key = "public-key-a".to_string();
+        let mut registration_b =
+            test_registration_with_token("daemon-b", "machine-b", "Linux", 10, "daemon-b-token");
+        registration_b.daemon_alias = Some("shared".to_string());
+        registration_b.public_key = "public-key-b".to_string();
+        for (socket, registration) in [
+            (&mut daemon_a, registration_a),
+            (&mut daemon_b, registration_b),
+        ] {
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
+                        .expect("register should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("register should send");
+        }
+
+        let (mut client_a, _) = connect_async(&url).await.expect("client A should connect");
+        client_a
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientMetadataRequest {
+                    request_id: "machines-a".to_string(),
+                    auth_token: "client-a-token".to_string(),
+                    query: RelayMetadataQuery::ListLiveMachines,
+                })
+                .expect("metadata request should serialize")
+                .into(),
+            ))
+            .await
+            .expect("metadata request should send");
+        let machines_payload = match client_a.next().await {
+            Some(Ok(Message::Text(text))) => text,
+            other => panic!("unexpected machines response: {other:?}"),
+        };
+        match serde_json::from_str::<RelayEnvelope>(&machines_payload)
+            .expect("machines response should decode")
+        {
+            RelayEnvelope::ClientMetadataResponse {
+                machines: Some(machines),
+                error: None,
+                ..
+            } => {
+                assert_eq!(machines.len(), 1);
+                assert_eq!(machines[0].machine_id, "machine-a");
+            }
+            other => panic!("unexpected machines response envelope: {other:?}"),
+        }
+
+        client_a
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientConnect {
+                    auth_token: "client-a-token".to_string(),
+                    target: ClientTarget {
+                        daemon_id: None,
+                        daemon_alias: Some("shared".to_string()),
+                    },
+                })
+                .expect("client connect should serialize")
+                .into(),
+            ))
+            .await
+            .expect("client connect should send");
+        let connect_payload = match client_a.next().await {
+            Some(Ok(Message::Text(text))) => text,
+            other => panic!("unexpected connect response: {other:?}"),
+        };
+        match serde_json::from_str::<RelayEnvelope>(&connect_payload)
+            .expect("connect response should decode")
+        {
+            RelayEnvelope::ClientConnected {
+                daemon_public_key, ..
+            } => assert_eq!(daemon_public_key, "public-key-a"),
+            other => panic!("unexpected connect response envelope: {other:?}"),
+        }
+
+        let (mut client_b, _) = connect_async(&url).await.expect("client B should connect");
+        client_b
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientConnect {
+                    auth_token: "client-b-token".to_string(),
+                    target: ClientTarget {
+                        daemon_id: None,
+                        daemon_alias: Some("shared".to_string()),
+                    },
+                })
+                .expect("client connect should serialize")
+                .into(),
+            ))
+            .await
+            .expect("client connect should send");
+        let connect_payload = match client_b.next().await {
+            Some(Ok(Message::Text(text))) => text,
+            other => panic!("unexpected connect response: {other:?}"),
+        };
+        match serde_json::from_str::<RelayEnvelope>(&connect_payload)
+            .expect("connect response should decode")
+        {
+            RelayEnvelope::ClientConnected {
+                daemon_public_key, ..
+            } => assert_eq!(daemon_public_key, "public-key-b"),
+            other => panic!("unexpected connect response envelope: {other:?}"),
+        }
+
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn daemon_peer_requests_are_routed_between_registered_kernels() {
         let server = RelayServer::new(RelayConfig {
@@ -1485,6 +1887,7 @@ mod tests {
                 .await
                 .expect("register frame should send");
         }
+        sleep(Duration::from_millis(50)).await;
 
         let encrypted_request = EncryptedRelayPayload {
             sender_public_key: "client-public".to_string(),
