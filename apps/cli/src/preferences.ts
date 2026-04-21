@@ -5,8 +5,27 @@ import type { ThemeName } from "./theme-registry.js"
 
 export type ArrobaPreferences = {
   providers?: Record<string, ProviderPreferences>
+  relay?: RelayPreferences
   ui?: UiPreferences
   sessions?: Record<string, SessionPreferences>
+}
+
+export type RelayPreferences = {
+  cloud?: RelayCloudProfile | null
+}
+
+export type RelayCloudProfile = {
+  apiUrl: string
+  email: string
+  accountId: string
+  userId: string
+  accountSlug: string
+  realmId: string
+  relayUrl: string
+  issuerId: string
+  clientId?: string
+  clientAlias?: string
+  tokenExpiresAtMs?: number
 }
 
 export type ProviderPreferences = {
@@ -126,6 +145,29 @@ export async function saveProviderPreferences(provider: string, next: ProviderPr
 
 export async function saveUiPreferences(next: UiPreferences) {
   await updatePreferences((current) => mergeUiPreferences(current, next))
+}
+
+export function mergeRelayCloudProfile(
+  current: ArrobaPreferences,
+  profile: RelayCloudProfile | null,
+): ArrobaPreferences {
+  return {
+    ...current,
+    relay: {
+      ...(current.relay ?? {}),
+      cloud: profile,
+    },
+  }
+}
+
+export function relayCloudProfile(
+  current: ArrobaPreferences,
+): RelayCloudProfile | null {
+  return current.relay?.cloud ?? null
+}
+
+export async function saveRelayCloudProfile(profile: RelayCloudProfile | null) {
+  await updatePreferences((current) => mergeRelayCloudProfile(current, profile))
 }
 
 export async function saveSessionPromptHistory(sessionId: string, entries: readonly string[]) {

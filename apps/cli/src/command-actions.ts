@@ -22,7 +22,7 @@ import type {
   WorkspaceLinkDefinition,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
-import type { MultiAgentResponseLayout, UiPreferences } from "./preferences.js"
+import type { RelayCloudProfile, MultiAgentResponseLayout, UiPreferences } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { SessionListEntry } from "./sessions.js"
 import { sessionHasPromptWork } from "./session-state.js"
@@ -139,6 +139,7 @@ type CommandActionDeps = {
   workspace: string
   worktree: string
   accountProfile?: string | null
+  clientId?: string | null
   isAttached: () => boolean
   sessionState: () => RuntimeSession
   attachmentState: () => RuntimeAttachment | null
@@ -188,6 +189,26 @@ type CommandActionDeps = {
     machine_alias?: string | null
   }>
   refreshWaitingRoomData?: () => Promise<void>
+  getCloudRelayProfile?: () => RelayCloudProfile | null
+  saveCloudRelayProfile?: (profile: RelayCloudProfile | null) => Promise<void>
+  bootstrapCloudRelay?: (
+    apiUrl: string,
+    email: string,
+    accountSlug?: string,
+  ) => Promise<RelayCloudProfile>
+  pairCloudRelayClient?: (
+    profile: RelayCloudProfile,
+    clientId: string,
+    alias?: string,
+  ) => Promise<RelayCloudProfile>
+  issueCloudKernelRelayToken?: (
+    profile: RelayCloudProfile,
+    daemonId: string,
+  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number }>
+  issueCloudClientRelayToken?: (
+    profile: RelayCloudProfile,
+    targetDaemonAlias: string,
+  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number }>
   listRemoteMachines?: () => Promise<Array<{
     machine_id: string
     machine_alias?: string | null
@@ -1464,6 +1485,136 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     command: Extract<ParsedSlashCommand, { kind: "relay" }>,
   ): Promise<void> => {
     const [subcommand, ...args] = command.args
+    if (subcommand === "cloud") {
+      const [cloudCommand, ...cloudArgs] = args
+      if (!cloudCommand || cloudCommand === "status") {
+        const profile = deps.getCloudRelayProfile?.() ?? null
+        if (!profile) {
+          deps.flashFooter("cloud relay is not configured", "info")
+          return
+        }
+        deps.appendNotice(
+          [
+            "cloud relay profile",
+            `api=${profile.apiUrl}`,
+            `email=${profile.email}`,
+            `account=${profile.accountSlug} (${profile.accountId})`,
+            `realm=${profile.realmId}`,
+            `relay=${profile.relayUrl}`,
+            `client=${profile.clientId ?? "-"}`,
+          ].join("\n"),
+        )
+        deps.flashFooter(`cloud relay profile ${profile.accountSlug}`, "info")
+        return
+      }
+      if (cloudCommand === "login" || cloudCommand === "bootstrap") {
+        if (!deps.bootstrapCloudRelay || !deps.saveCloudRelayProfile) {
+          deps.flashFooter("cloud relay login is unavailable in this build", "error")
+          return
+        }
+        const apiUrl = cloudArgs[0]
+        const email = cloudArgs[1]
+        const accountSlug = cloudArgs[2]
+        if (!apiUrl || !email) {
+          deps.flashFooter("usage: /relay cloud login <api-url> <email> [account-slug]", "error")
+          return
+        }
+        const profile = await deps.bootstrapCloudRelay(apiUrl, email, accountSlug)
+        await deps.saveCloudRelayProfile(profile)
+        deps.flashFooter(`cloud relay profile ${profile.accountSlug} saved`, "info")
+        return
+      }
+      if (cloudCommand === "pair") {
+        if (!deps.pairCloudRelayClient || !deps.saveCloudRelayProfile) {
+          deps.flashFooter("cloud relay client pairing is unavailable in this build", "error")
+          return
+        }
+        const profile = deps.getCloudRelayProfile?.() ?? null
+        if (!profile) {
+          deps.flashFooter("cloud relay profile missing; run /relay cloud login first", "error")
+          return
+        }
+        const alias = cloudArgs.join(" ").trim() || undefined
+        const paired = await deps.pairCloudRelayClient(
+          profile,
+          deps.clientId ?? "arroba-cli",
+          alias,
+        )
+        await deps.saveCloudRelayProfile(paired)
+        deps.flashFooter(`cloud relay client paired as ${paired.clientId ?? deps.clientId}`, "info")
+        return
+      }
+      if (cloudCommand === "connect" || cloudCommand === "refresh") {
+        if (!deps.issueCloudKernelRelayToken || !deps.saveCloudRelayProfile || !deps.getRelayStatus || !deps.configureRelay) {
+          deps.flashFooter("cloud relay connect is unavailable in this build", "error")
+          return
+        }
+        const profile = deps.getCloudRelayProfile?.() ?? null
+        if (!profile) {
+          deps.flashFooter("cloud relay profile missing; run /relay cloud login first", "error")
+          return
+        }
+        const relayStatus = await deps.getRelayStatus()
+        const issued = await deps.issueCloudKernelRelayToken(profile, relayStatus.daemon_id)
+        await deps.configureRelay(issued.relayUrl, issued.relayToken)
+        await deps.saveCloudRelayProfile({
+          ...profile,
+          tokenExpiresAtMs: issued.tokenExpiresAtMs,
+        })
+        await deps.refreshWaitingRoomData?.()
+        deps.flashFooter(`cloud relay connected: ${issued.relayUrl}`, "info")
+        return
+      }
+      if (cloudCommand === "client-token") {
+        if (!deps.issueCloudClientRelayToken || !deps.saveCloudRelayProfile) {
+          deps.flashFooter("cloud relay client tokens are unavailable in this build", "error")
+          return
+        }
+        const profile = deps.getCloudRelayProfile?.() ?? null
+        if (!profile) {
+          deps.flashFooter("cloud relay profile missing; run /relay cloud login first", "error")
+          return
+        }
+        const targetDaemonAlias = cloudArgs[0]
+        if (!targetDaemonAlias) {
+          deps.flashFooter("usage: /relay cloud client-token <target-daemon-alias>", "error")
+          return
+        }
+        const ensuredProfile = profile.clientId
+          ? profile
+          : deps.pairCloudRelayClient
+            ? await deps.pairCloudRelayClient(profile, deps.clientId ?? "arroba-cli", undefined)
+            : profile
+        if (!profile.clientId && deps.saveCloudRelayProfile) {
+          await deps.saveCloudRelayProfile(ensuredProfile)
+        }
+        const issued = await deps.issueCloudClientRelayToken(ensuredProfile, targetDaemonAlias)
+        deps.appendNotice(
+          [
+            "cloud relay client token",
+            `relay_url=${issued.relayUrl}`,
+            `expires_at_ms=${issued.tokenExpiresAtMs}`,
+            `command=arroba --relay-url ${issued.relayUrl} --relay-token ${issued.relayToken} --target-daemon-alias ${targetDaemonAlias}`,
+          ].join("\n"),
+        )
+        deps.flashFooter(`cloud relay client token minted for ${targetDaemonAlias}`, "info")
+        return
+      }
+      if (cloudCommand === "disable" || cloudCommand === "logout") {
+        if (!deps.saveCloudRelayProfile) {
+          deps.flashFooter("cloud relay profile storage is unavailable in this build", "error")
+          return
+        }
+        await deps.saveCloudRelayProfile(null)
+        deps.flashFooter("cloud relay profile cleared", "info")
+        return
+      }
+      deps.flashFooter(
+        "usage: /relay cloud status | /relay cloud login <api-url> <email> [account-slug] | /relay cloud pair [alias] | /relay cloud connect | /relay cloud client-token <target-daemon-alias> | /relay cloud disable",
+        "error",
+      )
+      return
+    }
     if (!subcommand || subcommand === "status") {
       if (!deps.getRelayStatus) {
         deps.flashFooter("relay status is unavailable in this build", "error")

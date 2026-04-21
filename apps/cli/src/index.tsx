@@ -145,11 +145,19 @@ import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
 import { evaluateConnectionHealth, runPollingLoop } from "./polling-effects.js"
 import {
+  bootstrapCloudRelayProfile,
+  issueCloudRelayToken,
+  pairCloudRelayClient,
+} from "./cloud-relay.js"
+import {
   loadPreferences,
   mergeSessionPromptState,
+  mergeRelayCloudProfile,
   mergeUiPreferences,
+  relayCloudProfile,
   resolveMaxAgentsPerScreen,
   saveProviderPreferences,
+  saveRelayCloudProfile,
   saveSessionPromptState,
   sessionPromptDraftEntry,
   saveUiPreferences,
@@ -5358,6 +5366,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     workspace: options.workspace ?? process.cwd(),
     worktree: options.worktree ?? options.workspace ?? process.cwd(),
     accountProfile: options.accountProfile,
+    clientId: options.clientId,
     isAttached,
     sessionState,
     attachmentState,
@@ -5386,6 +5395,35 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     logoutProvider: (provider) => logoutProvider(client, provider),
     getRelayStatus: () => getRelayStatus(client),
     configureRelay: (relayUrl, relayToken) => configureRelay(client, relayUrl, relayToken),
+    getCloudRelayProfile: () => relayCloudProfile(preferencesState()),
+    saveCloudRelayProfile: async (profile) => {
+      await saveRelayCloudProfile(profile)
+      setPreferencesState((current) => mergeRelayCloudProfile(current, profile))
+    },
+    bootstrapCloudRelay: (apiUrl, email, accountSlug) =>
+      bootstrapCloudRelayProfile({
+        apiUrl,
+        email,
+        ...(accountSlug ? { accountSlug } : {}),
+      }),
+    pairCloudRelayClient: (profile, clientId, alias) =>
+      pairCloudRelayClient(profile, clientId, alias),
+    issueCloudKernelRelayToken: (profile, daemonId) =>
+      issueCloudRelayToken({
+        profile,
+        subject: daemonId,
+        subjectKind: "kernel",
+        userId: profile.userId,
+      }),
+    issueCloudClientRelayToken: (profile, targetDaemonAlias) =>
+      issueCloudRelayToken({
+        profile,
+        subject: profile.clientId ?? options.clientId,
+        subjectKind: "client",
+        userId: profile.userId,
+        clientId: profile.clientId ?? options.clientId,
+        allowedTargets: [targetDaemonAlias],
+      }),
     getUserConfig: () => getUserConfig(client),
     setUserConfigValue: (path, value) => setUserConfigValue(client, path, value),
     unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),

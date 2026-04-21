@@ -6,10 +6,13 @@ import test from "node:test"
 
 import {
   loadPreferences,
+  mergeRelayCloudProfile,
   mergeSessionPromptState,
   mergeSessionPromptHistory,
   mergeUiPreferences,
   preferencesPath,
+  relayCloudProfile,
+  saveRelayCloudProfile,
   saveSessionPromptState,
   sessionPromptDraftEntry,
   sessionPromptHistoryEntries,
@@ -141,6 +144,30 @@ test("sessionPromptDraftEntry returns normalized draft text for one session", ()
   assert.equal(sessionPromptDraftEntry(current, "missing"), "")
 })
 
+test("mergeRelayCloudProfile stores and clears the cloud relay profile", () => {
+  const current: ArrobaPreferences = {
+    providers: {
+      opencode: {
+        model: "openai/gpt-5",
+      },
+    },
+  }
+
+  const merged = mergeRelayCloudProfile(current, {
+    apiUrl: "https://cloud.example",
+    email: "user@example.com",
+    accountId: "account-1",
+    userId: "user-1",
+    accountSlug: "user",
+    realmId: "realm-1",
+    relayUrl: "wss://relay.example",
+    issuerId: "issuer-1",
+    clientId: "client-1",
+  })
+  assert.equal(relayCloudProfile(merged)?.clientId, "client-1")
+  assert.equal(relayCloudProfile(mergeRelayCloudProfile(merged, null)), null)
+})
+
 test("saveSessionPromptState preserves prompt history across queued draft-only writes", async () => {
   const previousConfigHome = process.env.XDG_CONFIG_HOME
   const tempConfigHome = await mkdtemp(path.join(os.tmpdir(), "arroba-preferences-"))
@@ -161,6 +188,36 @@ test("saveSessionPromptState preserves prompt history across queued draft-only w
     assert.equal(preferencesPath(), path.join(tempConfigHome, "arroba", "config.json"))
     assert.deepEqual(sessionPromptHistoryEntries(current, "session-1"), ["prompt 1", "prompt 2"])
     assert.equal(sessionPromptDraftEntry(current, "session-1"), "draft prompt")
+  } finally {
+    if (previousConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME
+    } else {
+      process.env.XDG_CONFIG_HOME = previousConfigHome
+    }
+    await rm(tempConfigHome, { recursive: true, force: true })
+  }
+})
+
+test("saveRelayCloudProfile persists the configured cloud relay profile", async () => {
+  const previousConfigHome = process.env.XDG_CONFIG_HOME
+  const tempConfigHome = await mkdtemp(path.join(os.tmpdir(), "arroba-preferences-"))
+  process.env.XDG_CONFIG_HOME = tempConfigHome
+
+  try {
+    await saveRelayCloudProfile({
+      apiUrl: "https://cloud.example",
+      email: "user@example.com",
+      accountId: "account-1",
+      userId: "user-1",
+      accountSlug: "user",
+      realmId: "realm-1",
+      relayUrl: "wss://relay.example",
+      issuerId: "issuer-1",
+      clientId: "client-1",
+    })
+
+    const current = await loadPreferences()
+    assert.equal(relayCloudProfile(current)?.relayUrl, "wss://relay.example")
   } finally {
     if (previousConfigHome === undefined) {
       delete process.env.XDG_CONFIG_HOME

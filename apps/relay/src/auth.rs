@@ -220,9 +220,23 @@ impl ScopedTokenVerifier {
     }
 
     fn verify_signed_token(&self, token: &str) -> Result<RelayTokenClaims, RelayAuthError> {
-        let signed = decode_scoped_token_parts(token)?;
-        let claims = serde_json::from_slice::<RelayTokenClaims>(&signed.claims_payload)
-            .map_err(|_| RelayAuthError::InvalidToken)?;
+        if let Ok(signed) = decode_scoped_token_parts(token) {
+            let claims = serde_json::from_slice::<RelayTokenClaims>(&signed.claims_payload)
+                .map_err(|_| RelayAuthError::InvalidToken)?;
+            let secret = self
+                .issuer_secrets
+                .get(&claims.issuer)
+                .ok_or(RelayAuthError::InvalidToken)?;
+            verify_hmac_signature(
+                secret.as_bytes(),
+                signed.signing_input.as_bytes(),
+                &signed.signature,
+            )?;
+            return Ok(claims);
+        }
+
+        let signed = decode_jwt_hmac_token_parts(token)?;
+        let claims = parse_cloud_jwt_claims(&signed.claims_payload)?;
         let secret = self
             .issuer_secrets
             .get(&claims.issuer)
@@ -255,6 +269,43 @@ struct DecodedScopedToken {
     signature: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct JwtHeader {
+    alg: String,
+    #[serde(default)]
+    typ: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CloudJwtClaims {
+    iss: String,
+    sub: String,
+    subject_kind: RelaySubjectKind,
+    realm_id: RelayRealmId,
+    allowed_actions: Vec<String>,
+    #[serde(default)]
+    allowed_targets: Option<Vec<String>>,
+    iat: u64,
+    exp: u64,
+    jti: String,
+    #[serde(default)]
+    account_id: Option<String>,
+    #[serde(default)]
+    organization_id: Option<String>,
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    device_id: Option<String>,
+    #[serde(default)]
+    machine_id: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    public_key_thumbprint: Option<String>,
+    #[serde(default)]
+    entitlements_version: Option<String>,
+}
+
 fn decode_scoped_token_parts(token: &str) -> Result<DecodedScopedToken, RelayAuthError> {
     let mut parts = token.trim().split('.');
     let Some(prefix) = parts.next() else {
@@ -280,6 +331,82 @@ fn decode_scoped_token_parts(token: &str) -> Result<DecodedScopedToken, RelayAut
         claims_payload,
         signature,
     })
+}
+
+fn decode_jwt_hmac_token_parts(token: &str) -> Result<DecodedScopedToken, RelayAuthError> {
+    let mut parts = token.trim().split('.');
+    let Some(header_b64) = parts.next() else {
+        return Err(RelayAuthError::InvalidToken);
+    };
+    let Some(claims_b64) = parts.next() else {
+        return Err(RelayAuthError::InvalidToken);
+    };
+    let Some(signature_b64) = parts.next() else {
+        return Err(RelayAuthError::InvalidToken);
+    };
+    if parts.next().is_some() {
+        return Err(RelayAuthError::InvalidToken);
+    }
+    let header_payload = URL_SAFE_NO_PAD
+        .decode(header_b64)
+        .map_err(|_| RelayAuthError::InvalidToken)?;
+    let header = serde_json::from_slice::<JwtHeader>(&header_payload)
+        .map_err(|_| RelayAuthError::InvalidToken)?;
+    if header.alg != "HS256" || header.typ.as_deref().unwrap_or("JWT") != "JWT" {
+        return Err(RelayAuthError::InvalidToken);
+    }
+    let claims_payload = URL_SAFE_NO_PAD
+        .decode(claims_b64)
+        .map_err(|_| RelayAuthError::InvalidToken)?;
+    let signature = URL_SAFE_NO_PAD
+        .decode(signature_b64)
+        .map_err(|_| RelayAuthError::InvalidToken)?;
+    Ok(DecodedScopedToken {
+        signing_input: format!("{header_b64}.{claims_b64}"),
+        claims_payload,
+        signature,
+    })
+}
+
+fn parse_cloud_jwt_claims(payload: &[u8]) -> Result<RelayTokenClaims, RelayAuthError> {
+    let claims =
+        serde_json::from_slice::<CloudJwtClaims>(payload).map_err(|_| RelayAuthError::InvalidToken)?;
+    Ok(RelayTokenClaims {
+        issuer: claims.iss,
+        subject: claims.sub,
+        subject_kind: claims.subject_kind,
+        realm_id: claims.realm_id,
+        allowed_actions: claims
+            .allowed_actions
+            .into_iter()
+            .map(parse_cloud_action)
+            .collect::<Result<Vec<_>, _>>()?,
+        allowed_targets: claims.allowed_targets,
+        issued_at_ms: claims.iat.saturating_mul(1000),
+        expires_at_ms: claims.exp.saturating_mul(1000),
+        token_id: claims.jti,
+        account_id: claims.account_id,
+        organization_id: claims.organization_id,
+        user_id: claims.user_id,
+        device_id: claims.device_id,
+        machine_id: claims.machine_id,
+        client_id: claims.client_id,
+        public_key_thumbprint: claims.public_key_thumbprint,
+        entitlements_version: claims.entitlements_version,
+    })
+}
+
+fn parse_cloud_action(action: String) -> Result<RelayAction, RelayAuthError> {
+    match action.as_str() {
+        "daemon.register" => Ok(RelayAction::DaemonRegister),
+        "daemon.heartbeat" => Ok(RelayAction::DaemonHeartbeat),
+        "client.metadata.read" => Ok(RelayAction::ClientMetadataRead),
+        "client.connect" => Ok(RelayAction::ClientConnect),
+        "packet.route" => Ok(RelayAction::PacketRoute),
+        "peer.request" => Ok(RelayAction::PeerRequest),
+        "peer.event" => Ok(RelayAction::PeerEvent),
+        _ => Err(RelayAuthError::InvalidToken),
+    }
 }
 
 fn validate_claims(
@@ -608,6 +735,99 @@ mod tests {
                     target: None,
                 })
                 .expect_err("unknown issuer should fail"),
+            RelayAuthError::InvalidToken
+        );
+    }
+
+    #[test]
+    fn scoped_hmac_verifier_accepts_cloud_jwt_tokens() {
+        let header = serde_json::json!({
+            "alg": "HS256",
+            "typ": "JWT",
+        });
+        let claims = serde_json::json!({
+            "iss": "arroba-cloud-test",
+            "sub": "client-1",
+            "subject_kind": "client",
+            "realm_id": "realm-1",
+            "allowed_actions": ["client.connect", "client.metadata.read", "packet.route"],
+            "allowed_targets": ["daemon-1"],
+            "iat": 10,
+            "exp": 20,
+            "jti": "token-1",
+            "account_id": "account-1",
+            "client_id": "client-1",
+            "public_key_thumbprint": "thumbprint",
+        });
+        let header_b64 = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&header).expect("jwt header should serialize"),
+        );
+        let claims_b64 = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&claims).expect("jwt claims should serialize"),
+        );
+        let signing_input = format!("{header_b64}.{claims_b64}");
+        let signature =
+            URL_SAFE_NO_PAD.encode(sign_hmac(b"issuer-secret", signing_input.as_bytes()).unwrap());
+        let token = format!("{signing_input}.{signature}");
+        let verifier = RelayAuthVerifier::scoped_hmac(
+            BTreeMap::from([("arroba-cloud-test".to_string(), "issuer-secret".to_string())]),
+            Some(15_000),
+        );
+
+        let identity = verifier
+            .verify(RelayAuthRequest {
+                token: &token,
+                action: RelayAction::ClientConnect,
+                target: Some("daemon-1"),
+            })
+            .expect("jwt cloud token should verify");
+
+        assert_eq!(identity.realm_id, "realm-1");
+        assert_eq!(identity.subject, "client-1");
+        assert_eq!(identity.subject_kind, RelaySubjectKind::Client);
+        assert_eq!(identity.token_id.as_deref(), Some("token-1"));
+        assert_eq!(identity.public_key_thumbprint.as_deref(), Some("thumbprint"));
+    }
+
+    #[test]
+    fn scoped_hmac_verifier_rejects_cloud_jwt_tokens_with_unknown_actions() {
+        let header = serde_json::json!({
+            "alg": "HS256",
+            "typ": "JWT",
+        });
+        let claims = serde_json::json!({
+            "iss": "arroba-cloud-test",
+            "sub": "client-1",
+            "subject_kind": "client",
+            "realm_id": "realm-1",
+            "allowed_actions": ["client.connect", "workflow.run"],
+            "iat": 10,
+            "exp": 20,
+            "jti": "token-1",
+        });
+        let header_b64 = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&header).expect("jwt header should serialize"),
+        );
+        let claims_b64 = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&claims).expect("jwt claims should serialize"),
+        );
+        let signing_input = format!("{header_b64}.{claims_b64}");
+        let signature =
+            URL_SAFE_NO_PAD.encode(sign_hmac(b"issuer-secret", signing_input.as_bytes()).unwrap());
+        let token = format!("{signing_input}.{signature}");
+        let verifier = RelayAuthVerifier::scoped_hmac(
+            BTreeMap::from([("arroba-cloud-test".to_string(), "issuer-secret".to_string())]),
+            Some(15_000),
+        );
+
+        assert_eq!(
+            verifier
+                .verify(RelayAuthRequest {
+                    token: &token,
+                    action: RelayAction::ClientConnect,
+                    target: None,
+                })
+                .expect_err("unknown cloud action should fail"),
             RelayAuthError::InvalidToken
         );
     }
