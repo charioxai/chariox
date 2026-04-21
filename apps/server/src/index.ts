@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { createHmac, timingSafeEqual } from "node:crypto"
+import { createHmac, createPublicKey, timingSafeEqual, verify as verifySignature } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import process from "node:process"
@@ -573,8 +573,11 @@ function handleConnectorHandshake(
 ): { handled: true; payload: unknown } | { handled: false } {
   const connectors = publication.auth?.mode === "arroba" ? publication.auth.connectors ?? [] : []
   for (const connector of connectors) {
-    if (connector.kind !== "slack") continue
-    const response = handleSlackHandshake(request, connector, reply)
+    const response = connector.kind === "slack"
+      ? handleSlackHandshake(request, connector, reply)
+      : connector.kind === "discord"
+        ? handleDiscordHandshake(request, connector, reply)
+        : { handled: false as const }
     if (response.handled) return response
   }
   return { handled: false }
@@ -599,15 +602,57 @@ function handleSlackHandshake(
   return { handled: true, payload: body.challenge }
 }
 
+function handleDiscordHandshake(
+  request: GatewayRequest,
+  connector: Extract<ConnectorConfig, { kind: "discord" }>,
+  reply: { code: (code: number) => unknown; headers: (headers: Record<string, string>) => unknown },
+): { handled: true; payload: unknown } | { handled: false } {
+  const body = objectBody(request.body)
+  if (body.type !== 1) {
+    return { handled: false }
+  }
+  if (connector.public_key_env && !verifyDiscordSignature(request, readRequiredEnv(connector.public_key_env))) {
+    reply.code(401)
+    reply.headers({ "content-type": "application/json" })
+    return { handled: true, payload: { error: "invalid discord signature" } }
+  }
+  reply.code(200)
+  reply.headers({ "content-type": "application/json" })
+  return { handled: true, payload: { type: 1 } }
+}
+
 function verifySingleConnectorIdentity(request: GatewayRequest, connector: ConnectorConfig): VerifiedExternalIdentity | null {
   if (connector.kind === "http") {
     return connector.principal ? { connector: "http", external_id: connector.principal.id } : null
   }
   if (connector.kind === "telegram") return verifyTelegramIdentity(request, connector)
   if (connector.kind === "slack") return verifySlackIdentity(request, connector)
-  if (connector.kind === "discord") return verifyHeaderIdentity(request, connector.kind)
+  if (connector.kind === "discord") return verifyDiscordIdentity(request, connector)
   if (connector.kind === "whatsapp") return verifyHeaderIdentity(request, connector.kind)
   return verifyHeaderIdentity(request, connector.kind)
+}
+
+function verifyDiscordIdentity(request: GatewayRequest, connector: Extract<ConnectorConfig, { kind: "discord" }>): VerifiedExternalIdentity | null {
+  if (connector.public_key_env) {
+    const publicKeyHex = readRequiredEnv(connector.public_key_env)
+    if (!verifyDiscordSignature(request, publicKeyHex)) return null
+  }
+  const body = objectBody(request.body)
+  const member = body.member as Record<string, unknown> | undefined
+  const user = (member?.user as Record<string, unknown> | undefined)
+    ?? (body.user as Record<string, unknown> | undefined)
+  const userId = String(user?.id ?? "")
+  if (!userId) return null
+  const guildId = String(body.guild_id ?? "")
+  return {
+    connector: "discord",
+    external_id: guildId ? `${guildId}:${userId}` : userId,
+    metadata: {
+      guild_id: guildId || undefined,
+      user_id: userId,
+      username: user?.username,
+    },
+  }
 }
 
 function verifyTelegramIdentity(request: GatewayRequest, connector: Extract<ConnectorConfig, { kind: "telegram" }>): VerifiedExternalIdentity | null {
@@ -716,6 +761,31 @@ function verifySlackSignature(request: GatewayRequest, signingSecret: string) {
   const base = `v0:${timestamp}:${rawBody}`
   const expected = `v0=${createHmac("sha256", signingSecret).update(base).digest("hex")}`
   return safeEqualString(signature, expected)
+}
+
+function verifyDiscordSignature(request: GatewayRequest, publicKeyHex: string) {
+  const timestamp = headerValue(request, "x-signature-timestamp")
+  const signatureHex = headerValue(request, "x-signature-ed25519")
+  const rawBody = rawRequestBody(request)
+  if (!timestamp || !signatureHex || rawBody === undefined) return false
+  try {
+    const publicKey = createPublicKey({
+      key: Buffer.concat([
+        Buffer.from("302a300506032b6570032100", "hex"),
+        Buffer.from(publicKeyHex, "hex"),
+      ]),
+      format: "der",
+      type: "spki",
+    })
+    return verifySignature(
+      null,
+      Buffer.from(`${timestamp}${rawBody}`),
+      publicKey,
+      Buffer.from(signatureHex, "hex"),
+    )
+  } catch {
+    return false
+  }
 }
 
 function rawRequestBody(request: GatewayRequest) {

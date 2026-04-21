@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { createHmac } from 'node:crypto'
+import { createHmac, generateKeyPairSync, sign } from 'node:crypto'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -48,6 +48,20 @@ function slackHeaders(secret, body, contentType = 'application/json') {
     'x-slack-request-timestamp': timestamp,
     'x-slack-signature': `v0=${createHmac('sha256', secret).update(`v0:${timestamp}:${body}`).digest('hex')}`,
   }
+}
+
+function discordHeaders(privateKey, body, options = {}) {
+  const timestamp = String(Math.floor(Date.now() / 1000))
+  const signature = sign(null, Buffer.from(`${timestamp}${body}`), privateKey).toString('hex')
+  return {
+    'content-type': 'application/json',
+    'x-signature-timestamp': timestamp,
+    'x-signature-ed25519': options.tamperSignature ? `00${signature.slice(2)}` : signature,
+  }
+}
+
+function discordPublicKeyHex(publicKey) {
+  return publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex')
 }
 
 async function run(command, args, options = {}) {
@@ -522,6 +536,84 @@ async function main() {
     const telegramBody = await telegramResponse.json()
     if (telegramResponse.status !== 202 || !telegramBody.workflow_run?.id) {
       throw new Error(`expected Telegram connector HTTP 202, got ${telegramResponse.status}: ${JSON.stringify(telegramBody)}`)
+    }
+    await stopProcess(gateway)
+    gateway = null
+
+    logStep('create_discord_publication')
+    const discordKeyPair = generateKeyPairSync('ed25519')
+    const discordPublication = variant(
+      await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {
+        alias: 'discord_connector',
+        route: '/discord/*',
+        methods: ['POST'],
+        auth: {
+          mode: 'arroba',
+          connectors: [{ kind: 'discord', public_key_env: 'ARROBA_PUBLICATION_DRILL_DISCORD_PUBLIC_KEY' }],
+          external_identities: [{
+            connector: 'discord',
+            external_id: 'guild-pub:user-pub',
+            principal: { id: 'publication-drill-discord-user', type: 'user', allowed_connectors: ['discord'] },
+          }],
+        },
+        parser: { kind: 'webhook' },
+        mode: 'async',
+      })),
+      'WorkflowPublicationCreated',
+    ).publication
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: session.id,
+        ARROBA_PUBLICATION_ID: discordPublication.id,
+        ARROBA_PUBLICATION_DRILL_DISCORD_PUBLIC_KEY: discordPublicKeyHex(discordKeyPair.publicKey),
+      },
+      'gateway-discord',
+    )
+    await waitForGateway(gatewayUrl)
+
+    logStep('discord_ping')
+    const discordPingPayload = JSON.stringify({ type: 1 })
+    const discordPing = await fetch(`${gatewayUrl}/discord/interactions`, {
+      method: 'POST',
+      headers: discordHeaders(discordKeyPair.privateKey, discordPingPayload),
+      body: discordPingPayload,
+    })
+    const discordPingBody = await discordPing.json()
+    if (discordPing.status !== 200 || discordPingBody.type !== 1) {
+      throw new Error(`expected Discord ping response, got ${discordPing.status}: ${JSON.stringify(discordPingBody)}`)
+    }
+
+    logStep('discord_signature_reject')
+    const discordPayload = JSON.stringify({
+      type: 2,
+      guild_id: 'guild-pub',
+      member: { user: { id: 'user-pub', username: 'publication_drill' } },
+      data: { name: 'arroba', options: [{ name: 'prompt', value: 'ship-publication' }] },
+    })
+    const discordRejected = await fetch(`${gatewayUrl}/discord/interactions`, {
+      method: 'POST',
+      headers: discordHeaders(discordKeyPair.privateKey, discordPayload, { tamperSignature: true }),
+      body: discordPayload,
+    })
+    if (discordRejected.status !== 401) {
+      throw new Error(`expected Discord connector HTTP 401, got ${discordRejected.status}: ${await discordRejected.text()}`)
+    }
+
+    logStep('discord_signed_invoke')
+    const discordResponse = await fetch(`${gatewayUrl}/discord/interactions`, {
+      method: 'POST',
+      headers: discordHeaders(discordKeyPair.privateKey, discordPayload),
+      body: discordPayload,
+    })
+    const discordBody = await discordResponse.json()
+    if (discordResponse.status !== 202 || !discordBody.workflow_run?.id) {
+      throw new Error(`expected Discord connector HTTP 202, got ${discordResponse.status}: ${JSON.stringify(discordBody)}`)
     }
     await stopProcess(gateway)
     gateway = null

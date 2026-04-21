@@ -396,6 +396,35 @@ Implementation status:
   verifies invalid webhook-secret rejection, and invokes the workflow through an
   accepted Telegram webhook payload.
 
+## M9.14 Discord Connector
+
+Discord is implemented as a connector-specific ingress path on the publication
+gateway, feeding the same Arroba auth model as HTTP, Slack, and Telegram.
+
+V1 behavior:
+
+- verifies `x-signature-ed25519` and `x-signature-timestamp` with the
+  configured Discord public key
+- signs/verifies the Discord-required `timestamp + raw_body` payload
+- handles signed PING interactions (`type: 1`) directly without invoking the
+  workflow
+- rejects invalid signatures
+- extracts sender identity from `member.user.id` or `user.id`
+- normalizes Discord identity as `guild_id:user_id` when a guild is present,
+  otherwise as the user id string, and maps it to an Arroba principal through
+  `auth.external_identities`
+- forwards the Discord interaction envelope through the existing `webhook`
+  parser
+
+Implementation status:
+
+- Unit coverage verifies signed PING handling without workflow invocation,
+  invalid signature rejection, accepted interaction sender mapping, username
+  metadata, and guild/user metadata.
+- The publication live drill now creates a Discord-shaped publication with a
+  generated Ed25519 key pair, verifies PING handling, invalid signature
+  rejection, and accepted signed interaction invocation.
+
 ## V2
 
 - Dedicated workflow-to-workflow invocation protocol with signed caller identity, reply routing, status/result URLs, and optional streaming.

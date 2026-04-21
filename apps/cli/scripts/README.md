@@ -93,6 +93,7 @@ restarts the gateway with self-signed HTTPS/TLS and invokes it again, exports it
 `workflow publication export`, starts the gateway from the exported
 `publication.config.json`, validates signed Slack URL verification and signed
 Slack slash-command invocation, validates Telegram webhook-secret rejection and
+accepted invocation, validates Discord Ed25519 ping, signature rejection, and
 accepted invocation, then validates paired sender
 reject/redeem/invoke/revoke/reject behavior.
 

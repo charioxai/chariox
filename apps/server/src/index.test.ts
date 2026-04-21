@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { createHmac } from "node:crypto"
+import { createHmac, generateKeyPairSync, sign, type KeyObject } from "node:crypto"
 import test from "node:test"
 
 import {
@@ -502,6 +502,82 @@ test("telegram connector verifies webhook secret and maps sender identity", asyn
   }
 })
 
+test("discord connector verifies Ed25519 signatures, handles ping, and maps interaction identity", async () => {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519")
+  process.env.GATEWAY_TEST_DISCORD_PUBLIC_KEY = discordPublicKeyHex(publicKey)
+  const callers: unknown[] = []
+  const { app } = buildServer({
+    ...baseConfig,
+    methods: ["POST"],
+    auth: {
+      mode: "arroba",
+      connectors: [{ kind: "discord", public_key_env: "GATEWAY_TEST_DISCORD_PUBLIC_KEY" }],
+      external_identities: [{
+        connector: "discord",
+        external_id: "guild-1:user-1",
+        principal: { id: "user-discord", type: "user", allowed_connectors: ["discord"] },
+      }],
+    },
+    parser: { kind: "webhook" },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      callers.push(invocation.caller)
+      return { accepted: true, workflow_run: { id: "run-1", status: "Running" } }
+    },
+  })
+
+  try {
+    const pingPayload = JSON.stringify({ type: 1 })
+    const ping = await app.inject({
+      method: "POST",
+      url: "/discord/interactions",
+      headers: discordHeaders(privateKey, pingPayload),
+      payload: pingPayload,
+    })
+    assert.equal(ping.statusCode, 200)
+    assert.deepEqual(ping.json(), { type: 1 })
+    assert.equal(callers.length, 0)
+
+    const interactionPayload = JSON.stringify({
+      type: 2,
+      guild_id: "guild-1",
+      member: { user: { id: "user-1", username: "miguel" } },
+      data: { name: "arroba", options: [{ name: "prompt", value: "ship it" }] },
+    })
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/discord/interactions",
+      headers: discordHeaders(privateKey, interactionPayload, { tamperSignature: true }),
+      payload: interactionPayload,
+    })
+    assert.equal(rejected.statusCode, 401)
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/discord/interactions",
+      headers: discordHeaders(privateKey, interactionPayload),
+      payload: interactionPayload,
+    })
+    assert.equal(accepted.statusCode, 202)
+    assert.deepEqual(callers[0], {
+      type: "user",
+      principal_id: "user-discord",
+      teams: [],
+      display_name: undefined,
+      allowed_connectors: ["discord"],
+      proof: {
+        auth: "connector",
+        connector: "discord",
+        external_id: "guild-1:user-1",
+        metadata: { guild_id: "guild-1", user_id: "user-1", username: "miguel" },
+      },
+    })
+  } finally {
+    await app.close()
+    delete process.env.GATEWAY_TEST_DISCORD_PUBLIC_KEY
+  }
+})
+
 function slackHeaders(secret: string, body: string, contentType = "application/json") {
   const timestamp = String(Math.floor(Date.now() / 1000))
   return {
@@ -511,15 +587,34 @@ function slackHeaders(secret: string, body: string, contentType = "application/j
   }
 }
 
-test("arroba auth rejects linked principals through disallowed connectors", async () => {
+function discordHeaders(
+  privateKey: KeyObject,
+  body: string,
+  options: { tamperSignature?: boolean } = {},
+) {
+  const timestamp = String(Math.floor(Date.now() / 1000))
+  const signature = sign(null, Buffer.from(`${timestamp}${body}`), privateKey).toString("hex")
+  return {
+    "content-type": "application/json",
+    "x-signature-timestamp": timestamp,
+    "x-signature-ed25519": options.tamperSignature ? `00${signature.slice(2)}` : signature,
+  }
+}
+
+function discordPublicKeyHex(publicKey: KeyObject) {
+  const der = publicKey.export({ format: "der", type: "spki" }) as Buffer
+  return der.subarray(-32).toString("hex")
+}
+
+test("arroba auth rejects linked principals through disallowed header-based connectors", async () => {
   const { app } = buildServer({
     ...baseConfig,
     auth: {
       mode: "arroba",
-      connectors: [{ kind: "discord" }],
+      connectors: [{ kind: "whatsapp" }],
       external_identities: [{
-        connector: "discord",
-        external_id: "guild-1:user-1",
+        connector: "whatsapp",
+        external_id: "phone-1",
         principal: {
           id: "user-1",
           type: "user",
@@ -534,12 +629,12 @@ test("arroba auth rejects linked principals through disallowed connectors", asyn
   try {
     const response = await app.inject({
       method: "POST",
-      url: "/discord",
-      headers: { "x-arroba-discord-identity": "guild-1:user-1" },
+      url: "/whatsapp",
+      headers: { "x-arroba-whatsapp-identity": "phone-1" },
       payload: { content: "hello" },
     })
     assert.equal(response.statusCode, 401)
-    assert.deepEqual(response.json(), { error: "principal is not allowed through discord" })
+    assert.deepEqual(response.json(), { error: "principal is not allowed through whatsapp" })
   } finally {
     await app.close()
   }
