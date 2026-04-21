@@ -249,6 +249,7 @@ type CommandActionDeps = {
   issueCloudClientRelayToken?: (
     profile: RelayCloudProfile,
     targetDaemonAlias: string,
+    options?: { sessionId?: string | null },
   ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; profile?: RelayCloudProfile }>
   createCloudSessionInvite?: (
     sessionId: string,
@@ -1718,7 +1719,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         const targetDaemonAlias = cloudArgs[0]
         if (!targetDaemonAlias) {
-          deps.flashFooter("usage: /relay cloud client-token <target-daemon-alias>", "error")
+          deps.flashFooter("usage: /relay cloud client-token <target-daemon-alias> [session-id]", "error")
           return
         }
         const ensuredProfile = profile.clientId
@@ -1729,7 +1730,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         if (!profile.clientId && deps.saveCloudRelayProfile) {
           await deps.saveCloudRelayProfile(ensuredProfile)
         }
-        const issued = await deps.issueCloudClientRelayToken(ensuredProfile, targetDaemonAlias)
+        const sessionId = cloudArgs[1] ?? deps.sessionState().id ?? null
+        const issued = await deps.issueCloudClientRelayToken(ensuredProfile, targetDaemonAlias, { sessionId })
         if (issued.profile && deps.saveCloudRelayProfile) {
           await deps.saveCloudRelayProfile(issued.profile)
         }
@@ -1738,6 +1740,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
             "cloud relay client token",
             `relay_url=${issued.relayUrl}`,
             `expires_at_ms=${issued.tokenExpiresAtMs}`,
+            ...(sessionId ? [`session_id=${sessionId}`] : []),
             `command=arroba --relay-url ${issued.relayUrl} --relay-token ${issued.relayToken} --target-daemon-alias ${targetDaemonAlias}`,
           ].join("\n"),
         )
@@ -1763,7 +1766,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       deps.flashFooter(
-        "usage: /relay cloud status | /relay cloud login <api-url> <email> [account-slug] | /relay cloud pair [alias] | /relay cloud pair-machine [machine-id] [alias] | /relay cloud connect | /relay cloud client-token <target-daemon-alias> | /relay cloud disable",
+        "usage: /relay cloud status | /relay cloud login <api-url> <email> [account-slug] | /relay cloud pair [alias] | /relay cloud pair-machine [machine-id] [alias] | /relay cloud connect | /relay cloud client-token <target-daemon-alias> [session-id] | /relay cloud disable",
         "error",
       )
       return

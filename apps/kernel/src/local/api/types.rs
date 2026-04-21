@@ -331,6 +331,8 @@ pub struct ConnectCloudRelayRequest;
 pub struct IssueCloudRelayClientTokenRequest {
     pub target_daemon_alias: String,
     pub client_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -823,11 +823,12 @@ export function connectCloudRelayRequest() {
   return { ConnectCloudRelay: null }
 }
 
-export function issueCloudRelayClientTokenRequest(targetDaemonAlias: string, clientId: string) {
+export function issueCloudRelayClientTokenRequest(targetDaemonAlias: string, clientId: string, sessionId?: string | null) {
   return {
     IssueCloudRelayClientToken: {
       target_daemon_alias: targetDaemonAlias,
       client_id: clientId,
+      session_id: sessionId ?? null,
     },
   }
 }

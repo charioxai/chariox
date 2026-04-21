@@ -120,7 +120,8 @@ The CLI should keep browser-first behavior where useful:
   - `cloud collaborators`
   - `cloud status`
 - The first bridge uses a paired cloud invite token plus the existing local kernel session invite token. This keeps kernel authorization unchanged while allowing cloud acceptance to establish cloud membership and collaborator history.
-- Not yet closed: hosted relay admission is not yet scoped by cloud session membership, and the full two-cloud-user hosted relay workflow drill has not run.
+- Hosted relay token issuance now requires an active cloud session token. Session-scoped client tokens require accepted cloud shared-session membership and bind the relay subject to the logged-in cloud session's client id.
+- The live cloud relay drill now covers two cloud users: the second user accepts the cloud invite, receives a session-scoped hosted relay token, joins the kernel session through the relay with the paired local invite, and appears in kernel session membership.
 
 ## Data Model
 
@@ -151,7 +152,7 @@ The kernel needs persisted or projected fields for:
 
 Required before closing M5.7:
 
-- two cloud users accept one session invite and join through hosted relay
+- two cloud users accept one session invite and join through hosted relay: **covered by `pnpm --filter @arroba/cli run cloud-relay:drill`**
 - user B cannot see user A's freeform providers or agents
 - user B can see user A's public workflow node label
 - user B can add an edge involving one of B's own nodes and user A's node
@@ -165,10 +166,10 @@ Required before closing M5.7:
 
 M5.7 is complete when:
 
-- cloud-backed session invites work through browser and terminal fallback: **partially implemented** through generated invite URLs and terminal token fallback; the browser acceptance page remains in cloud/web work.
-- accepted invites produce cloud session membership usable by the kernel: **partially implemented**; cloud acceptance returns the cloud user id and the CLI/shell use it to join the local kernel invite when the local token is present.
-- hosted relay admission is scoped to cloud session membership: **open**.
+- cloud-backed session invites work through browser and terminal fallback: **implemented for CLI/kernel flows** through generated invite URLs and terminal token fallback; the hosted web acceptance page remains cloud/web product work.
+- accepted invites produce cloud session membership usable by the kernel: **implemented**; cloud acceptance returns the cloud user id and session membership, and CLI/shell paths can join the local kernel invite when the local token is present.
+- hosted relay admission is scoped to cloud session membership: **implemented at token issuance**; Cloud only mints session-scoped client relay tokens for accepted shared-session members.
 - CLI and shell expose invite/member/collaborator commands: **implemented**.
 - collaborator history is persisted and visible as suggestions only: **implemented at API/command level**.
-- live two-user hosted relay drill passes
-- M6.5 kernel authorization and redaction rules remain unchanged and covered
+- live two-user hosted relay drill passes: **implemented**
+- M6.5 kernel authorization and redaction rules remain unchanged and covered by the existing M6.5 drills; a future hardening drill should run those same assertions through cloud-issued session-scoped relay tokens.

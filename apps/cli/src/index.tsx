@@ -5487,8 +5487,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       pairKernelCloudRelayMachine(client, machineId, alias),
     issueCloudKernelRelayToken: async () => connectKernelCloudRelay(client),
     issueCloudMachineRelayToken: async () => connectKernelCloudRelay(client),
-    issueCloudClientRelayToken: async (_profile, targetDaemonAlias) =>
-      issueKernelCloudRelayClientToken(client, targetDaemonAlias, options.clientId ?? "arroba-cli"),
+    issueCloudClientRelayToken: async (_profile, targetDaemonAlias, tokenOptions) =>
+      issueKernelCloudRelayClientToken(
+        client,
+        targetDaemonAlias,
+        options.clientId ?? "arroba-cli",
+        tokenOptions?.sessionId ?? null,
+      ),
     createCloudSessionInvite: async (sessionId, inviteOptions) => {
       const response = await client.send<Record<string, unknown>>(
         createCloudSessionInviteRequest(sessionId, inviteOptions),
@@ -8169,9 +8174,10 @@ async function issueKernelCloudRelayClientToken(
   client: LocalIpcClient,
   targetDaemonAlias: string,
   clientId: string,
+  sessionId?: string | null,
 ) {
   const response = await client.send<Record<string, unknown>>(
-    issueCloudRelayClientTokenRequest(targetDaemonAlias, clientId),
+    issueCloudRelayClientTokenRequest(targetDaemonAlias, clientId, sessionId),
   )
   const payload = expectVariant<{
     profile: KernelCloudRelayProfile

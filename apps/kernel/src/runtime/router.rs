@@ -2048,9 +2048,16 @@ impl CommandRouter {
             } else {
                 (daemon_id, "kernel", None)
             };
-        let issued =
-            issue_cloud_runtime_token(&profile, &subject, subject_kind, None, None, machine_id)
-                .await?;
+        let issued = issue_cloud_runtime_token(
+            &profile,
+            &subject,
+            subject_kind,
+            None,
+            None,
+            machine_id,
+            None,
+        )
+        .await?;
         profile.token_expires_at_ms = None;
         let saved = self.persist_cloud_profile(profile.clone()).await?;
         {
@@ -2112,6 +2119,7 @@ impl CommandRouter {
             Some(vec![request.target_daemon_alias]),
             Some(client_id.clone()),
             None,
+            request.session_id,
         )
         .await?;
         let token = CloudRelayRuntimeToken {
@@ -4926,8 +4934,15 @@ async fn issue_cloud_runtime_token(
     allowed_targets: Option<Vec<String>>,
     client_id: Option<String>,
     machine_id: Option<String>,
+    session_id: Option<String>,
 ) -> Result<CloudRuntimeTokenResponse, DaemonError> {
     let mut body = serde_json::Map::new();
+    if let Some(session_token) = profile.cloud_session_token.clone() {
+        body.insert(
+            "sessionToken".to_string(),
+            serde_json::Value::String(session_token),
+        );
+    }
     body.insert(
         "accountId".to_string(),
         serde_json::Value::String(profile.account_id.clone()),
@@ -4964,6 +4979,12 @@ async fn issue_cloud_runtime_token(
         body.insert(
             "machineId".to_string(),
             serde_json::Value::String(machine_id),
+        );
+    }
+    if let Some(session_id) = session_id {
+        body.insert(
+            "sessionId".to_string(),
+            serde_json::Value::String(session_id),
         );
     }
     post_cloud_json(

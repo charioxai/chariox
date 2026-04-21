@@ -350,9 +350,9 @@ function createMinimalCommandDeps({
       )
       return tokenFromKernel(connected.token, connected.profile)
     },
-    issueCloudClientRelayToken: async (_profile, targetDaemonAlias) => {
+    issueCloudClientRelayToken: async (_profile, targetDaemonAlias, options = {}) => {
       const issued = unwrap(
-        await localClient.send(requests.issueCloudRelayClientTokenRequest(targetDaemonAlias, clientId)),
+        await localClient.send(requests.issueCloudRelayClientTokenRequest(targetDaemonAlias, clientId, options.sessionId)),
         "CloudRelayClientTokenIssued",
       )
       return tokenFromKernel(issued.token, issued.profile)
@@ -547,6 +547,89 @@ async function main() {
       listed,
     )
 
+    log("cloud-shared-session-invite")
+    const localInvite = unwrap(
+      await remoteClient.send(requests.createSessionInviteRequest(created.session.id, null, 2)),
+      "SessionInviteCreated",
+    )
+    const cloudInvite = unwrap(
+      await localClient.send(requests.createCloudSessionInviteRequest(created.session.id, {
+        displayName: "Cloud relay shared session drill",
+        maxUses: 2,
+      })),
+      "CloudSessionInviteCreated",
+    )
+    const localInviteToken = localInvite.invite?.invite_token
+    const cloudInviteToken = cloudInvite.invite?.invite_token
+    assert(localInviteToken, "local session invite token should be returned", localInvite)
+    assert(cloudInviteToken, "cloud session invite token should be returned", cloudInvite)
+
+    log("cloud-peer-login")
+    const peerClientId = `${clientId}-peer`
+    const peerStarted = await postJson(`${apiUrl}/auth/device/start`, {
+      clientId: peerClientId,
+      clientAlias: "drill-peer-cli",
+    })
+    await postJson(`${apiUrl}/auth/device/approve`, {
+      userCode: peerStarted.userCode,
+      email: `${runId}-peer@example.com`,
+      accountSlug: `${runId}-peer`,
+    })
+    const peerPolled = await postJson(`${apiUrl}/auth/device/poll`, {
+      deviceCode: peerStarted.deviceCode,
+    })
+    assert(peerPolled.status === "approved", "peer cloud login should be approved", peerPolled)
+    const peerProfile = peerPolled.profile
+    const peerCloudSessionToken = peerPolled.cloudSessionToken
+    assert(peerProfile?.userId && peerCloudSessionToken, "peer cloud login should return profile and session", peerPolled)
+
+    log("cloud-peer-accept-invite")
+    const peerAcceptance = await postJson(`${apiUrl}/sessions/invites/${encodeURIComponent(cloudInviteToken)}/accept`, {
+      sessionToken: peerCloudSessionToken,
+    })
+    assert(peerAcceptance.userId === peerProfile.userId, "peer should accept the cloud invite as itself", peerAcceptance)
+
+    log("cloud-peer-session-scoped-token")
+    const peerRuntime = await postJson(`${apiUrl}/relay/token`, {
+      sessionToken: peerCloudSessionToken,
+      accountId: profileRef.current.accountId,
+      subject: peerClientId,
+      subjectKind: "client",
+      realmId: profileRef.current.realmId,
+      userId: peerProfile.userId,
+      clientId: peerClientId,
+      sessionId: created.session.id,
+      allowedTargets: [daemonAlias],
+    })
+    assert(peerRuntime.token, "peer session-scoped relay token should be returned", peerRuntime)
+
+    log("cloud-peer-relay-join")
+    const peerRemoteClient = new LocalIpcClient(profileRef.current.relayUrl, {
+      relayAuthToken: peerRuntime.token,
+      targetDaemonAlias: daemonAlias,
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    try {
+      await peerRemoteClient.send(requests.joinSessionInviteRequest(localInviteToken, peerProfile.userId))
+      const peerAttached = unwrap(
+        await peerRemoteClient.send(requests.attachToSessionRequest(created.session.id, `${peerClientId}-remote`)),
+        "SessionAttached",
+      )
+      assert(peerAttached.attachment?.session_id === created.session.id, "peer should attach to joined session", peerAttached)
+      const members = unwrap(
+        await peerRemoteClient.send(requests.listSessionMembersRequest(created.session.id)),
+        "SessionMembersListed",
+      )
+      assert(
+        members.members?.some((member) => member.user_id === peerProfile.userId),
+        "peer should appear in kernel session members after relay join",
+        members,
+      )
+    } finally {
+      await peerRemoteClient.close().catch(() => {})
+    }
+
     console.log("live cloud relay drill passed")
   } finally {
     await remoteClient?.close().catch(() => {})
@@ -554,8 +637,8 @@ async function main() {
     await terminateChild(daemon)
     await terminateChild(relay)
     await terminateChild(cloudServer)
-    await db.account.deleteMany({ where: { slug: runId } }).catch(() => {})
-    await db.user.deleteMany({ where: { email: `${runId}@example.com` } }).catch(() => {})
+    await db.account.deleteMany({ where: { slug: { in: [runId, `${runId}-peer`] } } }).catch(() => {})
+    await db.user.deleteMany({ where: { email: { in: [`${runId}@example.com`, `${runId}-peer@example.com`] } } }).catch(() => {})
     await db.$disconnect().catch(() => {})
     await rm(rootDir, { recursive: true, force: true }).catch(() => {})
   }

@@ -11,6 +11,7 @@ export type IssueCloudRelayTokenInput = {
   subject: string
   subjectKind: "client" | "kernel" | "machine"
   allowedTargets?: string[]
+  sessionId?: string
   userId?: string
   clientId?: string
   machineId?: string
@@ -204,12 +205,14 @@ export async function issueCloudRelayToken(
     tokenId: string
     expiresAt: string
   }>(input.profile.apiUrl, "/relay/token", {
+    sessionToken: input.profile.cloudSessionToken,
     accountId: input.profile.accountId,
     subject: input.subject,
     subjectKind: input.subjectKind,
     realmId: input.profile.realmId,
     userId: input.userId ?? input.profile.userId,
     allowedTargets: input.allowedTargets,
+    sessionId: input.sessionId,
     clientId: input.clientId,
     machineId: input.machineId,
   })
