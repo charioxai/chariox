@@ -557,6 +557,15 @@ impl DaemonApp {
         Ok(())
     }
 
+    pub(crate) fn persist_cloud_relay_profile(
+        &mut self,
+        profile: Option<crate::config::PersistedCloudRelayProfile>,
+    ) -> Result<(), DaemonError> {
+        self.config.persist_cloud_relay_profile(profile)?;
+        self.config_projection.update(self.config.clone());
+        Ok(())
+    }
+
     pub(crate) fn set_user_config_value(
         &mut self,
         path: impl AsRef<str>,

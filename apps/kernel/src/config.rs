@@ -20,6 +20,7 @@ pub struct DaemonConfig {
     pub daemon_alias: Option<String>,
     pub relay_url: Option<String>,
     pub relay_token: Option<String>,
+    pub cloud_relay: Option<PersistedCloudRelayProfile>,
     pub relay_public_key: String,
     pub relay_private_key: String,
     pub relay_heartbeat_ms: u64,
@@ -125,6 +126,7 @@ impl DaemonConfig {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .or_else(|| load_persisted_relay_config().and_then(|config| config.relay_token)),
+            cloud_relay: load_persisted_relay_config().and_then(|config| config.cloud_relay),
             relay_public_key: runtime_identity.relay_public_key,
             relay_private_key: runtime_identity.relay_private_key,
             relay_heartbeat_ms: env::var("ARROBA_RELAY_HEARTBEAT_MS")
@@ -183,6 +185,7 @@ impl DaemonConfig {
             daemon_alias: None,
             relay_url: None,
             relay_token: None,
+            cloud_relay: None,
             relay_public_key,
             relay_private_key,
             relay_heartbeat_ms: 5_000,
@@ -369,7 +372,16 @@ impl DaemonConfig {
         let mut persisted = load_persisted_daemon_config();
         persisted.relay_url = self.relay_url.clone();
         persisted.relay_token = self.relay_token.clone();
+        persisted.cloud_relay = self.cloud_relay.clone();
         persist_daemon_config(&persisted, "persist relay config")
+    }
+
+    pub fn persist_cloud_relay_profile(
+        &mut self,
+        profile: Option<PersistedCloudRelayProfile>,
+    ) -> Result<(), DaemonError> {
+        self.cloud_relay = profile;
+        self.persist_relay_config()
     }
 
     pub fn machine_registry_entries() -> Vec<PersistedMachineRegistration> {
@@ -1420,9 +1432,37 @@ struct PersistedDaemonConfig {
     #[serde(default)]
     relay_token: Option<String>,
     #[serde(default)]
+    cloud_relay: Option<PersistedCloudRelayProfile>,
+    #[serde(default)]
     machines: Vec<PersistedMachineRegistration>,
     #[serde(default)]
     clients: Vec<PersistedClientPairing>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedCloudRelayProfile {
+    pub api_url: String,
+    pub email: String,
+    pub account_id: String,
+    pub user_id: String,
+    pub account_slug: String,
+    pub realm_id: String,
+    pub relay_url: String,
+    pub issuer_id: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_alias: Option<String>,
+    #[serde(default)]
+    pub machine_id: Option<String>,
+    #[serde(default)]
+    pub machine_alias: Option<String>,
+    #[serde(default)]
+    pub cloud_session_token: Option<String>,
+    #[serde(default)]
+    pub cloud_session_expires_at_ms: Option<u64>,
+    #[serde(default)]
+    pub token_expires_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

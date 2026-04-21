@@ -131,7 +131,7 @@ test("waiting room renders session rows with alias text", () => {
   assert.equal(aliasedSessionRow?.title, "session-1 (frontend)")
 })
 
-test("waiting room places join below start configuration and makes relay configure selectable", () => {
+test("waiting room places join below start configuration and makes cloud relay login selectable", () => {
   const catalog = fallbackProviderCatalog()
   let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
   const rows = waitingRoomRows(state, [], catalog, {
@@ -159,6 +159,8 @@ test("waiting room places join below start configuration and makes relay configu
     },
   })
   const relayConfigure = relayRows.find((row) => row.id === "relay-configure")
+  assert.equal(relayConfigure?.title, "Connect to Arroba Cloud")
+  assert.equal(relayConfigure?.value, "/relay cloud login")
   assert.equal(relayConfigure?.selectable, true)
   assert.equal(relayConfigure?.focused, true)
 })

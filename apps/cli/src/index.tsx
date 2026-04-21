@@ -122,6 +122,8 @@ import {
   relayStatusRequest,
   logoutProviderRequest,
   listSessionsRequest,
+  logoutCloudRelayRequest,
+  pollCloudRelayLoginRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
@@ -131,6 +133,7 @@ import {
   setUserConfigValueRequest,
   showWorkspaceLinkRequest,
   spawnAgentRequest,
+  startCloudRelayLoginRequest,
   startProviderLoginRequest,
   storeTransferredFileRequest,
   submitPromptRequest,
@@ -148,11 +151,8 @@ import { evaluateConnectionHealth, runPollingLoop } from "./polling-effects.js"
 import {
   bootstrapCloudRelayProfile,
   issueCloudRelayToken,
-  logoutCloudRelayProfile,
   pairCloudRelayClient,
   pairCloudRelayMachine,
-  pollCloudDeviceLogin,
-  startCloudDeviceLogin,
 } from "./cloud-relay.js"
 import {
   loadPreferences,
@@ -370,6 +370,40 @@ type RelayStatusView = {
   daemon_id: string
   machine_id: string
   machine_alias?: string | null
+}
+
+type KernelCloudRelayProfile = {
+  api_url: string
+  email: string
+  account_id: string
+  user_id: string
+  account_slug: string
+  realm_id: string
+  relay_url: string
+  issuer_id: string
+  client_id?: string | null
+  client_alias?: string | null
+  machine_id?: string | null
+  machine_alias?: string | null
+  cloud_session_token?: string | null
+  cloud_session_expires_at_ms?: number | null
+  token_expires_at_ms?: number | null
+}
+
+type KernelCloudRelayLoginStart = {
+  api_url: string
+  device_code: string
+  user_code: string
+  verification_url: string
+  expires_at: string
+  interval_seconds: number
+}
+
+type KernelCloudRelayLoginPoll = {
+  status: "authorization_pending" | "expired_token" | "approved"
+  interval_seconds?: number | null
+  expires_at?: string | null
+  profile?: KernelCloudRelayProfile | null
 }
 
 type RemoteMachineView = {
@@ -1395,10 +1429,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const activateWaitingRoom = async () => {
     try {
       if (waitingRoomState().focus === "relay") {
-        setPromptText("/relay use ")
+        setPromptText("/relay cloud login")
         promptInput?.focus()
-        syncCommandCenter("/relay use ")
-        flashFooter("enter relay URL and token, then press Enter", "info")
+        syncCommandCenter("/relay cloud login")
+        flashFooter("press Enter to open Arroba Cloud login", "info")
         return
       }
       const decision = deriveWaitingRoomActivationDecision({
@@ -5411,11 +5445,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         email,
         ...(accountSlug ? { accountSlug } : {}),
       }),
-    startCloudDeviceLogin: (apiUrl, input) =>
-      startCloudDeviceLogin({ apiUrl, ...input }),
-    pollCloudDeviceLogin,
+    startCloudDeviceLogin: (apiUrl, input) => startCloudRelayLogin(client, apiUrl, input),
+    pollCloudDeviceLogin: (apiUrl, deviceCode) => pollCloudRelayLogin(client, apiUrl, deviceCode),
     openExternalUrl,
-    logoutCloudRelay: (profile, options) => logoutCloudRelayProfile(profile, options),
+    logoutCloudRelay: (_profile, options) => logoutCloudRelay(client, options),
     pairCloudRelayClient: (profile, clientId, alias) =>
       pairCloudRelayClient(profile, clientId, alias),
     pairCloudRelayMachine: (profile, machineId, alias) =>
@@ -7991,6 +8024,80 @@ async function configureRelay(
 ): Promise<RelayStatusView> {
   const response = await client.send<Record<string, unknown>>(configureRelayRequest(relayUrl, relayToken))
   return expectVariant<{ status: RelayStatusView }>(response, "RelayConfigured").status
+}
+
+async function startCloudRelayLogin(
+  client: LocalIpcClient,
+  apiUrl: string,
+  input: { clientId?: string; machineId?: string; clientAlias?: string; machineAlias?: string },
+) {
+  const response = await client.send<Record<string, unknown>>(startCloudRelayLoginRequest(apiUrl, input))
+  const payload = expectVariant<{ login: KernelCloudRelayLoginStart }>(response, "CloudRelayLoginStarted").login
+  return {
+    apiUrl: payload.api_url,
+    deviceCode: payload.device_code,
+    userCode: payload.user_code,
+    verificationUrl: payload.verification_url,
+    expiresAtMs: Date.parse(payload.expires_at),
+    intervalSeconds: payload.interval_seconds,
+  }
+}
+
+async function pollCloudRelayLogin(
+  client: LocalIpcClient,
+  apiUrl: string,
+  deviceCode: string,
+) {
+  const response = await client.send<Record<string, unknown>>(pollCloudRelayLoginRequest(apiUrl, deviceCode))
+  const payload = expectVariant<{ result: KernelCloudRelayLoginPoll }>(response, "CloudRelayLoginPolled").result
+  if (payload.status === "authorization_pending") {
+    return {
+      status: "authorization_pending" as const,
+      intervalSeconds: payload.interval_seconds ?? 2,
+      expiresAtMs: payload.expires_at ? Date.parse(payload.expires_at) : 0,
+    }
+  }
+  if (payload.status === "expired_token") {
+    return { status: "expired_token" as const }
+  }
+  if (!payload.profile) {
+    throw new Error("cloud device login approval response was incomplete")
+  }
+  return {
+    status: "approved" as const,
+    profile: {
+      ...relayCloudProfileFromKernel(payload.profile),
+      ...(payload.expires_at ? { cloudSessionExpiresAtMs: Date.parse(payload.expires_at) } : {}),
+    },
+  }
+}
+
+async function logoutCloudRelay(
+  client: LocalIpcClient,
+  options: { revokeClient?: boolean; revokeMachine?: boolean } = {},
+): Promise<void> {
+  const response = await client.send<Record<string, unknown>>(logoutCloudRelayRequest(options))
+  expectVariant(response, "CloudRelayLoggedOut")
+}
+
+function relayCloudProfileFromKernel(profile: KernelCloudRelayProfile) {
+  return {
+    apiUrl: profile.api_url,
+    email: profile.email,
+    accountId: profile.account_id,
+    userId: profile.user_id,
+    accountSlug: profile.account_slug,
+    realmId: profile.realm_id,
+    relayUrl: profile.relay_url,
+    issuerId: profile.issuer_id,
+    ...(profile.client_id ? { clientId: profile.client_id } : {}),
+    ...(profile.client_alias ? { clientAlias: profile.client_alias } : {}),
+    ...(profile.machine_id ? { machineId: profile.machine_id } : {}),
+    ...(profile.machine_alias ? { machineAlias: profile.machine_alias } : {}),
+    ...(profile.cloud_session_token ? { cloudSessionToken: profile.cloud_session_token } : {}),
+    ...(profile.cloud_session_expires_at_ms ? { cloudSessionExpiresAtMs: profile.cloud_session_expires_at_ms } : {}),
+    ...(profile.token_expires_at_ms ? { tokenExpiresAtMs: profile.token_expires_at_ms } : {}),
+  }
 }
 
 async function getUserConfig(client: LocalIpcClient): Promise<ArrobaUserConfigPayload> {

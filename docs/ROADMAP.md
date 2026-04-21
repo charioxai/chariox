@@ -388,6 +388,15 @@ Logout is part of v1:
 - local logout always clears kernel cloud auth/profile state
 - `POST /auth/logout` revokes the cloud session token
 - logout can optionally revoke the paired client and/or machine
+
+Current implementation status:
+
+- Arroba Cloud exposes device start/poll/approve and logout endpoints, including cloud session tokens
+- the kernel owns device-login start, poll, persisted cloud profile state, and logout
+- the CLI no-argument `/relay cloud login` path calls the kernel for device login and opens the browser with URL/code fallback
+- the waiting room `Relay` action starts `/relay cloud login` instead of raw self-hosted token entry
+- the live cloud relay drill now rebuilds the kernel, drives `/relay cloud login` through the kernel device-login start/poll requests, approves through Arroba Cloud, then verifies pair/connect/client-token and remote session attach
+- relay runtime token minting for `/relay cloud connect`, `/relay cloud pair`, and client-token flows still uses the CLI cloud helper against the kernel-persisted profile mirror; the next cleanup is to move those token operations behind kernel requests too
 - if server logout fails, local logout still completes and the CLI warns that remote revocation was not confirmed
 
 Self-hosted relay discovery remains identity-less:

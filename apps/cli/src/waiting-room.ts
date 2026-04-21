@@ -406,8 +406,8 @@ function waitingRoomRemoteRows(
     },
     {
       id: "relay-configure",
-      title: "Configure Relay",
-      value: "/relay use <ws-url> <token>",
+      title: "Connect to Arroba Cloud",
+      value: "/relay cloud login",
       titleWidth,
       indent: 1,
       focused: state.focus === "relay",

@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
 
 use crate::app::DaemonApp;
+use crate::config::PersistedCloudRelayProfile;
 use crate::error::DaemonError;
 use crate::history::SessionHistoryStore;
 use crate::history::{HistoryEventQuery, OperationalHistoryStore};
@@ -23,7 +24,8 @@ use crate::local::provider_requests::{
     PROVIDER_CATALOG_CACHE_TTL,
 };
 use crate::local::{
-    AgentGrantKind, ApproveRemoteMachineRequest, AttachWorkspaceLinkRequest, ConfigureRelayRequest,
+    AgentGrantKind, ApproveRemoteMachineRequest, AttachWorkspaceLinkRequest, CloudRelayLoginPoll,
+    CloudRelayLoginPollStatus, CloudRelayLoginStart, CloudRelayProfile, ConfigureRelayRequest,
     CreatePairingInviteRequest, CreateSessionInviteRequest, CreateWorkspaceLinkRequest,
     DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GetMcpServerRequest,
     GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
@@ -32,13 +34,15 @@ use crate::local::{
     JoinPairingInviteRequest, JoinSessionInviteRequest, ListAgentsRequest, ListMcpServersRequest,
     ListProviderProcessesRequest, ListSessionMembersRequest, ListSessionsRequest,
     ListSkillsRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
-    LogoutProviderRequest, MoveAgentToRemoteRequest, PairedClientRecord, PairingInviteIntent,
-    PairingInviteRecord, PairingJoinRecord, PumpTerminalOutputRequest, QueryHistoryRequest,
-    RecordPairedClientRequest, RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest,
-    RevokeAgentCapabilityRequest, RevokePairedClientRequest, RevokeSessionInviteRequest,
-    SearchHistoryRequest, SessionInviteRecord, SetUserConfigValueRequest, ShowWorkspaceLinkRequest,
-    StartProviderLoginRequest, TeardownProviderProcessesRequest, UninstallMcpServerRequest,
-    UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
+    LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest, PairedClientRecord,
+    PairingInviteIntent, PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest,
+    PumpTerminalOutputRequest, QueryHistoryRequest, RecordPairedClientRequest, RelayStatus,
+    RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
+    RevokePairedClientRequest, RevokeSessionInviteRequest, SearchHistoryRequest,
+    SessionInviteRecord, SetUserConfigValueRequest, ShowWorkspaceLinkRequest,
+    StartCloudRelayLoginRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
+    UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
+    UpdateMcpServerRequest, UpdateSkillRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -925,6 +929,18 @@ impl CommandRouter {
             LocalDaemonRequest::ConfigureRelay(request) => {
                 self.execute_configure_relay_request(request).await
             }
+            LocalDaemonRequest::CloudRelayStatus(_) => {
+                self.execute_cloud_relay_status_request().await
+            }
+            LocalDaemonRequest::StartCloudRelayLogin(request) => {
+                self.execute_start_cloud_relay_login_request(request).await
+            }
+            LocalDaemonRequest::PollCloudRelayLogin(request) => {
+                self.execute_poll_cloud_relay_login_request(request).await
+            }
+            LocalDaemonRequest::LogoutCloudRelay(request) => {
+                self.execute_logout_cloud_relay_request(request).await
+            }
             LocalDaemonRequest::GetUserConfig(request) => {
                 self.execute_get_user_config_request(request).await
             }
@@ -1753,6 +1769,156 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::RelayConfigured {
             status: self.projected_relay_status().await,
         })
+    }
+
+    async fn execute_cloud_relay_status_request(&self) -> Result<LocalDaemonResponse, DaemonError> {
+        let profile = self
+            .config_projection
+            .snapshot()
+            .cloud_relay
+            .as_ref()
+            .map(cloud_profile_from_persisted);
+        Ok(LocalDaemonResponse::CloudRelayStatus { profile })
+    }
+
+    async fn execute_start_cloud_relay_login_request(
+        &self,
+        request: StartCloudRelayLoginRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let api_url = normalize_cloud_api_url(&request.api_url)?;
+        let response: CloudDeviceStartResponse = post_cloud_json(
+            api_url.clone(),
+            "/auth/device/start",
+            serde_json::json!({
+                "clientId": request.client_id,
+                "clientAlias": request.client_alias,
+                "machineId": request.machine_id,
+                "machineAlias": request.machine_alias,
+            }),
+        )
+        .await?;
+        Ok(LocalDaemonResponse::CloudRelayLoginStarted {
+            login: CloudRelayLoginStart {
+                api_url,
+                device_code: response.device_code,
+                user_code: response.user_code,
+                verification_url: response.verification_url,
+                expires_at: response.expires_at,
+                interval_seconds: response.interval_seconds,
+            },
+        })
+    }
+
+    async fn execute_poll_cloud_relay_login_request(
+        &self,
+        request: PollCloudRelayLoginRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let api_url = normalize_cloud_api_url(&request.api_url)?;
+        let response: CloudDevicePollResponse = post_cloud_json(
+            api_url.clone(),
+            "/auth/device/poll",
+            serde_json::json!({ "deviceCode": request.device_code }),
+        )
+        .await?;
+        let result = match response.status.as_str() {
+            "authorization_pending" => CloudRelayLoginPoll {
+                status: CloudRelayLoginPollStatus::AuthorizationPending,
+                interval_seconds: response.interval_seconds,
+                expires_at: response.expires_at,
+                profile: None,
+            },
+            "expired_token" => CloudRelayLoginPoll {
+                status: CloudRelayLoginPollStatus::ExpiredToken,
+                interval_seconds: None,
+                expires_at: None,
+                profile: None,
+            },
+            "approved" => {
+                let profile = response
+                    .profile
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "poll cloud relay login",
+                        message: "cloud approval response did not include a profile".to_string(),
+                    })?;
+                let session_token =
+                    response
+                        .cloud_session_token
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "poll cloud relay login",
+                            message: "cloud approval response did not include a session token"
+                                .to_string(),
+                        })?;
+                let persisted = PersistedCloudRelayProfile {
+                    api_url,
+                    email: profile.email,
+                    account_id: profile.account_id,
+                    user_id: profile.user_id,
+                    account_slug: profile.account_slug,
+                    realm_id: profile.realm_id,
+                    relay_url: profile.relay_url,
+                    issuer_id: profile.issuer_id,
+                    client_id: profile.client_id,
+                    client_alias: profile.client_alias,
+                    machine_id: profile.machine_id,
+                    machine_alias: profile.machine_alias,
+                    cloud_session_token: Some(session_token),
+                    cloud_session_expires_at_ms: None,
+                    token_expires_at_ms: None,
+                };
+                {
+                    let mut app = self.app.lock().await;
+                    app.persist_cloud_relay_profile(Some(persisted.clone()))?;
+                }
+                self.config_projection.update({
+                    let app = self.app.lock().await;
+                    app.config().clone()
+                });
+                CloudRelayLoginPoll {
+                    status: CloudRelayLoginPollStatus::Approved,
+                    interval_seconds: None,
+                    expires_at: response.cloud_session_expires_at,
+                    profile: Some(cloud_profile_from_persisted(&persisted)),
+                }
+            }
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "poll cloud relay login",
+                    message: format!("cloud returned unknown device login status `{other}`"),
+                });
+            }
+        };
+        Ok(LocalDaemonResponse::CloudRelayLoginPolled { result })
+    }
+
+    async fn execute_logout_cloud_relay_request(
+        &self,
+        request: LogoutCloudRelayRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let profile = self.config_projection.snapshot().cloud_relay;
+        if let Some(profile) = profile.as_ref() {
+            let _ = post_cloud_json::<serde_json::Value>(
+                profile.api_url.clone(),
+                "/auth/logout",
+                serde_json::json!({
+                    "sessionToken": profile.cloud_session_token,
+                    "accountId": profile.account_id,
+                    "clientId": profile.client_id,
+                    "machineId": profile.machine_id,
+                    "revokeClient": request.revoke_client,
+                    "revokeMachine": request.revoke_machine,
+                }),
+            )
+            .await;
+        }
+        {
+            let mut app = self.app.lock().await;
+            app.persist_cloud_relay_profile(None)?;
+        }
+        self.config_projection.update({
+            let app = self.app.lock().await;
+            app.config().clone()
+        });
+        Ok(LocalDaemonResponse::CloudRelayLoggedOut)
     }
 
     async fn execute_get_user_config_request(
@@ -2664,6 +2830,18 @@ impl CommandRouter {
             LocalDaemonRequest::RelayStatus(_) => self.projected_relay_status_response().await,
             LocalDaemonRequest::ConfigureRelay(request) => {
                 self.execute_configure_relay_request(request).await
+            }
+            LocalDaemonRequest::CloudRelayStatus(_) => {
+                self.execute_cloud_relay_status_request().await
+            }
+            LocalDaemonRequest::StartCloudRelayLogin(request) => {
+                self.execute_start_cloud_relay_login_request(request).await
+            }
+            LocalDaemonRequest::PollCloudRelayLogin(request) => {
+                self.execute_poll_cloud_relay_login_request(request).await
+            }
+            LocalDaemonRequest::LogoutCloudRelay(request) => {
+                self.execute_logout_cloud_relay_request(request).await
             }
             LocalDaemonRequest::GetUserConfig(request) => {
                 self.execute_get_user_config_request(request).await
@@ -4140,6 +4318,130 @@ async fn execute_list_provider_processes_request(
     Ok(LocalDaemonResponse::ProviderProcessesListed { processes })
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudDeviceStartResponse {
+    device_code: String,
+    user_code: String,
+    verification_url: String,
+    expires_at: String,
+    interval_seconds: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudDevicePollResponse {
+    status: String,
+    interval_seconds: Option<u64>,
+    expires_at: Option<String>,
+    profile: Option<CloudDeviceProfileResponse>,
+    cloud_session_token: Option<String>,
+    cloud_session_expires_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudDeviceProfileResponse {
+    email: String,
+    account_id: String,
+    user_id: String,
+    account_slug: String,
+    realm_id: String,
+    relay_url: String,
+    issuer_id: String,
+    client_id: Option<String>,
+    client_alias: Option<String>,
+    machine_id: Option<String>,
+    machine_alias: Option<String>,
+}
+
+fn cloud_profile_from_persisted(profile: &PersistedCloudRelayProfile) -> CloudRelayProfile {
+    CloudRelayProfile {
+        api_url: profile.api_url.clone(),
+        email: profile.email.clone(),
+        account_id: profile.account_id.clone(),
+        user_id: profile.user_id.clone(),
+        account_slug: profile.account_slug.clone(),
+        realm_id: profile.realm_id.clone(),
+        relay_url: profile.relay_url.clone(),
+        issuer_id: profile.issuer_id.clone(),
+        client_id: profile.client_id.clone(),
+        client_alias: profile.client_alias.clone(),
+        machine_id: profile.machine_id.clone(),
+        machine_alias: profile.machine_alias.clone(),
+        cloud_session_token: profile.cloud_session_token.clone(),
+        cloud_session_expires_at_ms: profile.cloud_session_expires_at_ms,
+        token_expires_at_ms: profile.token_expires_at_ms,
+    }
+}
+
+fn normalize_cloud_api_url(api_url: &str) -> Result<String, DaemonError> {
+    let normalized = api_url.trim().trim_end_matches('/').to_string();
+    if normalized.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "normalize cloud relay api url",
+            message: "api_url must not be empty".to_string(),
+        });
+    }
+    Ok(normalized)
+}
+
+async fn post_cloud_json<T>(
+    api_url: String,
+    path: &'static str,
+    body: serde_json::Value,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || post_cloud_json_blocking(api_url, path, body))
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "post cloud relay json",
+            message: error.to_string(),
+        })?
+}
+
+fn post_cloud_json_blocking<T>(
+    api_url: String,
+    path: &'static str,
+    body: serde_json::Value,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let url = format!("{api_url}{path}");
+    let response = ureq::post(&url)
+        .set("content-type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(|error| cloud_transport_error(path, error))?;
+    let payload = response
+        .into_string()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "read cloud relay response",
+            message: error.to_string(),
+        })?;
+    serde_json::from_str::<T>(&payload).map_err(|error| DaemonError::LocalTransport {
+        operation: "decode cloud relay response",
+        message: error.to_string(),
+    })
+}
+
+fn cloud_transport_error(operation: &'static str, error: ureq::Error) -> DaemonError {
+    let message = match error {
+        ureq::Error::Status(status, response) => {
+            let body = response.into_string().unwrap_or_default();
+            if body.is_empty() {
+                format!("cloud relay request failed with {status}")
+            } else {
+                format!("cloud relay request failed with {status}: {body}")
+            }
+        }
+        ureq::Error::Transport(error) => error.to_string(),
+    };
+    DaemonError::LocalTransport { operation, message }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -4158,11 +4460,10 @@ mod tests {
         FocusAgentRequest, GetDaemonHealthRequest, GetProviderAuthStatusRequest,
         GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderRunRequest,
         GetSessionHistoryRequest, GetSessionStateRequest, InvokeWorkflowEndpointRequest,
-        LaunchProviderRunRequest, ListAgentsRequest,
-        ListProviderProcessesRequest, ListSessionsRequest, ListWorkflowRunsRequest,
-        ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest,
-        LocalDaemonResponse, PollRuntimeNoticesRequest, PumpTerminalOutputRequest,
-        QueryHistoryRequest, RelayStatusRequest,
+        LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
+        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
+        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        PumpTerminalOutputRequest, QueryHistoryRequest, RelayStatusRequest,
         RemoveWorkflowEdgeRequest, ResizeTerminalRequest, ResolveSessionRequest,
         ResolveWorkflowRequest, RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
         TeardownProviderProcessesRequest, UpdateSessionConfigRequest,

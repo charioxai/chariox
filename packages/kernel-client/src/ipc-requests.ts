@@ -762,6 +762,45 @@ export function configureRelayRequest(relayUrl: string | null, relayToken: strin
   }
 }
 
+export function cloudRelayStatusRequest() {
+  return { CloudRelayStatus: null }
+}
+
+export function startCloudRelayLoginRequest(apiUrl: string, input: {
+  clientId?: string
+  clientAlias?: string
+  machineId?: string
+  machineAlias?: string
+}) {
+  return {
+    StartCloudRelayLogin: {
+      api_url: apiUrl,
+      client_id: input.clientId,
+      client_alias: input.clientAlias,
+      machine_id: input.machineId,
+      machine_alias: input.machineAlias,
+    },
+  }
+}
+
+export function pollCloudRelayLoginRequest(apiUrl: string, deviceCode: string) {
+  return {
+    PollCloudRelayLogin: {
+      api_url: apiUrl,
+      device_code: deviceCode,
+    },
+  }
+}
+
+export function logoutCloudRelayRequest(options: { revokeClient?: boolean; revokeMachine?: boolean } = {}) {
+  return {
+    LogoutCloudRelay: {
+      revoke_client: options.revokeClient ?? false,
+      revoke_machine: options.revokeMachine ?? false,
+    },
+  }
+}
+
 export function getUserConfigRequest() {
   return { GetUserConfig: null }
 }

@@ -281,6 +281,91 @@ pub struct ConfigureRelayRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudRelayStatusRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartCloudRelayLoginRequest {
+    pub api_url: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_alias: Option<String>,
+    #[serde(default)]
+    pub machine_id: Option<String>,
+    #[serde(default)]
+    pub machine_alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PollCloudRelayLoginRequest {
+    pub api_url: String,
+    pub device_code: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogoutCloudRelayRequest {
+    #[serde(default)]
+    pub revoke_client: bool,
+    #[serde(default)]
+    pub revoke_machine: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudRelayProfile {
+    pub api_url: String,
+    pub email: String,
+    pub account_id: String,
+    pub user_id: String,
+    pub account_slug: String,
+    pub realm_id: String,
+    pub relay_url: String,
+    pub issuer_id: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_alias: Option<String>,
+    #[serde(default)]
+    pub machine_id: Option<String>,
+    #[serde(default)]
+    pub machine_alias: Option<String>,
+    #[serde(default)]
+    pub cloud_session_token: Option<String>,
+    #[serde(default)]
+    pub cloud_session_expires_at_ms: Option<u64>,
+    #[serde(default)]
+    pub token_expires_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudRelayLoginStart {
+    pub api_url: String,
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_url: String,
+    pub expires_at: String,
+    pub interval_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudRelayLoginPollStatus {
+    AuthorizationPending,
+    ExpiredToken,
+    Approved,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudRelayLoginPoll {
+    pub status: CloudRelayLoginPollStatus,
+    #[serde(default)]
+    pub interval_seconds: Option<u64>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub profile: Option<CloudRelayProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetUserConfigRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -927,6 +1012,10 @@ pub enum LocalDaemonRequest {
     ListSkills(ListSkillsRequest),
     RelayStatus(RelayStatusRequest),
     ConfigureRelay(ConfigureRelayRequest),
+    CloudRelayStatus(CloudRelayStatusRequest),
+    StartCloudRelayLogin(StartCloudRelayLoginRequest),
+    PollCloudRelayLogin(PollCloudRelayLoginRequest),
+    LogoutCloudRelay(LogoutCloudRelayRequest),
     GetUserConfig(GetUserConfigRequest),
     SetUserConfigValue(SetUserConfigValueRequest),
     UnsetUserConfigValue(UnsetUserConfigValueRequest),
@@ -1132,6 +1221,16 @@ pub enum LocalDaemonResponse {
     RelayConfigured {
         status: RelayStatus,
     },
+    CloudRelayStatus {
+        profile: Option<CloudRelayProfile>,
+    },
+    CloudRelayLoginStarted {
+        login: CloudRelayLoginStart,
+    },
+    CloudRelayLoginPolled {
+        result: CloudRelayLoginPoll,
+    },
+    CloudRelayLoggedOut,
     UserConfig {
         path: PathBuf,
         config: ArrobaUserConfig,

@@ -210,6 +210,40 @@ export type RelayStatus = {
   machine_alias?: string | null
 }
 
+export type CloudRelayProfile = {
+  api_url: string
+  email: string
+  account_id: string
+  user_id: string
+  account_slug: string
+  realm_id: string
+  relay_url: string
+  issuer_id: string
+  client_id?: string | null
+  client_alias?: string | null
+  machine_id?: string | null
+  machine_alias?: string | null
+  cloud_session_token?: string | null
+  cloud_session_expires_at_ms?: number | null
+  token_expires_at_ms?: number | null
+}
+
+export type CloudRelayLoginStart = {
+  api_url: string
+  device_code: string
+  user_code: string
+  verification_url: string
+  expires_at: string
+  interval_seconds: number
+}
+
+export type CloudRelayLoginPoll = {
+  status: "authorization_pending" | "expired_token" | "approved"
+  interval_seconds?: number | null
+  expires_at?: string | null
+  profile?: CloudRelayProfile | null
+}
+
 export type RemoteMachineRecord = {
   machine_id: string
   machine_alias?: string | null

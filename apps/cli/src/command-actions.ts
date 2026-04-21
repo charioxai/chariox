@@ -191,6 +191,7 @@ type CommandActionDeps = {
   refreshWaitingRoomData?: () => Promise<void>
   getCloudRelayProfile?: () => RelayCloudProfile | null
   saveCloudRelayProfile?: (profile: RelayCloudProfile | null) => Promise<void>
+  cloudRelayApiUrl?: string
   bootstrapCloudRelay?: (
     apiUrl: string,
     email: string,
@@ -1551,7 +1552,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         const accountSlug = cloudArgs[2]
         if (!apiUrl && cloudCommand === "login" && deps.startCloudDeviceLogin && deps.pollCloudDeviceLogin && deps.getRelayStatus) {
           const relayStatus = await deps.getRelayStatus()
-          const started = await deps.startCloudDeviceLogin("https://cloud.arroba.dev", {
+          const started = await deps.startCloudDeviceLogin(deps.cloudRelayApiUrl ?? "https://cloud.arroba.dev", {
             clientId: deps.clientId ?? "arroba-cli",
             machineId: relayStatus.machine_id,
             ...(relayStatus.machine_alias ? { machineAlias: relayStatus.machine_alias } : {}),

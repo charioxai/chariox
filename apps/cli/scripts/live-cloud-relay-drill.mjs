@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
-import { mkdir, rm, stat } from "node:fs/promises"
+import { mkdir, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -46,10 +46,25 @@ async function run(command, args, options = {}) {
 }
 
 function spawnProcess(command, args, options) {
-  return spawn(command, args, {
+  const child = spawn(command, args, {
     ...options,
     stdio: ["ignore", "pipe", "pipe"],
   })
+  const name = options.name ?? path.basename(command)
+  child.stdout.on("data", (chunk) => {
+    for (const line of chunk.toString().trimEnd().split("\n").filter(Boolean)) {
+      log(`${name}:stdout`, line)
+    }
+  })
+  child.stderr.on("data", (chunk) => {
+    for (const line of chunk.toString().trimEnd().split("\n").filter(Boolean)) {
+      log(`${name}:stderr`, line)
+    }
+  })
+  child.on("exit", (code, signal) => {
+    log(`${name}:exit`, { code, signal })
+  })
+  return child
 }
 
 async function waitForHttp(url, timeoutMs = 30_000) {
@@ -70,8 +85,6 @@ async function waitForHttp(url, timeoutMs = 30_000) {
 
 async function buildKernelIfNeeded() {
   const binary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
-  const exists = await stat(binary).then((info) => info.isFile()).catch(() => false)
-  if (exists) return binary
   const result = await run("cargo", ["build", "--manifest-path", path.join(repoRoot, "apps/kernel/Cargo.toml"), "--bin", "arroba-kernel"])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   return binary
@@ -149,6 +162,38 @@ function unwrap(resp, key) {
   return resp?.[key] ?? resp
 }
 
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    throw new Error(`POST ${url} failed with ${response.status}: ${await response.text()}`)
+  }
+  return response.json().catch(() => null)
+}
+
+function profileFromKernel(profile, expiresAt) {
+  assert(profile, "kernel cloud login approval should return a profile")
+  return {
+    apiUrl: profile.api_url,
+    email: profile.email,
+    accountId: profile.account_id,
+    userId: profile.user_id,
+    accountSlug: profile.account_slug,
+    realmId: profile.realm_id,
+    relayUrl: profile.relay_url,
+    issuerId: profile.issuer_id,
+    ...(profile.client_id ? { clientId: profile.client_id } : {}),
+    ...(profile.client_alias ? { clientAlias: profile.client_alias } : {}),
+    ...(profile.machine_id ? { machineId: profile.machine_id } : {}),
+    ...(profile.machine_alias ? { machineAlias: profile.machine_alias } : {}),
+    ...(profile.cloud_session_token ? { cloudSessionToken: profile.cloud_session_token } : {}),
+    ...(expiresAt ? { cloudSessionExpiresAtMs: Date.parse(expiresAt) } : {}),
+  }
+}
+
 function parseCloudClientTokenNotice(notices) {
   const notice = [...notices].reverse().find((item) => item.startsWith("cloud relay client token\n"))
   assert(notice, "cloud relay client-token command should append a token notice", notices)
@@ -172,6 +217,8 @@ function parseCloudClientTokenNotice(notices) {
 }
 
 function createMinimalCommandDeps({
+  apiUrl,
+  runId,
   workspace,
   clientId,
   localClient,
@@ -200,6 +247,7 @@ function createMinimalCommandDeps({
       log("command-notice", { firstLine: message.split("\n")[0] })
     },
     formatError: (error) => error instanceof Error ? error.message : String(error),
+    cloudRelayApiUrl: apiUrl,
     getCloudRelayProfile: () => profileRef.current,
     saveCloudRelayProfile: async (profile) => {
       profileRef.current = profile
@@ -227,6 +275,53 @@ function createMinimalCommandDeps({
       await localClient.send(requests.configureRelayRequest(relayUrl, relayToken)),
       "RelayConfigured",
     ).status,
+    startCloudDeviceLogin: async (nextApiUrl, input) => {
+      log("kernel-cloud-login-start")
+      const login = unwrap(
+        await localClient.send(requests.startCloudRelayLoginRequest(nextApiUrl, input)),
+        "CloudRelayLoginStarted",
+      ).login
+      profileRef.deviceUserCode = login.user_code
+      return {
+        apiUrl: login.api_url,
+        deviceCode: login.device_code,
+        userCode: login.user_code,
+        verificationUrl: login.verification_url,
+        expiresAtMs: Date.parse(login.expires_at),
+        intervalSeconds: login.interval_seconds,
+      }
+    },
+    pollCloudDeviceLogin: async (nextApiUrl, deviceCode) => {
+      if (!profileRef.deviceApproved) {
+        profileRef.deviceApproved = true
+        log("cloud-device-approve")
+        await postJson(`${nextApiUrl}/auth/device/approve`, {
+          userCode: profileRef.deviceUserCode,
+          email: `${runId}@example.com`,
+          accountSlug: runId,
+        })
+      }
+      log("kernel-cloud-login-poll")
+      const result = unwrap(
+        await localClient.send(requests.pollCloudRelayLoginRequest(nextApiUrl, deviceCode)),
+        "CloudRelayLoginPolled",
+      ).result
+      log("kernel-cloud-login-poll-result", { status: result.status })
+      if (result.status === "authorization_pending") {
+        return {
+          status: "authorization_pending",
+          intervalSeconds: result.interval_seconds ?? 1,
+          expiresAtMs: result.expires_at ? Date.parse(result.expires_at) : Date.now() + 30_000,
+        }
+      }
+      if (result.status === "expired_token") {
+        return { status: "expired_token" }
+      }
+      return {
+        status: "approved",
+        profile: profileFromKernel(result.profile, result.expires_at),
+      }
+    },
     issueCloudKernelRelayToken: (profile, daemonId) => cloudRelay.issueCloudRelayToken({
       profile,
       subject: daemonId,
@@ -332,6 +427,7 @@ async function main() {
     cloudServer = spawnProcess("node", [path.join(cloudRoot, "apps/api/dist/server.js")], {
       cwd: cloudRoot,
       env: cloudEnv,
+      name: "cloud-api",
     })
     await waitForHttp(`${apiUrl}/health`)
 
@@ -339,8 +435,9 @@ async function main() {
     relay = spawnProcess("cargo", ["run", "--manifest-path", path.join(repoRoot, "apps/relay/Cargo.toml"), "--bin", "arroba-relay"], {
       cwd: repoRoot,
       env: relayEnv,
+      name: "relay",
     })
-    daemon = spawnProcess(kernelPath, [], { cwd: repoRoot, env: daemonEnv })
+    daemon = spawnProcess(kernelPath, [], { cwd: repoRoot, env: daemonEnv, name: "kernel" })
 
     const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}/kernel`
     await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace)
@@ -349,6 +446,8 @@ async function main() {
     const profileRef = { current: null }
     const notices = []
     const handlers = commandActions.createCommandActionHandlers(createMinimalCommandDeps({
+      apiUrl,
+      runId,
       workspace,
       clientId,
       localClient,
@@ -362,7 +461,7 @@ async function main() {
     await handlers.handleRelayCommand({
       kind: "relay",
       raw: "/relay cloud login",
-      args: ["cloud", "login", apiUrl, `${runId}@example.com`, runId],
+      args: ["cloud", "login"],
     })
     assert(profileRef.current?.accountSlug === runId, "cloud login command should save the profile", profileRef.current)
 
