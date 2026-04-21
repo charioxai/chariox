@@ -276,11 +276,27 @@ CLI/shell commands:
 workflow publication create [workflow_ref] <endpoint_ref> [alias] [--route <route>] [--method POST] [--auth-json <json>] [--parser-json <json>] [--transport-json <json>] [--input-schema-json <json>] [--mode async]
 workflow publication list
 workflow publication show <publication>
+workflow publication export <publication> <directory> [--kernel-url <url>]
 workflow publication disable <publication>
 ```
 
 Gateway export/package output will include publication config, launcher, README,
 env var template, and example curl/websocket commands.
+
+Implementation status:
+
+- `workflow publication export <publication> <directory>` writes a deployable
+  gateway package with `publication.config.json`, `.env.example`, `run.sh`, and
+  `README.md`.
+- The exported config is a file-based gateway config, so it can run without
+  re-querying publication metadata at process startup as long as the target
+  Arroba kernel remains reachable.
+- The package preserves publication auth/parser/method/mode config and includes
+  paired-sender pairing instructions when the publication enables paired sender
+  auth.
+- The publication live drill now exports a kernel-owned publication and starts
+  the gateway from the exported `publication.config.json` before continuing to
+  paired-sender coverage.
 
 ## M9.10 Workflow-To-Workflow Drill
 

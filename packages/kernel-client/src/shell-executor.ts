@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { stat } from "node:fs/promises"
+import { mkdir, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, resolve as resolvePath } from "node:path"
 import { promisify } from "node:util"
 
@@ -53,7 +53,6 @@ import {
   cancelActivePromptRequest,
   cancelWorkflowRunRequest,
   clearQueuedWorkflowLaunchesRequest,
-  authenticateWorkflowPublicationSenderRequest,
   approveRemoteMachineRequest,
   acceptCloudSessionInviteRequest,
   cloudRelayStatusRequest,
@@ -1645,6 +1644,24 @@ async function executeWorkflowPublicationCommand(
     return { ok: true, message: JSON.stringify(publication, null, 2), data: { publication }, format: "json" }
   }
 
+  if (action === "export") {
+    const [publicationRef, outputDirectory, ...optionArgs] = rest
+    if (!publicationRef || !outputDirectory) {
+      return { ok: false, message: "usage: workflow publication export <publication-ref> <directory> [--kernel-url <url>]" }
+    }
+    const options = parseWorkflowPublicationExportOptions(optionArgs)
+    if (!options.ok) return { ok: false, message: options.message }
+    const response = await deps.client.send(getWorkflowPublicationRequest(sessionId, publicationRef))
+    const publication = expectVariant<{ publication: WorkflowPublicationDefinition }>(response, "WorkflowPublication").publication
+    const outputRoot = resolvePath(context.worktree ?? context.workspace ?? process.cwd(), outputDirectory)
+    const packageFiles = await writeWorkflowPublicationExportPackage(publication, outputRoot, options.kernelUrl)
+    return {
+      ok: true,
+      message: `exported workflow publication ${formatWorkflowPublicationLabel(publication)} to ${outputRoot}`,
+      data: { publication, outputRoot, files: packageFiles },
+    }
+  }
+
   if (action === "disable" || action === "remove") {
     const publicationRef = rest[0]
     if (!publicationRef) {
@@ -1750,7 +1767,7 @@ async function executeWorkflowPublicationCommand(
     )
   }
 
-  return { ok: false, message: "usage: workflow publication list|create|show|disable|pair-code|redeem-code|senders|revoke-sender" }
+  return { ok: false, message: "usage: workflow publication list|create|show|export|disable|pair-code|redeem-code|senders|revoke-sender" }
 }
 
 async function executeWorkflowWatchdogCommand(
@@ -2080,6 +2097,23 @@ function parseWorkflowPublicationCreateOptions(
   return { ok: true, workflowRef, endpointRef, options }
 }
 
+function parseWorkflowPublicationExportOptions(
+  args: string[],
+): { ok: true; kernelUrl?: string | undefined } | { ok: false; message: string } {
+  let kernelUrl: string | undefined
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === "--kernel-url") {
+      const value = args[++index]
+      if (!value) return { ok: false, message: "usage: workflow publication export <publication-ref> <directory> [--kernel-url <url>]" }
+      kernelUrl = value
+    } else {
+      return { ok: false, message: `unknown publication export option: ${arg ?? ""}` }
+    }
+  }
+  return { ok: true, kernelUrl }
+}
+
 function parseNumericFlags(
   args: string[],
   allowedFlags: string[],
@@ -2112,6 +2146,142 @@ function parseJsonOption(
   } catch (error) {
     return { ok: false, message: `${option} is invalid JSON: ${error instanceof Error ? error.message : String(error)}` }
   }
+}
+
+async function writeWorkflowPublicationExportPackage(
+  publication: WorkflowPublicationDefinition,
+  outputRoot: string,
+  kernelUrl?: string,
+) {
+  await mkdir(outputRoot, { recursive: true })
+  const config = workflowPublicationGatewayConfig(publication, kernelUrl)
+  const files = {
+    "publication.config.json": JSON.stringify(config, null, 2) + "\n",
+    ".env.example": workflowPublicationEnvTemplate(publication, kernelUrl),
+    "run.sh": workflowPublicationLauncherScript(),
+    "README.md": workflowPublicationReadme(publication, config),
+  }
+  const paths: string[] = []
+  for (const [name, content] of Object.entries(files)) {
+    const filePath = resolvePath(outputRoot, name)
+    await writeFile(filePath, content, name === "run.sh" ? { mode: 0o755 } : undefined)
+    paths.push(filePath)
+  }
+  return paths
+}
+
+function workflowPublicationGatewayConfig(
+  publication: WorkflowPublicationDefinition,
+  kernelUrl?: string,
+) {
+  const config: Record<string, unknown> = {
+    publication_id: publication.id,
+    session_id: publication.session_id,
+    workflow_ref: publication.workflow_id,
+    endpoint_ref: publication.endpoint_id,
+    route: publication.route ?? "/*",
+    auth: publication.auth ?? { mode: "anonymous" },
+    parser: publication.parser ?? { kind: "json" },
+    mode: publication.mode === "async" ? "async" : "sync",
+  }
+  if (kernelUrl) config.kernel_endpoint = kernelUrl
+  if (publication.methods?.length) config.methods = publication.methods
+  if (publication.transport != null) config.transport = publication.transport
+  if (publication.input_schema != null) config.input_schema = publication.input_schema
+  return config
+}
+
+function workflowPublicationEnvTemplate(publication: WorkflowPublicationDefinition, kernelUrl?: string) {
+  return [
+    "# Copy this file to .env or export these variables before running run.sh.",
+    "HOST=0.0.0.0",
+    "PORT=3000",
+    `ARROBA_KERNEL_URL=${kernelUrl ?? "ws://127.0.0.1:43118"}`,
+    "ARROBA_PUBLICATION_CONFIG=./publication.config.json",
+    `ARROBA_PUBLICATION_SESSION_ID=${publication.session_id}`,
+    `ARROBA_PUBLICATION_ID=${publication.id}`,
+    "",
+  ].join("\n")
+}
+
+function workflowPublicationLauncherScript() {
+  return [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    "DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"",
+    "if [ -f \"$DIR/.env\" ]; then",
+    "  set -a",
+    "  . \"$DIR/.env\"",
+    "  set +a",
+    "fi",
+    "export ARROBA_PUBLICATION_CONFIG=\"${ARROBA_PUBLICATION_CONFIG:-$DIR/publication.config.json}\"",
+    "exec arroba-workflow-gateway",
+    "",
+  ].join("\n")
+}
+
+function workflowPublicationReadme(
+  publication: WorkflowPublicationDefinition,
+  config: Record<string, unknown>,
+) {
+  const route = String(config.route ?? "/*")
+  const examplePath = route.includes("*") ? route.replace("*", "example") : route
+  const methods = Array.isArray(config.methods) && config.methods.length ? config.methods.map(String) : ["GET", "POST"]
+  const primaryMethod = methods[0] ?? "GET"
+  const paired = isPairedSenderPublication(publication)
+  const authHint = paired
+    ? [
+        "This publication uses paired sender auth.",
+        "",
+        "```bash",
+        "PAIR_CODE=\"paste-code-here\"",
+        "curl -sS -X POST \"$BASE_URL/.well-known/arroba/publication/pair\" \\",
+        "  -H 'content-type: application/json' \\",
+        "  -d \"{\\\"pair_code\\\":\\\"$PAIR_CODE\\\",\\\"display_name\\\":\\\"example sender\\\"}\"",
+        "```",
+        "",
+        "Use the returned credential as `Authorization: Bearer <credential>`.",
+      ].join("\n")
+    : "This publication does not require paired sender auth unless its auth config says otherwise."
+  const body = primaryMethod === "GET"
+    ? ""
+    : " \\\n  -H 'content-type: application/json' \\\n  -d '{\"input\":\"hello\"}'"
+  const authHeader = paired ? " \\\n  -H \"authorization: Bearer $SENDER_CREDENTIAL\"" : ""
+  return [
+    `# Workflow Publication ${publication.alias ?? publication.id}`,
+    "",
+    "This directory is an Arroba workflow-gateway package. It runs only when an Arroba kernel is reachable.",
+    "",
+    "## Files",
+    "",
+    "- `publication.config.json`: gateway publication config",
+    "- `.env.example`: environment template",
+    "- `run.sh`: launcher for `arroba-workflow-gateway`",
+    "",
+    "## Run",
+    "",
+    "```bash",
+    "cp .env.example .env",
+    "./run.sh",
+    "```",
+    "",
+    "## Invoke",
+    "",
+    "```bash",
+    "BASE_URL=http://127.0.0.1:3000",
+    `curl -sS -X ${primaryMethod} "$BASE_URL${examplePath}"${authHeader}${body}`,
+    "```",
+    "",
+    "## Auth",
+    "",
+    authHint,
+    "",
+  ].join("\n")
+}
+
+function isPairedSenderPublication(publication: WorkflowPublicationDefinition) {
+  const auth = publication.auth as { mode?: string; paired_senders?: { enabled?: boolean } } | null | undefined
+  return auth?.mode === "arroba" && auth.paired_senders?.enabled === true
 }
 
 function parseWatchdogIntervalSeconds(value: string | undefined): number | null {

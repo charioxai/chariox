@@ -78,6 +78,21 @@ Run syntax checks for edited scripts before committing:
 node --check apps/cli/scripts/<script>.mjs
 ```
 
+## Workflow Publication Drill
+
+Use this after touching the workflow gateway, publication auth, publication
+export packaging, or HTTP invocation path:
+
+```bash
+pnpm --filter @arroba/cli run publication:drill
+```
+
+It launches an isolated kernel and gateway, creates a kernel-owned HTTP
+publication, invokes it directly, exports it with
+`workflow publication export`, starts the gateway from the exported
+`publication.config.json`, then validates paired sender
+reject/redeem/invoke/revoke/reject behavior.
+
 ## Kernel Reconnect Drill
 
 Use this after touching CLI/kernel transport recovery:

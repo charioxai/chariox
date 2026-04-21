@@ -11,6 +11,8 @@ const repoRoot = path.resolve(cliRoot, '..', '..')
 
 const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
 const requests = await import('../../../packages/kernel-client/dist/ipc-requests.js')
+const { createDefaultShellContext, parseShellCommand } = await import('../../../packages/kernel-client/dist/shell-core.js')
+const { executeShellCommand } = await import('../../../packages/kernel-client/dist/shell-executor.js')
 
 const {
   addWorkflowNodeRequest,
@@ -265,6 +267,41 @@ async function main() {
       throw new Error(`gateway did not return accepted workflow run metadata: ${JSON.stringify(body)}`)
     }
     logStep('anonymous_ok', { publicationId: publication.id, workflowRunId: body.workflow_run.id })
+    await stopProcess(gateway)
+    gateway = null
+
+    logStep('export_publication_package')
+    const exportDir = path.join(root, 'exported-publication')
+    const exportResult = await executeShellCommand(
+      parseShellCommand(`workflow publication export ${publication.id} ${exportDir} --kernel-url ${kernelUrl}`),
+      createDefaultShellContext({
+        workspace,
+        worktree: workspace,
+        sessionId: session.id,
+        workflowId: workflow.id,
+      }),
+      { client },
+    )
+    if (!exportResult.ok) {
+      throw new Error(`publication export failed: ${exportResult.message}`)
+    }
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_PUBLICATION_CONFIG: path.join(exportDir, 'publication.config.json'),
+      },
+      'gateway-exported',
+    )
+    await waitForGateway(gatewayUrl)
+    const exportedResponse = await fetch(`${gatewayUrl}/qa/exported-publication`)
+    const exportedBody = await exportedResponse.json()
+    if (exportedResponse.status !== 202 || !exportedBody.workflow_run?.id) {
+      throw new Error(`expected exported package HTTP 202, got ${exportedResponse.status}: ${JSON.stringify(exportedBody)}`)
+    }
     await stopProcess(gateway)
     gateway = null
 

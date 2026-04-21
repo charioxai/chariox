@@ -1,4 +1,7 @@
 import assert from "node:assert/strict"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
 
 import type {
@@ -1468,6 +1471,51 @@ test("executeShellCommand manages workflow publications", async () => {
     { ListWorkflowPublicationSenders: { session_id: "session-1", publication_ref: "publication-1" } },
     { RevokeWorkflowPublicationSender: { session_id: "session-1", publication_ref: "publication-1", sender_ref: "sender-1" } },
   ])
+})
+
+test("executeShellCommand exports a workflow publication gateway package", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-publication-export-test-"))
+  try {
+    const publication = makeWorkflowPublication({
+      auth: { mode: "arroba", paired_senders: { enabled: true } },
+      mode: "async",
+    })
+    const fake = fakeClient((request) => {
+      if ("GetWorkflowPublication" in request) {
+        return { WorkflowPublication: { publication } }
+      }
+      throw new Error(`unexpected request ${JSON.stringify(request)}`)
+    })
+    const context = createDefaultShellContext({
+      workspace: root,
+      worktree: root,
+      sessionId: "session-1",
+      workflowId: "workflow-1",
+    })
+
+    const result = await executeShellCommand(
+      parseShellCommand("workflow publication export publication-1 exported --kernel-url ws://kernel.example"),
+      context,
+      { client: fake.client },
+    )
+
+    assert.equal(result.ok, true)
+    assert.match(result.message ?? "", /exported workflow publication publication-1/)
+    const config = JSON.parse(await readFile(join(root, "exported", "publication.config.json"), "utf8"))
+    assert.equal(config.publication_id, "publication-1")
+    assert.equal(config.kernel_endpoint, "ws://kernel.example")
+    assert.deepEqual(config.auth, { mode: "arroba", paired_senders: { enabled: true } })
+    const launcher = await readFile(join(root, "exported", "run.sh"), "utf8")
+    assert.match(launcher, /arroba-workflow-gateway/)
+    const readme = await readFile(join(root, "exported", "README.md"), "utf8")
+    assert.match(readme, /paired sender auth/)
+    assert.match(readme, /well-known\/arroba\/publication\/pair/)
+    assert.deepEqual(fake.requests, [
+      { GetWorkflowPublication: { session_id: "session-1", publication_ref: "publication-1" } },
+    ])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("executeShellCommand manages advanced workflow settings, watchdogs, and queue", async () => {
