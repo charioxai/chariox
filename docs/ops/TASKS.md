@@ -16,8 +16,8 @@ A lightweight, repo-native task board so contributors and future agents can cont
   - Note: Build the M5.7 plan in `docs/M5_7_ARROBA_CLOUD_MULTI_USER_PLAN.md`.
   - Scope: cloud-backed session invites, invite acceptance, cloud user identity propagation into kernels/CLIs, hosted relay admission scoped to cloud session membership, collaborator history, CLI/shell invite and member commands, and live two-user hosted relay drills.
   - Result: Cloud service shared-session invite/member/collaborator APIs are implemented in `arroba-cloud`; OSS kernel IPC bridges those APIs through the persisted cloud relay session; TUI slash commands and `arroba-shell` expose cloud invite create/accept, members, collaborators, and status. Runtime relay token minting requires an active cloud session token, and session-scoped client tokens require accepted cloud shared-session membership.
-  - Drill: `pnpm --filter @arroba/cli run cloud-relay:drill` now covers two cloud users joining one hosted session through a session-scoped cloud-issued relay token.
-  - Follow-up: Add a hardening drill that reruns the M6.5 workflow/redaction assertions through cloud-issued session-scoped relay tokens.
+  - Drill: `pnpm --filter @arroba/cli run cloud-relay:drill` now covers three cloud users joining one hosted session through cloud-issued session-scoped relay tokens and reruns the M6.5 workflow/redaction assertions through that cloud path.
+  - Follow-up: Browser-hosted invite acceptance remains cloud/web product work; the terminal and kernel paths are covered.
 - [ ] **M5.5-001** Add relay realms, pairing, and scoped tokens
   - Note: Build the M5.5 plan in `docs/M5_5_RELAY_IDENTITY_PLAN.md`.
   - Scope: realm-scoped relay registry, scoped relay token verifier, remote CLI pairing, remote machine pairing, caller identity propagation, self-hosted issuer compatibility, hosted issuer compatibility, and security drills.

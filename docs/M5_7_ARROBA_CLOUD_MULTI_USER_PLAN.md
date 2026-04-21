@@ -121,7 +121,7 @@ The CLI should keep browser-first behavior where useful:
   - `cloud status`
 - The first bridge uses a paired cloud invite token plus the existing local kernel session invite token. This keeps kernel authorization unchanged while allowing cloud acceptance to establish cloud membership and collaborator history.
 - Hosted relay token issuance now requires an active cloud session token. Session-scoped client tokens require accepted cloud shared-session membership and bind the relay subject to the logged-in cloud session's client id.
-- The live cloud relay drill now covers two cloud users: the second user accepts the cloud invite, receives a session-scoped hosted relay token, joins the kernel session through the relay with the paired local invite, and appears in kernel session membership.
+- The live cloud relay drill now covers three cloud users: invited users accept the cloud invite, receive session-scoped hosted relay tokens, join the kernel session through the relay with the paired local invite, and run the M6.5 workflow authorization/redaction assertions through that cloud path.
 
 ## Data Model
 
@@ -172,4 +172,4 @@ M5.7 is complete when:
 - CLI and shell expose invite/member/collaborator commands: **implemented**.
 - collaborator history is persisted and visible as suggestions only: **implemented at API/command level**.
 - live two-user hosted relay drill passes: **implemented**
-- M6.5 kernel authorization and redaction rules remain unchanged and covered by the existing M6.5 drills; a future hardening drill should run those same assertions through cloud-issued session-scoped relay tokens.
+- M6.5 kernel authorization and redaction rules remain unchanged and are covered both by the original M6.5 drills and by the cloud relay hardening path using cloud-issued session-scoped relay tokens.

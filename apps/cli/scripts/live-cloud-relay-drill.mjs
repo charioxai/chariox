@@ -162,6 +162,125 @@ function unwrap(resp, key) {
   return resp?.[key] ?? resp
 }
 
+async function expectReject(promise, label, expectedText) {
+  try {
+    await promise
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (expectedText && !message.includes(expectedText)) {
+      throw new Error(`${label} rejected with unexpected error: ${message}`)
+    }
+    return message
+  }
+  throw new Error(`${label} unexpectedly succeeded`)
+}
+
+function addWorkflowNodeRequest(sessionId, workflowRef, agentId, expectedRevision = null) {
+  return {
+    AddWorkflowNode: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      agent_id: agentId,
+      expected_workflow_revision: expectedRevision,
+    },
+  }
+}
+
+function updateWorkflowNodeInstructionsRequest(sessionId, workflowRef, nodeId, instructions, expectedRevision = null) {
+  return {
+    UpdateWorkflowNodeInstructions: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      node_id: nodeId,
+      instructions,
+      expected_workflow_revision: expectedRevision,
+    },
+  }
+}
+
+function createWorkflowEndpointRequest(sessionId, workflowRef, entryNodeId, alias, expectedRevision = null) {
+  return {
+    CreateWorkflowEndpoint: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      entry_node_id: entryNodeId,
+      alias,
+      expected_workflow_revision: expectedRevision,
+    },
+  }
+}
+
+function addWorkflowEdgeRequest(sessionId, workflowRef, fromNodeId, toNodeId, expectedRevision = null) {
+  return {
+    AddWorkflowEdge: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      from_node_id: fromNodeId,
+      to_node_id: toNodeId,
+      output_schema_ref: null,
+      validation_policy: null,
+      expected_workflow_revision: expectedRevision,
+    },
+  }
+}
+
+function removeWorkflowEdgeRequest(sessionId, workflowRef, edgeId, expectedRevision = null) {
+  return {
+    RemoveWorkflowEdge: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      edge_id: edgeId,
+      expected_workflow_revision: expectedRevision,
+    },
+  }
+}
+
+async function loginCloudDrillUser(apiUrl, { email, accountSlug, clientId, clientAlias }) {
+  const started = await postJson(`${apiUrl}/auth/device/start`, {
+    clientId,
+    clientAlias,
+  })
+  await postJson(`${apiUrl}/auth/device/approve`, {
+    userCode: started.userCode,
+    email,
+    accountSlug,
+  })
+  const polled = await postJson(`${apiUrl}/auth/device/poll`, {
+    deviceCode: started.deviceCode,
+  })
+  assert(polled.status === "approved", "cloud drill login should be approved", polled)
+  assert(polled.profile?.userId && polled.cloudSessionToken, "cloud drill login should return profile and session", polled)
+  return {
+    profile: polled.profile,
+    cloudSessionToken: polled.cloudSessionToken,
+  }
+}
+
+async function issueSessionScopedClientToken(apiUrl, {
+  sessionToken,
+  accountId,
+  realmId,
+  subject,
+  userId,
+  clientId,
+  sessionId,
+  targetDaemonAlias,
+}) {
+  const runtime = await postJson(`${apiUrl}/relay/token`, {
+    sessionToken,
+    accountId,
+    subject,
+    subjectKind: "client",
+    realmId,
+    userId,
+    clientId,
+    sessionId,
+    allowedTargets: [targetDaemonAlias],
+  })
+  assert(runtime.token, "session-scoped relay token should be returned", runtime)
+  return runtime.token
+}
+
 async function postJson(url, body) {
   const response = await fetch(url, {
     method: "POST",
@@ -549,13 +668,13 @@ async function main() {
 
     log("cloud-shared-session-invite")
     const localInvite = unwrap(
-      await remoteClient.send(requests.createSessionInviteRequest(created.session.id, null, 2)),
+      await remoteClient.send(requests.createSessionInviteRequest(created.session.id, null, 3)),
       "SessionInviteCreated",
     )
     const cloudInvite = unwrap(
       await localClient.send(requests.createCloudSessionInviteRequest(created.session.id, {
         displayName: "Cloud relay shared session drill",
-        maxUses: 2,
+        maxUses: 3,
       })),
       "CloudSessionInviteCreated",
     )
@@ -564,24 +683,45 @@ async function main() {
     assert(localInviteToken, "local session invite token should be returned", localInvite)
     assert(cloudInviteToken, "cloud session invite token should be returned", cloudInvite)
 
+    log("cloud-owner-session-scoped-token")
+    const ownerScopedToken = await issueSessionScopedClientToken(apiUrl, {
+      sessionToken: profileRef.current.cloudSessionToken,
+      accountId: profileRef.current.accountId,
+      realmId: profileRef.current.realmId,
+      subject: clientId,
+      userId: profileRef.current.userId,
+      clientId,
+      sessionId: created.session.id,
+      targetDaemonAlias: daemonAlias,
+    })
+    const ownerScopedClient = new LocalIpcClient(profileRef.current.relayUrl, {
+      relayAuthToken: ownerScopedToken,
+      targetDaemonAlias: daemonAlias,
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+
     log("cloud-peer-login")
     const peerClientId = `${clientId}-peer`
-    const peerStarted = await postJson(`${apiUrl}/auth/device/start`, {
+    const peerLogin = await loginCloudDrillUser(apiUrl, {
+      email: `${runId}-peer@example.com`,
+      accountSlug: `${runId}-peer`,
       clientId: peerClientId,
       clientAlias: "drill-peer-cli",
     })
-    await postJson(`${apiUrl}/auth/device/approve`, {
-      userCode: peerStarted.userCode,
-      email: `${runId}-peer@example.com`,
-      accountSlug: `${runId}-peer`,
+    const peerProfile = peerLogin.profile
+    const peerCloudSessionToken = peerLogin.cloudSessionToken
+
+    log("cloud-third-login")
+    const thirdClientId = `${clientId}-third`
+    const thirdLogin = await loginCloudDrillUser(apiUrl, {
+      email: `${runId}-third@example.com`,
+      accountSlug: `${runId}-third`,
+      clientId: thirdClientId,
+      clientAlias: "drill-third-cli",
     })
-    const peerPolled = await postJson(`${apiUrl}/auth/device/poll`, {
-      deviceCode: peerStarted.deviceCode,
-    })
-    assert(peerPolled.status === "approved", "peer cloud login should be approved", peerPolled)
-    const peerProfile = peerPolled.profile
-    const peerCloudSessionToken = peerPolled.cloudSessionToken
-    assert(peerProfile?.userId && peerCloudSessionToken, "peer cloud login should return profile and session", peerPolled)
+    const thirdProfile = thirdLogin.profile
+    const thirdCloudSessionToken = thirdLogin.cloudSessionToken
 
     log("cloud-peer-accept-invite")
     const peerAcceptance = await postJson(`${apiUrl}/sessions/invites/${encodeURIComponent(cloudInviteToken)}/accept`, {
@@ -589,34 +729,62 @@ async function main() {
     })
     assert(peerAcceptance.userId === peerProfile.userId, "peer should accept the cloud invite as itself", peerAcceptance)
 
+    log("cloud-third-accept-invite")
+    const thirdAcceptance = await postJson(`${apiUrl}/sessions/invites/${encodeURIComponent(cloudInviteToken)}/accept`, {
+      sessionToken: thirdCloudSessionToken,
+    })
+    assert(thirdAcceptance.userId === thirdProfile.userId, "third user should accept the cloud invite as itself", thirdAcceptance)
+
     log("cloud-peer-session-scoped-token")
-    const peerRuntime = await postJson(`${apiUrl}/relay/token`, {
+    const peerRelayToken = await issueSessionScopedClientToken(apiUrl, {
       sessionToken: peerCloudSessionToken,
       accountId: profileRef.current.accountId,
-      subject: peerClientId,
-      subjectKind: "client",
       realmId: profileRef.current.realmId,
+      subject: peerClientId,
       userId: peerProfile.userId,
       clientId: peerClientId,
       sessionId: created.session.id,
-      allowedTargets: [daemonAlias],
+      targetDaemonAlias: daemonAlias,
     })
-    assert(peerRuntime.token, "peer session-scoped relay token should be returned", peerRuntime)
+
+    log("cloud-third-session-scoped-token")
+    const thirdRelayToken = await issueSessionScopedClientToken(apiUrl, {
+      sessionToken: thirdCloudSessionToken,
+      accountId: profileRef.current.accountId,
+      realmId: profileRef.current.realmId,
+      subject: thirdClientId,
+      userId: thirdProfile.userId,
+      clientId: thirdClientId,
+      sessionId: created.session.id,
+      targetDaemonAlias: daemonAlias,
+    })
 
     log("cloud-peer-relay-join")
     const peerRemoteClient = new LocalIpcClient(profileRef.current.relayUrl, {
-      relayAuthToken: peerRuntime.token,
+      relayAuthToken: peerRelayToken,
+      targetDaemonAlias: daemonAlias,
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    const thirdRemoteClient = new LocalIpcClient(profileRef.current.relayUrl, {
+      relayAuthToken: thirdRelayToken,
       targetDaemonAlias: daemonAlias,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })
     try {
       await peerRemoteClient.send(requests.joinSessionInviteRequest(localInviteToken, peerProfile.userId))
+      await thirdRemoteClient.send(requests.joinSessionInviteRequest(localInviteToken, thirdProfile.userId))
       const peerAttached = unwrap(
         await peerRemoteClient.send(requests.attachToSessionRequest(created.session.id, `${peerClientId}-remote`)),
         "SessionAttached",
       )
       assert(peerAttached.attachment?.session_id === created.session.id, "peer should attach to joined session", peerAttached)
+      const thirdAttached = unwrap(
+        await thirdRemoteClient.send(requests.attachToSessionRequest(created.session.id, `${thirdClientId}-remote`)),
+        "SessionAttached",
+      )
+      assert(thirdAttached.attachment?.session_id === created.session.id, "third user should attach to joined session", thirdAttached)
       const members = unwrap(
         await peerRemoteClient.send(requests.listSessionMembersRequest(created.session.id)),
         "SessionMembersListed",
@@ -626,8 +794,150 @@ async function main() {
         "peer should appear in kernel session members after relay join",
         members,
       )
+      assert(
+        members.members?.some((member) => member.user_id === thirdProfile.userId),
+        "third user should appear in kernel session members after relay join",
+        members,
+      )
+
+      log("cloud-session-scoped-workflow-assertions")
+      const ownerAgent = unwrap(
+        await ownerScopedClient.send(requests.spawnAgentRequest(created.session.id, "dev-stub", "owner-agent", "multi-user-drill", workspace, "low")),
+        "AgentSpawned",
+      ).agent
+      const peerAgent = unwrap(
+        await peerRemoteClient.send(requests.spawnAgentRequest(created.session.id, "dev-stub", "peer-agent", "multi-user-drill", workspace, "low")),
+        "AgentSpawned",
+      ).agent
+      assert(ownerAgent.owner_user_id === profileRef.current.userId, "owner agent should use owner cloud user id", ownerAgent)
+      assert(peerAgent.owner_user_id === peerProfile.userId, "peer agent should use peer cloud user id", peerAgent)
+
+      const peerAgents = unwrap(
+        await peerRemoteClient.send(requests.listAgentsRequest(created.session.id)),
+        "AgentsListed",
+      ).agents
+      assert(
+        peerAgents.length === 1 && peerAgents[0].id === peerAgent.id,
+        "peer should only list its own providers/agents through cloud-scoped relay token",
+        peerAgents,
+      )
+
+      const workflow = unwrap(
+        await ownerScopedClient.send(requests.createWorkflowRequest(created.session.id, "cloud-session-scoped-live-flow")),
+        "WorkflowCreated",
+      ).workflow
+      const ownerNode = unwrap(
+        await ownerScopedClient.send(addWorkflowNodeRequest(created.session.id, workflow.id, ownerAgent.id, workflow.revision)),
+        "WorkflowNodeAdded",
+      ).node
+      await ownerScopedClient.send(updateWorkflowNodeInstructionsRequest(
+        created.session.id,
+        workflow.id,
+        ownerNode.id,
+        "private cloud owner prompt",
+      ))
+
+      await expectReject(
+        peerRemoteClient.send(addWorkflowNodeRequest(created.session.id, workflow.id, ownerAgent.id)),
+        "peer adding owner agent as workflow node through cloud-scoped relay token",
+        "owned by",
+      )
+
+      const beforePeerNode = unwrap(
+        await peerRemoteClient.send(requests.resolveWorkflowRequest(created.session.id, workflow.id)),
+        "WorkflowResolved",
+      ).workflow
+      const peerNode = unwrap(
+        await peerRemoteClient.send(addWorkflowNodeRequest(created.session.id, workflow.id, peerAgent.id, beforePeerNode.revision)),
+        "WorkflowNodeAdded",
+      ).node
+      await peerRemoteClient.send(updateWorkflowNodeInstructionsRequest(
+        created.session.id,
+        workflow.id,
+        peerNode.id,
+        "private cloud peer prompt",
+      ))
+
+      const endpoint = unwrap(
+        await ownerScopedClient.send(createWorkflowEndpointRequest(created.session.id, workflow.id, ownerNode.id, "owner-cloud-entry")),
+        "WorkflowEndpointCreated",
+      ).endpoint
+      await expectReject(
+        peerRemoteClient.send(requests.invokeWorkflowEndpointRequest(created.session.id, workflow.id, endpoint.id, "should be denied")),
+        "peer invoking owner endpoint through cloud-scoped relay token",
+        "owned by",
+      )
+
+      const beforeEdge = unwrap(
+        await peerRemoteClient.send(requests.resolveWorkflowRequest(created.session.id, workflow.id)),
+        "WorkflowResolved",
+      ).workflow
+      const edge = unwrap(
+        await peerRemoteClient.send(addWorkflowEdgeRequest(created.session.id, workflow.id, ownerNode.id, peerNode.id, beforeEdge.revision)),
+        "WorkflowEdgeAdded",
+      ).edge
+      assert(edge.created_by_user_id === peerProfile.userId, "cross-owner edge should record peer cloud user id", edge)
+
+      await expectReject(
+        thirdRemoteClient.send(removeWorkflowEdgeRequest(created.session.id, workflow.id, edge.id)),
+        "third user removing edge unrelated to its nodes through cloud-scoped relay token",
+        "cannot perform",
+      )
+
+      const beforeStaleMutation = unwrap(
+        await ownerScopedClient.send(requests.resolveWorkflowRequest(created.session.id, workflow.id)),
+        "WorkflowResolved",
+      ).workflow
+      await peerRemoteClient.send(updateWorkflowNodeInstructionsRequest(
+        created.session.id,
+        workflow.id,
+        peerNode.id,
+        "private cloud peer prompt after revision bump",
+      ))
+      await expectReject(
+        ownerScopedClient.send(updateWorkflowNodeInstructionsRequest(
+          created.session.id,
+          workflow.id,
+          ownerNode.id,
+          "stale private cloud owner prompt",
+          beforeStaleMutation.revision,
+        )),
+        "stale workflow revision mutation through cloud-scoped relay token",
+        "expected",
+      )
+
+      const freshWorkflow = unwrap(
+        await ownerScopedClient.send(requests.resolveWorkflowRequest(created.session.id, workflow.id)),
+        "WorkflowResolved",
+      ).workflow
+      const removedWorkflow = unwrap(
+        await ownerScopedClient.send(removeWorkflowEdgeRequest(created.session.id, workflow.id, edge.id, freshWorkflow.revision)),
+        "WorkflowEdgeRemoved",
+      ).workflow
+      assert(removedWorkflow.edges.length === 0, "owner should remove edge incident to its own node", removedWorkflow)
+
+      const peerStatePayload = unwrap(
+        await peerRemoteClient.send(requests.getSessionStateRequest(created.session.id)),
+        "SessionState",
+      )
+      const peerState = peerStatePayload.session ?? peerStatePayload.state ?? peerStatePayload
+      assert(peerState.agents.length === 1 && peerState.agents[0].id === peerAgent.id, "peer state should redact owner agent", peerState.agents)
+      const redactedWorkflow = peerState.workflows.find((entry) => entry.id === workflow.id)
+      assert(redactedWorkflow, "peer should see shared workflow graph", peerState.workflows)
+      const redactedOwnerNode = redactedWorkflow.nodes.find((node) => node.id === ownerNode.id)
+      const visiblePeerNode = redactedWorkflow.nodes.find((node) => node.id === peerNode.id)
+      assert(redactedOwnerNode, "peer should see owner node shell", redactedWorkflow)
+      assert(visiblePeerNode, "peer should see own node", redactedWorkflow)
+      assert(redactedOwnerNode.instructions == null, "owner node instructions should be redacted from peer", redactedOwnerNode)
+      assert(
+        visiblePeerNode.instructions === "private cloud peer prompt after revision bump",
+        "peer node instructions should remain visible to owner",
+        visiblePeerNode,
+      )
     } finally {
+      await thirdRemoteClient.close().catch(() => {})
       await peerRemoteClient.close().catch(() => {})
+      await ownerScopedClient.close().catch(() => {})
     }
 
     console.log("live cloud relay drill passed")
@@ -637,8 +947,8 @@ async function main() {
     await terminateChild(daemon)
     await terminateChild(relay)
     await terminateChild(cloudServer)
-    await db.account.deleteMany({ where: { slug: { in: [runId, `${runId}-peer`] } } }).catch(() => {})
-    await db.user.deleteMany({ where: { email: { in: [`${runId}@example.com`, `${runId}-peer@example.com`] } } }).catch(() => {})
+    await db.account.deleteMany({ where: { slug: { in: [runId, `${runId}-peer`, `${runId}-third`] } } }).catch(() => {})
+    await db.user.deleteMany({ where: { email: { in: [`${runId}@example.com`, `${runId}-peer@example.com`, `${runId}-third@example.com`] } } }).catch(() => {})
     await db.$disconnect().catch(() => {})
     await rm(rootDir, { recursive: true, force: true }).catch(() => {})
   }
