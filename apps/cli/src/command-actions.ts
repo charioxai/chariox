@@ -201,9 +201,19 @@ type CommandActionDeps = {
     clientId: string,
     alias?: string,
   ) => Promise<RelayCloudProfile>
+  pairCloudRelayMachine?: (
+    profile: RelayCloudProfile,
+    machineId: string,
+    alias?: string,
+  ) => Promise<RelayCloudProfile>
   issueCloudKernelRelayToken?: (
     profile: RelayCloudProfile,
     daemonId: string,
+  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number }>
+  issueCloudMachineRelayToken?: (
+    profile: RelayCloudProfile,
+    daemonId: string,
+    machineId: string,
   ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number }>
   issueCloudClientRelayToken?: (
     profile: RelayCloudProfile,
@@ -1502,6 +1512,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
             `realm=${profile.realmId}`,
             `relay=${profile.relayUrl}`,
             `client=${profile.clientId ?? "-"}`,
+            `machine=${profile.machineId ?? "-"}`,
           ].join("\n"),
         )
         deps.flashFooter(`cloud relay profile ${profile.accountSlug}`, "info")
@@ -1544,6 +1555,28 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         deps.flashFooter(`cloud relay client paired as ${paired.clientId ?? deps.clientId}`, "info")
         return
       }
+      if (cloudCommand === "pair-machine") {
+        if (!deps.pairCloudRelayMachine || !deps.saveCloudRelayProfile || !deps.getRelayStatus) {
+          deps.flashFooter("cloud relay machine pairing is unavailable in this build", "error")
+          return
+        }
+        const profile = deps.getCloudRelayProfile?.() ?? null
+        if (!profile) {
+          deps.flashFooter("cloud relay profile missing; run /relay cloud login first", "error")
+          return
+        }
+        const relayStatus = await deps.getRelayStatus()
+        const machineId = cloudArgs[0] || relayStatus.machine_id
+        if (!machineId) {
+          deps.flashFooter("usage: /relay cloud pair-machine [machine-id] [alias]", "error")
+          return
+        }
+        const alias = cloudArgs.slice(1).join(" ").trim() || relayStatus.machine_alias || undefined
+        const paired = await deps.pairCloudRelayMachine(profile, machineId, alias)
+        await deps.saveCloudRelayProfile(paired)
+        deps.flashFooter(`cloud relay machine paired as ${paired.machineId ?? machineId}`, "info")
+        return
+      }
       if (cloudCommand === "connect" || cloudCommand === "refresh") {
         if (!deps.issueCloudKernelRelayToken || !deps.saveCloudRelayProfile || !deps.getRelayStatus || !deps.configureRelay) {
           deps.flashFooter("cloud relay connect is unavailable in this build", "error")
@@ -1555,7 +1588,9 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           return
         }
         const relayStatus = await deps.getRelayStatus()
-        const issued = await deps.issueCloudKernelRelayToken(profile, relayStatus.daemon_id)
+        const issued = profile.machineId && deps.issueCloudMachineRelayToken
+          ? await deps.issueCloudMachineRelayToken(profile, relayStatus.daemon_id, profile.machineId)
+          : await deps.issueCloudKernelRelayToken(profile, relayStatus.daemon_id)
         await deps.configureRelay(issued.relayUrl, issued.relayToken)
         await deps.saveCloudRelayProfile({
           ...profile,
@@ -1610,7 +1645,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       deps.flashFooter(
-        "usage: /relay cloud status | /relay cloud login <api-url> <email> [account-slug] | /relay cloud pair [alias] | /relay cloud connect | /relay cloud client-token <target-daemon-alias> | /relay cloud disable",
+        "usage: /relay cloud status | /relay cloud login <api-url> <email> [account-slug] | /relay cloud pair [alias] | /relay cloud pair-machine [machine-id] [alias] | /relay cloud connect | /relay cloud client-token <target-daemon-alias> | /relay cloud disable",
         "error",
       )
       return

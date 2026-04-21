@@ -148,6 +148,7 @@ import {
   bootstrapCloudRelayProfile,
   issueCloudRelayToken,
   pairCloudRelayClient,
+  pairCloudRelayMachine,
 } from "./cloud-relay.js"
 import {
   loadPreferences,
@@ -5408,12 +5409,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }),
     pairCloudRelayClient: (profile, clientId, alias) =>
       pairCloudRelayClient(profile, clientId, alias),
+    pairCloudRelayMachine: (profile, machineId, alias) =>
+      pairCloudRelayMachine(profile, machineId, alias),
     issueCloudKernelRelayToken: (profile, daemonId) =>
       issueCloudRelayToken({
         profile,
         subject: daemonId,
         subjectKind: "kernel",
         userId: profile.userId,
+      }),
+    issueCloudMachineRelayToken: (profile, daemonId, machineId) =>
+      issueCloudRelayToken({
+        profile,
+        subject: machineId,
+        subjectKind: "machine",
+        userId: profile.userId,
+        machineId,
       }),
     issueCloudClientRelayToken: (profile, targetDaemonAlias) =>
       issueCloudRelayToken({

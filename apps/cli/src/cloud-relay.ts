@@ -66,6 +66,30 @@ export async function pairCloudRelayClient(
   }
 }
 
+export async function pairCloudRelayMachine(
+  profile: RelayCloudProfile,
+  machineId: string,
+  alias?: string,
+): Promise<RelayCloudProfile> {
+  const pairing = await postJson<{ token: string }>(profile.apiUrl, "/pairing-tokens", {
+    accountId: profile.accountId,
+    createdByUserId: profile.userId,
+    subjectKind: "machine",
+  })
+  await postJson(profile.apiUrl, "/machines/pair", {
+    accountId: profile.accountId,
+    token: pairing.token,
+    machineId,
+    userId: profile.userId,
+    ...(alias ? { alias } : {}),
+  })
+  return {
+    ...profile,
+    machineId,
+    ...(alias ? { machineAlias: alias } : {}),
+  }
+}
+
 export async function issueCloudRelayToken(
   input: IssueCloudRelayTokenInput,
 ): Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number }> {

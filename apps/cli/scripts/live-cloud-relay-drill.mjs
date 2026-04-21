@@ -214,6 +214,11 @@ function createMinimalCommandDeps({
       nextClientId,
       alias,
     ),
+    pairCloudRelayMachine: (profile, machineId, alias) => cloudRelay.pairCloudRelayMachine(
+      profile,
+      machineId,
+      alias,
+    ),
     getRelayStatus: async () => unwrap(
       await localClient.send(requests.relayStatusRequest()),
       "RelayStatus",
@@ -227,6 +232,13 @@ function createMinimalCommandDeps({
       subject: daemonId,
       subjectKind: "kernel",
       userId: profile.userId,
+    }),
+    issueCloudMachineRelayToken: (profile, daemonId, machineId) => cloudRelay.issueCloudRelayToken({
+      profile,
+      subject: machineId,
+      subjectKind: "machine",
+      userId: profile.userId,
+      machineId,
     }),
     issueCloudClientRelayToken: (profile, targetDaemonAlias) => cloudRelay.issueCloudRelayToken({
       profile,
@@ -361,6 +373,14 @@ async function main() {
       args: ["cloud", "pair", "drill-cli"],
     })
     assert(profileRef.current?.clientId === clientId, "cloud pair command should save client id", profileRef.current)
+
+    log("command-cloud-pair-machine")
+    await handlers.handleRelayCommand({
+      kind: "relay",
+      raw: `/relay cloud pair-machine ${daemonId} drill-machine`,
+      args: ["cloud", "pair-machine", daemonId, "drill-machine"],
+    })
+    assert(profileRef.current?.machineId === daemonId, "cloud pair-machine command should save machine id", profileRef.current)
 
     log("command-cloud-connect")
     await handlers.handleRelayCommand({

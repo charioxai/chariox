@@ -323,6 +323,100 @@ test("relay cloud connect mints a daemon token and configures relay", async () =
   assert.equal(flashed.at(-1), "cloud relay connected: wss://relay.example")
 })
 
+test("relay cloud pair-machine stores the local machine identity", async () => {
+  const flashed: string[] = []
+  let savedProfile: Record<string, unknown> | null = null
+  const profile = {
+    apiUrl: "https://cloud.example",
+    email: "user@example.com",
+    accountId: "account-1",
+    userId: "user-1",
+    accountSlug: "user",
+    realmId: "realm-1",
+    relayUrl: "wss://relay.example",
+    issuerId: "issuer-1",
+  }
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    flashFooter: (message: string) => { flashed.push(message) },
+    getCloudRelayProfile: () => profile,
+    getRelayStatus: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    pairCloudRelayMachine: async (_profile: Record<string, unknown>, machineId: string, alias?: string) => ({
+      ...profile,
+      machineId,
+      ...(alias ? { machineAlias: alias } : {}),
+    }),
+    saveCloudRelayProfile: async (next: Record<string, unknown> | null) => {
+      savedProfile = next
+    },
+  }))
+
+  await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud pair-machine", args: ["cloud", "pair-machine"] })
+
+  assert.equal((savedProfile as { machineId?: string } | null)?.machineId, "machine-1")
+  assert.equal((savedProfile as { machineAlias?: string } | null)?.machineAlias, "laptop")
+  assert.equal(flashed.at(-1), "cloud relay machine paired as machine-1")
+})
+
+test("relay cloud connect prefers paired machine tokens", async () => {
+  const configured: Array<{ relayUrl: string | null; relayToken: string | null }> = []
+  const profile = {
+    apiUrl: "https://cloud.example",
+    email: "user@example.com",
+    accountId: "account-1",
+    userId: "user-1",
+    accountSlug: "user",
+    realmId: "realm-1",
+    relayUrl: "wss://relay.example",
+    issuerId: "issuer-1",
+    machineId: "machine-1",
+  }
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    getCloudRelayProfile: () => profile,
+    getRelayStatus: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: null,
+    }),
+    issueCloudKernelRelayToken: async () => {
+      throw new Error("kernel token path should not be used")
+    },
+    issueCloudMachineRelayToken: async (_profile: Record<string, unknown>, daemonId: string, machineId: string) => ({
+      relayUrl: "wss://relay.example",
+      relayToken: `machine-token:${machineId}:${daemonId}`,
+      tokenExpiresAtMs: 5678,
+    }),
+    configureRelay: async (relayUrl: string | null, relayToken: string | null) => {
+      configured.push({ relayUrl, relayToken })
+      return {
+        configured: true,
+        connected: false,
+        relay_url: relayUrl,
+        relay_token_configured: Boolean(relayToken),
+        daemon_id: "daemon-1",
+        machine_id: "machine-1",
+        machine_alias: null,
+      }
+    },
+    saveCloudRelayProfile: async () => {},
+  }))
+
+  await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud connect", args: ["cloud", "connect"] })
+
+  assert.deepEqual(configured, [{ relayUrl: "wss://relay.example", relayToken: "machine-token:machine-1:daemon-1" }])
+})
+
 test("workflow add node all adds only agents missing from the selected workflow", async () => {
   const existingAgent = makeAgent({
     id: "agent-existing",

@@ -25,6 +25,8 @@ export type RelayCloudProfile = {
   issuerId: string
   clientId?: string
   clientAlias?: string
+  machineId?: string
+  machineAlias?: string
   tokenExpiresAtMs?: number
 }
 
