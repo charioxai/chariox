@@ -304,6 +304,18 @@ M9 does not add a dedicated workflow-to-workflow protocol. Instead, add a live d
 
 This proves the application shape while keeping protocol discovery and mesh semantics out of v1.
 
+Implementation status:
+
+- Added `pnpm --filter @arroba/cli run workflow-to-workflow-publication:drill`.
+- The drill starts two isolated kernels and two workflow gateways.
+- Workflow B is published over HTTP from the worker kernel.
+- Workflow A is published over HTTP from the home kernel with a custom parser
+  that calls workflow B's published HTTP endpoint, captures B's accepted
+  workflow run id, and passes that metadata into workflow A's normalized input.
+- The drill validates both A and B return accepted async workflow run metadata,
+  proving cross-kernel workflow interaction through the v1 publication HTTP
+  surface without adding the future mesh/discovery protocol.
+
 ## M9.11 Live Drills
 
 Required drills:

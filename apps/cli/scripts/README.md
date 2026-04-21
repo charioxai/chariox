@@ -93,6 +93,17 @@ publication, invokes it directly, exports it with
 `publication.config.json`, then validates paired sender
 reject/redeem/invoke/revoke/reject behavior.
 
+Use this after touching cross-kernel publication calls or the custom parser
+path:
+
+```bash
+pnpm --filter @arroba/cli run workflow-to-workflow-publication:drill
+```
+
+It launches two isolated kernels and gateways. Workflow A's published gateway
+uses a custom parser that calls workflow B's published HTTP endpoint, then
+passes B's accepted run id into workflow A's normalized input.
+
 ## Kernel Reconnect Drill
 
 Use this after touching CLI/kernel transport recovery:
