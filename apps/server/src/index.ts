@@ -168,6 +168,14 @@ type GatewayDeps = {
   ) => Promise<WorkflowPublicationTrustedSender>
 }
 
+export type PublicationInvocationOptions = {
+  input: unknown
+  caller?: Record<string, unknown>
+  mode?: "sync" | "async"
+  requestIdPrefix?: string
+  deps?: Pick<GatewayDeps, "invokeWorkflow">
+}
+
 type KernelLookupClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
   close?: () => Promise<void>
@@ -429,6 +437,26 @@ async function invokeKernelWorkflow(
   } finally {
     await client.close().catch(() => {})
   }
+}
+
+export async function invokePublicationInput(
+  publication: WorkflowPublicationConfig,
+  options: PublicationInvocationOptions,
+): Promise<WorkflowInvocationResult> {
+  validateInput(options.input, publication.input_schema)
+  const invocation: NormalizedInvocation = {
+    publication_id: publication.publication_id,
+    request_id: `${options.requestIdPrefix ?? "ipc"}_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    caller: options.caller ?? {
+      type: "ipc",
+      proof: { auth: "ipc", connector: "ipc" },
+    },
+    input: options.input,
+    mode: options.mode ?? publication.mode ?? "sync",
+  }
+  return options.deps?.invokeWorkflow
+    ? await options.deps.invokeWorkflow(invocation)
+    : await invokeKernelWorkflow(publication, invocation)
 }
 
 async function redeemPublicationPairCode(

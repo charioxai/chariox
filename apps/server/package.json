@@ -14,7 +14,8 @@
     "ws": "^8.18.3"
   },
   "bin": {
-    "arroba-workflow-gateway": "dist/index.js"
+    "arroba-workflow-gateway": "dist/index.js",
+    "arroba-workflow-call": "dist/workflow-call.js"
   },
   "devDependencies": {
     "@types/ws": "^8.5.13"

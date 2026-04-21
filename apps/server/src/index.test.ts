@@ -4,6 +4,7 @@ import test from "node:test"
 
 import {
   buildServer,
+  invokePublicationInput,
   loadPublicationConfigFromKernel,
   publicationConfigFromKernelRecord,
   type WorkflowPublicationConfig,
@@ -342,6 +343,40 @@ test("gateway reports WebSocket input validation errors", async () => {
   } finally {
     await app.close()
   }
+})
+
+test("invokePublicationInput validates and invokes through IPC-shaped caller metadata", async () => {
+  const inputs: unknown[] = []
+  const callers: unknown[] = []
+  const result = await invokePublicationInput({
+    ...baseConfig,
+    input_schema: { type: "object", required: ["task"], properties: { task: { type: "string" } } },
+  }, {
+    input: { task: "ship" },
+    mode: "async",
+    deps: {
+      invokeWorkflow: async (invocation) => {
+        inputs.push(invocation.input)
+        callers.push(invocation.caller)
+        return { accepted: true, workflow_run: { id: "run-ipc", status: "Running" } }
+      },
+    },
+  })
+
+  assert.equal(result.workflow_run?.id, "run-ipc")
+  assert.deepEqual(inputs, [{ task: "ship" }])
+  assert.deepEqual(callers, [{ type: "ipc", proof: { auth: "ipc", connector: "ipc" } }])
+
+  await assert.rejects(
+    () => invokePublicationInput({
+      ...baseConfig,
+      input_schema: { type: "object", required: ["task"], properties: { task: { type: "string" } } },
+    }, {
+      input: { task: 7 },
+      deps: { invokeWorkflow: async () => ({ accepted: true }) },
+    }),
+    /field task expected string/,
+  )
 })
 
 test("arroba auth maps a verified connector identity to one Arroba principal", async () => {

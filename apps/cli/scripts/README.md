@@ -92,7 +92,8 @@ publication, invokes it directly, verifies parser failures return HTTP 400,
 invokes the same publication over WebSocket, restarts the gateway with
 self-signed HTTPS/TLS and invokes it again over HTTPS and WSS, exports it with
 `workflow publication export`, starts the gateway from the exported
-`publication.config.json`, validates signed Slack URL verification and signed
+`publication.config.json`, invokes the exported package through
+`arroba-workflow-call`, validates signed Slack URL verification and signed
 Slack slash-command invocation, validates Telegram webhook-secret rejection and
 accepted invocation, validates Discord Ed25519 ping, signature rejection, and
 accepted invocation, validates WhatsApp webhook challenge/HMAC invocation,

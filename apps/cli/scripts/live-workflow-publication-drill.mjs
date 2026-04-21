@@ -506,6 +506,24 @@ async function main() {
     await stopProcess(gateway)
     gateway = null
 
+    logStep('invoke_ipc_exported')
+    const ipcResult = await run(process.execPath, [
+      path.join(repoRoot, 'apps/server/dist/workflow-call.js'),
+      '--config',
+      path.join(exportDir, 'publication.config.json'),
+      '--input',
+      JSON.stringify({ task: 'ipc-exported-publication' }),
+      '--mode',
+      'async',
+    ], { env })
+    if (ipcResult.code !== 0) {
+      throw new Error(`expected IPC exported invocation to succeed\nstdout:\n${ipcResult.stdout}\nstderr:\n${ipcResult.stderr}`)
+    }
+    const ipcBody = JSON.parse(ipcResult.stdout)
+    if (!ipcBody.accepted || !hasAcceptedRunMetadata(ipcBody)) {
+      throw new Error(`expected IPC accepted run metadata, got ${ipcResult.stdout}`)
+    }
+
     logStep('create_slack_publication')
     const slackSecret = 'publication-drill-slack-secret'
     const slackPublication = variant(

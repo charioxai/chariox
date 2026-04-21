@@ -322,8 +322,28 @@ Implementation status:
 Local program/script integration without the interactive CLI:
 
 ```bash
-arroba-workflow-call publication-name --input input.json
+arroba-workflow-call --config ./publication.config.json --input '{"task":"ship"}'
+arroba-workflow-call --session-id <session> --publication-id <publication> --input-file input.json
 ```
+
+V1 behavior:
+
+- loads an exported `publication.config.json`, or looks up a kernel-owned
+  publication by session id plus publication id
+- accepts JSON input from `--input`, `--input-file`, or stdin
+- validates the publication input schema before invoking the workflow endpoint
+- invokes the same kernel workflow endpoint as HTTP and WebSocket
+- returns the workflow invocation result as JSON on stdout
+- treats local filesystem/kernel access as the v1 trust boundary and marks
+  caller metadata as `auth=ipc`
+
+Implementation status:
+
+- Added `arroba-workflow-call` as a server package executable.
+- Exported publication README files document local IPC invocation.
+- Unit coverage verifies IPC-shaped caller metadata and validation failures.
+- The publication live drill now invokes the exported publication package
+  through `arroba-workflow-call`.
 
 ## M9.9 Export Command
 
@@ -392,7 +412,7 @@ Required drills:
 - async response returns run id/status metadata
 - artifact-backed HTTP response passthrough
 - WebSocket stream returns progress/final output
-- IPC invocation works
+- IPC invocation works through `arroba-workflow-call`
 - workflow A calls workflow B through B's published HTTP endpoint in a separate kernel
 
 ## M9.12 Slack Connector
