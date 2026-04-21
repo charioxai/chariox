@@ -149,6 +149,97 @@ function unwrap(resp, key) {
   return resp?.[key] ?? resp
 }
 
+function parseCloudClientTokenNotice(notices) {
+  const notice = [...notices].reverse().find((item) => item.startsWith("cloud relay client token\n"))
+  assert(notice, "cloud relay client-token command should append a token notice", notices)
+  const fields = Object.fromEntries(
+    notice
+      .split("\n")
+      .slice(1)
+      .map((line) => {
+        const index = line.indexOf("=")
+        return index === -1 ? [line, ""] : [line.slice(0, index), line.slice(index + 1)]
+      }),
+  )
+  assert(fields.relay_url, "client token notice should include relay_url", fields)
+  assert(fields.command, "client token notice should include command", fields)
+  const tokenMatch = fields.command.match(/\s--relay-token\s+(\S+)/)
+  assert(tokenMatch?.[1], "client token command should include --relay-token", fields.command)
+  return {
+    relayUrl: fields.relay_url,
+    relayToken: tokenMatch[1],
+  }
+}
+
+function createMinimalCommandDeps({
+  workspace,
+  clientId,
+  localClient,
+  requests,
+  cloudRelay,
+  profileRef,
+  notices,
+}) {
+  return {
+    workspace,
+    worktree: workspace,
+    clientId,
+    isAttached: () => false,
+    sessionState: () => ({ id: null, agents: [], workflows: [] }),
+    attachmentState: () => null,
+    providerRunState: () => null,
+    currentModelId: () => "gpt-5.2",
+    currentVariantId: () => "low",
+    currentProviderId: () => "codex",
+    focusedAgentId: () => null,
+    multiAgentResponseLayout: () => "individual",
+    maxAgentsPerScreen: () => 3,
+    flashFooter: (message, tone) => log("command-footer", { tone, message }),
+    appendNotice: (message) => {
+      notices.push(message)
+      log("command-notice", { firstLine: message.split("\n")[0] })
+    },
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    getCloudRelayProfile: () => profileRef.current,
+    saveCloudRelayProfile: async (profile) => {
+      profileRef.current = profile
+    },
+    bootstrapCloudRelay: (apiUrl, email, accountSlug) => cloudRelay.bootstrapCloudRelayProfile({
+      apiUrl,
+      email,
+      ...(accountSlug ? { accountSlug } : {}),
+    }),
+    pairCloudRelayClient: (profile, nextClientId, alias) => cloudRelay.pairCloudRelayClient(
+      profile,
+      nextClientId,
+      alias,
+    ),
+    getRelayStatus: async () => unwrap(
+      await localClient.send(requests.relayStatusRequest()),
+      "RelayStatus",
+    ).status,
+    configureRelay: async (relayUrl, relayToken) => unwrap(
+      await localClient.send(requests.configureRelayRequest(relayUrl, relayToken)),
+      "RelayConfigured",
+    ).status,
+    issueCloudKernelRelayToken: (profile, daemonId) => cloudRelay.issueCloudRelayToken({
+      profile,
+      subject: daemonId,
+      subjectKind: "kernel",
+      userId: profile.userId,
+    }),
+    issueCloudClientRelayToken: (profile, targetDaemonAlias) => cloudRelay.issueCloudRelayToken({
+      profile,
+      subject: profile.clientId ?? clientId,
+      subjectKind: "client",
+      userId: profile.userId,
+      clientId: profile.clientId ?? clientId,
+      allowedTargets: [targetDaemonAlias],
+    }),
+    refreshWaitingRoomData: async () => {},
+  }
+}
+
 async function main() {
   const ports = makePorts()
   const runId = `cloud-relay-${process.pid}-${Date.now()}`
@@ -161,10 +252,11 @@ async function main() {
   await rm(rootDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(workspace, { recursive: true })
 
-  const [{ LocalIpcClient }, requests, cloudRelay, cloudDb] = await Promise.all([
+  const [{ LocalIpcClient }, requests, cloudRelay, commandActions, cloudDb] = await Promise.all([
     import("../../../packages/kernel-client/dist/ipc.js"),
     import("../../../packages/kernel-client/dist/ipc-requests.js"),
     import("../dist/cloud-relay.js"),
+    import("../dist/command-actions.js"),
     import(path.join(cloudRoot, "packages/db/dist/index.js")),
   ])
 
@@ -242,34 +334,48 @@ async function main() {
     await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace)
     localClient = new LocalIpcClient(kernelUrl)
 
-    log("bootstrap-cloud-profile")
-    let profile = await cloudRelay.bootstrapCloudRelayProfile({
-      apiUrl,
-      email: `${runId}@example.com`,
-      accountSlug: runId,
-    })
-    profile = await cloudRelay.pairCloudRelayClient(profile, clientId, "drill-cli")
+    const profileRef = { current: null }
+    const notices = []
+    const handlers = commandActions.createCommandActionHandlers(createMinimalCommandDeps({
+      workspace,
+      clientId,
+      localClient,
+      requests,
+      cloudRelay,
+      profileRef,
+      notices,
+    }))
 
-    log("mint-kernel-token")
-    const daemonRelay = await cloudRelay.issueCloudRelayToken({
-      profile,
-      subject: daemonId,
-      subjectKind: "kernel",
-      userId: profile.userId,
+    log("command-cloud-login")
+    await handlers.handleRelayCommand({
+      kind: "relay",
+      raw: "/relay cloud login",
+      args: ["cloud", "login", apiUrl, `${runId}@example.com`, runId],
     })
-    await localClient.send(
-      requests.configureRelayRequest(daemonRelay.relayUrl, daemonRelay.relayToken),
-    )
+    assert(profileRef.current?.accountSlug === runId, "cloud login command should save the profile", profileRef.current)
 
-    log("mint-client-token")
-    const clientRelay = await cloudRelay.issueCloudRelayToken({
-      profile,
-      subject: profile.clientId ?? clientId,
-      subjectKind: "client",
-      userId: profile.userId,
-      clientId: profile.clientId ?? clientId,
-      allowedTargets: [daemonAlias],
+    log("command-cloud-pair")
+    await handlers.handleRelayCommand({
+      kind: "relay",
+      raw: "/relay cloud pair drill-cli",
+      args: ["cloud", "pair", "drill-cli"],
     })
+    assert(profileRef.current?.clientId === clientId, "cloud pair command should save client id", profileRef.current)
+
+    log("command-cloud-connect")
+    await handlers.handleRelayCommand({
+      kind: "relay",
+      raw: "/relay cloud connect",
+      args: ["cloud", "connect"],
+    })
+
+    log("command-cloud-client-token")
+    await handlers.handleRelayCommand({
+      kind: "relay",
+      raw: `/relay cloud client-token ${daemonAlias}`,
+      args: ["cloud", "client-token", daemonAlias],
+    })
+    const clientRelay = parseCloudClientTokenNotice(notices)
 
     await waitForRelayTarget(
       LocalIpcClient,
