@@ -40,6 +40,14 @@ test("parseSlashCommand parses workspace link commands and args", () => {
   })
 })
 
+test("parseSlashCommand parses cloud commands and args", () => {
+  assert.deepEqual(parseSlashCommand("/cloud invite accept token-1"), {
+    kind: "cloud",
+    raw: "/cloud invite accept token-1",
+    args: ["invite", "accept", "token-1"],
+  })
+})
+
 test("shouldClearCommandCenterForSlashCommand only clears selector-backed commands", () => {
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/model openai/gpt-5")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/session list")!), false)
@@ -61,6 +69,7 @@ test("executeSlashCommand dispatches to the matching handler", async () => {
     onAgent: () => calls.push("agent"),
     onMachine: () => calls.push("machine"),
     onRelay: () => calls.push("relay"),
+    onCloud: () => calls.push("cloud"),
     onConfig: () => calls.push("config"),
     onWorkspace: () => calls.push("workspace"),
     onWorkflow: () => calls.push("workflow"),
@@ -90,6 +99,7 @@ test("executeSlashCommand returns null for non-command input", async () => {
     onAgent: () => undefined,
     onMachine: () => undefined,
     onRelay: () => undefined,
+    onCloud: () => undefined,
     onConfig: () => undefined,
     onWorkspace: () => undefined,
     onWorkflow: () => undefined,

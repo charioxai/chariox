@@ -104,6 +104,24 @@ The CLI should keep browser-first behavior where useful:
 - if a browser is available, open the invite acceptance URL
 - otherwise print the URL/token and continue with a terminal fallback
 
+## Current Implementation Status
+
+- Cloud service API and Prisma persistence are implemented in `arroba-cloud`: shared-session invites, members, invite expiry/max-use handling, creator-only revoke, and collaborator history are available.
+- OSS kernel IPC now exposes cloud session invite create/show/accept/revoke, cloud session member listing, and recent collaborator listing through the persisted cloud relay session token.
+- TUI slash commands are wired:
+  - `/cloud invite create [max-uses|--max-uses n]`
+  - `/cloud invite accept <invite-token-or-url>`
+  - `/cloud members`
+  - `/cloud collaborators`
+- `arroba-shell` shared executor supports:
+  - `cloud invite create [max-uses]`
+  - `cloud invite accept <cloud-invite-token> [local-invite-token]`
+  - `cloud members`
+  - `cloud collaborators`
+  - `cloud status`
+- The first bridge uses a paired cloud invite token plus the existing local kernel session invite token. This keeps kernel authorization unchanged while allowing cloud acceptance to establish cloud membership and collaborator history.
+- Not yet closed: hosted relay admission is not yet scoped by cloud session membership, and the full two-cloud-user hosted relay workflow drill has not run.
+
 ## Data Model
 
 Cloud needs durable tables for:
@@ -147,10 +165,10 @@ Required before closing M5.7:
 
 M5.7 is complete when:
 
-- cloud-backed session invites work through browser and terminal fallback
-- accepted invites produce cloud session membership usable by the kernel
-- hosted relay admission is scoped to cloud session membership
-- CLI and shell expose invite/member/collaborator commands
-- collaborator history is persisted and visible as suggestions only
+- cloud-backed session invites work through browser and terminal fallback: **partially implemented** through generated invite URLs and terminal token fallback; the browser acceptance page remains in cloud/web work.
+- accepted invites produce cloud session membership usable by the kernel: **partially implemented**; cloud acceptance returns the cloud user id and the CLI/shell use it to join the local kernel invite when the local token is present.
+- hosted relay admission is scoped to cloud session membership: **open**.
+- CLI and shell expose invite/member/collaborator commands: **implemented**.
+- collaborator history is persisted and visible as suggestions only: **implemented at API/command level**.
 - live two-user hosted relay drill passes
 - M6.5 kernel authorization and redaction rules remain unchanged and covered

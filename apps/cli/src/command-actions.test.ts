@@ -480,6 +480,86 @@ test("relay cloud connect prefers paired machine tokens", async () => {
   assert.deepEqual(configured, [{ relayUrl: "wss://relay.example", relayToken: "machine-token:machine-1:daemon-1" }])
 })
 
+test("cloud invite create pairs cloud and local session invite tokens", async () => {
+  const notices: string[] = []
+  const flashed: string[] = []
+  const profile = {
+    apiUrl: "https://cloud.example",
+    email: "owner@example.com",
+    accountId: "account-1",
+    userId: "owner-1",
+    accountSlug: "owner",
+    realmId: "realm-1",
+    relayUrl: "wss://relay.example",
+    issuerId: "issuer-1",
+  }
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    getCloudRelayProfile: () => profile,
+    appendNotice: (message: string) => { notices.push(message) },
+    flashFooter: (message: string) => { flashed.push(message) },
+    openExternalUrl: async (url: string) => {
+      assert.match(url, /cloud_invite=cloud-token/)
+      assert.match(url, /local_invite=local-token/)
+      return false
+    },
+    createSessionInvite: async (sessionId: string, _expiresInMs: number | null, maxUses: number | null) => {
+      assert.equal(sessionId, "session-1")
+      assert.equal(maxUses, 2)
+      return {
+        invite: { invite_token: "local-token", invite: { invite_id: "local-invite-1" } },
+        session: makeSession(),
+      }
+    },
+    createCloudSessionInvite: async (sessionId: string, options: { maxUses?: number | null }) => {
+      assert.equal(sessionId, "session-1")
+      assert.equal(options.maxUses, 2)
+      return { invite: { invite_id: "cloud-invite-1", invite_token: "cloud-token" } }
+    },
+  }))
+
+  await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud invite create 2", args: ["invite", "create", "2"] })
+
+  assert.match(notices.at(-1) ?? "", /local_invite=local-token/)
+  assert.equal(flashed.at(-1), "cloud invite created")
+})
+
+test("cloud invite accept accepts cloud token and joins local session when URL carries both tokens", async () => {
+  const flashed: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    getCloudRelayProfile: () => ({
+      apiUrl: "https://cloud.example",
+      email: "peer@example.com",
+      accountId: "account-2",
+      userId: "peer-1",
+      accountSlug: "peer",
+      realmId: "realm-2",
+      relayUrl: "wss://relay.example",
+      issuerId: "issuer-1",
+    }),
+    flashFooter: (message: string) => { flashed.push(message) },
+    acceptCloudSessionInvite: async (inviteToken: string) => {
+      assert.equal(inviteToken, "cloud-token")
+      return { acceptance: { user_id: "peer-1" } }
+    },
+    joinSessionInvite: async (inviteToken: string, userId: string) => {
+      assert.equal(inviteToken, "local-token")
+      assert.equal(userId, "peer-1")
+      return {
+        member: { user_id: "peer-1" },
+        session: makeSession({ id: "joined-session" }),
+      }
+    },
+  }))
+
+  await handlers.handleCloudCommand({
+    kind: "cloud",
+    raw: "/cloud invite accept https://cloud.example/sessions/invites?cloud_invite=cloud-token&local_invite=local-token",
+    args: ["invite", "accept", "https://cloud.example/sessions/invites?cloud_invite=cloud-token&local_invite=local-token"],
+  })
+
+  assert.equal(flashed.at(-1), "joined cloud session as peer-1")
+})
+
 test("workflow add node all adds only agents missing from the selected workflow", async () => {
   const existingAgent = makeAgent({
     id: "agent-existing",

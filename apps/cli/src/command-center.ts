@@ -64,6 +64,18 @@ const COMMAND_TREE: CommandNode[] = [
     ],
   },
   {
+    id: "cloud",
+    label: "/cloud",
+    description: "Manage cloud collaboration invites and members",
+    value: "/cloud ",
+    children: [
+      { id: "cloud-invite-create", label: "invite create", description: "Create a cloud-backed session invite", value: "/cloud invite create " },
+      { id: "cloud-invite-accept", label: "invite accept", description: "Accept a cloud-backed session invite", value: "/cloud invite accept " },
+      { id: "cloud-members", label: "members", description: "List cloud members for the current session", value: "/cloud members" },
+      { id: "cloud-collaborators", label: "collaborators", description: "List recent cloud collaborators", value: "/cloud collaborators" },
+    ],
+  },
+  {
     id: "mcp",
     label: "/mcp",
     description: "Manage Arroba MCP registry and agent grants",

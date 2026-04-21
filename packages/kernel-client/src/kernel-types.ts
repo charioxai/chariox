@@ -244,6 +244,52 @@ export type CloudRelayLoginPoll = {
   profile?: CloudRelayProfile | null
 }
 
+export type CloudSessionInvite = {
+  invite_id: string
+  invite_token: string
+  session_id: string
+  account_id: string
+  created_by_user_id: string
+  expires_at?: string | null
+  max_uses?: number | null
+}
+
+export type CloudSessionInviteDetails = {
+  invite_id: string
+  session_id: string
+  account_id: string
+  created_by_user_id: string
+  display_name?: string | null
+  expires_at?: string | null
+  max_uses?: number | null
+  used_count: number
+  status: string
+}
+
+export type CloudSessionInviteAcceptance = {
+  session_id: string
+  account_id: string
+  user_id: string
+  invited_by_user_id: string
+  joined_at: string
+}
+
+export type CloudSessionMember = {
+  user_id: string
+  email: string
+  display_name?: string | null
+  invited_by_user_id?: string | null
+  joined_at: string
+}
+
+export type CloudCollaborator = {
+  user_id: string
+  email: string
+  display_name?: string | null
+  last_collaborated_at: string
+  shared_session_count: number
+}
+
 export type CloudRelayRuntimeToken = {
   relay_url: string
   relay_token: string

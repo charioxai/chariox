@@ -832,6 +832,57 @@ export function issueCloudRelayClientTokenRequest(targetDaemonAlias: string, cli
   }
 }
 
+export function createCloudSessionInviteRequest(
+  sessionId: string,
+  options: { displayName?: string | null; expiresInMs?: number | null; maxUses?: number | null } = {},
+) {
+  return {
+    CreateCloudSessionInvite: {
+      session_id: sessionId,
+      display_name: options.displayName ?? null,
+      expires_in_ms: options.expiresInMs ?? null,
+      max_uses: options.maxUses ?? null,
+    },
+  }
+}
+
+export function showCloudSessionInviteRequest(inviteToken: string) {
+  return {
+    ShowCloudSessionInvite: {
+      invite_token: inviteToken,
+    },
+  }
+}
+
+export function acceptCloudSessionInviteRequest(inviteToken: string) {
+  return {
+    AcceptCloudSessionInvite: {
+      invite_token: inviteToken,
+    },
+  }
+}
+
+export function revokeCloudSessionInviteRequest(sessionId: string, inviteId: string) {
+  return {
+    RevokeCloudSessionInvite: {
+      session_id: sessionId,
+      invite_id: inviteId,
+    },
+  }
+}
+
+export function listCloudSessionMembersRequest(sessionId: string) {
+  return {
+    ListCloudSessionMembers: {
+      session_id: sessionId,
+    },
+  }
+}
+
+export function listCloudCollaboratorsRequest() {
+  return { ListCloudCollaborators: null }
+}
+
 export function getUserConfigRequest() {
   return { GetUserConfig: null }
 }

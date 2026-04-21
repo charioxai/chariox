@@ -24,27 +24,30 @@ use crate::local::provider_requests::{
     PROVIDER_CATALOG_CACHE_TTL,
 };
 use crate::local::{
-    AgentGrantKind, ApproveRemoteMachineRequest, AttachWorkspaceLinkRequest, CloudRelayLoginPoll,
-    CloudRelayLoginPollStatus, CloudRelayLoginStart, CloudRelayProfile, CloudRelayRuntimeToken,
-    ConfigureRelayRequest, ConnectCloudRelayRequest, CreatePairingInviteRequest,
-    CreateSessionInviteRequest, CreateWorkspaceLinkRequest, DetachWorkspaceLinkRequest,
-    ForgetRemoteMachineRequest, GetMcpServerRequest, GetProviderAuthStatusRequest,
-    GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest,
-    GetUserConfigRequest, GrantAgentCapabilityRequest, ImportMcpServersRequest,
-    ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
+    AcceptCloudSessionInviteRequest, AgentGrantKind, ApproveRemoteMachineRequest,
+    AttachWorkspaceLinkRequest, CloudCollaborator, CloudRelayLoginPoll, CloudRelayLoginPollStatus,
+    CloudRelayLoginStart, CloudRelayProfile, CloudRelayRuntimeToken, CloudSessionInvite,
+    CloudSessionInviteAcceptance, CloudSessionInviteDetails, CloudSessionMember,
+    ConfigureRelayRequest, ConnectCloudRelayRequest, CreateCloudSessionInviteRequest,
+    CreatePairingInviteRequest, CreateSessionInviteRequest, CreateWorkspaceLinkRequest,
+    DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GetMcpServerRequest,
+    GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+    GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GrantAgentCapabilityRequest,
+    ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
     IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest, JoinSessionInviteRequest,
-    ListAgentsRequest, ListMcpServersRequest, ListProviderProcessesRequest,
-    ListSessionMembersRequest, ListSessionsRequest, ListSkillsRequest, ListWorkspaceLinksRequest,
-    LocalDaemonRequest, LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest,
-    MoveAgentToRemoteRequest, PairCloudRelayClientRequest, PairCloudRelayMachineRequest,
-    PairedClientRecord, PairingInviteIntent, PairingInviteRecord, PairingJoinRecord,
-    PollCloudRelayLoginRequest, PumpTerminalOutputRequest, QueryHistoryRequest,
-    RecordPairedClientRequest, RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest,
-    RevokeAgentCapabilityRequest, RevokePairedClientRequest, RevokeSessionInviteRequest,
-    SearchHistoryRequest, SessionInviteRecord, SetUserConfigValueRequest, ShowWorkspaceLinkRequest,
-    StartCloudRelayLoginRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
-    UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
-    UpdateMcpServerRequest, UpdateSkillRequest,
+    ListAgentsRequest, ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest,
+    ListMcpServersRequest, ListProviderProcessesRequest, ListSessionMembersRequest,
+    ListSessionsRequest, ListSkillsRequest, ListWorkspaceLinksRequest, LocalDaemonRequest,
+    LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
+    PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairedClientRecord,
+    PairingInviteIntent, PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest,
+    PumpTerminalOutputRequest, QueryHistoryRequest, RecordPairedClientRequest, RelayStatus,
+    RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
+    RevokeCloudSessionInviteRequest, RevokePairedClientRequest, RevokeSessionInviteRequest,
+    SearchHistoryRequest, SessionInviteRecord, SetUserConfigValueRequest,
+    ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest, StartCloudRelayLoginRequest,
+    StartProviderLoginRequest, TeardownProviderProcessesRequest, UninstallMcpServerRequest,
+    UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -955,6 +958,29 @@ impl CommandRouter {
             LocalDaemonRequest::IssueCloudRelayClientToken(request) => {
                 self.execute_issue_cloud_relay_client_token_request(request)
                     .await
+            }
+            LocalDaemonRequest::CreateCloudSessionInvite(request) => {
+                self.execute_create_cloud_session_invite_request(request)
+                    .await
+            }
+            LocalDaemonRequest::ShowCloudSessionInvite(request) => {
+                self.execute_show_cloud_session_invite_request(request)
+                    .await
+            }
+            LocalDaemonRequest::AcceptCloudSessionInvite(request) => {
+                self.execute_accept_cloud_session_invite_request(request)
+                    .await
+            }
+            LocalDaemonRequest::RevokeCloudSessionInvite(request) => {
+                self.execute_revoke_cloud_session_invite_request(request)
+                    .await
+            }
+            LocalDaemonRequest::ListCloudSessionMembers(request) => {
+                self.execute_list_cloud_session_members_request(request)
+                    .await
+            }
+            LocalDaemonRequest::ListCloudCollaborators(request) => {
+                self.execute_list_cloud_collaborators_request(request).await
             }
             LocalDaemonRequest::GetUserConfig(request) => {
                 self.execute_get_user_config_request(request).await
@@ -2099,6 +2125,138 @@ impl CommandRouter {
         })
     }
 
+    async fn execute_create_cloud_session_invite_request(
+        &self,
+        request: CreateCloudSessionInviteRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let profile = self.required_cloud_relay_profile_with_session()?;
+        let invite: CloudSessionInviteResponse = post_cloud_json(
+            profile.api_url.clone(),
+            "/sessions/invites",
+            serde_json::json!({
+                "sessionToken": profile.cloud_session_token,
+                "accountId": profile.account_id,
+                "sessionId": request.session_id,
+                "displayName": request.display_name,
+                "expiresInMs": request.expires_in_ms,
+                "maxUses": request.max_uses,
+            }),
+        )
+        .await?;
+        Ok(LocalDaemonResponse::CloudSessionInviteCreated {
+            invite: cloud_session_invite_from_response(invite),
+        })
+    }
+
+    async fn execute_show_cloud_session_invite_request(
+        &self,
+        request: ShowCloudSessionInviteRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let profile = self.required_cloud_relay_profile()?;
+        let invite: CloudSessionInviteDetailsResponse = get_cloud_json(
+            profile.api_url.clone(),
+            format!(
+                "/sessions/invites/{}",
+                cloud_url_component(&request.invite_token)
+            ),
+        )
+        .await?;
+        Ok(LocalDaemonResponse::CloudSessionInviteShown {
+            invite: cloud_session_invite_details_from_response(invite),
+        })
+    }
+
+    async fn execute_accept_cloud_session_invite_request(
+        &self,
+        request: AcceptCloudSessionInviteRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let profile = self.required_cloud_relay_profile_with_session()?;
+        let acceptance: CloudSessionInviteAcceptanceResponse = post_cloud_json_dynamic(
+            profile.api_url.clone(),
+            format!(
+                "/sessions/invites/{}/accept",
+                cloud_url_component(&request.invite_token)
+            ),
+            serde_json::json!({
+                "sessionToken": profile.cloud_session_token,
+            }),
+        )
+        .await?;
+        Ok(LocalDaemonResponse::CloudSessionInviteAccepted {
+            acceptance: cloud_session_invite_acceptance_from_response(acceptance),
+        })
+    }
+
+    async fn execute_revoke_cloud_session_invite_request(
+        &self,
+        request: RevokeCloudSessionInviteRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let profile = self.required_cloud_relay_profile_with_session()?;
+        let revoked: CloudSessionInviteRevokedResponse = post_cloud_json(
+            profile.api_url.clone(),
+            "/sessions/invites/revoke",
+            serde_json::json!({
+                "sessionToken": profile.cloud_session_token,
+                "accountId": profile.account_id,
+                "sessionId": request.session_id,
+                "inviteId": request.invite_id,
+            }),
+        )
+        .await?;
+        Ok(LocalDaemonResponse::CloudSessionInviteRevoked {
+            invite_id: revoked.invite_id,
+            status: revoked.status,
+        })
+    }
+
+    async fn execute_list_cloud_session_members_request(
+        &self,
+        request: ListCloudSessionMembersRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let profile = self.required_cloud_relay_profile_with_session()?;
+        let listed: CloudSessionMembersResponse = get_cloud_json(
+            profile.api_url.clone(),
+            format!(
+                "/sessions/members?sessionToken={}&accountId={}&sessionId={}",
+                cloud_url_component(profile.cloud_session_token.as_deref().unwrap_or_default()),
+                cloud_url_component(&profile.account_id),
+                cloud_url_component(&request.session_id),
+            ),
+        )
+        .await?;
+        Ok(LocalDaemonResponse::CloudSessionMembersListed {
+            session_id: listed.session_id,
+            members: listed
+                .members
+                .into_iter()
+                .map(cloud_session_member_from_response)
+                .collect(),
+        })
+    }
+
+    async fn execute_list_cloud_collaborators_request(
+        &self,
+        _request: ListCloudCollaboratorsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let profile = self.required_cloud_relay_profile_with_session()?;
+        let listed: CloudCollaboratorsResponse = get_cloud_json(
+            profile.api_url.clone(),
+            format!(
+                "/collaborators/recent?sessionToken={}&accountId={}",
+                cloud_url_component(profile.cloud_session_token.as_deref().unwrap_or_default()),
+                cloud_url_component(&profile.account_id),
+            ),
+        )
+        .await?;
+        Ok(LocalDaemonResponse::CloudCollaboratorsListed {
+            collaborators: listed
+                .collaborators
+                .into_iter()
+                .map(cloud_collaborator_from_response)
+                .collect(),
+        })
+    }
+
     fn required_cloud_relay_profile(&self) -> Result<PersistedCloudRelayProfile, DaemonError> {
         self.config_projection
             .snapshot()
@@ -2107,6 +2265,24 @@ impl CommandRouter {
                 operation: "load cloud relay profile",
                 message: "cloud relay profile missing; run /relay cloud login first".to_string(),
             })
+    }
+
+    fn required_cloud_relay_profile_with_session(
+        &self,
+    ) -> Result<PersistedCloudRelayProfile, DaemonError> {
+        let profile = self.required_cloud_relay_profile()?;
+        if profile
+            .cloud_session_token
+            .as_deref()
+            .unwrap_or("")
+            .is_empty()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "load cloud relay session",
+                message: "cloud session token missing; run /relay cloud login first".to_string(),
+            });
+        }
+        Ok(profile)
     }
 
     async fn persist_cloud_profile(
@@ -3058,6 +3234,29 @@ impl CommandRouter {
             LocalDaemonRequest::IssueCloudRelayClientToken(request) => {
                 self.execute_issue_cloud_relay_client_token_request(request)
                     .await
+            }
+            LocalDaemonRequest::CreateCloudSessionInvite(request) => {
+                self.execute_create_cloud_session_invite_request(request)
+                    .await
+            }
+            LocalDaemonRequest::ShowCloudSessionInvite(request) => {
+                self.execute_show_cloud_session_invite_request(request)
+                    .await
+            }
+            LocalDaemonRequest::AcceptCloudSessionInvite(request) => {
+                self.execute_accept_cloud_session_invite_request(request)
+                    .await
+            }
+            LocalDaemonRequest::RevokeCloudSessionInvite(request) => {
+                self.execute_revoke_cloud_session_invite_request(request)
+                    .await
+            }
+            LocalDaemonRequest::ListCloudSessionMembers(request) => {
+                self.execute_list_cloud_session_members_request(request)
+                    .await
+            }
+            LocalDaemonRequest::ListCloudCollaborators(request) => {
+                self.execute_list_cloud_collaborators_request(request).await
             }
             LocalDaemonRequest::GetUserConfig(request) => {
                 self.execute_get_user_config_request(request).await
@@ -4584,6 +4783,142 @@ struct CloudRuntimeTokenResponse {
     expires_at: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudSessionInviteResponse {
+    invite_id: String,
+    invite_token: String,
+    session_id: String,
+    account_id: String,
+    created_by_user_id: String,
+    expires_at: Option<String>,
+    max_uses: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudSessionInviteDetailsResponse {
+    invite_id: String,
+    session_id: String,
+    account_id: String,
+    created_by_user_id: String,
+    display_name: Option<String>,
+    expires_at: Option<String>,
+    max_uses: Option<u32>,
+    used_count: u32,
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudSessionInviteAcceptanceResponse {
+    session_id: String,
+    account_id: String,
+    user_id: String,
+    invited_by_user_id: String,
+    joined_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudSessionInviteRevokedResponse {
+    invite_id: String,
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudSessionMembersResponse {
+    session_id: String,
+    members: Vec<CloudSessionMemberResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudSessionMemberResponse {
+    user_id: String,
+    email: String,
+    display_name: Option<String>,
+    invited_by_user_id: Option<String>,
+    joined_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudCollaboratorsResponse {
+    collaborators: Vec<CloudCollaboratorResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudCollaboratorResponse {
+    user_id: String,
+    email: String,
+    display_name: Option<String>,
+    last_collaborated_at: String,
+    shared_session_count: u32,
+}
+
+fn cloud_session_invite_from_response(response: CloudSessionInviteResponse) -> CloudSessionInvite {
+    CloudSessionInvite {
+        invite_id: response.invite_id,
+        invite_token: response.invite_token,
+        session_id: response.session_id,
+        account_id: response.account_id,
+        created_by_user_id: response.created_by_user_id,
+        expires_at: response.expires_at,
+        max_uses: response.max_uses,
+    }
+}
+
+fn cloud_session_invite_details_from_response(
+    response: CloudSessionInviteDetailsResponse,
+) -> CloudSessionInviteDetails {
+    CloudSessionInviteDetails {
+        invite_id: response.invite_id,
+        session_id: response.session_id,
+        account_id: response.account_id,
+        created_by_user_id: response.created_by_user_id,
+        display_name: response.display_name,
+        expires_at: response.expires_at,
+        max_uses: response.max_uses,
+        used_count: response.used_count,
+        status: response.status,
+    }
+}
+
+fn cloud_session_invite_acceptance_from_response(
+    response: CloudSessionInviteAcceptanceResponse,
+) -> CloudSessionInviteAcceptance {
+    CloudSessionInviteAcceptance {
+        session_id: response.session_id,
+        account_id: response.account_id,
+        user_id: response.user_id,
+        invited_by_user_id: response.invited_by_user_id,
+        joined_at: response.joined_at,
+    }
+}
+
+fn cloud_session_member_from_response(response: CloudSessionMemberResponse) -> CloudSessionMember {
+    CloudSessionMember {
+        user_id: response.user_id,
+        email: response.email,
+        display_name: response.display_name,
+        invited_by_user_id: response.invited_by_user_id,
+        joined_at: response.joined_at,
+    }
+}
+
+fn cloud_collaborator_from_response(response: CloudCollaboratorResponse) -> CloudCollaborator {
+    CloudCollaborator {
+        user_id: response.user_id,
+        email: response.email,
+        display_name: response.display_name,
+        last_collaborated_at: response.last_collaborated_at,
+        shared_session_count: response.shared_session_count,
+    }
+}
+
 async fn issue_cloud_runtime_token(
     profile: &PersistedCloudRelayProfile,
     subject: &str,
@@ -4686,9 +5021,37 @@ where
         })?
 }
 
+async fn post_cloud_json_dynamic<T>(
+    api_url: String,
+    path: String,
+    body: serde_json::Value,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || post_cloud_json_blocking(api_url, &path, body))
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "post cloud relay json",
+            message: error.to_string(),
+        })?
+}
+
+async fn get_cloud_json<T>(api_url: String, path: String) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || get_cloud_json_blocking(api_url, &path))
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "get cloud relay json",
+            message: error.to_string(),
+        })?
+}
+
 fn post_cloud_json_blocking<T>(
     api_url: String,
-    path: &'static str,
+    path: &str,
     body: serde_json::Value,
 ) -> Result<T, DaemonError>
 where
@@ -4698,7 +5061,7 @@ where
     let response = ureq::post(&url)
         .set("content-type", "application/json")
         .send_string(&body.to_string())
-        .map_err(|error| cloud_transport_error(path, error))?;
+        .map_err(|error| cloud_transport_error(error))?;
     let payload = response
         .into_string()
         .map_err(|error| DaemonError::LocalTransport {
@@ -4711,7 +5074,39 @@ where
     })
 }
 
-fn cloud_transport_error(operation: &'static str, error: ureq::Error) -> DaemonError {
+fn get_cloud_json_blocking<T>(api_url: String, path: &str) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let url = format!("{api_url}{path}");
+    let response = ureq::get(&url)
+        .call()
+        .map_err(|error| cloud_transport_error(error))?;
+    let payload = response
+        .into_string()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "read cloud relay response",
+            message: error.to_string(),
+        })?;
+    serde_json::from_str::<T>(&payload).map_err(|error| DaemonError::LocalTransport {
+        operation: "decode cloud relay response",
+        message: error.to_string(),
+    })
+}
+
+fn cloud_url_component(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                vec![byte as char]
+            }
+            _ => format!("%{byte:02X}").chars().collect(),
+        })
+        .collect()
+}
+
+fn cloud_transport_error(error: ureq::Error) -> DaemonError {
     let message = match error {
         ureq::Error::Status(status, response) => {
             let body = response.into_string().unwrap_or_default();
@@ -4723,7 +5118,10 @@ fn cloud_transport_error(operation: &'static str, error: ureq::Error) -> DaemonE
         }
         ureq::Error::Transport(error) => error.to_string(),
     };
-    DaemonError::LocalTransport { operation, message }
+    DaemonError::LocalTransport {
+        operation: "cloud relay request",
+        message,
+    }
 }
 
 #[cfg(test)]

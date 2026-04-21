@@ -22,6 +22,8 @@ import type {
   RelayStatus,
   RemoteMachineRecord,
   RuntimeSession,
+  CloudCollaborator,
+  CloudSessionMember,
   SessionInvite,
   SessionHistoryPage,
   SessionHistoryPageEntry,
@@ -48,6 +50,9 @@ import {
   cancelWorkflowRunRequest,
   clearQueuedWorkflowLaunchesRequest,
   approveRemoteMachineRequest,
+  acceptCloudSessionInviteRequest,
+  cloudRelayStatusRequest,
+  createCloudSessionInviteRequest,
   createSessionInviteRequest,
   createPairingInviteRequest,
   createWorkspaceLinkRequest,
@@ -70,6 +75,8 @@ import {
   installSkillRequest,
   joinPairingInviteRequest,
   joinSessionInviteRequest,
+  listCloudCollaboratorsRequest,
+  listCloudSessionMembersRequest,
   getUserConfigRequest,
   detachWorkspaceLinkRequest,
   listAgentsRequest,
@@ -184,6 +191,8 @@ export async function executeShellCommand(
       return executeMachineCommand(parsed, deps)
     case "relay":
       return executeRelayCommand(parsed, deps)
+    case "cloud":
+      return executeCloudCommand(parsed, context, deps)
     case "config":
       return executeConfigCommand(parsed, deps)
     case "mcp":
@@ -924,6 +933,101 @@ async function executeRelayCommand(
   const response = await deps.client.send(relayStatusRequest())
   const status = expectVariant<{ status: RelayStatus }>(response, "RelayStatus").status
   return { ok: true, message: formatRelayStatus(status), data: { status } }
+}
+
+async function executeCloudCommand(
+  parsed: ParsedShellCommand,
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const [area, action, ...args] = parsed.args
+  if (area === "invite" && action === "create") {
+    if (!context.sessionId) {
+      return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
+    }
+    const maxUses = args[0] ? Number.parseInt(args[0], 10) : 1
+    if (!Number.isFinite(maxUses) || maxUses <= 0) {
+      return { ok: false, message: "usage: cloud invite create [max-uses]" }
+    }
+    const localResponse = await deps.client.send(createSessionInviteRequest(context.sessionId, null, maxUses))
+    const local = expectVariant<{ invite: { invite: SessionInvite; invite_token: string }; session: RuntimeSession }>(
+      localResponse,
+      "SessionInviteCreated",
+    )
+    const cloudResponse = await deps.client.send(createCloudSessionInviteRequest(context.sessionId, {
+      displayName: local.session.alias ?? local.session.id,
+      maxUses,
+    }))
+    const cloud = expectVariant<{ invite: { invite_token: string; invite_id: string } }>(
+      cloudResponse,
+      "CloudSessionInviteCreated",
+    )
+    return {
+      ok: true,
+      message: [
+        `cloud invite ${cloud.invite.invite_id}`,
+        `cloud_invite=${cloud.invite.invite_token}`,
+        `local_invite=${local.invite.invite_token}`,
+      ].join("\n"),
+      data: { cloud, local },
+      contextUpdates: { sessionId: local.session.id, agentId: local.session.focused_agent_id ?? undefined },
+    }
+  }
+  if (area === "invite" && action === "accept") {
+    const inviteToken = args[0]
+    const localInviteToken = args[1]
+    if (!inviteToken) {
+      return { ok: false, message: "usage: cloud invite accept <cloud-invite-token> [local-invite-token]" }
+    }
+    const cloudResponse = await deps.client.send(acceptCloudSessionInviteRequest(inviteToken))
+    const cloud = expectVariant<{ acceptance: { user_id: string } }>(cloudResponse, "CloudSessionInviteAccepted")
+    if (!localInviteToken) {
+      return {
+        ok: true,
+        message: `accepted cloud invite as ${cloud.acceptance.user_id}; provide local invite token to join the kernel session`,
+        data: cloud,
+      }
+    }
+    const joinResponse = await deps.client.send(joinSessionInviteRequest(localInviteToken, cloud.acceptance.user_id))
+    const joined = expectVariant<{ member: SessionMember; session: RuntimeSession }>(joinResponse, "SessionInviteJoined")
+    const attachmentId = await attachShellSession(joined.session.id, deps)
+    return {
+      ok: true,
+      message: `joined session ${joined.session.alias ?? joined.session.id} as ${joined.member.user_id}`,
+      data: { cloud, joined },
+      contextUpdates: {
+        sessionId: joined.session.id,
+        ...(attachmentId ? { attachmentId } : {}),
+        agentId: joined.session.focused_agent_id ?? undefined,
+        workspace: joined.session.workspace_id,
+        worktree: joined.session.worktree_id,
+      },
+    }
+  }
+  if ((area === "members" && !action) || (area === "members" && action === "list")) {
+    const sessionId = context.sessionId
+    if (!sessionId) {
+      return { ok: false, message: "usage: cloud members [list]" }
+    }
+    const response = await deps.client.send(listCloudSessionMembersRequest(sessionId))
+    const payload = expectVariant<{ members: CloudSessionMember[] }>(response, "CloudSessionMembersListed")
+    return { ok: true, message: formatCloudMembers(payload.members), data: payload }
+  }
+  if ((area === "collaborators" && !action) || (area === "collaborators" && action === "list")) {
+    const response = await deps.client.send(listCloudCollaboratorsRequest())
+    const payload = expectVariant<{ collaborators: CloudCollaborator[] }>(response, "CloudCollaboratorsListed")
+    return { ok: true, message: formatCloudCollaborators(payload.collaborators), data: payload }
+  }
+  if (!area || area === "status") {
+    const response = await deps.client.send(cloudRelayStatusRequest())
+    const payload = expectVariant<{ profile: { account_slug?: string; email?: string } | null }>(response, "CloudRelayStatus")
+    return {
+      ok: true,
+      message: payload.profile ? `cloud profile ${payload.profile.account_slug ?? payload.profile.email ?? "configured"}` : "cloud profile not configured",
+      data: payload,
+    }
+  }
+  return { ok: false, message: "usage: cloud invite create|accept | cloud members | cloud collaborators | cloud status" }
 }
 
 async function executeConfigCommand(
@@ -2266,6 +2370,24 @@ function formatSessionInvite(invite: SessionInvite, inviteToken: string): string
   const maxUses = invite.max_uses ?? "unlimited"
   const expires = invite.expires_at_ms ? ` expires_at=${invite.expires_at_ms}` : ""
   return `session invite ${invite.invite_id} uses=0/${maxUses}${expires}\n${inviteToken}`
+}
+
+function formatCloudMembers(members: CloudSessionMember[]): string {
+  if (members.length === 0) {
+    return "no cloud members in session"
+  }
+  return members.map((member) => (
+    `${member.user_id} ${member.email}${member.display_name ? ` (${member.display_name})` : ""}`
+  )).join("\n")
+}
+
+function formatCloudCollaborators(collaborators: CloudCollaborator[]): string {
+  if (collaborators.length === 0) {
+    return "no recent cloud collaborators"
+  }
+  return collaborators.map((collaborator) => (
+    `${collaborator.user_id} ${collaborator.email} shared_sessions=${collaborator.shared_session_count}`
+  )).join("\n")
 }
 
 function formatWorkspaceLinks(links: WorkspaceLinkDefinition[]): string {

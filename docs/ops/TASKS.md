@@ -15,7 +15,8 @@ A lightweight, repo-native task board so contributors and future agents can cont
 - [ ] **M5.7-001** Add Arroba Cloud multi-user bridge
   - Note: Build the M5.7 plan in `docs/M5_7_ARROBA_CLOUD_MULTI_USER_PLAN.md`.
   - Scope: cloud-backed session invites, invite acceptance, cloud user identity propagation into kernels/CLIs, hosted relay admission scoped to cloud session membership, collaborator history, CLI/shell invite and member commands, and live two-user hosted relay drills.
-  - Next: Implement the cloud session-invite data model and API first, then wire kernel/CLI invite create/accept around existing device-login cloud sessions.
+  - Progress: Cloud service shared-session invite/member/collaborator APIs are implemented in `arroba-cloud`; OSS kernel IPC now bridges those APIs through the persisted cloud relay session; TUI slash commands and `arroba-shell` expose cloud invite create/accept, members, collaborators, and status. The current bridge pairs a cloud invite token with the existing local kernel invite token so cloud acceptance can produce a cloud user id while kernel authorization remains unchanged.
+  - Next: Add hosted relay/session admission scoping for accepted cloud members, then extend the live cloud relay drill to two cloud users joining one hosted session and rerun the M6.5 workflow/redaction assertions through the cloud path.
 - [ ] **M5.5-001** Add relay realms, pairing, and scoped tokens
   - Note: Build the M5.5 plan in `docs/M5_5_RELAY_IDENTITY_PLAN.md`.
   - Scope: realm-scoped relay registry, scoped relay token verifier, remote CLI pairing, remote machine pairing, caller identity propagation, self-hosted issuer compatibility, hosted issuer compatibility, and security drills.

@@ -125,6 +125,12 @@ import {
   listSessionsRequest,
   logoutCloudRelayRequest,
   issueCloudRelayClientTokenRequest,
+  acceptCloudSessionInviteRequest,
+  createCloudSessionInviteRequest,
+  createSessionInviteRequest,
+  joinSessionInviteRequest,
+  listCloudCollaboratorsRequest,
+  listCloudSessionMembersRequest,
   pairCloudRelayClientRequest,
   pairCloudRelayMachineRequest,
   pollCloudRelayLoginRequest,
@@ -5403,6 +5409,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleAgentCommand,
     handleMachineCommand,
     handleRelayCommand,
+    handleCloudCommand,
     handleConfigCommand,
     handleWorkspaceCommand,
     handleWorkflowCommand,
@@ -5427,6 +5434,24 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     appendNotice,
     formatError,
     createSession: (workspace, worktree, alias) => createSession(client, workspace, worktree, alias),
+    createSessionInvite: async (sessionId, expiresInMs, maxUses) => {
+      const response = await client.send<Record<string, unknown>>(
+        createSessionInviteRequest(sessionId, expiresInMs, maxUses),
+      )
+      return expectVariant<{
+        invite: { invite_token: string; invite: { invite_id: string } }
+        session: RuntimeSession
+      }>(response, "SessionInviteCreated")
+    },
+    joinSessionInvite: async (inviteToken, userId) => {
+      const response = await client.send<Record<string, unknown>>(
+        joinSessionInviteRequest(inviteToken, userId),
+      )
+      return expectVariant<{ member: { user_id: string }; session: RuntimeSession }>(
+        response,
+        "SessionInviteJoined",
+      )
+    },
     attachBinding: (session, createdSession) => attachBinding(session, createdSession),
     resolveSession: (reference, workspace) => resolveSession(client, reference, workspace),
     listSessions: () => listSessions(client),
@@ -5464,6 +5489,31 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     issueCloudMachineRelayToken: async () => connectKernelCloudRelay(client),
     issueCloudClientRelayToken: async (_profile, targetDaemonAlias) =>
       issueKernelCloudRelayClientToken(client, targetDaemonAlias, options.clientId ?? "arroba-cli"),
+    createCloudSessionInvite: async (sessionId, inviteOptions) => {
+      const response = await client.send<Record<string, unknown>>(
+        createCloudSessionInviteRequest(sessionId, inviteOptions),
+      )
+      return expectVariant<Record<string, unknown>>(response, "CloudSessionInviteCreated")
+    },
+    acceptCloudSessionInvite: async (inviteToken) => {
+      const response = await client.send<Record<string, unknown>>(
+        acceptCloudSessionInviteRequest(inviteToken),
+      )
+      return expectVariant<Record<string, unknown>>(response, "CloudSessionInviteAccepted")
+    },
+    listCloudSessionMembers: async (sessionId) => {
+      const response = await client.send<Record<string, unknown>>(
+        listCloudSessionMembersRequest(sessionId),
+      )
+      return expectVariant<Record<string, unknown>>(response, "CloudSessionMembersListed")
+    },
+    listCloudCollaborators: async () => {
+      const response = await client.send<Record<string, unknown>>(listCloudCollaboratorsRequest())
+      return expectVariant<{ collaborators: Record<string, unknown>[] }>(
+        response,
+        "CloudCollaboratorsListed",
+      ).collaborators
+    },
     getUserConfig: () => getUserConfig(client),
     setUserConfigValue: (path, value) => setUserConfigValue(client, path, value),
     unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),
@@ -5823,6 +5873,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           flashFooter(formatError(error), "error")
         }
       },
+      onCloud: async (command) => {
+        try {
+          await handleCloudCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
       onConfig: async (command) => {
         try {
           await handleConfigCommand(command)
@@ -6144,6 +6201,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onRelay: async (command) => {
         try {
           await handleRelayCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onCloud: async (command) => {
+        try {
+          await handleCloudCommand(command)
         } catch (error) {
           flashFooter(formatError(error), "error")
         }

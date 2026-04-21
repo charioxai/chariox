@@ -19,6 +19,7 @@ export type ParsedSlashCommand =
   | { kind: "agent"; raw: string; args: string[] }
   | { kind: "machine"; raw: string; args: string[] }
   | { kind: "relay"; raw: string; args: string[] }
+  | { kind: "cloud"; raw: string; args: string[] }
   | { kind: "config"; raw: string; args: string[] }
   | { kind: "workspace"; raw: string; args: string[] }
   | { kind: "workflow"; raw: string; args: string[] }
@@ -38,6 +39,7 @@ export type SlashCommandHandlers = {
   onAgent: (command: Extract<ParsedSlashCommand, { kind: "agent" }>) => Promise<unknown> | unknown
   onMachine: (command: Extract<ParsedSlashCommand, { kind: "machine" }>) => Promise<unknown> | unknown
   onRelay: (command: Extract<ParsedSlashCommand, { kind: "relay" }>) => Promise<unknown> | unknown
+  onCloud: (command: Extract<ParsedSlashCommand, { kind: "cloud" }>) => Promise<unknown> | unknown
   onConfig: (command: Extract<ParsedSlashCommand, { kind: "config" }>) => Promise<unknown> | unknown
   onWorkspace: (command: Extract<ParsedSlashCommand, { kind: "workspace" }>) => Promise<unknown> | unknown
   onWorkflow: (command: Extract<ParsedSlashCommand, { kind: "workflow" }>) => Promise<unknown> | unknown
@@ -119,6 +121,13 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       kind: "relay",
       raw: trimmed,
       args: trimmed.replace(/^\/relay\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
+  if (trimmed.startsWith("/cloud")) {
+    return {
+      kind: "cloud",
+      raw: trimmed,
+      args: trimmed.replace(/^\/cloud\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
   if (trimmed.startsWith("/config")) {
@@ -205,6 +214,9 @@ export async function executeSlashCommand(
     case "relay":
       await handlers.onRelay(command)
       break
+    case "cloud":
+      await handlers.onCloud(command)
+      break
     case "config":
       await handlers.onConfig(command)
       break
@@ -233,6 +245,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "agent":
     case "machine":
     case "relay":
+    case "cloud":
     case "config":
     case "workspace":
     case "workflow":

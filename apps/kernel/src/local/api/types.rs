@@ -334,6 +334,41 @@ pub struct IssueCloudRelayClientTokenRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateCloudSessionInviteRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub expires_in_ms: Option<u64>,
+    #[serde(default)]
+    pub max_uses: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShowCloudSessionInviteRequest {
+    pub invite_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptCloudSessionInviteRequest {
+    pub invite_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevokeCloudSessionInviteRequest {
+    pub session_id: String,
+    pub invite_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListCloudSessionMembersRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListCloudCollaboratorsRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CloudRelayProfile {
     pub api_url: String,
     pub email: String,
@@ -393,6 +428,65 @@ pub struct CloudRelayRuntimeToken {
     pub relay_url: String,
     pub relay_token: String,
     pub token_expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudSessionInvite {
+    pub invite_id: String,
+    pub invite_token: String,
+    pub session_id: String,
+    pub account_id: String,
+    pub created_by_user_id: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub max_uses: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudSessionInviteDetails {
+    pub invite_id: String,
+    pub session_id: String,
+    pub account_id: String,
+    pub created_by_user_id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub max_uses: Option<u32>,
+    pub used_count: u32,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudSessionInviteAcceptance {
+    pub session_id: String,
+    pub account_id: String,
+    pub user_id: String,
+    pub invited_by_user_id: String,
+    pub joined_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudSessionMember {
+    pub user_id: String,
+    pub email: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub invited_by_user_id: Option<String>,
+    pub joined_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudCollaborator {
+    pub user_id: String,
+    pub email: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    pub last_collaborated_at: String,
+    pub shared_session_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1050,6 +1144,12 @@ pub enum LocalDaemonRequest {
     PairCloudRelayMachine(PairCloudRelayMachineRequest),
     ConnectCloudRelay(ConnectCloudRelayRequest),
     IssueCloudRelayClientToken(IssueCloudRelayClientTokenRequest),
+    CreateCloudSessionInvite(CreateCloudSessionInviteRequest),
+    ShowCloudSessionInvite(ShowCloudSessionInviteRequest),
+    AcceptCloudSessionInvite(AcceptCloudSessionInviteRequest),
+    RevokeCloudSessionInvite(RevokeCloudSessionInviteRequest),
+    ListCloudSessionMembers(ListCloudSessionMembersRequest),
+    ListCloudCollaborators(ListCloudCollaboratorsRequest),
     GetUserConfig(GetUserConfigRequest),
     SetUserConfigValue(SetUserConfigValueRequest),
     UnsetUserConfigValue(UnsetUserConfigValueRequest),
@@ -1279,6 +1379,26 @@ pub enum LocalDaemonResponse {
     CloudRelayClientTokenIssued {
         profile: CloudRelayProfile,
         token: CloudRelayRuntimeToken,
+    },
+    CloudSessionInviteCreated {
+        invite: CloudSessionInvite,
+    },
+    CloudSessionInviteShown {
+        invite: CloudSessionInviteDetails,
+    },
+    CloudSessionInviteAccepted {
+        acceptance: CloudSessionInviteAcceptance,
+    },
+    CloudSessionInviteRevoked {
+        invite_id: String,
+        status: String,
+    },
+    CloudSessionMembersListed {
+        session_id: String,
+        members: Vec<CloudSessionMember>,
+    },
+    CloudCollaboratorsListed {
+        collaborators: Vec<CloudCollaborator>,
     },
     UserConfig {
         path: PathBuf,
