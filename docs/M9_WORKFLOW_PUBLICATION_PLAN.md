@@ -414,6 +414,20 @@ Required drills:
 - WebSocket stream returns progress/final output
 - IPC invocation works through `arroba-workflow-call`
 - workflow A calls workflow B through B's published HTTP endpoint in a separate kernel
+- Docker-backed external client drill kicks off workflow runs over HTTP, HTTPS,
+  WS, WSS, Slack, Discord, Telegram, WhatsApp, and Signal
+
+Docker connector drill:
+
+```bash
+pnpm --filter @arroba/cli run publication:docker-connectors-drill
+```
+
+This drill proves provider-shaped ingress from outside the Arroba process. The
+container client signs or authenticates requests using the same webhook
+contracts as the real providers, then verifies each connector receives accepted
+workflow run metadata. It does not replace a public-reachability drill through a
+real deployed URL or tunnel.
 
 ## M9.12 Slack Connector
 

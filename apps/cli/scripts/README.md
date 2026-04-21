@@ -111,6 +111,20 @@ It launches two isolated kernels and gateways. Workflow A's published gateway
 uses a custom parser that calls workflow B's published HTTP endpoint, then
 passes B's accepted run id into workflow A's normalized input.
 
+Use this after touching connector ingress, gateway bind behavior, Docker/local
+network assumptions, or provider-shaped webhook verification:
+
+```bash
+pnpm --filter @arroba/cli run publication:docker-connectors-drill
+```
+
+It builds a Docker client image, launches an isolated kernel and gateway, then
+invokes workflow publications from inside the container over HTTP, HTTPS,
+WebSocket, WSS, Slack-shaped signed slash commands, Telegram webhook-secret
+requests, Discord Ed25519 interactions, WhatsApp HMAC webhooks, and Signal
+bridge-secret webhooks. IPC is intentionally excluded because it is a local
+process connector rather than a network ingress connector.
+
 ## Kernel Reconnect Drill
 
 Use this after touching CLI/kernel transport recovery:
