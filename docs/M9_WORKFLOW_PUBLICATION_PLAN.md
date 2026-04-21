@@ -88,6 +88,11 @@ Add a deployable app at the same level as CLI and shell. The gateway loads a pub
 V1 transport:
 
 - HTTP
+- Slack connector
+- Discord connector
+- Telegram connector
+- WhatsApp connector
+- Signal connector
 
 Later in the milestone:
 
@@ -101,9 +106,24 @@ Support production-usable simple auth:
 - bearer token
 - API key header
 - paired sender
+- registered Arroba user/team identity
 - explicit anonymous mode
 
 Every accepted request is associated with a caller identity in the normalized invocation metadata.
+
+Auth and connector security are separate layers:
+
+- Connector ingress verification proves the request really came through the
+  configured transport/provider. Examples: Slack signing secret, Telegram
+  webhook secret, Discord interaction signature, WhatsApp/Signal transport
+  session identity, or HTTPS/API-key checks for generic HTTP.
+- Arroba identity authorization decides whether the verified sender is allowed
+  to invoke this publication. Examples: registered Arroba user, team member,
+  paired sender, API token owner, or explicit anonymous caller.
+
+Both layers can be enabled together. For public/chat connectors, V1 should
+verify the connector first, then map the provider sender id to an Arroba caller
+through registered-user, team, or paired-sender records.
 
 ### Paired Senders
 
@@ -233,6 +253,8 @@ Required drills:
 - publish an existing workflow endpoint over HTTP
 - auth accepted/rejected
 - paired sender code generation, redemption, accepted request, revoked request
+- connector ingress verification plus Arroba identity authorization for Slack,
+  Discord, Telegram, WhatsApp, and Signal
 - JSON parser success/failure
 - regex/path parser success/failure
 - custom parser success/failure
@@ -249,7 +271,7 @@ Required drills:
 - Workflow mesh discovery, trust policies, capability metadata, quotas, revocation, and federation.
 - Parser SDKs/libraries for Python, TypeScript, Rust, and other languages so users can define custom parsers programmatically while targeting the same stdin/stdout parser protocol.
 - Packaged publication templates for common hosting targets.
-- Connector plugin SDK for chat and collaboration surfaces such as Slack, Discord, Telegram, Matrix, Mattermost, Google Chat, LINE, Signal, WhatsApp, IRC, Nostr, Microsoft Teams, Feishu/Lark, Twitch, QQ, Zalo, Nextcloud Talk, Synology Chat, and self-hosted/custom channels.
+- Connector plugin SDK for additional chat and collaboration surfaces such as Matrix, Mattermost, Google Chat, LINE, IRC, Nostr, Microsoft Teams, Feishu/Lark, Twitch, QQ, Zalo, Nextcloud Talk, Synology Chat, BlueBubbles/iMessage, Tlon, and self-hosted/custom channels.
 - Connector-specific security contracts: provider webhook signature verification, raw-body HMAC checks where required, stable sender-id allowlists, mention/command gating for group contexts, per-connector rate limits, SecretRef-style credential indirection, and security-audit checks for dangerous public ingress.
 
 ## OpenClaw Reference Notes
