@@ -111,19 +111,25 @@ Support production-usable simple auth:
 
 Every accepted request is associated with a caller identity in the normalized invocation metadata.
 
-Auth and connector security are separate layers:
+Arroba has one publication authorization model. Connectors are identity-proof
+mechanisms that feed that model, not separate user systems.
 
-- Connector ingress verification proves the request really came through the
-  configured transport/provider. Examples: Slack signing secret, Telegram
-  webhook secret, Discord interaction signature, WhatsApp/Signal transport
-  session identity, or HTTPS/API-key checks for generic HTTP.
-- Arroba identity authorization decides whether the verified sender is allowed
-  to invoke this publication. Examples: registered Arroba user, team member,
-  paired sender, API token owner, or explicit anonymous caller.
+- Connector ingress verification proves an external identity claim. Examples:
+  Slack signing secret plus Slack workspace/user id, Telegram webhook secret
+  plus Telegram user id, Discord interaction signature plus Discord user id,
+  WhatsApp/Signal transport identity, or HTTPS/API-key checks for generic HTTP.
+- Arroba identity authorization maps that verified external identity to one
+  Arroba principal and decides whether that principal can invoke the
+  publication.
+- Publication policy can restrict which connectors a principal may use. A user
+  linked to Slack can still be denied through Discord if the publication only
+  allows that user through Slack.
 
-Both layers can be enabled together. For public/chat connectors, V1 should
-verify the connector first, then map the provider sender id to an Arroba caller
-through registered-user, team, or paired-sender records.
+Users should not register separately per connector. They register once in
+Arroba and link external connector identities to that Arroba user/team. Paired
+sender flow is a bootstrap/linking path for external callers that do not yet
+have an Arroba identity or are intentionally limited to a publication. Anonymous
+access remains an explicit publication policy for public HTTP-style services.
 
 ### Paired Senders
 

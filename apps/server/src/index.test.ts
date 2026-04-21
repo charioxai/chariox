@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { createHmac } from "node:crypto"
 import test from "node:test"
 
 import { buildServer, type WorkflowPublicationConfig } from "./index.js"
@@ -154,5 +155,151 @@ test("gateway supports custom command parsers", async () => {
     assert.deepEqual(inputs[0], { url: "/custom", ok: true })
   } finally {
     await app.close()
+  }
+})
+
+test("arroba auth maps a verified connector identity to one Arroba principal", async () => {
+  process.env.GATEWAY_TEST_SLACK_SECRET = "slack-secret"
+  const callers: unknown[] = []
+  const { app } = buildServer({
+    ...baseConfig,
+    auth: {
+      mode: "arroba",
+      connectors: [{ kind: "slack", signing_secret_env: "GATEWAY_TEST_SLACK_SECRET" }],
+      external_identities: [{
+        connector: "slack",
+        external_id: "T123:U456",
+        principal: {
+          id: "user-miguel",
+          type: "user",
+          teams: ["team-core"],
+          allowed_connectors: ["slack"],
+        },
+      }],
+    },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      callers.push(invocation.caller)
+      return { accepted: true, workflow_run: { id: "run-1", status: "Running" } }
+    },
+  })
+
+  try {
+    const badPayload = JSON.stringify({ team_id: "T123", user_id: "U456" })
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/slack",
+      headers: slackHeaders("wrong", badPayload),
+      payload: badPayload,
+    })
+    assert.equal(rejected.statusCode, 401)
+
+    const payload = JSON.stringify({ team_id: "T123", user_id: "U456" })
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/slack",
+      headers: slackHeaders("slack-secret", payload),
+      payload,
+    })
+    assert.equal(accepted.statusCode, 202)
+    assert.deepEqual(callers[0], {
+      type: "user",
+      principal_id: "user-miguel",
+      teams: ["team-core"],
+      display_name: undefined,
+      allowed_connectors: ["slack"],
+      proof: {
+        auth: "connector",
+        connector: "slack",
+        external_id: "T123:U456",
+        metadata: { team_id: "T123", user_id: "U456" },
+      },
+    })
+  } finally {
+    await app.close()
+    delete process.env.GATEWAY_TEST_SLACK_SECRET
+  }
+})
+
+function slackHeaders(secret: string, body: string) {
+  const timestamp = String(Math.floor(Date.now() / 1000))
+  return {
+    "content-type": "application/json",
+    "x-slack-request-timestamp": timestamp,
+    "x-slack-signature": `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${body}`).digest("hex")}`,
+  }
+}
+
+test("arroba auth rejects linked principals through disallowed connectors", async () => {
+  const { app } = buildServer({
+    ...baseConfig,
+    auth: {
+      mode: "arroba",
+      connectors: [{ kind: "discord" }],
+      external_identities: [{
+        connector: "discord",
+        external_id: "guild-1:user-1",
+        principal: {
+          id: "user-1",
+          type: "user",
+          allowed_connectors: ["slack"],
+        },
+      }],
+    },
+  }, {
+    invokeWorkflow: async () => ({ accepted: true, workflow_run: { id: "run-1", status: "Running" } }),
+  })
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/discord",
+      headers: { "x-arroba-discord-identity": "guild-1:user-1" },
+      payload: { content: "hello" },
+    })
+    assert.equal(response.statusCode, 401)
+    assert.deepEqual(response.json(), { error: "principal is not allowed through discord" })
+  } finally {
+    await app.close()
+  }
+})
+
+test("arroba auth keeps anonymous access explicit", async () => {
+  const deniedServer = buildServer({
+    ...baseConfig,
+    auth: { mode: "arroba" },
+  }, {
+    invokeWorkflow: async () => ({ accepted: true, workflow_run: { id: "run-1", status: "Running" } }),
+  })
+
+  try {
+    const denied = await deniedServer.app.inject({ method: "POST", url: "/public", payload: {} })
+    assert.equal(denied.statusCode, 401)
+  } finally {
+    await deniedServer.app.close()
+  }
+
+  const allowedServer = buildServer({
+    ...baseConfig,
+    auth: { mode: "arroba", allow_anonymous: true },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      assert.deepEqual(invocation.caller, {
+        type: "anonymous",
+        principal_id: "anonymous",
+        teams: [],
+        display_name: undefined,
+        allowed_connectors: undefined,
+        proof: { auth: "anonymous", connector: "http" },
+      })
+      return { accepted: true, workflow_run: { id: "run-1", status: "Running" } }
+    },
+  })
+
+  try {
+    const allowed = await allowedServer.app.inject({ method: "POST", url: "/public", payload: {} })
+    assert.equal(allowed.statusCode, 202)
+  } finally {
+    await allowedServer.app.close()
   }
 })

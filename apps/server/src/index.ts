@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process"
+import { createHmac, timingSafeEqual } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import process from "node:process"
 
@@ -23,8 +24,54 @@ type ParserKind =
 
 type AuthConfig =
   | { mode: "anonymous" }
-  | { mode: "bearer"; token_env: string }
-  | { mode: "api_key"; header: string; key_env: string }
+  | { mode: "bearer"; token_env: string; principal?: PrincipalRef }
+  | { mode: "api_key"; header: string; key_env: string; principal?: PrincipalRef }
+  | ArrobaAuthConfig
+
+type PrincipalRef = {
+  id: string
+  type?: "user" | "team" | "sender" | "service" | "anonymous"
+  teams?: string[]
+  display_name?: string
+  allowed_connectors?: ConnectorKind[]
+}
+
+type ExternalIdentityBinding = {
+  connector: ConnectorKind
+  external_id: string
+  principal: PrincipalRef
+}
+
+type BearerPrincipal = {
+  token_env: string
+  principal: PrincipalRef
+}
+
+type ApiKeyPrincipal = {
+  header: string
+  key_env: string
+  principal: PrincipalRef
+}
+
+type ConnectorKind = "http" | "slack" | "discord" | "telegram" | "whatsapp" | "signal"
+
+type ConnectorConfig =
+  | { kind: "http"; principal?: PrincipalRef }
+  | { kind: "slack"; signing_secret_env?: string }
+  | { kind: "discord"; public_key_env?: string }
+  | { kind: "telegram"; webhook_secret_env?: string }
+  | { kind: "whatsapp" }
+  | { kind: "signal" }
+
+type ArrobaAuthConfig = {
+  mode: "arroba"
+  allow_anonymous?: boolean
+  anonymous_principal?: PrincipalRef
+  bearer_tokens?: BearerPrincipal[]
+  api_keys?: ApiKeyPrincipal[]
+  external_identities?: ExternalIdentityBinding[]
+  connectors?: ConnectorConfig[]
+}
 
 type ParserConfig = {
   kind: ParserKind
@@ -84,10 +131,17 @@ type GatewayDeps = {
   invokeWorkflow?: (invocation: NormalizedInvocation) => Promise<WorkflowInvocationResult>
 }
 
+type VerifiedExternalIdentity = {
+  connector: ConnectorKind
+  external_id: string
+  metadata?: Record<string, unknown>
+}
+
 export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDeps = {}) => {
   const processLogger = createProcessLogger("workflow-gateway")
   const logger = processLogger.child("gateway.http")
   const app = Fastify({ logger: false })
+  installRawBodyParsers(app)
   const publication = config ?? defaultPublicationConfig()
 
   app.get("/health", async () => {
@@ -233,17 +287,230 @@ function authenticateRequest(request: FastifyRequest, config: AuthConfig): { ok:
   if (config.mode === "bearer") {
     const expected = readRequiredEnv(config.token_env)
     const actual = request.headers.authorization
-    if (actual !== `Bearer ${expected}`) {
+    if (!safeEqualString(actual, `Bearer ${expected}`)) {
       return { ok: false, message: "missing or invalid bearer token" }
     }
-    return { ok: true, caller: { type: "bearer", token_env: config.token_env } }
+    return { ok: true, caller: principalCaller(config.principal, { auth: "bearer", token_env: config.token_env, connector: "http" }) }
   }
-  const expected = readRequiredEnv(config.key_env)
-  const actual = headerValue(request, config.header)
-  if (actual !== expected) {
-    return { ok: false, message: "missing or invalid API key" }
+  if (config.mode === "api_key") {
+    const expected = readRequiredEnv(config.key_env)
+    const actual = headerValue(request, config.header)
+    if (!safeEqualString(actual, expected)) {
+      return { ok: false, message: "missing or invalid API key" }
+    }
+    return { ok: true, caller: principalCaller(config.principal, { auth: "api_key", key_env: config.key_env, connector: "http" }) }
   }
-  return { ok: true, caller: { type: "api_key", key_env: config.key_env } }
+  return authenticateArrobaRequest(request, config)
+}
+
+function authenticateArrobaRequest(request: FastifyRequest, config: ArrobaAuthConfig): { ok: true; caller: Record<string, unknown> } | { ok: false; message: string } {
+  const bearer = authenticateBearerPrincipals(request, config.bearer_tokens ?? [])
+  if (bearer) return bearer
+
+  const apiKey = authenticateApiKeyPrincipals(request, config.api_keys ?? [])
+  if (apiKey) return apiKey
+
+  const identity = verifyConnectorIdentity(request, config.connectors ?? [])
+  if (identity) {
+    const binding = findExternalIdentityBinding(config.external_identities ?? [], identity)
+    if (!binding) {
+      return {
+        ok: false,
+        message: `verified ${identity.connector} identity is not linked to an Arroba principal`,
+      }
+    }
+    if (!principalAllowsConnector(binding.principal, identity.connector)) {
+      return {
+        ok: false,
+        message: `principal is not allowed through ${identity.connector}`,
+      }
+    }
+    return {
+      ok: true,
+      caller: principalCaller(binding.principal, {
+        auth: "connector",
+        connector: identity.connector,
+        external_id: identity.external_id,
+        metadata: identity.metadata ?? {},
+      }),
+    }
+  }
+
+  if (config.allow_anonymous) {
+    return {
+      ok: true,
+      caller: principalCaller(config.anonymous_principal ?? { id: "anonymous", type: "anonymous" }, {
+        auth: "anonymous",
+        connector: "http",
+      }),
+    }
+  }
+
+  return { ok: false, message: "request is not authorized for this publication" }
+}
+
+function authenticateBearerPrincipals(request: FastifyRequest, tokens: BearerPrincipal[]) {
+  const actual = request.headers.authorization
+  for (const token of tokens) {
+    const expected = `Bearer ${readRequiredEnv(token.token_env)}`
+    if (safeEqualString(actual, expected)) {
+      return { ok: true as const, caller: principalCaller(token.principal, { auth: "bearer", token_env: token.token_env, connector: "http" }) }
+    }
+  }
+  return null
+}
+
+function authenticateApiKeyPrincipals(request: FastifyRequest, apiKeys: ApiKeyPrincipal[]) {
+  for (const apiKey of apiKeys) {
+    const actual = headerValue(request, apiKey.header)
+    const expected = readRequiredEnv(apiKey.key_env)
+    if (safeEqualString(actual, expected)) {
+      return { ok: true as const, caller: principalCaller(apiKey.principal, { auth: "api_key", key_env: apiKey.key_env, connector: "http" }) }
+    }
+  }
+  return null
+}
+
+function verifyConnectorIdentity(request: FastifyRequest, connectors: ConnectorConfig[]): VerifiedExternalIdentity | null {
+  for (const connector of connectors) {
+    const identity = verifySingleConnectorIdentity(request, connector)
+    if (identity) return identity
+  }
+  return null
+}
+
+function verifySingleConnectorIdentity(request: FastifyRequest, connector: ConnectorConfig): VerifiedExternalIdentity | null {
+  if (connector.kind === "http") {
+    return connector.principal ? { connector: "http", external_id: connector.principal.id } : null
+  }
+  if (connector.kind === "telegram") return verifyTelegramIdentity(request, connector)
+  if (connector.kind === "slack") return verifySlackIdentity(request, connector)
+  if (connector.kind === "discord") return verifyHeaderIdentity(request, connector.kind)
+  if (connector.kind === "whatsapp") return verifyHeaderIdentity(request, connector.kind)
+  return verifyHeaderIdentity(request, connector.kind)
+}
+
+function verifyTelegramIdentity(request: FastifyRequest, connector: Extract<ConnectorConfig, { kind: "telegram" }>): VerifiedExternalIdentity | null {
+  if (connector.webhook_secret_env) {
+    const expected = readRequiredEnv(connector.webhook_secret_env)
+    const actual = headerValue(request, "x-telegram-bot-api-secret-token")
+    if (!safeEqualString(actual, expected)) return null
+  }
+  const body = objectBody(request.body)
+  const from = (body.message as Record<string, unknown> | undefined)?.from
+    ?? (body.callback_query as Record<string, unknown> | undefined)?.from
+    ?? (body.edited_message as Record<string, unknown> | undefined)?.from
+  const userId = String((from as Record<string, unknown> | undefined)?.id ?? "")
+  if (!userId) return null
+  return {
+    connector: "telegram",
+    external_id: userId,
+    metadata: {
+      username: (from as Record<string, unknown> | undefined)?.username,
+      chat_id: (body.message as Record<string, unknown> | undefined)?.chat && String(((body.message as Record<string, unknown>).chat as Record<string, unknown>).id ?? ""),
+    },
+  }
+}
+
+function verifySlackIdentity(request: FastifyRequest, connector: Extract<ConnectorConfig, { kind: "slack" }>): VerifiedExternalIdentity | null {
+  if (connector.signing_secret_env) {
+    const expected = readRequiredEnv(connector.signing_secret_env)
+    if (!verifySlackSignature(request, expected)) return null
+  }
+  const body = objectBody(request.body)
+  const event = body.event as Record<string, unknown> | undefined
+  const teamId = String(body.team_id ?? (body.team as Record<string, unknown> | undefined)?.id ?? "")
+  const userId = String(body.user_id ?? body.user ?? event?.user ?? event?.user_id ?? "")
+  if (!userId) return null
+  return {
+    connector: "slack",
+    external_id: teamId ? `${teamId}:${userId}` : userId,
+    metadata: { team_id: teamId || undefined, user_id: userId },
+  }
+}
+
+function verifyHeaderIdentity(request: FastifyRequest, connector: ConnectorKind): VerifiedExternalIdentity | null {
+  const externalId = headerValue(request, `x-arroba-${connector}-identity`)
+  if (!externalId) return null
+  return { connector, external_id: externalId }
+}
+
+function findExternalIdentityBinding(bindings: ExternalIdentityBinding[], identity: VerifiedExternalIdentity) {
+  return bindings.find((binding) =>
+    binding.connector === identity.connector && binding.external_id === identity.external_id
+  )
+}
+
+function principalAllowsConnector(principal: PrincipalRef, connector: ConnectorKind) {
+  return !principal.allowed_connectors?.length || principal.allowed_connectors.includes(connector)
+}
+
+function principalCaller(principal: PrincipalRef | undefined, proof: Record<string, unknown>) {
+  if (!principal) return { type: proof.auth, ...proof }
+  return {
+    type: principal.type ?? "user",
+    principal_id: principal.id,
+    teams: principal.teams ?? [],
+    display_name: principal.display_name,
+    allowed_connectors: principal.allowed_connectors,
+    proof,
+  }
+}
+
+function safeEqualString(actual: string | undefined, expected: string) {
+  if (!actual) return false
+  const actualBuffer = Buffer.from(actual)
+  const expectedBuffer = Buffer.from(expected)
+  if (actualBuffer.length !== expectedBuffer.length) return false
+  return timingSafeEqual(actualBuffer, expectedBuffer)
+}
+
+function objectBody(body: unknown): Record<string, unknown> {
+  return body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {}
+}
+
+function verifySlackSignature(request: FastifyRequest, signingSecret: string) {
+  const timestamp = headerValue(request, "x-slack-request-timestamp")
+  const signature = headerValue(request, "x-slack-signature")
+  const rawBody = rawRequestBody(request)
+  if (!timestamp || !signature || rawBody === undefined) return false
+  const timestampSeconds = Number(timestamp)
+  if (!Number.isFinite(timestampSeconds)) return false
+  const maxSkewSeconds = 60 * 5
+  if (Math.abs(Math.floor(Date.now() / 1000) - timestampSeconds) > maxSkewSeconds) return false
+  const base = `v0:${timestamp}:${rawBody}`
+  const expected = `v0=${createHmac("sha256", signingSecret).update(base).digest("hex")}`
+  return safeEqualString(signature, expected)
+}
+
+function rawRequestBody(request: FastifyRequest) {
+  return (request.raw as typeof request.raw & { arrobaRawBody?: string }).arrobaRawBody
+}
+
+function installRawBodyParsers(app: ReturnType<typeof Fastify>) {
+  app.removeContentTypeParser("application/json")
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request: { raw: { arrobaRawBody?: string } }, body: string, done: (error: Error | null, body?: unknown) => void) => {
+    setRawRequestBody(request, body)
+    try {
+      done(null, body ? JSON.parse(body) : {})
+    } catch (error) {
+      done(error as Error)
+    }
+  })
+
+  app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (request: { raw: { arrobaRawBody?: string } }, body: string, done: (error: Error | null, body?: unknown) => void) => {
+    setRawRequestBody(request, body)
+    done(null, Object.fromEntries(new URLSearchParams(body)))
+  })
+
+  app.addContentTypeParser("text/plain", { parseAs: "string" }, (request: { raw: { arrobaRawBody?: string } }, body: string, done: (error: Error | null, body?: unknown) => void) => {
+    setRawRequestBody(request, body)
+    done(null, body)
+  })
+}
+
+function setRawRequestBody(request: { raw: { arrobaRawBody?: string } }, body: string) {
+  request.raw.arrobaRawBody = body
 }
 
 async function parseRequest(request: FastifyRequest, config: ParserConfig): Promise<unknown> {
