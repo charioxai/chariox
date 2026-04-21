@@ -268,6 +268,17 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::ListWorkflowPublications(request) => request.session_id.clone(),
         LocalDaemonRequest::GetWorkflowPublication(request) => request.session_id.clone(),
         LocalDaemonRequest::DisableWorkflowPublication(request) => request.session_id.clone(),
+        LocalDaemonRequest::CreateWorkflowPublicationPairCode(request) => {
+            request.session_id.clone()
+        }
+        LocalDaemonRequest::RedeemWorkflowPublicationPairCode(request) => {
+            request.session_id.clone()
+        }
+        LocalDaemonRequest::ListWorkflowPublicationSenders(request) => request.session_id.clone(),
+        LocalDaemonRequest::RevokeWorkflowPublicationSender(request) => request.session_id.clone(),
+        LocalDaemonRequest::AuthenticateWorkflowPublicationSender(request) => {
+            request.session_id.clone()
+        }
         LocalDaemonRequest::CreateWorkflowEndpoint(request) => request.session_id.clone(),
         LocalDaemonRequest::AliasWorkflowEndpoint(request) => request.session_id.clone(),
         LocalDaemonRequest::BindWorkflowEndpoint(request) => request.session_id.clone(),

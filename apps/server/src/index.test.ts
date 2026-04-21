@@ -378,3 +378,87 @@ test("arroba auth keeps anonymous access explicit", async () => {
     await allowedServer.app.close()
   }
 })
+
+test("paired sender auth is optional per publication and uses the pairing endpoint when enabled", async () => {
+  const disabled = buildServer({
+    ...baseConfig,
+    auth: { mode: "arroba", allow_anonymous: true, paired_senders: { enabled: false } },
+  }, {
+    invokeWorkflow: async () => ({ accepted: true }),
+  })
+  try {
+    const response = await disabled.app.inject({
+      method: "POST",
+      url: "/.well-known/arroba/publication/pair",
+      payload: { pair_code: "pair" },
+    })
+    assert.equal(response.statusCode, 404)
+  } finally {
+    await disabled.app.close()
+  }
+
+  const seenCallers: unknown[] = []
+  const enabled = buildServer({
+    ...baseConfig,
+    auth: { mode: "arroba", paired_senders: { enabled: true } },
+  }, {
+    redeemPublicationPairCode: async (_publication, pairCode, displayName) => {
+      assert.equal(pairCode, "pair-code")
+      assert.equal(displayName, "sender one")
+      return {
+        sender: {
+          sender_id: "sender-1",
+          publication_id: "pub-test",
+          display_name: "sender one",
+          credential_hash: "hash",
+          allowed_transports: ["http"],
+          created_at_ms: 0,
+        },
+        credential: "sender-secret",
+      }
+    },
+    authenticatePublicationSender: async (_publication, credential, transport) => {
+      if (credential !== "sender-secret") throw new Error("bad sender")
+      assert.equal(transport, "http")
+      return {
+        sender_id: "sender-1",
+        publication_id: "pub-test",
+        display_name: "sender one",
+        credential_hash: "hash",
+        allowed_transports: ["http"],
+        created_at_ms: 0,
+      }
+    },
+    invokeWorkflow: async (invocation) => {
+      seenCallers.push(invocation.caller)
+      return { accepted: true }
+    },
+  })
+  try {
+    const pair = await enabled.app.inject({
+      method: "POST",
+      url: "/.well-known/arroba/publication/pair",
+      payload: { pair_code: "pair-code", display_name: "sender one" },
+    })
+    assert.equal(pair.statusCode, 200)
+    assert.equal(pair.json().credential, "sender-secret")
+
+    const rejected = await enabled.app.inject({
+      method: "POST",
+      url: "/anything",
+      payload: {},
+    })
+    assert.equal(rejected.statusCode, 401)
+
+    const accepted = await enabled.app.inject({
+      method: "POST",
+      url: "/anything",
+      headers: { authorization: "Bearer sender-secret" },
+      payload: {},
+    })
+    assert.equal(accepted.statusCode, 200)
+    assert.deepEqual((seenCallers[0] as Record<string, unknown>).principal_id, "sender-1")
+  } finally {
+    await enabled.app.close()
+  }
+})

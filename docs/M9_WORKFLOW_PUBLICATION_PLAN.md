@@ -148,6 +148,12 @@ Paired sender auth is the workflow-publication equivalent of pairing a trusted
 external caller with a published endpoint. A pairing code is only a bootstrap
 credential; it is not used for steady-state request auth.
 
+Pairing is optional per publication. A workflow publication can use
+`auth.mode = "anonymous"`, bearer/API-key auth, registered Arroba principals, or
+Arroba auth with `paired_senders.enabled = true`. If paired senders are not
+enabled for that publication, the gateway does not expose the pairing endpoint
+for that workflow.
+
 Flow:
 
 1. The owner generates a short-lived pairing code for a publication or endpoint
@@ -180,9 +186,10 @@ headers.
 CLI/shell shape:
 
 ```text
-/workflow publication pair-code <publication> [--endpoint <endpoint>] [--expires 10m] [--max-uses 1]
-/workflow publication senders <publication>
-/workflow publication revoke-sender <publication> <sender_id>
+workflow publication pair-code <publication> [--expires-ms N] [--max-uses N]
+workflow publication redeem-code <publication> <pair-code> [display-name]
+workflow publication senders <publication>
+workflow publication revoke-sender <publication> <sender_id>
 ```
 
 HTTP shape:
@@ -193,6 +200,24 @@ POST /.well-known/arroba/publication/pair
 
 The endpoint redeems the pairing code and returns the sender id plus the issued
 credential once. The gateway must not log the raw credential.
+
+Implementation status:
+
+- Kernel session state now owns publication pairing codes and trusted sender
+  records. Pairing codes store only a hash of the opaque code; trusted senders
+  store only a credential hash.
+- Local API, kernel-client helpers, and shell commands support creating pairing
+  codes, redeeming codes, listing senders, revoking senders, and authenticating
+  sender credentials.
+- The gateway supports optional paired-sender auth per publication through
+  `auth.mode = "arroba"` plus `paired_senders.enabled = true`.
+- The gateway exposes `POST /.well-known/arroba/publication/pair` only when
+  pairing is enabled for that publication, authenticates subsequent HTTP calls
+  through the configured sender credential header, and forwards the sender
+  identity in invocation metadata.
+- Unit coverage verifies optional pairing behavior, redemption, sender auth,
+  and revocation. The live publication drill now covers anonymous publication
+  plus paired publication reject/redeem/invoke/revoke/reject.
 
 ## M9.6 HTTP Connector
 

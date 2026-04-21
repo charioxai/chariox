@@ -603,9 +603,45 @@ export type WorkflowPublicationDefinition = {
   parser?: unknown | null
   input_schema?: unknown | null
   mode?: string | null
+  pairing_codes?: WorkflowPublicationPairingCode[]
+  trusted_senders?: WorkflowPublicationTrustedSender[]
   created_by_user_id: string
   created_at_ms: number
   updated_at_ms: number
+}
+
+export type WorkflowPublicationPairingCode = {
+  code_id: string
+  publication_id: string
+  pair_code_hash: string
+  created_by_user_id: string
+  created_at_ms: number
+  expires_at_ms?: number | null
+  max_uses?: number | null
+  used_count: number
+  revoked_at_ms?: number | null
+}
+
+export type WorkflowPublicationPairingCodeRecord = {
+  code: WorkflowPublicationPairingCode
+  pair_code: string
+}
+
+export type WorkflowPublicationTrustedSender = {
+  sender_id: string
+  publication_id: string
+  display_name?: string | null
+  credential_hash: string
+  allowed_transports?: string[]
+  created_at_ms: number
+  last_used_at_ms?: number | null
+  expires_at_ms?: number | null
+  revoked_at_ms?: number | null
+}
+
+export type WorkflowPublicationSenderCredential = {
+  sender: WorkflowPublicationTrustedSender
+  credential: string
 }
 
 export type WorkflowWatchdogDefinition = {

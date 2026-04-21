@@ -17,11 +17,13 @@ const {
   attachToSessionRequest,
   createSessionRequest,
   createWorkflowEndpointRequest,
+  createWorkflowPublicationPairCodeRequest,
   createWorkflowPublicationRequest,
   createWorkflowRequest,
   endSessionRequest,
   getProviderRunRequest,
   launchProviderRunRequest,
+  revokeWorkflowPublicationSenderRequest,
   listSessionsRequest,
   spawnAgentRequest,
   updateWorkflowNodeInstructionsRequest,
@@ -262,7 +264,81 @@ async function main() {
     if (!body.accepted || !body.workflow_run?.id) {
       throw new Error(`gateway did not return accepted workflow run metadata: ${JSON.stringify(body)}`)
     }
-    logStep('ok', { publicationId: publication.id, workflowRunId: body.workflow_run.id })
+    logStep('anonymous_ok', { publicationId: publication.id, workflowRunId: body.workflow_run.id })
+    await stopProcess(gateway)
+    gateway = null
+
+    logStep('create_paired_publication')
+    const pairedPublication = variant(
+      await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {
+        alias: 'paired_http',
+        route: '/paired/*',
+        methods: ['GET'],
+        auth: { mode: 'arroba', paired_senders: { enabled: true } },
+        parser: { kind: 'path_template', template: '/paired/:task' },
+        mode: 'async',
+      })),
+      'WorkflowPublicationCreated',
+    ).publication
+    const pairCode = variant(
+      await client.send(createWorkflowPublicationPairCodeRequest(session.id, pairedPublication.id, null, 1)),
+      'WorkflowPublicationPairCodeCreated',
+    ).pair_code.pair_code
+
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: session.id,
+        ARROBA_PUBLICATION_ID: pairedPublication.id,
+      },
+      'gateway-paired',
+    )
+    await waitForGateway(gatewayUrl)
+
+    logStep('paired_rejects_missing_sender')
+    const missingAuth = await fetch(`${gatewayUrl}/paired/ship-publication`)
+    if (missingAuth.status !== 401) {
+      throw new Error(`expected HTTP 401 without paired sender credential, got ${missingAuth.status}: ${await missingAuth.text()}`)
+    }
+
+    logStep('paired_redeem')
+    const pairResponse = await fetch(`${gatewayUrl}/.well-known/arroba/publication/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pair_code: pairCode, display_name: 'drill sender' }),
+    })
+    const pairBody = await pairResponse.json()
+    if (pairResponse.status !== 200 || !pairBody.credential || !pairBody.sender?.sender_id) {
+      throw new Error(`expected successful sender pairing, got ${pairResponse.status}: ${JSON.stringify(pairBody)}`)
+    }
+
+    logStep('paired_invoke')
+    const pairedResponse = await fetch(`${gatewayUrl}/paired/ship-publication`, {
+      headers: { authorization: `Bearer ${pairBody.credential}` },
+    })
+    const pairedBody = await pairedResponse.json()
+    if (pairedResponse.status !== 202 || !pairedBody.workflow_run?.id) {
+      throw new Error(`expected HTTP 202 from paired publication, got ${pairedResponse.status}: ${JSON.stringify(pairedBody)}`)
+    }
+
+    await client.send(revokeWorkflowPublicationSenderRequest(session.id, pairedPublication.id, pairBody.sender.sender_id))
+    const revokedResponse = await fetch(`${gatewayUrl}/paired/ship-publication`, {
+      headers: { authorization: `Bearer ${pairBody.credential}` },
+    })
+    if (revokedResponse.status !== 401) {
+      throw new Error(`expected HTTP 401 after sender revoke, got ${revokedResponse.status}: ${await revokedResponse.text()}`)
+    }
+
+    logStep('ok', {
+      anonymousPublicationId: publication.id,
+      pairedPublicationId: pairedPublication.id,
+      pairedWorkflowRunId: pairedBody.workflow_run.id,
+    })
     succeeded = true
   } finally {
     if (client && sessionId) {

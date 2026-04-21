@@ -10,6 +10,7 @@ import type {
   WorkflowWatchdogDefinition,
   WorkflowDefinition,
   WorkflowPublicationDefinition,
+  WorkflowPublicationTrustedSender,
   WorkflowRun,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"
@@ -1349,10 +1350,45 @@ test("executeShellCommand manages workflow graph and endpoints", async () => {
 
 test("executeShellCommand manages workflow publications", async () => {
   const publication = makeWorkflowPublication()
+  const sender: WorkflowPublicationTrustedSender = {
+    sender_id: "sender-1",
+    publication_id: publication.id,
+    display_name: "partner",
+    credential_hash: "hash",
+    allowed_transports: ["http"],
+    created_at_ms: 0,
+  }
   const session = makeSession({ workflows: [makeWorkflow()], workflow_publications: [publication] })
   const fake = fakeClient((request) => {
     if ("CreateWorkflowPublication" in request) {
       return { WorkflowPublicationCreated: { publication, session } }
+    }
+    if ("CreateWorkflowPublicationPairCode" in request) {
+      return {
+        WorkflowPublicationPairCodeCreated: {
+          pair_code: {
+            code: {
+              code_id: "pair-1",
+              publication_id: publication.id,
+              pair_code_hash: "hash",
+              created_by_user_id: "local",
+              created_at_ms: 0,
+              used_count: 0,
+            },
+            pair_code: "pair-code",
+          },
+          session,
+        },
+      }
+    }
+    if ("RedeemWorkflowPublicationPairCode" in request) {
+      return { WorkflowPublicationSenderPaired: { sender_credential: { sender, credential: "sender-secret" }, session } }
+    }
+    if ("ListWorkflowPublicationSenders" in request) {
+      return { WorkflowPublicationSendersListed: { senders: [sender] } }
+    }
+    if ("RevokeWorkflowPublicationSender" in request) {
+      return { WorkflowPublicationSenderRevoked: { sender: { ...sender, revoked_at_ms: 42 }, session } }
     }
     if ("ListWorkflowPublications" in request) {
       return { WorkflowPublicationsListed: { publications: [publication] } }
@@ -1377,6 +1413,10 @@ test("executeShellCommand manages workflow publications", async () => {
   const listResult = await executeShellCommand(parseShellCommand("workflow publication list"), context, { client: fake.client })
   const showResult = await executeShellCommand(parseShellCommand("workflow publication show publication-1"), context, { client: fake.client })
   const disableResult = await executeShellCommand(parseShellCommand("workflow publication disable publication-1"), context, { client: fake.client })
+  const pairCodeResult = await executeShellCommand(parseShellCommand("workflow publication pair-code publication-1 --max-uses 1"), context, { client: fake.client })
+  const redeemResult = await executeShellCommand(parseShellCommand("workflow publication redeem-code publication-1 pair-code partner"), context, { client: fake.client })
+  const sendersResult = await executeShellCommand(parseShellCommand("workflow publication senders publication-1"), context, { client: fake.client })
+  const revokeSenderResult = await executeShellCommand(parseShellCommand("workflow publication revoke-sender publication-1 sender-1"), context, { client: fake.client })
 
   assert.equal(createResult.ok, true)
   assert.match(createResult.message ?? "", /created workflow publication publication-1/)
@@ -1387,6 +1427,14 @@ test("executeShellCommand manages workflow publications", async () => {
   assert.equal(showResult.format, "json")
   assert.equal(disableResult.ok, true)
   assert.match(disableResult.message ?? "", /disabled workflow publication publication-1/)
+  assert.equal(pairCodeResult.ok, true)
+  assert.match(pairCodeResult.message ?? "", /pair-code/)
+  assert.equal(redeemResult.ok, true)
+  assert.match(redeemResult.message ?? "", /sender-secret/)
+  assert.equal(sendersResult.ok, true)
+  assert.match(sendersResult.message ?? "", /sender-1 \(partner\)/)
+  assert.equal(revokeSenderResult.ok, true)
+  assert.match(revokeSenderResult.message ?? "", /revoked workflow publication sender sender-1/)
   assert.deepEqual(fake.requests, [
     {
       CreateWorkflowPublication: {
@@ -1406,6 +1454,19 @@ test("executeShellCommand manages workflow publications", async () => {
     { ListWorkflowPublications: { session_id: "session-1" } },
     { GetWorkflowPublication: { session_id: "session-1", publication_ref: "publication-1" } },
     { DisableWorkflowPublication: { session_id: "session-1", publication_ref: "publication-1" } },
+    { CreateWorkflowPublicationPairCode: { session_id: "session-1", publication_ref: "publication-1", expires_in_ms: null, max_uses: 1 } },
+    {
+      RedeemWorkflowPublicationPairCode: {
+        session_id: "session-1",
+        publication_ref: "publication-1",
+        pair_code: "pair-code",
+        display_name: "partner",
+        allowed_transports: ["http"],
+        expires_in_ms: null,
+      },
+    },
+    { ListWorkflowPublicationSenders: { session_id: "session-1", publication_ref: "publication-1" } },
+    { RevokeWorkflowPublicationSender: { session_id: "session-1", publication_ref: "publication-1", sender_ref: "sender-1" } },
   ])
 })
 

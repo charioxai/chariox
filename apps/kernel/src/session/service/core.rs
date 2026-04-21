@@ -17,6 +17,8 @@ impl SessionService {
             next_workflow_message_number: 0,
             next_workflow_watchdog_number: 0,
             next_workflow_publication_number: 0,
+            next_workflow_publication_pairing_code_number: 0,
+            next_workflow_publication_sender_number: 0,
             next_queued_workflow_launch_number: 0,
             next_workspace_link_number: 0,
         }
@@ -703,6 +705,241 @@ impl SessionService {
         Ok(publication.clone())
     }
 
+    pub fn create_workflow_publication_pairing_code(
+        &mut self,
+        session_id: &str,
+        publication_ref: &str,
+        pair_code_hash: &str,
+        created_by_user_id: String,
+        expires_at_ms: Option<u64>,
+        max_uses: Option<u32>,
+    ) -> Result<WorkflowPublicationPairingCode, DaemonError> {
+        let code_id = self.next_workflow_publication_pairing_code_id();
+        self.create_workflow_publication_pairing_code_with_id(
+            session_id,
+            publication_ref,
+            code_id,
+            pair_code_hash,
+            created_by_user_id,
+            expires_at_ms,
+            max_uses,
+        )
+    }
+
+    pub fn create_workflow_publication_pairing_code_with_id(
+        &mut self,
+        session_id: &str,
+        publication_ref: &str,
+        code_id: String,
+        pair_code_hash: &str,
+        created_by_user_id: String,
+        expires_at_ms: Option<u64>,
+        max_uses: Option<u32>,
+    ) -> Result<WorkflowPublicationPairingCode, DaemonError> {
+        let publication_id = self
+            .resolve_workflow_publication_ref(session_id, publication_ref)?
+            .id()
+            .to_string();
+        let code = WorkflowPublicationPairingCode::new(
+            code_id,
+            publication_id.clone(),
+            pair_code_hash,
+            created_by_user_id,
+            unix_epoch_ms(),
+            expires_at_ms,
+            max_uses,
+        );
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let publication = session
+            .workflow_publication_mut(&publication_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "create workflow publication pairing code",
+                message: format!("workflow publication `{publication_ref}` was not found"),
+            })?;
+        Ok(publication.add_pairing_code(code))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn redeem_workflow_publication_pairing_code(
+        &mut self,
+        session_id: &str,
+        publication_ref: &str,
+        code_id: &str,
+        pair_code_hash: &str,
+        credential: &str,
+        display_name: Option<String>,
+        allowed_transports: Vec<String>,
+        expires_at_ms: Option<u64>,
+        now_ms: u64,
+    ) -> Result<WorkflowPublicationSenderCredential, DaemonError> {
+        let publication_id = self
+            .resolve_workflow_publication_ref(session_id, publication_ref)?
+            .id()
+            .to_string();
+        let sender_id = self.next_workflow_publication_sender_id();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let publication = session
+            .workflow_publication_mut(&publication_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "redeem workflow publication pairing code",
+                message: format!("workflow publication `{publication_ref}` was not found"),
+            })?;
+        let code =
+            publication
+                .pairing_code_mut(code_id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "redeem workflow publication pairing code",
+                    message: "pairing code was not found".to_string(),
+                })?;
+        if code.is_revoked() {
+            return Err(DaemonError::LocalTransport {
+                operation: "redeem workflow publication pairing code",
+                message: "pairing code is revoked".to_string(),
+            });
+        }
+        if code.is_expired(now_ms) {
+            return Err(DaemonError::LocalTransport {
+                operation: "redeem workflow publication pairing code",
+                message: "pairing code is expired".to_string(),
+            });
+        }
+        if code.is_exhausted() {
+            return Err(DaemonError::LocalTransport {
+                operation: "redeem workflow publication pairing code",
+                message: "pairing code has no remaining uses".to_string(),
+            });
+        }
+        if code.pair_code_hash() != pair_code_hash {
+            return Err(DaemonError::LocalTransport {
+                operation: "redeem workflow publication pairing code",
+                message: "pairing code was not recognized".to_string(),
+            });
+        }
+        code.mark_used();
+        let sender = WorkflowPublicationTrustedSender::new(
+            sender_id,
+            publication_id,
+            display_name,
+            hash_workflow_publication_credential(credential),
+            allowed_transports,
+            now_ms,
+            expires_at_ms,
+        );
+        let sender = publication.add_trusted_sender(sender);
+        Ok(WorkflowPublicationSenderCredential {
+            sender,
+            credential: credential.to_string(),
+        })
+    }
+
+    pub fn list_workflow_publication_senders(
+        &self,
+        session_id: &str,
+        publication_ref: &str,
+    ) -> Result<Vec<WorkflowPublicationTrustedSender>, DaemonError> {
+        Ok(self
+            .resolve_workflow_publication_ref(session_id, publication_ref)?
+            .trusted_senders()
+            .to_vec())
+    }
+
+    pub fn revoke_workflow_publication_sender(
+        &mut self,
+        session_id: &str,
+        publication_ref: &str,
+        sender_ref: &str,
+        now_ms: u64,
+    ) -> Result<WorkflowPublicationTrustedSender, DaemonError> {
+        let publication_id = self
+            .resolve_workflow_publication_ref(session_id, publication_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let publication = session
+            .workflow_publication_mut(&publication_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "revoke workflow publication sender",
+                message: format!("workflow publication `{publication_ref}` was not found"),
+            })?;
+        let sender_id = resolve_publication_sender_id(publication, sender_ref)?;
+        let sender = publication.trusted_sender_mut(&sender_id).ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "revoke workflow publication sender",
+                message: format!("workflow publication sender `{sender_ref}` was not found"),
+            }
+        })?;
+        sender.revoke(now_ms);
+        Ok(sender.clone())
+    }
+
+    pub fn authenticate_workflow_publication_sender(
+        &mut self,
+        session_id: &str,
+        publication_ref: &str,
+        credential: &str,
+        transport: &str,
+        now_ms: u64,
+    ) -> Result<WorkflowPublicationTrustedSender, DaemonError> {
+        let publication_id = self
+            .resolve_workflow_publication_ref(session_id, publication_ref)?
+            .id()
+            .to_string();
+        let credential_hash = hash_workflow_publication_credential(credential);
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let publication = session
+            .workflow_publication_mut(&publication_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "authenticate workflow publication sender",
+                message: format!("workflow publication `{publication_ref}` was not found"),
+            })?;
+        let sender = publication
+            .trusted_sender_by_credential_hash_mut(&credential_hash)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "authenticate workflow publication sender",
+                message: "sender credential was not recognized".to_string(),
+            })?;
+        if sender.is_revoked() {
+            return Err(DaemonError::LocalTransport {
+                operation: "authenticate workflow publication sender",
+                message: "sender credential is revoked".to_string(),
+            });
+        }
+        if sender.is_expired(now_ms) {
+            return Err(DaemonError::LocalTransport {
+                operation: "authenticate workflow publication sender",
+                message: "sender credential is expired".to_string(),
+            });
+        }
+        if !sender.allows_transport(transport) {
+            return Err(DaemonError::LocalTransport {
+                operation: "authenticate workflow publication sender",
+                message: format!("sender is not allowed through `{transport}`"),
+            });
+        }
+        sender.mark_used(now_ms);
+        Ok(sender.clone())
+    }
+
     pub fn list_workflow_runs(
         &self,
         session_id: &str,
@@ -805,6 +1042,46 @@ impl SessionService {
             Ok(())
         }
     }
+}
+
+fn resolve_publication_sender_id(
+    publication: &WorkflowPublicationDefinition,
+    sender_ref: &str,
+) -> Result<String, DaemonError> {
+    let normalized_ref = sender_ref.trim().to_lowercase();
+    if let Some(sender_id) = publication
+        .trusted_senders()
+        .iter()
+        .find(|sender| sender.sender_id() == normalized_ref)
+        .map(|sender| sender.sender_id().to_string())
+    {
+        return Ok(sender_id);
+    }
+    let matches = publication
+        .trusted_senders()
+        .iter()
+        .filter(|sender| sender.sender_id().starts_with(&normalized_ref))
+        .map(|sender| sender.sender_id().to_string())
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [sender_id] => Ok(sender_id.clone()),
+        [] => Err(DaemonError::LocalTransport {
+            operation: "resolve workflow publication sender",
+            message: format!("workflow publication sender `{sender_ref}` was not found"),
+        }),
+        _ => Err(DaemonError::LocalTransport {
+            operation: "resolve workflow publication sender",
+            message: format!("workflow publication sender `{sender_ref}` is ambiguous"),
+        }),
+    }
+}
+
+fn hash_workflow_publication_credential(credential: &str) -> String {
+    let digest = Sha256::digest(credential.as_bytes());
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 fn normalize_workspace_link_name(name: &str) -> Result<String, DaemonError> {

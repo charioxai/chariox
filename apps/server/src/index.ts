@@ -6,11 +6,17 @@ import process from "node:process"
 import Fastify, { type FastifyRequest } from "fastify"
 
 import { LocalIpcClient } from "@arroba/kernel-client/ipc"
-import type { WorkflowPublicationDefinition } from "@arroba/kernel-client/kernel-types"
+import type {
+  WorkflowPublicationDefinition,
+  WorkflowPublicationSenderCredential,
+  WorkflowPublicationTrustedSender,
+} from "@arroba/kernel-client/kernel-types"
 import {
+  authenticateWorkflowPublicationSenderRequest,
   getWorkflowPublicationRequest,
   getWorkflowRunRequest,
   invokeWorkflowEndpointRequest,
+  redeemWorkflowPublicationPairCodeRequest,
 } from "@arroba/kernel-client/ipc-requests"
 
 import { createProcessLogger } from "./logging.js"
@@ -69,10 +75,18 @@ type ArrobaAuthConfig = {
   mode: "arroba"
   allow_anonymous?: boolean
   anonymous_principal?: PrincipalRef
+  paired_senders?: PairedSendersAuthConfig
   bearer_tokens?: BearerPrincipal[]
   api_keys?: ApiKeyPrincipal[]
   external_identities?: ExternalIdentityBinding[]
   connectors?: ConnectorConfig[]
+}
+
+type PairedSendersAuthConfig = {
+  enabled?: boolean
+  header?: string
+  transport?: ConnectorKind
+  pair_endpoint?: boolean
 }
 
 type ParserConfig = {
@@ -131,6 +145,16 @@ type WorkflowInvocationResult = {
 
 type GatewayDeps = {
   invokeWorkflow?: (invocation: NormalizedInvocation) => Promise<WorkflowInvocationResult>
+  redeemPublicationPairCode?: (
+    publication: WorkflowPublicationConfig,
+    pairCode: string,
+    displayName?: string | null,
+  ) => Promise<WorkflowPublicationSenderCredential>
+  authenticatePublicationSender?: (
+    publication: WorkflowPublicationConfig,
+    credential: string,
+    transport: ConnectorKind,
+  ) => Promise<WorkflowPublicationTrustedSender>
 }
 
 type KernelLookupClient = {
@@ -156,13 +180,41 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     return { status: "ok" }
   })
 
+  if (isPairedSenderAuthEnabled(publication.auth)) {
+    app.post("/.well-known/arroba/publication/pair", async (request, reply) => {
+      const body = objectBody(request.body)
+      const pairCode = String(body.pair_code ?? "")
+      if (!pairCode) {
+        reply.code(400)
+        return { error: "missing pair_code" }
+      }
+      const senderCredential = deps.redeemPublicationPairCode
+        ? await deps.redeemPublicationPairCode(publication, pairCode, optionalString(body.display_name))
+        : await redeemPublicationPairCode(publication, pairCode, optionalString(body.display_name))
+      return {
+        sender: senderCredential.sender,
+        credential: senderCredential.credential,
+      }
+    })
+  } else {
+    app.post("/.well-known/arroba/publication/pair", async (_request, reply) => {
+      reply.code(404)
+      return { error: "publication pairing is not enabled" }
+    })
+  }
+
   const methods = publication.methods?.length ? publication.methods : ["GET", "POST"]
   for (const method of methods) {
     app.route({
       method,
       url: publication.route ?? "/*",
       handler: async (request, reply) => {
-        const auth = authenticateRequest(request, publication.auth ?? { mode: "anonymous" })
+        const auth = await authenticateRequest(
+          request,
+          publication,
+          publication.auth ?? { mode: "anonymous" },
+          deps,
+        )
         if (!auth.ok) {
           reply.code(401).headers({ "content-type": "application/json" })
           return { error: auth.message }
@@ -217,6 +269,53 @@ async function invokeKernelWorkflow(
     }
     const workflowRun = await waitForWorkflowRun(client, publication, invoked.workflow_run.id)
     return { accepted: true, workflow_run: workflowRun }
+  } finally {
+    await client.close().catch(() => {})
+  }
+}
+
+async function redeemPublicationPairCode(
+  publication: WorkflowPublicationConfig,
+  pairCode: string,
+  displayName?: string | null,
+): Promise<WorkflowPublicationSenderCredential> {
+  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
+  try {
+    const response = await client.send<Record<string, unknown>>(redeemWorkflowPublicationPairCodeRequest(
+      publication.session_id,
+      publication.publication_id,
+      pairCode,
+      displayName ?? null,
+      ["http"],
+    ))
+    const payload = response.WorkflowPublicationSenderPaired as { sender_credential?: WorkflowPublicationSenderCredential } | undefined
+    if (!payload?.sender_credential) {
+      throw new Error(`unexpected publication pair response: ${JSON.stringify(response)}`)
+    }
+    return payload.sender_credential
+  } finally {
+    await client.close().catch(() => {})
+  }
+}
+
+async function authenticatePublicationSender(
+  publication: WorkflowPublicationConfig,
+  credential: string,
+  transport: ConnectorKind,
+): Promise<WorkflowPublicationTrustedSender> {
+  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
+  try {
+    const response = await client.send<Record<string, unknown>>(authenticateWorkflowPublicationSenderRequest(
+      publication.session_id,
+      publication.publication_id,
+      credential,
+      transport,
+    ))
+    const payload = response.WorkflowPublicationSenderAuthenticated as { sender?: WorkflowPublicationTrustedSender } | undefined
+    if (!payload?.sender) {
+      throw new Error(`unexpected publication sender auth response: ${JSON.stringify(response)}`)
+    }
+    return payload.sender
   } finally {
     await client.close().catch(() => {})
   }
@@ -287,7 +386,12 @@ function parseTransportResponse(message: string | undefined | null): { status: n
   }
 }
 
-function authenticateRequest(request: FastifyRequest, config: AuthConfig): { ok: true; caller: Record<string, unknown> } | { ok: false; message: string } {
+async function authenticateRequest(
+  request: FastifyRequest,
+  publication: WorkflowPublicationConfig,
+  config: AuthConfig,
+  deps: GatewayDeps,
+): Promise<{ ok: true; caller: Record<string, unknown> } | { ok: false; message: string }> {
   if (config.mode === "anonymous") {
     return { ok: true, caller: { type: "anonymous" } }
   }
@@ -307,10 +411,18 @@ function authenticateRequest(request: FastifyRequest, config: AuthConfig): { ok:
     }
     return { ok: true, caller: principalCaller(config.principal, { auth: "api_key", key_env: config.key_env, connector: "http" }) }
   }
-  return authenticateArrobaRequest(request, config)
+  return authenticateArrobaRequest(request, publication, config, deps)
 }
 
-function authenticateArrobaRequest(request: FastifyRequest, config: ArrobaAuthConfig): { ok: true; caller: Record<string, unknown> } | { ok: false; message: string } {
+async function authenticateArrobaRequest(
+  request: FastifyRequest,
+  publication: WorkflowPublicationConfig,
+  config: ArrobaAuthConfig,
+  deps: GatewayDeps,
+): Promise<{ ok: true; caller: Record<string, unknown> } | { ok: false; message: string }> {
+  const pairedSender = await authenticatePairedSender(request, publication, config, deps)
+  if (pairedSender) return pairedSender
+
   const bearer = authenticateBearerPrincipals(request, config.bearer_tokens ?? [])
   if (bearer) return bearer
 
@@ -354,6 +466,48 @@ function authenticateArrobaRequest(request: FastifyRequest, config: ArrobaAuthCo
   }
 
   return { ok: false, message: "request is not authorized for this publication" }
+}
+
+async function authenticatePairedSender(
+  request: FastifyRequest,
+  publication: WorkflowPublicationConfig,
+  config: ArrobaAuthConfig,
+  deps: GatewayDeps,
+): Promise<{ ok: true; caller: Record<string, unknown> } | { ok: false; message: string } | null> {
+  if (!config.paired_senders?.enabled) return null
+  const header = config.paired_senders.header ?? "authorization"
+  const rawCredential = headerValue(request, header)
+  const credential = header.toLowerCase() === "authorization"
+    ? rawCredential?.replace(/^Bearer\s+/i, "")
+    : rawCredential
+  if (!credential) return null
+  try {
+    const transport = config.paired_senders.transport ?? "http"
+    const sender = deps.authenticatePublicationSender
+      ? await deps.authenticatePublicationSender(publication, credential, transport)
+      : await authenticatePublicationSender(publication, credential, transport)
+    const principal: PrincipalRef = {
+      id: sender.sender_id,
+      type: "sender",
+    }
+    if (sender.display_name) principal.display_name = sender.display_name
+    if (sender.allowed_transports?.length) {
+      principal.allowed_connectors = sender.allowed_transports as ConnectorKind[]
+    }
+    return {
+      ok: true,
+      caller: principalCaller(principal, {
+        auth: "paired_sender",
+        connector: transport,
+        sender_id: sender.sender_id,
+      }),
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "sender credential was not authorized",
+    }
+  }
 }
 
 function authenticateBearerPrincipals(request: FastifyRequest, tokens: BearerPrincipal[]) {
@@ -474,6 +628,14 @@ function safeEqualString(actual: string | undefined, expected: string) {
 
 function objectBody(body: unknown): Record<string, unknown> {
   return body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {}
+}
+
+function optionalString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null
+}
+
+function isPairedSenderAuthEnabled(auth: AuthConfig | undefined) {
+  return auth?.mode === "arroba" && auth.paired_senders?.enabled === true && auth.paired_senders.pair_endpoint !== false
 }
 
 function verifySlackSignature(request: FastifyRequest, signingSecret: string) {

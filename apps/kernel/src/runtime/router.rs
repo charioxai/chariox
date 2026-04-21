@@ -3402,6 +3402,11 @@ impl CommandRouter {
             | LocalDaemonRequest::ListWorkflowPublications(_)
             | LocalDaemonRequest::GetWorkflowPublication(_)
             | LocalDaemonRequest::DisableWorkflowPublication(_)
+            | LocalDaemonRequest::CreateWorkflowPublicationPairCode(_)
+            | LocalDaemonRequest::RedeemWorkflowPublicationPairCode(_)
+            | LocalDaemonRequest::ListWorkflowPublicationSenders(_)
+            | LocalDaemonRequest::RevokeWorkflowPublicationSender(_)
+            | LocalDaemonRequest::AuthenticateWorkflowPublicationSender(_)
             | LocalDaemonRequest::CreateWorkflowEndpoint(_)
             | LocalDaemonRequest::AliasWorkflowEndpoint(_)
             | LocalDaemonRequest::BindWorkflowEndpoint(_)
@@ -4486,6 +4491,21 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::DisableWorkflowPublication(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CreateWorkflowPublicationPairCode(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RedeemWorkflowPublicationPairCode(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkflowPublicationSenders(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RevokeWorkflowPublicationSender(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::AuthenticateWorkflowPublicationSender(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::CreateWorkflowEndpoint(request) => Some(

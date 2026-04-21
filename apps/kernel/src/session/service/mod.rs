@@ -8,6 +8,7 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use jsonschema::JSONSchema;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::types::{
     WorkflowIntermediateOutput, WorkflowRunOutputSubmission, WorkflowTurnSubmissionKind,
@@ -19,10 +20,11 @@ use super::{
     WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent,
     WorkflowFailureKind, WorkflowHandoffPayload, WorkflowLaunchPolicy, WorkflowMessage,
     WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
-    WorkflowOutputValidationPolicy, WorkflowPublicationDefinition, WorkflowRun, WorkflowRunStatus,
-    WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
-    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
-    WorkspaceLinkDefinition, DEFAULT_LOCAL_USER_ID,
+    WorkflowOutputValidationPolicy, WorkflowPublicationDefinition, WorkflowPublicationPairingCode,
+    WorkflowPublicationSenderCredential, WorkflowPublicationTrustedSender, WorkflowRun,
+    WorkflowRunStatus, WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope,
+    WorkflowTurnRuntimeState, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
+    WorkspaceLinkAttachment, WorkspaceLinkDefinition, DEFAULT_LOCAL_USER_ID,
 };
 #[cfg(test)]
 use super::{PromptAttachment, PromptSubmissionOutcome};
@@ -101,6 +103,8 @@ pub struct SessionService {
     next_workflow_message_number: u64,
     next_workflow_watchdog_number: u64,
     next_workflow_publication_number: u64,
+    next_workflow_publication_pairing_code_number: u64,
+    next_workflow_publication_sender_number: u64,
     next_queued_workflow_launch_number: u64,
     next_workspace_link_number: u64,
 }

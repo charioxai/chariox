@@ -35,6 +35,9 @@ import type {
   WorkflowEndpointDefinition,
   WorkflowNodeDefinition,
   WorkflowPublicationDefinition,
+  WorkflowPublicationPairingCodeRecord,
+  WorkflowPublicationSenderCredential,
+  WorkflowPublicationTrustedSender,
   WorkflowRun,
   WorkflowWatchdogDefinition,
   WorkspaceLinkDefinition,
@@ -50,6 +53,7 @@ import {
   cancelActivePromptRequest,
   cancelWorkflowRunRequest,
   clearQueuedWorkflowLaunchesRequest,
+  authenticateWorkflowPublicationSenderRequest,
   approveRemoteMachineRequest,
   acceptCloudSessionInviteRequest,
   cloudRelayStatusRequest,
@@ -59,6 +63,7 @@ import {
   createPairingInviteRequest,
   createWorkspaceLinkRequest,
   createWorkflowEndpointRequest,
+  createWorkflowPublicationPairCodeRequest,
   createWorkflowPublicationRequest,
   createWorkflowRequest,
   createWorkflowWatchdogRequest,
@@ -79,6 +84,7 @@ import {
   installSkillRequest,
   joinPairingInviteRequest,
   joinSessionInviteRequest,
+  listWorkflowPublicationSendersRequest,
   listCloudCollaboratorsRequest,
   listCloudSessionMembersRequest,
   getUserConfigRequest,
@@ -109,8 +115,10 @@ import {
   forgetRemoteMachineRequest,
   renameRemoteMachineRequest,
   revokeAgentCapabilityRequest,
+  redeemWorkflowPublicationPairCodeRequest,
   revokePairedClientRequest,
   revokeSessionInviteRequest,
+  revokeWorkflowPublicationSenderRequest,
   disableWorkflowPublicationRequest,
   resolveWorkflowRequest,
   resumeWorkflowRunRequest,
@@ -1652,6 +1660,75 @@ async function executeWorkflowPublicationCommand(
     }
   }
 
+  if (action === "pair-code") {
+    const publicationRef = rest[0]
+    if (!publicationRef) {
+      return { ok: false, message: "usage: workflow publication pair-code <publication-ref> [--expires-ms N] [--max-uses N]" }
+    }
+    const options = parseNumericFlags(rest.slice(1), ["--expires-ms", "--max-uses"])
+    if (!options.ok) return { ok: false, message: options.message }
+    const response = await deps.client.send(createWorkflowPublicationPairCodeRequest(
+      sessionId,
+      publicationRef,
+      options.values["--expires-ms"] ?? null,
+      options.values["--max-uses"] ?? null,
+    ))
+    const payload = expectVariant<{ pair_code: WorkflowPublicationPairingCodeRecord; session: RuntimeSession }>(response, "WorkflowPublicationPairCodeCreated")
+    return {
+      ok: true,
+      message: `pair_code ${payload.pair_code.code.code_id}\n${payload.pair_code.pair_code}`,
+      data: payload,
+      contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+    }
+  }
+
+  if (action === "redeem-code") {
+    const [publicationRef, pairCode, ...displayNameParts] = rest
+    if (!publicationRef || !pairCode) {
+      return { ok: false, message: "usage: workflow publication redeem-code <publication-ref> <pair-code> [display-name]" }
+    }
+    const displayName = displayNameParts.join(" ").trim() || null
+    const response = await deps.client.send(redeemWorkflowPublicationPairCodeRequest(
+      sessionId,
+      publicationRef,
+      pairCode,
+      displayName,
+      ["http"],
+    ))
+    const payload = expectVariant<{ sender_credential: WorkflowPublicationSenderCredential; session: RuntimeSession }>(response, "WorkflowPublicationSenderPaired")
+    return {
+      ok: true,
+      message: `sender ${payload.sender_credential.sender.sender_id}\n${payload.sender_credential.credential}`,
+      data: payload,
+      contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+    }
+  }
+
+  if (action === "senders") {
+    const publicationRef = rest[0]
+    if (!publicationRef) {
+      return { ok: false, message: "usage: workflow publication senders <publication-ref>" }
+    }
+    const response = await deps.client.send(listWorkflowPublicationSendersRequest(sessionId, publicationRef))
+    const senders = expectVariant<{ senders: WorkflowPublicationTrustedSender[] }>(response, "WorkflowPublicationSendersListed").senders
+    return { ok: true, message: formatWorkflowPublicationSenders(senders), data: { senders } }
+  }
+
+  if (action === "revoke-sender") {
+    const [publicationRef, senderRef] = rest
+    if (!publicationRef || !senderRef) {
+      return { ok: false, message: "usage: workflow publication revoke-sender <publication-ref> <sender-ref>" }
+    }
+    const response = await deps.client.send(revokeWorkflowPublicationSenderRequest(sessionId, publicationRef, senderRef))
+    const payload = expectVariant<{ sender: WorkflowPublicationTrustedSender; session: RuntimeSession }>(response, "WorkflowPublicationSenderRevoked")
+    return {
+      ok: true,
+      message: `revoked workflow publication sender ${payload.sender.sender_id}`,
+      data: payload,
+      contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+    }
+  }
+
   if (action === "create" || action === "new") {
     const parsed = parseWorkflowPublicationCreateOptions(rest, context.workflowId)
     if (!parsed.ok) {
@@ -1673,7 +1750,7 @@ async function executeWorkflowPublicationCommand(
     )
   }
 
-  return { ok: false, message: "usage: workflow publication list|create|show|disable" }
+  return { ok: false, message: "usage: workflow publication list|create|show|disable|pair-code|redeem-code|senders|revoke-sender" }
 }
 
 async function executeWorkflowWatchdogCommand(
@@ -2001,6 +2078,26 @@ function parseWorkflowPublicationCreateOptions(
   }
   options.alias = alias ?? null
   return { ok: true, workflowRef, endpointRef, options }
+}
+
+function parseNumericFlags(
+  args: string[],
+  allowedFlags: string[],
+): { ok: true; values: Record<string, number> } | { ok: false; message: string } {
+  const values: Record<string, number> = {}
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index]
+    if (!flag || !allowedFlags.includes(flag)) {
+      return { ok: false, message: `unsupported option ${flag ?? ""}`.trim() }
+    }
+    const raw = args[++index]
+    const value = Number(raw)
+    if (!raw || !Number.isFinite(value) || value < 0) {
+      return { ok: false, message: `expected non-negative number after ${flag}` }
+    }
+    values[flag] = value
+  }
+  return { ok: true, values }
 }
 
 function parseJsonOption(
@@ -2439,6 +2536,18 @@ function formatWorkflowPublications(publications: WorkflowPublicationDefinition[
     const route = publication.route ? ` route=${publication.route}` : ""
     const methods = publication.methods?.length ? ` methods=${publication.methods.join(",")}` : ""
     return `${formatWorkflowPublicationLabel(publication)} workflow=${publication.workflow_id} endpoint=${publication.endpoint_id} enabled=${String(publication.enabled)}${route}${methods}`
+  }).join("\n")
+}
+
+function formatWorkflowPublicationSenders(senders: WorkflowPublicationTrustedSender[]): string {
+  if (senders.length === 0) {
+    return "no trusted senders configured"
+  }
+  return senders.map((sender) => {
+    const name = sender.display_name ? ` (${sender.display_name})` : ""
+    const transports = sender.allowed_transports?.length ? ` transports=${sender.allowed_transports.join(",")}` : ""
+    const revoked = sender.revoked_at_ms ? " revoked=true" : ""
+    return `${sender.sender_id}${name} publication=${sender.publication_id}${transports}${revoked}`
   }).join("\n")
 }
 

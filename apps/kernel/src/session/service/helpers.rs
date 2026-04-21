@@ -412,6 +412,28 @@ impl SessionService {
         )
     }
 
+    pub fn next_workflow_publication_pairing_code_id(&mut self) -> String {
+        self.next_workflow_publication_pairing_code_number = self
+            .next_workflow_publication_pairing_code_number
+            .wrapping_add(1);
+        format!(
+            "{:016x}",
+            unix_epoch_ms()
+                ^ self
+                    .next_workflow_publication_pairing_code_number
+                    .rotate_left(21)
+        )
+    }
+
+    pub(super) fn next_workflow_publication_sender_id(&mut self) -> String {
+        self.next_workflow_publication_sender_number =
+            self.next_workflow_publication_sender_number.wrapping_add(1);
+        format!(
+            "{:016x}",
+            unix_epoch_ms() ^ self.next_workflow_publication_sender_number.rotate_left(23)
+        )
+    }
+
     pub(super) fn next_queued_workflow_launch_id(&mut self) -> String {
         self.next_queued_workflow_launch_number =
             self.next_queued_workflow_launch_number.wrapping_add(1);
