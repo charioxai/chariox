@@ -425,6 +425,59 @@ Implementation status:
   generated Ed25519 key pair, verifies PING handling, invalid signature
   rejection, and accepted signed interaction invocation.
 
+## M9.15 WhatsApp Connector
+
+WhatsApp is implemented as a connector-specific ingress path on the publication
+gateway, feeding the same Arroba auth model as the other publication
+connectors.
+
+V1 behavior:
+
+- handles Meta webhook verification over `GET` with `hub.mode=subscribe`,
+  `hub.verify_token`, and `hub.challenge`
+- verifies `x-hub-signature-256` HMAC-SHA256 over the raw request body when
+  `app_secret_env` is configured
+- rejects invalid verification tokens and invalid HMAC signatures
+- extracts sender identity from `messages[0].from` or `contacts[0].wa_id`
+- normalizes WhatsApp identity as the sender phone/wa id string and maps it to
+  an Arroba principal through `auth.external_identities`
+- forwards the WhatsApp webhook envelope through the existing `webhook` parser
+
+Implementation status:
+
+- Unit coverage verifies Meta webhook challenge handling, invalid verify-token
+  rejection, invalid HMAC rejection, accepted sender mapping, and phone-number
+  metadata.
+- The publication live drill now creates a WhatsApp-shaped publication,
+  verifies the challenge endpoint, invalid signature rejection, and accepted
+  signed message invocation.
+
+## M9.16 Signal Connector
+
+Signal is implemented as a bridge-style webhook connector because Signal does
+not provide a universal first-party bot webhook equivalent to Slack, Telegram,
+Discord, or WhatsApp. The gateway verifies a bridge-supplied shared secret and
+normalizes the bridge envelope into Arroba identity.
+
+V1 behavior:
+
+- verifies `x-signal-webhook-secret` when `webhook_secret_env` is configured
+- rejects missing or invalid bridge secrets
+- extracts sender identity from `envelope.sourceUuid`,
+  `envelope.sourceNumber`, `envelope.source`, or matching top-level fields
+- normalizes Signal identity as the bridge source UUID/number string and maps it
+  to an Arroba principal through `auth.external_identities`
+- forwards the Signal bridge webhook envelope through the existing `webhook`
+  parser
+
+Implementation status:
+
+- Unit coverage verifies bridge-secret rejection, accepted sender mapping,
+  source UUID metadata, and source number metadata.
+- The publication live drill now creates a Signal-shaped publication, verifies
+  invalid bridge-secret rejection, and invokes the workflow through an accepted
+  Signal bridge webhook payload.
+
 ## V2
 
 - Dedicated workflow-to-workflow invocation protocol with signed caller identity, reply routing, status/result URLs, and optional streaming.

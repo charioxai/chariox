@@ -94,7 +94,8 @@ restarts the gateway with self-signed HTTPS/TLS and invokes it again, exports it
 `publication.config.json`, validates signed Slack URL verification and signed
 Slack slash-command invocation, validates Telegram webhook-secret rejection and
 accepted invocation, validates Discord Ed25519 ping, signature rejection, and
-accepted invocation, then validates paired sender
+accepted invocation, validates WhatsApp webhook challenge/HMAC invocation,
+validates Signal bridge-secret invocation, then validates paired sender
 reject/redeem/invoke/revoke/reject behavior.
 
 Use this after touching cross-kernel publication calls or the custom parser

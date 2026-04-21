@@ -578,6 +578,151 @@ test("discord connector verifies Ed25519 signatures, handles ping, and maps inte
   }
 })
 
+test("whatsapp connector verifies Meta webhook challenge, HMAC, and sender identity", async () => {
+  process.env.GATEWAY_TEST_WHATSAPP_APP_SECRET = "whatsapp-app-secret"
+  process.env.GATEWAY_TEST_WHATSAPP_VERIFY_TOKEN = "verify-token"
+  const callers: unknown[] = []
+  const { app } = buildServer({
+    ...baseConfig,
+    methods: ["GET", "POST"],
+    auth: {
+      mode: "arroba",
+      connectors: [{
+        kind: "whatsapp",
+        app_secret_env: "GATEWAY_TEST_WHATSAPP_APP_SECRET",
+        verify_token_env: "GATEWAY_TEST_WHATSAPP_VERIFY_TOKEN",
+      }],
+      external_identities: [{
+        connector: "whatsapp",
+        external_id: "15551234567",
+        principal: { id: "user-whatsapp", type: "user", allowed_connectors: ["whatsapp"] },
+      }],
+    },
+    parser: { kind: "webhook" },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      callers.push(invocation.caller)
+      return { accepted: true, workflow_run: { id: "run-1", status: "Running" } }
+    },
+  })
+
+  try {
+    const challenge = await app.inject({
+      method: "GET",
+      url: "/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=verify-token&hub.challenge=challenge-1",
+    })
+    assert.equal(challenge.statusCode, 200)
+    assert.equal(challenge.body, "challenge-1")
+    assert.equal(callers.length, 0)
+
+    const rejectedChallenge = await app.inject({
+      method: "GET",
+      url: "/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=challenge-1",
+    })
+    assert.equal(rejectedChallenge.statusCode, 401)
+
+    const payload = JSON.stringify(whatsAppPayload())
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/whatsapp/webhook",
+      headers: whatsAppHeaders("wrong-secret", payload),
+      payload,
+    })
+    assert.equal(rejected.statusCode, 401)
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/whatsapp/webhook",
+      headers: whatsAppHeaders("whatsapp-app-secret", payload),
+      payload,
+    })
+    assert.equal(accepted.statusCode, 202)
+    assert.deepEqual(callers[0], {
+      type: "user",
+      principal_id: "user-whatsapp",
+      teams: [],
+      display_name: undefined,
+      allowed_connectors: ["whatsapp"],
+      proof: {
+        auth: "connector",
+        connector: "whatsapp",
+        external_id: "15551234567",
+        metadata: { phone_number_id: "phone-number-id", display_phone_number: "15557654321" },
+      },
+    })
+  } finally {
+    await app.close()
+    delete process.env.GATEWAY_TEST_WHATSAPP_APP_SECRET
+    delete process.env.GATEWAY_TEST_WHATSAPP_VERIFY_TOKEN
+  }
+})
+
+test("signal connector verifies bridge webhook secret and sender identity", async () => {
+  process.env.GATEWAY_TEST_SIGNAL_SECRET = "signal-secret"
+  const callers: unknown[] = []
+  const { app } = buildServer({
+    ...baseConfig,
+    methods: ["POST"],
+    auth: {
+      mode: "arroba",
+      connectors: [{ kind: "signal", webhook_secret_env: "GATEWAY_TEST_SIGNAL_SECRET" }],
+      external_identities: [{
+        connector: "signal",
+        external_id: "signal-source-uuid",
+        principal: { id: "user-signal", type: "user", allowed_connectors: ["signal"] },
+      }],
+    },
+    parser: { kind: "webhook" },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      callers.push(invocation.caller)
+      return { accepted: true, workflow_run: { id: "run-1", status: "Running" } }
+    },
+  })
+
+  try {
+    const payload = {
+      envelope: {
+        sourceUuid: "signal-source-uuid",
+        sourceNumber: "+15551234567",
+        dataMessage: { message: "ship it" },
+      },
+    }
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/signal/webhook",
+      headers: { "x-signal-webhook-secret": "wrong-secret" },
+      payload,
+    })
+    assert.equal(rejected.statusCode, 401)
+    assert.equal(callers.length, 0)
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/signal/webhook",
+      headers: { "x-signal-webhook-secret": "signal-secret" },
+      payload,
+    })
+    assert.equal(accepted.statusCode, 202)
+    assert.deepEqual(callers[0], {
+      type: "user",
+      principal_id: "user-signal",
+      teams: [],
+      display_name: undefined,
+      allowed_connectors: ["signal"],
+      proof: {
+        auth: "connector",
+        connector: "signal",
+        external_id: "signal-source-uuid",
+        metadata: { source_number: "+15551234567", source_uuid: "signal-source-uuid" },
+      },
+    })
+  } finally {
+    await app.close()
+    delete process.env.GATEWAY_TEST_SIGNAL_SECRET
+  }
+})
+
 function slackHeaders(secret: string, body: string, contentType = "application/json") {
   const timestamp = String(Math.floor(Date.now() / 1000))
   return {
@@ -606,15 +751,43 @@ function discordPublicKeyHex(publicKey: KeyObject) {
   return der.subarray(-32).toString("hex")
 }
 
-test("arroba auth rejects linked principals through disallowed header-based connectors", async () => {
+function whatsAppHeaders(secret: string, body: string) {
+  return {
+    "content-type": "application/json",
+    "x-hub-signature-256": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+  }
+}
+
+function whatsAppPayload() {
+  return {
+    object: "whatsapp_business_account",
+    entry: [{
+      id: "business-id",
+      changes: [{
+        field: "messages",
+        value: {
+          messaging_product: "whatsapp",
+          metadata: {
+            display_phone_number: "15557654321",
+            phone_number_id: "phone-number-id",
+          },
+          contacts: [{ wa_id: "15551234567", profile: { name: "Miguel" } }],
+          messages: [{ from: "15551234567", id: "wamid.1", text: { body: "ship it" }, type: "text" }],
+        },
+      }],
+    }],
+  }
+}
+
+test("arroba auth rejects linked principals through disallowed connectors", async () => {
   const { app } = buildServer({
     ...baseConfig,
     auth: {
       mode: "arroba",
-      connectors: [{ kind: "whatsapp" }],
+      connectors: [{ kind: "http", principal: { id: "http-subject" } }],
       external_identities: [{
-        connector: "whatsapp",
-        external_id: "phone-1",
+        connector: "http",
+        external_id: "http-subject",
         principal: {
           id: "user-1",
           type: "user",
@@ -629,12 +802,11 @@ test("arroba auth rejects linked principals through disallowed header-based conn
   try {
     const response = await app.inject({
       method: "POST",
-      url: "/whatsapp",
-      headers: { "x-arroba-whatsapp-identity": "phone-1" },
+      url: "/http",
       payload: { content: "hello" },
     })
     assert.equal(response.statusCode, 401)
-    assert.deepEqual(response.json(), { error: "principal is not allowed through whatsapp" })
+    assert.deepEqual(response.json(), { error: "principal is not allowed through http" })
   } finally {
     await app.close()
   }

@@ -69,8 +69,8 @@ type ConnectorConfig =
   | { kind: "slack"; signing_secret_env?: string }
   | { kind: "discord"; public_key_env?: string }
   | { kind: "telegram"; webhook_secret_env?: string }
-  | { kind: "whatsapp" }
-  | { kind: "signal" }
+  | { kind: "whatsapp"; app_secret_env?: string; verify_token_env?: string }
+  | { kind: "signal"; webhook_secret_env?: string }
 
 type ArrobaAuthConfig = {
   mode: "arroba"
@@ -577,7 +577,9 @@ function handleConnectorHandshake(
       ? handleSlackHandshake(request, connector, reply)
       : connector.kind === "discord"
         ? handleDiscordHandshake(request, connector, reply)
-        : { handled: false as const }
+        : connector.kind === "whatsapp"
+          ? handleWhatsAppHandshake(request, connector, reply)
+          : { handled: false as const }
     if (response.handled) return response
   }
   return { handled: false }
@@ -621,6 +623,28 @@ function handleDiscordHandshake(
   return { handled: true, payload: { type: 1 } }
 }
 
+function handleWhatsAppHandshake(
+  request: GatewayRequest,
+  connector: Extract<ConnectorConfig, { kind: "whatsapp" }>,
+  reply: { code: (code: number) => unknown; headers: (headers: Record<string, string>) => unknown },
+): { handled: true; payload: unknown } | { handled: false } {
+  const query = objectBody(request.query)
+  if (request.method.toUpperCase() !== "GET" || query["hub.mode"] !== "subscribe") {
+    return { handled: false }
+  }
+  const challenge = typeof query["hub.challenge"] === "string" ? query["hub.challenge"] : ""
+  const expectedToken = connector.verify_token_env ? readRequiredEnv(connector.verify_token_env) : null
+  const actualToken = typeof query["hub.verify_token"] === "string" ? query["hub.verify_token"] : undefined
+  if (expectedToken && !safeEqualString(actualToken, expectedToken)) {
+    reply.code(401)
+    reply.headers({ "content-type": "application/json" })
+    return { handled: true, payload: { error: "invalid whatsapp verify token" } }
+  }
+  reply.code(200)
+  reply.headers({ "content-type": "text/plain" })
+  return { handled: true, payload: challenge }
+}
+
 function verifySingleConnectorIdentity(request: GatewayRequest, connector: ConnectorConfig): VerifiedExternalIdentity | null {
   if (connector.kind === "http") {
     return connector.principal ? { connector: "http", external_id: connector.principal.id } : null
@@ -628,8 +652,63 @@ function verifySingleConnectorIdentity(request: GatewayRequest, connector: Conne
   if (connector.kind === "telegram") return verifyTelegramIdentity(request, connector)
   if (connector.kind === "slack") return verifySlackIdentity(request, connector)
   if (connector.kind === "discord") return verifyDiscordIdentity(request, connector)
-  if (connector.kind === "whatsapp") return verifyHeaderIdentity(request, connector.kind)
-  return verifyHeaderIdentity(request, connector.kind)
+  if (connector.kind === "whatsapp") return verifyWhatsAppIdentity(request, connector)
+  return verifySignalIdentity(request, connector)
+}
+
+function verifyWhatsAppIdentity(request: GatewayRequest, connector: Extract<ConnectorConfig, { kind: "whatsapp" }>): VerifiedExternalIdentity | null {
+  if (connector.app_secret_env) {
+    const appSecret = readRequiredEnv(connector.app_secret_env)
+    if (!verifyWhatsAppSignature(request, appSecret)) return null
+  }
+  const value = firstWhatsAppValue(objectBody(request.body))
+  const message = Array.isArray(value?.messages) ? value.messages[0] as Record<string, unknown> | undefined : undefined
+  const contact = Array.isArray(value?.contacts) ? value.contacts[0] as Record<string, unknown> | undefined : undefined
+  const externalId = String(message?.from ?? contact?.wa_id ?? "")
+  if (!externalId) return null
+  const metadata = value?.metadata as Record<string, unknown> | undefined
+  return {
+    connector: "whatsapp",
+    external_id: externalId,
+    metadata: {
+      phone_number_id: metadata?.phone_number_id,
+      display_phone_number: metadata?.display_phone_number,
+    },
+  }
+}
+
+function firstWhatsAppValue(body: Record<string, unknown>): Record<string, unknown> | undefined {
+  const entry = Array.isArray(body.entry) ? body.entry[0] as Record<string, unknown> | undefined : undefined
+  const change = Array.isArray(entry?.changes) ? entry.changes[0] as Record<string, unknown> | undefined : undefined
+  return change?.value as Record<string, unknown> | undefined
+}
+
+function verifySignalIdentity(request: GatewayRequest, connector: Extract<ConnectorConfig, { kind: "signal" }>): VerifiedExternalIdentity | null {
+  if (connector.webhook_secret_env) {
+    const expected = readRequiredEnv(connector.webhook_secret_env)
+    const actual = headerValue(request, "x-signal-webhook-secret")
+    if (!safeEqualString(actual, expected)) return null
+  }
+  const body = objectBody(request.body)
+  const envelope = body.envelope as Record<string, unknown> | undefined
+  const externalId = String(
+    envelope?.sourceUuid
+      ?? envelope?.sourceNumber
+      ?? envelope?.source
+      ?? body.sourceUuid
+      ?? body.sourceNumber
+      ?? body.source
+      ?? "",
+  )
+  if (!externalId) return null
+  return {
+    connector: "signal",
+    external_id: externalId,
+    metadata: {
+      source_number: envelope?.sourceNumber ?? body.sourceNumber,
+      source_uuid: envelope?.sourceUuid ?? body.sourceUuid,
+    },
+  }
 }
 
 function verifyDiscordIdentity(request: GatewayRequest, connector: Extract<ConnectorConfig, { kind: "discord" }>): VerifiedExternalIdentity | null {
@@ -786,6 +865,14 @@ function verifyDiscordSignature(request: GatewayRequest, publicKeyHex: string) {
   } catch {
     return false
   }
+}
+
+function verifyWhatsAppSignature(request: GatewayRequest, appSecret: string) {
+  const signature = headerValue(request, "x-hub-signature-256")
+  const rawBody = rawRequestBody(request)
+  if (!signature || rawBody === undefined) return false
+  const expected = `sha256=${createHmac("sha256", appSecret).update(rawBody).digest("hex")}`
+  return safeEqualString(signature, expected)
 }
 
 function rawRequestBody(request: GatewayRequest) {

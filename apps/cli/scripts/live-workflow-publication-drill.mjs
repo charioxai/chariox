@@ -64,6 +64,34 @@ function discordPublicKeyHex(publicKey) {
   return publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex')
 }
 
+function whatsAppHeaders(secret, body) {
+  return {
+    'content-type': 'application/json',
+    'x-hub-signature-256': `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`,
+  }
+}
+
+function whatsAppPayload() {
+  return {
+    object: 'whatsapp_business_account',
+    entry: [{
+      id: 'business-id',
+      changes: [{
+        field: 'messages',
+        value: {
+          messaging_product: 'whatsapp',
+          metadata: {
+            display_phone_number: '15557654321',
+            phone_number_id: 'phone-number-id',
+          },
+          contacts: [{ wa_id: '15551234567', profile: { name: 'Publication Drill' } }],
+          messages: [{ from: '15551234567', id: 'wamid.1', text: { body: 'ship-publication' }, type: 'text' }],
+        },
+      }],
+    }],
+  }
+}
+
 async function run(command, args, options = {}) {
   return await new Promise((resolve) => {
     const child = spawn(command, args, {
@@ -614,6 +642,147 @@ async function main() {
     const discordBody = await discordResponse.json()
     if (discordResponse.status !== 202 || !discordBody.workflow_run?.id) {
       throw new Error(`expected Discord connector HTTP 202, got ${discordResponse.status}: ${JSON.stringify(discordBody)}`)
+    }
+    await stopProcess(gateway)
+    gateway = null
+
+    logStep('create_whatsapp_publication')
+    const whatsAppSecret = 'publication-drill-whatsapp-secret'
+    const whatsAppVerifyToken = 'publication-drill-whatsapp-verify-token'
+    const whatsAppPublication = variant(
+      await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {
+        alias: 'whatsapp_connector',
+        route: '/whatsapp/*',
+        methods: ['GET', 'POST'],
+        auth: {
+          mode: 'arroba',
+          connectors: [{
+            kind: 'whatsapp',
+            app_secret_env: 'ARROBA_PUBLICATION_DRILL_WHATSAPP_SECRET',
+            verify_token_env: 'ARROBA_PUBLICATION_DRILL_WHATSAPP_VERIFY_TOKEN',
+          }],
+          external_identities: [{
+            connector: 'whatsapp',
+            external_id: '15551234567',
+            principal: { id: 'publication-drill-whatsapp-user', type: 'user', allowed_connectors: ['whatsapp'] },
+          }],
+        },
+        parser: { kind: 'webhook' },
+        mode: 'async',
+      })),
+      'WorkflowPublicationCreated',
+    ).publication
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: session.id,
+        ARROBA_PUBLICATION_ID: whatsAppPublication.id,
+        ARROBA_PUBLICATION_DRILL_WHATSAPP_SECRET: whatsAppSecret,
+        ARROBA_PUBLICATION_DRILL_WHATSAPP_VERIFY_TOKEN: whatsAppVerifyToken,
+      },
+      'gateway-whatsapp',
+    )
+    await waitForGateway(gatewayUrl)
+
+    logStep('whatsapp_verify_challenge')
+    const whatsAppChallenge = await fetch(`${gatewayUrl}/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=${encodeURIComponent(whatsAppVerifyToken)}&hub.challenge=arroba-whatsapp-challenge`)
+    const whatsAppChallengeBody = await whatsAppChallenge.text()
+    if (whatsAppChallenge.status !== 200 || whatsAppChallengeBody !== 'arroba-whatsapp-challenge') {
+      throw new Error(`expected WhatsApp challenge response, got ${whatsAppChallenge.status}: ${whatsAppChallengeBody}`)
+    }
+
+    logStep('whatsapp_signature_reject')
+    const whatsAppBodyText = JSON.stringify(whatsAppPayload())
+    const whatsAppRejected = await fetch(`${gatewayUrl}/whatsapp/webhook`, {
+      method: 'POST',
+      headers: whatsAppHeaders('wrong-secret', whatsAppBodyText),
+      body: whatsAppBodyText,
+    })
+    if (whatsAppRejected.status !== 401) {
+      throw new Error(`expected WhatsApp connector HTTP 401, got ${whatsAppRejected.status}: ${await whatsAppRejected.text()}`)
+    }
+
+    logStep('whatsapp_signed_invoke')
+    const whatsAppResponse = await fetch(`${gatewayUrl}/whatsapp/webhook`, {
+      method: 'POST',
+      headers: whatsAppHeaders(whatsAppSecret, whatsAppBodyText),
+      body: whatsAppBodyText,
+    })
+    const whatsAppResponseBody = await whatsAppResponse.json()
+    if (whatsAppResponse.status !== 202 || !whatsAppResponseBody.workflow_run?.id) {
+      throw new Error(`expected WhatsApp connector HTTP 202, got ${whatsAppResponse.status}: ${JSON.stringify(whatsAppResponseBody)}`)
+    }
+    await stopProcess(gateway)
+    gateway = null
+
+    logStep('create_signal_publication')
+    const signalSecret = 'publication-drill-signal-secret'
+    const signalPublication = variant(
+      await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {
+        alias: 'signal_connector',
+        route: '/signal/*',
+        methods: ['POST'],
+        auth: {
+          mode: 'arroba',
+          connectors: [{ kind: 'signal', webhook_secret_env: 'ARROBA_PUBLICATION_DRILL_SIGNAL_SECRET' }],
+          external_identities: [{
+            connector: 'signal',
+            external_id: 'signal-source-uuid',
+            principal: { id: 'publication-drill-signal-user', type: 'user', allowed_connectors: ['signal'] },
+          }],
+        },
+        parser: { kind: 'webhook' },
+        mode: 'async',
+      })),
+      'WorkflowPublicationCreated',
+    ).publication
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: session.id,
+        ARROBA_PUBLICATION_ID: signalPublication.id,
+        ARROBA_PUBLICATION_DRILL_SIGNAL_SECRET: signalSecret,
+      },
+      'gateway-signal',
+    )
+    await waitForGateway(gatewayUrl)
+
+    const signalPayload = {
+      envelope: {
+        sourceUuid: 'signal-source-uuid',
+        sourceNumber: '+15551234567',
+        dataMessage: { message: 'ship-publication' },
+      },
+    }
+    logStep('signal_secret_reject')
+    const signalRejected = await fetch(`${gatewayUrl}/signal/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-signal-webhook-secret': 'wrong-secret' },
+      body: JSON.stringify(signalPayload),
+    })
+    if (signalRejected.status !== 401) {
+      throw new Error(`expected Signal connector HTTP 401, got ${signalRejected.status}: ${await signalRejected.text()}`)
+    }
+
+    logStep('signal_signed_invoke')
+    const signalResponse = await fetch(`${gatewayUrl}/signal/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-signal-webhook-secret': signalSecret },
+      body: JSON.stringify(signalPayload),
+    })
+    const signalBody = await signalResponse.json()
+    if (signalResponse.status !== 202 || !signalBody.workflow_run?.id) {
+      throw new Error(`expected Signal connector HTTP 202, got ${signalResponse.status}: ${JSON.stringify(signalBody)}`)
     }
     await stopProcess(gateway)
     gateway = null
