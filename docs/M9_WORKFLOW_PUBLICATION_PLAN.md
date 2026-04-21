@@ -100,9 +100,62 @@ Support production-usable simple auth:
 
 - bearer token
 - API key header
+- paired sender
 - explicit anonymous mode
 
 Every accepted request is associated with a caller identity in the normalized invocation metadata.
+
+### Paired Senders
+
+Paired sender auth is the workflow-publication equivalent of pairing a trusted
+external caller with a published endpoint. A pairing code is only a bootstrap
+credential; it is not used for steady-state request auth.
+
+Flow:
+
+1. The owner generates a short-lived pairing code for a publication or endpoint
+   scope.
+2. The sender redeems the code against the publication gateway.
+3. The gateway asks the kernel to create a trusted sender record.
+4. The sender receives a durable credential for subsequent requests.
+5. Future requests authenticate as that sender and are recorded in invocation
+   metadata.
+
+Trusted sender records are kernel-owned state and include:
+
+```text
+sender_id
+publication_id / endpoint scope
+display name / external subject
+auth method
+credential hash or public key
+allowed transports
+created / last_used / expires_at metadata
+revoked flag
+```
+
+V1 should support bearer-style issued tokens because they are easy to use from
+curl, scripts, and other workflows. The record stores only a credential hash.
+The design must keep room for signed requests later: a sender can redeem a
+pairing code with a public key, then sign requests with timestamp and nonce
+headers.
+
+CLI/shell shape:
+
+```text
+/workflow publication pair-code <publication> [--endpoint <endpoint>] [--expires 10m] [--max-uses 1]
+/workflow publication senders <publication>
+/workflow publication revoke-sender <publication> <sender_id>
+```
+
+HTTP shape:
+
+```text
+POST /.well-known/arroba/publication/pair
+```
+
+The endpoint redeems the pairing code and returns the sender id plus the issued
+credential once. The gateway must not log the raw credential.
 
 ## M9.6 HTTP Connector
 
@@ -179,6 +232,7 @@ Required drills:
 
 - publish an existing workflow endpoint over HTTP
 - auth accepted/rejected
+- paired sender code generation, redemption, accepted request, revoked request
 - JSON parser success/failure
 - regex/path parser success/failure
 - custom parser success/failure
@@ -195,3 +249,31 @@ Required drills:
 - Workflow mesh discovery, trust policies, capability metadata, quotas, revocation, and federation.
 - Parser SDKs/libraries for Python, TypeScript, Rust, and other languages so users can define custom parsers programmatically while targeting the same stdin/stdout parser protocol.
 - Packaged publication templates for common hosting targets.
+- Connector plugin SDK for chat and collaboration surfaces such as Slack, Discord, Telegram, Matrix, Mattermost, Google Chat, LINE, Signal, WhatsApp, IRC, Nostr, Microsoft Teams, Feishu/Lark, Twitch, QQ, Zalo, Nextcloud Talk, Synology Chat, and self-hosted/custom channels.
+- Connector-specific security contracts: provider webhook signature verification, raw-body HMAC checks where required, stable sender-id allowlists, mention/command gating for group contexts, per-connector rate limits, SecretRef-style credential indirection, and security-audit checks for dangerous public ingress.
+
+## OpenClaw Reference Notes
+
+OpenClaw source inspection was done from `https://github.com/openclaw/openclaw`
+at commit `f1df354`. Relevant local files:
+
+- `/tmp/openclaw-source/docs/channels/index.md`
+- `/tmp/openclaw-source/docs/channels/pairing.md`
+- `/tmp/openclaw-source/docs/cli/security.md`
+- `/tmp/openclaw-source/docs/plugins/sdk-channel-plugins.md`
+- `/tmp/openclaw-source/extensions/*/channel-plugin-api.ts`
+
+Useful mechanisms to adapt:
+
+- Keep connector transport code pluggable, but normalize inbound requests into
+  one core invocation envelope.
+- Make pairing and allowlists core concepts instead of each connector inventing
+  unrelated trusted-sender storage.
+- Split direct-message/private sender policy from group/channel policy.
+- Prefer stable provider ids over mutable names, usernames, tags, or emails.
+- Treat group/public-channel ingress as mention-gated by default.
+- Keep provider webhook verification beside the connector because each provider
+  has different signature, token, and raw-body requirements.
+- Add a security audit command for publication/connectors that flags anonymous
+  public ingress, wildcard sender rules, weak tokens, missing webhook
+  signatures, missing TLS/proxy assumptions, and dangerous connector settings.
