@@ -457,6 +457,75 @@ async function main() {
     await stopProcess(gateway)
     gateway = null
 
+    logStep('create_telegram_publication')
+    const telegramSecret = 'publication-drill-telegram-secret'
+    const telegramPublication = variant(
+      await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {
+        alias: 'telegram_connector',
+        route: '/telegram/*',
+        methods: ['POST'],
+        auth: {
+          mode: 'arroba',
+          connectors: [{ kind: 'telegram', webhook_secret_env: 'ARROBA_PUBLICATION_DRILL_TELEGRAM_SECRET' }],
+          external_identities: [{
+            connector: 'telegram',
+            external_id: '456',
+            principal: { id: 'publication-drill-telegram-user', type: 'user', allowed_connectors: ['telegram'] },
+          }],
+        },
+        parser: { kind: 'webhook' },
+        mode: 'async',
+      })),
+      'WorkflowPublicationCreated',
+    ).publication
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: session.id,
+        ARROBA_PUBLICATION_ID: telegramPublication.id,
+        ARROBA_PUBLICATION_DRILL_TELEGRAM_SECRET: telegramSecret,
+      },
+      'gateway-telegram',
+    )
+    await waitForGateway(gatewayUrl)
+
+    logStep('telegram_secret_reject')
+    const telegramPayload = {
+      update_id: 123,
+      message: {
+        message_id: 1,
+        chat: { id: 789, type: 'private' },
+        from: { id: 456, username: 'publication_drill' },
+        text: 'ship-publication',
+      },
+    }
+    const telegramRejected = await fetch(`${gatewayUrl}/telegram/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-telegram-bot-api-secret-token': 'wrong-secret' },
+      body: JSON.stringify(telegramPayload),
+    })
+    if (telegramRejected.status !== 401) {
+      throw new Error(`expected Telegram connector HTTP 401, got ${telegramRejected.status}: ${await telegramRejected.text()}`)
+    }
+
+    logStep('telegram_signed_invoke')
+    const telegramResponse = await fetch(`${gatewayUrl}/telegram/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-telegram-bot-api-secret-token': telegramSecret },
+      body: JSON.stringify(telegramPayload),
+    })
+    const telegramBody = await telegramResponse.json()
+    if (telegramResponse.status !== 202 || !telegramBody.workflow_run?.id) {
+      throw new Error(`expected Telegram connector HTTP 202, got ${telegramResponse.status}: ${JSON.stringify(telegramBody)}`)
+    }
+    await stopProcess(gateway)
+    gateway = null
+
     logStep('create_paired_publication')
     const pairedPublication = variant(
       await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {

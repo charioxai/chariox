@@ -434,6 +434,74 @@ test("slack connector accepts signed slash-command form payloads", async () => {
   }
 })
 
+test("telegram connector verifies webhook secret and maps sender identity", async () => {
+  process.env.GATEWAY_TEST_TELEGRAM_SECRET = "telegram-secret"
+  const callers: unknown[] = []
+  const { app } = buildServer({
+    ...baseConfig,
+    methods: ["POST"],
+    auth: {
+      mode: "arroba",
+      connectors: [{ kind: "telegram", webhook_secret_env: "GATEWAY_TEST_TELEGRAM_SECRET" }],
+      external_identities: [{
+        connector: "telegram",
+        external_id: "456",
+        principal: { id: "user-telegram", type: "user", allowed_connectors: ["telegram"] },
+      }],
+    },
+    parser: { kind: "webhook" },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      callers.push(invocation.caller)
+      return { accepted: true, workflow_run: { id: "run-1", status: "Running" } }
+    },
+  })
+
+  try {
+    const payload = {
+      update_id: 123,
+      message: {
+        message_id: 1,
+        chat: { id: 789, type: "private" },
+        from: { id: 456, username: "miguel" },
+        text: "ship it",
+      },
+    }
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/telegram/webhook",
+      headers: { "x-telegram-bot-api-secret-token": "wrong-secret" },
+      payload,
+    })
+    assert.equal(rejected.statusCode, 401)
+    assert.equal(callers.length, 0)
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/telegram/webhook",
+      headers: { "x-telegram-bot-api-secret-token": "telegram-secret" },
+      payload,
+    })
+    assert.equal(accepted.statusCode, 202)
+    assert.deepEqual(callers[0], {
+      type: "user",
+      principal_id: "user-telegram",
+      teams: [],
+      display_name: undefined,
+      allowed_connectors: ["telegram"],
+      proof: {
+        auth: "connector",
+        connector: "telegram",
+        external_id: "456",
+        metadata: { username: "miguel", chat_id: "789" },
+      },
+    })
+  } finally {
+    await app.close()
+    delete process.env.GATEWAY_TEST_TELEGRAM_SECRET
+  }
+})
+
 function slackHeaders(secret: string, body: string, contentType = "application/json") {
   const timestamp = String(Math.floor(Date.now() / 1000))
   return {

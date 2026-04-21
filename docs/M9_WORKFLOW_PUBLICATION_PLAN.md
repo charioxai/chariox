@@ -372,6 +372,30 @@ Implementation status:
   signed URL verification, and invokes the workflow through a signed
   slash-command payload.
 
+## M9.13 Telegram Connector
+
+Telegram is implemented as a connector-specific ingress path on the publication
+gateway, feeding the same Arroba auth model as HTTP and Slack.
+
+V1 behavior:
+
+- verifies `x-telegram-bot-api-secret-token` when `webhook_secret_env` is
+  configured
+- rejects missing or invalid webhook secrets
+- extracts sender identity from `message.from`, `callback_query.from`, or
+  `edited_message.from`
+- normalizes Telegram identity as the Telegram user id string and maps it to an
+  Arroba principal through `auth.external_identities`
+- forwards the Telegram webhook envelope through the existing `webhook` parser
+
+Implementation status:
+
+- Unit coverage verifies webhook-secret rejection, accepted sender mapping,
+  username metadata, and chat id metadata.
+- The publication live drill now creates a Telegram-shaped publication,
+  verifies invalid webhook-secret rejection, and invokes the workflow through an
+  accepted Telegram webhook payload.
+
 ## V2
 
 - Dedicated workflow-to-workflow invocation protocol with signed caller identity, reply routing, status/result URLs, and optional streaming.
