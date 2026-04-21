@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process"
 import { createHmac, timingSafeEqual } from "node:crypto"
+import { readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import process from "node:process"
 
-import Fastify, { type FastifyRequest } from "fastify"
+import Fastify from "fastify"
 
 import { LocalIpcClient } from "@arroba/kernel-client/ipc"
 import type {
@@ -104,6 +105,12 @@ type InputSchema = {
   properties?: Record<string, { type?: "string" | "number" | "boolean" | "object" | "array" }>
 }
 
+type TlsConfig = {
+  enabled?: boolean
+  key_file?: string
+  cert_file?: string
+}
+
 export type WorkflowPublicationConfig = {
   publication_id: string
   session_id: string
@@ -115,6 +122,7 @@ export type WorkflowPublicationConfig = {
   auth?: AuthConfig
   parser?: ParserConfig
   input_schema?: InputSchema
+  tls?: TlsConfig
   mode?: "sync" | "async"
   sync_timeout_ms?: number
   poll_ms?: number
@@ -168,12 +176,22 @@ type VerifiedExternalIdentity = {
   metadata?: Record<string, unknown>
 }
 
+type GatewayRequest = {
+  method: string
+  url: string
+  headers: Record<string, string | string[] | undefined>
+  body?: unknown
+  query?: unknown
+  raw: unknown
+}
+
 export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDeps = {}) => {
   const processLogger = createProcessLogger("workflow-gateway")
   const logger = processLogger.child("gateway.http")
-  const app = Fastify({ logger: false })
-  installRawBodyParsers(app)
   const publication = config ?? defaultPublicationConfig()
+  const httpsOptions = resolveHttpsOptions(publication.tls)
+  const app = Fastify({ logger: false, ...(httpsOptions ? { https: httpsOptions } : {}) } as never)
+  installRawBodyParsers(app)
 
   app.get("/health", async () => {
     logger.debug("handled health request")
@@ -210,7 +228,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
       url: publication.route ?? "/*",
       handler: async (request, reply) => {
         const auth = await authenticateRequest(
-          request,
+          request as unknown as GatewayRequest,
           publication,
           publication.auth ?? { mode: "anonymous" },
           deps,
@@ -220,8 +238,13 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
           return { error: auth.message }
         }
 
-        const parsed = await parseRequest(request, publication.parser ?? { kind: "json" })
-        validateInput(parsed, publication.input_schema)
+        const parsed = await parseAndValidateRequest(request as unknown as GatewayRequest, publication).catch((error) => {
+          reply.code(400).headers({ "content-type": "application/json" })
+          return { __arroba_parse_error: error instanceof Error ? error.message : String(error) }
+        })
+        if (isParseErrorPayload(parsed)) {
+          return { error: parsed.__arroba_parse_error }
+        }
         const invocation: NormalizedInvocation = {
           publication_id: publication.publication_id,
           request_id: `req_${Date.now()}_${Math.random().toString(16).slice(2)}`,
@@ -387,7 +410,7 @@ function parseTransportResponse(message: string | undefined | null): { status: n
 }
 
 async function authenticateRequest(
-  request: FastifyRequest,
+  request: GatewayRequest,
   publication: WorkflowPublicationConfig,
   config: AuthConfig,
   deps: GatewayDeps,
@@ -397,7 +420,7 @@ async function authenticateRequest(
   }
   if (config.mode === "bearer") {
     const expected = readRequiredEnv(config.token_env)
-    const actual = request.headers.authorization
+    const actual = firstHeaderValue(request.headers.authorization)
     if (!safeEqualString(actual, `Bearer ${expected}`)) {
       return { ok: false, message: "missing or invalid bearer token" }
     }
@@ -415,7 +438,7 @@ async function authenticateRequest(
 }
 
 async function authenticateArrobaRequest(
-  request: FastifyRequest,
+  request: GatewayRequest,
   publication: WorkflowPublicationConfig,
   config: ArrobaAuthConfig,
   deps: GatewayDeps,
@@ -469,7 +492,7 @@ async function authenticateArrobaRequest(
 }
 
 async function authenticatePairedSender(
-  request: FastifyRequest,
+  request: GatewayRequest,
   publication: WorkflowPublicationConfig,
   config: ArrobaAuthConfig,
   deps: GatewayDeps,
@@ -510,8 +533,8 @@ async function authenticatePairedSender(
   }
 }
 
-function authenticateBearerPrincipals(request: FastifyRequest, tokens: BearerPrincipal[]) {
-  const actual = request.headers.authorization
+function authenticateBearerPrincipals(request: GatewayRequest, tokens: BearerPrincipal[]) {
+  const actual = firstHeaderValue(request.headers.authorization)
   for (const token of tokens) {
     const expected = `Bearer ${readRequiredEnv(token.token_env)}`
     if (safeEqualString(actual, expected)) {
@@ -521,7 +544,7 @@ function authenticateBearerPrincipals(request: FastifyRequest, tokens: BearerPri
   return null
 }
 
-function authenticateApiKeyPrincipals(request: FastifyRequest, apiKeys: ApiKeyPrincipal[]) {
+function authenticateApiKeyPrincipals(request: GatewayRequest, apiKeys: ApiKeyPrincipal[]) {
   for (const apiKey of apiKeys) {
     const actual = headerValue(request, apiKey.header)
     const expected = readRequiredEnv(apiKey.key_env)
@@ -532,7 +555,7 @@ function authenticateApiKeyPrincipals(request: FastifyRequest, apiKeys: ApiKeyPr
   return null
 }
 
-function verifyConnectorIdentity(request: FastifyRequest, connectors: ConnectorConfig[]): VerifiedExternalIdentity | null {
+function verifyConnectorIdentity(request: GatewayRequest, connectors: ConnectorConfig[]): VerifiedExternalIdentity | null {
   for (const connector of connectors) {
     const identity = verifySingleConnectorIdentity(request, connector)
     if (identity) return identity
@@ -540,7 +563,7 @@ function verifyConnectorIdentity(request: FastifyRequest, connectors: ConnectorC
   return null
 }
 
-function verifySingleConnectorIdentity(request: FastifyRequest, connector: ConnectorConfig): VerifiedExternalIdentity | null {
+function verifySingleConnectorIdentity(request: GatewayRequest, connector: ConnectorConfig): VerifiedExternalIdentity | null {
   if (connector.kind === "http") {
     return connector.principal ? { connector: "http", external_id: connector.principal.id } : null
   }
@@ -551,7 +574,7 @@ function verifySingleConnectorIdentity(request: FastifyRequest, connector: Conne
   return verifyHeaderIdentity(request, connector.kind)
 }
 
-function verifyTelegramIdentity(request: FastifyRequest, connector: Extract<ConnectorConfig, { kind: "telegram" }>): VerifiedExternalIdentity | null {
+function verifyTelegramIdentity(request: GatewayRequest, connector: Extract<ConnectorConfig, { kind: "telegram" }>): VerifiedExternalIdentity | null {
   if (connector.webhook_secret_env) {
     const expected = readRequiredEnv(connector.webhook_secret_env)
     const actual = headerValue(request, "x-telegram-bot-api-secret-token")
@@ -573,7 +596,7 @@ function verifyTelegramIdentity(request: FastifyRequest, connector: Extract<Conn
   }
 }
 
-function verifySlackIdentity(request: FastifyRequest, connector: Extract<ConnectorConfig, { kind: "slack" }>): VerifiedExternalIdentity | null {
+function verifySlackIdentity(request: GatewayRequest, connector: Extract<ConnectorConfig, { kind: "slack" }>): VerifiedExternalIdentity | null {
   if (connector.signing_secret_env) {
     const expected = readRequiredEnv(connector.signing_secret_env)
     if (!verifySlackSignature(request, expected)) return null
@@ -590,7 +613,7 @@ function verifySlackIdentity(request: FastifyRequest, connector: Extract<Connect
   }
 }
 
-function verifyHeaderIdentity(request: FastifyRequest, connector: ConnectorKind): VerifiedExternalIdentity | null {
+function verifyHeaderIdentity(request: GatewayRequest, connector: ConnectorKind): VerifiedExternalIdentity | null {
   const externalId = headerValue(request, `x-arroba-${connector}-identity`)
   if (!externalId) return null
   return { connector, external_id: externalId }
@@ -630,6 +653,13 @@ function objectBody(body: unknown): Record<string, unknown> {
   return body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {}
 }
 
+function isParseErrorPayload(value: unknown): value is { __arroba_parse_error: string } {
+  return !!value
+    && typeof value === "object"
+    && "__arroba_parse_error" in value
+    && typeof (value as { __arroba_parse_error?: unknown }).__arroba_parse_error === "string"
+}
+
 function optionalString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null
 }
@@ -638,7 +668,7 @@ function isPairedSenderAuthEnabled(auth: AuthConfig | undefined) {
   return auth?.mode === "arroba" && auth.paired_senders?.enabled === true && auth.paired_senders.pair_endpoint !== false
 }
 
-function verifySlackSignature(request: FastifyRequest, signingSecret: string) {
+function verifySlackSignature(request: GatewayRequest, signingSecret: string) {
   const timestamp = headerValue(request, "x-slack-request-timestamp")
   const signature = headerValue(request, "x-slack-signature")
   const rawBody = rawRequestBody(request)
@@ -652,8 +682,8 @@ function verifySlackSignature(request: FastifyRequest, signingSecret: string) {
   return safeEqualString(signature, expected)
 }
 
-function rawRequestBody(request: FastifyRequest) {
-  return (request.raw as typeof request.raw & { arrobaRawBody?: string }).arrobaRawBody
+function rawRequestBody(request: GatewayRequest) {
+  return (request.raw as { arrobaRawBody?: string } | undefined)?.arrobaRawBody
 }
 
 function installRawBodyParsers(app: ReturnType<typeof Fastify>) {
@@ -682,7 +712,7 @@ function setRawRequestBody(request: { raw: { arrobaRawBody?: string } }, body: s
   request.raw.arrobaRawBody = body
 }
 
-async function parseRequest(request: FastifyRequest, config: ParserConfig): Promise<unknown> {
+async function parseRequest(request: GatewayRequest, config: ParserConfig): Promise<unknown> {
   switch (config.kind) {
     case "json":
       return request.body ?? {}
@@ -699,6 +729,15 @@ async function parseRequest(request: FastifyRequest, config: ParserConfig): Prom
     case "custom_command":
       return await parseCustomCommand(request, config)
   }
+}
+
+async function parseAndValidateRequest(
+  request: GatewayRequest,
+  publication: WorkflowPublicationConfig,
+): Promise<unknown> {
+  const parsed = await parseRequest(request, publication.parser ?? { kind: "json" })
+  validateInput(parsed, publication.input_schema)
+  return parsed
 }
 
 function parseRegex(source: string, config: ParserConfig) {
@@ -725,7 +764,7 @@ function parsePathTemplate(pathname: string, config: ParserConfig) {
   return output
 }
 
-async function parseCustomCommand(request: FastifyRequest, config: ParserConfig) {
+async function parseCustomCommand(request: GatewayRequest, config: ParserConfig) {
   if (!config.command) throw new Error("custom_command parser requires command")
   const envelope = JSON.stringify({
     method: request.method,
@@ -763,7 +802,7 @@ function matchesJsonType(value: unknown, type: string) {
   return typeof value === type
 }
 
-function sourceValue(request: FastifyRequest, source: ParserConfig["source"]) {
+function sourceValue(request: GatewayRequest, source: ParserConfig["source"]) {
   if (source === "body") return typeof request.body === "string" ? request.body : JSON.stringify(request.body ?? {})
   if (source === "query") return JSON.stringify(request.query ?? {})
   if (source === "headers") return JSON.stringify(request.headers)
@@ -771,8 +810,12 @@ function sourceValue(request: FastifyRequest, source: ParserConfig["source"]) {
   return String(request.url.split("?")[0] ?? "/")
 }
 
-function headerValue(request: FastifyRequest, header: string) {
+function headerValue(request: GatewayRequest, header: string) {
   const value = request.headers[header.toLowerCase()]
+  return firstHeaderValue(value)
+}
+
+function firstHeaderValue(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value
 }
 
@@ -796,7 +839,30 @@ function defaultPublicationConfig(): WorkflowPublicationConfig {
     mode: process.env.ARROBA_PUBLICATION_MODE === "async" ? "async" : "sync",
   }
   if (process.env.ARROBA_KERNEL_URL) config.kernel_endpoint = process.env.ARROBA_KERNEL_URL
+  const tls = tlsConfigFromEnv()
+  if (tls) config.tls = tls
   return config
+}
+
+function tlsConfigFromEnv(): TlsConfig | undefined {
+  const keyFile = process.env.ARROBA_PUBLICATION_TLS_KEY_FILE
+  const certFile = process.env.ARROBA_PUBLICATION_TLS_CERT_FILE
+  if (!keyFile && !certFile) return undefined
+  const tls: TlsConfig = { enabled: process.env.ARROBA_PUBLICATION_TLS_ENABLED !== "false" }
+  if (keyFile) tls.key_file = keyFile
+  if (certFile) tls.cert_file = certFile
+  return tls
+}
+
+function resolveHttpsOptions(tls: TlsConfig | undefined) {
+  if (!tls || tls.enabled === false) return undefined
+  if (!tls.key_file || !tls.cert_file) {
+    throw new Error("HTTPS requires tls.key_file and tls.cert_file")
+  }
+  return {
+    key: readFileSync(tls.key_file),
+    cert: readFileSync(tls.cert_file),
+  }
 }
 
 function requiredProcessEnv(name: string) {
@@ -880,20 +946,26 @@ export function publicationConfigFromKernelRecord(
 
 export async function loadGatewayPublicationConfig(): Promise<WorkflowPublicationConfig | undefined> {
   if (process.env.ARROBA_PUBLICATION_CONFIG) {
-    return loadPublicationConfig(process.env.ARROBA_PUBLICATION_CONFIG)
+    return withEnvTlsConfig(await loadPublicationConfig(process.env.ARROBA_PUBLICATION_CONFIG))
   }
   if (
     process.env.ARROBA_PUBLICATION_SESSION_ID
     && process.env.ARROBA_PUBLICATION_ID
     && (!process.env.ARROBA_PUBLICATION_WORKFLOW || !process.env.ARROBA_PUBLICATION_ENDPOINT)
   ) {
-    return loadPublicationConfigFromKernel(
+    return withEnvTlsConfig(await loadPublicationConfigFromKernel(
       process.env.ARROBA_PUBLICATION_SESSION_ID,
       process.env.ARROBA_PUBLICATION_ID,
       defaultKernelEndpoint(),
-    )
+    ))
   }
   return undefined
+}
+
+function withEnvTlsConfig(config: WorkflowPublicationConfig) {
+  const tls = tlsConfigFromEnv()
+  if (tls) return { ...config, tls }
+  return config
 }
 
 function normalizeHttpMethods(methods: string[] | undefined): Array<"GET" | "POST"> | undefined {

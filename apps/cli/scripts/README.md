@@ -88,7 +88,8 @@ pnpm --filter @arroba/cli run publication:drill
 ```
 
 It launches an isolated kernel and gateway, creates a kernel-owned HTTP
-publication, invokes it directly, exports it with
+publication, invokes it directly, verifies parser failures return HTTP 400,
+restarts the gateway with self-signed HTTPS/TLS and invokes it again, exports it with
 `workflow publication export`, starts the gateway from the exported
 `publication.config.json`, then validates paired sender
 reject/redeem/invoke/revoke/reject behavior.

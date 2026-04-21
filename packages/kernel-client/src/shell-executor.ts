@@ -2201,6 +2201,11 @@ function workflowPublicationEnvTemplate(publication: WorkflowPublicationDefiniti
     `ARROBA_PUBLICATION_SESSION_ID=${publication.session_id}`,
     `ARROBA_PUBLICATION_ID=${publication.id}`,
     "",
+    "# Optional HTTPS/TLS. When both files are set, the gateway serves HTTPS.",
+    "# ARROBA_PUBLICATION_TLS_KEY_FILE=./tls.key",
+    "# ARROBA_PUBLICATION_TLS_CERT_FILE=./tls.crt",
+    "# ARROBA_PUBLICATION_TLS_ENABLED=true",
+    "",
   ].join("\n")
 }
 

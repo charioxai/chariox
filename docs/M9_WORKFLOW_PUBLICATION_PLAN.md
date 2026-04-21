@@ -98,7 +98,7 @@ Add a deployable app at the same level as CLI and shell. The gateway loads a pub
 
 V1 transport:
 
-- HTTP
+- HTTP and HTTPS/TLS
 - Slack connector
 - Discord connector
 - Telegram connector
@@ -221,7 +221,8 @@ Implementation status:
 
 ## M9.6 HTTP Connector
 
-Support `GET` and `POST`.
+Support `GET` and `POST` over HTTP or HTTPS/TLS. HTTPS is not a separate
+connector; it is TLS configuration on the HTTP publication gateway.
 
 Pipeline:
 
@@ -233,6 +234,14 @@ HTTP request
 -> kernel workflow invoke
 -> response forwarding
 ```
+
+TLS configuration:
+
+- file/config: `tls.enabled`, `tls.key_file`, `tls.cert_file`
+- env override: `ARROBA_PUBLICATION_TLS_KEY_FILE`,
+  `ARROBA_PUBLICATION_TLS_CERT_FILE`, `ARROBA_PUBLICATION_TLS_ENABLED`
+- if TLS is enabled without both key and cert files, gateway startup fails
+  clearly rather than serving insecurely by accident
 
 Response modes:
 
@@ -297,6 +306,9 @@ Implementation status:
 - The publication live drill now exports a kernel-owned publication and starts
   the gateway from the exported `publication.config.json` before continuing to
   paired-sender coverage.
+- Exported `.env.example` files include optional HTTPS/TLS variables for
+  deployments that terminate TLS inside the Arroba gateway rather than at a
+  proxy/load balancer.
 
 ## M9.10 Workflow-To-Workflow Drill
 
@@ -320,7 +332,7 @@ Implementation status:
 
 Required drills:
 
-- publish an existing workflow endpoint over HTTP: `pnpm --filter @arroba/cli run publication:drill`
+- publish an existing workflow endpoint over HTTP/HTTPS: `pnpm --filter @arroba/cli run publication:drill`
 - auth accepted/rejected
 - paired sender code generation, redemption, accepted request, revoked request
 - connector ingress verification plus Arroba identity authorization for Slack,

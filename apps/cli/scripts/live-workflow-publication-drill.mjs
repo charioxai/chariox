@@ -153,6 +153,36 @@ async function waitForProviderRunReady(client, providerRunId) {
   throw new Error(`provider run ${providerRunId} did not become ready`)
 }
 
+async function createSelfSignedCertificate(root) {
+  const keyFile = path.join(root, 'gateway.key')
+  const certFile = path.join(root, 'gateway.crt')
+  const args = [
+    'req',
+    '-x509',
+    '-newkey',
+    'rsa:2048',
+    '-nodes',
+    '-keyout',
+    keyFile,
+    '-out',
+    certFile,
+    '-subj',
+    '/CN=127.0.0.1',
+    '-addext',
+    'subjectAltName=IP:127.0.0.1,DNS:localhost',
+    '-days',
+    '1',
+  ]
+  let result = await run('openssl', args, { cwd: root })
+  if (result.code !== 0 && result.stderr.includes('addext')) {
+    result = await run('openssl', args.filter((arg, index) => arg !== '-addext' && args[index - 1] !== '-addext'), { cwd: root })
+  }
+  if (result.code !== 0) {
+    throw new Error(`openssl self-signed certificate generation failed\n${result.stdout}\n${result.stderr}`)
+  }
+  return { keyFile, certFile }
+}
+
 async function main() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'arroba-publication-drill-'))
   const workspace = path.join(root, 'workspace')
@@ -164,8 +194,10 @@ async function main() {
   const opencodePort = await freePort()
   const codexPort = await freePort()
   const gatewayPort = await freePort()
+  const gatewayHttpsPort = await freePort()
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const gatewayUrl = `http://127.0.0.1:${gatewayPort}`
+  const gatewayHttpsUrl = `https://127.0.0.1:${gatewayHttpsPort}`
   const env = {
     ...process.env,
     HOME: home,
@@ -189,6 +221,7 @@ async function main() {
     await mkdir(workspace, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
+    const tls = await createSelfSignedCertificate(root)
 
     const kernelBinary = await buildKernel()
     kernel = startProcess(kernelBinary, [], env, 'kernel')
@@ -267,6 +300,47 @@ async function main() {
       throw new Error(`gateway did not return accepted workflow run metadata: ${JSON.stringify(body)}`)
     }
     logStep('anonymous_ok', { publicationId: publication.id, workflowRunId: body.workflow_run.id })
+
+    logStep('parser_failure_400')
+    const badParserResponse = await fetch(`${gatewayUrl}/qa/a/b`)
+    if (badParserResponse.status !== 400) {
+      throw new Error(`expected parser failure HTTP 400, got ${badParserResponse.status}: ${await badParserResponse.text()}`)
+    }
+
+    await stopProcess(gateway)
+    gateway = null
+
+    logStep('invoke_https')
+    const previousTlsReject = process.env.NODE_TLS_REJECT_UNAUTHORIZED
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayHttpsPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: session.id,
+        ARROBA_PUBLICATION_ID: publication.id,
+        ARROBA_PUBLICATION_TLS_KEY_FILE: tls.keyFile,
+        ARROBA_PUBLICATION_TLS_CERT_FILE: tls.certFile,
+      },
+      'gateway-https',
+    )
+    let httpsBody = null
+    let httpsResponse = null
+    try {
+      await waitForGateway(gatewayHttpsUrl)
+      httpsResponse = await fetch(`${gatewayHttpsUrl}/qa/ship-publication-secure`)
+      httpsBody = await httpsResponse.json()
+      if (httpsResponse.status !== 202 || !httpsBody.workflow_run?.id) {
+        throw new Error(`expected HTTPS 202 from async publication, got ${httpsResponse.status}: ${JSON.stringify(httpsBody)}`)
+      }
+    } finally {
+      if (previousTlsReject === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
+      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTlsReject
+    }
     await stopProcess(gateway)
     gateway = null
 

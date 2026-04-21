@@ -205,6 +205,45 @@ test("gateway supports regex and path-template parsers", async () => {
   }
 })
 
+test("gateway returns HTTP 400 for parser and schema failures", async () => {
+  let invoked = false
+  const parserServer = buildServer({
+    ...baseConfig,
+    parser: { kind: "regex", source: "path", pattern: "^/ok/(?<value>.+)$" },
+  }, {
+    invokeWorkflow: async () => {
+      invoked = true
+      return { accepted: true }
+    },
+  })
+  try {
+    const response = await parserServer.app.inject({ method: "GET", url: "/bad/value" })
+    assert.equal(response.statusCode, 400)
+    assert.match(response.json().error, /did not match/)
+    assert.equal(invoked, false)
+  } finally {
+    await parserServer.app.close()
+  }
+
+  const schemaServer = buildServer({
+    ...baseConfig,
+    input_schema: { type: "object", required: ["name"], properties: { name: { type: "string" } } },
+  }, {
+    invokeWorkflow: async () => {
+      invoked = true
+      return { accepted: true }
+    },
+  })
+  try {
+    const response = await schemaServer.app.inject({ method: "POST", url: "/schema", payload: { name: 42 } })
+    assert.equal(response.statusCode, 400)
+    assert.match(response.json().error, /field name expected string/)
+    assert.equal(invoked, false)
+  } finally {
+    await schemaServer.app.close()
+  }
+})
+
 test("gateway supports custom command parsers", async () => {
   const inputs: unknown[] = []
   const { app } = buildServer({
