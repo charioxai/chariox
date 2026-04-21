@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { createHmac } from 'node:crypto'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -38,6 +39,15 @@ function logStep(name, details = null) {
 
 function variant(response, key) {
   return response?.[key] ?? response
+}
+
+function slackHeaders(secret, body, contentType = 'application/json') {
+  const timestamp = String(Math.floor(Date.now() / 1000))
+  return {
+    'content-type': contentType,
+    'x-slack-request-timestamp': timestamp,
+    'x-slack-signature': `v0=${createHmac('sha256', secret).update(`v0:${timestamp}:${body}`).digest('hex')}`,
+  }
 }
 
 async function run(command, args, options = {}) {
@@ -375,6 +385,74 @@ async function main() {
     const exportedBody = await exportedResponse.json()
     if (exportedResponse.status !== 202 || !exportedBody.workflow_run?.id) {
       throw new Error(`expected exported package HTTP 202, got ${exportedResponse.status}: ${JSON.stringify(exportedBody)}`)
+    }
+    await stopProcess(gateway)
+    gateway = null
+
+    logStep('create_slack_publication')
+    const slackSecret = 'publication-drill-slack-secret'
+    const slackPublication = variant(
+      await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {
+        alias: 'slack_connector',
+        route: '/slack/*',
+        methods: ['POST'],
+        auth: {
+          mode: 'arroba',
+          connectors: [{ kind: 'slack', signing_secret_env: 'ARROBA_PUBLICATION_DRILL_SLACK_SECRET' }],
+          external_identities: [{
+            connector: 'slack',
+            external_id: 'T-PUB:U-PUB',
+            principal: { id: 'publication-drill-slack-user', type: 'user', allowed_connectors: ['slack'] },
+          }],
+        },
+        parser: { kind: 'webhook' },
+        mode: 'async',
+      })),
+      'WorkflowPublicationCreated',
+    ).publication
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: session.id,
+        ARROBA_PUBLICATION_ID: slackPublication.id,
+        ARROBA_PUBLICATION_DRILL_SLACK_SECRET: slackSecret,
+      },
+      'gateway-slack',
+    )
+    await waitForGateway(gatewayUrl)
+
+    logStep('slack_url_verification')
+    const challengePayload = JSON.stringify({ type: 'url_verification', challenge: 'arroba-slack-challenge' })
+    const challengeResponse = await fetch(`${gatewayUrl}/slack/events`, {
+      method: 'POST',
+      headers: slackHeaders(slackSecret, challengePayload),
+      body: challengePayload,
+    })
+    const challengeBody = await challengeResponse.text()
+    if (challengeResponse.status !== 200 || challengeBody !== 'arroba-slack-challenge') {
+      throw new Error(`expected Slack challenge response, got ${challengeResponse.status}: ${challengeBody}`)
+    }
+
+    logStep('slack_signed_invoke')
+    const slackPayload = new URLSearchParams({
+      team_id: 'T-PUB',
+      user_id: 'U-PUB',
+      command: '/arroba',
+      text: 'ship-publication',
+    }).toString()
+    const slackResponse = await fetch(`${gatewayUrl}/slack/commands`, {
+      method: 'POST',
+      headers: slackHeaders(slackSecret, slackPayload, 'application/x-www-form-urlencoded'),
+      body: slackPayload,
+    })
+    const slackBody = await slackResponse.json()
+    if (slackResponse.status !== 202 || !slackBody.workflow_run?.id) {
+      throw new Error(`expected Slack connector HTTP 202, got ${slackResponse.status}: ${JSON.stringify(slackBody)}`)
     }
     await stopProcess(gateway)
     gateway = null

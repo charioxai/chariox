@@ -227,6 +227,9 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
       method,
       url: publication.route ?? "/*",
       handler: async (request, reply) => {
+        const handshake = handleConnectorHandshake(request as unknown as GatewayRequest, reply, publication)
+        if (handshake.handled) return handshake.payload
+
         const auth = await authenticateRequest(
           request as unknown as GatewayRequest,
           publication,
@@ -561,6 +564,39 @@ function verifyConnectorIdentity(request: GatewayRequest, connectors: ConnectorC
     if (identity) return identity
   }
   return null
+}
+
+function handleConnectorHandshake(
+  request: GatewayRequest,
+  reply: { code: (code: number) => unknown; headers: (headers: Record<string, string>) => unknown },
+  publication: WorkflowPublicationConfig,
+): { handled: true; payload: unknown } | { handled: false } {
+  const connectors = publication.auth?.mode === "arroba" ? publication.auth.connectors ?? [] : []
+  for (const connector of connectors) {
+    if (connector.kind !== "slack") continue
+    const response = handleSlackHandshake(request, connector, reply)
+    if (response.handled) return response
+  }
+  return { handled: false }
+}
+
+function handleSlackHandshake(
+  request: GatewayRequest,
+  connector: Extract<ConnectorConfig, { kind: "slack" }>,
+  reply: { code: (code: number) => unknown; headers: (headers: Record<string, string>) => unknown },
+): { handled: true; payload: unknown } | { handled: false } {
+  const body = objectBody(request.body)
+  if (body.type !== "url_verification" || typeof body.challenge !== "string") {
+    return { handled: false }
+  }
+  if (connector.signing_secret_env && !verifySlackSignature(request, readRequiredEnv(connector.signing_secret_env))) {
+    reply.code(401)
+    reply.headers({ "content-type": "application/json" })
+    return { handled: true, payload: { error: "invalid slack signature" } }
+  }
+  reply.code(200)
+  reply.headers({ "content-type": "text/plain" })
+  return { handled: true, payload: body.challenge }
 }
 
 function verifySingleConnectorIdentity(request: GatewayRequest, connector: ConnectorConfig): VerifiedExternalIdentity | null {

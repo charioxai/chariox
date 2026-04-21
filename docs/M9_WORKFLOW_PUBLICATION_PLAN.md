@@ -347,6 +347,31 @@ Required drills:
 - IPC invocation works
 - workflow A calls workflow B through B's published HTTP endpoint in a separate kernel
 
+## M9.12 Slack Connector
+
+Slack is implemented as a connector-specific ingress path on the publication
+gateway, feeding the same Arroba auth model as HTTP.
+
+V1 behavior:
+
+- verifies Slack request signatures with `x-slack-request-timestamp`,
+  `x-slack-signature`, and the configured signing secret
+- rejects stale or invalid signatures
+- handles signed `url_verification` challenges directly without invoking the
+  workflow
+- accepts signed JSON events and slash-command form payloads
+- normalizes Slack identity as `team_id:user_id` and maps it to an Arroba
+  principal through `auth.external_identities`
+
+Implementation status:
+
+- Unit coverage verifies signed challenge handling does not invoke workflows,
+  invalid signatures reject, and signed slash-command form payloads map to the
+  configured Arroba principal.
+- The publication live drill now creates a Slack-shaped publication, verifies
+  signed URL verification, and invokes the workflow through a signed
+  slash-command payload.
+
 ## V2
 
 - Dedicated workflow-to-workflow invocation protocol with signed caller identity, reply routing, status/result URLs, and optional streaming.

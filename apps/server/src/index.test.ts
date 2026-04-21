@@ -335,10 +335,109 @@ test("arroba auth maps a verified connector identity to one Arroba principal", a
   }
 })
 
-function slackHeaders(secret: string, body: string) {
+test("slack connector handles signed URL verification without invoking workflow", async () => {
+  process.env.GATEWAY_TEST_SLACK_SECRET = "slack-secret"
+  let invoked = false
+  const { app } = buildServer({
+    ...baseConfig,
+    methods: ["POST"],
+    auth: {
+      mode: "arroba",
+      connectors: [{ kind: "slack", signing_secret_env: "GATEWAY_TEST_SLACK_SECRET" }],
+    },
+  }, {
+    invokeWorkflow: async () => {
+      invoked = true
+      return { accepted: true, workflow_run: { id: "run-1", status: "Running" } }
+    },
+  })
+
+  try {
+    const payload = JSON.stringify({ type: "url_verification", challenge: "challenge-token" })
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/slack/events",
+      headers: slackHeaders("slack-secret", payload),
+      payload,
+    })
+    assert.equal(accepted.statusCode, 200)
+    assert.equal(accepted.body, "challenge-token")
+    assert.equal(invoked, false)
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/slack/events",
+      headers: slackHeaders("wrong-secret", payload),
+      payload,
+    })
+    assert.equal(rejected.statusCode, 401)
+    assert.equal(invoked, false)
+  } finally {
+    await app.close()
+    delete process.env.GATEWAY_TEST_SLACK_SECRET
+  }
+})
+
+test("slack connector accepts signed slash-command form payloads", async () => {
+  process.env.GATEWAY_TEST_SLACK_SECRET = "slack-secret"
+  const callers: unknown[] = []
+  const { app } = buildServer({
+    ...baseConfig,
+    methods: ["POST"],
+    auth: {
+      mode: "arroba",
+      connectors: [{ kind: "slack", signing_secret_env: "GATEWAY_TEST_SLACK_SECRET" }],
+      external_identities: [{
+        connector: "slack",
+        external_id: "T123:U456",
+        principal: { id: "user-miguel", type: "user", allowed_connectors: ["slack"] },
+      }],
+    },
+    parser: { kind: "webhook" },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      callers.push(invocation.caller)
+      return { accepted: true, workflow_run: { id: "run-1", status: "Running" } }
+    },
+  })
+
+  try {
+    const payload = new URLSearchParams({
+      team_id: "T123",
+      user_id: "U456",
+      command: "/arroba",
+      text: "ship it",
+    }).toString()
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/slack/commands",
+      headers: slackHeaders("slack-secret", payload, "application/x-www-form-urlencoded"),
+      payload,
+    })
+    assert.equal(accepted.statusCode, 202)
+    assert.deepEqual(callers[0], {
+      type: "user",
+      principal_id: "user-miguel",
+      teams: [],
+      display_name: undefined,
+      allowed_connectors: ["slack"],
+      proof: {
+        auth: "connector",
+        connector: "slack",
+        external_id: "T123:U456",
+        metadata: { team_id: "T123", user_id: "U456" },
+      },
+    })
+  } finally {
+    await app.close()
+    delete process.env.GATEWAY_TEST_SLACK_SECRET
+  }
+})
+
+function slackHeaders(secret: string, body: string, contentType = "application/json") {
   const timestamp = String(Math.floor(Date.now() / 1000))
   return {
-    "content-type": "application/json",
+    "content-type": contentType,
     "x-slack-request-timestamp": timestamp,
     "x-slack-signature": `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${body}`).digest("hex")}`,
   }
