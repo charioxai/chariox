@@ -54,6 +54,9 @@ Implementation status:
 - Shell command routing exposes publication records through
   `workflow publication ...`, so the CLI shell pane and `arroba-shell` use the
   same executor path.
+- The gateway can load a kernel-owned publication by
+  `ARROBA_PUBLICATION_SESSION_ID` plus `ARROBA_PUBLICATION_ID` when explicit
+  workflow/endpoint env vars are not provided.
 
 ## M9.2 Endpoint Input Contracts
 
@@ -264,7 +267,7 @@ This proves the application shape while keeping protocol discovery and mesh sema
 
 Required drills:
 
-- publish an existing workflow endpoint over HTTP
+- publish an existing workflow endpoint over HTTP: `pnpm --filter @arroba/cli run publication:drill`
 - auth accepted/rejected
 - paired sender code generation, redemption, accepted request, revoked request
 - connector ingress verification plus Arroba identity authorization for Slack,

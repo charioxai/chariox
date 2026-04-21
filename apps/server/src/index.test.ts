@@ -2,7 +2,12 @@ import assert from "node:assert/strict"
 import { createHmac } from "node:crypto"
 import test from "node:test"
 
-import { buildServer, type WorkflowPublicationConfig } from "./index.js"
+import {
+  buildServer,
+  loadPublicationConfigFromKernel,
+  publicationConfigFromKernelRecord,
+  type WorkflowPublicationConfig,
+} from "./index.js"
 
 const baseConfig: WorkflowPublicationConfig = {
   publication_id: "pub-test",
@@ -28,6 +33,76 @@ test("GET /health returns an ok status payload", async () => {
   } finally {
     await app.close()
   }
+})
+
+test("gateway maps kernel-owned publication records to runtime config", async () => {
+  const config = publicationConfigFromKernelRecord({
+    id: "pub-1",
+    session_id: "session-1",
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+    alias: "public_qa",
+    enabled: true,
+    route: "/qa",
+    methods: ["POST", "PUT"],
+    auth: { mode: "bearer", token_env: "TOKEN_ENV" },
+    parser: { kind: "regex", source: "path", pattern: "^/qa/(?<task>.+)$" },
+    input_schema: { type: "object", required: ["task"] },
+    mode: "async",
+    created_by_user_id: "local",
+    created_at_ms: 0,
+    updated_at_ms: 0,
+  }, "ws://kernel")
+
+  assert.deepEqual(config, {
+    publication_id: "pub-1",
+    session_id: "session-1",
+    workflow_ref: "workflow-1",
+    endpoint_ref: "endpoint-1",
+    kernel_endpoint: "ws://kernel",
+    route: "/qa",
+    methods: ["POST"],
+    auth: { mode: "bearer", token_env: "TOKEN_ENV" },
+    parser: { kind: "regex", source: "path", pattern: "^/qa/(?<task>.+)$" },
+    input_schema: { type: "object", required: ["task"] },
+    mode: "async",
+  })
+})
+
+test("gateway can load publication config from kernel lookup", async () => {
+  const requests: Record<string, unknown>[] = []
+  const config = await loadPublicationConfigFromKernel("session-1", "pub-1", "ws://kernel", {
+    send: async (request) => {
+      requests.push(request)
+      return {
+        WorkflowPublication: {
+          publication: {
+            id: "pub-1",
+            session_id: "session-1",
+            workflow_id: "workflow-1",
+            endpoint_id: "endpoint-1",
+            enabled: true,
+            route: "/qa",
+            methods: ["GET"],
+            auth: { mode: "anonymous" },
+            parser: { kind: "json" },
+            mode: "sync",
+            created_by_user_id: "local",
+            created_at_ms: 0,
+            updated_at_ms: 0,
+          },
+        },
+      }
+    },
+  })
+
+  assert.deepEqual(requests, [
+    { GetWorkflowPublication: { session_id: "session-1", publication_ref: "pub-1" } },
+  ])
+  assert.equal(config.publication_id, "pub-1")
+  assert.equal(config.workflow_ref, "workflow-1")
+  assert.equal(config.endpoint_ref, "endpoint-1")
+  assert.deepEqual(config.methods, ["GET"])
 })
 
 test("gateway authenticates, parses JSON, and forwards transport-shaped workflow output", async () => {

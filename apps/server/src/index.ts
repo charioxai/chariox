@@ -6,7 +6,9 @@ import process from "node:process"
 import Fastify, { type FastifyRequest } from "fastify"
 
 import { LocalIpcClient } from "@arroba/kernel-client/ipc"
+import type { WorkflowPublicationDefinition } from "@arroba/kernel-client/kernel-types"
 import {
+  getWorkflowPublicationRequest,
   getWorkflowRunRequest,
   invokeWorkflowEndpointRequest,
 } from "@arroba/kernel-client/ipc-requests"
@@ -129,6 +131,11 @@ type WorkflowInvocationResult = {
 
 type GatewayDeps = {
   invokeWorkflow?: (invocation: NormalizedInvocation) => Promise<WorkflowInvocationResult>
+}
+
+type KernelLookupClient = {
+  send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
+  close?: () => Promise<void>
 }
 
 type VerifiedExternalIdentity = {
@@ -664,10 +671,94 @@ export async function loadPublicationConfig(path: string) {
   return JSON.parse(await readFile(path, "utf8")) as WorkflowPublicationConfig
 }
 
+export async function loadPublicationConfigFromKernel(
+  sessionId: string,
+  publicationRef: string,
+  kernelEndpoint = defaultKernelEndpoint(),
+  client?: KernelLookupClient,
+): Promise<WorkflowPublicationConfig> {
+  const ownedClient = client ?? new LocalIpcClient(kernelEndpoint)
+  try {
+    const response = await ownedClient.send(
+      getWorkflowPublicationRequest(sessionId, publicationRef),
+    )
+    const publication = (response.WorkflowPublication as { publication?: WorkflowPublicationDefinition } | undefined)?.publication
+    if (!publication) {
+      throw new Error(`unexpected workflow publication response: ${JSON.stringify(response)}`)
+    }
+    return publicationConfigFromKernelRecord(publication, kernelEndpoint)
+  } finally {
+    if (!client) {
+      await ownedClient.close?.().catch(() => {})
+    }
+  }
+}
+
+export function publicationConfigFromKernelRecord(
+  publication: WorkflowPublicationDefinition,
+  kernelEndpoint = defaultKernelEndpoint(),
+): WorkflowPublicationConfig {
+  const config: WorkflowPublicationConfig = {
+    publication_id: publication.id,
+    session_id: publication.session_id,
+    workflow_ref: publication.workflow_id,
+    endpoint_ref: publication.endpoint_id,
+    kernel_endpoint: kernelEndpoint,
+    route: publication.route ?? "/*",
+    auth: asAuthConfig(publication.auth) ?? { mode: "anonymous" },
+    parser: asParserConfig(publication.parser) ?? { kind: "json" },
+    mode: publication.mode === "async" ? "async" : "sync",
+  }
+  const methods = normalizeHttpMethods(publication.methods)
+  if (methods) config.methods = methods
+  const inputSchema = asInputSchema(publication.input_schema)
+  if (inputSchema) config.input_schema = inputSchema
+  return config
+}
+
+export async function loadGatewayPublicationConfig(): Promise<WorkflowPublicationConfig | undefined> {
+  if (process.env.ARROBA_PUBLICATION_CONFIG) {
+    return loadPublicationConfig(process.env.ARROBA_PUBLICATION_CONFIG)
+  }
+  if (
+    process.env.ARROBA_PUBLICATION_SESSION_ID
+    && process.env.ARROBA_PUBLICATION_ID
+    && (!process.env.ARROBA_PUBLICATION_WORKFLOW || !process.env.ARROBA_PUBLICATION_ENDPOINT)
+  ) {
+    return loadPublicationConfigFromKernel(
+      process.env.ARROBA_PUBLICATION_SESSION_ID,
+      process.env.ARROBA_PUBLICATION_ID,
+      defaultKernelEndpoint(),
+    )
+  }
+  return undefined
+}
+
+function normalizeHttpMethods(methods: string[] | undefined): Array<"GET" | "POST"> | undefined {
+  const normalized = (methods ?? [])
+    .map((method) => method.toUpperCase())
+    .filter((method): method is "GET" | "POST" => method === "GET" || method === "POST")
+  return normalized.length > 0 ? normalized : undefined
+}
+
+function asAuthConfig(value: unknown): AuthConfig | undefined {
+  return isPlainObject(value) && typeof value.mode === "string" ? value as AuthConfig : undefined
+}
+
+function asParserConfig(value: unknown): ParserConfig | undefined {
+  return isPlainObject(value) && typeof value.kind === "string" ? value as ParserConfig : undefined
+}
+
+function asInputSchema(value: unknown): InputSchema | undefined {
+  return isPlainObject(value) ? value as InputSchema : undefined
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const config = process.env.ARROBA_PUBLICATION_CONFIG
-    ? await loadPublicationConfig(process.env.ARROBA_PUBLICATION_CONFIG)
-    : undefined
+  const config = await loadGatewayPublicationConfig()
   const { app, logger } = buildServer(config)
   const host = process.env.HOST ?? "0.0.0.0"
   const port = Number(process.env.PORT ?? 3000)
