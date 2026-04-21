@@ -922,3 +922,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Extended the archive adapter protocol with `PUT /arroba/artifacts/blobs/:artifact_id` for raw blob upload and `POST /arroba/artifacts/manifest` for durable artifact metadata acceptance.
 - Extended `arroba-history-archive-flush` to flush pending artifact blobs/manifests before history events. The JSON output now has separate `artifacts` and `history` sections.
 - Extended the Postgres archive drill to use production-shaped archive storage: Postgres stores events/artifact manifests/searchable metadata and MinIO stores S3-compatible artifact blobs. Verified `pnpm --filter @arroba/cli run postgres-archive:drill` passes with one archived transferred artifact and four archived transcript events.
+
+### M9 workflow publication kickoff
+
+- Added `docs/M9_WORKFLOW_PUBLICATION_PLAN.md`, defining publication gateways as transport/auth/parser/control infrastructure that forwards workflow-produced outputs without semantic manipulation.
+- Reworked `apps/server` into the first `arroba-workflow-gateway` app. It loads a publication config, exposes HTTP routes, supports anonymous/bearer/API-key auth, built-in JSON/query/header/webhook/regex/path-template parsers, custom command parsers, lightweight input schema checks, sync/async kernel invocation, and passthrough `http_response` workflow output forwarding.
+- Added gateway coverage for health, auth rejection/acceptance, JSON parsing/schema checks, transport-shaped output passthrough, regex parsing, and path-template parsing.

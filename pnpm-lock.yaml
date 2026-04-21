@@ -48,6 +48,9 @@ importers:
 
   apps/server:
     dependencies:
+      '@arroba/kernel-client':
+        specifier: workspace:*
+        version: link:../../packages/kernel-client
       fastify:
         specifier: ^5.1.0
         version: 5.8.2

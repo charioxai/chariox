@@ -4,11 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && node --test dist/index.test.js"
+    "build": "pnpm --filter @arroba/kernel-client run build && tsc -p tsconfig.json",
+    "lint": "pnpm --filter @arroba/kernel-client run build && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run build && node --test dist/index.test.js"
   },
   "dependencies": {
+    "@arroba/kernel-client": "workspace:*",
     "fastify": "^5.1.0"
+  },
+  "bin": {
+    "arroba-workflow-gateway": "dist/index.js"
   }
 }
