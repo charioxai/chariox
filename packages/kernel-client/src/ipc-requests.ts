@@ -361,6 +361,66 @@ export function resolveWorkflowRequest(sessionId: string, workflowRef: string) {
   }
 }
 
+export type CreateWorkflowPublicationOptions = {
+  alias?: string | null
+  route?: string | null
+  methods?: string[]
+  transport?: unknown | null
+  auth?: unknown | null
+  parser?: unknown | null
+  inputSchema?: unknown | null
+  mode?: string | null
+}
+
+export function createWorkflowPublicationRequest(
+  sessionId: string,
+  workflowRef: string,
+  endpointRef: string,
+  options: CreateWorkflowPublicationOptions = {},
+) {
+  return {
+    CreateWorkflowPublication: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      endpoint_ref: endpointRef,
+      alias: options.alias ?? null,
+      route: options.route ?? null,
+      methods: options.methods ?? [],
+      transport: options.transport ?? null,
+      auth: options.auth ?? null,
+      parser: options.parser ?? null,
+      input_schema: options.inputSchema ?? null,
+      mode: options.mode ?? null,
+    },
+  }
+}
+
+export function listWorkflowPublicationsRequest(sessionId: string) {
+  return {
+    ListWorkflowPublications: {
+      session_id: sessionId,
+    },
+  }
+}
+
+export function getWorkflowPublicationRequest(sessionId: string, publicationRef: string) {
+  return {
+    GetWorkflowPublication: {
+      session_id: sessionId,
+      publication_ref: publicationRef,
+    },
+  }
+}
+
+export function disableWorkflowPublicationRequest(sessionId: string, publicationRef: string) {
+  return {
+    DisableWorkflowPublication: {
+      session_id: sessionId,
+      publication_ref: publicationRef,
+    },
+  }
+}
+
 export function createWorkflowEndpointRequest(
   sessionId: string,
   workflowRef: string,

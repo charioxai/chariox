@@ -45,7 +45,15 @@ response mode
 created/updated metadata
 ```
 
-First implementation can load a publication file directly in the gateway. Kernel-owned publication CRUD comes after the gateway contract proves stable.
+Implementation status:
+
+- The gateway can still load a publication file directly for standalone drills.
+- The kernel now owns workflow publication records inside session state.
+- Local API and kernel-client request helpers support publication create, list,
+  get, and disable.
+- Shell command routing exposes publication records through
+  `workflow publication ...`, so the CLI shell pane and `arroba-shell` use the
+  same executor path.
 
 ## M9.2 Endpoint Input Contracts
 
@@ -237,14 +245,14 @@ arroba-workflow-call publication-name --input input.json
 CLI/shell commands:
 
 ```text
-/workflow publish <workflow_ref> <endpoint_ref>
-/workflow publications
-/workflow publication get <publication>
-/workflow publication disable <publication>
-/workflow export <publication> --out ./published-app
+workflow publication create [workflow_ref] <endpoint_ref> [alias] [--route <route>] [--method POST] [--auth-json <json>] [--parser-json <json>] [--transport-json <json>] [--input-schema-json <json>] [--mode async]
+workflow publication list
+workflow publication show <publication>
+workflow publication disable <publication>
 ```
 
-Export output includes publication config, launcher, README, env var template, and example curl/websocket commands.
+Gateway export/package output will include publication config, launcher, README,
+env var template, and example curl/websocket commands.
 
 ## M9.10 Workflow-To-Workflow Drill
 

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::agent::AgentInstance;
 
@@ -824,6 +825,105 @@ impl WorkflowConsole {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPublicationDefinition {
+    id: String,
+    session_id: String,
+    workflow_id: String,
+    endpoint_id: String,
+    alias: Option<String>,
+    enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    route: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    methods: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transport: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parser: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+    created_by_user_id: String,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+}
+
+impl WorkflowPublicationDefinition {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: impl Into<String>,
+        session_id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        endpoint_id: impl Into<String>,
+        alias: Option<String>,
+        route: Option<String>,
+        methods: Vec<String>,
+        transport: Option<Value>,
+        auth: Option<Value>,
+        parser: Option<Value>,
+        input_schema: Option<Value>,
+        mode: Option<String>,
+        created_by_user_id: impl Into<String>,
+    ) -> Self {
+        let now = unix_epoch_ms();
+        Self {
+            id: id.into(),
+            session_id: session_id.into(),
+            workflow_id: workflow_id.into(),
+            endpoint_id: endpoint_id.into(),
+            alias,
+            enabled: true,
+            route,
+            methods,
+            transport,
+            auth,
+            parser,
+            input_schema,
+            mode,
+            created_by_user_id: created_by_user_id.into(),
+            created_at_ms: now,
+            updated_at_ms: now,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn workflow_id(&self) -> &str {
+        &self.workflow_id
+    }
+
+    pub fn endpoint_id(&self) -> &str {
+        &self.endpoint_id
+    }
+
+    pub fn alias(&self) -> Option<&str> {
+        self.alias.as_deref()
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn created_by_user_id(&self) -> &str {
+        &self.created_by_user_id
+    }
+
+    pub fn disable(&mut self) {
+        self.enabled = false;
+        self.updated_at_ms = unix_epoch_ms();
     }
 }
 
@@ -2489,6 +2589,8 @@ pub struct RuntimeSession {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_consoles: Vec<WorkflowConsole>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workflow_publications: Vec<WorkflowPublicationDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workspace_links: Vec<WorkspaceLinkDefinition>,
 }
 
@@ -2539,6 +2641,7 @@ impl RuntimeSession {
             queued_workflow_launches: VecDeque::new(),
             workflow_watchdogs: Vec::new(),
             workflow_consoles: Vec::new(),
+            workflow_publications: Vec::new(),
             workspace_links: Vec::new(),
         }
     }
@@ -2672,6 +2775,8 @@ impl RuntimeSession {
             .into_iter()
             .map(|workflow| workflow.redacted_for_user(user_id))
             .collect();
+        self.workflow_publications
+            .retain(|publication| publication.created_by_user_id() == user_id);
         self
     }
     pub fn attachment_ids(&self) -> &BTreeSet<String> {
@@ -2769,6 +2874,10 @@ impl RuntimeSession {
         &self.workflow_consoles
     }
 
+    pub fn workflow_publications(&self) -> &[WorkflowPublicationDefinition] {
+        &self.workflow_publications
+    }
+
     pub fn workspace_links(&self) -> &[WorkspaceLinkDefinition] {
         &self.workspace_links
     }
@@ -2843,6 +2952,32 @@ impl RuntimeSession {
         self.workflows
             .iter_mut()
             .find(|workflow| workflow.id() == workflow_id)
+    }
+
+    pub fn create_workflow_publication(
+        &mut self,
+        publication: WorkflowPublicationDefinition,
+    ) -> WorkflowPublicationDefinition {
+        self.workflow_publications.push(publication.clone());
+        publication
+    }
+
+    pub fn workflow_publication(
+        &self,
+        publication_id: &str,
+    ) -> Option<&WorkflowPublicationDefinition> {
+        self.workflow_publications
+            .iter()
+            .find(|publication| publication.id() == publication_id)
+    }
+
+    pub fn workflow_publication_mut(
+        &mut self,
+        publication_id: &str,
+    ) -> Option<&mut WorkflowPublicationDefinition> {
+        self.workflow_publications
+            .iter_mut()
+            .find(|publication| publication.id() == publication_id)
     }
 
     pub fn create_workflow_run(&mut self, workflow_run: WorkflowRun) -> WorkflowRun {

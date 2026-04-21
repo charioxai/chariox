@@ -293,6 +293,67 @@ fn creates_lists_and_resolves_workflows_by_id_and_alias_prefix() {
 }
 
 #[test]
+fn creates_lists_resolves_and_disables_workflow_publications() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let node = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect("workflow node should be added");
+    let endpoint = service
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("main".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+
+    let publication = service
+        .create_workflow_publication(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("public_review".to_string()),
+            Some("/review".to_string()),
+            vec!["POST".to_string()],
+            Some(serde_json::json!({"kind": "http"})),
+            Some(serde_json::json!({"mode": "anonymous"})),
+            Some(serde_json::json!({"kind": "webhook"})),
+            None,
+            Some("async".to_string()),
+            "local".to_string(),
+        )
+        .expect("workflow publication should be created");
+
+    assert_eq!(publication.workflow_id(), workflow.id());
+    assert_eq!(publication.endpoint_id(), endpoint.id());
+    assert_eq!(publication.alias(), Some("public_review"));
+    assert!(publication.enabled());
+
+    let publications = service
+        .list_workflow_publications(session.id())
+        .expect("publication list should succeed");
+    assert_eq!(publications, vec![publication.clone()]);
+    assert_eq!(
+        service
+            .resolve_workflow_publication_ref(session.id(), "public")
+            .expect("publication alias prefix should resolve")
+            .id(),
+        publication.id()
+    );
+
+    let disabled = service
+        .disable_workflow_publication(session.id(), publication.id())
+        .expect("publication should be disabled");
+    assert!(!disabled.enabled());
+}
+
+#[test]
 fn workflow_flush_context_defaults_true_and_can_be_updated() {
     let mut service = SessionService::new(&test_config());
     let session = service

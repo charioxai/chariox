@@ -302,6 +302,30 @@ pub(super) fn normalize_workflow_endpoint_alias(
     Ok(Some(normalized))
 }
 
+pub(super) fn normalize_workflow_publication_alias(
+    alias: Option<String>,
+) -> Result<Option<String>, DaemonError> {
+    let Some(alias) = alias else {
+        return Ok(None);
+    };
+    let normalized = alias.trim().to_lowercase();
+    if normalized.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "normalize workflow publication alias",
+            message: "alias cannot be empty".to_string(),
+        });
+    }
+    if !normalized.chars().all(|char| {
+        char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-' || char == '_'
+    }) {
+        return Err(DaemonError::LocalTransport {
+            operation: "normalize workflow publication alias",
+            message: "alias must use lowercase letters, digits, `-`, or `_`".to_string(),
+        });
+    }
+    Ok(Some(normalized))
+}
+
 impl SessionService {
     pub(super) fn next_workflow_id(&mut self) -> String {
         loop {
@@ -376,6 +400,15 @@ impl SessionService {
         format!(
             "{:016x}",
             unix_epoch_ms() ^ self.next_workflow_watchdog_number.rotate_left(1)
+        )
+    }
+
+    pub(super) fn next_workflow_publication_id(&mut self) -> String {
+        self.next_workflow_publication_number =
+            self.next_workflow_publication_number.wrapping_add(1);
+        format!(
+            "{:016x}",
+            unix_epoch_ms() ^ self.next_workflow_publication_number.rotate_left(19)
         )
     }
 

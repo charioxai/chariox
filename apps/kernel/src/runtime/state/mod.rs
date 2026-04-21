@@ -592,6 +592,22 @@ impl KernelRuntimeState {
             LocalDaemonRequest::ResolveWorkflow(request) => {
                 (owned.workflow_resolve_workflow(request), None)
             }
+            LocalDaemonRequest::CreateWorkflowPublication(request) => {
+                let result = owned.workflow_create_publication(request, &caller_user_id);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::ListWorkflowPublications(request) => {
+                (owned.workflow_list_publications(request), None)
+            }
+            LocalDaemonRequest::GetWorkflowPublication(request) => {
+                (owned.workflow_get_publication(request), None)
+            }
+            LocalDaemonRequest::DisableWorkflowPublication(request) => {
+                let result = owned.workflow_disable_publication(request, &caller_user_id);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
             LocalDaemonRequest::CreateWorkflowEndpoint(request) => {
                 let result = owned.workflow_create_endpoint(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
@@ -927,6 +943,8 @@ fn workflow_response_session(
     match response {
         LocalDaemonResponse::WorkflowCreated { session, .. }
         | LocalDaemonResponse::WorkflowAliased { session, .. }
+        | LocalDaemonResponse::WorkflowPublicationCreated { session, .. }
+        | LocalDaemonResponse::WorkflowPublicationDisabled { session, .. }
         | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
         | LocalDaemonResponse::WorkflowEndpointAliased { session, .. }
         | LocalDaemonResponse::WorkflowEndpointBound { session, .. }

@@ -3398,6 +3398,10 @@ impl CommandRouter {
             | LocalDaemonRequest::AliasWorkflow(_)
             | LocalDaemonRequest::ListWorkflows(_)
             | LocalDaemonRequest::ResolveWorkflow(_)
+            | LocalDaemonRequest::CreateWorkflowPublication(_)
+            | LocalDaemonRequest::ListWorkflowPublications(_)
+            | LocalDaemonRequest::GetWorkflowPublication(_)
+            | LocalDaemonRequest::DisableWorkflowPublication(_)
             | LocalDaemonRequest::CreateWorkflowEndpoint(_)
             | LocalDaemonRequest::AliasWorkflowEndpoint(_)
             | LocalDaemonRequest::BindWorkflowEndpoint(_)
@@ -4472,6 +4476,18 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
         LocalDaemonRequest::ResolveWorkflow(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::CreateWorkflowPublication(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkflowPublications(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetWorkflowPublication(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::DisableWorkflowPublication(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::CreateWorkflowEndpoint(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

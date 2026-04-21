@@ -60,6 +60,7 @@ export type RuntimeSession = {
   config_state: SessionConfigState
   workflow_launch_policy?: "reject" | "queue" | null
   workflows?: WorkflowDefinition[]
+  workflow_publications?: WorkflowPublicationDefinition[]
   workflow_runs?: WorkflowRun[]
   queued_workflow_launches?: QueuedWorkflowLaunch[]
   workflow_watchdogs?: WorkflowWatchdogDefinition[]
@@ -586,6 +587,25 @@ export type WorkflowEndpointDefinition = {
   id: string
   alias: string | null
   entry_node_id: string
+}
+
+export type WorkflowPublicationDefinition = {
+  id: string
+  session_id: string
+  workflow_id: string
+  endpoint_id: string
+  alias?: string | null
+  enabled: boolean
+  route?: string | null
+  methods?: string[]
+  transport?: unknown | null
+  auth?: unknown | null
+  parser?: unknown | null
+  input_schema?: unknown | null
+  mode?: string | null
+  created_by_user_id: string
+  created_at_ms: number
+  updated_at_ms: number
 }
 
 export type WorkflowWatchdogDefinition = {

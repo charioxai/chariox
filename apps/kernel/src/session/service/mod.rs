@@ -19,10 +19,10 @@ use super::{
     WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent,
     WorkflowFailureKind, WorkflowHandoffPayload, WorkflowLaunchPolicy, WorkflowMessage,
     WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
-    WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
-    WorkflowTurnEnvelope, WorkflowTurnRuntimeState, WorkflowWatchdogDefinition,
-    WorkflowWatchdogPolicy, WorkspaceLinkAttachment, WorkspaceLinkDefinition,
-    DEFAULT_LOCAL_USER_ID,
+    WorkflowOutputValidationPolicy, WorkflowPublicationDefinition, WorkflowRun, WorkflowRunStatus,
+    WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
+    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
+    WorkspaceLinkDefinition, DEFAULT_LOCAL_USER_ID,
 };
 #[cfg(test)]
 use super::{PromptAttachment, PromptSubmissionOutcome};
@@ -100,6 +100,7 @@ pub struct SessionService {
     next_workflow_node_run_number: u64,
     next_workflow_message_number: u64,
     next_workflow_watchdog_number: u64,
+    next_workflow_publication_number: u64,
     next_queued_workflow_launch_number: u64,
     next_workspace_link_number: u64,
 }
@@ -117,5 +118,6 @@ mod workflow_defs;
 pub use helpers::classify_workflow_failure_kind;
 use helpers::{
     collect_ready_workflow_dispatches, describe_session_match, normalize_session_alias,
-    normalize_workflow_alias, normalize_workflow_endpoint_alias, validate_workflow_edge_output,
+    normalize_workflow_alias, normalize_workflow_endpoint_alias,
+    normalize_workflow_publication_alias, validate_workflow_edge_output,
 };

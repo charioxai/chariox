@@ -848,6 +848,46 @@ pub struct ResolveWorkflowRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkflowPublicationRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub endpoint_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parser: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowPublicationsRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetWorkflowPublicationRequest {
+    pub session_id: String,
+    pub publication_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisableWorkflowPublicationRequest {
+    pub session_id: String,
+    pub publication_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateWorkflowEndpointRequest {
     pub session_id: String,
     pub workflow_ref: String,
@@ -1202,6 +1242,10 @@ pub enum LocalDaemonRequest {
     AliasWorkflow(AliasWorkflowRequest),
     ListWorkflows(ListWorkflowsRequest),
     ResolveWorkflow(ResolveWorkflowRequest),
+    CreateWorkflowPublication(CreateWorkflowPublicationRequest),
+    ListWorkflowPublications(ListWorkflowPublicationsRequest),
+    GetWorkflowPublication(GetWorkflowPublicationRequest),
+    DisableWorkflowPublication(DisableWorkflowPublicationRequest),
     CreateWorkflowEndpoint(CreateWorkflowEndpointRequest),
     AliasWorkflowEndpoint(AliasWorkflowEndpointRequest),
     BindWorkflowEndpoint(BindWorkflowEndpointRequest),
@@ -1556,6 +1600,20 @@ pub enum LocalDaemonResponse {
     },
     WorkflowResolved {
         workflow: WorkflowDefinition,
+    },
+    WorkflowPublicationCreated {
+        publication: WorkflowPublicationDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowPublicationsListed {
+        publications: Vec<WorkflowPublicationDefinition>,
+    },
+    WorkflowPublication {
+        publication: WorkflowPublicationDefinition,
+    },
+    WorkflowPublicationDisabled {
+        publication: WorkflowPublicationDefinition,
+        session: RuntimeSession,
     },
     WorkflowEndpointCreated {
         endpoint: WorkflowEndpointDefinition,

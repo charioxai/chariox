@@ -21,12 +21,13 @@ pub use types::{
     WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition,
     WorkflowFailureEvent, WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode,
     WorkflowHandoffPayload, WorkflowLaunchPolicy, WorkflowMessage, WorkflowNodeDefinition,
-    WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload, WorkflowRun, WorkflowRunStatus,
-    WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope, WorkflowTurnOutputSubmissions,
-    WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind, WorkflowWatchdogDefinition,
-    WorkflowWatchdogPolicy, WorkspaceLinkAttachment, WorkspaceLinkDefinition,
-    WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID, DEFAULT_WORKFLOW_LAUNCH_POLICY,
-    DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
+    WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload, WorkflowPublicationDefinition,
+    WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope,
+    WorkflowTurnOutputSubmissions, WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind,
+    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
+    WorkspaceLinkDefinition, WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID,
+    DEFAULT_WORKFLOW_LAUNCH_POLICY, DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT,
+    DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
 };
 
 pub(crate) fn is_false(value: &bool) -> bool {

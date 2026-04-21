@@ -34,6 +34,7 @@ import type {
   WorkflowEdgeDefinition,
   WorkflowEndpointDefinition,
   WorkflowNodeDefinition,
+  WorkflowPublicationDefinition,
   WorkflowRun,
   WorkflowWatchdogDefinition,
   WorkspaceLinkDefinition,
@@ -53,10 +54,12 @@ import {
   acceptCloudSessionInviteRequest,
   cloudRelayStatusRequest,
   createCloudSessionInviteRequest,
+  type CreateWorkflowPublicationOptions,
   createSessionInviteRequest,
   createPairingInviteRequest,
   createWorkspaceLinkRequest,
   createWorkflowEndpointRequest,
+  createWorkflowPublicationRequest,
   createWorkflowRequest,
   createWorkflowWatchdogRequest,
   createSessionRequest,
@@ -66,6 +69,7 @@ import {
   getSessionHistoryRequest,
   getSessionStateRequest,
   getSkillRequest,
+  getWorkflowPublicationRequest,
   getWorkflowRunRequest,
   grantAgentCapabilityRequest,
   importMcpServersRequest,
@@ -91,6 +95,7 @@ import {
   listSkillsRequest,
   listWorkspaceLinksRequest,
   listWorkflowWatchdogsRequest,
+  listWorkflowPublicationsRequest,
   listWorkflowRunsRequest,
   listWorkflowsRequest,
   logoutProviderRequest,
@@ -106,6 +111,7 @@ import {
   revokeAgentCapabilityRequest,
   revokePairedClientRequest,
   revokeSessionInviteRequest,
+  disableWorkflowPublicationRequest,
   resolveWorkflowRequest,
   resumeWorkflowRunRequest,
   resolveSessionRequest,
@@ -1428,12 +1434,15 @@ async function executeWorkflowCommand(
       return executeWorkflowEdgeCommand(args, context, deps)
     case "endpoint":
       return executeWorkflowEndpointCommand(args, context, deps)
+    case "publication":
+    case "publish":
+      return executeWorkflowPublicationCommand(args, context, deps)
     case "watchdog":
       return executeWorkflowWatchdogCommand(args, context, deps)
     case "queue":
       return executeWorkflowQueueCommand(args, context, deps)
     default:
-      return { ok: false, message: "usage: workflow list|new|show|alias|run|runs|run-show|cancel|resume|node|edge|endpoint|watchdog|queue" }
+      return { ok: false, message: "usage: workflow list|new|show|alias|run|runs|run-show|cancel|resume|node|edge|endpoint|publication|watchdog|queue" }
   }
 }
 
@@ -1599,6 +1608,72 @@ async function executeWorkflowEndpointCommand(
     return { ok: true, message: `workflow endpoint ${payload.endpoint.id} bound to node ${payload.endpoint.entry_node_id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
   return { ok: false, message: "usage: workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind [workflow-ref] <endpoint-ref> <entry-node-id>" }
+}
+
+async function executeWorkflowPublicationCommand(
+  args: string[],
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const sessionId = context.sessionId
+  if (!sessionId) {
+    return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
+  }
+
+  const [action = "list", ...rest] = args
+  if (action === "list" || action === "ls") {
+    const response = await deps.client.send(listWorkflowPublicationsRequest(sessionId))
+    const publications = expectVariant<{ publications: WorkflowPublicationDefinition[] }>(response, "WorkflowPublicationsListed").publications
+    return { ok: true, message: formatWorkflowPublications(publications), data: { publications } }
+  }
+
+  if (action === "show" || action === "get") {
+    const publicationRef = rest[0]
+    if (!publicationRef) {
+      return { ok: false, message: "usage: workflow publication show <publication-ref>" }
+    }
+    const response = await deps.client.send(getWorkflowPublicationRequest(sessionId, publicationRef))
+    const publication = expectVariant<{ publication: WorkflowPublicationDefinition }>(response, "WorkflowPublication").publication
+    return { ok: true, message: JSON.stringify(publication, null, 2), data: { publication }, format: "json" }
+  }
+
+  if (action === "disable" || action === "remove") {
+    const publicationRef = rest[0]
+    if (!publicationRef) {
+      return { ok: false, message: "usage: workflow publication disable <publication-ref>" }
+    }
+    const response = await deps.client.send(disableWorkflowPublicationRequest(sessionId, publicationRef))
+    const payload = expectVariant<{ publication: WorkflowPublicationDefinition; session: RuntimeSession }>(response, "WorkflowPublicationDisabled")
+    return {
+      ok: true,
+      message: `disabled workflow publication ${payload.publication.id}`,
+      data: payload,
+      contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+    }
+  }
+
+  if (action === "create" || action === "new") {
+    const parsed = parseWorkflowPublicationCreateOptions(rest, context.workflowId)
+    if (!parsed.ok) {
+      return { ok: false, message: parsed.message }
+    }
+    const response = await deps.client.send(createWorkflowPublicationRequest(
+      sessionId,
+      parsed.workflowRef,
+      parsed.endpointRef,
+      parsed.options,
+    ))
+    const payload = expectVariant<{ publication: WorkflowPublicationDefinition; session: RuntimeSession }>(response, "WorkflowPublicationCreated")
+    return resourceResult(
+      `created workflow publication ${formatWorkflowPublicationLabel(payload.publication)}`,
+      undefined,
+      payload.publication.id,
+      { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined, workflowId: payload.publication.workflow_id },
+      payload,
+    )
+  }
+
+  return { ok: false, message: "usage: workflow publication list|create|show|disable" }
 }
 
 async function executeWorkflowWatchdogCommand(
@@ -1864,6 +1939,82 @@ function parseMcpInstallConfig(args: string[]): ArrobaMcpServerConfig | null {
     }
   }
   return null
+}
+
+function parseWorkflowPublicationCreateOptions(
+  args: string[],
+  currentWorkflowId?: string,
+):
+  | { ok: true; workflowRef: string; endpointRef: string; options: CreateWorkflowPublicationOptions }
+  | { ok: false; message: string } {
+  const positional: string[] = []
+  const options: CreateWorkflowPublicationOptions = {}
+  const methods: string[] = []
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (!arg) continue
+    if (arg === "--route") {
+      const value = args[++index]
+      if (!value) return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] --route <route>" }
+      options.route = value
+    } else if (arg === "--method") {
+      const value = args[++index]
+      if (!value) return { ok: false, message: "usage: workflow publication create ... --method <GET|POST|...>" }
+      methods.push(value.toUpperCase())
+    } else if (arg === "--transport-json") {
+      const parsed = parseJsonOption(args[++index], "--transport-json")
+      if (!parsed.ok) return parsed
+      options.transport = parsed.value
+    } else if (arg === "--auth-json") {
+      const parsed = parseJsonOption(args[++index], "--auth-json")
+      if (!parsed.ok) return parsed
+      options.auth = parsed.value
+    } else if (arg === "--parser-json") {
+      const parsed = parseJsonOption(args[++index], "--parser-json")
+      if (!parsed.ok) return parsed
+      options.parser = parsed.value
+    } else if (arg === "--input-schema-json") {
+      const parsed = parseJsonOption(args[++index], "--input-schema-json")
+      if (!parsed.ok) return parsed
+      options.inputSchema = parsed.value
+    } else if (arg === "--mode") {
+      const value = args[++index]
+      if (!value) return { ok: false, message: "usage: workflow publication create ... --mode <sync|async>" }
+      options.mode = value
+    } else if (arg.startsWith("--")) {
+      return { ok: false, message: `unknown publication option: ${arg}` }
+    } else {
+      positional.push(arg)
+    }
+  }
+  if (methods.length > 0) {
+    options.methods = methods
+  }
+  const workflowRef = positional.length >= 3 ? positional[0] : currentWorkflowId
+  const endpointRef = positional.length >= 3 ? positional[1] : positional[0]
+  const alias = positional.length >= 3 ? positional[2] : positional[1]
+  if (!workflowRef || !endpointRef) {
+    return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] [--route <route>] [--method POST] [--auth-json <json>] [--parser-json <json>] [--transport-json <json>] [--input-schema-json <json>] [--mode async]" }
+  }
+  if (positional.length > 3 || (!currentWorkflowId && positional.length < 2)) {
+    return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] ..." }
+  }
+  options.alias = alias ?? null
+  return { ok: true, workflowRef, endpointRef, options }
+}
+
+function parseJsonOption(
+  value: string | undefined,
+  option: string,
+): { ok: true; value: unknown } | { ok: false; message: string } {
+  if (!value) {
+    return { ok: false, message: `${option} requires a JSON value` }
+  }
+  try {
+    return { ok: true, value: JSON.parse(value) }
+  } catch (error) {
+    return { ok: false, message: `${option} is invalid JSON: ${error instanceof Error ? error.message : String(error)}` }
+  }
 }
 
 function parseWatchdogIntervalSeconds(value: string | undefined): number | null {
@@ -2273,6 +2424,21 @@ function formatWorkflowRunList(workflowRuns: WorkflowRun[], workflowRef: string 
   return workflowRuns.map((run) => {
     const failures = (run.failure_events?.length ?? 0) > 0 ? ` failures=${run.failure_events?.length ?? 0}` : ""
     return `${run.id} workflow=${run.workflow_id} endpoint=${run.endpoint_id} [${String(run.status).toLowerCase()}${failures}]`
+  }).join("\n")
+}
+
+function formatWorkflowPublicationLabel(publication: WorkflowPublicationDefinition): string {
+  return publication.alias ? `${publication.id} (${publication.alias})` : publication.id
+}
+
+function formatWorkflowPublications(publications: WorkflowPublicationDefinition[]): string {
+  if (publications.length === 0) {
+    return "no workflow publications configured"
+  }
+  return publications.map((publication) => {
+    const route = publication.route ? ` route=${publication.route}` : ""
+    const methods = publication.methods?.length ? ` methods=${publication.methods.join(",")}` : ""
+    return `${formatWorkflowPublicationLabel(publication)} workflow=${publication.workflow_id} endpoint=${publication.endpoint_id} enabled=${String(publication.enabled)}${route}${methods}`
   }).join("\n")
 }
 

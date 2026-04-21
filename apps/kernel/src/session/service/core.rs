@@ -16,6 +16,7 @@ impl SessionService {
             next_workflow_node_run_number: 0,
             next_workflow_message_number: 0,
             next_workflow_watchdog_number: 0,
+            next_workflow_publication_number: 0,
             next_queued_workflow_launch_number: 0,
             next_workspace_link_number: 0,
         }
@@ -574,6 +575,134 @@ impl SessionService {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_workflow_publication(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        alias: Option<String>,
+        route: Option<String>,
+        methods: Vec<String>,
+        transport: Option<Value>,
+        auth: Option<Value>,
+        parser: Option<Value>,
+        input_schema: Option<Value>,
+        mode: Option<String>,
+        created_by_user_id: String,
+    ) -> Result<WorkflowPublicationDefinition, DaemonError> {
+        let workflow = self.resolve_workflow_ref(session_id, workflow_ref)?;
+        let endpoint =
+            self.resolve_workflow_endpoint_ref(session_id, workflow.id(), endpoint_ref)?;
+        let alias = normalize_workflow_publication_alias(alias)?;
+        if let Some(alias) = alias.as_deref() {
+            self.ensure_workflow_publication_alias_available(session_id, alias)?;
+        }
+        let publication = WorkflowPublicationDefinition::new(
+            self.next_workflow_publication_id(),
+            session_id.to_string(),
+            workflow.id().to_string(),
+            endpoint.id().to_string(),
+            alias,
+            route,
+            methods,
+            transport,
+            auth,
+            parser,
+            input_schema,
+            mode,
+            created_by_user_id,
+        );
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok(session.create_workflow_publication(publication))
+    }
+
+    pub fn list_workflow_publications(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<WorkflowPublicationDefinition>, DaemonError> {
+        Ok(self
+            .get_session(session_id)?
+            .workflow_publications()
+            .to_vec())
+    }
+
+    pub fn resolve_workflow_publication_ref(
+        &self,
+        session_id: &str,
+        publication_ref: &str,
+    ) -> Result<WorkflowPublicationDefinition, DaemonError> {
+        let normalized_ref = publication_ref.trim().to_lowercase();
+        let session = self.get_session(session_id)?;
+        let publications = session.workflow_publications();
+        if let Some(publication) = publications
+            .iter()
+            .find(|publication| publication.id() == normalized_ref)
+        {
+            return Ok(publication.clone());
+        }
+        if let Some(publication) = publications
+            .iter()
+            .find(|publication| publication.alias() == Some(normalized_ref.as_str()))
+        {
+            return Ok(publication.clone());
+        }
+        let id_matches = publications
+            .iter()
+            .filter(|publication| publication.id().starts_with(&normalized_ref))
+            .cloned()
+            .collect::<Vec<_>>();
+        if id_matches.len() == 1 {
+            return Ok(id_matches[0].clone());
+        }
+        let alias_matches = publications
+            .iter()
+            .filter(|publication| {
+                publication
+                    .alias()
+                    .is_some_and(|alias| alias.starts_with(normalized_ref.as_str()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if alias_matches.len() == 1 {
+            return Ok(alias_matches[0].clone());
+        }
+        Err(DaemonError::LocalTransport {
+            operation: "resolve workflow publication",
+            message: format!("workflow publication `{publication_ref}` was not found"),
+        })
+    }
+
+    pub fn disable_workflow_publication(
+        &mut self,
+        session_id: &str,
+        publication_ref: &str,
+    ) -> Result<WorkflowPublicationDefinition, DaemonError> {
+        let publication_id = self
+            .resolve_workflow_publication_ref(session_id, publication_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let publication = session
+            .workflow_publication_mut(&publication_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "disable workflow publication",
+                message: format!("workflow publication `{publication_ref}` was not found"),
+            })?;
+        publication.disable();
+        Ok(publication.clone())
+    }
+
     pub fn list_workflow_runs(
         &self,
         session_id: &str,
@@ -653,6 +782,28 @@ impl SessionService {
             reference: queue_item_ref.to_string(),
             message: "queued workflow launch was not found",
         })
+    }
+}
+
+impl SessionService {
+    fn ensure_workflow_publication_alias_available(
+        &self,
+        session_id: &str,
+        alias: &str,
+    ) -> Result<(), DaemonError> {
+        if self
+            .get_session(session_id)?
+            .workflow_publications()
+            .iter()
+            .any(|publication| publication.alias() == Some(alias))
+        {
+            Err(DaemonError::LocalTransport {
+                operation: "create workflow publication",
+                message: format!("workflow publication alias `{alias}` is already in use"),
+            })
+        } else {
+            Ok(())
+        }
     }
 }
 

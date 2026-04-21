@@ -9,6 +9,7 @@ import type {
   RuntimeSession,
   WorkflowWatchdogDefinition,
   WorkflowDefinition,
+  WorkflowPublicationDefinition,
   WorkflowRun,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"
@@ -82,6 +83,25 @@ function makeWorkflowRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
     created_at_ms: 0,
     started_at_ms: 0,
     completed_at_ms: null,
+    ...overrides,
+  }
+}
+
+function makeWorkflowPublication(overrides: Partial<WorkflowPublicationDefinition> = {}): WorkflowPublicationDefinition {
+  return {
+    id: "publication-1",
+    session_id: "session-1",
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+    alias: "public_qa",
+    enabled: true,
+    route: "/qa",
+    methods: ["POST"],
+    auth: { mode: "anonymous" },
+    parser: { kind: "json" },
+    created_by_user_id: "local",
+    created_at_ms: 0,
+    updated_at_ms: 0,
     ...overrides,
   }
 }
@@ -1324,6 +1344,68 @@ test("executeShellCommand manages workflow graph and endpoints", async () => {
     { CreateWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", entry_node_id: "node-1", alias: "default" } },
     { AliasWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", alias: "smoke" } },
     { BindWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", entry_node_id: "node-1" } },
+  ])
+})
+
+test("executeShellCommand manages workflow publications", async () => {
+  const publication = makeWorkflowPublication()
+  const session = makeSession({ workflows: [makeWorkflow()], workflow_publications: [publication] })
+  const fake = fakeClient((request) => {
+    if ("CreateWorkflowPublication" in request) {
+      return { WorkflowPublicationCreated: { publication, session } }
+    }
+    if ("ListWorkflowPublications" in request) {
+      return { WorkflowPublicationsListed: { publications: [publication] } }
+    }
+    if ("GetWorkflowPublication" in request) {
+      return { WorkflowPublication: { publication } }
+    }
+    return { WorkflowPublicationDisabled: { publication: { ...publication, enabled: false }, session } }
+  })
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    workflowId: "workflow-1",
+  })
+
+  const createResult = await executeShellCommand(
+    parseShellCommand("workflow publication create endpoint-1 public_qa --route /qa --method POST --auth-json '{\"mode\":\"anonymous\"}'"),
+    context,
+    { client: fake.client },
+  )
+  const listResult = await executeShellCommand(parseShellCommand("workflow publication list"), context, { client: fake.client })
+  const showResult = await executeShellCommand(parseShellCommand("workflow publication show publication-1"), context, { client: fake.client })
+  const disableResult = await executeShellCommand(parseShellCommand("workflow publication disable publication-1"), context, { client: fake.client })
+
+  assert.equal(createResult.ok, true)
+  assert.match(createResult.message ?? "", /created workflow publication publication-1/)
+  assert.deepEqual(createResult.contextUpdates, { sessionId: "session-1", agentId: "agent-1", workflowId: "workflow-1" })
+  assert.equal(listResult.ok, true)
+  assert.match(listResult.message ?? "", /publication-1 \(public_qa\) workflow=workflow-1 endpoint=endpoint-1 enabled=true route=\/qa methods=POST/)
+  assert.equal(showResult.ok, true)
+  assert.equal(showResult.format, "json")
+  assert.equal(disableResult.ok, true)
+  assert.match(disableResult.message ?? "", /disabled workflow publication publication-1/)
+  assert.deepEqual(fake.requests, [
+    {
+      CreateWorkflowPublication: {
+        session_id: "session-1",
+        workflow_ref: "workflow-1",
+        endpoint_ref: "endpoint-1",
+        alias: "public_qa",
+        route: "/qa",
+        methods: ["POST"],
+        transport: null,
+        auth: { mode: "anonymous" },
+        parser: null,
+        input_schema: null,
+        mode: null,
+      },
+    },
+    { ListWorkflowPublications: { session_id: "session-1" } },
+    { GetWorkflowPublication: { session_id: "session-1", publication_ref: "publication-1" } },
+    { DisableWorkflowPublication: { session_id: "session-1", publication_ref: "publication-1" } },
   ])
 })
 
