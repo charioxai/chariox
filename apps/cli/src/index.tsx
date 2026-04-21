@@ -1,5 +1,6 @@
 import path from "node:path"
 import process from "node:process"
+import { spawn } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import { unlink } from "node:fs/promises"
 import { homedir } from "node:os"
@@ -147,8 +148,11 @@ import { evaluateConnectionHealth, runPollingLoop } from "./polling-effects.js"
 import {
   bootstrapCloudRelayProfile,
   issueCloudRelayToken,
+  logoutCloudRelayProfile,
   pairCloudRelayClient,
   pairCloudRelayMachine,
+  pollCloudDeviceLogin,
+  startCloudDeviceLogin,
 } from "./cloud-relay.js"
 import {
   loadPreferences,
@@ -5407,6 +5411,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         email,
         ...(accountSlug ? { accountSlug } : {}),
       }),
+    startCloudDeviceLogin: (apiUrl, input) =>
+      startCloudDeviceLogin({ apiUrl, ...input }),
+    pollCloudDeviceLogin,
+    openExternalUrl,
+    logoutCloudRelay: (profile, options) => logoutCloudRelayProfile(profile, options),
     pairCloudRelayClient: (profile, clientId, alias) =>
       pairCloudRelayClient(profile, clientId, alias),
     pairCloudRelayMachine: (profile, machineId, alias) =>
@@ -8251,6 +8260,26 @@ function defaultKernelEndpoint(): string {
   const host = process.env.ARROBA_KERNEL_HOST ?? "127.0.0.1"
   const port = process.env.ARROBA_KERNEL_PORT ?? "43118"
   return `ws://${host}:${port}/kernel`
+}
+
+async function openExternalUrl(url: string): Promise<boolean> {
+  const command = process.platform === "darwin"
+    ? "open"
+    : process.platform === "win32"
+      ? "cmd"
+      : "xdg-open"
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url]
+  return await new Promise((resolve) => {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: "ignore",
+    })
+    child.once("error", () => resolve(false))
+    child.once("spawn", () => {
+      child.unref()
+      resolve(true)
+    })
+  })
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

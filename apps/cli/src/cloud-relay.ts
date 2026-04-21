@@ -16,6 +16,37 @@ export type IssueCloudRelayTokenInput = {
   machineId?: string
 }
 
+export type StartCloudDeviceLoginInput = {
+  apiUrl: string
+  clientId?: string
+  clientAlias?: string
+  machineId?: string
+  machineAlias?: string
+}
+
+export type CloudDeviceLoginStart = {
+  apiUrl: string
+  deviceCode: string
+  userCode: string
+  verificationUrl: string
+  expiresAtMs: number
+  intervalSeconds: number
+}
+
+export type CloudDeviceLoginPollResult =
+  | {
+    status: "authorization_pending"
+    intervalSeconds: number
+    expiresAtMs: number
+  }
+  | {
+    status: "expired_token"
+  }
+  | {
+    status: "approved"
+    profile: RelayCloudProfile
+  }
+
 export async function bootstrapCloudRelayProfile(
   input: BootstrapCloudRelayInput,
 ): Promise<RelayCloudProfile> {
@@ -40,6 +71,81 @@ export async function bootstrapCloudRelayProfile(
     relayUrl: payload.relayUrl,
     issuerId: payload.issuerId,
   }
+}
+
+export async function startCloudDeviceLogin(
+  input: StartCloudDeviceLoginInput,
+): Promise<CloudDeviceLoginStart> {
+  const payload = await postJson<{
+    deviceCode: string
+    userCode: string
+    verificationUrl: string
+    expiresAt: string
+    intervalSeconds: number
+  }>(input.apiUrl, "/auth/device/start", {
+    clientId: input.clientId,
+    clientAlias: input.clientAlias,
+    machineId: input.machineId,
+    machineAlias: input.machineAlias,
+  })
+  return {
+    apiUrl: normalizeApiUrl(input.apiUrl),
+    deviceCode: payload.deviceCode,
+    userCode: payload.userCode,
+    verificationUrl: payload.verificationUrl,
+    expiresAtMs: Date.parse(payload.expiresAt),
+    intervalSeconds: payload.intervalSeconds,
+  }
+}
+
+export async function pollCloudDeviceLogin(
+  apiUrl: string,
+  deviceCode: string,
+): Promise<CloudDeviceLoginPollResult> {
+  const payload = await postJson<{
+    status: "authorization_pending" | "expired_token" | "approved"
+    intervalSeconds?: number
+    expiresAt?: string
+    profile?: RelayCloudProfile & { email: string }
+    cloudSessionToken?: string
+    cloudSessionExpiresAt?: string
+  }>(apiUrl, "/auth/device/poll", { deviceCode })
+  if (payload.status === "authorization_pending") {
+    return {
+      status: "authorization_pending",
+      intervalSeconds: payload.intervalSeconds ?? 2,
+      expiresAtMs: payload.expiresAt ? Date.parse(payload.expiresAt) : 0,
+    }
+  }
+  if (payload.status === "expired_token") {
+    return { status: "expired_token" }
+  }
+  if (!payload.profile || !payload.cloudSessionToken || !payload.cloudSessionExpiresAt) {
+    throw new Error("cloud device login approval response was incomplete")
+  }
+  return {
+    status: "approved",
+    profile: {
+      ...payload.profile,
+      apiUrl: normalizeApiUrl(apiUrl),
+      cloudSessionToken: payload.cloudSessionToken,
+      cloudSessionExpiresAtMs: Date.parse(payload.cloudSessionExpiresAt),
+    },
+  }
+}
+
+export async function logoutCloudRelayProfile(
+  profile: RelayCloudProfile,
+  options: { revokeClient?: boolean; revokeMachine?: boolean } = {},
+): Promise<void> {
+  await postJson(profile.apiUrl, "/auth/logout", {
+    sessionToken: profile.cloudSessionToken,
+    accountId: profile.accountId,
+    clientId: profile.clientId,
+    machineId: profile.machineId,
+    revokeClient: options.revokeClient,
+    revokeMachine: options.revokeMachine,
+  })
 }
 
 export async function pairCloudRelayClient(

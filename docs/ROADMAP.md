@@ -366,6 +366,42 @@ Exit criteria:
 - the relay remains a transport broker, not a workspace/workflow authority
 - open-source self-hosted relay usage does not depend on any external managed service
 
+## M5.6 - Arroba Cloud Device Login And Relay Onboarding
+
+The default hosted-relay onboarding path should be browser/device login, not terminal email bootstrap.
+
+Target flow:
+
+- the waiting room exposes `Connect to Arroba Cloud`
+- `/relay cloud login` with no arguments starts device login
+- the CLI asks the kernel to start cloud login with stable local CLI and machine ids
+- Arroba Cloud returns a verification URL, short user code, device code, expiry, and polling interval
+- the CLI opens the browser to the verification URL
+- if browser launch fails, the CLI prints the URL and code and keeps polling
+- the user logs in or registers in Arroba Cloud, chooses or creates an account, and approves the local device
+- the kernel polls cloud until approved
+- cloud returns account/user/realm profile, paired client/machine ids, and a revocable cloud session token
+- the kernel persists cloud auth state, mints short-lived relay runtime tokens, configures relay, and remote machines appear in the normal waiting-room machine surface
+
+Logout is part of v1:
+
+- local logout always clears kernel cloud auth/profile state
+- `POST /auth/logout` revokes the cloud session token
+- logout can optionally revoke the paired client and/or machine
+- if server logout fails, local logout still completes and the CLI warns that remote revocation was not confirmed
+
+Self-hosted relay discovery remains identity-less:
+
+- the waiting room may show machines visible through a manually configured self-hosted relay token/realm
+- no cloud user directory, collaborator history, account membership, or identity service is implied for self-hosted relays
+- trust and approval remain local kernel state
+
+Once multi-user collaboration exists, Arroba Cloud should keep a collaborator history:
+
+- previous collaborators can be suggested when adding users to a future session
+- collaborator history is convenience only, not authorization
+- every new session still requires an explicit invite/accept unless a later team/org policy changes that
+
 
 ## M5 Docker Remote-Machine Lab
 

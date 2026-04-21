@@ -196,6 +196,27 @@ type CommandActionDeps = {
     email: string,
     accountSlug?: string,
   ) => Promise<RelayCloudProfile>
+  startCloudDeviceLogin?: (
+    apiUrl: string,
+    input: { clientId?: string; machineId?: string; clientAlias?: string; machineAlias?: string },
+  ) => Promise<{
+    apiUrl: string
+    deviceCode: string
+    userCode: string
+    verificationUrl: string
+    expiresAtMs: number
+    intervalSeconds: number
+  }>
+  pollCloudDeviceLogin?: (
+    apiUrl: string,
+    deviceCode: string,
+  ) => Promise<
+    | { status: "authorization_pending"; intervalSeconds: number; expiresAtMs: number }
+    | { status: "expired_token" }
+    | { status: "approved"; profile: RelayCloudProfile }
+  >
+  openExternalUrl?: (url: string) => Promise<boolean>
+  logoutCloudRelay?: (profile: RelayCloudProfile, options?: { revokeClient?: boolean; revokeMachine?: boolean }) => Promise<void>
   pairCloudRelayClient?: (
     profile: RelayCloudProfile,
     clientId: string,
@@ -544,6 +565,8 @@ function slugifyGitBranch(value: string): string {
     .replace(/^-+|-+$/g, "")
     || "worktree"
 }
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export function createCommandActionHandlers(deps: CommandActionDeps) {
   const currentWorkflowLaunchPolicy = (): "reject" | "queue" => {
@@ -1526,6 +1549,41 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         const apiUrl = cloudArgs[0]
         const email = cloudArgs[1]
         const accountSlug = cloudArgs[2]
+        if (!apiUrl && cloudCommand === "login" && deps.startCloudDeviceLogin && deps.pollCloudDeviceLogin && deps.getRelayStatus) {
+          const relayStatus = await deps.getRelayStatus()
+          const started = await deps.startCloudDeviceLogin("https://cloud.arroba.dev", {
+            clientId: deps.clientId ?? "arroba-cli",
+            machineId: relayStatus.machine_id,
+            ...(relayStatus.machine_alias ? { machineAlias: relayStatus.machine_alias } : {}),
+          })
+          const opened = await deps.openExternalUrl?.(started.verificationUrl)
+          deps.appendNotice(
+            [
+              "cloud login",
+              `url=${started.verificationUrl}`,
+              `code=${started.userCode}`,
+              opened ? "browser=opened" : "browser=manual",
+            ].join("\n"),
+          )
+          deps.flashFooter(opened ? "opened Arroba Cloud login in browser" : `open ${started.verificationUrl} and enter ${started.userCode}`, "info")
+          let intervalMs = Math.max(started.intervalSeconds, 1) * 1000
+          while (Date.now() < started.expiresAtMs) {
+            const polled = await deps.pollCloudDeviceLogin(started.apiUrl, started.deviceCode)
+            if (polled.status === "approved") {
+              await deps.saveCloudRelayProfile(polled.profile)
+              deps.flashFooter(`cloud relay profile ${polled.profile.accountSlug} saved`, "info")
+              return
+            }
+            if (polled.status === "expired_token") {
+              deps.flashFooter("cloud login expired", "error")
+              return
+            }
+            intervalMs = Math.max(polled.intervalSeconds, 1) * 1000
+            await sleep(intervalMs)
+          }
+          deps.flashFooter("cloud login expired", "error")
+          return
+        }
         if (!apiUrl || !email) {
           deps.flashFooter("usage: /relay cloud login <api-url> <email> [account-slug]", "error")
           return
@@ -1639,6 +1697,15 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         if (!deps.saveCloudRelayProfile) {
           deps.flashFooter("cloud relay profile storage is unavailable in this build", "error")
           return
+        }
+        const profile = deps.getCloudRelayProfile?.() ?? null
+        if (profile && deps.logoutCloudRelay) {
+          await deps.logoutCloudRelay(profile, {
+            revokeClient: cloudArgs.includes("--revoke-client"),
+            revokeMachine: cloudArgs.includes("--revoke-machine"),
+          }).catch((error) => {
+            deps.appendNotice(`cloud logout remote revocation failed: ${deps.formatError(error)}`)
+          })
         }
         await deps.saveCloudRelayProfile(null)
         deps.flashFooter("cloud relay profile cleared", "info")

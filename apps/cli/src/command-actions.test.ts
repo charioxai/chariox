@@ -268,6 +268,69 @@ test("relay cloud login stores the bootstrap profile", async () => {
   assert.equal(flashed.at(-1), "cloud relay profile user saved")
 })
 
+test("relay cloud login without args uses device flow", async () => {
+  const notices: string[] = []
+  let savedProfile: Record<string, unknown> | null = null
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    clientId: "client-1",
+    appendNotice: (message: string) => { notices.push(message) },
+    bootstrapCloudRelay: async () => {
+      throw new Error("bootstrap path should not be used")
+    },
+    getRelayStatus: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    startCloudDeviceLogin: async (apiUrl: string, input: { clientId?: string; machineId?: string; machineAlias?: string }) => {
+      assert.equal(apiUrl, "https://cloud.arroba.dev")
+      assert.equal(input.clientId, "client-1")
+      assert.equal(input.machineId, "machine-1")
+      assert.equal(input.machineAlias, "laptop")
+      return {
+        apiUrl,
+        deviceCode: "dev-code",
+        userCode: "ABCD-EFGH",
+        verificationUrl: "https://cloud.arroba.dev/activate?user_code=ABCD-EFGH",
+        expiresAtMs: Date.now() + 60_000,
+        intervalSeconds: 1,
+      }
+    },
+    openExternalUrl: async () => false,
+    pollCloudDeviceLogin: async (_apiUrl: string, deviceCode: string) => {
+      assert.equal(deviceCode, "dev-code")
+      return {
+        status: "approved",
+        profile: {
+          apiUrl: "https://cloud.arroba.dev",
+          email: "user@example.com",
+          accountId: "account-1",
+          userId: "user-1",
+          accountSlug: "user",
+          realmId: "realm-1",
+          relayUrl: "wss://relay.example",
+          issuerId: "issuer-1",
+          clientId: "client-1",
+          machineId: "machine-1",
+          cloudSessionToken: "session-token",
+        },
+      }
+    },
+    saveCloudRelayProfile: async (profile: Record<string, unknown> | null) => {
+      savedProfile = profile
+    },
+  }))
+
+  await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud login", args: ["cloud", "login"] })
+
+  assert.equal((savedProfile as { cloudSessionToken?: string } | null)?.cloudSessionToken, "session-token")
+  assert.match(notices.at(-1) ?? "", /code=ABCD-EFGH/)
+})
+
 test("relay cloud connect mints a daemon token and configures relay", async () => {
   const flashed: string[] = []
   const configured: Array<{ relayUrl: string | null; relayToken: string | null }> = []
