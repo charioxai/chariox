@@ -8,6 +8,7 @@ import {
   publicationConfigFromKernelRecord,
   type WorkflowPublicationConfig,
 } from "./index.js"
+import { WebSocket } from "ws"
 
 const baseConfig: WorkflowPublicationConfig = {
   publication_id: "pub-test",
@@ -267,6 +268,77 @@ test("gateway supports custom command parsers", async () => {
     const response = await app.inject({ method: "POST", url: "/custom", payload: { ignored: true } })
     assert.equal(response.statusCode, 202)
     assert.deepEqual(inputs[0], { url: "/custom", ok: true })
+  } finally {
+    await app.close()
+  }
+})
+
+test("gateway accepts WebSocket publication invocations", async () => {
+  const inputs: unknown[] = []
+  const { app } = buildServer({
+    ...baseConfig,
+    input_schema: { type: "object", required: ["task"], properties: { task: { type: "string" } } },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      inputs.push(invocation.input)
+      return {
+        accepted: true,
+        workflow_run: {
+          id: "run-ws",
+          status: "Completed",
+          final_output: { message: "done" },
+        },
+      }
+    },
+  })
+
+  try {
+    await app.listen({ host: "127.0.0.1", port: 0 })
+    const address = app.server.address()
+    const port = typeof address === "object" && address ? address.port : 0
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/.well-known/arroba/publication/ws`)
+    const reader = createWebSocketReader(socket)
+    try {
+      assert.deepEqual(await reader.read(), { type: "ready", publication_id: "pub-test" })
+      socket.send(JSON.stringify({ type: "invoke", input: { task: "ship" } }))
+      const accepted = await reader.read() as { type?: string; workflow_run?: { id?: string } }
+      assert.equal(accepted.type, "accepted")
+      assert.equal(accepted.workflow_run?.id, "run-ws")
+      const final = await reader.read() as { type?: string; workflow_run?: { status?: string } }
+      assert.equal(final.type, "final")
+      assert.equal(final.workflow_run?.status, "Completed")
+      assert.deepEqual(inputs, [{ task: "ship" }])
+    } finally {
+      socket.close()
+    }
+  } finally {
+    await app.close()
+  }
+})
+
+test("gateway reports WebSocket input validation errors", async () => {
+  const { app } = buildServer({
+    ...baseConfig,
+    input_schema: { type: "object", required: ["task"], properties: { task: { type: "string" } } },
+  }, {
+    invokeWorkflow: async () => ({ accepted: true }),
+  })
+
+  try {
+    await app.listen({ host: "127.0.0.1", port: 0 })
+    const address = app.server.address()
+    const port = typeof address === "object" && address ? address.port : 0
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/.well-known/arroba/publication/ws`)
+    const reader = createWebSocketReader(socket)
+    try {
+      await reader.read()
+      socket.send(JSON.stringify({ type: "invoke", input: { task: 3 } }))
+      const error = await reader.read() as { type?: string; error?: string }
+      assert.equal(error.type, "error")
+      assert.match(error.error ?? "", /field task expected string/)
+    } finally {
+      socket.close()
+    }
   } finally {
     await app.close()
   }
@@ -776,6 +848,41 @@ function whatsAppPayload() {
         },
       }],
     }],
+  }
+}
+
+function createWebSocketReader(socket: WebSocket) {
+  const queue: unknown[] = []
+  const waiters: Array<(value: unknown) => void> = []
+  let socketError: Error | null = null
+  socket.on("message", (data) => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(data.toString())
+    } catch (error) {
+      socketError = error as Error
+      return
+    }
+    const waiter = waiters.shift()
+    if (waiter) waiter(parsed)
+    else queue.push(parsed)
+  })
+  socket.on("error", (error) => {
+    socketError = error
+  })
+  return {
+    async read() {
+      if (socketError) throw socketError
+      const queued = queue.shift()
+      if (queued !== undefined) return queued
+      return await new Promise<unknown>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("timed out waiting for websocket message")), 5_000)
+        waiters.push((value) => {
+          clearTimeout(timeout)
+          resolve(value)
+        })
+      })
+    },
   }
 }
 

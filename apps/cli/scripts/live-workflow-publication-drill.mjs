@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { WebSocket } from 'ws'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -28,6 +29,7 @@ const {
   launchProviderRunRequest,
   revokeWorkflowPublicationSenderRequest,
   listSessionsRequest,
+  setWorkflowLaunchPolicyRequest,
   spawnAgentRequest,
   updateWorkflowNodeInstructionsRequest,
 } = requests
@@ -39,6 +41,10 @@ function logStep(name, details = null) {
 
 function variant(response, key) {
   return response?.[key] ?? response
+}
+
+function hasAcceptedRunMetadata(body) {
+  return !!body && (body.workflow_run?.id || body.queued === true)
 }
 
 function slackHeaders(secret, body, contentType = 'application/json') {
@@ -89,6 +95,60 @@ function whatsAppPayload() {
         },
       }],
     }],
+  }
+}
+
+function createWebSocketReader(socket) {
+  const queue = []
+  const waiters = []
+  let socketError = null
+  socket.on('message', (data) => {
+    let parsed
+    try {
+      parsed = JSON.parse(data.toString())
+    } catch (error) {
+      socketError = error
+      return
+    }
+    const waiter = waiters.shift()
+    if (waiter) waiter(parsed)
+    else queue.push(parsed)
+  })
+  socket.on('error', (error) => {
+    socketError = error
+  })
+  return {
+    read: async () => {
+      if (socketError) throw socketError
+      const queued = queue.shift()
+      if (queued !== undefined) return queued
+      return await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('timed out waiting for websocket message')), 20_000)
+        waiters.push((value) => {
+          clearTimeout(timeout)
+          resolve(value)
+        })
+      })
+    },
+  }
+}
+
+async function invokePublicationWebSocket(url, input, options = {}) {
+  const socket = new WebSocket(url, options)
+  const reader = createWebSocketReader(socket)
+  try {
+    const ready = await reader.read()
+    if (ready.type !== 'ready') {
+      throw new Error(`expected websocket ready message, got ${JSON.stringify(ready)}`)
+    }
+    socket.send(JSON.stringify({ type: 'invoke', input }))
+    const accepted = await reader.read()
+    if (accepted.type !== 'accepted' || (!accepted.workflow_run?.id && !accepted.queued)) {
+      throw new Error(`expected websocket accepted run metadata, got ${JSON.stringify(accepted)}`)
+    }
+    return accepted
+  } finally {
+    socket.close()
   }
 }
 
@@ -301,6 +361,7 @@ async function main() {
 
     logStep('create_workflow')
     const workflow = variant(await client.send(createWorkflowRequest(session.id, 'published')), 'WorkflowCreated').workflow
+    await client.send(setWorkflowLaunchPolicyRequest(session.id, 'queue'))
     const node = variant(await client.send(addWorkflowNodeRequest(session.id, workflow.id, agent.id)), 'WorkflowNodeAdded').node
     await client.send(updateWorkflowNodeInstructionsRequest(
       session.id,
@@ -348,16 +409,23 @@ async function main() {
     if (response.status !== 202) {
       throw new Error(`expected HTTP 202 from async publication, got ${response.status}: ${JSON.stringify(body)}`)
     }
-    if (!body.accepted || !body.workflow_run?.id) {
+    if (!body.accepted || !hasAcceptedRunMetadata(body)) {
       throw new Error(`gateway did not return accepted workflow run metadata: ${JSON.stringify(body)}`)
     }
-    logStep('anonymous_ok', { publicationId: publication.id, workflowRunId: body.workflow_run.id })
+    logStep('anonymous_ok', { publicationId: publication.id, workflowRunId: body.workflow_run?.id ?? null, queued: body.queued === true })
 
     logStep('parser_failure_400')
     const badParserResponse = await fetch(`${gatewayUrl}/qa/a/b`)
     if (badParserResponse.status !== 400) {
       throw new Error(`expected parser failure HTTP 400, got ${badParserResponse.status}: ${await badParserResponse.text()}`)
     }
+
+    logStep('invoke_websocket')
+    const webSocketAccepted = await invokePublicationWebSocket(
+      `ws://127.0.0.1:${gatewayPort}/.well-known/arroba/publication/ws`,
+      { task: 'websocket-publication' },
+    )
+    logStep('websocket_ok', { workflowRunId: webSocketAccepted.workflow_run?.id ?? null, queued: webSocketAccepted.queued === true })
 
     await stopProcess(gateway)
     gateway = null
@@ -386,9 +454,16 @@ async function main() {
       await waitForGateway(gatewayHttpsUrl)
       httpsResponse = await fetch(`${gatewayHttpsUrl}/qa/ship-publication-secure`)
       httpsBody = await httpsResponse.json()
-      if (httpsResponse.status !== 202 || !httpsBody.workflow_run?.id) {
+      if (httpsResponse.status !== 202 || !hasAcceptedRunMetadata(httpsBody)) {
         throw new Error(`expected HTTPS 202 from async publication, got ${httpsResponse.status}: ${JSON.stringify(httpsBody)}`)
       }
+      logStep('invoke_wss')
+      const wssAccepted = await invokePublicationWebSocket(
+        `wss://127.0.0.1:${gatewayHttpsPort}/.well-known/arroba/publication/ws`,
+        { task: 'wss-publication' },
+        { rejectUnauthorized: false },
+      )
+      logStep('wss_ok', { workflowRunId: wssAccepted.workflow_run?.id ?? null, queued: wssAccepted.queued === true })
     } finally {
       if (previousTlsReject === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
       else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTlsReject
@@ -425,7 +500,7 @@ async function main() {
     await waitForGateway(gatewayUrl)
     const exportedResponse = await fetch(`${gatewayUrl}/qa/exported-publication`)
     const exportedBody = await exportedResponse.json()
-    if (exportedResponse.status !== 202 || !exportedBody.workflow_run?.id) {
+    if (exportedResponse.status !== 202 || !hasAcceptedRunMetadata(exportedBody)) {
       throw new Error(`expected exported package HTTP 202, got ${exportedResponse.status}: ${JSON.stringify(exportedBody)}`)
     }
     await stopProcess(gateway)
@@ -493,7 +568,7 @@ async function main() {
       body: slackPayload,
     })
     const slackBody = await slackResponse.json()
-    if (slackResponse.status !== 202 || !slackBody.workflow_run?.id) {
+    if (slackResponse.status !== 202 || !hasAcceptedRunMetadata(slackBody)) {
       throw new Error(`expected Slack connector HTTP 202, got ${slackResponse.status}: ${JSON.stringify(slackBody)}`)
     }
     await stopProcess(gateway)
@@ -562,7 +637,7 @@ async function main() {
       body: JSON.stringify(telegramPayload),
     })
     const telegramBody = await telegramResponse.json()
-    if (telegramResponse.status !== 202 || !telegramBody.workflow_run?.id) {
+    if (telegramResponse.status !== 202 || !hasAcceptedRunMetadata(telegramBody)) {
       throw new Error(`expected Telegram connector HTTP 202, got ${telegramResponse.status}: ${JSON.stringify(telegramBody)}`)
     }
     await stopProcess(gateway)
@@ -640,7 +715,7 @@ async function main() {
       body: discordPayload,
     })
     const discordBody = await discordResponse.json()
-    if (discordResponse.status !== 202 || !discordBody.workflow_run?.id) {
+    if (discordResponse.status !== 202 || !hasAcceptedRunMetadata(discordBody)) {
       throw new Error(`expected Discord connector HTTP 202, got ${discordResponse.status}: ${JSON.stringify(discordBody)}`)
     }
     await stopProcess(gateway)
@@ -714,7 +789,7 @@ async function main() {
       body: whatsAppBodyText,
     })
     const whatsAppResponseBody = await whatsAppResponse.json()
-    if (whatsAppResponse.status !== 202 || !whatsAppResponseBody.workflow_run?.id) {
+    if (whatsAppResponse.status !== 202 || !hasAcceptedRunMetadata(whatsAppResponseBody)) {
       throw new Error(`expected WhatsApp connector HTTP 202, got ${whatsAppResponse.status}: ${JSON.stringify(whatsAppResponseBody)}`)
     }
     await stopProcess(gateway)
@@ -781,7 +856,7 @@ async function main() {
       body: JSON.stringify(signalPayload),
     })
     const signalBody = await signalResponse.json()
-    if (signalResponse.status !== 202 || !signalBody.workflow_run?.id) {
+    if (signalResponse.status !== 202 || !hasAcceptedRunMetadata(signalBody)) {
       throw new Error(`expected Signal connector HTTP 202, got ${signalResponse.status}: ${JSON.stringify(signalBody)}`)
     }
     await stopProcess(gateway)
@@ -841,7 +916,7 @@ async function main() {
       headers: { authorization: `Bearer ${pairBody.credential}` },
     })
     const pairedBody = await pairedResponse.json()
-    if (pairedResponse.status !== 202 || !pairedBody.workflow_run?.id) {
+    if (pairedResponse.status !== 202 || !hasAcceptedRunMetadata(pairedBody)) {
       throw new Error(`expected HTTP 202 from paired publication, got ${pairedResponse.status}: ${JSON.stringify(pairedBody)}`)
     }
 
@@ -856,7 +931,7 @@ async function main() {
     logStep('ok', {
       anonymousPublicationId: publication.id,
       pairedPublicationId: pairedPublication.id,
-      pairedWorkflowRunId: pairedBody.workflow_run.id,
+      pairedWorkflowRunId: pairedBody.workflow_run?.id ?? null,
     })
     succeeded = true
   } finally {

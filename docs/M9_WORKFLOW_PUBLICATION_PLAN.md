@@ -267,7 +267,55 @@ If the workflow does not produce a transport-shaped response yet, the gateway re
 
 ## M9.7 WebSocket Connector
 
-For long-running workflows, clients can connect, submit a request envelope, receive progress events, and receive final output. This is the primary fit for semantic rendering/checkouts where generation should stream progress.
+For long-running workflows, clients can connect, submit a request envelope,
+receive accepted/status/final events, and keep the client interaction open
+while the workflow runs. This is the primary fit for semantic
+rendering/checkouts where generation should stream progress.
+
+WSS is not a separate connector. It is WebSocket over the same gateway TLS
+configuration used for HTTPS.
+
+V1 endpoint:
+
+```text
+ws://host/.well-known/arroba/publication/ws
+wss://host/.well-known/arroba/publication/ws
+```
+
+V1 client message:
+
+```json
+{
+  "type": "invoke",
+  "input": {}
+}
+```
+
+V1 gateway messages:
+
+```json
+{ "type": "ready", "publication_id": "pub_..." }
+{ "type": "accepted", "workflow_run": {} }
+{ "type": "accepted", "queued": true, "result": {} }
+{ "type": "status", "workflow_run": {} }
+{ "type": "final", "workflow_run": {} }
+{ "type": "error", "error": "..." }
+```
+
+Implementation status:
+
+- The gateway exposes WebSocket upgrade handling at
+  `/.well-known/arroba/publication/ws`.
+- WebSocket auth reuses the publication auth config and HTTP upgrade headers.
+- WebSocket invocation validates the configured input schema and invokes the
+  same kernel workflow endpoint as HTTP.
+- For direct workflow-run responses, the gateway can stream status/final
+  messages by polling the kernel run state. Queued launches return an accepted
+  queued event in v1.
+- WSS works by starting the gateway with TLS, using the same config/env shape as
+  HTTPS.
+- Unit coverage verifies WebSocket invocation and validation errors. The
+  publication live drill covers WS and WSS against the kernel-backed gateway.
 
 ## M9.8 IPC Connector
 

@@ -54,6 +54,13 @@ importers:
       fastify:
         specifier: ^5.1.0
         version: 5.8.2
+      ws:
+        specifier: ^8.18.3
+        version: 8.20.0
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
 
   apps/shell:
     dependencies:
