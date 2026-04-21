@@ -240,11 +240,16 @@ async function loginCloudDrillUser(apiUrl, { email, accountSlug, clientId, clien
     clientId,
     clientAlias,
   })
-  await postJson(`${apiUrl}/auth/device/approve`, {
+  await postJsonWithHeaders(`${apiUrl}/auth/device/approve`, {
     userCode: started.userCode,
-    email,
     accountSlug,
-  })
+  }, await browserMutationHeaders(apiUrl, {
+    provider: "auth0",
+    providerSubject: `auth0|${accountSlug}`,
+    email,
+    emailVerified: true,
+    displayName: accountSlug,
+  }))
   const polled = await postJson(`${apiUrl}/auth/device/poll`, {
     deviceCode: started.deviceCode,
   })
@@ -282,15 +287,41 @@ async function issueSessionScopedClientToken(apiUrl, {
 }
 
 async function postJson(url, body) {
+  return postJsonWithHeaders(url, body)
+}
+
+async function postJsonWithHeaders(url, body, headers = {}) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
   })
   if (!response.ok) {
     throw new Error(`POST ${url} failed with ${response.status}: ${await response.text()}`)
   }
   return response.json().catch(() => null)
+}
+
+async function getJsonWithHeaders(url) {
+  const response = await fetch(url)
+  if (!response.ok) {
+    throw new Error(`GET ${url} failed with ${response.status}: ${await response.text()}`)
+  }
+  return {
+    body: await response.json(),
+    headers: response.headers,
+  }
+}
+
+async function browserMutationHeaders(apiUrl, identity) {
+  const csrf = await getJsonWithHeaders(`${apiUrl}/auth/csrf`)
+  const csrfCookie = csrf.headers.get("set-cookie")
+  assert(csrfCookie, "cloud csrf response should set a csrf cookie", csrf)
+  return {
+    cookie: csrfCookie,
+    "csrf-token": csrf.body.csrfToken,
+    "x-arroba-test-auth0-identity": JSON.stringify(identity),
+  }
 }
 
 function profileFromKernel(profile, expiresAt) {
@@ -428,11 +459,16 @@ function createMinimalCommandDeps({
       if (!profileRef.deviceApproved) {
         profileRef.deviceApproved = true
         log("cloud-device-approve")
-        await postJson(`${nextApiUrl}/auth/device/approve`, {
+        await postJsonWithHeaders(`${nextApiUrl}/auth/device/approve`, {
           userCode: profileRef.deviceUserCode,
-          email: `${runId}@example.com`,
           accountSlug: runId,
-        })
+        }, await browserMutationHeaders(nextApiUrl, {
+          provider: "auth0",
+          providerSubject: `auth0|${runId}`,
+          email: `${runId}@example.com`,
+          emailVerified: true,
+          displayName: runId,
+        }))
       }
       log("kernel-cloud-login-poll")
       const result = unwrap(
@@ -527,6 +563,7 @@ async function main() {
     ARROBA_CLOUD_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
     ARROBA_CLOUD_ISSUER_ID: CLOUD_ISSUER,
     ARROBA_CLOUD_RELAY_TOKEN_SECRET: CLOUD_SECRET,
+    ARROBA_CLOUD_TEST_AUTH0_IDENTITY_HEADER: "1",
   }
 
   let relay = null
