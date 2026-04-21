@@ -12,6 +12,10 @@ A lightweight, repo-native task board so contributors and future agents can cont
 
 ## In Progress
 
+- [ ] **M5.7-001** Add Arroba Cloud multi-user bridge
+  - Note: Build the M5.7 plan in `docs/M5_7_ARROBA_CLOUD_MULTI_USER_PLAN.md`.
+  - Scope: cloud-backed session invites, invite acceptance, cloud user identity propagation into kernels/CLIs, hosted relay admission scoped to cloud session membership, collaborator history, CLI/shell invite and member commands, and live two-user hosted relay drills.
+  - Next: Implement the cloud session-invite data model and API first, then wire kernel/CLI invite create/accept around existing device-login cloud sessions.
 - [ ] **M5.5-001** Add relay realms, pairing, and scoped tokens
   - Note: Build the M5.5 plan in `docs/M5_5_RELAY_IDENTITY_PLAN.md`.
   - Scope: realm-scoped relay registry, scoped relay token verifier, remote CLI pairing, remote machine pairing, caller identity propagation, self-hosted issuer compatibility, hosted issuer compatibility, and security drills.
@@ -55,6 +59,11 @@ A lightweight, repo-native task board so contributors and future agents can cont
   - Note: Multi-provider expansion is intentionally the last major breadth step after OpenCode, harnessing, multi-machine behavior, and multi-platform clients are settled.
 
 ## Done
+
+- [x] **M5.6-001** Add Arroba Cloud device login and relay onboarding
+  - Note: Hosted relay onboarding is closed in `docs/ROADMAP.md`.
+  - Result: Browser/device login, kernel-owned cloud profile state, hosted relay pairing, runtime-token minting, client-token minting, logout, waiting-room cloud entry point, and live cloud relay drill coverage are landed. The old terminal email bootstrap helper remains dev/manual compatibility only.
+  - Commits: `cca2910`, `18c91b0`
 
 - [x] **M7.5-001** Add Arroba Shell command REPL and script runner
   - Note: Build the M7.5 plan in `docs/M7_5_ARROBA_SHELL_PLAN.md`. `arroba-shell` should be independent from the TUI while reusing the same command executor as slash commands.

@@ -14,7 +14,9 @@ Current milestone status:
 - M4.5 is now the kernel runtime refactor phase: the daemon implementation is actively moving from a global `DaemonApp` lock toward an actor/event/projection kernel before relay scale-out
 - M5 is now the relay and remote-transport phase: relay infrastructure, remote terminal attachment, and daemon identity are the next major delivery target
 - M5.5 is the relay identity hardening phase: relay realms, pairing, scoped tokens, caller identity propagation, and hosted issuer compatibility are planned in `docs/M5_5_RELAY_IDENTITY_PLAN.md`
-- M6.5 is the multi-user collaboration phase: session-scoped invites, user-owned agents/providers, shared workflow graph collaboration, endpoint ownership, caller-scoped redaction, workflow edit conflict rejection, and workspace links are planned in `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`
+- M5.6 completed on 2026-04-21: hosted Arroba Cloud device login, kernel-owned cloud relay onboarding, token minting, pairing, logout, and live cloud relay drill coverage are landed
+- M5.7 is the Arroba Cloud multi-user bridge: cloud-backed session invites, cloud user identity propagation, collaborator history, and hosted relay admission for multi-user sessions are planned in `docs/M5_7_ARROBA_CLOUD_MULTI_USER_PLAN.md`
+- M6.5 is the kernel multi-user collaboration phase: session-scoped invites, user-owned agents/providers, shared workflow graph collaboration, endpoint ownership, caller-scoped redaction, workflow edit conflict rejection, and workspace links are planned in `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`
 
 ## 1. Roadmap Goals
 
@@ -38,6 +40,8 @@ Current milestone status:
 - M4.5: Kernel Runtime Refactor
 - M5: Relay and Remote Transport
 - M5.5: Relay Realms, Pairing, and Scoped Tokens. See `docs/M5_5_RELAY_IDENTITY_PLAN.md`.
+- M5.6: Arroba Cloud Device Login and Relay Onboarding. Completed on 2026-04-21.
+- M5.7: Arroba Cloud Multi-User Bridge. See `docs/M5_7_ARROBA_CLOUD_MULTI_USER_PLAN.md`.
 - M6: Remote Agents and Machine Membership
 - M6.5: Multi-User Collaboration. See `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`.
 - M7: Arroba-owned MCP and skill management. In progress: MCP/skill registries, slash-command install/list/show/import/grant/revoke/grants, Codex/OpenCode MCP and skill import, per-agent grants, local Codex/OpenCode MCP rendering, granted-skill summary injection, local explicit full skill-body injection, runtime discovery/request tools, and strict local MCP/skill drills are landed; remote materialization remains open.
@@ -57,6 +61,7 @@ Rollout priority:
 - then remove the daemon hot-path dependency on one shared `DaemonApp` lock by introducing actor-owned mutation, command routing, ordered kernel events, and query projections
 - then add relay-backed remote transport
 - then harden relay identity with realms, pairing, scoped tokens, and caller identity propagation
+- then add Arroba Cloud hosted onboarding and cloud-backed identity/session invitations for users who do not self-host relay identity services
 - then add remote agents and machine membership on top of relay
 - then add session-scoped multi-user collaboration on top of the shared session and relay model
 - then add Arroba-owned MCP and skill management with per-agent grants, provider-native MCP rendering, skill prompt injection, and provider import paths; the local registry/grant/rendering baseline is now in progress and partially landed
@@ -368,6 +373,14 @@ Exit criteria:
 
 ## M5.6 - Arroba Cloud Device Login And Relay Onboarding
 
+Status:
+
+- completed on 2026-04-21
+- closed scope is hosted relay onboarding, not multi-user collaboration
+- default hosted path is browser/device login through Arroba Cloud
+- kernel owns cloud relay profile state, cloud device polling, hosted relay pairing, runtime-token minting, client-token minting, relay configuration, and logout
+- CLI owns presentation only for the default hosted path: browser open, URL/code fallback, notices, and profile display mirror
+
 The default hosted-relay onboarding path should be browser/device login, not terminal email bootstrap.
 
 Target flow:
@@ -389,7 +402,7 @@ Logout is part of v1:
 - `POST /auth/logout` revokes the cloud session token
 - logout can optionally revoke the paired client and/or machine
 
-Current implementation status:
+Delivered implementation:
 
 - Arroba Cloud exposes device start/poll/approve and logout endpoints, including cloud session tokens
 - the kernel owns device-login start, poll, persisted cloud profile state, and logout
@@ -412,6 +425,44 @@ Once multi-user collaboration exists, Arroba Cloud should keep a collaborator hi
 - previous collaborators can be suggested when adding users to a future session
 - collaborator history is convenience only, not authorization
 - every new session still requires an explicit invite/accept unless a later team/org policy changes that
+
+## M5.7 - Arroba Cloud Multi-User Bridge
+
+Implementation plan:
+
+- `docs/M5_7_ARROBA_CLOUD_MULTI_USER_PLAN.md`
+
+Goal:
+
+Connect the hosted Arroba Cloud identity/relay service to the existing kernel multi-user collaboration model. M5.7 is the cloud bridge, not the full collaboration policy layer: the kernel remains the session, workflow, provider, projection-redaction, and managed-I/O authority.
+
+Scope:
+
+- cloud-backed session invite creation, acceptance, expiry, revocation, and membership listing
+- cloud user/account identity propagation into local kernels and CLIs after device login
+- relay admission for cloud session members without requiring users to share static relay credentials
+- collaborator history for users who have previously joined a shared session together
+- hosted relay route authorization based on account/session membership and scoped runtime credentials
+- CLI and shell commands for cloud invite creation, invite acceptance, member listing, and collaborator suggestions
+- live two-user cloud relay drills that prove cloud users can join the same session and then rely on the existing kernel multi-user rules
+
+Non-goals:
+
+- generalized ACLs or roles
+- enterprise SSO, org policy, audit history/search, or admin-managed teams
+- public user/agent marketplace
+- self-hosted relay identity service
+- moving workflow authorization or provider ownership into Arroba Cloud
+
+Exit criteria:
+
+- user A can create a cloud-backed invite for an existing session
+- user B can accept the invite after cloud login and join the same session through hosted relay
+- both users' kernels receive stable cloud user identity and session membership context
+- hosted relay credentials are scoped to the invited cloud session/account and do not grant broad realm access
+- collaborator history suggests prior collaborators without granting automatic access
+- existing M6.5 kernel rules still enforce owner-only providers/freeform agents, public workflow node labels, endpoint owner execution, caller-scoped redaction, and stale workflow edit rejection
+- live cloud two-user drill passes through hosted relay with two CLIs
 
 
 ## M5 Docker Remote-Machine Lab

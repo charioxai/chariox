@@ -17,6 +17,8 @@ The v1 collaboration model is open collaboration inside an invited session:
 
 This milestone does not add a public agent marketplace, external-agent marker, or generalized ACL language. V1 uses fixed ownership rules and session-scoped invites.
 
+Cloud-backed invitation, collaborator history, and hosted relay admission are tracked separately in `docs/M5_7_ARROBA_CLOUD_MULTI_USER_PLAN.md`. This plan remains the kernel/runtime collaboration policy layer.
+
 ## Core Decisions
 
 - A collaboration unit is still one Arroba session.
