@@ -801,6 +801,37 @@ export function logoutCloudRelayRequest(options: { revokeClient?: boolean; revok
   }
 }
 
+export function pairCloudRelayClientRequest(clientId: string, alias?: string) {
+  return {
+    PairCloudRelayClient: {
+      client_id: clientId,
+      alias,
+    },
+  }
+}
+
+export function pairCloudRelayMachineRequest(machineId: string, alias?: string) {
+  return {
+    PairCloudRelayMachine: {
+      machine_id: machineId,
+      alias,
+    },
+  }
+}
+
+export function connectCloudRelayRequest() {
+  return { ConnectCloudRelay: null }
+}
+
+export function issueCloudRelayClientTokenRequest(targetDaemonAlias: string, clientId: string) {
+  return {
+    IssueCloudRelayClientToken: {
+      target_daemon_alias: targetDaemonAlias,
+      client_id: clientId,
+    },
+  }
+}
+
 export function getUserConfigRequest() {
   return { GetUserConfig: null }
 }

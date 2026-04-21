@@ -194,6 +194,16 @@ function profileFromKernel(profile, expiresAt) {
   }
 }
 
+function tokenFromKernel(token, profile) {
+  assert(token, "kernel cloud token response should include a token")
+  return {
+    relayUrl: token.relay_url,
+    relayToken: token.relay_token,
+    tokenExpiresAtMs: Date.parse(token.token_expires_at),
+    profile: profile ? profileFromKernel(profile) : undefined,
+  }
+}
+
 function parseCloudClientTokenNotice(notices) {
   const notice = [...notices].reverse().find((item) => item.startsWith("cloud relay client token\n"))
   assert(notice, "cloud relay client-token command should append a token notice", notices)
@@ -257,16 +267,20 @@ function createMinimalCommandDeps({
       email,
       ...(accountSlug ? { accountSlug } : {}),
     }),
-    pairCloudRelayClient: (profile, nextClientId, alias) => cloudRelay.pairCloudRelayClient(
-      profile,
-      nextClientId,
-      alias,
-    ),
-    pairCloudRelayMachine: (profile, machineId, alias) => cloudRelay.pairCloudRelayMachine(
-      profile,
-      machineId,
-      alias,
-    ),
+    pairCloudRelayClient: async (_profile, nextClientId, alias) => {
+      const paired = unwrap(
+        await localClient.send(requests.pairCloudRelayClientRequest(nextClientId, alias)),
+        "CloudRelayClientPaired",
+      )
+      return profileFromKernel(paired.profile)
+    },
+    pairCloudRelayMachine: async (_profile, machineId, alias) => {
+      const paired = unwrap(
+        await localClient.send(requests.pairCloudRelayMachineRequest(machineId, alias)),
+        "CloudRelayMachinePaired",
+      )
+      return profileFromKernel(paired.profile)
+    },
     getRelayStatus: async () => unwrap(
       await localClient.send(requests.relayStatusRequest()),
       "RelayStatus",
@@ -322,27 +336,27 @@ function createMinimalCommandDeps({
         profile: profileFromKernel(result.profile, result.expires_at),
       }
     },
-    issueCloudKernelRelayToken: (profile, daemonId) => cloudRelay.issueCloudRelayToken({
-      profile,
-      subject: daemonId,
-      subjectKind: "kernel",
-      userId: profile.userId,
-    }),
-    issueCloudMachineRelayToken: (profile, daemonId, machineId) => cloudRelay.issueCloudRelayToken({
-      profile,
-      subject: machineId,
-      subjectKind: "machine",
-      userId: profile.userId,
-      machineId,
-    }),
-    issueCloudClientRelayToken: (profile, targetDaemonAlias) => cloudRelay.issueCloudRelayToken({
-      profile,
-      subject: profile.clientId ?? clientId,
-      subjectKind: "client",
-      userId: profile.userId,
-      clientId: profile.clientId ?? clientId,
-      allowedTargets: [targetDaemonAlias],
-    }),
+    issueCloudKernelRelayToken: async () => {
+      const connected = unwrap(
+        await localClient.send(requests.connectCloudRelayRequest()),
+        "CloudRelayConnected",
+      )
+      return tokenFromKernel(connected.token, connected.profile)
+    },
+    issueCloudMachineRelayToken: async () => {
+      const connected = unwrap(
+        await localClient.send(requests.connectCloudRelayRequest()),
+        "CloudRelayConnected",
+      )
+      return tokenFromKernel(connected.token, connected.profile)
+    },
+    issueCloudClientRelayToken: async (_profile, targetDaemonAlias) => {
+      const issued = unwrap(
+        await localClient.send(requests.issueCloudRelayClientTokenRequest(targetDaemonAlias, clientId)),
+        "CloudRelayClientTokenIssued",
+      )
+      return tokenFromKernel(issued.token, issued.profile)
+    },
     refreshWaitingRoomData: async () => {},
   }
 }

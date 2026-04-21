@@ -231,16 +231,16 @@ type CommandActionDeps = {
   issueCloudKernelRelayToken?: (
     profile: RelayCloudProfile,
     daemonId: string,
-  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number }>
+  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; profile?: RelayCloudProfile }>
   issueCloudMachineRelayToken?: (
     profile: RelayCloudProfile,
     daemonId: string,
     machineId: string,
-  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number }>
+  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; profile?: RelayCloudProfile }>
   issueCloudClientRelayToken?: (
     profile: RelayCloudProfile,
     targetDaemonAlias: string,
-  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number }>
+  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; profile?: RelayCloudProfile }>
   listRemoteMachines?: () => Promise<Array<{
     machine_id: string
     machine_alias?: string | null
@@ -1652,7 +1652,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           : await deps.issueCloudKernelRelayToken(profile, relayStatus.daemon_id)
         await deps.configureRelay(issued.relayUrl, issued.relayToken)
         await deps.saveCloudRelayProfile({
-          ...profile,
+          ...(issued.profile ?? profile),
           tokenExpiresAtMs: issued.tokenExpiresAtMs,
         })
         await deps.refreshWaitingRoomData?.()
@@ -1683,6 +1683,9 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           await deps.saveCloudRelayProfile(ensuredProfile)
         }
         const issued = await deps.issueCloudClientRelayToken(ensuredProfile, targetDaemonAlias)
+        if (issued.profile && deps.saveCloudRelayProfile) {
+          await deps.saveCloudRelayProfile(issued.profile)
+        }
         deps.appendNotice(
           [
             "cloud relay client token",

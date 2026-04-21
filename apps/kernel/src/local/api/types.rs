@@ -311,6 +311,29 @@ pub struct LogoutCloudRelayRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairCloudRelayClientRequest {
+    pub client_id: String,
+    #[serde(default)]
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairCloudRelayMachineRequest {
+    pub machine_id: String,
+    #[serde(default)]
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectCloudRelayRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueCloudRelayClientTokenRequest {
+    pub target_daemon_alias: String,
+    pub client_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CloudRelayProfile {
     pub api_url: String,
     pub email: String,
@@ -363,6 +386,13 @@ pub struct CloudRelayLoginPoll {
     pub expires_at: Option<String>,
     #[serde(default)]
     pub profile: Option<CloudRelayProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudRelayRuntimeToken {
+    pub relay_url: String,
+    pub relay_token: String,
+    pub token_expires_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1016,6 +1046,10 @@ pub enum LocalDaemonRequest {
     StartCloudRelayLogin(StartCloudRelayLoginRequest),
     PollCloudRelayLogin(PollCloudRelayLoginRequest),
     LogoutCloudRelay(LogoutCloudRelayRequest),
+    PairCloudRelayClient(PairCloudRelayClientRequest),
+    PairCloudRelayMachine(PairCloudRelayMachineRequest),
+    ConnectCloudRelay(ConnectCloudRelayRequest),
+    IssueCloudRelayClientToken(IssueCloudRelayClientTokenRequest),
     GetUserConfig(GetUserConfigRequest),
     SetUserConfigValue(SetUserConfigValueRequest),
     UnsetUserConfigValue(UnsetUserConfigValueRequest),
@@ -1231,6 +1265,21 @@ pub enum LocalDaemonResponse {
         result: CloudRelayLoginPoll,
     },
     CloudRelayLoggedOut,
+    CloudRelayClientPaired {
+        profile: CloudRelayProfile,
+    },
+    CloudRelayMachinePaired {
+        profile: CloudRelayProfile,
+    },
+    CloudRelayConnected {
+        status: RelayStatus,
+        profile: CloudRelayProfile,
+        token: CloudRelayRuntimeToken,
+    },
+    CloudRelayClientTokenIssued {
+        profile: CloudRelayProfile,
+        token: CloudRelayRuntimeToken,
+    },
     UserConfig {
         path: PathBuf,
         config: ArrobaUserConfig,

@@ -244,6 +244,12 @@ export type CloudRelayLoginPoll = {
   profile?: CloudRelayProfile | null
 }
 
+export type CloudRelayRuntimeToken = {
+  relay_url: string
+  relay_token: string
+  token_expires_at: string
+}
+
 export type RemoteMachineRecord = {
   machine_id: string
   machine_alias?: string | null

@@ -85,6 +85,7 @@ import {
   attachWorkspaceLinkRequest,
   approveRemoteMachineRequest,
   cancelActivePromptRequest,
+  connectCloudRelayRequest,
   configureRelayRequest,
   captureScreenshotRequest,
   aliasSessionRequest,
@@ -123,6 +124,9 @@ import {
   logoutProviderRequest,
   listSessionsRequest,
   logoutCloudRelayRequest,
+  issueCloudRelayClientTokenRequest,
+  pairCloudRelayClientRequest,
+  pairCloudRelayMachineRequest,
   pollCloudRelayLoginRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
@@ -150,9 +154,6 @@ import { runLogViewer } from "./logs.js"
 import { evaluateConnectionHealth, runPollingLoop } from "./polling-effects.js"
 import {
   bootstrapCloudRelayProfile,
-  issueCloudRelayToken,
-  pairCloudRelayClient,
-  pairCloudRelayMachine,
 } from "./cloud-relay.js"
 import {
   loadPreferences,
@@ -404,6 +405,12 @@ type KernelCloudRelayLoginPoll = {
   interval_seconds?: number | null
   expires_at?: string | null
   profile?: KernelCloudRelayProfile | null
+}
+
+type KernelCloudRelayRuntimeToken = {
+  relay_url: string
+  relay_token: string
+  token_expires_at: string
 }
 
 type RemoteMachineView = {
@@ -5449,34 +5456,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     pollCloudDeviceLogin: (apiUrl, deviceCode) => pollCloudRelayLogin(client, apiUrl, deviceCode),
     openExternalUrl,
     logoutCloudRelay: (_profile, options) => logoutCloudRelay(client, options),
-    pairCloudRelayClient: (profile, clientId, alias) =>
-      pairCloudRelayClient(profile, clientId, alias),
-    pairCloudRelayMachine: (profile, machineId, alias) =>
-      pairCloudRelayMachine(profile, machineId, alias),
-    issueCloudKernelRelayToken: (profile, daemonId) =>
-      issueCloudRelayToken({
-        profile,
-        subject: daemonId,
-        subjectKind: "kernel",
-        userId: profile.userId,
-      }),
-    issueCloudMachineRelayToken: (profile, daemonId, machineId) =>
-      issueCloudRelayToken({
-        profile,
-        subject: machineId,
-        subjectKind: "machine",
-        userId: profile.userId,
-        machineId,
-      }),
-    issueCloudClientRelayToken: (profile, targetDaemonAlias) =>
-      issueCloudRelayToken({
-        profile,
-        subject: profile.clientId ?? options.clientId,
-        subjectKind: "client",
-        userId: profile.userId,
-        clientId: profile.clientId ?? options.clientId,
-        allowedTargets: [targetDaemonAlias],
-      }),
+    pairCloudRelayClient: (_profile, clientId, alias) =>
+      pairKernelCloudRelayClient(client, clientId, alias),
+    pairCloudRelayMachine: (_profile, machineId, alias) =>
+      pairKernelCloudRelayMachine(client, machineId, alias),
+    issueCloudKernelRelayToken: async () => connectKernelCloudRelay(client),
+    issueCloudMachineRelayToken: async () => connectKernelCloudRelay(client),
+    issueCloudClientRelayToken: async (_profile, targetDaemonAlias) =>
+      issueKernelCloudRelayClientToken(client, targetDaemonAlias, options.clientId ?? "arroba-cli"),
     getUserConfig: () => getUserConfig(client),
     setUserConfigValue: (path, value) => setUserConfigValue(client, path, value),
     unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),
@@ -8078,6 +8065,60 @@ async function logoutCloudRelay(
 ): Promise<void> {
   const response = await client.send<Record<string, unknown>>(logoutCloudRelayRequest(options))
   expectVariant(response, "CloudRelayLoggedOut")
+}
+
+async function pairKernelCloudRelayClient(
+  client: LocalIpcClient,
+  clientId: string,
+  alias?: string,
+) {
+  const response = await client.send<Record<string, unknown>>(pairCloudRelayClientRequest(clientId, alias))
+  const payload = expectVariant<{ profile: KernelCloudRelayProfile }>(response, "CloudRelayClientPaired")
+  return relayCloudProfileFromKernel(payload.profile)
+}
+
+async function pairKernelCloudRelayMachine(
+  client: LocalIpcClient,
+  machineId: string,
+  alias?: string,
+) {
+  const response = await client.send<Record<string, unknown>>(pairCloudRelayMachineRequest(machineId, alias))
+  const payload = expectVariant<{ profile: KernelCloudRelayProfile }>(response, "CloudRelayMachinePaired")
+  return relayCloudProfileFromKernel(payload.profile)
+}
+
+async function connectKernelCloudRelay(client: LocalIpcClient) {
+  const response = await client.send<Record<string, unknown>>(connectCloudRelayRequest())
+  const payload = expectVariant<{
+    profile: KernelCloudRelayProfile
+    token: KernelCloudRelayRuntimeToken
+  }>(response, "CloudRelayConnected")
+  return {
+    relayUrl: payload.token.relay_url,
+    relayToken: payload.token.relay_token,
+    tokenExpiresAtMs: Date.parse(payload.token.token_expires_at),
+    profile: relayCloudProfileFromKernel(payload.profile),
+  }
+}
+
+async function issueKernelCloudRelayClientToken(
+  client: LocalIpcClient,
+  targetDaemonAlias: string,
+  clientId: string,
+) {
+  const response = await client.send<Record<string, unknown>>(
+    issueCloudRelayClientTokenRequest(targetDaemonAlias, clientId),
+  )
+  const payload = expectVariant<{
+    profile: KernelCloudRelayProfile
+    token: KernelCloudRelayRuntimeToken
+  }>(response, "CloudRelayClientTokenIssued")
+  return {
+    relayUrl: payload.token.relay_url,
+    relayToken: payload.token.relay_token,
+    tokenExpiresAtMs: Date.parse(payload.token.token_expires_at),
+    profile: relayCloudProfileFromKernel(payload.profile),
+  }
 }
 
 function relayCloudProfileFromKernel(profile: KernelCloudRelayProfile) {

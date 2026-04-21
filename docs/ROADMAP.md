@@ -395,8 +395,10 @@ Current implementation status:
 - the kernel owns device-login start, poll, persisted cloud profile state, and logout
 - the CLI no-argument `/relay cloud login` path calls the kernel for device login and opens the browser with URL/code fallback
 - the waiting room `Relay` action starts `/relay cloud login` instead of raw self-hosted token entry
-- the live cloud relay drill now rebuilds the kernel, drives `/relay cloud login` through the kernel device-login start/poll requests, approves through Arroba Cloud, then verifies pair/connect/client-token and remote session attach
-- relay runtime token minting for `/relay cloud connect`, `/relay cloud pair`, and client-token flows still uses the CLI cloud helper against the kernel-persisted profile mirror; the next cleanup is to move those token operations behind kernel requests too
+- the kernel owns hosted relay client pairing, machine pairing, relay connect/runtime-token minting, and client-token minting
+- the CLI default hosted path is now presentation only: it opens the browser, mirrors the returned profile for display/preferences, and renders notices
+- the live cloud relay drill now rebuilds the kernel, drives `/relay cloud login` through the kernel device-login start/poll requests, approves through Arroba Cloud, then verifies kernel-owned pair/connect/client-token and remote session attach
+- the old terminal email bootstrap helper remains only as a dev/manual compatibility path
 - if server logout fails, local logout still completes and the CLI warns that remote revocation was not confirmed
 
 Self-hosted relay discovery remains identity-less:

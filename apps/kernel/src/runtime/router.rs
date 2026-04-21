@@ -25,21 +25,23 @@ use crate::local::provider_requests::{
 };
 use crate::local::{
     AgentGrantKind, ApproveRemoteMachineRequest, AttachWorkspaceLinkRequest, CloudRelayLoginPoll,
-    CloudRelayLoginPollStatus, CloudRelayLoginStart, CloudRelayProfile, ConfigureRelayRequest,
-    CreatePairingInviteRequest, CreateSessionInviteRequest, CreateWorkspaceLinkRequest,
-    DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GetMcpServerRequest,
-    GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-    GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GrantAgentCapabilityRequest,
-    ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
-    JoinPairingInviteRequest, JoinSessionInviteRequest, ListAgentsRequest, ListMcpServersRequest,
-    ListProviderProcessesRequest, ListSessionMembersRequest, ListSessionsRequest,
-    ListSkillsRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
-    LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest, PairedClientRecord,
-    PairingInviteIntent, PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest,
-    PumpTerminalOutputRequest, QueryHistoryRequest, RecordPairedClientRequest, RelayStatus,
-    RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
-    RevokePairedClientRequest, RevokeSessionInviteRequest, SearchHistoryRequest,
-    SessionInviteRecord, SetUserConfigValueRequest, ShowWorkspaceLinkRequest,
+    CloudRelayLoginPollStatus, CloudRelayLoginStart, CloudRelayProfile, CloudRelayRuntimeToken,
+    ConfigureRelayRequest, ConnectCloudRelayRequest, CreatePairingInviteRequest,
+    CreateSessionInviteRequest, CreateWorkspaceLinkRequest, DetachWorkspaceLinkRequest,
+    ForgetRemoteMachineRequest, GetMcpServerRequest, GetProviderAuthStatusRequest,
+    GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest,
+    GetUserConfigRequest, GrantAgentCapabilityRequest, ImportMcpServersRequest,
+    ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
+    IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest, JoinSessionInviteRequest,
+    ListAgentsRequest, ListMcpServersRequest, ListProviderProcessesRequest,
+    ListSessionMembersRequest, ListSessionsRequest, ListSkillsRequest, ListWorkspaceLinksRequest,
+    LocalDaemonRequest, LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest,
+    MoveAgentToRemoteRequest, PairCloudRelayClientRequest, PairCloudRelayMachineRequest,
+    PairedClientRecord, PairingInviteIntent, PairingInviteRecord, PairingJoinRecord,
+    PollCloudRelayLoginRequest, PumpTerminalOutputRequest, QueryHistoryRequest,
+    RecordPairedClientRequest, RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest,
+    RevokeAgentCapabilityRequest, RevokePairedClientRequest, RevokeSessionInviteRequest,
+    SearchHistoryRequest, SessionInviteRecord, SetUserConfigValueRequest, ShowWorkspaceLinkRequest,
     StartCloudRelayLoginRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
     UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
     UpdateMcpServerRequest, UpdateSkillRequest,
@@ -940,6 +942,19 @@ impl CommandRouter {
             }
             LocalDaemonRequest::LogoutCloudRelay(request) => {
                 self.execute_logout_cloud_relay_request(request).await
+            }
+            LocalDaemonRequest::PairCloudRelayClient(request) => {
+                self.execute_pair_cloud_relay_client_request(request).await
+            }
+            LocalDaemonRequest::PairCloudRelayMachine(request) => {
+                self.execute_pair_cloud_relay_machine_request(request).await
+            }
+            LocalDaemonRequest::ConnectCloudRelay(request) => {
+                self.execute_connect_cloud_relay_request(request).await
+            }
+            LocalDaemonRequest::IssueCloudRelayClientToken(request) => {
+                self.execute_issue_cloud_relay_client_token_request(request)
+                    .await
             }
             LocalDaemonRequest::GetUserConfig(request) => {
                 self.execute_get_user_config_request(request).await
@@ -1921,6 +1936,194 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::CloudRelayLoggedOut)
     }
 
+    async fn execute_pair_cloud_relay_client_request(
+        &self,
+        request: PairCloudRelayClientRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut profile = self.required_cloud_relay_profile()?;
+        let pairing: CloudPairingTokenResponse = post_cloud_json(
+            profile.api_url.clone(),
+            "/pairing-tokens",
+            serde_json::json!({
+                "accountId": profile.account_id,
+                "createdByUserId": profile.user_id,
+                "subjectKind": "client",
+            }),
+        )
+        .await?;
+        post_cloud_json::<serde_json::Value>(
+            profile.api_url.clone(),
+            "/clients/pair",
+            serde_json::json!({
+                "accountId": profile.account_id,
+                "token": pairing.token,
+                "clientId": request.client_id,
+                "userId": profile.user_id,
+                "alias": request.alias,
+            }),
+        )
+        .await?;
+        profile.client_id = Some(request.client_id);
+        if request.alias.is_some() {
+            profile.client_alias = request.alias;
+        }
+        let saved = self.persist_cloud_profile(profile).await?;
+        Ok(LocalDaemonResponse::CloudRelayClientPaired {
+            profile: cloud_profile_from_persisted(&saved),
+        })
+    }
+
+    async fn execute_pair_cloud_relay_machine_request(
+        &self,
+        request: PairCloudRelayMachineRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut profile = self.required_cloud_relay_profile()?;
+        let pairing: CloudPairingTokenResponse = post_cloud_json(
+            profile.api_url.clone(),
+            "/pairing-tokens",
+            serde_json::json!({
+                "accountId": profile.account_id,
+                "createdByUserId": profile.user_id,
+                "subjectKind": "machine",
+            }),
+        )
+        .await?;
+        post_cloud_json::<serde_json::Value>(
+            profile.api_url.clone(),
+            "/machines/pair",
+            serde_json::json!({
+                "accountId": profile.account_id,
+                "token": pairing.token,
+                "machineId": request.machine_id,
+                "userId": profile.user_id,
+                "alias": request.alias,
+            }),
+        )
+        .await?;
+        profile.machine_id = Some(request.machine_id);
+        if request.alias.is_some() {
+            profile.machine_alias = request.alias;
+        }
+        let saved = self.persist_cloud_profile(profile).await?;
+        Ok(LocalDaemonResponse::CloudRelayMachinePaired {
+            profile: cloud_profile_from_persisted(&saved),
+        })
+    }
+
+    async fn execute_connect_cloud_relay_request(
+        &self,
+        _request: ConnectCloudRelayRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut profile = self.required_cloud_relay_profile()?;
+        let daemon_id = self.config_projection.snapshot().daemon_id;
+        let (subject, subject_kind, machine_id) =
+            if let Some(machine_id) = profile.machine_id.clone() {
+                (machine_id.clone(), "machine", Some(machine_id))
+            } else {
+                (daemon_id, "kernel", None)
+            };
+        let issued =
+            issue_cloud_runtime_token(&profile, &subject, subject_kind, None, None, machine_id)
+                .await?;
+        profile.token_expires_at_ms = None;
+        let saved = self.persist_cloud_profile(profile.clone()).await?;
+        {
+            let mut app = self.app.lock().await;
+            app.configure_relay(Some(profile.relay_url.clone()), Some(issued.token.clone()))?;
+            app.invalidate_provider_catalog_cache();
+        }
+        self.provider_catalog_projection.invalidate();
+        let token = CloudRelayRuntimeToken {
+            relay_url: profile.relay_url,
+            relay_token: issued.token,
+            token_expires_at: issued.expires_at,
+        };
+        Ok(LocalDaemonResponse::CloudRelayConnected {
+            status: self.projected_relay_status().await,
+            profile: cloud_profile_from_persisted(&saved),
+            token,
+        })
+    }
+
+    async fn execute_issue_cloud_relay_client_token_request(
+        &self,
+        request: IssueCloudRelayClientTokenRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut profile = self.required_cloud_relay_profile()?;
+        if profile.client_id.is_none() {
+            let pairing: CloudPairingTokenResponse = post_cloud_json(
+                profile.api_url.clone(),
+                "/pairing-tokens",
+                serde_json::json!({
+                    "accountId": profile.account_id,
+                    "createdByUserId": profile.user_id,
+                    "subjectKind": "client",
+                }),
+            )
+            .await?;
+            post_cloud_json::<serde_json::Value>(
+                profile.api_url.clone(),
+                "/clients/pair",
+                serde_json::json!({
+                    "accountId": profile.account_id,
+                    "token": pairing.token,
+                    "clientId": request.client_id,
+                    "userId": profile.user_id,
+                }),
+            )
+            .await?;
+            profile.client_id = Some(request.client_id.clone());
+            profile = self.persist_cloud_profile(profile).await?;
+        }
+        let client_id = profile
+            .client_id
+            .clone()
+            .unwrap_or_else(|| request.client_id.clone());
+        let issued = issue_cloud_runtime_token(
+            &profile,
+            &client_id,
+            "client",
+            Some(vec![request.target_daemon_alias]),
+            Some(client_id.clone()),
+            None,
+        )
+        .await?;
+        let token = CloudRelayRuntimeToken {
+            relay_url: profile.relay_url.clone(),
+            relay_token: issued.token,
+            token_expires_at: issued.expires_at,
+        };
+        Ok(LocalDaemonResponse::CloudRelayClientTokenIssued {
+            profile: cloud_profile_from_persisted(&profile),
+            token,
+        })
+    }
+
+    fn required_cloud_relay_profile(&self) -> Result<PersistedCloudRelayProfile, DaemonError> {
+        self.config_projection
+            .snapshot()
+            .cloud_relay
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "load cloud relay profile",
+                message: "cloud relay profile missing; run /relay cloud login first".to_string(),
+            })
+    }
+
+    async fn persist_cloud_profile(
+        &self,
+        profile: PersistedCloudRelayProfile,
+    ) -> Result<PersistedCloudRelayProfile, DaemonError> {
+        {
+            let mut app = self.app.lock().await;
+            app.persist_cloud_relay_profile(Some(profile.clone()))?;
+        }
+        self.config_projection.update({
+            let app = self.app.lock().await;
+            app.config().clone()
+        });
+        Ok(profile)
+    }
+
     async fn execute_get_user_config_request(
         &self,
         _request: GetUserConfigRequest,
@@ -2842,6 +3045,19 @@ impl CommandRouter {
             }
             LocalDaemonRequest::LogoutCloudRelay(request) => {
                 self.execute_logout_cloud_relay_request(request).await
+            }
+            LocalDaemonRequest::PairCloudRelayClient(request) => {
+                self.execute_pair_cloud_relay_client_request(request).await
+            }
+            LocalDaemonRequest::PairCloudRelayMachine(request) => {
+                self.execute_pair_cloud_relay_machine_request(request).await
+            }
+            LocalDaemonRequest::ConnectCloudRelay(request) => {
+                self.execute_connect_cloud_relay_request(request).await
+            }
+            LocalDaemonRequest::IssueCloudRelayClientToken(request) => {
+                self.execute_issue_cloud_relay_client_token_request(request)
+                    .await
             }
             LocalDaemonRequest::GetUserConfig(request) => {
                 self.execute_get_user_config_request(request).await
@@ -4353,6 +4569,74 @@ struct CloudDeviceProfileResponse {
     client_alias: Option<String>,
     machine_id: Option<String>,
     machine_alias: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudPairingTokenResponse {
+    token: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudRuntimeTokenResponse {
+    token: String,
+    expires_at: String,
+}
+
+async fn issue_cloud_runtime_token(
+    profile: &PersistedCloudRelayProfile,
+    subject: &str,
+    subject_kind: &str,
+    allowed_targets: Option<Vec<String>>,
+    client_id: Option<String>,
+    machine_id: Option<String>,
+) -> Result<CloudRuntimeTokenResponse, DaemonError> {
+    let mut body = serde_json::Map::new();
+    body.insert(
+        "accountId".to_string(),
+        serde_json::Value::String(profile.account_id.clone()),
+    );
+    body.insert(
+        "subject".to_string(),
+        serde_json::Value::String(subject.to_string()),
+    );
+    body.insert(
+        "subjectKind".to_string(),
+        serde_json::Value::String(subject_kind.to_string()),
+    );
+    body.insert(
+        "realmId".to_string(),
+        serde_json::Value::String(profile.realm_id.clone()),
+    );
+    body.insert(
+        "userId".to_string(),
+        serde_json::Value::String(profile.user_id.clone()),
+    );
+    if let Some(allowed_targets) = allowed_targets {
+        body.insert(
+            "allowedTargets".to_string(),
+            serde_json::to_value(allowed_targets).map_err(|error| DaemonError::LocalTransport {
+                operation: "encode cloud relay token request",
+                message: error.to_string(),
+            })?,
+        );
+    }
+    if let Some(client_id) = client_id {
+        body.insert("clientId".to_string(), serde_json::Value::String(client_id));
+    }
+    if let Some(machine_id) = machine_id {
+        body.insert(
+            "machineId".to_string(),
+            serde_json::Value::String(machine_id),
+        );
+    }
+    post_cloud_json(
+        profile.api_url.clone(),
+        "/relay/token",
+        serde_json::Value::Object(body),
+    )
+    .await
 }
 
 fn cloud_profile_from_persisted(profile: &PersistedCloudRelayProfile) -> CloudRelayProfile {
