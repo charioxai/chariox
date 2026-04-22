@@ -502,6 +502,7 @@ export type CliOptions = {
   relayToken?: string
   targetDaemonId?: string
   targetDaemonAlias?: string
+  detached?: boolean
   sessionId?: string
   createSession?: boolean
   deleteSessionRef?: string
