@@ -11,6 +11,7 @@ const repoRoot = path.resolve(cliRoot, "..", "..")
 const apiUrl = (process.env.ARROBA_CLOUD_HOSTED_API_URL ?? "https://arroba-cloud-staging.osc-fr1.scalingo.io").replace(/\/$/, "")
 const pollTimeoutMs = Number(process.env.ARROBA_CLOUD_HOSTED_POLL_TIMEOUT_MS ?? 10 * 60 * 1000)
 const runMultiUser = process.env.ARROBA_CLOUD_HOSTED_MULTI_USER === "1"
+const devAuthSecret = process.env.ARROBA_CLOUD_DEV_AUTH_SECRET ?? ""
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -145,16 +146,33 @@ function parseCloudClientTokenNotice(notices) {
   }
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, headers = {}) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
   })
   if (!response.ok) {
     throw new Error(`POST ${url} failed with ${response.status}: ${await response.text()}`)
   }
   return response.json().catch(() => null)
+}
+
+async function approveDevDeviceLogin({ role, userCode, accountSlug }) {
+  if (!devAuthSecret) return false
+  const slug = accountSlug ?? `hosted-${role}-${process.pid}-${Date.now()}`
+  const email = `${slug}@arroba.local`
+  log(`${role}-dev-approve-cloud-login`, { accountSlug: slug, email })
+  await postJson(`${apiUrl}/auth/dev/device/approve`, {
+    userCode,
+    email,
+    accountSlug: slug,
+    displayName: `Hosted ${role} drill`,
+    providerSubject: `dev|${slug}`,
+  }, {
+    "x-arroba-dev-auth-secret": devAuthSecret,
+  })
+  return true
 }
 
 async function expectReject(promise, label, expectedText) {
@@ -291,6 +309,7 @@ async function manualCloudDeviceLogin({ role, clientId, clientAlias, localClient
     userCode: login.user_code,
     expiresAt: login.expires_at,
   })
+  await approveDevDeviceLogin({ role, userCode: login.user_code })
   while (Date.now() < expiresAtMs) {
     const result = unwrap(
       await localClient.send(requests.pollCloudRelayLoginRequest(apiUrl, login.device_code)),
@@ -617,6 +636,7 @@ function createHostedCommandDeps({
   requests,
   profileRef,
   notices,
+  ownerAccountSlug,
 }) {
   return {
     workspace,
@@ -678,6 +698,11 @@ function createHostedCommandDeps({
         verificationUrl: login.verification_url,
         userCode: login.user_code,
         expiresAt: login.expires_at,
+      })
+      await approveDevDeviceLogin({
+        role: "owner",
+        userCode: login.user_code,
+        accountSlug: ownerAccountSlug,
       })
       return {
         apiUrl: login.api_url,
@@ -743,6 +768,7 @@ async function main() {
   const daemonId = `hosted-daemon-${process.pid}-${Date.now()}`
   const daemonAlias = `hosted-home-${process.pid}`
   const clientId = `hosted-cli-${process.pid}-${Date.now()}`
+  const ownerAccountSlug = `hosted-owner-${process.pid}-${Date.now()}`
 
   await rm(rootDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(workspace, { recursive: true })
@@ -795,6 +821,7 @@ async function main() {
       requests,
       profileRef,
       notices,
+      ownerAccountSlug,
     }))
 
     log("command-cloud-login", { apiUrl })
@@ -882,7 +909,9 @@ async function main() {
       })
     } else {
       log("multi-user-skipped", {
-        reason: "set ARROBA_CLOUD_HOSTED_MULTI_USER=1 and approve owner, peer, and third browser logins",
+        reason: devAuthSecret
+          ? "set ARROBA_CLOUD_HOSTED_MULTI_USER=1"
+          : "set ARROBA_CLOUD_HOSTED_MULTI_USER=1 and approve owner, peer, and third browser logins, or set ARROBA_CLOUD_DEV_AUTH_SECRET",
       })
     }
 

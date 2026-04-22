@@ -56,6 +56,20 @@ pnpm --filter @arroba/cli run multi-user-workflow:drill
 
 It launches a scoped-token relay plus a local kernel, connects three relay clients with different `user_id`s, joins them into one session through an invite, and verifies the live transport path for per-user agent visibility, workflow node ownership, cross-owner edge creation, unrelated edge-removal denial, stale workflow revision rejection, endpoint-owner invocation denial, incident-edge removal by node owner, and private node-instruction redaction. It uses `dev-stub` agents only, so it does not spend provider turns.
 
+## Hosted Cloud Relay Drill
+
+Use this after touching Arroba Cloud device login, cloud relay pairing, hosted relay token issuance, or CLI/kernel relay setup:
+
+```bash
+node apps/cli/scripts/live-hosted-cloud-relay-drill.mjs
+```
+
+By default the drill targets `https://arroba-cloud-staging.osc-fr1.scalingo.io`. Set `ARROBA_CLOUD_HOSTED_API_URL` to use another cloud API. The single-user path validates local CLI to local kernel login, cloud client pairing, machine pairing, machine relay connect, client relay-token issuance, and remote client session create/list through the hosted relay.
+
+For non-interactive staging drills, set `ARROBA_CLOUD_DEV_AUTH_SECRET` to the matching staging secret. The cloud API must have its guarded dev device approval endpoint enabled. This still starts device login and polls through the kernel; only the browser/Auth0 approval step is replaced by a synthetic verified user.
+
+Set `ARROBA_CLOUD_HOSTED_MULTI_USER=1` to add the hosted multi-user path. With the dev secret, the drill creates distinct synthetic owner, peer, and third users, accepts a cloud session invite, joins the kernel session through the hosted relay, and verifies multi-user workflow ownership and redaction over the remote relay transport.
+
 ## MCP/Skill Drills
 
 `live-mcp-skill-drill.mjs` is local-only for now. It installs a real Playwright MCP into an isolated Arroba registry, optionally installs GitHub MCP when `--include-github-mcp` is set and `GITHUB_PERSONAL_ACCESS_TOKEN` or `GITHUB_TOKEN` is present, installs a deterministic local drill skill, attempts to install a public web skill repo, and verifies per-agent grants plus same-turn skill requests.
@@ -124,6 +138,19 @@ WebSocket, WSS, Slack-shaped signed slash commands, Telegram webhook-secret
 requests, Discord Ed25519 interactions, WhatsApp HMAC webhooks, and Signal
 bridge-secret webhooks. IPC is intentionally excluded because it is a local
 process connector rather than a network ingress connector.
+
+Use this to validate the semantic URL renderer application shape on top of
+workflow publication:
+
+```bash
+pnpm --filter @arroba/cli run semantic-url-renderer:drill
+```
+
+It creates a CLI/shell-driven session with one Codex `gpt-5.4` agent, builds a
+small static website, creates and publishes a one-node workflow with a custom
+parser, then serves URLs like `/about/<prompt>` through an async wrapper. The
+first response must be a loading page; later polling must return the workflow
+rendered HTML page with prompt-driven styling.
 
 ## Kernel Reconnect Drill
 
