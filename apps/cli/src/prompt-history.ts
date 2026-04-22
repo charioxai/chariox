@@ -21,6 +21,8 @@ export type PromptHistoryKeyPolicy = {
   promptFocused: boolean
   commandCenterOpen: boolean
   keyName: string
+  currentText?: string | undefined
+  cursorOffset?: number | undefined
   eventType?: string | undefined
   ctrl?: boolean | undefined
   meta?: boolean | undefined
@@ -59,12 +61,35 @@ export function promptHistoryDirectionForKey(
     return null
   }
   if (options.keyName === "up") {
+    if (!cursorIsOnFirstPromptLine(options.currentText ?? "", options.cursorOffset ?? 0)) {
+      return null
+    }
     return "previous"
   }
   if (options.keyName === "down") {
+    if (!cursorIsOnLastPromptLine(options.currentText ?? "", options.cursorOffset ?? 0)) {
+      return null
+    }
     return "next"
   }
   return null
+}
+
+export function cursorIsOnFirstPromptLine(text: string, cursorOffset: number): boolean {
+  const offset = boundedCursorOffset(text, cursorOffset)
+  return !text.slice(0, offset).includes("\n")
+}
+
+export function cursorIsOnLastPromptLine(text: string, cursorOffset: number): boolean {
+  const offset = boundedCursorOffset(text, cursorOffset)
+  return !text.slice(offset).includes("\n")
+}
+
+function boundedCursorOffset(text: string, cursorOffset: number): number {
+  if (!Number.isFinite(cursorOffset)) {
+    return text.length
+  }
+  return Math.max(0, Math.min(text.length, Math.floor(cursorOffset)))
 }
 
 export function pushPromptHistoryEntry(

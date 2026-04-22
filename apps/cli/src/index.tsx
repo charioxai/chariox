@@ -6531,6 +6531,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       promptFocused: Boolean(promptInput?.focused),
       commandCenterOpen: commandCenterOpen(),
       keyName: event.name,
+      currentText: promptInput?.plainText ?? promptTextSnapshot,
+      cursorOffset: promptInput?.cursorOffset ?? promptTextSnapshot.length,
       eventType: event.eventType,
       ctrl: event.ctrl,
       meta: event.meta,

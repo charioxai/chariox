@@ -2,6 +2,8 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  cursorIsOnFirstPromptLine,
+  cursorIsOnLastPromptLine,
   extractPromptHistoryEntries,
   isProgrammaticPromptContentEcho,
   navigatePromptHistory,
@@ -195,4 +197,46 @@ test("promptHistoryDirectionForKey yields to the command center and modifiers", 
     commandCenterOpen: false,
     keyName: "down",
   }), "next")
+})
+
+test("promptHistoryDirectionForKey yields multiline prompts to cursor navigation", () => {
+  assert.equal(promptHistoryDirectionForKey({
+    attached: true,
+    promptFocused: true,
+    commandCenterOpen: false,
+    keyName: "up",
+    currentText: "first\nsecond",
+    cursorOffset: "first\nsecond".length,
+  }), null)
+  assert.equal(promptHistoryDirectionForKey({
+    attached: true,
+    promptFocused: true,
+    commandCenterOpen: false,
+    keyName: "up",
+    currentText: "first\nsecond",
+    cursorOffset: 2,
+  }), "previous")
+  assert.equal(promptHistoryDirectionForKey({
+    attached: true,
+    promptFocused: true,
+    commandCenterOpen: false,
+    keyName: "down",
+    currentText: "first\nsecond",
+    cursorOffset: 2,
+  }), null)
+  assert.equal(promptHistoryDirectionForKey({
+    attached: true,
+    promptFocused: true,
+    commandCenterOpen: false,
+    keyName: "down",
+    currentText: "first\nsecond",
+    cursorOffset: "first\nsecond".length,
+  }), "next")
+})
+
+test("prompt cursor line helpers clamp offsets", () => {
+  assert.equal(cursorIsOnFirstPromptLine("first\nsecond", -10), true)
+  assert.equal(cursorIsOnFirstPromptLine("first\nsecond", 999), false)
+  assert.equal(cursorIsOnLastPromptLine("first\nsecond", -10), false)
+  assert.equal(cursorIsOnLastPromptLine("first\nsecond", 999), true)
 })
