@@ -70,6 +70,10 @@ For non-interactive staging drills, set `ARROBA_CLOUD_DEV_AUTH_SECRET` to the ma
 
 Set `ARROBA_CLOUD_HOSTED_MULTI_USER=1` to add the hosted multi-user path. With the dev secret, the drill creates distinct synthetic owner, peer, and third users, accepts a cloud session invite, joins the kernel session through the hosted relay, and verifies multi-user workflow ownership and redaction over the remote relay transport.
 
+Set `ARROBA_CLOUD_HOSTED_REMOTE_CLI=1` to launch a real CLI over SSH on the configured remote host and verify it creates a session through the hosted relay. The default remote target is `root@195.201.123.115` with key `~/.ssh/arroba_hetzner_staging` and repo `/opt/arroba-cli-drill`; override them with `ARROBA_CLOUD_HOSTED_REMOTE_CLI_HOST`, `ARROBA_CLOUD_HOSTED_REMOTE_CLI_KEY`, and `ARROBA_CLOUD_HOSTED_REMOTE_CLI_REPO`. The remote host must have Node, Bun, and a built Arroba CLI.
+
+Set `ARROBA_CLOUD_HOSTED_SECOND_KERNEL=1` to launch a second local kernel as a cloud-paired remote machine through the hosted relay. That path uses a `dev-stub` remote agent so it validates remote-machine leasing, prompt dispatch, and completion without requiring provider-account login on the worker machine.
+
 ## MCP/Skill Drills
 
 `live-mcp-skill-drill.mjs` is local-only for now. It installs a real Playwright MCP into an isolated Arroba registry, optionally installs GitHub MCP when `--include-github-mcp` is set and `GITHUB_PERSONAL_ACCESS_TOKEN` or `GITHUB_TOKEN` is present, installs a deterministic local drill skill, attempts to install a public web skill repo, and verifies per-agent grants plus same-turn skill requests.

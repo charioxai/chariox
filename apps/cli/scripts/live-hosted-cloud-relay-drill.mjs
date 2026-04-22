@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
 import { mkdir, rm } from "node:fs/promises"
+import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -11,6 +12,11 @@ const repoRoot = path.resolve(cliRoot, "..", "..")
 const apiUrl = (process.env.ARROBA_CLOUD_HOSTED_API_URL ?? "https://arroba-cloud-staging.osc-fr1.scalingo.io").replace(/\/$/, "")
 const pollTimeoutMs = Number(process.env.ARROBA_CLOUD_HOSTED_POLL_TIMEOUT_MS ?? 10 * 60 * 1000)
 const runMultiUser = process.env.ARROBA_CLOUD_HOSTED_MULTI_USER === "1"
+const runSecondKernel = process.env.ARROBA_CLOUD_HOSTED_SECOND_KERNEL === "1"
+const runRemoteCli = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI === "1"
+const remoteCliHost = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_HOST ?? "root@195.201.123.115"
+const remoteCliKey = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_KEY ?? path.join(os.homedir(), ".ssh/arroba_hetzner_staging")
+const remoteCliRepo = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_REPO ?? "/opt/arroba-cli-drill"
 const devAuthSecret = process.env.ARROBA_CLOUD_DEV_AUTH_SECRET ?? ""
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -64,6 +70,33 @@ function spawnProcess(command, args, options) {
   return child
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`
+}
+
+function sshArgs(command, options = {}) {
+  const args = [
+    "-i",
+    options.key ?? remoteCliKey,
+    "-o",
+    "IdentitiesOnly=yes",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=10",
+  ]
+  if (options.tty) args.push("-tt")
+  args.push(options.host ?? remoteCliHost, command)
+  return args
+}
+
+async function runSsh(command, options = {}) {
+  return await run("ssh", sshArgs(command, options), {
+    cwd: options.cwd ?? repoRoot,
+    env: options.env ?? process.env,
+  })
+}
+
 async function terminateChild(child, signal = "SIGTERM") {
   if (!child || child.exitCode != null) return
   child.kill(signal)
@@ -81,13 +114,38 @@ async function buildKernelIfNeeded() {
   return binary
 }
 
-function makePorts() {
-  const base = 56000 + Math.floor(Math.random() * 1000)
+async function getFreePort() {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.on("error", reject)
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address()
+      server.close(() => {
+        if (address && typeof address === "object") {
+          resolve(address.port)
+        } else {
+          reject(new Error("failed to allocate a free port"))
+        }
+      })
+    })
+  })
+}
+
+async function makePorts() {
   return {
-    kernelPort: base,
-    mcpPort: base + 1000,
-    opencodePort: base + 2000,
-    codexPort: base + 2001,
+    kernelPort: await getFreePort(),
+    mcpPort: await getFreePort(),
+    opencodePort: await getFreePort(),
+    codexPort: await getFreePort(),
+  }
+}
+
+async function makeWorkerPorts() {
+  return {
+    kernelPort: await getFreePort(),
+    mcpPort: await getFreePort(),
+    opencodePort: await getFreePort(),
+    codexPort: await getFreePort(),
   }
 }
 
@@ -156,6 +214,47 @@ async function postJson(url, body, headers = {}) {
     throw new Error(`POST ${url} failed with ${response.status}: ${await response.text()}`)
   }
   return response.json().catch(() => null)
+}
+
+async function createPairingToken({ accountId, userId, subjectKind }) {
+  const response = await postJson(`${apiUrl}/pairing-tokens`, {
+    accountId,
+    createdByUserId: userId,
+    subjectKind,
+  })
+  assert(response?.token, "cloud pairing token should be returned", response)
+  return response.token
+}
+
+async function pairCloudMachineDirect({ profile, machineId, alias }) {
+  const token = await createPairingToken({
+    accountId: profile.accountId,
+    userId: profile.userId,
+    subjectKind: "machine",
+  })
+  const response = await postJson(`${apiUrl}/machines/pair`, {
+    accountId: profile.accountId,
+    token,
+    machineId,
+    userId: profile.userId,
+    alias,
+  })
+  assert(response?.machineId === machineId, "cloud machine pair should return the paired machine id", response)
+  return response
+}
+
+async function issueMachineRelayToken({ profile, machineId }) {
+  const response = await postJson(`${apiUrl}/relay/token`, {
+    sessionToken: profile.cloudSessionToken,
+    accountId: profile.accountId,
+    subject: machineId,
+    subjectKind: "machine",
+    realmId: profile.realmId,
+    userId: profile.userId,
+    machineId,
+  })
+  assert(response?.token, "machine relay token should be returned", response)
+  return response.token
 }
 
 async function approveDevDeviceLogin({ role, userCode, accountSlug }) {
@@ -607,7 +706,7 @@ async function runHostedMultiUserAssertions({
 
 async function waitForRelayTarget(LocalIpcClient, requests, relayUrl, relayToken, targetDaemonAlias) {
   let lastError = null
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
     const client = new LocalIpcClient(relayUrl, {
       relayAuthToken: relayToken,
       targetDaemonAlias,
@@ -624,10 +723,304 @@ async function waitForRelayTarget(LocalIpcClient, requests, relayUrl, relayToken
     } catch (error) {
       lastError = error
       await client.close().catch(() => {})
+      if (attempt === 0 || attempt % 10 === 9) {
+        log("relay-target-wait-retry", {
+          targetDaemonAlias,
+          attempt: attempt + 1,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
       await sleep(250)
     }
   }
   throw new Error(`relay target did not become reachable: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
+}
+
+async function waitForRemoteMachine(client, requests, machineRef) {
+  let lastError = null
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    try {
+      const listed = unwrap(
+        await Promise.race([
+          client.send(requests.listRemoteMachineKernelsRequest(machineRef)),
+          sleep(2_000).then(() => { throw new Error("remote machine kernel list timeout") }),
+        ]),
+        "RemoteMachineKernelsListed",
+      )
+      if ((listed.kernels ?? []).some((kernel) => kernel.accepting_remote_leases)) {
+        return listed
+      }
+    } catch (error) {
+      lastError = error
+      if (attempt === 0 || attempt % 10 === 9) {
+        log("remote-machine-wait-retry", {
+          machineRef,
+          attempt: attempt + 1,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    await sleep(500)
+  }
+  throw new Error(`remote machine ${machineRef} did not become ready: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
+}
+
+async function waitForCompletion(eventLog, timeoutMs, baselineCount = 0) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const completions = eventLog.filter((event) => event.event === "assistant_message_completed")
+    if (completions.length > baselineCount) {
+      return completions[completions.length - 1]
+    }
+    await sleep(100)
+  }
+  throw new Error("timed out waiting for assistant completion")
+}
+
+async function waitForRemoteSocket(socketPath, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    const result = await runSsh(`[ -S ${shellQuote(socketPath)} ]`)
+    if (result.code === 0) return
+    lastError = result.stderr || result.stdout || `exit ${result.code}`
+    await sleep(250)
+  }
+  throw new Error(`remote automation socket did not become ready: ${lastError}`)
+}
+
+async function remoteAutomation(socketPath, action, fields = {}) {
+  const request = JSON.stringify({ id: 1, action, ...fields })
+  const code = `
+const net = require("node:net");
+const socketPath = process.argv[1];
+const request = JSON.parse(process.argv[2]);
+const socket = net.createConnection(socketPath);
+socket.setEncoding("utf8");
+let buffer = "";
+socket.on("data", (chunk) => {
+  buffer += chunk;
+  const newline = buffer.indexOf("\\n");
+  if (newline === -1) return;
+  console.log(buffer.slice(0, newline));
+  socket.end();
+});
+socket.on("error", (error) => {
+  console.error(error.message);
+  process.exit(1);
+});
+socket.write(JSON.stringify(request) + "\\n");
+`
+  const result = await runSsh(
+    `export PATH=/root/.bun/bin:/opt/node-v22/bin:$PATH; node -e ${shellQuote(code)} ${shellQuote(socketPath)} ${shellQuote(request)}`,
+  )
+  if (result.code !== 0) {
+    throw new Error(`remote automation ${action} failed\n${result.stdout}\n${result.stderr}`)
+  }
+  const line = result.stdout.trim().split("\n").filter(Boolean).at(-1)
+  assert(line, `remote automation ${action} should return a response`, result)
+  const response = JSON.parse(line)
+  if (!response.ok) {
+    throw new Error(`remote automation ${action} rejected: ${response.error ?? "unknown error"}`)
+  }
+  return response.data
+}
+
+async function runHostedRemoteCliAssertions({
+  requests,
+  verificationClient,
+  relayUrl,
+  relayToken,
+  targetDaemonAlias,
+}) {
+  const remoteId = `${process.pid}-${Date.now()}`
+  const remoteAlias = `hosted-remote-cli-${remoteId}`
+  const remoteClientId = `hosted-remote-client-${remoteId}`
+  const remoteWorkspace = `/tmp/arroba-hosted-remote-cli-${remoteId}`
+  const remoteSocket = `/tmp/arroba-hosted-remote-cli-${remoteId}.sock`
+  const remoteCommand = [
+    "set -e",
+    "export PATH=/root/.bun/bin:/opt/node-v22/bin:$PATH",
+    "export ARROBA_TEST_TUI=1",
+    `mkdir -p ${shellQuote(remoteWorkspace)}`,
+    `cd ${shellQuote(path.posix.join(remoteCliRepo, "apps/cli"))}`,
+    [
+      "bun",
+      "dist/index.js",
+      "--relay-url",
+      shellQuote(relayUrl),
+      "--relay-token",
+      shellQuote(relayToken),
+      "--target-daemon-alias",
+      shellQuote(targetDaemonAlias),
+      "--automation-socket",
+      shellQuote(remoteSocket),
+      "--create-session",
+      "--alias",
+      shellQuote(remoteAlias),
+      "--workspace",
+      shellQuote(remoteWorkspace),
+      "--worktree",
+      shellQuote(remoteWorkspace),
+      "--client-id",
+      shellQuote(remoteClientId),
+      "--provider",
+      "dev-stub",
+      "--model",
+      "remote-cli-drill",
+      "--effort",
+      "low",
+    ].join(" "),
+  ].join("; ")
+
+  let remoteCli = null
+  try {
+    log("remote-cli-start", { host: remoteCliHost, repo: remoteCliRepo, alias: remoteAlias })
+    remoteCli = spawnProcess("ssh", sshArgs(remoteCommand, { tty: true }), {
+      cwd: repoRoot,
+      env: process.env,
+      name: "remote-cli",
+    })
+    try {
+      await waitForRemoteSocket(remoteSocket)
+    } catch (error) {
+      throw new Error(`${error instanceof Error ? error.message : String(error)}\nremote alias: ${remoteAlias}`)
+    }
+    await remoteAutomation(remoteSocket, "ping")
+    const snapshot = await remoteAutomation(remoteSocket, "wait_for", { screen: "agents", timeoutMs: 10_000 })
+    assert(snapshot.session?.id, "remote CLI should attach to a session", snapshot)
+    const listed = unwrap(
+      await verificationClient.send(requests.listSessionsRequest()),
+      "SessionsListed",
+    )
+    const remoteSession = listed.sessions?.find((session) => session.alias === remoteAlias)
+    assert(remoteSession, "home kernel should list the session created by the remote CLI", {
+      remoteAlias,
+      sessions: listed.sessions,
+    })
+    assert(remoteSession.id === snapshot.session.id, "remote CLI snapshot should match home kernel session", {
+      snapshotSession: snapshot.session,
+      remoteSession,
+    })
+    await remoteAutomation(remoteSocket, "exit").catch(() => {})
+    await verificationClient.send(requests.endSessionRequest(remoteSession.id)).catch(() => {})
+    log("remote-cli-pass", {
+      host: remoteCliHost,
+      sessionId: remoteSession.id,
+      alias: remoteAlias,
+    })
+  } finally {
+    await terminateChild(remoteCli)
+    await runSsh(`rm -f ${shellQuote(remoteSocket)}; rm -rf ${shellQuote(remoteWorkspace)}`).catch(() => {})
+  }
+}
+
+async function runHostedSecondKernelAssertions({
+  LocalIpcClient,
+  requests,
+  kernelPath,
+  rootDir,
+  workspace,
+  homeClient,
+  ownerProfile,
+  ownerClientId,
+}) {
+  const workerPorts = await makeWorkerPorts()
+  const workerDaemonId = `hosted-worker-daemon-${process.pid}-${Date.now()}`
+  const workerAlias = `hosted-worker-${process.pid}`
+
+  log("second-kernel-cloud-pair-machine", { machineId: workerDaemonId, alias: workerAlias })
+  await pairCloudMachineDirect({
+    profile: ownerProfile,
+    machineId: workerDaemonId,
+    alias: workerAlias,
+  })
+  const workerRelayToken = await issueMachineRelayToken({
+    profile: ownerProfile,
+    machineId: workerDaemonId,
+  })
+  const workerEnv = {
+    ...process.env,
+    ARROBA_KERNEL_PORT: String(workerPorts.kernelPort),
+    ARROBA_MCP_PORT: String(workerPorts.mcpPort),
+    ARROBA_OPENCODE_PORT: String(workerPorts.opencodePort),
+    ARROBA_CODEX_PORT: String(workerPorts.codexPort),
+    ARROBA_RELAY_URL: ownerProfile.relayUrl,
+    ARROBA_RELAY_TOKEN: workerRelayToken,
+    ARROBA_DAEMON_ID: workerDaemonId,
+    ARROBA_DAEMON_ALIAS: workerAlias,
+    ARROBA_MACHINE_ID: workerDaemonId,
+    ARROBA_MACHINE_ALIAS: workerAlias,
+    ARROBA_ACCEPT_REMOTE_LEASES: "1",
+    ARROBA_DAEMON_SOCKET: path.join(rootDir, "worker-daemon.sock"),
+    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, "worker-session-history"),
+  }
+
+  let worker = null
+  const eventLog = []
+  try {
+    log("start-second-kernel", { workerAlias })
+    worker = spawnProcess(kernelPath, [], { cwd: repoRoot, env: workerEnv, name: "worker-kernel" })
+
+    const workerClientToken = await issueSessionScopedClientToken(apiUrl, {
+      sessionToken: ownerProfile.cloudSessionToken,
+      accountId: ownerProfile.accountId,
+      realmId: ownerProfile.realmId,
+      subject: ownerClientId,
+      userId: ownerProfile.userId,
+      clientId: ownerClientId,
+      targetDaemonAlias: workerAlias,
+    })
+    await waitForRelayTarget(
+      LocalIpcClient,
+      requests,
+      ownerProfile.relayUrl,
+      workerClientToken,
+      workerAlias,
+    )
+
+    await waitForRemoteMachine(homeClient, requests, workerDaemonId)
+    const created = unwrap(
+      await homeClient.send(requests.createSessionRequest(workspace, workspace)),
+      "SessionCreated",
+    )
+    const session = created.session
+    const attachment = unwrap(
+      await homeClient.send(requests.attachToSessionRequest(session.id, `hosted-second-kernel-${Date.now()}`)),
+      "SessionAttached",
+    ).attachment
+    homeClient.onKernelEvent((event) => {
+      eventLog.push({ ...event, observed_at_ms: Date.now() })
+    })
+    await homeClient.subscribeToKernelEvents(session.id, attachment.id)
+
+    const spawned = unwrap(
+      await homeClient.send(requests.spawnAgentRequest(session.id, "dev-stub", "hosted-worker-agent", "hosted-second-kernel", workspace, "low", workerDaemonId)),
+      "AgentSpawned",
+    )
+    assert(spawned.agent?.remote_execution?.worker_machine_id === workerDaemonId, "remote dev-stub agent should be leased to the second kernel", spawned)
+    await homeClient.send(requests.submitPromptRequest(
+      session.id,
+      attachment.id,
+      spawned.agent.id,
+      "Reply with exactly HOSTED_SECOND_KERNEL_OK.",
+      [],
+    ))
+    const completed = unwrap(
+      await homeClient.send({ CompletePrompt: { session_id: session.id } }),
+      "PromptCompleted",
+    )
+    await waitForCompletion(eventLog, pollTimeoutMs, 0)
+    await homeClient.send(requests.endSessionRequest(session.id)).catch(() => {})
+    log("second-kernel-pass", {
+      machineId: workerDaemonId,
+      workerAlias,
+      agentId: spawned.agent.id,
+      completedPromptId: completed.completion?.completed?.id ?? null,
+    })
+  } finally {
+    await terminateChild(worker)
+  }
 }
 
 function createHostedCommandDeps({
@@ -762,7 +1155,7 @@ function createHostedCommandDeps({
 }
 
 async function main() {
-  const ports = makePorts()
+  const ports = await makePorts()
   const runId = `hosted-cloud-relay-${process.pid}-${Date.now()}`
   const rootDir = path.join(os.tmpdir(), runId)
   const workspace = path.join(rootDir, "workspace")
@@ -897,6 +1290,16 @@ async function main() {
       listed,
     )
 
+    if (runRemoteCli) {
+      await runHostedRemoteCliAssertions({
+        requests,
+        verificationClient: remoteClient,
+        relayUrl: clientRelay.relayUrl,
+        relayToken: clientRelay.relayToken,
+        targetDaemonAlias: daemonAlias,
+      })
+    }
+
     if (runMultiUser) {
       await runHostedMultiUserAssertions({
         LocalIpcClient,
@@ -917,12 +1320,27 @@ async function main() {
       })
     }
 
+    if (runSecondKernel) {
+      await runHostedSecondKernelAssertions({
+        LocalIpcClient,
+        requests,
+        kernelPath,
+        rootDir,
+        workspace,
+        homeClient: localClient,
+        ownerProfile: profileRef.current,
+        ownerClientId: clientId,
+      })
+    }
+
     log("pass", {
       apiUrl,
       relayUrl: clientRelay.relayUrl,
       accountSlug: profileRef.current.accountSlug,
       sessionId: created.session.id,
       multiUser: runMultiUser,
+      remoteCli: runRemoteCli,
+      secondKernel: runSecondKernel,
     })
   } finally {
     await remoteClient?.close().catch(() => {})
