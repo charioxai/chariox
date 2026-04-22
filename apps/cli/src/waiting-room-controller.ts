@@ -9,6 +9,7 @@ import type { ThemeRegistry } from "./theme-registry.js"
 import {
   normalizeWaitingRoomState,
   waitingRoomChoice,
+  type WaitingRoomRemoteState,
   type WaitingRoomState,
 } from "./waiting-room.js"
 
@@ -55,6 +56,7 @@ export function deriveWaitingRoomStateUpdate(options: {
   nextState: WaitingRoomState
   sessions: SessionListEntry[]
   catalog: ProviderCatalog
+  remote?: WaitingRoomRemoteState
   themeRegistry?: ThemeRegistry
   currentProvider: BackendProviderId
   currentModel: string
@@ -64,6 +66,7 @@ export function deriveWaitingRoomStateUpdate(options: {
     options.sessions,
     options.catalog,
     options.themeRegistry,
+    options.remote,
   )
   const nextModel = normalizedState.modelId || options.currentModel
 

@@ -165,6 +165,48 @@ test("waiting room places join below start configuration and makes cloud relay l
   assert.equal(relayConfigure?.focused, true)
 })
 
+test("waiting room shows relay kernels as selectable targets", () => {
+  const catalog = fallbackProviderCatalog()
+  let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+  const remote = {
+    relay: {
+      configured: true,
+      connected: true,
+      relay_url: "wss://relay.example",
+    },
+    machines: [{
+      machine_id: "machine-1",
+      machine_alias: "builder",
+      display_name: "builder",
+      trust_status: "approved" as const,
+      online: true,
+      pending: false,
+      kernel_count: 1,
+      available_providers: ["opencode"],
+    }],
+    kernels: [{
+      kernel_id: "kernel-1",
+      machine_id: "machine-1",
+      machine_alias: "builder",
+      relay_alias: "builder-kernel",
+      available_providers: ["opencode", "codex"],
+      accepting_remote_leases: true,
+      leased_agent_count: 0,
+      local_session_count: 2,
+    }],
+  }
+
+  state = moveWaitingRoomFocus(state, [], 5, remote)
+  assert.equal(state.focus, "remote-kernel")
+
+  const rows = waitingRoomRows(state, [], catalog, remote)
+  const kernelRow = rows.find((row) => row.id === "remote-kernel:kernel-1")
+  assert.equal(kernelRow?.title, "builder-kernel @ builder")
+  assert.equal(kernelRow?.value, "ready opencode,codex")
+  assert.equal(kernelRow?.selectable, true)
+  assert.equal(kernelRow?.focused, true)
+})
+
 test("waiting room keeps session metadata column widths stable across scroll windows", () => {
   const catalog = fallbackProviderCatalog()
   const sessions = Array.from({ length: 12 }, (_, index) => ({

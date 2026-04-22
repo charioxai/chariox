@@ -431,6 +431,19 @@ type RemoteMachineView = {
   available_providers?: string[]
 }
 
+type RemoteKernelView = {
+  kernel_id: string
+  machine_id: string
+  machine_alias?: string | null
+  kernel_alias?: string | null
+  relay_alias?: string | null
+  available_providers?: string[]
+  capabilities?: string[]
+  accepting_remote_leases?: boolean
+  leased_agent_count?: number
+  local_session_count?: number
+}
+
 type HotkeySection = {
   title: string
   items: HotkeyItem[]
@@ -766,6 +779,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [themeRegistryState] = createSignal(initialThemeRegistry)
   const [relayStatusState, setRelayStatusState] = createSignal<RelayStatusView | null>(null)
   const [remoteMachinesState, setRemoteMachinesState] = createSignal<RemoteMachineView[]>([])
+  const [remoteKernelsState, setRemoteKernelsState] = createSignal<RemoteKernelView[]>([])
   const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
     createWaitingRoomState(
       initialSessions,
@@ -1488,6 +1502,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       nextState: next,
       sessions: availableSessions(),
       catalog: providerCatalogState(),
+      remote: {
+        relay: relayStatusState(),
+        machines: remoteMachinesState(),
+        kernels: remoteKernelsState(),
+      },
       themeRegistry: themeRegistryState(),
       currentProvider: (options.provider ?? "opencode") as BackendProviderId,
       currentModel: options.model,
@@ -1528,6 +1547,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         promptInput?.focus()
         syncCommandCenter("/relay cloud login")
         flashFooter("press Enter to open Arroba Cloud login", "info")
+        return
+      }
+      if (waitingRoomState().focus === "remote-kernel") {
+        const kernel = remoteKernelsState()[waitingRoomState().remoteKernelIndex]
+        if (!kernel) {
+          flashFooter("no remote kernel selected", "error")
+          return
+        }
+        const target = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
+        const command = `/relay cloud client-token ${target}`
+        setPromptText(command)
+        promptInput?.focus()
+        syncCommandCenter(command)
+        flashFooter(`press Enter to mint a relay token for ${target}`, "info")
         return
       }
       const decision = deriveWaitingRoomActivationDecision({
@@ -1593,9 +1626,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return []
       })
       : []
+    const kernels = relayStatus?.configured
+      ? (await Promise.all(
+          machines
+            .filter((machine) => machine.online !== false && !machine.pending && machine.kernel_count > 0)
+            .map((machine) => listRemoteMachineKernels(client, machine.machine_id).catch((error) => {
+              appLogger?.warn("remote machine kernel refresh failed", {
+                machine_id: machine.machine_id,
+                error: formatError(error),
+              })
+              return [] as RemoteKernelView[]
+            })),
+        )).flat()
+      : []
     setAvailableSessions(sessions)
     setRelayStatusState(relayStatus)
     setRemoteMachinesState(machines)
+    setRemoteKernelsState(kernels)
     reconcileWaitingRoom(waitingRoomState())
   }
   const refreshWaitingRoomData = async () => {
@@ -4937,6 +4984,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState(), {
           relay: relayStatusState(),
           machines: remoteMachinesState(),
+          kernels: remoteKernelsState(),
         }, themeRegistryState())
       transcriptScrollbox.add(emptyTranscriptRenderable)
       if (isAttached()) {
@@ -6757,9 +6805,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         if (event.eventType !== "release") {
           reconcileWaitingRoom(
             keyName === "up"
-              ? moveWaitingRoomFocus(next, availableSessions(), -1)
+              ? moveWaitingRoomFocus(next, availableSessions(), -1, {
+                  relay: relayStatusState(),
+                  machines: remoteMachinesState(),
+                  kernels: remoteKernelsState(),
+                })
               : keyName === "down"
-                ? moveWaitingRoomFocus(next, availableSessions(), 1)
+                ? moveWaitingRoomFocus(next, availableSessions(), 1, {
+                    relay: relayStatusState(),
+                    machines: remoteMachinesState(),
+                    kernels: remoteKernelsState(),
+                  })
                 : cycleWaitingRoomValue(next, availableSessions(), providerCatalogState(), keyName === "left" ? -1 : 1, themeRegistryState()),
           )
           return
@@ -8385,30 +8441,10 @@ async function renameRemoteMachine(
   return expectVariant<{ machine: RemoteMachineView }>(response, "RemoteMachineRenamed").machine
 }
 
-async function listRemoteMachineKernels(client: LocalIpcClient, machineRef: string): Promise<Array<{
-  kernel_id: string
-  machine_id: string
-  machine_alias?: string | null
-  kernel_alias?: string | null
-  available_providers?: string[]
-  capabilities?: string[]
-  accepting_remote_leases?: boolean
-  leased_agent_count?: number
-  local_session_count?: number
-}>> {
+async function listRemoteMachineKernels(client: LocalIpcClient, machineRef: string): Promise<RemoteKernelView[]> {
   const response = await client.send<Record<string, unknown>>(listRemoteMachineKernelsRequest(machineRef))
   const payload = expectVariant<{
-    kernels: Array<{
-      kernel_id: string
-      machine_id: string
-      machine_alias?: string | null
-      kernel_alias?: string | null
-      available_providers?: string[]
-      capabilities?: string[]
-      accepting_remote_leases?: boolean
-      leased_agent_count?: number
-      local_session_count?: number
-    }>
+    kernels: RemoteKernelView[]
   }>(response, "RemoteMachineKernelsListed")
   return payload.kernels
 }

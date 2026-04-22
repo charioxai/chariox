@@ -377,6 +377,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
   return {
     focus: "new",
     sessionIndex: 0,
+    remoteKernelIndex: 0,
     providerId: "opencode",
     modelId: "openai/gpt-5.4",
     effort: "high",

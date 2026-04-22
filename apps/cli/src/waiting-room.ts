@@ -29,7 +29,7 @@ function formatWaitingRoomSessionTitle(session: SessionListEntry) {
   return `${session.id} (${session.alias})`
 }
 
-export type WaitingRoomFocus = "new" | "provider" | "model" | "effort" | "theme" | "session" | "relay"
+export type WaitingRoomFocus = "new" | "provider" | "model" | "effort" | "theme" | "session" | "relay" | "remote-kernel"
 
 export type WaitingRoomKeyState = {
   up: boolean
@@ -41,6 +41,7 @@ export type WaitingRoomKeyState = {
 export type WaitingRoomState = {
   focus: WaitingRoomFocus
   sessionIndex: number
+  remoteKernelIndex: number
   providerId: BackendProviderId
   modelId: string
   effort: string
@@ -65,6 +66,17 @@ export type WaitingRoomRemoteState = {
     kernel_count: number
     available_providers?: string[]
     pending?: boolean
+  }>
+  kernels?: Array<{
+    kernel_id: string
+    machine_id: string
+    machine_alias?: string | null
+    kernel_alias?: string | null
+    relay_alias?: string | null
+    available_providers?: string[]
+    accepting_remote_leases?: boolean
+    leased_agent_count?: number
+    local_session_count?: number
   }>
 }
 
@@ -94,6 +106,7 @@ export function createWaitingRoomState(
     {
       focus: "new",
       sessionIndex: 0,
+      remoteKernelIndex: 0,
       providerId,
       modelId: selected?.id ?? model,
       effort: selectConfiguredVariant(selected, effort),
@@ -112,16 +125,24 @@ export function normalizeWaitingRoomState(
   sessions: SessionListEntry[],
   catalog: ProviderCatalog,
   themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
+  remote: WaitingRoomRemoteState = {},
 ) {
   const visibleSessions = waitingRoomSessions(sessions)
+  const remoteKernels = waitingRoomRemoteKernels(remote)
   const providerId = normalizeBackendProvider(state.providerId)
   const selected = selectConfiguredModel(catalog, state.modelId, providerId)
   const efforts = waitingRoomEfforts(selected)
+  const focus = visibleSessions.length === 0 && state.focus === "session"
+    ? "new"
+    : remoteKernels.length === 0 && state.focus === "remote-kernel"
+      ? "relay"
+      : state.focus
   return {
     ...state,
-    focus: visibleSessions.length === 0 && state.focus === "session" ? "new" : state.focus,
+    focus,
     providerId,
     sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
+    remoteKernelIndex: remoteKernels.length === 0 ? 0 : modulo(state.remoteKernelIndex, remoteKernels.length),
     modelId: selected?.id ?? state.modelId,
     effort: efforts.includes(state.effort) ? state.effort : efforts[0] ?? "",
     themeId: normalizeThemeName(state.themeId, themeRegistry),
@@ -139,13 +160,19 @@ export function waitingRoomEfforts(option: CatalogModelOption | null) {
   return option.variants
 }
 
-export function moveWaitingRoomFocus(state: WaitingRoomState, sessions: SessionListEntry[], delta: number) {
-  const order = waitingRoomFocusTargets(sessions)
+export function moveWaitingRoomFocus(
+  state: WaitingRoomState,
+  sessions: SessionListEntry[],
+  delta: number,
+  remote: WaitingRoomRemoteState = {},
+) {
+  const order = waitingRoomFocusTargets(sessions, remote)
   const currentIndex = Math.max(
     0,
     order.findIndex((target) => (
       target.focus === state.focus
       && (target.focus !== "session" || target.sessionIndex === state.sessionIndex)
+      && (target.focus !== "remote-kernel" || target.remoteKernelIndex === state.remoteKernelIndex)
     )),
   )
   const next = order[modulo(currentIndex + delta, order.length)] ?? order[0]
@@ -157,6 +184,7 @@ export function moveWaitingRoomFocus(state: WaitingRoomState, sessions: SessionL
     ...state,
     focus: next.focus,
     sessionIndex: next.focus === "session" ? next.sessionIndex : state.sessionIndex,
+    remoteKernelIndex: next.focus === "remote-kernel" ? next.remoteKernelIndex : state.remoteKernelIndex,
   }
 }
 
@@ -217,11 +245,18 @@ export function cycleWaitingRoomValue(
   return state
 }
 
-export function waitingRoomChoice(state: WaitingRoomState, sessions: SessionListEntry[], catalog: ProviderCatalog) {
+export function waitingRoomChoice(
+  state: WaitingRoomState,
+  sessions: SessionListEntry[],
+  catalog: ProviderCatalog,
+  remote: WaitingRoomRemoteState = {},
+) {
   const visibleSessions = waitingRoomSessions(sessions)
   const model = waitingRoomModel(state, catalog)
+  const remoteKernels = waitingRoomRemoteKernels(remote)
   return {
     session: visibleSessions[state.sessionIndex] ?? null,
+    remoteKernel: remoteKernels[state.remoteKernelIndex] ?? null,
     providerId: state.providerId,
     model,
     effort: state.effort,
@@ -469,6 +504,47 @@ function waitingRoomRemoteRows(
       scrollbar: "",
     })
   }
+  const kernels = waitingRoomRemoteKernels(remote)
+  if (kernels.length > 0) {
+    rows.push({
+      id: "remote-kernels-header",
+      title: "Remote Kernels",
+      value: "",
+      titleWidth,
+      indent: 0,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    })
+    for (const [index, kernel] of kernels.slice(0, 6).entries()) {
+      const label = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
+      const machine = kernel.machine_alias ?? kernel.machine_id
+      const providers = (kernel.available_providers ?? []).join(",") || "no providers"
+      const status = kernel.accepting_remote_leases === false ? "not accepting leases" : "ready"
+      rows.push({
+        id: `remote-kernel:${kernel.kernel_id}`,
+        title: `${label} @ ${machine}`,
+        value: `${status} ${providers}`,
+        titleWidth,
+        indent: 1,
+        focused: state.focus === "remote-kernel" && state.remoteKernelIndex === index,
+        selectable: true,
+        scrollbar: "",
+      })
+    }
+    if (kernels.length > 6) {
+      rows.push({
+        id: "remote-kernels-more",
+        title: "More Remote Kernels",
+        value: `${kernels.length - 6} more`,
+        titleWidth,
+        indent: 1,
+        focused: false,
+        selectable: false,
+        scrollbar: "",
+      })
+    }
+  }
   if (machines.length > 4) {
     rows.push({
       id: "machines-more",
@@ -482,6 +558,10 @@ function waitingRoomRemoteRows(
     })
   }
   return rows
+}
+
+function waitingRoomRemoteKernels(remote: WaitingRoomRemoteState) {
+  return (remote.kernels ?? []).filter((kernel) => kernel.accepting_remote_leases !== false)
 }
 
 export function waitingRoomMenuMinWidth(sessions: SessionListEntry[]) {
@@ -552,8 +632,9 @@ function waitingRoomSessions(sessions: SessionListEntry[]) {
   return sessions.filter((session) => session.status !== "Ended")
 }
 
-function waitingRoomFocusTargets(sessions: SessionListEntry[]) {
+function waitingRoomFocusTargets(sessions: SessionListEntry[], remote: WaitingRoomRemoteState = {}) {
   const visibleSessions = waitingRoomSessions(sessions)
+  const remoteKernels = waitingRoomRemoteKernels(remote)
   return [
     { focus: "new" as const, sessionIndex: 0 },
     { focus: "provider" as const, sessionIndex: 0 },
@@ -561,8 +642,16 @@ function waitingRoomFocusTargets(sessions: SessionListEntry[]) {
     { focus: "effort" as const, sessionIndex: 0 },
     ...visibleSessions.map((_, sessionIndex) => ({ focus: "session" as const, sessionIndex })),
     { focus: "relay" as const, sessionIndex: 0 },
+    ...remoteKernels.map((_, remoteKernelIndex) => ({
+      focus: "remote-kernel" as const,
+      sessionIndex: 0,
+      remoteKernelIndex,
+    })),
     { focus: "theme" as const, sessionIndex: 0 },
-  ]
+  ].map((target) => ({
+    remoteKernelIndex: 0,
+    ...target,
+  }))
 }
 
 function waitingRoomSessionWindow(state: WaitingRoomState, sessions: SessionListEntry[]) {
