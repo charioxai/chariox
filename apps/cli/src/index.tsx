@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto"
 import { unlink } from "node:fs/promises"
 import { homedir } from "node:os"
 import { pathToFileURL } from "node:url"
-import { createServer, type Server as NetServer, type Socket as NetSocket } from "node:net"
+import { createConnection, createServer, type Server as NetServer, type Socket as NetSocket } from "node:net"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
@@ -584,44 +584,57 @@ async function main() {
     worktree_id: worktree,
     client_id: options.clientId,
   })
-  const bootstrap: BootstrapState = options.detached
-    ? {
-      client,
-      binding: null,
-      sessions: [],
-      providerCatalog: fallbackProviderCatalog(),
-      providerCommandCatalogs: fallbackProviderCommandCatalogs(),
-      options,
-      preferences,
+  if (!options.detached && isNoArgDefaultKernelLaunch(argv) && !(await isKernelEndpointReachable(kernelEndpoint))) {
+    getLogger("cli.main")?.warn("default local kernel unavailable; launching detached waiting room", {
+      kernel_endpoint: kernelEndpoint,
+    })
+    options.detached = true
+  }
+  let bootstrap: BootstrapState
+  if (options.detached) {
+    bootstrap = buildDetachedBootstrap(client, options, preferences)
+  } else {
+    try {
+      bootstrap = await bootstrapSession(client, options, workspace, worktree, preferences, {
+        logger: getLogger("cli.main"),
+        listSessions,
+        getProviderCatalog,
+        getProviderCommandCatalogs,
+        createSession,
+        resolveSession,
+        attachToSession,
+        getSessionState,
+        launchProviderRun,
+        tryGetProviderRun,
+        catchUpAttachedSession,
+        getSessionHistory,
+        resolveVisibleAgentId: (session, nextPreferences) => {
+          const focusedAgentId = session.focused_agent_id ?? session.agents[0]?.id ?? null
+          return selectResponsePaneAgents(
+            session.agents,
+            focusedAgentId,
+            sessionResponseLayout(session, nextPreferences.ui?.multiAgentResponseLayout) === "split",
+            resolveMaxAgentsPerScreen(nextPreferences.ui?.maxAgentsPerScreen),
+          ).visibleTranscriptAgentId
+        },
+        prepareHistoryEntries: (entries, session) =>
+          reindexTranscriptEntries(
+            hydrateTranscriptEntries(entries),
+            0,
+          ),
+      })
+    } catch (error) {
+      if (!isNoArgDefaultKernelLaunch(argv) || !isKernelEndpointUnavailableError(error)) {
+        throw error
+      }
+      getLogger("cli.main")?.warn("default local kernel unavailable; launching detached waiting room", {
+        kernel_endpoint: kernelEndpoint,
+        error: formatError(error),
+      })
+      options.detached = true
+      bootstrap = buildDetachedBootstrap(client, options, preferences)
     }
-    : await bootstrapSession(client, options, workspace, worktree, preferences, {
-    logger: getLogger("cli.main"),
-    listSessions,
-    getProviderCatalog,
-    getProviderCommandCatalogs,
-    createSession,
-    resolveSession,
-    attachToSession,
-    getSessionState,
-    launchProviderRun,
-    tryGetProviderRun,
-    catchUpAttachedSession,
-    getSessionHistory,
-    resolveVisibleAgentId: (session, nextPreferences) => {
-      const focusedAgentId = session.focused_agent_id ?? session.agents[0]?.id ?? null
-      return selectResponsePaneAgents(
-        session.agents,
-        focusedAgentId,
-        sessionResponseLayout(session, nextPreferences.ui?.multiAgentResponseLayout) === "split",
-        resolveMaxAgentsPerScreen(nextPreferences.ui?.maxAgentsPerScreen),
-      ).visibleTranscriptAgentId
-    },
-    prepareHistoryEntries: (entries, session) =>
-      reindexTranscriptEntries(
-        hydrateTranscriptEntries(entries),
-        0,
-      ),
-  })
+  }
   bootstrap.themeRegistry = themeRegistry
   if (bootstrap.binding) {
     getLogger("cli.main")?.info("bootstrapped cli session", {
@@ -648,6 +661,60 @@ async function main() {
     },
   )
   getLogger("cli.main")?.info("render mounted")
+}
+
+function buildDetachedBootstrap(
+  client: LocalIpcClient,
+  options: CliOptions,
+  preferences: BootstrapState["preferences"],
+): BootstrapState {
+  return {
+    client,
+    binding: null,
+    sessions: [],
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    options,
+    preferences,
+  }
+}
+
+function isNoArgDefaultKernelLaunch(argv: string[]): boolean {
+  return argv.length === 0
+}
+
+async function isKernelEndpointReachable(endpoint: string): Promise<boolean> {
+  let url: URL
+  try {
+    url = new URL(endpoint)
+  } catch {
+    return true
+  }
+  if (url.protocol !== "ws:" && url.protocol !== "wss:") {
+    return true
+  }
+  const port = Number(url.port || (url.protocol === "wss:" ? 443 : 80))
+  if (!Number.isFinite(port) || port <= 0) {
+    return true
+  }
+  return new Promise((resolve) => {
+    const socket = createConnection({ host: url.hostname, port })
+    const settle = (reachable: boolean) => {
+      socket.removeAllListeners()
+      socket.destroy()
+      resolve(reachable)
+    }
+    socket.setTimeout(500)
+    socket.once("connect", () => settle(true))
+    socket.once("error", () => settle(false))
+    socket.once("timeout", () => settle(false))
+  })
+}
+
+function isKernelEndpointUnavailableError(error: unknown): boolean {
+  const message = formatError(error)
+  return /\bECONNREFUSED\b|\bENOENT\b|\bEHOSTUNREACH\b|\bENETUNREACH\b|\bETIMEDOUT\b/i.test(message)
+    || /kernel transport `connect kernel websocket` failed: \[object ErrorEvent\]/i.test(message)
 }
 
 function ensureTranscriptParsersRegistered() {
