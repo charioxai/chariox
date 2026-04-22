@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { createHmac } from 'node:crypto'
 import { access, mkdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -45,6 +46,41 @@ const DEFAULT_WORKSPACE = repoRoot
 const DEFAULT_WORKTREE = repoRoot
 const DEFAULT_TIMEOUT_MS = 180_000
 const DEFAULT_POLL_MS = 1_000
+const RELAY_ISSUER = 'arroba-remote-machine-runtime-drill'
+const RELAY_SECRET = 'arroba-remote-machine-runtime-drill-secret'
+const RELAY_REALM = 'remote-machine-runtime-drill'
+
+function base64url(input) {
+  return Buffer.from(input).toString('base64url')
+}
+
+function signRelayToken(claims) {
+  const payload = base64url(JSON.stringify(claims))
+  const signature = createHmac('sha256', RELAY_SECRET).update(payload).digest('base64url')
+  return `arroba-scoped-v1.${payload}.${signature}`
+}
+
+function relayClaims({ subject, subjectKind, actions, userId = null, targets = null }) {
+  return {
+    issuer: RELAY_ISSUER,
+    subject,
+    subject_kind: subjectKind,
+    realm_id: RELAY_REALM,
+    allowed_actions: actions,
+    allowed_targets: targets,
+    issued_at_ms: Date.now(),
+    expires_at_ms: Date.now() + 10 * 60_000,
+    token_id: `${subject}-${Date.now()}`,
+    account_id: 'remote-machine-runtime-drill-account',
+    organization_id: null,
+    user_id: userId,
+    device_id: subject,
+    machine_id: subjectKind === 'kernel' || subjectKind === 'machine' ? subject : null,
+    client_id: subjectKind === 'client' ? subject : null,
+    public_key_thumbprint: `${subject}-thumbprint`,
+    entitlements_version: 'drill',
+  }
+}
 
 function parseArgs(argv) {
   const options = {
@@ -251,22 +287,40 @@ async function main() {
     submitPromptRequest,
   } } = await loadCliModules(cliRuntimeDir))
 
-  const relayToken = `relay-token-${process.pid}-${Date.now()}`
   const relayEnv = {
     ...process.env,
     ARROBA_RELAY_HOST: '127.0.0.1',
     ARROBA_RELAY_PORT: String(ports.relayPort),
-    ARROBA_RELAY_TOKEN: relayToken,
+    ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
+    ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
   }
   const homeDaemonId = `remote-machine-home-${process.pid}-${Date.now()}`
   const workerDaemonId = `remote-machine-worker-${process.pid}-${Date.now()}`
   const workerMachineId = `machine-worker-${process.pid}`
   const workerMachineAlias = `builder-west-${process.pid}`
+  const clientRelayToken = signRelayToken(relayClaims({
+    subject: `remote-machine-client-${process.pid}-${Date.now()}`,
+    subjectKind: 'client',
+    actions: ['client_connect', 'client_metadata_read', 'packet_route'],
+    userId: 'local',
+  }))
+  const homeRelayToken = signRelayToken(relayClaims({
+    subject: homeDaemonId,
+    subjectKind: 'kernel',
+    actions: ['daemon_register', 'daemon_heartbeat', 'peer_request', 'peer_event', 'client_metadata_read'],
+    userId: 'local',
+  }))
+  const workerRelayToken = signRelayToken(relayClaims({
+    subject: workerDaemonId,
+    subjectKind: 'kernel',
+    actions: ['daemon_register', 'daemon_heartbeat', 'peer_request', 'peer_event', 'client_metadata_read'],
+    userId: 'local',
+  }))
 
   const homeEnv = makeDaemonEnv({
     ports,
     rootDir,
-    relayToken,
+    relayToken: homeRelayToken,
     daemonId: homeDaemonId,
     daemonAlias: 'home',
     machineId: `machine-home-${process.pid}`,
@@ -281,7 +335,7 @@ async function main() {
   const workerEnv = makeDaemonEnv({
     ports,
     rootDir,
-    relayToken,
+    relayToken: workerRelayToken,
     daemonId: workerDaemonId,
     daemonAlias: 'worker',
     machineId: workerMachineId,
@@ -313,6 +367,7 @@ async function main() {
   let client = null
   let sessionId = null
   let eventLog = []
+  let cliDisplay = null
 
   try {
     relayChild = spawnProcess(relayBinary, [], { cwd: repoRoot, env: relayEnv })
@@ -320,9 +375,10 @@ async function main() {
     workerChild = spawnProcess(daemonBinary, [], { cwd: repoRoot, env: workerEnv })
 
     await waitForLocalDaemon(homeKernelUrl, options.workspace, options.worktree)
-    await waitForRelayTarget(relayUrl, relayToken, 'home')
-    await waitForRelayTarget(relayUrl, relayToken, 'worker')
+    await waitForRelayTarget(relayUrl, clientRelayToken, 'home')
+    await waitForRelayTarget(relayUrl, clientRelayToken, 'worker')
     client = new LocalIpcClient(homeKernelUrl)
+    await client.send({ ConfigureRelay: { relay_url: relayUrl, relay_token: homeRelayToken } })
     await waitForRemoteMachine(client, workerMachineId)
 
     const created = unwrap(await client.send(createSessionRequest(options.workspace, options.worktree)), 'SessionCreated')
@@ -348,6 +404,27 @@ async function main() {
     const selectedKernel = kernels.find((kernel) => kernel.accepting_remote_leases && (kernel.available_providers || []).includes(options.provider))
     if (!selectedKernel) {
       throw new Error(`no worker kernel on ${workerMachineId} advertises provider ${options.provider}`)
+    }
+
+    const [{ createWaitingRoomState, waitingRoomRows }, { fallbackProviderCatalog }] = await Promise.all([
+      import('../dist/waiting-room.js'),
+      import('../dist/provider-catalog.js'),
+    ])
+    const catalog = fallbackProviderCatalog()
+    const relayStatus = unwrapVariant(await client.send({ RelayStatus: null }), 'RelayStatus').status
+    const displayState = createWaitingRoomState([], catalog, 'opencode', 'openai/gpt-5.4', 'low')
+    const displayRows = waitingRoomRows(displayState, [], catalog, {
+      relay: relayStatus,
+      machines: remoteMachines,
+      kernels,
+    })
+    const displayedKernelRow = displayRows.find((row) => row.id === `remote-kernel:${selectedKernel.kernel_id}`)
+    if (!displayedKernelRow) {
+      throw new Error(`waiting room rows did not include remote kernel ${selectedKernel.kernel_id}\n${JSON.stringify(displayRows, null, 2)}`)
+    }
+    cliDisplay = {
+      row: displayedKernelRow,
+      rowCount: displayRows.length,
     }
 
     const providerModel = modelForProvider(options.provider, options)
@@ -424,6 +501,12 @@ async function main() {
         kernelId: selectedKernel.kernel_id,
         machineId: selectedKernel.machine_id,
         providers: selectedKernel.available_providers,
+      },
+      terminalCliDisplay: {
+        rowId: cliDisplay?.row?.id ?? null,
+        title: cliDisplay?.row?.title ?? null,
+        value: cliDisplay?.row?.value ?? null,
+        rowCount: cliDisplay?.rowCount ?? 0,
       },
       firstPrompt: {
         completePromptResponse: completeResponse?.completion?.completed?.id ?? null,

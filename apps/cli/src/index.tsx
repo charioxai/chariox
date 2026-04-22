@@ -298,6 +298,7 @@ import {
   createWaitingRoomState,
   cycleWaitingRoomValue,
   moveWaitingRoomFocus,
+  waitingRoomRows,
   type WaitingRoomFocus,
   type WaitingRoomState,
 } from "./waiting-room.js"
@@ -1620,13 +1621,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return null
       }),
     ])
-    const machines = relayStatus?.configured
-      ? await listRemoteMachines(client).catch((error) => {
-        appLogger?.warn("remote machine refresh failed", { error: formatError(error) })
-        return []
-      })
-      : []
-    const kernels = relayStatus?.configured
+    const machines = await listRemoteMachines(client).catch((error) => {
+      appLogger?.warn("remote machine refresh failed", { error: formatError(error) })
+      return []
+    })
+    const kernels = machines.length > 0
       ? (await Promise.all(
           machines
             .filter((machine) => machine.online !== false && !machine.pending && machine.kernel_count > 0)
@@ -6844,6 +6843,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         focusedAgentId: focusedAgentId(),
         agentCount: sessionState().agents.length,
       },
+      waitingRoom: !isAttached()
+        ? {
+          state: waitingRoomState(),
+          rows: waitingRoomRows(waitingRoomState(), availableSessions(), providerCatalogState(), {
+            relay: relayStatusState(),
+            machines: remoteMachinesState(),
+            kernels: remoteKernelsState(),
+          }, themeRegistryState()).map((row) => ({
+            id: row.id,
+            title: row.title,
+            value: row.value,
+            focused: row.focused,
+            selectable: row.selectable,
+          })),
+        }
+        : null,
       selectedWorkflowId: selectedWorkflowId(),
       selectedWorkflowNodeId: selectedWorkflowNodeId(),
       selectedWorkflow: selectedWorkflow

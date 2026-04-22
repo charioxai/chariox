@@ -461,7 +461,7 @@ function waitingRoomRemoteRows(
     },
   ]
 
-  if (!relay?.configured) {
+  if (!relay?.configured && machines.length === 0 && waitingRoomRemoteKernels(remote).length === 0) {
     rows.push({
       id: "machines-unavailable",
       title: "Remote Machines",
@@ -479,7 +479,7 @@ function waitingRoomRemoteRows(
     rows.push({
       id: "machines-none",
       title: "Remote Machines",
-      value: relay.connected ? "none online" : "waiting for relay connection",
+      value: relay?.connected ? "none online" : "waiting for relay connection",
       titleWidth,
       indent: 1,
       focused: false,
