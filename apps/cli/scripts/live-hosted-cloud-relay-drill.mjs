@@ -335,6 +335,7 @@ async function runHostedMultiUserAssertions({
   LocalIpcClient,
   requests,
   localClient,
+  ownerRemoteClient,
   ownerProfile,
   ownerClientId,
   workspace,
@@ -343,11 +344,11 @@ async function runHostedMultiUserAssertions({
 }) {
   log("multi-user-cloud-invites")
   const localInvite = unwrap(
-    await localClient.send(requests.createSessionInviteRequest(session.id, null, 2)),
+    await ownerRemoteClient.send(requests.createSessionInviteRequest(session.id, null, 2)),
     "SessionInviteCreated",
   )
   const cloudInvite = unwrap(
-    await localClient.send(requests.createCloudSessionInviteRequest(session.id, {
+    await ownerRemoteClient.send(requests.createCloudSessionInviteRequest(session.id, {
       displayName: "Hosted cloud relay multi-user drill",
       maxUses: 2,
     })),
@@ -901,6 +902,7 @@ async function main() {
         LocalIpcClient,
         requests,
         localClient,
+        ownerRemoteClient: remoteClient,
         ownerProfile: profileRef.current,
         ownerClientId: clientId,
         workspace,
