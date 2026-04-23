@@ -594,6 +594,8 @@ pub struct ArrobaUserConfig {
     pub relay: UserRelayConfig,
     #[serde(default)]
     pub kernel: UserKernelConfig,
+    #[serde(default)]
+    pub credential_vault: UserCredentialVaultConfig,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub credentials: Vec<UserCredentialConfig>,
 }
@@ -609,6 +611,7 @@ impl Default for ArrobaUserConfig {
             ui: UserUiConfig::default(),
             relay: UserRelayConfig::default(),
             kernel: UserKernelConfig::default(),
+            credential_vault: UserCredentialVaultConfig::default(),
             credentials: Vec::new(),
         }
     }
@@ -620,6 +623,7 @@ impl ArrobaUserConfig {
         self.history.validate()?;
         self.artifacts.validate()?;
         self.state.validate()?;
+        validate_non_empty("credential_vault.service", &self.credential_vault.service)?;
         validate_credentials(&self.credentials)?;
         Ok(())
     }
@@ -817,6 +821,10 @@ impl ArrobaUserConfig {
                 self.kernel.runtime_mcp_port =
                     Some(parse_config_port("kernel.runtime_mcp_port", &value)?)
             }
+            "credential_vault.service" => {
+                self.credential_vault.service =
+                    non_empty_config_string("credential_vault.service", value)?
+            }
             path if path.starts_with("providers.managed_io.") => {
                 let provider = path
                     .trim_start_matches("providers.managed_io.")
@@ -954,6 +962,44 @@ pub struct UserCredentialConfig {
 pub enum UserCredentialSourceConfig {
     Env { name: String },
     File { path: String },
+    Vault { key: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserCredentialVaultConfig {
+    #[serde(default = "default_credential_vault_backend")]
+    pub backend: CredentialVaultBackend,
+    #[serde(default = "default_credential_vault_service")]
+    pub service: String,
+}
+
+impl Default for UserCredentialVaultConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_credential_vault_backend(),
+            service: default_credential_vault_service(),
+        }
+    }
+}
+
+impl UserCredentialVaultConfig {
+    pub fn service_name(&self) -> &str {
+        self.service.trim()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialVaultBackend {
+    OsKeychain,
+}
+
+fn default_credential_vault_backend() -> CredentialVaultBackend {
+    CredentialVaultBackend::OsKeychain
+}
+
+fn default_credential_vault_service() -> String {
+    "arroba".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1010,6 +1056,9 @@ fn validate_credentials(credentials: &[UserCredentialConfig]) -> Result<(), Daem
             }
             UserCredentialSourceConfig::File { path } => {
                 validate_non_empty("credentials.source.path", path)?;
+            }
+            UserCredentialSourceConfig::Vault { key } => {
+                validate_non_empty("credentials.source.key", key)?;
             }
         }
         for host in &credential.allowed_hosts {
@@ -2049,6 +2098,34 @@ injection = { kind = "header", name = "authorization", value = "Bearer ${secret}
         assert_eq!(
             config.credentials[0].allowed_uses,
             vec![UserCredentialUse::Http]
+        );
+    }
+
+    #[test]
+    fn user_config_parses_vault_credential_source() {
+        let payload = r#"
+version = 1
+
+[credential_vault]
+service = "arroba-test"
+
+[[credentials]]
+id = "github"
+source = { type = "vault", key = "github-token" }
+allowed_uses = ["http"]
+allowed_hosts = ["api.github.com"]
+injection = { kind = "header", name = "authorization", value = "Bearer ${secret}" }
+"#;
+
+        let config =
+            toml::from_str::<ArrobaUserConfig>(payload).expect("vault credential should parse");
+        config.validate().expect("vault credential should validate");
+        assert_eq!(config.credential_vault.service, "arroba-test");
+        assert_eq!(
+            config.credentials[0].source,
+            UserCredentialSourceConfig::Vault {
+                key: "github-token".to_string()
+            }
         );
     }
 

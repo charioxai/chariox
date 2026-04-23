@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use base64::Engine;
 use hmac::{Hmac, Mac};
@@ -53,11 +54,40 @@ pub struct CredentialHttpResponse {
 #[derive(Debug, Clone)]
 pub struct RuntimeSecretService {
     credentials: Vec<UserCredentialConfig>,
+    vault_service: String,
+    vault_store: Arc<dyn CredentialVaultStore>,
 }
 
 impl RuntimeSecretService {
     pub fn new(credentials: Vec<UserCredentialConfig>) -> Self {
-        Self { credentials }
+        Self::with_vault_store(
+            credentials,
+            "arroba",
+            Arc::new(OsKeychainCredentialVaultStore),
+        )
+    }
+
+    pub fn with_vault_service(
+        credentials: Vec<UserCredentialConfig>,
+        vault_service: impl Into<String>,
+    ) -> Self {
+        Self::with_vault_store(
+            credentials,
+            vault_service,
+            Arc::new(OsKeychainCredentialVaultStore),
+        )
+    }
+
+    pub fn with_vault_store(
+        credentials: Vec<UserCredentialConfig>,
+        vault_service: impl Into<String>,
+        vault_store: Arc<dyn CredentialVaultStore>,
+    ) -> Self {
+        Self {
+            credentials,
+            vault_service: vault_service.into(),
+            vault_store,
+        }
     }
 
     pub fn credential_env_names(&self) -> BTreeSet<String> {
@@ -65,7 +95,8 @@ impl RuntimeSecretService {
             .iter()
             .filter_map(|credential| match &credential.source {
                 UserCredentialSourceConfig::Env { name } => Some(name.clone()),
-                UserCredentialSourceConfig::File { .. } => None,
+                UserCredentialSourceConfig::File { .. }
+                | UserCredentialSourceConfig::Vault { .. } => None,
             })
             .collect()
     }
@@ -190,6 +221,24 @@ impl RuntimeSecretService {
         self.resolve_secret(credential)
     }
 
+    pub fn set_vault_secret(&self, key: &str, value: &str) -> Result<(), DaemonError> {
+        validate_vault_key(key)?;
+        if value.is_empty() {
+            return Err(secret_error(
+                "credential_vault",
+                "credential value must not be empty".to_string(),
+            ));
+        }
+        self.vault_store
+            .set_secret(self.vault_service_name()?, key.trim(), value)
+    }
+
+    pub fn delete_vault_secret(&self, key: &str) -> Result<(), DaemonError> {
+        validate_vault_key(key)?;
+        self.vault_store
+            .delete_secret(self.vault_service_name()?, key.trim())
+    }
+
     fn credential(&self, id: &str) -> Result<&UserCredentialConfig, DaemonError> {
         self.credentials
             .iter()
@@ -220,7 +269,30 @@ impl RuntimeSecretService {
                         )
                     })
             }
+            UserCredentialSourceConfig::Vault { key } => self
+                .vault_store
+                .get_secret(self.vault_service_name()?, key.trim())
+                .map_err(|error| {
+                    secret_error(
+                        "credential_resolve",
+                        format!(
+                            "failed to resolve credential `{}` from vault key `{}`: {error}",
+                            credential.id, key
+                        ),
+                    )
+                }),
         }
+    }
+
+    fn vault_service_name(&self) -> Result<&str, DaemonError> {
+        let service = self.vault_service.trim();
+        if service.is_empty() {
+            return Err(secret_error(
+                "credential_vault",
+                "credential vault service must not be empty".to_string(),
+            ));
+        }
+        Ok(service)
     }
 
     fn ensure_use_allowed(
@@ -272,6 +344,35 @@ impl RuntimeSecretService {
                 credential.id
             ),
         ))
+    }
+}
+
+pub trait CredentialVaultStore: Send + Sync + std::fmt::Debug {
+    fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError>;
+    fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError>;
+    fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError>;
+}
+
+#[derive(Debug, Default)]
+pub struct OsKeychainCredentialVaultStore;
+
+impl CredentialVaultStore for OsKeychainCredentialVaultStore {
+    fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
+        keyring_entry(service, key)?
+            .get_password()
+            .map_err(|error| vault_error("get", key, error))
+    }
+
+    fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
+        keyring_entry(service, key)?
+            .set_password(value)
+            .map_err(|error| vault_error("set", key, error))
+    }
+
+    fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
+        keyring_entry(service, key)?
+            .delete_credential()
+            .map_err(|error| vault_error("delete", key, error))
     }
 }
 
@@ -378,6 +479,27 @@ fn expand_user_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+fn validate_vault_key(key: &str) -> Result<(), DaemonError> {
+    if key.trim().is_empty() {
+        return Err(secret_error(
+            "credential_vault",
+            "credential key must not be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn keyring_entry(service: &str, key: &str) -> Result<keyring::Entry, DaemonError> {
+    keyring::Entry::new(service, key).map_err(|error| vault_error("open", key, error))
+}
+
+fn vault_error(operation: &'static str, key: &str, error: keyring::Error) -> DaemonError {
+    secret_error(
+        "credential_vault",
+        format!("failed to {operation} credential `{key}` in OS keychain: {error}"),
+    )
+}
+
 fn secret_error(operation: &'static str, message: String) -> DaemonError {
     DaemonError::LocalTransport { operation, message }
 }
@@ -390,7 +512,42 @@ mod tests {
     };
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
     use std::thread;
+
+    #[derive(Debug, Default)]
+    struct MemoryVaultStore {
+        secrets: Mutex<BTreeMap<(String, String), String>>,
+    }
+
+    impl CredentialVaultStore for MemoryVaultStore {
+        fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
+            self.secrets
+                .lock()
+                .unwrap()
+                .get(&(service.to_string(), key.to_string()))
+                .cloned()
+                .ok_or_else(|| {
+                    secret_error("credential_vault", format!("credential `{key}` not found"))
+                })
+        }
+
+        fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
+            self.secrets
+                .lock()
+                .unwrap()
+                .insert((service.to_string(), key.to_string()), value.to_string());
+            Ok(())
+        }
+
+        fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
+            self.secrets
+                .lock()
+                .unwrap()
+                .remove(&(service.to_string(), key.to_string()));
+            Ok(())
+        }
+    }
 
     #[test]
     fn credential_handles_do_not_include_sources_or_values() {
@@ -537,5 +694,38 @@ mod tests {
             "terminal-secret"
         );
         std::env::remove_var("ARROBA_TEST_TERMINAL_PASSWORD");
+    }
+
+    #[test]
+    fn vault_source_resolves_without_exposing_secret_in_handles() {
+        let vault = Arc::new(MemoryVaultStore::default());
+        let service = RuntimeSecretService::with_vault_store(
+            vec![UserCredentialConfig {
+                id: "github".to_string(),
+                description: None,
+                source: UserCredentialSourceConfig::Vault {
+                    key: "github-token".to_string(),
+                },
+                allowed_hosts: Vec::new(),
+                allowed_uses: vec![UserCredentialUse::Pty],
+                injection: UserCredentialInjectionConfig::Pty,
+            }],
+            "arroba-test",
+            vault,
+        );
+
+        service
+            .set_vault_secret("github-token", "vault-secret")
+            .expect("vault secret should store");
+
+        assert_eq!(
+            service
+                .terminal_secret_input("github")
+                .expect("vault secret should resolve"),
+            "vault-secret"
+        );
+        let serialized = serde_json::to_string(&service.list_handles()).unwrap();
+        assert!(!serialized.contains("vault-secret"));
+        assert!(!serialized.contains("github-token"));
     }
 }

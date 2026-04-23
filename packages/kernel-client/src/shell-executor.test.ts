@@ -992,6 +992,58 @@ test("executeShellCommand mutates user config", async () => {
   ])
 })
 
+test("executeShellCommand stores credentials only through hidden reader", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("GetUserConfig" in request) {
+          return {
+            UserConfig: {
+              path: "/home/.arroba/config.toml",
+              config: {
+                version: 1,
+                credentials: [
+                  {
+                    id: "github",
+                    source: { type: "vault", key: "github-token" },
+                    allowed_uses: ["http"],
+                  },
+                ],
+              },
+            },
+          }
+        }
+        if ("SetCredentialSecret" in request) {
+          return { CredentialSecretStored: { key: "github-token" } }
+        }
+        return { CredentialSecretDeleted: { key: "github-token" } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const listResult = await executeShellCommand(parseShellCommand("credential list"), context, { client: fake.client })
+  const blockedResult = await executeShellCommand(parseShellCommand("credential set github-token"), context, { client: fake.client })
+  const setResult = await executeShellCommand(parseShellCommand("credential set github-token"), context, {
+    client: fake.client,
+    readSecret: async () => "hidden-secret",
+  })
+  const deleteResult = await executeShellCommand(parseShellCommand("credential delete github-token"), context, { client: fake.client })
+
+  assert.equal(listResult.ok, true)
+  assert.match(listResult.message ?? "", /github\tvault\thttp/)
+  assert.equal(blockedResult.ok, false)
+  assert.match(blockedResult.message ?? "", /hidden input/)
+  assert.equal(setResult.ok, true)
+  assert.equal(deleteResult.ok, true)
+  assert.deepEqual(requests, [
+    { GetUserConfig: null },
+    { SetCredentialSecret: { key: "github-token", value: "hidden-secret" } },
+    { DeleteCredentialSecret: { key: "github-token" } },
+  ])
+})
+
 test("executeShellCommand installs and updates MCP servers", async () => {
   const installed: ArrobaMcpServerConfig = {
     name: "playwright",

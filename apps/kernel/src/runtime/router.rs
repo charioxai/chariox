@@ -30,24 +30,26 @@ use crate::local::{
     CloudSessionInviteAcceptance, CloudSessionInviteDetails, CloudSessionMember,
     ConfigureRelayRequest, ConnectCloudRelayRequest, CreateCloudSessionInviteRequest,
     CreatePairingInviteRequest, CreateSessionInviteRequest, CreateWorkspaceLinkRequest,
-    DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GetMcpServerRequest,
-    GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-    GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GrantAgentCapabilityRequest,
-    ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
-    IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest, JoinSessionInviteRequest,
-    ListAgentsRequest, ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest,
-    ListMcpServersRequest, ListProviderProcessesRequest, ListSessionMembersRequest,
-    ListSessionsRequest, ListSkillsRequest, ListWorkspaceLinksRequest, LocalDaemonRequest,
-    LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
+    DeleteCredentialSecretRequest, DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest,
+    GetMcpServerRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
+    GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest,
+    GrantAgentCapabilityRequest, ImportMcpServersRequest, ImportSkillsRequest,
+    InstallMcpServerRequest, InstallSkillRequest, IssueCloudRelayClientTokenRequest,
+    JoinPairingInviteRequest, JoinSessionInviteRequest, ListAgentsRequest,
+    ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest, ListMcpServersRequest,
+    ListProviderProcessesRequest, ListSessionMembersRequest, ListSessionsRequest,
+    ListSkillsRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
+    LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
     PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairedClientRecord,
     PairingInviteIntent, PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest,
     PumpTerminalOutputRequest, QueryHistoryRequest, RecordPairedClientRequest, RelayStatus,
     RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
     RevokeCloudSessionInviteRequest, RevokePairedClientRequest, RevokeSessionInviteRequest,
-    SearchHistoryRequest, SessionInviteRecord, SetUserConfigValueRequest,
-    ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest, StartCloudRelayLoginRequest,
-    StartProviderLoginRequest, TeardownProviderProcessesRequest, UninstallMcpServerRequest,
-    UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
+    SearchHistoryRequest, SessionInviteRecord, SetCredentialSecretRequest,
+    SetUserConfigValueRequest, ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest,
+    StartCloudRelayLoginRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
+    UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
+    UpdateMcpServerRequest, UpdateSkillRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -990,6 +992,12 @@ impl CommandRouter {
             }
             LocalDaemonRequest::UnsetUserConfigValue(request) => {
                 self.execute_unset_user_config_value_request(request).await
+            }
+            LocalDaemonRequest::SetCredentialSecret(request) => {
+                self.execute_set_credential_secret_request(request).await
+            }
+            LocalDaemonRequest::DeleteCredentialSecret(request) => {
+                self.execute_delete_credential_secret_request(request).await
             }
             LocalDaemonRequest::ApproveRemoteMachine(request) => {
                 self.execute_approve_remote_machine_request(request).await
@@ -2351,6 +2359,32 @@ impl CommandRouter {
         })
     }
 
+    async fn execute_set_credential_secret_request(
+        &self,
+        request: SetCredentialSecretRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let user_config = self.config_projection.snapshot().user_config;
+        let service = crate::secret::RuntimeSecretService::with_vault_service(
+            user_config.credentials,
+            user_config.credential_vault.service,
+        );
+        service.set_vault_secret(&request.key, &request.value)?;
+        Ok(LocalDaemonResponse::CredentialSecretStored { key: request.key })
+    }
+
+    async fn execute_delete_credential_secret_request(
+        &self,
+        request: DeleteCredentialSecretRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let user_config = self.config_projection.snapshot().user_config;
+        let service = crate::secret::RuntimeSecretService::with_vault_service(
+            user_config.credentials,
+            user_config.credential_vault.service,
+        );
+        service.delete_vault_secret(&request.key)?;
+        Ok(LocalDaemonResponse::CredentialSecretDeleted { key: request.key })
+    }
+
     async fn execute_approve_remote_machine_request(
         &self,
         request: ApproveRemoteMachineRequest,
@@ -3274,6 +3308,12 @@ impl CommandRouter {
             }
             LocalDaemonRequest::UnsetUserConfigValue(request) => {
                 self.execute_unset_user_config_value_request(request).await
+            }
+            LocalDaemonRequest::SetCredentialSecret(request) => {
+                self.execute_set_credential_secret_request(request).await
+            }
+            LocalDaemonRequest::DeleteCredentialSecret(request) => {
+                self.execute_delete_credential_secret_request(request).await
             }
             LocalDaemonRequest::ListRemoteMachines(_) => {
                 self.projected_remote_machines_response().await

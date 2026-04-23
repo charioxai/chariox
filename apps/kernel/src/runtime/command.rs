@@ -172,7 +172,7 @@ impl KernelCommand {
         request: &LocalDaemonRequest,
     ) -> Self {
         let command_id = command_id.into();
-        let payload = serde_json::to_value(request).unwrap_or(Value::Null);
+        let payload = local_request_payload(request);
         let metadata = local_request_metadata(request);
         Self {
             command_id: command_id.clone(),
@@ -192,6 +192,18 @@ impl KernelCommand {
             priority: metadata.priority,
             payload,
         }
+    }
+}
+
+fn local_request_payload(request: &LocalDaemonRequest) -> Value {
+    match request {
+        LocalDaemonRequest::SetCredentialSecret(request) => serde_json::json!({
+            "SetCredentialSecret": {
+                "key": request.key,
+                "value": "[redacted]"
+            }
+        }),
+        _ => serde_json::to_value(request).unwrap_or(Value::Null),
     }
 }
 
@@ -414,6 +426,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetUserConfig(_) => "config.get",
         LocalDaemonRequest::SetUserConfigValue(_) => "config.set",
         LocalDaemonRequest::UnsetUserConfigValue(_) => "config.unset",
+        LocalDaemonRequest::SetCredentialSecret(_) => "credential.secret.set",
+        LocalDaemonRequest::DeleteCredentialSecret(_) => "credential.secret.delete",
         LocalDaemonRequest::ListRemoteMachines(_) => "remote_machine.list",
         LocalDaemonRequest::ListRemoteMachineKernels(_) => "remote_machine.kernel.list",
         LocalDaemonRequest::ApproveRemoteMachine(_) => "remote_machine.approve",
@@ -533,7 +547,8 @@ mod tests {
     use crate::local::{
         AliasSessionRequest, AttachToSessionRequest, DestroyAgentRequest, EndSessionRequest,
         FocusAgentRequest, GetDaemonHealthRequest, LocalDaemonRequest, PollRuntimeNoticesRequest,
-        SpawnAgentRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
+        SetCredentialSecretRequest, SpawnAgentRequest, SubmitPromptRequest,
+        UpdateSessionConfigRequest,
     };
     use crate::runtime::command::{
         KernelCaller, KernelCallerKind, KernelCommand, KernelCommandPriority, KernelCommandSource,
@@ -708,6 +723,32 @@ mod tests {
 
         assert_eq!(command.command_type, "daemon.health.get");
         assert_eq!(command.priority, KernelCommandPriority::Normal);
+    }
+
+    #[test]
+    fn redacts_credential_secret_payloads() {
+        let command = KernelCommand::from_local_request(
+            "credential-1",
+            None,
+            None,
+            &LocalDaemonRequest::SetCredentialSecret(SetCredentialSecretRequest {
+                key: "github-token".to_string(),
+                value: "super-secret".to_string(),
+            }),
+        );
+
+        assert_eq!(command.command_type, "credential.secret.set");
+        assert_eq!(
+            command.payload["SetCredentialSecret"]["key"],
+            "github-token"
+        );
+        assert_eq!(
+            command.payload["SetCredentialSecret"]["value"],
+            "[redacted]"
+        );
+        assert!(!serde_json::to_string(&command.payload)
+            .unwrap()
+            .contains("super-secret"));
     }
 
     #[test]

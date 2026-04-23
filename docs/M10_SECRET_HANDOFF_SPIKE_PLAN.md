@@ -10,6 +10,8 @@ Prove these v1 claims:
 
 - Env-source credentials can be read by the Arroba-side runtime while being
   omitted from agent/provider process environments.
+- OS-keychain credentials can be stored through hidden local input and resolved
+  by the runtime without writing plaintext values into Arroba config.
 - Agents can trigger controlled secret use through runtime tools without
   receiving the secret value.
 - Generic bearer/API-key request injection is enough for static-token APIs.
@@ -25,7 +27,8 @@ Prove these v1 claims:
 - No MCP-specific work. Normal MCP use already keeps env secrets inside the MCP
   process unless the MCP itself returns/logs them.
 - No OAuth lifecycle implementation in this spike.
-- No production Arroba runtime MCP integration until the spike passes.
+- No remote secret semantics in this slice. Remote vault/credential behavior is
+  intentionally left for the next design pass.
 
 ## Prototype Location
 
@@ -146,6 +149,10 @@ Success:
 - M10.8 terminal secret handoff: complete for direct current-provider PTY stdin
   writes. Prompt-pattern scanning is intentionally not included in this slice
   because it can consume terminal output that the UI also needs to display.
+- M10.9 local vault source: complete for OS-keychain-backed `vault` credential
+  sources, local kernel set/delete APIs, and hidden `arroba-shell` input through
+  `credential set <key>`. Inline values are rejected so secrets are not typed
+  into the visible prompt area or shell command history.
 
 Validated commands:
 
@@ -168,8 +175,11 @@ cd apps/kernel
 cargo check --lib --message-format=short
 cargo test -q secret::tests
 cargo test -q user_config_parses_credential_handles_without_values
+cargo test -q user_config_parses_vault_credential_source
 cargo test -q user_config_rejects_duplicate_credential_ids
 cargo test -q transport::mcp_server::tests::mcp_initialize_and_tools_list_return_runtime_tools
+pnpm --filter @arroba/kernel-client test
+pnpm --filter @arroba/shell lint
 ```
 
 ## Integration Plan
@@ -200,6 +210,8 @@ Supported v1 sources:
 
 - `env`: read from the Arroba kernel process environment.
 - `file`: read from a local file path owned by the user.
+- `vault`: read from the platform OS keychain using a key stored in config and
+  a secret value stored outside the config file.
 
 Supported v1 injections:
 
@@ -209,10 +221,32 @@ Supported v1 injections:
 - `hmac`
 - `pty`
 
-`vault` is not a separate v1 storage system. The production v1 equivalent is
-the runtime secret service resolving `env` and `file` credential sources. A real
-local encrypted store or OS keychain integration can be designed later as an
-additional source type.
+Local vault config:
+
+```toml
+[credential_vault]
+backend = "os_keychain"
+service = "arroba"
+
+[[credentials]]
+id = "github"
+description = "GitHub API token"
+source = { type = "vault", key = "github-token" }
+allowed_hosts = ["api.github.com"]
+allowed_uses = ["http"]
+injection = { kind = "header", name = "authorization", value = "Bearer ${secret}" }
+```
+
+Users set the vault value through hidden input:
+
+```text
+@ credential set github-token
+credential github-token:
+```
+
+The shell never accepts `credential set <key> <value>`. Non-interactive scripts
+and embedded shells must supply a hidden-input provider; otherwise the command
+fails instead of exposing a secret in the visible prompt area.
 
 Acceptance:
 
@@ -305,7 +339,31 @@ Acceptance:
 - no prompt transcript/history includes the password
 - tool output returns only submission metadata
 
-### M10.9 Remote Semantics
+### M10.9 Local Vault Source
+
+Add platform key storage as a v1 source so users do not need plaintext secrets
+in env vars or files.
+
+Scope:
+
+- support `source = { type = "vault", key = "..." }`
+- store/delete local vault entries through kernel APIs
+- use the platform OS keychain as the only built-in v1 vault backend
+- read secret values through hidden interactive input in standalone
+  `arroba-shell`
+- reject inline secret values and reject hidden-input commands when the shell
+  surface cannot hide input
+
+Acceptance:
+
+- config parses and validates vault sources
+- runtime resolves vault credentials through the same policy/injection service
+  as env/file sources
+- `credential set <key>` does not echo the typed value
+- scripts and embedded shells cannot accidentally place secrets in visible
+  command text
+
+### M10.10 Remote Semantics
 
 For v1, the home kernel owns credential truth. Remote agents can request
 credential use through the home runtime path, but no automatic remote secret
@@ -325,7 +383,7 @@ Acceptance:
 - remote agent can request a home-owned HTTP credential handle
 - docs clearly state that remote-local network locality is not solved in v1
 
-### M10.10 Live Drills
+### M10.11 Live Drills
 
 Run end-to-end drills after each production slice:
 
@@ -347,5 +405,5 @@ The spike transfer gate is passed:
 - implementation stays small enough to map cleanly to Arroba runtime MCP and
   provider launch boundaries
 
-Production integration is complete only when M10.4-M10.10 pass and docs/drills
+Production integration is complete only when M10.4-M10.11 pass and docs/drills
 are updated after each slice.

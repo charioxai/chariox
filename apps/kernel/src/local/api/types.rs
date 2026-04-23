@@ -506,6 +506,17 @@ pub struct UnsetUserConfigValueRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetCredentialSecretRequest {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteCredentialSecretRequest {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayStatus {
     pub configured: bool,
     pub connected: bool,
@@ -1239,6 +1250,8 @@ pub enum LocalDaemonRequest {
     GetUserConfig(GetUserConfigRequest),
     SetUserConfigValue(SetUserConfigValueRequest),
     UnsetUserConfigValue(UnsetUserConfigValueRequest),
+    SetCredentialSecret(SetCredentialSecretRequest),
+    DeleteCredentialSecret(DeleteCredentialSecretRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     ApproveRemoteMachine(ApproveRemoteMachineRequest),
@@ -1502,6 +1515,12 @@ pub enum LocalDaemonResponse {
     UserConfigUpdated {
         path: PathBuf,
         config: ArrobaUserConfig,
+    },
+    CredentialSecretStored {
+        key: String,
+    },
+    CredentialSecretDeleted {
+        key: String,
     },
     RemoteMachinesListed {
         machines: Vec<RemoteMachineRecord>,

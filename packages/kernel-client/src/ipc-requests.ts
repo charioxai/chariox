@@ -1036,6 +1036,23 @@ export function unsetUserConfigValueRequest(path: string) {
   }
 }
 
+export function setCredentialSecretRequest(key: string, value: string) {
+  return {
+    SetCredentialSecret: {
+      key,
+      value,
+    },
+  }
+}
+
+export function deleteCredentialSecretRequest(key: string) {
+  return {
+    DeleteCredentialSecret: {
+      key,
+    },
+  }
+}
+
 export function listRemoteMachinesRequest() {
   return { ListRemoteMachines: null }
 }

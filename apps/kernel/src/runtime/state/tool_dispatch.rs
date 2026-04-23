@@ -219,13 +219,11 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let credentials = self
-            .owned
-            .config_projection
-            .snapshot()
-            .user_config
-            .credentials;
-        let service = crate::secret::RuntimeSecretService::new(credentials);
+        let user_config = self.owned.config_projection.snapshot().user_config;
+        let service = crate::secret::RuntimeSecretService::with_vault_service(
+            user_config.credentials,
+            user_config.credential_vault.service,
+        );
         match tool_name {
             crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL => {
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {

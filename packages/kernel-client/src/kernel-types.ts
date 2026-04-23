@@ -153,6 +153,18 @@ export type ArrobaUserConfig = {
   ui?: Record<string, unknown>
   relay?: Record<string, unknown>
   kernel?: Record<string, unknown>
+  credential_vault?: {
+    backend?: "os_keychain"
+    service?: string
+  }
+  credentials?: Array<{
+    id: string
+    description?: string
+    source?: Record<string, unknown>
+    allowed_hosts?: string[]
+    allowed_uses?: string[]
+    injection?: Record<string, unknown>
+  }>
 }
 
 export type ArrobaUserConfigPayload = {

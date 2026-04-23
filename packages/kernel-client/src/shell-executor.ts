@@ -67,6 +67,7 @@ import {
   createWorkflowRequest,
   createWorkflowWatchdogRequest,
   createSessionRequest,
+  deleteCredentialSecretRequest,
   focusAgentRequest,
   getMcpServerRequest,
   getProviderAuthStatusRequest,
@@ -131,6 +132,7 @@ import {
   setWorkflowNodeMaxTurnsRequest,
   setWorkflowRunOutputSchemaRequest,
   setWorkflowWatchdogEnabledRequest,
+  setCredentialSecretRequest,
   setUserConfigValueRequest,
   showWorkspaceLinkRequest,
   spawnAgentRequest,
@@ -172,6 +174,7 @@ type PlacementOptions = {
 export type ShellExecutorDeps = {
   client: ShellKernelClient
   clientId?: string | undefined
+  readSecret?: ((prompt: string) => Promise<string>) | undefined
   prepareLocalGitWorktree?: ((options: LocalGitWorktreeOptions) => Promise<string>) | undefined
   resolveExistingDirectory?: ((directory: string, baseDirectory: string, label: string) => Promise<string>) | undefined
 }
@@ -208,6 +211,8 @@ export async function executeShellCommand(
       return executeCloudCommand(parsed, context, deps)
     case "config":
       return executeConfigCommand(parsed, deps)
+    case "credential":
+      return executeCredentialCommand(parsed, deps)
     case "mcp":
       return executeMcpCommand(parsed, context, deps)
     case "skill":
@@ -247,6 +252,7 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
           "machine invite create|join|list|kernels|approve|rename|revoke",
           "relay status",
           "config show|path|set|unset|managed-io",
+          "credential list|set|delete",
           "mcp list|show|install|update|uninstall|import|grant|revoke|grants",
           "skill list|show|install|update|uninstall|import|grant|revoke|grants",
           "workspace link create|list|show|attach|detach",
@@ -1092,6 +1098,60 @@ async function executeConfigCommand(
     }
   }
   return { ok: false, message: "usage: config show|path|set|unset|managed-io" }
+}
+
+async function executeCredentialCommand(
+  parsed: ParsedShellCommand,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const [action, key, ...rest] = parsed.args
+  if (!action || action === "list" || action === "ls") {
+    const response = await deps.client.send(getUserConfigRequest())
+    const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfig")
+    const credentials = Array.isArray(payload.config.credentials) ? payload.config.credentials : []
+    if (credentials.length === 0) {
+      return { ok: true, message: "no credential handles configured" }
+    }
+    return {
+      ok: true,
+      message: credentials
+        .map((credential: Record<string, unknown>) => {
+          const id = String(credential.id ?? "")
+          const source = credential.source && typeof credential.source === "object"
+            ? String((credential.source as Record<string, unknown>).type ?? "unknown")
+            : "unknown"
+          const uses = Array.isArray(credential.allowed_uses) ? credential.allowed_uses.join(",") : "any"
+          return `${id}\t${source}\t${uses || "any"}`
+        })
+        .join("\n"),
+      format: "table",
+    }
+  }
+  if (action === "set") {
+    if (!key || rest.length > 0) {
+      return { ok: false, message: "usage: credential set <key>" }
+    }
+    if (!deps.readSecret) {
+      return {
+        ok: false,
+        message: "credential set requires hidden input support; run it from interactive arroba-shell",
+      }
+    }
+    const value = await deps.readSecret(`credential ${key}: `)
+    if (!value) {
+      return { ok: false, message: "credential value must not be empty" }
+    }
+    await deps.client.send(setCredentialSecretRequest(key, value))
+    return { ok: true, message: `credential ${key} stored in OS keychain` }
+  }
+  if (action === "delete" || action === "remove" || action === "rm") {
+    if (!key || rest.length > 0) {
+      return { ok: false, message: "usage: credential delete <key>" }
+    }
+    await deps.client.send(deleteCredentialSecretRequest(key))
+    return { ok: true, message: `credential ${key} deleted from OS keychain` }
+  }
+  return { ok: false, message: "usage: credential list|set|delete" }
 }
 
 async function executeMcpCommand(
