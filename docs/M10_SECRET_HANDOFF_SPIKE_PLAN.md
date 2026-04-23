@@ -1,5 +1,7 @@
 # M10 Secret Handoff Spike Plan
 
+Status: completed on 2026-04-23.
+
 This spike validates whether Arroba can let agents use secrets without placing
 the secret values in the model context window. It is intentionally outside
 production `apps/` and `packages/` code until the behavior is proven.
