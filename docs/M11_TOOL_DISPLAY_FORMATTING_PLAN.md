@@ -56,7 +56,7 @@ view because split diffs become noisy when several agents are active.
   current fixture corpus.
 - M11.7 run live drills across expanded provider/model catalog and update
   fixtures when raw provider shapes differ.
-- M11.8 document web/iOS/Android consumption rules.
+- M11.8 document web/iOS/Android consumption rules: complete.
 
 ## Initial Scope
 
@@ -107,6 +107,36 @@ tools can arrive as underscore names such as `arroba_read_artifact` and
 `arroba_apply_patch`, with snake_case inputs such as `patch_text`. The shared
 formatter now normalizes these aliases so CLI/web/native clients do not render
 those blobs as raw JSON.
+
+The expanded `--all-models` drill currently needs model-id filtering before it
+is treated as authoritative. Codex targets resolve to direct model ids, while
+OpenCode catalog entries can resolve to unqualified ids. The OpenCode submit
+path requires `provider/model` to force a specific model; otherwise it can fall
+back to the provider default. M11.7 should either qualify OpenCode catalog
+models from the provider catalog source or run explicit `--provider-model`
+targets only.
+
+## Client Consumption Rules
+
+All clients should consume the shared display contract in this order:
+
+1. Parse provider/runtime tool chunks as `ToolTranscriptUpdate`.
+2. Call the shared formatter for a normalized `ToolDisplay`.
+3. Render `ToolDisplay.blocks` as the canonical expanded representation.
+4. Use `ToolDisplay.collapsed` for compact transcript rows.
+5. Avoid provider-specific parsing in app code unless a new raw provider shape
+   has first been added to `packages/tool-display/fixtures/` and covered by a
+   golden test.
+
+Patch blocks should render `previewLines` by default. Removed old-side lines
+are intentionally excluded from the normal transcript expansion. A future
+full-diff mode can still use the original `files[].diff` payload if a client
+needs an explicit before/after review view.
+
+Web and native clients that are not TypeScript consumers should validate
+against `packages/tool-display/schema/tool-display.schema.json` and use the
+fixture corpus as compatibility examples. TypeScript clients should depend on
+`@arroba/tool-display` directly.
 
 ## Drills
 
