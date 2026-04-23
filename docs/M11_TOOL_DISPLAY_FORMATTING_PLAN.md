@@ -1,6 +1,6 @@
 # M11 Tool Display Formatting Plan
 
-Status: in progress. M11.1-M11.6 are implemented.
+Status: in progress. M11.1-M11.8 are implemented.
 
 ## Goal
 
@@ -55,7 +55,8 @@ view because split diffs become noisy when several agents are active.
 - M11.6 add golden tests for every supported tool family: complete for the
   current fixture corpus.
 - M11.7 run live drills across expanded provider/model catalog and update
-  fixtures when raw provider shapes differ.
+  fixtures when raw provider shapes differ: complete for OpenCode Zen model
+  coverage with documented provider/model exceptions.
 - M11.8 document web/iOS/Android consumption rules: complete.
 
 ## Initial Scope
@@ -86,6 +87,7 @@ node apps/cli/scripts/live-tool-display-fixture-drill.mjs --providers codex,open
 node apps/cli/scripts/live-tool-display-fixture-drill.mjs --providers codex,opencode --timeout-ms 300000 --keep-artifacts-on-failure
 pnpm --filter @arroba/tool-display test
 pnpm --filter @arroba/cli test
+node apps/cli/scripts/live-tool-display-fixture-drill.mjs --provider opencode --all-models --max-models-per-provider 80 --timeout-ms 180000 --poll-ms 1000 --continue-on-failure --keep-artifacts-on-failure
 ```
 
 The fixture drill resolved the default local targets as:
@@ -108,13 +110,23 @@ tools can arrive as underscore names such as `arroba_read_artifact` and
 formatter now normalizes these aliases so CLI/web/native clients do not render
 those blobs as raw JSON.
 
-The expanded `--all-models` drill currently needs model-id filtering before it
-is treated as authoritative. Codex targets resolve to direct model ids, while
-OpenCode catalog entries can resolve to unqualified ids. The OpenCode submit
-path requires `provider/model` to force a specific model; otherwise it can fall
-back to the provider default. M11.7 should either qualify OpenCode catalog
-models from the provider catalog source or run explicit `--provider-model`
-targets only.
+The expanded `--all-models` drill now qualifies OpenCode catalog model ids as
+`opencode/<model>` so the OpenCode submit path is forced to the intended Zen
+model instead of falling back to the provider default. The drill also waits for
+explicit assistant phase markers in streamed history so slower models cannot be
+advanced to phase 2 before phase 1 has actually completed.
+
+OpenCode Zen model coverage on 2026-04-23:
+
+- 36 of 39 `opencode/*` model targets produced read plus patch tool fixtures.
+- `opencode/claude-3-5-haiku` failed with an OpenCode provider model error:
+  `model: claude-3-5-haiku-20241022`.
+- `opencode/gpt-5.4-pro` failed because the drill used low effort, while that
+  model requires medium/high/xhigh. We are not expanding effort coverage in M11
+  because effort variants should expose the same tool surface.
+- `opencode/minimax-m2.5` did not emit OpenCode tool events; it emitted an
+  XML-like `<invoke name="read_artifact">...` text block instead. This is a
+  model/provider behavior exception, not a shared formatter regression.
 
 ## Client Consumption Rules
 

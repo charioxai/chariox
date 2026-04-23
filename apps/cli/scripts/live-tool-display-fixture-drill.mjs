@@ -23,6 +23,7 @@ function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     keepArtifactsOnFailure: false,
+    continueOnFailure: false,
     outDir: null,
     listTargets: false,
   }
@@ -42,6 +43,7 @@ function parseArgs(argv) {
     else if (arg === '--out-dir') options.outDir = argv[++i]
     else if (arg === '--list-targets') options.listTargets = true
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--continue-on-failure') options.continueOnFailure = true
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -67,6 +69,7 @@ function printHelp() {
     '  --out-dir PATH',
     '  --list-targets',
     '  --keep-artifacts-on-failure',
+    '  --continue-on-failure',
   ].join('\n'))
 }
 
@@ -174,10 +177,15 @@ function drillTargets(catalog, options) {
       .filter((model) => model.status !== 'deprecated')
       .slice(0, options.maxModelsPerProvider)
     for (const model of models) {
-      targets.push({ provider: provider.id, model: model.id })
+      targets.push({ provider: provider.id, model: qualifiedCatalogModelId(provider.id, model.id) })
     }
   }
   return targets
+}
+
+function qualifiedCatalogModelId(provider, modelId) {
+  if (provider === 'opencode' && !modelId.includes('/')) return `opencode/${modelId}`
+  return modelId
 }
 
 async function waitForAgentIdle({ client, requests, sessionId, attachmentId, agentId, timeoutMs, pollMs }) {
@@ -194,6 +202,63 @@ async function waitForAgentIdle({ client, requests, sessionId, attachmentId, age
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for ${agentId} to become idle`)
+}
+
+async function waitForHistoryMarker({ client, requests, sessionId, attachmentId, historyDir, agentId, markers, timeoutMs, pollMs }) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    await client.send(requests.pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
+    const result = await readHistoryMarkerState(historyDir, agentId, markers)
+    if (result.error) throw new Error(result.error)
+    if (result.matched) {
+      return
+    }
+    await sleep(pollMs)
+  }
+  await client.send(requests.pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
+  const finalResult = await readHistoryMarkerState(historyDir, agentId, markers)
+  if (finalResult.error) throw new Error(finalResult.error)
+  if (finalResult.matched) return
+  const rawDiagnostics = await collectProviderDiagnostics(historyDir, agentId)
+  if (diagnosticsContainMarker(rawDiagnostics, markers)) return
+  const diagnostics = summarizeDiagnostics(rawDiagnostics)
+  throw new Error(`timed out waiting for assistant marker ${markers.join(' or ')}${diagnostics ? `; ${diagnostics}` : ''}`)
+}
+
+function diagnosticsContainMarker(diagnostics, markers) {
+  const text = [...diagnostics.outputs, ...diagnostics.notices].join('')
+  return markers.some((marker) => text.includes(marker))
+}
+
+async function readHistoryMarkerState(historyDir, agentId, markers) {
+  const entries = await collectHistoryEntries(historyDir, agentId)
+  const providerFailure = entries.find((entry) => entry.kind === 'provider_error')
+  if (providerFailure) {
+    return { matched: false, error: String(providerFailure.text ?? 'provider error') }
+  }
+  const combined = entries
+    .filter((entry) => entry.kind === 'provider_output' || entry.kind === 'notice')
+    .map((entry) => String(entry.text ?? ''))
+    .join('')
+  return { matched: markers.some((marker) => combined.includes(marker)), error: null }
+}
+
+async function collectHistoryEntries(historyDir, agentId) {
+  const entries = []
+  const files = await listJsonlFiles(historyDir)
+  for (const file of files) {
+    const lines = (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const entry = JSON.parse(line)
+        if (!entry.agent_id || entry.agent_id === agentId) entries.push(entry)
+      } catch {
+        // Ignore malformed partial writes.
+      }
+    }
+  }
+  return entries
 }
 
 async function collectProviderToolEvents(historyDir, agentId) {
@@ -276,6 +341,10 @@ async function listJsonlFiles(root) {
 
 function fixtureFileName(provider, model) {
   return `${provider}-${model.replace(/[^a-zA-Z0-9_.-]+/g, '_')}.jsonl`
+}
+
+function fixtureSlug(value) {
+  return value.replace(/[^a-zA-Z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64)
 }
 
 function toolNamesFromEvents(events) {
@@ -365,65 +434,34 @@ async function main() {
     const session = unwrap(await client.send(requests.createSessionRequest(workspace, workspace)), 'SessionCreated').session
     sessionId = session.id
     const attachment = unwrap(await client.send(requests.attachToSessionRequest(session.id, `tool-display-fixtures-${Date.now()}`)), 'SessionAttached').attachment
+    const failures = []
 
     for (const target of targets) {
-      await writeFile(path.join(workspace, 'seed.txt'), 'TOOL_DISPLAY_FIXTURE_SEED\n', 'utf8')
-      await writeFile(path.join(workspace, 'patch-target.txt'), 'before\n', 'utf8')
-      const agent = unwrapVariant(
-        await client.send(requests.spawnAgentRequest(
-          session.id,
-          target.provider,
-          `${target.provider}-tool-display-fixture`,
-          target.model,
+      try {
+        await runTargetFixture({
+          client,
+          requests,
+          session,
+          attachment,
+          target,
           workspace,
-          'low',
-        )),
-        'AgentSpawned',
-      ).agent
-      await client.send(requests.submitPromptRequest(session.id, attachment.id, agent.id, [
-        'This is an Arroba tool-display fixture drill.',
-        'You must actually call tools now. Do not describe, plan, or summarize the steps without calling tools.',
-        'Keep all changes inside this disposable workspace.',
-        'Step 1: call the Arroba runtime tool `arroba.read_artifact` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.',
-        'Step 2: call a search/grep tool, if available, to search for TOOL_DISPLAY_FIXTURE_SEED in this workspace.',
-        'Step 3: call a shell/bash tool, if available, to run `printf TOOL_DISPLAY_SHELL_OK\\n`.',
-        'Only after the required tool calls succeed, reply with TOOL_DISPLAY_FIXTURE_PHASE_1_DONE.',
-        'If you cannot call any tool, reply with TOOL_DISPLAY_FIXTURE_NO_TOOLS and include the exact reason.',
-      ].join('\n'), []))
-      await waitForAgentIdle({
-        client,
-        requests,
-        sessionId: session.id,
-        attachmentId: attachment.id,
-        agentId: agent.id,
-        timeoutMs: options.timeoutMs,
-        pollMs: options.pollMs,
-      })
-      await client.send(requests.submitPromptRequest(session.id, attachment.id, agent.id, [
-        'This is phase 2 of the Arroba tool-display fixture drill.',
-        'You must actually call the patch tool now. Do not describe or summarize without calling it.',
-        'Call the Arroba runtime tool `arroba.apply_patch` exactly once with JSON arguments {"patch_text":"*** Begin Patch\\n*** Update File: patch-target.txt\\n@@\\n-before\\n+after\\n*** End Patch","domain":"text"}.',
-        'Only after the patch tool succeeds, reply with TOOL_DISPLAY_FIXTURE_DONE.',
-        'If you cannot call the patch tool, reply with TOOL_DISPLAY_FIXTURE_NO_PATCH and include the exact reason.',
-      ].join('\n'), []))
-      await waitForAgentIdle({
-        client,
-        requests,
-        sessionId: session.id,
-        attachmentId: attachment.id,
-        agentId: agent.id,
-        timeoutMs: options.timeoutMs,
-        pollMs: options.pollMs,
-      })
-      const events = await collectProviderToolEvents(historyDir, agent.id)
-      if (events.length === 0) {
-        const diagnostics = summarizeDiagnostics(await collectProviderDiagnostics(historyDir, agent.id))
-        throw new Error(`${target.provider} ${target.model} produced no provider_tool events${diagnostics ? `; ${diagnostics}` : ''}`)
+          historyDir,
+          outDir,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        failures.push({ target, message })
+        console.error(`[tool-display-fixture] ${target.provider} ${target.model}: FAILED ${message}`)
+        if (!options.continueOnFailure) {
+          throw error
+        }
       }
-      assertRequiredToolFamilies(target, events)
-      const targetPath = path.join(outDir, fixtureFileName(target.provider, target.model))
-      await writeFile(targetPath, `${events.join('\n')}\n`, 'utf8')
-      console.log(`[tool-display-fixture] ${target.provider} ${target.model}: ${events.length} tool events -> ${targetPath}`)
+    }
+
+    if (failures.length > 0) {
+      throw new Error(`${failures.length} target(s) failed: ${failures.map(({ target, message }) => `${target.provider} ${target.model}: ${message}`).join(' | ')}`)
     }
 
     await client.send(requests.endSessionRequest(session.id)).catch(() => {})
@@ -438,6 +476,99 @@ async function main() {
       console.error(`[tool-display-fixture] kept artifacts at ${rootDir}`)
     }
   }
+}
+
+async function runTargetFixture({
+  client,
+  requests,
+  session,
+  attachment,
+  target,
+  workspace,
+  historyDir,
+  outDir,
+  timeoutMs,
+  pollMs,
+}) {
+  await writeFile(path.join(workspace, 'seed.txt'), 'TOOL_DISPLAY_FIXTURE_SEED\n', 'utf8')
+  await writeFile(path.join(workspace, 'patch-target.txt'), 'before\n', 'utf8')
+  const agent = unwrapVariant(
+    await client.send(requests.spawnAgentRequest(
+      session.id,
+      target.provider,
+      `${target.provider}-tool-display-${fixtureSlug(target.model)}`,
+      target.model,
+      workspace,
+      'low',
+    )),
+    'AgentSpawned',
+  ).agent
+  await client.send(requests.submitPromptRequest(session.id, attachment.id, agent.id, [
+    'This is an Arroba tool-display fixture drill.',
+    'You must actually call tools now. Do not describe, plan, or summarize the steps without calling tools.',
+    'Keep all changes inside this disposable workspace.',
+    'Step 1: call the Arroba runtime tool `arroba.read_artifact` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.',
+    'Step 2: call a search/grep tool, if available, to search for TOOL_DISPLAY_FIXTURE_SEED in this workspace.',
+    'Step 3: call a shell/bash tool, if available, to run `printf TOOL_DISPLAY_SHELL_OK\\n`.',
+    'Only after the required tool calls succeed, reply with TOOL_DISPLAY_FIXTURE_PHASE_1_DONE.',
+    'If you cannot call any tool, reply with TOOL_DISPLAY_FIXTURE_NO_TOOLS and include the exact reason.',
+  ].join('\n'), []))
+  await waitForAgentIdle({
+    client,
+    requests,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    agentId: agent.id,
+    timeoutMs,
+    pollMs,
+  })
+  await waitForHistoryMarker({
+    client,
+    requests,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    historyDir,
+    agentId: agent.id,
+    markers: ['TOOL_DISPLAY_FIXTURE_PHASE_1_DONE', 'TOOL_DISPLAY_FIXTURE_NO_TOOLS'],
+    timeoutMs,
+    pollMs,
+  })
+  await client.send(requests.submitPromptRequest(session.id, attachment.id, agent.id, [
+    'This is phase 2 of the Arroba tool-display fixture drill.',
+    'You must actually call the patch tool now. Do not describe or summarize without calling it.',
+    'Call the Arroba runtime tool `arroba.apply_patch` exactly once with JSON arguments {"patch_text":"*** Begin Patch\\n*** Update File: patch-target.txt\\n@@\\n-before\\n+after\\n*** End Patch","domain":"text"}.',
+    'Only after the patch tool succeeds, reply with TOOL_DISPLAY_FIXTURE_DONE.',
+    'If you cannot call the patch tool, reply with TOOL_DISPLAY_FIXTURE_NO_PATCH and include the exact reason.',
+  ].join('\n'), []))
+  await waitForAgentIdle({
+    client,
+    requests,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    agentId: agent.id,
+    timeoutMs,
+    pollMs,
+  })
+  await waitForHistoryMarker({
+    client,
+    requests,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    historyDir,
+    agentId: agent.id,
+    markers: ['TOOL_DISPLAY_FIXTURE_DONE', 'TOOL_DISPLAY_FIXTURE_NO_PATCH'],
+    timeoutMs,
+    pollMs,
+  })
+  const events = await collectProviderToolEvents(historyDir, agent.id)
+  if (events.length === 0) {
+    const diagnostics = summarizeDiagnostics(await collectProviderDiagnostics(historyDir, agent.id))
+    throw new Error(`${target.provider} ${target.model} produced no provider_tool events${diagnostics ? `; ${diagnostics}` : ''}`)
+  }
+  assertRequiredToolFamilies(target, events)
+  const targetPath = path.join(outDir, fixtureFileName(target.provider, target.model))
+  await writeFile(targetPath, `${events.join('\n')}\n`, 'utf8')
+  console.log(`[tool-display-fixture] ${target.provider} ${target.model}: ${events.length} tool events -> ${targetPath}`)
 }
 
 main().catch((error) => {
