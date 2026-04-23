@@ -249,6 +249,7 @@ export type PromptAttachmentPart = {
   url: string
   mime: string
   filename: string | null
+  contents_base64?: string | null
 }
 
 export type StoredTransferArtifact = {

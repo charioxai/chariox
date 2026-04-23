@@ -1,6 +1,9 @@
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
+use base64::Engine;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::app::KernelPreparedPromptSubmission;
@@ -16,7 +19,8 @@ use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::session_actor::FocusedAgentProjection;
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::{
-    PromptCompletion, PromptIdAllocator, PromptQueueItem, PromptStatus, DEFAULT_LOCAL_USER_ID,
+    PromptAttachment, PromptCompletion, PromptIdAllocator, PromptQueueItem, PromptStatus,
+    DEFAULT_LOCAL_USER_ID,
 };
 
 const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -104,7 +108,11 @@ impl AgentRuntimeCommandExecutor {
             &request.prompt,
             PromptStatus::Queued,
         )
-        .with_attachments(request.attachments);
+        .with_attachments(materialize_inline_prompt_attachments(
+            &request.session_id,
+            &target_agent_id,
+            request.attachments,
+        )?);
         let prepared = self
             .prompt_commands
             .submit_prepared_prompt(KernelPreparedPromptSubmission {
@@ -182,6 +190,82 @@ impl AgentRuntimeCommandExecutor {
         self.agent_runtime_projection.update_session(&session);
 
         Ok(LocalDaemonResponse::PromptCompleted { completion })
+    }
+}
+
+fn materialize_inline_prompt_attachments(
+    session_id: &str,
+    agent_id: &str,
+    attachments: Vec<PromptAttachment>,
+) -> Result<Vec<PromptAttachment>, DaemonError> {
+    attachments
+        .into_iter()
+        .enumerate()
+        .map(|(index, attachment)| {
+            let Some(contents_base64) = attachment.contents_base64() else {
+                return Ok(attachment);
+            };
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(contents_base64)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "decode inline prompt attachment",
+                    message: error.to_string(),
+                })?;
+            let filename = attachment
+                .filename()
+                .map(sanitize_attachment_filename)
+                .unwrap_or_else(|| format!("attachment-{index}"));
+            let root = std::env::temp_dir()
+                .join("arroba-web-cli-prompt-attachments")
+                .join(sanitize_path_component(session_id))
+                .join(sanitize_path_component(agent_id));
+            fs::create_dir_all(&root).map_err(|error| DaemonError::LocalTransport {
+                operation: "create inline prompt attachment directory",
+                message: error.to_string(),
+            })?;
+            let path = root.join(format!(
+                "{}-{}-{}",
+                crate::session::unix_epoch_ms(),
+                index,
+                filename
+            ));
+            fs::write(&path, bytes).map_err(|error| DaemonError::LocalTransport {
+                operation: "write inline prompt attachment",
+                message: error.to_string(),
+            })?;
+            Ok(PromptAttachment::new(
+                format!("file://{}", path.display()),
+                attachment.mime().to_string(),
+                Some(filename),
+            ))
+        })
+        .collect()
+}
+
+fn sanitize_attachment_filename(value: &str) -> String {
+    let file_name = Path::new(value)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("attachment");
+    sanitize_path_component(file_name)
+}
+
+fn sanitize_path_component(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches(['.', '-']);
+    if trimmed.is_empty() {
+        "attachment".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -650,8 +734,10 @@ fn completion_started_next_is_compatible(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::Arc;
 
+    use base64::Engine;
     use tokio::sync::Mutex;
     use tokio::time::{timeout, Duration};
 
@@ -662,16 +748,50 @@ mod tests {
         SubmitPromptRequest,
     };
     use crate::provider::{LaunchProviderRequest, ProviderRunOperationLanes};
-    use crate::runtime::agent_actor::AgentRuntime;
+    use crate::runtime::agent_actor::{
+        materialize_inline_prompt_attachments, AgentRuntime,
+    };
     use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::runtime::prompt_state::PromptStateOwner;
     use crate::runtime::session_actor::FocusedAgentProjection;
     use crate::runtime::state::KernelRuntimeState;
     use crate::session::{
-        CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+        CreateSessionRequest, PromptAttachment, PromptQueueItem, PromptStatus,
+        PromptSubmissionOutcome,
     };
     use crate::DaemonError;
     use crate::{DaemonApp, DaemonConfig};
+
+    #[test]
+    fn materializes_inline_prompt_attachments_to_local_files() {
+        let attachment = PromptAttachment::new(
+            "arroba-cloud://artifact/art-1",
+            "text/plain",
+            Some("../note.txt".to_string()),
+        )
+        .with_contents_base64(base64::engine::general_purpose::STANDARD.encode("hello artifact"));
+
+        let materialized = materialize_inline_prompt_attachments(
+            "session/one",
+            "agent:one",
+            vec![attachment],
+        )
+        .expect("inline attachment should materialize");
+
+        assert_eq!(materialized.len(), 1);
+        let path = materialized[0]
+            .url()
+            .strip_prefix("file://")
+            .expect("materialized attachment should use file URL");
+        assert_eq!(materialized[0].mime(), "text/plain");
+        assert_eq!(materialized[0].filename(), Some("note.txt"));
+        assert_eq!(
+            fs::read_to_string(path).expect("materialized file should be readable"),
+            "hello artifact"
+        );
+        assert!(path.contains("session-one"));
+        assert!(path.contains("agent-one"));
+    }
 
     fn launch_dev_stub_provider(
         app: &mut DaemonApp,

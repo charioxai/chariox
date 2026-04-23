@@ -2584,6 +2584,8 @@ pub struct PromptAttachment {
     url: String,
     mime: String,
     filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contents_base64: Option<String>,
 }
 
 impl PromptAttachment {
@@ -2592,7 +2594,13 @@ impl PromptAttachment {
             url: url.into(),
             mime: mime.into(),
             filename,
+            contents_base64: None,
         }
+    }
+
+    pub fn with_contents_base64(mut self, contents_base64: impl Into<String>) -> Self {
+        self.contents_base64 = Some(contents_base64.into());
+        self
     }
 
     pub fn url(&self) -> &str {
@@ -2605,6 +2613,10 @@ impl PromptAttachment {
 
     pub fn filename(&self) -> Option<&str> {
         self.filename.as_deref()
+    }
+
+    pub fn contents_base64(&self) -> Option<&str> {
+        self.contents_base64.as_deref()
     }
 }
 
