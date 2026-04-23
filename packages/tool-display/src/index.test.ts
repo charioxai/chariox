@@ -41,6 +41,35 @@ test("formatToolDisplay summarizes shell commands without requiring client JSON 
   assert.deepEqual(display.blocks.map((block) => block.kind), expect.blocks)
 })
 
+test("formatToolDisplay normalizes OpenCode Arroba read tool aliases", async () => {
+  const { input, expect } = await fixture("opencode/managed-read.json")
+  const display = formatToolDisplay(input)
+
+  assert.equal(display.summary, expect.summary)
+  assert.deepEqual(display.blocks.map((block) => block.kind), expect.blocks)
+  assert.match(JSON.stringify(display.blocks), /TOOL_DISPLAY_FIXTURE_SEED/)
+})
+
+test("formatToolDisplay normalizes OpenCode Arroba patch aliases", async () => {
+  const { input, expect } = await fixture("opencode/managed-apply-patch.json")
+  const display = formatToolDisplay(input)
+  const patch = display.blocks.find((block) => block.kind === "patch")
+
+  assert.equal(display.summary, expect.summary)
+  assert.equal(patch?.kind, "patch")
+  assert.deepEqual(patch?.files[0]?.previewLines, expect.previewLines)
+})
+
+test("formatToolDisplay accepts Codex runtime patch_text input", async () => {
+  const { input, expect } = await fixture("codex/managed-apply-patch.json")
+  const display = formatToolDisplay(input)
+  const patch = display.blocks.find((block) => block.kind === "patch")
+
+  assert.equal(display.summary, expect.summary)
+  assert.equal(patch?.kind, "patch")
+  assert.deepEqual(patch?.files[0]?.previewLines, expect.previewLines)
+})
+
 test("formatToolTranscriptUpdate keeps legacy markdown summaries stable", () => {
   assert.equal(
     formatToolTranscriptUpdate({

@@ -1,0 +1,20 @@
+{
+  "input": {
+    "id": "call_patch",
+    "tool": "apply_patch",
+    "status": "completed",
+    "title": "arroba",
+    "input": {
+      "domain": "text",
+      "patch_text": "*** Begin Patch\n*** Update File: patch-target.txt\n@@\n-before\n+after\n*** End Patch"
+    },
+    "output": "{\n  \"structuredContent\": {\n    \"applied\": true,\n    \"changes\": [\n      {\n        \"diff\": \"diff --git a/patch-target.txt b/patch-target.txt\\n--- a/patch-target.txt\\n+++ b/patch-target.txt\\n@@ -1,1 +1,1 @@\\n-before\\n+after\",\n        \"diff_truncated\": false,\n        \"kind\": \"update\",\n        \"path\": \"patch-target.txt\"\n      }\n    ]\n  }\n}"
+  },
+  "expect": {
+    "summary": "Patched patch-target.txt",
+    "previewLines": [
+      { "kind": "meta", "text": "@@ -1,1 +1,1 @@" },
+      { "kind": "added", "text": "after" }
+    ]
+  }
+}

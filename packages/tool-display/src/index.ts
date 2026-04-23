@@ -298,9 +298,9 @@ function summarizeToolDisplay(update: ToolTranscriptUpdate, patchFiles: ApplyPat
   return nonEmpty(update.description)
     ?? nonEmpty(update.title)
     ?? firstLine(update.text)
+    ?? plainMarkdownLine(firstLine(markdown))
     ?? firstLine(update.output)
     ?? firstLine(update.error)
-    ?? firstLine(markdown)
     ?? ""
 }
 
@@ -309,6 +309,10 @@ function firstLine(value: unknown) {
     return null
   }
   return nonEmpty(value.split(/\r?\n/)[0])
+}
+
+function plainMarkdownLine(value: string | null) {
+  return value?.replace(/\*\*/g, "").replace(/`/g, "")
 }
 
 export function buildApplyPatchNewPreview(file: ApplyPatchFile): ToolDisplayPatchLine[] {
@@ -558,7 +562,8 @@ function readApplyPatchText(input: unknown) {
   if (!input || typeof input !== "object") {
     return ""
   }
-  const patchText = (input as ApplyPatchInput).patchText
+  const patchText = (input as ApplyPatchInput & { patch_text?: unknown }).patchText
+    ?? (input as { patch_text?: unknown }).patch_text
   return typeof patchText === "string" ? patchText : ""
 }
 
@@ -603,11 +608,28 @@ function readManagedIoChangeFiles(update: ToolTranscriptUpdate): ApplyPatchFile[
 }
 
 function isManagedIoTool(tool: unknown) {
-  return tool === "arroba.edit_artifact"
-    || tool === "arroba.apply_patch"
-    || tool === "arroba.delete_artifact"
-    || tool === "arroba.move_artifact"
-    || tool === "arroba.write_artifact"
+  const canonical = canonicalToolName(tool)
+  return canonical === "arroba.edit_artifact"
+    || canonical === "arroba.apply_patch"
+    || canonical === "arroba.delete_artifact"
+    || canonical === "arroba.move_artifact"
+    || canonical === "arroba.write_artifact"
+}
+
+function canonicalToolName(tool: unknown) {
+  if (typeof tool !== "string") {
+    return ""
+  }
+  const normalized = tool.trim()
+  const compact = normalized.replace(/[._-]/g, "").toLowerCase()
+  if (compact === "arrobawriteartifact" || compact === "writeartifact") return "arroba.write_artifact"
+  if (compact === "arrobaeditartifact" || compact === "editartifact") return "arroba.edit_artifact"
+  if (compact === "arrobaapplypatch") return "arroba.apply_patch"
+  if (compact === "applypatch") return "apply_patch"
+  if (compact === "arrobadeleteartifact" || compact === "deleteartifact") return "arroba.delete_artifact"
+  if (compact === "arrobamoveartifact" || compact === "moveartifact") return "arroba.move_artifact"
+  if (compact === "arrobareadartifact" || compact === "readartifact") return "arroba.read_artifact"
+  return normalized
 }
 
 function readManagedIoChange(value: unknown): ApplyPatchFile | null {
@@ -909,7 +931,8 @@ function normalizeDiffPath(filePath: string) {
 }
 
 function formatReadTranscriptUpdate(update: ToolTranscriptUpdate) {
-  if (update.tool !== "read") {
+  const tool = canonicalToolName(update.tool)
+  if (tool !== "read" && tool !== "arroba.read_artifact") {
     return null
   }
 
@@ -919,7 +942,8 @@ function formatReadTranscriptUpdate(update: ToolTranscriptUpdate) {
     return null
   }
 
-  const header = `**read**${formatToolStatusBadge(nonEmpty(update.status))}\n\`${input.filePath}${formatReadWindow(input)}\``
+  const label = tool === "arroba.read_artifact" ? "managed I/O read" : "read"
+  const header = `**${label}**${formatToolStatusBadge(nonEmpty(update.status))}\n\`${input.filePath}${formatReadWindow(input)}\``
   const body = truncateToolBlob(content)
   const fence = codeFence(body)
   return `${header}\n\n${fence}${guessPathFenceLanguage(input.filePath)}\n${body}\n${fence}`
@@ -1069,8 +1093,12 @@ function readReadInput(input: unknown) {
     return null
   }
 
-  const value = input as ReadInput
-  const filePath = typeof value.filePath === "string" ? value.filePath.trim() : ""
+  const value = input as ReadInput & { path?: unknown }
+  const filePath = typeof value.filePath === "string"
+    ? value.filePath.trim()
+    : typeof value.path === "string"
+      ? value.path.trim()
+      : ""
   if (!filePath) {
     return null
   }
@@ -1103,11 +1131,26 @@ function readReadContent(value: unknown) {
   }
 
   const embedded = parseEmbeddedFileBlock(value)
-  if (!embedded) {
-    return null
+  if (embedded) {
+    return trimTrailingNewlines(embedded.content)
   }
 
-  return trimTrailingNewlines(embedded.content)
+  const normalized = normalizeJsonLike(value)
+  if (!isObjectValue(normalized)) {
+    return null
+  }
+  const directContent = readString(normalized.content_text) ?? readString(normalized.contentText)
+  if (directContent != null) {
+    return trimTrailingNewlines(directContent)
+  }
+  const structured = isObjectValue(normalized.structuredContent) ? normalized.structuredContent : null
+  const structuredContent = structured
+    ? readString(structured.content_text) ?? readString(structured.contentText)
+    : null
+  if (structuredContent != null) {
+    return trimTrailingNewlines(structuredContent)
+  }
+  return null
 }
 
 function truncateToolBlob(text: string) {

@@ -218,6 +218,48 @@ async function collectProviderToolEvents(historyDir, agentId) {
   return [...new Set(events)]
 }
 
+async function collectProviderDiagnostics(historyDir, agentId) {
+  const diagnostics = {
+    errors: [],
+    notices: [],
+    outputs: [],
+    reasoning: [],
+  }
+  const files = await listJsonlFiles(historyDir)
+  for (const file of files) {
+    const lines = (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
+    for (const line of lines) {
+      if (!line.trim()) continue
+      let entry
+      try {
+        entry = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if (entry.agent_id && entry.agent_id !== agentId) continue
+      if (typeof entry.text !== 'string' || entry.text.trim() === '') continue
+      if (entry.kind === 'provider_error') diagnostics.errors.push(entry.text.trim())
+      else if (entry.kind === 'notice') diagnostics.notices.push(entry.text.trim())
+      else if (entry.kind === 'provider_output') diagnostics.outputs.push(entry.text.trim())
+      else if (entry.kind === 'provider_reasoning') diagnostics.reasoning.push(entry.text.trim())
+    }
+  }
+  return diagnostics
+}
+
+function summarizeDiagnostics(diagnostics) {
+  const errors = [...new Set(diagnostics.errors)].slice(-3)
+  const notices = [...new Set(diagnostics.notices)].slice(-3)
+  const output = diagnostics.outputs.join('').trim().slice(-600)
+  const reasoning = diagnostics.reasoning.join('').trim().slice(-600)
+  return [
+    errors.length ? `errors=${JSON.stringify(errors)}` : null,
+    notices.length ? `notices=${JSON.stringify(notices)}` : null,
+    output ? `last_output=${JSON.stringify(output)}` : null,
+    reasoning ? `last_reasoning=${JSON.stringify(reasoning)}` : null,
+  ].filter(Boolean).join('; ')
+}
+
 async function listJsonlFiles(root) {
   const files = []
   const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
@@ -234,6 +276,31 @@ async function listJsonlFiles(root) {
 
 function fixtureFileName(provider, model) {
   return `${provider}-${model.replace(/[^a-zA-Z0-9_.-]+/g, '_')}.jsonl`
+}
+
+function toolNamesFromEvents(events) {
+  const names = new Set()
+  for (const event of events) {
+    try {
+      const parsed = JSON.parse(event)
+      if (typeof parsed.tool === 'string') names.add(parsed.tool.replace(/[._-]/g, '').toLowerCase())
+    } catch {
+      // Ignore non-JSON provider blobs; the formatter has separate fallback tests.
+    }
+  }
+  return names
+}
+
+function assertRequiredToolFamilies(target, events) {
+  const names = toolNamesFromEvents(events)
+  const hasRead = [...names].some((name) => name.includes('readartifact') || name === 'read')
+  const hasPatch = [...names].some((name) => name.includes('applypatch'))
+  const missing = []
+  if (!hasRead) missing.push('read')
+  if (!hasPatch) missing.push('apply_patch')
+  if (missing.length > 0) {
+    throw new Error(`${target.provider} ${target.model} fixture is missing required tool families: ${missing.join(', ')}`)
+  }
 }
 
 async function main() {
@@ -300,6 +367,8 @@ async function main() {
     const attachment = unwrap(await client.send(requests.attachToSessionRequest(session.id, `tool-display-fixtures-${Date.now()}`)), 'SessionAttached').attachment
 
     for (const target of targets) {
+      await writeFile(path.join(workspace, 'seed.txt'), 'TOOL_DISPLAY_FIXTURE_SEED\n', 'utf8')
+      await writeFile(path.join(workspace, 'patch-target.txt'), 'before\n', 'utf8')
       const agent = unwrapVariant(
         await client.send(requests.spawnAgentRequest(
           session.id,
@@ -313,12 +382,29 @@ async function main() {
       ).agent
       await client.send(requests.submitPromptRequest(session.id, attachment.id, agent.id, [
         'This is an Arroba tool-display fixture drill.',
-        'Use each available tool at most once and keep changes inside this disposable workspace.',
-        '1. Read seed.txt.',
-        '2. Search for TOOL_DISPLAY_FIXTURE_SEED in this workspace.',
-        '3. Run a harmless shell command that prints TOOL_DISPLAY_SHELL_OK.',
-        '4. Use apply_patch to change patch-target.txt from before to after.',
-        'Then reply with TOOL_DISPLAY_FIXTURE_DONE.',
+        'You must actually call tools now. Do not describe, plan, or summarize the steps without calling tools.',
+        'Keep all changes inside this disposable workspace.',
+        'Step 1: call the Arroba runtime tool `arroba.read_artifact` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.',
+        'Step 2: call a search/grep tool, if available, to search for TOOL_DISPLAY_FIXTURE_SEED in this workspace.',
+        'Step 3: call a shell/bash tool, if available, to run `printf TOOL_DISPLAY_SHELL_OK\\n`.',
+        'Only after the required tool calls succeed, reply with TOOL_DISPLAY_FIXTURE_PHASE_1_DONE.',
+        'If you cannot call any tool, reply with TOOL_DISPLAY_FIXTURE_NO_TOOLS and include the exact reason.',
+      ].join('\n'), []))
+      await waitForAgentIdle({
+        client,
+        requests,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        agentId: agent.id,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+      })
+      await client.send(requests.submitPromptRequest(session.id, attachment.id, agent.id, [
+        'This is phase 2 of the Arroba tool-display fixture drill.',
+        'You must actually call the patch tool now. Do not describe or summarize without calling it.',
+        'Call the Arroba runtime tool `arroba.apply_patch` exactly once with JSON arguments {"patch_text":"*** Begin Patch\\n*** Update File: patch-target.txt\\n@@\\n-before\\n+after\\n*** End Patch","domain":"text"}.',
+        'Only after the patch tool succeeds, reply with TOOL_DISPLAY_FIXTURE_DONE.',
+        'If you cannot call the patch tool, reply with TOOL_DISPLAY_FIXTURE_NO_PATCH and include the exact reason.',
       ].join('\n'), []))
       await waitForAgentIdle({
         client,
@@ -331,8 +417,10 @@ async function main() {
       })
       const events = await collectProviderToolEvents(historyDir, agent.id)
       if (events.length === 0) {
-        throw new Error(`${target.provider} ${target.model} produced no provider_tool events`)
+        const diagnostics = summarizeDiagnostics(await collectProviderDiagnostics(historyDir, agent.id))
+        throw new Error(`${target.provider} ${target.model} produced no provider_tool events${diagnostics ? `; ${diagnostics}` : ''}`)
       }
+      assertRequiredToolFamilies(target, events)
       const targetPath = path.join(outDir, fixtureFileName(target.provider, target.model))
       await writeFile(targetPath, `${events.join('\n')}\n`, 'utf8')
       console.log(`[tool-display-fixture] ${target.provider} ${target.model}: ${events.length} tool events -> ${targetPath}`)

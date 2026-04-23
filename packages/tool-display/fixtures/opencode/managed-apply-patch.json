@@ -1,0 +1,19 @@
+{
+  "input": {
+    "id": "prt_patch",
+    "tool": "arroba_apply_patch",
+    "status": "completed",
+    "input": {
+      "domain": "text",
+      "patch_text": "*** Begin Patch\n*** Update File: patch-target.txt\n@@\n-before\n+after\n*** End Patch"
+    },
+    "output": "{\"applied\":true,\"changes\":[{\"diff\":\"diff --git a/patch-target.txt b/patch-target.txt\\n--- a/patch-target.txt\\n+++ b/patch-target.txt\\n@@ -1,1 +1,1 @@\\n-before\\n+after\",\"diff_truncated\":false,\"kind\":\"update\",\"path\":\"patch-target.txt\"}]}"
+  },
+  "expect": {
+    "summary": "Patched patch-target.txt",
+    "previewLines": [
+      { "kind": "meta", "text": "@@ -1,1 +1,1 @@" },
+      { "kind": "added", "text": "after" }
+    ]
+  }
+}
