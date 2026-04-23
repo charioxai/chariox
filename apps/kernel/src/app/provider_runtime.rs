@@ -5,6 +5,7 @@ use rand::distributions::{Alphanumeric, DistString};
 
 use crate::agent::AgentInstance;
 use crate::app::{DaemonApp, TrackedProviderProcess};
+use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{
     AgentEndpointMode, LaunchProviderRequest, ProviderProcessInfo, ProviderProcessService,
@@ -825,6 +826,9 @@ impl DaemonApp {
                 shared_auth_token.unwrap_or_else(generate_runtime_mcp_auth_token),
             ));
         }
+        if request.provider_env_remove.is_empty() {
+            request = request.with_provider_env_remove(default_provider_env_remove(&self.config));
+        }
         let request_session_id = request.session_id.clone();
         let recipients = self
             .attachments
@@ -1122,6 +1126,9 @@ impl DaemonApp {
                 shared_auth_token.unwrap_or_else(generate_runtime_mcp_auth_token),
             ));
         }
+        if request.provider_env_remove.is_empty() {
+            request = request.with_provider_env_remove(default_provider_env_remove(&self.config));
+        }
         let run = self.providers.launch_run_detached(request)?;
         if run.endpoint_mode() == AgentEndpointMode::Managed {
             if let Err(error) = self.pty.spawn_for_run(&run) {
@@ -1363,6 +1370,12 @@ impl DaemonApp {
     }
 }
 
+fn default_provider_env_remove(config: &DaemonConfig) -> Vec<String> {
+    crate::secret::RuntimeSecretService::credential_env_names_from(&config.user_config.credentials)
+        .into_iter()
+        .collect()
+}
+
 pub(crate) fn sanitize_resume_state_for_launch(
     request: &LaunchProviderRequest,
     agent: &AgentInstance,
@@ -1407,7 +1420,10 @@ fn filter_provider_processes(
 mod tests {
     use crate::agent::{AgentInstance, GridPosition};
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
-    use crate::config::DaemonConfig;
+    use crate::config::{
+        DaemonConfig, UserCredentialConfig, UserCredentialInjectionConfig,
+        UserCredentialSourceConfig, UserCredentialUse,
+    };
     use crate::provider::{LaunchProviderRequest, ProviderResumeState};
     use crate::session::CreateSessionRequest;
 
@@ -1590,6 +1606,42 @@ mod tests {
             .expect("agent should restore");
         assert_eq!(restored_agent.provider(), "claude-code");
         assert_eq!(restored_agent.model(), Some(run_model.as_str()));
+    }
+
+    #[test]
+    fn provider_launch_scrubs_configured_credential_env_names() {
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.credentials.push(UserCredentialConfig {
+            id: "github".to_string(),
+            description: None,
+            source: UserCredentialSourceConfig::Env {
+                name: "ARROBA_TEST_GH_TOKEN".to_string(),
+            },
+            allowed_hosts: Vec::new(),
+            allowed_uses: vec![UserCredentialUse::Http],
+            injection: UserCredentialInjectionConfig::Header {
+                name: "authorization".to_string(),
+                value: "Bearer ${secret}".to_string(),
+            },
+        });
+        let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+
+        let run = app
+            .launch_provider(LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            ))
+            .expect("provider launch should succeed");
+
+        assert!(run
+            .pty_env_remove()
+            .contains(&"ARROBA_TEST_GH_TOKEN".to_string()));
     }
 
     #[test]

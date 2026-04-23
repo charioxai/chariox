@@ -156,6 +156,10 @@ Success:
   is built with explicit native backends for macOS Keychain, Windows Credential
   Manager, and Linux keyutils/Secret Service instead of the crate's mock
   fallback.
+- M10.10 remote semantics: complete for worker-local credential ownership and
+  worker-side provider env scrubbing. Remote agents discover/resolve credential
+  handles through the worker runtime MCP binding; users must configure
+  credentials on the machine where the agent runs.
 
 Validated commands:
 
@@ -181,6 +185,7 @@ cargo test -q user_config_parses_credential_handles_without_values
 cargo test -q user_config_parses_vault_credential_source
 cargo test -q user_config_rejects_duplicate_credential_ids
 cargo test -q transport::mcp_server::tests::mcp_initialize_and_tools_list_return_runtime_tools
+cargo test -q provider_launch_scrubs_configured_credential_env_names
 pnpm --filter @arroba/kernel-client test
 pnpm --filter @arroba/shell lint
 ```
@@ -380,23 +385,30 @@ Acceptance:
 
 ### M10.10 Remote Semantics
 
-For v1, the home kernel owns credential truth. Remote agents can request
-credential use through the home runtime path, but no automatic remote secret
-installation is performed.
+For v1, each kernel owns its own credential truth. Remote agents use the
+credential handles and vault sources available on the worker kernel where their
+provider process is running. Arroba does not copy, install, repair, or proxy
+credential values between machines.
 
 Rules:
 
-- HTTP credential calls execute from the kernel that owns the credential
-  source unless explicitly configured later
-- remote provider env is scrubbed using the same rules as local providers
+- local agents discover and resolve local/home credential handles
+- remote agents discover and resolve worker-local credential handles through
+  the worker runtime MCP binding
+- no broad spawn-time check tries to predict future credential needs
+- explicitly granted/preconfigured handles can be validated when known, but
+  otherwise missing or unresolved handles fail at first use with a clear error
+- remote provider env is scrubbed on the worker using the worker kernel config
+  plus the common secret-looking env patterns
 - terminal handoff for remote terminals is deferred until terminal ownership
   and transport semantics are explicit
 
 Acceptance:
 
-- remote provider env scrub tests pass
-- remote agent can request a home-owned HTTP credential handle
-- docs clearly state that remote-local network locality is not solved in v1
+- provider launches started by the worker scrub worker-local credential env vars
+- remote runtime MCP calls use the worker kernel's secret service
+- docs clearly state that users must configure credentials on the machine where
+  the agent runs
 
 ### M10.11 Live Drills
 
@@ -408,7 +420,8 @@ Run end-to-end drills after each production slice:
 - secret env absence inside provider environment
 - local terminal password prompt handoff
 - remote provider env scrub
-- remote HTTP credential request through home kernel
+- remote HTTP credential request through a worker-local credential handle
+- remote missing-handle/use-denied drill with a clear worker-side error
 
 ## Decision Gate
 
