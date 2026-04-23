@@ -1,0 +1,11 @@
+{
+  "name": "arroba-secret-handoff-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check src/secret-harness.mjs && node --check src/fake-agent.mjs && node --check src/password-prompt.mjs && node --check test/secret-handoff.test.mjs && node --check scripts/live-github-drill.mjs",
+    "test": "node --test test/*.test.mjs",
+    "drill:github": "node scripts/live-github-drill.mjs"
+  }
+}
