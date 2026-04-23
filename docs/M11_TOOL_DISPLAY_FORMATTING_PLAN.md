@@ -51,7 +51,7 @@ view because split diffs become noisy when several agents are active.
   complete.
 - M11.4 change `apply_patch` blobs to new-changes-only rendering: complete.
 - M11.5 collect Codex/OpenCode fixture corpus across available models and
-  tools: next.
+  tools: in progress.
 - M11.6 add golden tests for every supported tool family: in progress.
 - M11.7 run live drills across providers/models and update fixtures when raw
   provider shapes differ.
@@ -80,7 +80,24 @@ Validated commands:
 ```bash
 pnpm --filter @arroba/tool-display test
 pnpm --filter @arroba/cli test
+node --check apps/cli/scripts/live-tool-display-fixture-drill.mjs
+node apps/cli/scripts/live-tool-display-fixture-drill.mjs --providers codex,opencode --list-targets
+node apps/cli/scripts/live-tool-display-fixture-drill.mjs --provider codex --timeout-ms 240000 --keep-artifacts-on-failure
 ```
+
+The fixture drill resolved the default local targets as:
+
+- `codex gpt-5.4`
+- `opencode openai/gpt-5.4`
+
+Codex `gpt-5.4` produced four raw provider tool events and wrote them to
+`target/tool-display-fixtures/codex-gpt-5.4.jsonl`.
+
+OpenCode `openai/gpt-5.4` produced reasoning/output but no `provider_tool`
+records for the first prompt, so the drill failed fast and kept artifacts under
+`apps/cli/target/live-tool-display-fixture-drill/` for diagnosis. The next M11
+step is to tighten the OpenCode fixture prompt or inspect tool exposure for that
+provider path before expanding to all catalog models.
 
 ## Drills
 
