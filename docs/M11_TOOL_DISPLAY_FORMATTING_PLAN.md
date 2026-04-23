@@ -8,6 +8,9 @@ Make provider and runtime tool output readable across Arroba clients. Codex,
 OpenCode, CLI, web, iOS, and Android should not each invent their own parser
 for provider-specific JSON blobs.
 
+The client-facing rendering rules now live in
+`docs/CLI_AGENT_RESPONSE_RENDERING.md`.
+
 ## Design
 
 Arroba normalizes raw provider tool updates into a shared `ToolDisplay` JSON
