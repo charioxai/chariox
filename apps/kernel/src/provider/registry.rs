@@ -108,6 +108,7 @@ impl AgentEndpointAdapter for DevStubAdapter {
             pty_program: Some("/bin/sh".to_string()),
             pty_args,
             pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: request.provider_env_remove.clone(),
             working_directory: request.working_directory.clone(),
             structured_endpoint: None,
         })
@@ -171,6 +172,7 @@ fn dev_stub_pty_args(model: &str) -> Vec<String> {
             "workflow drill node 2",
             1843,
         )),
+        "semantic-url-renderer-stub" => Some(dev_stub_semantic_renderer_script()),
         _ => None,
     }
     .unwrap_or_else(|| "cat".to_string());
@@ -178,13 +180,33 @@ fn dev_stub_pty_args(model: &str) -> Vec<String> {
 }
 
 fn is_dev_stub_workflow_drill_model(model: &str) -> bool {
-    matches!(model, "workflow-drill-node-1" | "workflow-drill-node-2")
+    matches!(
+        model,
+        "workflow-drill-node-1" | "workflow-drill-node-2" | "semantic-url-renderer-stub"
+    )
 }
 
 fn dev_stub_workflow_output_script(summary: &str, value: i64) -> String {
     let payload =
         format!(r#"{{"summary":"{summary}","output":{{"message":{{"value":{value}}}}}}}"#);
     format!("sleep 1; printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; sleep 300")
+}
+
+fn dev_stub_semantic_renderer_script() -> String {
+    let response = serde_json::json!({
+        "kind": "http_response",
+        "status": 200,
+        "headers": { "content-type": "text/html; charset=utf-8" },
+        "body": "<!doctype html><html><head><title>About Arroba Foods - Neon</title><style>body{background:#000;color:#39ff14;font-family:system-ui,sans-serif}a{color:#39ff14}main{border:1px solid #39ff14;padding:2rem;box-shadow:0 0 24px #39ff14}</style></head><body data-arroba-render=\"ARROBA_RENDER_NEON_GREEN\"><main><h1>About Arroba Foods</h1><p>We build practical grocery tools for neighborhood stores.</p><a href=\"/contact\">Contact us</a></main></body></html>"
+    });
+    let payload = serde_json::json!({
+        "summary": "semantic renderer stub",
+        "output": { "message": response }
+    });
+    format!(
+        "while true; do sleep 2; printf '%s\\n%s\\n%s\\n' '```json' '{}' '```'; done",
+        payload
+    )
 }
 
 #[derive(Debug, Default)]
@@ -291,6 +313,7 @@ impl AgentEndpointAdapter for FailingPtyAdapter {
             pty_program: Some("/definitely/not/a/real/provider".to_string()),
             pty_args: Vec::new(),
             pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: request.provider_env_remove.clone(),
             working_directory: request.working_directory.clone(),
             structured_endpoint: None,
         })

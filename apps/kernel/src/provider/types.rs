@@ -225,6 +225,8 @@ pub struct LaunchProviderRequest {
     pub runtime_mcp_binding: Option<RuntimeMcpBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<ArrobaMcpServerConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_env_remove: Vec<String>,
     #[serde(
         default,
         skip_serializing_if = "ProviderWriteAccessMode::is_unrestricted"
@@ -272,6 +274,7 @@ impl LaunchProviderRequest {
             working_directory: None,
             runtime_mcp_binding: None,
             mcp_servers: Vec::new(),
+            provider_env_remove: Vec::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             resume_state: None,
         }
@@ -307,6 +310,11 @@ impl LaunchProviderRequest {
 
     pub fn with_mcp_servers(mut self, mcp_servers: Vec<ArrobaMcpServerConfig>) -> Self {
         self.mcp_servers = mcp_servers;
+        self
+    }
+
+    pub fn with_provider_env_remove(mut self, env_remove: Vec<String>) -> Self {
+        self.provider_env_remove = env_remove;
         self
     }
 
@@ -348,6 +356,8 @@ pub struct ProviderLaunchResult {
     pub pty_program: Option<String>,
     pub pty_args: Vec<String>,
     pub pty_env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pty_env_remove: Vec<String>,
     pub working_directory: Option<PathBuf>,
     pub structured_endpoint: Option<String>,
 }
@@ -372,6 +382,8 @@ pub struct RuntimeProviderRun {
     pty_program: Option<String>,
     pty_args: Vec<String>,
     pty_env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pty_env_remove: Vec<String>,
     working_directory: Option<PathBuf>,
     structured_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -421,6 +433,7 @@ impl RuntimeProviderRun {
             pty_program: launch_result.pty_program,
             pty_args: launch_result.pty_args,
             pty_env: launch_result.pty_env,
+            pty_env_remove: launch_result.pty_env_remove,
             working_directory: launch_result.working_directory,
             structured_endpoint: launch_result.structured_endpoint,
             runtime_mcp_server_url: request
@@ -480,6 +493,7 @@ impl RuntimeProviderRun {
             pty_program: None,
             pty_args: Vec::new(),
             pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
             working_directory: None,
             structured_endpoint: None,
             runtime_mcp_server_url: None,
@@ -578,6 +592,10 @@ impl RuntimeProviderRun {
     }
     pub fn pty_env(&self) -> &BTreeMap<String, String> {
         &self.pty_env
+    }
+
+    pub fn pty_env_remove(&self) -> &[String] {
+        &self.pty_env_remove
     }
     pub fn working_directory(&self) -> Option<&PathBuf> {
         self.working_directory.as_ref()
@@ -904,6 +922,7 @@ mod tests {
             pty_program: None,
             pty_args: Vec::new(),
             pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
             working_directory: None,
             structured_endpoint: None,
         };
@@ -933,6 +952,7 @@ mod tests {
             pty_program: None,
             pty_args: Vec::new(),
             pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
             working_directory: None,
             structured_endpoint: None,
         };

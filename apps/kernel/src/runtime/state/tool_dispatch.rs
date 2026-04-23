@@ -19,6 +19,9 @@ impl KernelRuntimeState {
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_capability_tool_name(tool_name)
                     })
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_credential_tool_name(tool_name)
+                    })
                     .unwrap_or_else(|| tool_name.strip_prefix("arroba_").unwrap_or(tool_name));
             let provider_runs = owned
                 .provider_store
@@ -73,6 +76,20 @@ impl KernelRuntimeState {
                 }
                 return self
                     .dispatch_capability_runtime_tool_call(
+                        &provider_runs[0],
+                        canonical_tool_name,
+                        arguments,
+                    )
+                    .await;
+            }
+            if matches!(
+                canonical_tool_name,
+                crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL
+                    | crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
+                    | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
+            ) {
+                return self
+                    .dispatch_credential_runtime_tool_call(
                         &provider_runs[0],
                         canonical_tool_name,
                         arguments,
@@ -193,6 +210,95 @@ impl KernelRuntimeState {
             )?;
             self.spawn_workflow_prompt_dispatches(dispatches);
             Ok(result)
+        }
+    }
+
+    async fn dispatch_credential_runtime_tool_call(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let credentials = self
+            .owned
+            .config_projection
+            .snapshot()
+            .user_config
+            .credentials;
+        let service = crate::secret::RuntimeSecretService::new(credentials);
+        match tool_name {
+            crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL => {
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "credentials": service.list_handles()
+                    }),
+                })
+            }
+            crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::HttpRequestWithCredentialArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_http_request_with_credential",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let request = crate::secret::CredentialHttpRequest {
+                    credential_id: args.credential_id,
+                    method: args.method,
+                    url: args.url,
+                    headers: args.headers,
+                    body_text: args.body_text,
+                    body_json: args.body_json,
+                };
+                let response = tokio::task::spawn_blocking(move || {
+                    service.http_request_with_credential(request)
+                })
+                .await
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_http_request_with_credential",
+                    message: error.to_string(),
+                })??;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::to_value(response).map_err(|error| {
+                        DaemonError::LocalTransport {
+                            operation: "runtime_tool_http_request_with_credential",
+                            message: error.to_string(),
+                        }
+                    })?,
+                })
+            }
+            crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SendSecretToTerminalArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_send_secret_to_terminal",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let mut input = service.terminal_secret_input(&args.credential_id)?;
+                if args.append_newline {
+                    input.push('\n');
+                }
+                let provider_run_id = provider_run.id().to_string();
+                self.with_app_side_effect(move |app| {
+                    app.write_provider_pty_input_for_runtime(&provider_run_id, input.as_bytes())
+                })
+                .await?;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "submitted": true,
+                        "credential_id": args.credential_id,
+                        "target": "current_provider_run",
+                    }),
+                })
+            }
+            _ => Err(DaemonError::LocalTransport {
+                operation: "dispatch_credential_runtime_tool_call",
+                message: format!("unknown credential runtime tool `{tool_name}`"),
+            }),
         }
     }
 

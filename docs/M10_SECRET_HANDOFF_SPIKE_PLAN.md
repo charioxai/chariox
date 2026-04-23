@@ -132,6 +132,20 @@ Success:
 - M10.1 spike harness: complete.
 - M10.2 deterministic local drills: complete.
 - M10.3 live GitHub bearer-token drill: complete.
+- M10.4 credential config model: complete for `env`/`file` sources and
+  `header`/`query`/`basic`/`hmac`/`pty` injection kinds.
+- M10.5 provider environment scrubber: complete for local Arroba-launched
+  provider PTYs. Provider runs now carry explicit env-removal names from
+  configured credential env sources, and the PTY manager also removes common
+  secret-looking env names before applying provider-required env overrides.
+- M10.6 runtime secret service: complete for local `env`/`file` resolution,
+  host/use policy checks, bearer/query/basic injection, generic HMAC signing,
+  and terminal-secret resolution.
+- M10.7 runtime MCP tools: complete for `list_credential_handles`,
+  `http_request_with_credential`, and `send_secret_to_terminal`.
+- M10.8 terminal secret handoff: complete for direct current-provider PTY stdin
+  writes. Prompt-pattern scanning is intentionally not included in this slice
+  because it can consume terminal output that the UI also needs to display.
 
 Validated commands:
 
@@ -146,6 +160,17 @@ The live GitHub drill returned `200` from `GET https://api.github.com/user`
 using a token sourced from `gh auth token`; the fake agent environment could
 not read `GITHUB_TOKEN` or `GH_TOKEN`, and the runtime result did not contain
 the token.
+
+Validated production commands:
+
+```bash
+cd apps/kernel
+cargo check --lib --message-format=short
+cargo test -q secret::tests
+cargo test -q user_config_parses_credential_handles_without_values
+cargo test -q user_config_rejects_duplicate_credential_ids
+cargo test -q transport::mcp_server::tests::mcp_initialize_and_tools_list_return_runtime_tools
+```
 
 ## Integration Plan
 
@@ -182,9 +207,12 @@ Supported v1 injections:
 - `query`
 - `basic`
 - `hmac`
+- `pty`
 
-`vault` remains a model concept from the spike but should wait until Arroba has
-a real local encrypted store or OS keychain integration.
+`vault` is not a separate v1 storage system. The production v1 equivalent is
+the runtime secret service resolving `env` and `file` credential sources. A real
+local encrypted store or OS keychain integration can be designed later as an
+additional source type.
 
 Acceptance:
 
@@ -243,11 +271,6 @@ V1 tools:
 
 - `list_credential_handles`
 - `http_request_with_credential`
-
-The terminal paste tool is useful but should be integrated after the HTTP path
-because it needs tighter coordination with the existing PTY/terminal ownership
-model:
-
 - `send_secret_to_terminal`
 
 Acceptance:
@@ -264,17 +287,23 @@ Integrate password prompt handoff with the kernel terminal/PTY manager.
 
 Scope:
 
-- write a configured credential value to a targeted terminal/PTY stdin after a
-  pattern match such as `Password:`
+- write a configured credential value to the current provider terminal/PTY
+  stdin
 - return only submission status
 - do not echo or store the value
+- do not record the secret as normal terminal input
+
+Out of scope for this slice:
+
+- waiting for a prompt pattern such as `Password:` before writing the secret.
+  That requires a PTY output ownership design so the runtime does not consume
+  output that should remain visible to the CLI/UI.
 
 Acceptance:
 
 - local PTY drill can complete a password prompt
 - no prompt transcript/history includes the password
-- failure to match the prompt returns a timeout/error without printing the
-  secret
+- tool output returns only submission metadata
 
 ### M10.9 Remote Semantics
 

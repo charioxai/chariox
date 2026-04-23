@@ -252,6 +252,7 @@ async fn handle_json_rpc_value(
                     "tools": crate::transport::runtime_tools::managed_io_runtime_tool_specs()
                         .into_iter()
                         .chain(crate::transport::runtime_tools::capability_runtime_tool_specs())
+                        .chain(crate::transport::runtime_tools::credential_runtime_tool_specs())
                         .chain(crate::transport::runtime_tools::workflow_runtime_tool_specs())
                         .map(|tool| serde_json::json!({
                             "name": tool.name,
@@ -491,6 +492,24 @@ mod tests {
         assert!(tools
             .iter()
             .any(|tool| tool["name"] == "request_capability"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "arroba.list_credential_handles"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "list_credential_handles"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "arroba.http_request_with_credential"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "http_request_with_credential"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "arroba.send_secret_to_terminal"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "send_secret_to_terminal"));
     }
 
     #[tokio::test]

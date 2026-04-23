@@ -198,6 +198,7 @@ mod tests {
             pty_program: Some("/bin/echo".to_string()),
             pty_args: vec!["hello".to_string()],
             pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
             working_directory: Some(std::env::temp_dir()),
             structured_endpoint: Some("http://127.0.0.1:1".to_string()),
         };
@@ -227,6 +228,7 @@ mod tests {
             pty_program: Some("/bin/echo".to_string()),
             pty_args: vec!["hello".to_string()],
             pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
             working_directory: Some(workspace.clone()),
             structured_endpoint: Some("http://127.0.0.1:1".to_string()),
         };

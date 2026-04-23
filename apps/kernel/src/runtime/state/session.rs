@@ -183,6 +183,14 @@ impl KernelRuntimeOwnedState {
                 shared_auth_token.unwrap_or_else(crate::app::generate_runtime_mcp_auth_token),
             ));
         }
+        if request.provider_env_remove.is_empty() {
+            let config = self.config_projection.snapshot();
+            let credential_env_names =
+                crate::secret::RuntimeSecretService::credential_env_names_from(
+                    &config.user_config.credentials,
+                );
+            request = request.with_provider_env_remove(credential_env_names.into_iter().collect());
+        }
         if request.mcp_servers.is_empty() {
             let granted_mcp_servers = self.granted_mcp_servers_for_launch(&request)?;
             request = request.with_mcp_servers(granted_mcp_servers);

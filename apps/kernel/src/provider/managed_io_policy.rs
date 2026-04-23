@@ -30,6 +30,7 @@ mod tests {
             pty_program: None,
             pty_args: Vec::new(),
             pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
             working_directory: None,
             structured_endpoint: Some("ws://127.0.0.1:43112".to_string()),
         }

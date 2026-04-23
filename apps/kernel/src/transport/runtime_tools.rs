@@ -33,6 +33,12 @@ pub const LIST_CAPABILITIES_TOOL: &str = "arroba.list_capabilities";
 pub const LIST_CAPABILITIES_TOOL_ALIAS: &str = "list_capabilities";
 pub const REQUEST_CAPABILITY_TOOL: &str = "arroba.request_capability";
 pub const REQUEST_CAPABILITY_TOOL_ALIAS: &str = "request_capability";
+pub const LIST_CREDENTIAL_HANDLES_TOOL: &str = "arroba.list_credential_handles";
+pub const LIST_CREDENTIAL_HANDLES_TOOL_ALIAS: &str = "list_credential_handles";
+pub const HTTP_REQUEST_WITH_CREDENTIAL_TOOL: &str = "arroba.http_request_with_credential";
+pub const HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS: &str = "http_request_with_credential";
+pub const SEND_SECRET_TO_TERMINAL_TOOL: &str = "arroba.send_secret_to_terminal";
+pub const SEND_SECRET_TO_TERMINAL_TOOL_ALIAS: &str = "send_secret_to_terminal";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -167,6 +173,35 @@ pub struct RequestCapabilityArgs {
     pub return_body: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpRequestWithCredentialArgs {
+    pub credential_id: String,
+    pub url: String,
+    #[serde(default = "default_http_method")]
+    pub method: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_json: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendSecretToTerminalArgs {
+    pub credential_id: String,
+    #[serde(default = "default_append_newline")]
+    pub append_newline: bool,
+}
+
+fn default_append_newline() -> bool {
+    true
+}
+
+fn default_http_method() -> String {
+    "GET".to_string()
+}
+
 impl ManagedMoveArtifactArgs {
     pub fn has_non_text_transform_fields(&self) -> bool {
         self.old_text
@@ -221,6 +256,99 @@ pub fn capability_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     let mut specs = canonical;
     specs.extend(aliases);
     specs
+}
+
+pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
+    let canonical = vec![
+        RuntimeToolSpec {
+            name: LIST_CREDENTIAL_HANDLES_TOOL.to_string(),
+            description: "List Arroba credential handles available to this runtime. Values are never returned; use a handle id with http_request_with_credential when a request needs a secret.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: HTTP_REQUEST_WITH_CREDENTIAL_TOOL.to_string(),
+            description: "Perform an HTTP request using an Arroba credential handle. Arroba resolves and injects/signs the secret outside the model context, enforces the handle policy, and returns only the HTTP status/body.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["credential_id", "url"],
+                "properties": {
+                    "credential_id": {"type": "string"},
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
+                    },
+                    "url": {"type": "string"},
+                    "headers": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"}
+                    },
+                    "body_text": {"type": "string"},
+                    "body_json": {}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SEND_SECRET_TO_TERMINAL_TOOL.to_string(),
+            description: "Write a terminal credential directly to the current provider PTY stdin. The secret value is not returned, recorded as terminal input, or placed in model context.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["credential_id"],
+                "properties": {
+                    "credential_id": {"type": "string"},
+                    "append_newline": {"type": "boolean"}
+                },
+                "additionalProperties": false
+            }),
+        },
+    ];
+    let aliases = canonical
+        .iter()
+        .filter_map(credential_alias_spec)
+        .collect::<Vec<_>>();
+    let mut specs = canonical;
+    specs.extend(aliases);
+    specs
+}
+
+fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
+    let alias = match spec.name.as_str() {
+        LIST_CREDENTIAL_HANDLES_TOOL => LIST_CREDENTIAL_HANDLES_TOOL_ALIAS,
+        HTTP_REQUEST_WITH_CREDENTIAL_TOOL => HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS,
+        SEND_SECRET_TO_TERMINAL_TOOL => SEND_SECRET_TO_TERMINAL_TOOL_ALIAS,
+        _ => return None,
+    };
+    let mut spec = spec.clone();
+    spec.name = alias.to_string();
+    spec.description = format!("{} Alias for `{}`.", spec.description, alias);
+    Some(spec)
+}
+
+pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        LIST_CREDENTIAL_HANDLES_TOOL
+        | LIST_CREDENTIAL_HANDLES_TOOL_ALIAS
+        | "arroba_list_credential_handles"
+        | "mcp__arroba__list_credential_handles"
+        | "mcp__arroba__arroba_list_credential_handles" => Some(LIST_CREDENTIAL_HANDLES_TOOL),
+        HTTP_REQUEST_WITH_CREDENTIAL_TOOL
+        | HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS
+        | "arroba_http_request_with_credential"
+        | "mcp__arroba__http_request_with_credential"
+        | "mcp__arroba__arroba_http_request_with_credential" => {
+            Some(HTTP_REQUEST_WITH_CREDENTIAL_TOOL)
+        }
+        SEND_SECRET_TO_TERMINAL_TOOL
+        | SEND_SECRET_TO_TERMINAL_TOOL_ALIAS
+        | "arroba_send_secret_to_terminal"
+        | "mcp__arroba__send_secret_to_terminal"
+        | "mcp__arroba__arroba_send_secret_to_terminal" => Some(SEND_SECRET_TO_TERMINAL_TOOL),
+        _ => None,
+    }
 }
 
 fn capability_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {

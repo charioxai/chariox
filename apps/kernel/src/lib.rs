@@ -22,6 +22,7 @@ pub mod pty;
 pub mod runtime;
 pub mod runtime_transport;
 pub mod scheduler;
+pub mod secret;
 pub mod session;
 pub mod session_history_page;
 pub mod skill;

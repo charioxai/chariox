@@ -594,6 +594,8 @@ pub struct ArrobaUserConfig {
     pub relay: UserRelayConfig,
     #[serde(default)]
     pub kernel: UserKernelConfig,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<UserCredentialConfig>,
 }
 
 impl Default for ArrobaUserConfig {
@@ -607,6 +609,7 @@ impl Default for ArrobaUserConfig {
             ui: UserUiConfig::default(),
             relay: UserRelayConfig::default(),
             kernel: UserKernelConfig::default(),
+            credentials: Vec::new(),
         }
     }
 }
@@ -617,6 +620,7 @@ impl ArrobaUserConfig {
         self.history.validate()?;
         self.artifacts.validate()?;
         self.state.validate()?;
+        validate_credentials(&self.credentials)?;
         Ok(())
     }
 
@@ -930,6 +934,107 @@ impl ArrobaUserConfig {
         }
         self.validate()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserCredentialConfig {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub source: UserCredentialSourceConfig,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_uses: Vec<UserCredentialUse>,
+    pub injection: UserCredentialInjectionConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum UserCredentialSourceConfig {
+    Env { name: String },
+    File { path: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserCredentialUse {
+    Http,
+    Pty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UserCredentialInjectionConfig {
+    Header {
+        name: String,
+        value: String,
+    },
+    Query {
+        name: String,
+    },
+    Basic {
+        #[serde(default)]
+        username: String,
+    },
+    Hmac {
+        #[serde(default = "default_hmac_timestamp_header")]
+        timestamp_header: String,
+        #[serde(default = "default_hmac_signature_header")]
+        signature_header: String,
+    },
+    Pty,
+}
+
+fn default_hmac_timestamp_header() -> String {
+    "x-arroba-timestamp".to_string()
+}
+
+fn default_hmac_signature_header() -> String {
+    "x-arroba-signature".to_string()
+}
+
+fn validate_credentials(credentials: &[UserCredentialConfig]) -> Result<(), DaemonError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for credential in credentials {
+        validate_config_key_path(&credential.id)?;
+        if !seen.insert(credential.id.as_str()) {
+            return Err(DaemonError::InvalidConfig {
+                field: "credentials",
+                message: "credential ids must be unique",
+            });
+        }
+        match &credential.source {
+            UserCredentialSourceConfig::Env { name } => {
+                validate_non_empty("credentials.source.name", name)?;
+            }
+            UserCredentialSourceConfig::File { path } => {
+                validate_non_empty("credentials.source.path", path)?;
+            }
+        }
+        for host in &credential.allowed_hosts {
+            validate_non_empty("credentials.allowed_hosts", host)?;
+        }
+        match &credential.injection {
+            UserCredentialInjectionConfig::Header { name, value } => {
+                validate_non_empty("credentials.injection.name", name)?;
+                validate_non_empty("credentials.injection.value", value)?;
+            }
+            UserCredentialInjectionConfig::Query { name } => {
+                validate_non_empty("credentials.injection.name", name)?;
+            }
+            UserCredentialInjectionConfig::Basic { .. } => {}
+            UserCredentialInjectionConfig::Hmac {
+                timestamp_header,
+                signature_header,
+            } => {
+                validate_non_empty("credentials.injection.timestamp_header", timestamp_header)?;
+                validate_non_empty("credentials.injection.signature_header", signature_header)?;
+            }
+            UserCredentialInjectionConfig::Pty => {}
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1917,6 +2022,61 @@ mod tests {
         assert_eq!(entries[0].public_key_thumbprint, "new-thumbprint");
         assert_eq!(entries[0].paired_at_ms, 20);
         assert!(!entries[0].revoked);
+    }
+
+    #[test]
+    fn user_config_parses_credential_handles_without_values() {
+        let payload = r#"
+version = 1
+
+[[credentials]]
+id = "github"
+description = "GitHub API"
+allowed_hosts = ["api.github.com"]
+allowed_uses = ["http"]
+source = { type = "env", name = "GH_TOKEN" }
+injection = { kind = "header", name = "authorization", value = "Bearer ${secret}" }
+"#;
+
+        let config =
+            toml::from_str::<ArrobaUserConfig>(payload).expect("credential config should parse");
+        config
+            .validate()
+            .expect("credential config should validate");
+
+        assert_eq!(config.credentials.len(), 1);
+        assert_eq!(config.credentials[0].id, "github");
+        assert_eq!(
+            config.credentials[0].allowed_uses,
+            vec![UserCredentialUse::Http]
+        );
+    }
+
+    #[test]
+    fn user_config_rejects_duplicate_credential_ids() {
+        let payload = r#"
+version = 1
+
+[[credentials]]
+id = "github"
+source = { type = "env", name = "GH_TOKEN" }
+injection = { kind = "query", name = "token" }
+
+[[credentials]]
+id = "github"
+source = { type = "env", name = "OTHER_TOKEN" }
+injection = { kind = "query", name = "token" }
+"#;
+
+        let config = toml::from_str::<ArrobaUserConfig>(payload)
+            .expect("duplicate ids should parse before validation");
+        let error = config
+            .validate()
+            .expect_err("duplicate credential ids should be invalid");
+        match error {
+            DaemonError::InvalidConfig { field, .. } => assert_eq!(field, "credentials"),
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[test]

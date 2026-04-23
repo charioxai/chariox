@@ -60,6 +60,7 @@ fn plan_codex_launch_unlocked(
 
     let executable = resolve_codex_executable_unlocked()?;
     let (config_args, env) = runtime_mcp_config(request)?;
+    let working_directory = request.and_then(|request| request.working_directory.clone());
     Ok(ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed,
         process_label: "codex:app-server".to_string(),
@@ -72,7 +73,10 @@ fn plan_codex_launch_unlocked(
             args
         },
         pty_env: env,
-        working_directory: None,
+        pty_env_remove: request
+            .map(|request| request.provider_env_remove.clone())
+            .unwrap_or_default(),
+        working_directory,
         structured_endpoint: Some(endpoint),
     })
 }

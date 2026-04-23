@@ -60,6 +60,9 @@ fn plan_opencode_launch_unlocked(
             port,
             base_url,
             runtime_mcp_env(request)?,
+            request
+                .map(|request| request.provider_env_remove.clone())
+                .unwrap_or_default(),
         ));
     }
 
@@ -72,6 +75,9 @@ fn plan_opencode_launch_unlocked(
         port,
         base_url,
         runtime_mcp_env(request)?,
+        request
+            .map(|request| request.provider_env_remove.clone())
+            .unwrap_or_default(),
     ))
 }
 
@@ -80,6 +86,7 @@ fn managed_launch(
     port: u16,
     base_url: String,
     pty_env: BTreeMap<String, String>,
+    pty_env_remove: Vec<String>,
 ) -> ProviderLaunchResult {
     ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed,
@@ -94,6 +101,7 @@ fn managed_launch(
             port.to_string(),
         ],
         pty_env,
+        pty_env_remove,
         working_directory: None,
         structured_endpoint: Some(base_url),
     }

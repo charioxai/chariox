@@ -20,6 +20,7 @@ pub struct PtySpawnRequest {
     pub program: String,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
+    pub env_remove: Vec<String>,
     pub working_directory: Option<PathBuf>,
     pub cols: u16,
     pub rows: u16,
@@ -78,6 +79,7 @@ impl PtyManager {
             program: program.to_string(),
             args: run.pty_args().to_vec(),
             env: run.pty_env().clone(),
+            env_remove: run.pty_env_remove().to_vec(),
             working_directory: run.working_directory().cloned(),
             cols: 120,
             rows: 40,
@@ -113,6 +115,14 @@ impl PtyManager {
         let mut command = CommandBuilder::new(request.program);
         for arg in request.args {
             command.arg(arg);
+        }
+        for (name, _) in std::env::vars() {
+            if crate::secret::secret_like_env_name(&name) {
+                command.env_remove(name);
+            }
+        }
+        for key in request.env_remove {
+            command.env_remove(key);
         }
         for (key, value) in request.env {
             command.env(key, value);
@@ -389,6 +399,7 @@ mod tests {
                 pty_program: Some("/bin/sh".to_string()),
                 pty_args: vec!["-lc".to_string(), "cat".to_string()],
                 pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
                 working_directory: None,
                 structured_endpoint: None,
             },
@@ -412,6 +423,7 @@ mod tests {
                 pty_program: Some("/bin/sh".to_string()),
                 pty_args: vec!["-lc".to_string(), "cat".to_string()],
                 pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
                 working_directory: None,
                 structured_endpoint: None,
             },
