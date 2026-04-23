@@ -152,7 +152,10 @@ Success:
 - M10.9 local vault source: complete for OS-keychain-backed `vault` credential
   sources, local kernel set/delete APIs, and hidden `arroba-shell` input through
   `credential set <key>`. Inline values are rejected so secrets are not typed
-  into the visible prompt area or shell command history.
+  into the visible prompt area or shell command history. The keyring dependency
+  is built with explicit native backends for macOS Keychain, Windows Credential
+  Manager, and Linux keyutils/Secret Service instead of the crate's mock
+  fallback.
 
 Validated commands:
 
@@ -247,6 +250,16 @@ credential github-token:
 The shell never accepts `credential set <key> <value>`. Non-interactive scripts
 and embedded shells must supply a hidden-input provider; otherwise the command
 fails instead of exposing a secret in the visible prompt area.
+
+Platform behavior:
+
+- macOS stores values in Keychain.
+- Windows stores values in Windows Credential Manager.
+- Linux stores values through the keyring native persistent backend
+  (`keyutils` cache plus Secret Service persistence). Linux machines need a
+  working Secret Service implementation such as GNOME Keyring or KWallet, plus
+  the normal DBus/libdbus runtime pieces. If those are absent, Arroba fails the
+  credential operation instead of falling back to plaintext or mock storage.
 
 Acceptance:
 
@@ -349,6 +362,8 @@ Scope:
 - support `source = { type = "vault", key = "..." }`
 - store/delete local vault entries through kernel APIs
 - use the platform OS keychain as the only built-in v1 vault backend
+- compile the keyring dependency with native macOS, Windows, and Linux backend
+  features enabled so production builds do not use the crate's mock fallback
 - read secret values through hidden interactive input in standalone
   `arroba-shell`
 - reject inline secret values and reject hidden-input commands when the shell

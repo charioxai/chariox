@@ -63,7 +63,7 @@ impl RuntimeSecretService {
         Self::with_vault_store(
             credentials,
             "arroba",
-            Arc::new(OsKeychainCredentialVaultStore),
+            Arc::new(PlatformKeychainCredentialVaultStore),
         )
     }
 
@@ -74,7 +74,7 @@ impl RuntimeSecretService {
         Self::with_vault_store(
             credentials,
             vault_service,
-            Arc::new(OsKeychainCredentialVaultStore),
+            Arc::new(PlatformKeychainCredentialVaultStore),
         )
     }
 
@@ -354,9 +354,9 @@ pub trait CredentialVaultStore: Send + Sync + std::fmt::Debug {
 }
 
 #[derive(Debug, Default)]
-pub struct OsKeychainCredentialVaultStore;
+pub struct PlatformKeychainCredentialVaultStore;
 
-impl CredentialVaultStore for OsKeychainCredentialVaultStore {
+impl CredentialVaultStore for PlatformKeychainCredentialVaultStore {
     fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
         keyring_entry(service, key)?
             .get_password()
@@ -496,8 +496,30 @@ fn keyring_entry(service: &str, key: &str) -> Result<keyring::Entry, DaemonError
 fn vault_error(operation: &'static str, key: &str, error: keyring::Error) -> DaemonError {
     secret_error(
         "credential_vault",
-        format!("failed to {operation} credential `{key}` in OS keychain: {error}"),
+        format!(
+            "failed to {operation} credential `{key}` in {}: {error}",
+            platform_keychain_backend_name()
+        ),
     )
+}
+
+fn platform_keychain_backend_name() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "macOS Keychain"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "Windows Credential Manager"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "Linux keyutils/Secret Service"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        "platform keychain"
+    }
 }
 
 fn secret_error(operation: &'static str, message: String) -> DaemonError {
