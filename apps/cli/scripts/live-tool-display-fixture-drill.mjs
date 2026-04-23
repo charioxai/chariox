@@ -12,6 +12,10 @@ const DEFAULT_PROVIDERS = ['codex', 'opencode']
 const DEFAULT_MODEL = 'gpt-5.4'
 const DEFAULT_TIMEOUT_MS = 360_000
 const DEFAULT_POLL_MS = 1_000
+const DEFAULT_SKIPPED_ALL_MODEL_TARGETS = new Map([
+  ['opencode:opencode/claude-3-5-haiku', 'OpenCode maps this catalog target to unavailable upstream model claude-3-5-haiku-20241022'],
+  ['opencode:opencode/gpt-5.4-pro', 'default drill effort is low, but this model requires medium/high/xhigh'],
+])
 
 function parseArgs(argv) {
   const options = {
@@ -177,7 +181,13 @@ function drillTargets(catalog, options) {
       .filter((model) => model.status !== 'deprecated')
       .slice(0, options.maxModelsPerProvider)
     for (const model of models) {
-      targets.push({ provider: provider.id, model: qualifiedCatalogModelId(provider.id, model.id) })
+      const qualifiedModel = qualifiedCatalogModelId(provider.id, model.id)
+      const skipReason = DEFAULT_SKIPPED_ALL_MODEL_TARGETS.get(`${provider.id}:${qualifiedModel}`)
+      if (skipReason) {
+        targets.push({ provider: provider.id, model: qualifiedModel, skipReason })
+      } else {
+        targets.push({ provider: provider.id, model: qualifiedModel })
+      }
     }
   }
   return targets
@@ -372,6 +382,14 @@ function assertRequiredToolFamilies(target, events) {
   }
 }
 
+function runtimeReadToolName(provider) {
+  return provider === 'opencode' ? 'arroba_read_artifact' : 'arroba.read_artifact'
+}
+
+function runtimePatchToolName(provider) {
+  return provider === 'opencode' ? 'arroba_apply_patch' : 'arroba.apply_patch'
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -425,7 +443,8 @@ async function main() {
     if (targets.length === 0) throw new Error('no provider/model targets selected')
     if (options.listTargets) {
       for (const target of targets) {
-        console.log(`[tool-display-fixture] target ${target.provider} ${target.model}`)
+        const suffix = target.skipReason ? ` SKIPPED (${target.skipReason})` : ''
+        console.log(`[tool-display-fixture] target ${target.provider} ${target.model}${suffix}`)
       }
       succeeded = true
       return
@@ -437,6 +456,10 @@ async function main() {
     const failures = []
 
     for (const target of targets) {
+      if (target.skipReason) {
+        console.log(`[tool-display-fixture] ${target.provider} ${target.model}: SKIPPED ${target.skipReason}`)
+        continue
+      }
       try {
         await runTargetFixture({
           client,
@@ -490,6 +513,8 @@ async function runTargetFixture({
   timeoutMs,
   pollMs,
 }) {
+  const readTool = runtimeReadToolName(target.provider)
+  const patchTool = runtimePatchToolName(target.provider)
   await writeFile(path.join(workspace, 'seed.txt'), 'TOOL_DISPLAY_FIXTURE_SEED\n', 'utf8')
   await writeFile(path.join(workspace, 'patch-target.txt'), 'before\n', 'utf8')
   const agent = unwrapVariant(
@@ -506,8 +531,9 @@ async function runTargetFixture({
   await client.send(requests.submitPromptRequest(session.id, attachment.id, agent.id, [
     'This is an Arroba tool-display fixture drill.',
     'You must actually call tools now. Do not describe, plan, or summarize the steps without calling tools.',
+    'Do not print XML, JSON, markdown, or pseudo-tool-call text. Use the provider tool-call mechanism only.',
     'Keep all changes inside this disposable workspace.',
-    'Step 1: call the Arroba runtime tool `arroba.read_artifact` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.',
+    `Step 1: call the Arroba runtime tool \`${readTool}\` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.`,
     'Step 2: call a search/grep tool, if available, to search for TOOL_DISPLAY_FIXTURE_SEED in this workspace.',
     'Step 3: call a shell/bash tool, if available, to run `printf TOOL_DISPLAY_SHELL_OK\\n`.',
     'Only after the required tool calls succeed, reply with TOOL_DISPLAY_FIXTURE_PHASE_1_DONE.',
@@ -536,7 +562,8 @@ async function runTargetFixture({
   await client.send(requests.submitPromptRequest(session.id, attachment.id, agent.id, [
     'This is phase 2 of the Arroba tool-display fixture drill.',
     'You must actually call the patch tool now. Do not describe or summarize without calling it.',
-    'Call the Arroba runtime tool `arroba.apply_patch` exactly once with JSON arguments {"patch_text":"*** Begin Patch\\n*** Update File: patch-target.txt\\n@@\\n-before\\n+after\\n*** End Patch","domain":"text"}.',
+    'Do not print XML, JSON, markdown, or pseudo-tool-call text. Use the provider tool-call mechanism only.',
+    `Call the Arroba runtime tool \`${patchTool}\` exactly once with JSON arguments {"patch_text":"*** Begin Patch\\n*** Update File: patch-target.txt\\n@@\\n-before\\n+after\\n*** End Patch","domain":"text"}.`,
     'Only after the patch tool succeeds, reply with TOOL_DISPLAY_FIXTURE_DONE.',
     'If you cannot call the patch tool, reply with TOOL_DISPLAY_FIXTURE_NO_PATCH and include the exact reason.',
   ].join('\n'), []))

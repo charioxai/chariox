@@ -118,15 +118,21 @@ advanced to phase 2 before phase 1 has actually completed.
 
 OpenCode Zen model coverage on 2026-04-23:
 
-- 36 of 39 `opencode/*` model targets produced read plus patch tool fixtures.
-- `opencode/claude-3-5-haiku` failed with an OpenCode provider model error:
-  `model: claude-3-5-haiku-20241022`.
+- 37 `opencode/*` model targets produced read plus patch tool fixtures.
+- `opencode/minimax-m2.5` originally emitted XML-like pseudo-tool text instead
+  of OpenCode tool events when prompted with dotted Arroba tool names. The drill
+  now prompts OpenCode targets with underscore runtime tool names such as
+  `arroba_read_artifact` and `arroba_apply_patch`; `opencode/minimax-m2.5`
+  passes with that prompt shape.
+- `opencode/claude-3-5-haiku` is skipped in expanded catalog drills. After
+  `opencode models --refresh`, direct OpenCode invocation still fails with
+  `model: claude-3-5-haiku-20241022`, before Arroba or tool display handling is
+  involved.
 - `opencode/gpt-5.4-pro` failed because the drill used low effort, while that
   model requires medium/high/xhigh. We are not expanding effort coverage in M11
   because effort variants should expose the same tool surface.
-- `opencode/minimax-m2.5` did not emit OpenCode tool events; it emitted an
-  XML-like `<invoke name="read_artifact">...` text block instead. This is a
-  model/provider behavior exception, not a shared formatter regression.
+- `opencode/gpt-5.4-pro` is also skipped in expanded catalog drills with the
+  default low-effort invocation.
 
 ## Client Consumption Rules
 
