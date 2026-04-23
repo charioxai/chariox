@@ -27,8 +27,8 @@ Prove these v1 claims:
 - No MCP-specific work. Normal MCP use already keeps env secrets inside the MCP
   process unless the MCP itself returns/logs them.
 - No OAuth lifecycle implementation in this spike.
-- No remote secret semantics in this slice. Remote vault/credential behavior is
-  intentionally left for the next design pass.
+- No remote secret copying, installation, repair, or proxying. Remote agents use
+  credentials owned by the worker kernel where the provider process runs.
 
 ## Prototype Location
 
@@ -188,7 +188,14 @@ cargo test -q transport::mcp_server::tests::mcp_initialize_and_tools_list_return
 cargo test -q provider_launch_scrubs_configured_credential_env_names
 pnpm --filter @arroba/kernel-client test
 pnpm --filter @arroba/shell lint
+node apps/cli/scripts/live-secret-handoff-drill.mjs
 ```
+
+On 2026-04-23, `live-secret-handoff-drill.mjs` passed against real local kernel
+processes. It validated provider env scrubbing, credential handle locality,
+HTTP bearer injection, wrong-host denial, missing worker-local handle denial,
+and direct PTY secret handoff. The remote part is a two-kernel worker-local
+simulation; it intentionally does not copy secrets from home to worker.
 
 ## Integration Plan
 
@@ -422,6 +429,19 @@ Run end-to-end drills after each production slice:
 - remote provider env scrub
 - remote HTTP credential request through a worker-local credential handle
 - remote missing-handle/use-denied drill with a clear worker-side error
+
+Current dedicated drill:
+
+```bash
+node apps/cli/scripts/live-secret-handoff-drill.mjs
+```
+
+The drill starts isolated local and worker kernels with separate Arroba config
+roots and separate credential env vars. It proves that each provider run
+receives scrub metadata for its own kernel, each runtime MCP sees only its own
+credential handles, HTTP requests can use credentials without returning secret
+values, policy denials surface without secret material, and terminal handoff can
+write the secret to the provider PTY without the tool result containing it.
 
 ## Decision Gate
 
