@@ -20,6 +20,9 @@ importers:
       '@arroba/kernel-client':
         specifier: workspace:*
         version: link:../../packages/kernel-client
+      '@arroba/tool-display':
+        specifier: workspace:*
+        version: link:../../packages/tool-display
       '@opentui/core':
         specifier: 0.1.87
         version: 0.1.87(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)
@@ -79,6 +82,8 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+
+  packages/tool-display: {}
 
 packages:
 

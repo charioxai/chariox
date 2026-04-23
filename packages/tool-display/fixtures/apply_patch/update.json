@@ -1,0 +1,18 @@
+{
+  "input": {
+    "id": "tool-apply-1",
+    "tool": "apply_patch",
+    "status": "completed",
+    "input": {
+      "patchText": "*** Begin Patch\n*** Update File: src/app.ts\n@@\n-const oldValue = 1\n+const newValue = 2\n console.log('ready')\n*** End Patch"
+    }
+  },
+  "expect": {
+    "summary": "Patched src/app.ts",
+    "previewLines": [
+      { "kind": "meta", "text": "@@ -1,2 +1,2 @@" },
+      { "kind": "added", "text": "const newValue = 2" },
+      { "kind": "context", "text": "console.log('ready')" }
+    ]
+  }
+}

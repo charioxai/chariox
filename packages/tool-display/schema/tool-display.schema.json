@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arroba.dev/schemas/tool-display.v1.json",
+  "title": "Arroba Tool Display",
+  "type": "object",
+  "required": ["version", "tool", "title", "summary", "collapsed", "blocks"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "tool": { "type": "string", "minLength": 1 },
+    "status": { "type": "string" },
+    "title": { "type": "string" },
+    "summary": { "type": "string" },
+    "collapsed": {
+      "type": "object",
+      "required": ["title", "summary"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string" },
+        "summary": { "type": "string" }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["kind", "text"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "text" },
+              "text": { "type": "string" }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["kind", "language", "text"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "code" },
+              "language": { "type": "string" },
+              "text": { "type": "string" }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["kind", "value"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "json" },
+              "value": true
+            }
+          },
+          {
+            "type": "object",
+            "required": ["kind", "columns", "rows"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "table" },
+              "columns": { "type": "array", "items": { "type": "string" } },
+              "rows": {
+                "type": "array",
+                "items": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["kind", "files"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "patch" },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["kind", "filePath", "title", "previewLines"],
+                  "additionalProperties": true,
+                  "properties": {
+                    "kind": { "enum": ["add", "delete", "update", "move"] },
+                    "filePath": { "type": "string" },
+                    "title": { "type": "string" },
+                    "diff": { "type": ["string", "null"] },
+                    "previewLines": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["kind", "text"],
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": { "enum": ["context", "added", "removed", "meta"] },
+                          "text": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

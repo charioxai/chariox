@@ -2,7 +2,6 @@ import { setTimeout as startTimeout } from "node:timers"
 
 import {
   BoxRenderable,
-  DiffRenderable,
   MarkdownRenderable,
   MouseButton,
   RGBA,
@@ -16,7 +15,7 @@ import type { TranscriptEntry } from "./cli-types.js"
 import { transcriptEntryPadding } from "./transcript-entry-style.js"
 import { theme, TranscriptSeparatorBorder } from "./theme.js"
 import {
-  guessPathFenceLanguage,
+  buildApplyPatchNewPreview,
   normalizeMarkdownFenceInfoStrings,
   parseToolTranscriptUpdate,
   readApplyPatchFiles,
@@ -332,41 +331,47 @@ function buildApplyPatchTranscriptContent(
         wrapMode: "word",
       }),
     )
-    if (file.diff) {
-      const diff = new DiffRenderable(renderer, {
-        diff: file.diff,
-        view: "split",
-        filetype: guessPathFenceLanguage(file.filePath),
-        syntaxStyle: transcriptSyntax,
-        showLineNumbers: true,
-        wrapMode: "none",
-        fg: theme.text,
-        addedBg: RGBA.fromHex("#102616"),
-        removedBg: RGBA.fromHex("#2a1215"),
-        contextBg: palette.element,
-        addedSignColor: theme.success,
-        removedSignColor: theme.error,
-        lineNumberFg: theme.textMuted,
-        lineNumberBg: palette.element,
-        addedLineNumberBg: RGBA.fromHex("#16301d"),
-        removedLineNumberBg: RGBA.fromHex("#34191d"),
-      })
-      block.add(diff)
-      startTimeout(() => {
-        ;(diff as unknown as { requestRebuild?: () => void }).requestRebuild?.()
-        diff.requestRender()
-      }, 0)
-    } else {
-      block.add(
-        new TextRenderable(renderer, {
-          content: file.kind === "delete" ? "File deleted" : "No diff available",
-          fg: theme.textMuted,
-          wrapMode: "word",
-        }),
-      )
-    }
+    buildApplyPatchNewOnlyContent(renderer, block, file, palette.element)
     body.add(block)
   }
+}
+
+function buildApplyPatchNewOnlyContent(
+  renderer: RenderContext,
+  block: BoxRenderable,
+  file: ReturnType<typeof readApplyPatchFiles>[number],
+  contextBg: RGBA,
+) {
+  const preview = buildApplyPatchNewPreview(file)
+  const text = new TextRenderable(renderer, {
+    fg: theme.text,
+    wrapMode: "none",
+    bg: contextBg,
+  })
+  for (const [index, line] of preview.entries()) {
+    if (index > 0) {
+      text.add("\n")
+    }
+    if (line.kind === "added") {
+      text.add(TextNodeRenderable.fromString(`+ ${line.text}`, {
+        fg: theme.success,
+        bg: RGBA.fromHex("#102616"),
+      }))
+      continue
+    }
+    if (line.kind === "meta") {
+      text.add(TextNodeRenderable.fromString(line.text, {
+        fg: theme.textMuted,
+        attributes: TextAttributes.BOLD,
+      }))
+      continue
+    }
+    text.add(TextNodeRenderable.fromString(`  ${line.text}`, {
+      fg: theme.text,
+      bg: contextBg,
+    }))
+  }
+  block.add(text)
 }
 
 function appendAttachmentChip(text: TextRenderable, mime: string, filename: string) {
