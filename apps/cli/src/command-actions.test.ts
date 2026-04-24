@@ -270,7 +270,8 @@ test("relay cloud login stores the bootstrap profile", async () => {
 
 test("relay cloud login without args uses device flow", async () => {
   const notices: string[] = []
-  let savedProfile: Record<string, unknown> | null = null
+  const savedProfiles: Array<Record<string, unknown> | null> = []
+  const configured: Array<{ relayUrl: string | null; relayToken: string | null }> = []
   const handlers = createCommandActionHandlers(makeCommandDeps({
     clientId: "client-1",
     appendNotice: (message: string) => { notices.push(message) },
@@ -320,15 +321,132 @@ test("relay cloud login without args uses device flow", async () => {
         },
       }
     },
+    pairCloudRelayMachine: async (profile: Record<string, unknown>, machineId: string, alias?: string) => ({
+      ...profile,
+      machineId,
+      machineAlias: alias ?? "laptop",
+    }),
+    issueCloudMachineRelayToken: async (_profile: Record<string, unknown>, daemonId: string, machineId: string) => {
+      assert.equal(daemonId, "daemon-1")
+      assert.equal(machineId, "machine-1")
+      return {
+        relayUrl: "wss://relay.example",
+        relayToken: "relay-token",
+        tokenExpiresAtMs: 1234,
+      }
+    },
+    configureRelay: async (relayUrl: string | null, relayToken: string | null) => {
+      configured.push({ relayUrl, relayToken })
+      return {
+        configured: true,
+        connected: true,
+        relay_url: relayUrl,
+        relay_token_configured: relayToken != null,
+        daemon_id: "daemon-1",
+        machine_id: "machine-1",
+        machine_alias: "laptop",
+      }
+    },
     saveCloudRelayProfile: async (profile: Record<string, unknown> | null) => {
-      savedProfile = profile
+      savedProfiles.push(profile)
     },
   }))
 
   await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud login", args: ["cloud", "login"] })
 
-  assert.equal((savedProfile as { cloudSessionToken?: string } | null)?.cloudSessionToken, "session-token")
+  assert.equal((savedProfiles.at(-1) as { cloudSessionToken?: string; tokenExpiresAtMs?: number } | null)?.cloudSessionToken, "session-token")
+  assert.equal((savedProfiles.at(-1) as { tokenExpiresAtMs?: number } | null)?.tokenExpiresAtMs, 1234)
+  assert.deepEqual(configured, [{ relayUrl: "wss://relay.example", relayToken: "relay-token" }])
   assert.match(notices.at(-1) ?? "", /code=ABCD-EFGH/)
+})
+
+test("/cloud triggers hosted device login flow", async () => {
+  const flashed: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    flashFooter: (message: string) => { flashed.push(message) },
+    getRelayStatus: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    startCloudDeviceLogin: async () => ({
+      apiUrl: "https://cloud.example",
+      deviceCode: "device-code",
+      userCode: "ABCD-EFGH",
+      verificationUrl: "https://cloud.example/activate?user_code=ABCD-EFGH",
+      expiresAtMs: Date.now() + 60_000,
+      intervalSeconds: 1,
+    }),
+    openExternalUrl: async () => true,
+    pollCloudDeviceLogin: async () => ({
+      status: "approved",
+      profile: {
+        apiUrl: "https://cloud.example",
+        email: "user@example.com",
+        accountId: "account-1",
+        userId: "user-1",
+        accountSlug: "user",
+        realmId: "realm-1",
+        relayUrl: "wss://relay.example",
+        issuerId: "issuer-1",
+      },
+    }),
+    pairCloudRelayMachine: async (profile: Record<string, unknown>) => profile,
+    issueCloudKernelRelayToken: async () => ({
+      relayUrl: "wss://relay.example",
+      relayToken: "relay-token",
+      tokenExpiresAtMs: 1234,
+    }),
+    configureRelay: async () => ({
+      configured: true,
+      connected: true,
+      relay_url: "wss://relay.example",
+      relay_token_configured: true,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    saveCloudRelayProfile: async () => {},
+  }))
+
+  await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
+
+  assert.equal(flashed.at(-1), "cloud linked: user")
+})
+
+test("relay cloud login without args prefers configured hosted api url", async () => {
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    clientId: "client-1",
+    cloudRelayApiUrl: "https://arroba-cloud-staging.osc-fr1.scalingo.io/",
+    getRelayStatus: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    startCloudDeviceLogin: async (apiUrl: string) => {
+      assert.equal(apiUrl, "https://arroba-cloud-staging.osc-fr1.scalingo.io/")
+      return {
+        apiUrl,
+        deviceCode: "dev-code",
+        userCode: "ABCD-EFGH",
+        verificationUrl: "https://arroba-cloud-staging.osc-fr1.scalingo.io/activate?user_code=ABCD-EFGH",
+        expiresAtMs: Date.now() + 60_000,
+        intervalSeconds: 1,
+      }
+    },
+    openExternalUrl: async () => true,
+    pollCloudDeviceLogin: async () => ({ status: "expired_token" }),
+  }))
+
+  await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud login", args: ["cloud", "login"] })
 })
 
 test("relay cloud connect mints a daemon token and configures relay", async () => {

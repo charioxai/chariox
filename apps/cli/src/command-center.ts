@@ -66,9 +66,10 @@ const COMMAND_TREE: CommandNode[] = [
   {
     id: "cloud",
     label: "/cloud",
-    description: "Manage cloud collaboration invites and members",
+    description: "Link local Arroba with Cloud and manage collaboration",
     value: "/cloud ",
     children: [
+      { id: "cloud-link", label: "link", description: "Open browser login and link this local kernel with Cloud", value: "/cloud" },
       { id: "cloud-invite-create", label: "invite create", description: "Create a cloud-backed session invite", value: "/cloud invite create " },
       { id: "cloud-invite-accept", label: "invite accept", description: "Accept a cloud-backed session invite", value: "/cloud invite accept " },
       { id: "cloud-members", label: "members", description: "List cloud members for the current session", value: "/cloud members" },

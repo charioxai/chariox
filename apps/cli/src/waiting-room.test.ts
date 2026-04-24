@@ -159,8 +159,8 @@ test("waiting room places join below start configuration and makes cloud relay l
     },
   })
   const relayConfigure = relayRows.find((row) => row.id === "relay-configure")
-  assert.equal(relayConfigure?.title, "Connect to Arroba Cloud")
-  assert.equal(relayConfigure?.value, "/relay cloud login")
+  assert.equal(relayConfigure?.title, "Cloud")
+  assert.equal(relayConfigure?.value, "/cloud")
   assert.equal(relayConfigure?.selectable, true)
   assert.equal(relayConfigure?.focused, true)
 })

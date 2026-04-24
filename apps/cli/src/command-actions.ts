@@ -35,6 +35,7 @@ const execFileAsync = promisify(execFile)
 
 const WORKFLOW_MAX_TURNS_CONFIG_KEY = "workflow.max_turns"
 const WORKFLOW_LAUNCH_POLICY_CONFIG_KEY = "workflow.launch_policy"
+const DEFAULT_HOSTED_CLOUD_API_URL = "https://cloud.arroba.dev"
 
 type FooterTone = "info" | "error"
 
@@ -200,7 +201,7 @@ type CommandActionDeps = {
   refreshWaitingRoomData?: () => Promise<void>
   getCloudRelayProfile?: () => RelayCloudProfile | null
   saveCloudRelayProfile?: (profile: RelayCloudProfile | null) => Promise<void>
-  cloudRelayApiUrl?: string
+  cloudRelayApiUrl?: string | undefined
   bootstrapCloudRelay?: (
     apiUrl: string,
     email: string,
@@ -675,6 +676,66 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const formatSkillSummary = (skill: ArrobaSkillMetadata): string => {
     const summary = skill.short_description ?? skill.description
     return `${skill.name}: ${summary}`
+  }
+  const startHostedCloudLink = async (): Promise<void> => {
+    if (!deps.startCloudDeviceLogin || !deps.pollCloudDeviceLogin || !deps.getRelayStatus || !deps.saveCloudRelayProfile) {
+      deps.flashFooter("cloud login is unavailable in this build", "error")
+      return
+    }
+    const relayStatus = await deps.getRelayStatus()
+    const started = await deps.startCloudDeviceLogin(deps.cloudRelayApiUrl ?? DEFAULT_HOSTED_CLOUD_API_URL, {
+      clientId: deps.clientId ?? "arroba-cli",
+      machineId: relayStatus.machine_id,
+      ...(relayStatus.machine_alias ? { machineAlias: relayStatus.machine_alias } : {}),
+    })
+    const opened = await deps.openExternalUrl?.(started.verificationUrl)
+    deps.appendNotice(
+      [
+        "cloud login",
+        `url=${started.verificationUrl}`,
+        `code=${started.userCode}`,
+        opened ? "browser=opened" : "browser=manual",
+      ].join("\n"),
+    )
+    deps.flashFooter(opened ? "opened Arroba Cloud in browser" : `open ${started.verificationUrl}`, "info")
+    let intervalMs = Math.max(started.intervalSeconds, 1) * 1000
+    while (Date.now() < started.expiresAtMs) {
+      const polled = await deps.pollCloudDeviceLogin(started.apiUrl, started.deviceCode)
+      if (polled.status === "approved") {
+        let profile = polled.profile
+        await deps.saveCloudRelayProfile(profile)
+        if (deps.pairCloudRelayMachine) {
+          profile = await deps.pairCloudRelayMachine(
+            profile,
+            relayStatus.machine_id,
+            relayStatus.machine_alias || undefined,
+          )
+          await deps.saveCloudRelayProfile(profile)
+        }
+        if (deps.issueCloudKernelRelayToken && deps.getRelayStatus && deps.configureRelay) {
+          const refreshedRelayStatus = await deps.getRelayStatus()
+          const issued = profile.machineId && deps.issueCloudMachineRelayToken
+            ? await deps.issueCloudMachineRelayToken(profile, refreshedRelayStatus.daemon_id, profile.machineId)
+            : await deps.issueCloudKernelRelayToken(profile, refreshedRelayStatus.daemon_id)
+          await deps.configureRelay(issued.relayUrl, issued.relayToken)
+          profile = {
+            ...(issued.profile ?? profile),
+            tokenExpiresAtMs: issued.tokenExpiresAtMs,
+          }
+          await deps.saveCloudRelayProfile(profile)
+        }
+        await deps.refreshWaitingRoomData?.()
+        deps.flashFooter(`cloud linked: ${profile.accountSlug}`, "info")
+        return
+      }
+      if (polled.status === "expired_token") {
+        deps.flashFooter("cloud login expired", "error")
+        return
+      }
+      intervalMs = Math.max(polled.intervalSeconds, 1) * 1000
+      await sleep(intervalMs)
+    }
+    deps.flashFooter("cloud login expired", "error")
   }
   const formatWorkspaceLinks = (links: WorkspaceLinkDefinition[]): string => {
     if (links.length === 0) {
@@ -1598,39 +1659,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         const apiUrl = cloudArgs[0]
         const email = cloudArgs[1]
         const accountSlug = cloudArgs[2]
-        if (!apiUrl && cloudCommand === "login" && deps.startCloudDeviceLogin && deps.pollCloudDeviceLogin && deps.getRelayStatus) {
-          const relayStatus = await deps.getRelayStatus()
-          const started = await deps.startCloudDeviceLogin(deps.cloudRelayApiUrl ?? "https://cloud.arroba.dev", {
-            clientId: deps.clientId ?? "arroba-cli",
-            machineId: relayStatus.machine_id,
-            ...(relayStatus.machine_alias ? { machineAlias: relayStatus.machine_alias } : {}),
-          })
-          const opened = await deps.openExternalUrl?.(started.verificationUrl)
-          deps.appendNotice(
-            [
-              "cloud login",
-              `url=${started.verificationUrl}`,
-              `code=${started.userCode}`,
-              opened ? "browser=opened" : "browser=manual",
-            ].join("\n"),
-          )
-          deps.flashFooter(opened ? "opened Arroba Cloud login in browser" : `open ${started.verificationUrl} and enter ${started.userCode}`, "info")
-          let intervalMs = Math.max(started.intervalSeconds, 1) * 1000
-          while (Date.now() < started.expiresAtMs) {
-            const polled = await deps.pollCloudDeviceLogin(started.apiUrl, started.deviceCode)
-            if (polled.status === "approved") {
-              await deps.saveCloudRelayProfile(polled.profile)
-              deps.flashFooter(`cloud relay profile ${polled.profile.accountSlug} saved`, "info")
-              return
-            }
-            if (polled.status === "expired_token") {
-              deps.flashFooter("cloud login expired", "error")
-              return
-            }
-            intervalMs = Math.max(polled.intervalSeconds, 1) * 1000
-            await sleep(intervalMs)
-          }
-          deps.flashFooter("cloud login expired", "error")
+        if (!apiUrl && cloudCommand === "login") {
+          await startHostedCloudLink()
           return
         }
         if (!apiUrl || !email) {
@@ -1824,9 +1854,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     command: Extract<ParsedSlashCommand, { kind: "cloud" }>,
   ): Promise<void> => {
     const [area, action, ...args] = command.args
+    if (!area) {
+      await startHostedCloudLink()
+      return
+    }
     const profile = deps.getCloudRelayProfile?.() ?? null
     if (!profile) {
-      deps.flashFooter("cloud profile missing; run /relay cloud login first", "error")
+      deps.flashFooter("cloud profile missing; run /cloud first", "error")
       return
     }
     if (area === "invite" && action === "create") {

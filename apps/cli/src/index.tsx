@@ -1544,10 +1544,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         await connectDetachedKernelFromWaitingRoom()
       }
       if (waitingRoomState().focus === "relay") {
-        setPromptText("/relay cloud login")
+        setPromptText("/cloud")
         promptInput?.focus()
-        syncCommandCenter("/relay cloud login")
-        flashFooter("press Enter to open Arroba Cloud login", "info")
+        syncCommandCenter("/cloud")
+        flashFooter("press Enter to link local Arroba with Cloud", "info")
         return
       }
       if (waitingRoomState().focus === "remote-kernel") {
@@ -5564,6 +5564,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleMcpCommand,
     handleSkillCommand,
   } = createCommandActionHandlers({
+    ...(resolveConfiguredCloudRelayApiUrl(preferencesState())
+      ? { cloudRelayApiUrl: resolveConfiguredCloudRelayApiUrl(preferencesState()) }
+      : {}),
     workspace: options.workspace ?? process.cwd(),
     worktree: options.worktree ?? options.workspace ?? process.cwd(),
     accountProfile: options.accountProfile,
@@ -8654,6 +8657,13 @@ function defaultKernelEndpoint(): string {
   const host = process.env.ARROBA_KERNEL_HOST ?? "127.0.0.1"
   const port = process.env.ARROBA_KERNEL_PORT ?? "43118"
   return `ws://${host}:${port}/kernel`
+}
+
+function resolveConfiguredCloudRelayApiUrl(preferences: ArrobaPreferences): string | undefined {
+  const configured = process.env.ARROBA_CLOUD_API_URL
+    ?? process.env.ARROBA_CLOUD_HOSTED_API_URL
+    ?? preferences.relay?.cloud?.apiUrl
+  return configured?.trim().replace(/\/+$/, "") || undefined
 }
 
 async function openExternalUrl(url: string): Promise<boolean> {
