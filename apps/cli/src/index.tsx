@@ -110,6 +110,7 @@ import {
   getSkillRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
+  getWaitingRoomInventoryRequest,
   getUserConfigRequest,
   installMcpServerRequest,
   installSkillRequest,
@@ -152,6 +153,7 @@ import {
   uninstallSkillRequest,
   unsetUserConfigValueRequest,
   updateMcpServerRequest,
+  updateAgentConfigRequest,
   updateSessionConfigRequest,
   updateSkillRequest,
 } from "./ipc-requests.js"
@@ -520,6 +522,10 @@ type SplitPaneFooterTextGroup = {
   modelText?: TextRenderable
   modelDividerText?: TextRenderable
   variantText?: TextRenderable
+  variantDividerText?: TextRenderable
+  modeText?: TextRenderable
+  modeDividerText?: TextRenderable
+  permissionText?: TextRenderable
 }
 
 const DEBUG_LOGS_ENABLED = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
@@ -1594,54 +1600,42 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
   let waitingRoomDataRefresh: Promise<void> | null = null
+  let waitingRoomInventoryVersion: string | null = null
   const connectDetachedKernelFromWaitingRoom = async () => {
     appLogger?.info("connecting detached cli to configured kernel endpoint")
     flashFooter("connecting to kernel...", "info")
-    const [sessions, catalog, commandCatalogs] = await Promise.all([
-      listSessions(client),
+    const [catalog, commandCatalogs] = await Promise.all([
       getProviderCatalog(client, appLogger),
       getProviderCommandCatalogs(client, appLogger),
     ])
-    setAvailableSessions(sessions)
+    waitingRoomInventoryVersion = null
     setProviderCatalogState(catalog)
     setProviderCommandCatalogState(commandCatalogs)
     setKernelConnected(true)
     setDaemonDisconnected(false)
-    reconcileWaitingRoom(waitingRoomState())
+    await refreshWaitingRoomData()
     flashFooter("connected to kernel", "info")
   }
   const refreshWaitingRoomDataNow = async () => {
     if (!kernelConnected()) {
       return
     }
-    const [sessions, relayStatus] = await Promise.all([
-      listSessions(client),
-      getRelayStatus(client).catch((error) => {
-        appLogger?.warn("relay status refresh failed", { error: formatError(error) })
-        return null
-      }),
-    ])
-    const machines = await listRemoteMachines(client).catch((error) => {
-      appLogger?.warn("remote machine refresh failed", { error: formatError(error) })
-      return []
+    const snapshot = await getWaitingRoomInventory(client).catch((error) => {
+      appLogger?.warn("waiting room inventory refresh failed", { error: formatError(error) })
+      return null
     })
-    const kernels = machines.length > 0
-      ? (await Promise.all(
-          machines
-            .filter((machine) => machine.online !== false && !machine.pending && machine.kernel_count > 0)
-            .map((machine) => listRemoteMachineKernels(client, machine.machine_id).catch((error) => {
-              appLogger?.warn("remote machine kernel refresh failed", {
-                machine_id: machine.machine_id,
-                error: formatError(error),
-              })
-              return [] as RemoteKernelView[]
-            })),
-        )).flat()
-      : []
-    setAvailableSessions(sessions)
-    setRelayStatusState(relayStatus)
-    setRemoteMachinesState(machines)
-    setRemoteKernelsState(kernels)
+    if (!snapshot) {
+      return
+    }
+    if (snapshot.inventoryVersion === waitingRoomInventoryVersion) {
+      reconcileWaitingRoom(waitingRoomState())
+      return
+    }
+    waitingRoomInventoryVersion = snapshot.inventoryVersion
+    setAvailableSessions(snapshot.sessions)
+    setRelayStatusState(snapshot.relayStatus)
+    setRemoteMachinesState(snapshot.remoteMachines)
+    setRemoteKernelsState(snapshot.remoteKernels)
     reconcileWaitingRoom(waitingRoomState())
   }
   const refreshWaitingRoomData = async () => {
@@ -2793,8 +2787,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return true
     }
     if (edit.kind === "delete-text") {
+      const hasSelection = selection && selection.start !== selection.end
       setPromptText(`${text.slice(0, edit.start)}${text.slice(edit.end)}`)
-      promptInput.cursorOffset = cursor
+      promptInput.cursorOffset = hasSelection ? Math.min(selection.start, selection.end) : cursor
       updateSessionChrome()
       ;(renderer as { requestRender?: () => void }).requestRender?.()
       return true
@@ -3151,11 +3146,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     flashFooter(`[hotkeys] ${message}`, "info")
   }
 
-  const copySelection = () => {
-    const text = renderer.getSelection()?.getSelectedText()
-    renderer.clearSelection()
+  const copyTextWithFeedback = (text: string | null | undefined) => {
     if (!text) {
-      return
+      return false
     }
     void copyTextToClipboard(text, renderer)
       .then(() => {
@@ -3167,6 +3160,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         })
         flashFooter("failed to copy selection", "error")
       })
+    return true
+  }
+
+  const copyPromptSelection = () => {
+    const selection = promptInput?.getSelection()
+    if (!selection || selection.start === selection.end || !promptInput) {
+      return false
+    }
+    const start = Math.max(0, Math.min(selection.start, selection.end))
+    const end = Math.min(promptInput.plainText.length, Math.max(selection.start, selection.end))
+    return copyTextWithFeedback(promptInput.plainText.slice(start, end))
+  }
+
+  const copySelection = () => {
+    const text = renderer.getSelection()?.getSelectedText()
+    renderer.clearSelection()
+    copyTextWithFeedback(text)
   }
 
   const applySessionState = (nextSession: RuntimeSession) => {
@@ -3529,6 +3539,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       modelText: new TextRenderable(renderer, { wrapMode: "none" }),
       modelDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
       variantText: new TextRenderable(renderer, { wrapMode: "none" }),
+      variantDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
+      modeText: new TextRenderable(renderer, { wrapMode: "none" }),
+      modeDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
+      permissionText: new TextRenderable(renderer, { wrapMode: "none" }),
     }
     infoBox.add(nextParts.agentText)
     infoBox.add(nextParts.agentDividerText)
@@ -3537,6 +3551,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     infoBox.add(nextParts.modelText)
     infoBox.add(nextParts.modelDividerText)
     infoBox.add(nextParts.variantText)
+    infoBox.add(nextParts.variantDividerText)
+    infoBox.add(nextParts.modeText)
+    infoBox.add(nextParts.modeDividerText)
+    infoBox.add(nextParts.permissionText)
     footerBox.add(badgeBox)
     footerBox.add(infoBox)
     assignParts(nextParts)
@@ -3674,6 +3692,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setTextRenderable(responsePrimaryFooterParts.modelText, "", theme.textMuted)
       setTextRenderable(responsePrimaryFooterParts.modelDividerText, "", theme.textMuted)
       setTextRenderable(responsePrimaryFooterParts.variantText, "", theme.textMuted)
+      setTextRenderable(responsePrimaryFooterParts.variantDividerText, "", theme.textMuted)
+      setTextRenderable(responsePrimaryFooterParts.modeText, "", theme.textMuted)
+      setTextRenderable(responsePrimaryFooterParts.modeDividerText, "", theme.textMuted)
+      setTextRenderable(responsePrimaryFooterParts.permissionText, "", theme.textMuted)
       responsePrimaryFooterBox?.requestRender()
       for (let slotIndex = 0; slotIndex < maxAgentsPerScreen() - 1; slotIndex += 1) {
         renderStatusBadgeTexts(responseAuxiliaryFooterBadgeTexts[slotIndex] ?? [], "", "idle")
@@ -3685,6 +3707,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         setTextRenderable(parts?.modelText, "", theme.textMuted)
         setTextRenderable(parts?.modelDividerText, "", theme.textMuted)
         setTextRenderable(parts?.variantText, "", theme.textMuted)
+        setTextRenderable(parts?.variantDividerText, "", theme.textMuted)
+        setTextRenderable(parts?.modeText, "", theme.textMuted)
+        setTextRenderable(parts?.modeDividerText, "", theme.textMuted)
+        setTextRenderable(parts?.permissionText, "", theme.textMuted)
         responseAuxiliaryFooterBoxes[slotIndex]?.requestRender()
       }
       return
@@ -3718,7 +3744,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           }
         : null
       const nextParts = formatSplitPaneFooterParts(
-        agent ?? null,
+        agent
+          ? {
+              ...agent,
+              execution_mode: agent.execution_mode_override
+                ?? ((sessionState().config_state?.values?.["agents.mode"] as "build" | "plan" | undefined) ?? "build"),
+              permission_level: agent.permission_level_override
+                ?? ((sessionState().config_state?.values?.["agents.permissions"] as "required" | "yolo" | undefined) ?? "yolo"),
+            }
+          : null,
         activeRun,
         null,
         selectionOverride
@@ -3747,6 +3781,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setPart(parts?.modelText, partTexts[2] ?? "", partTones[2], focused)
       setTextRenderable(parts?.modelDividerText, partTexts[3] ? " • " : "", theme.textMuted)
       setPart(parts?.variantText, partTexts[3] ?? "", partTones[3], focused)
+      setTextRenderable(parts?.variantDividerText, partTexts[4] ? " • " : "", theme.textMuted)
+      setPart(parts?.modeText, partTexts[4] ?? "", partTones[4], focused)
+      setTextRenderable(parts?.modeDividerText, partTexts[5] ? " • " : "", theme.textMuted)
+      setPart(parts?.permissionText, partTexts[5] ?? "", partTones[5], focused)
       footerBox?.requestRender()
     }
 
@@ -5803,6 +5841,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ),
     updateSessionConfig: (sessionId, attachmentId, values, requiresIdle) =>
       updateSessionConfig(client, sessionId, attachmentId, values, requiresIdle),
+    updateAgentConfig: (sessionId, agentId, options) =>
+      updateAgentConfig(client, sessionId, agentId, options),
     applySessionState,
     refreshAgentPanes,
     createWorkspaceLink: async (name) => {
@@ -5888,7 +5928,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     refreshSessionState: (sessionId) => getSessionState(client, sessionId),
     spawnAgent: async (provider, alias, model, effort, worktreeId, machineRef, worktreePlacement) => {
       const response = await client.send<Record<string, unknown>>(
-        spawnAgentRequest(sessionState().id, provider, alias, model, worktreeId, effort, machineRef, worktreePlacement),
+        spawnAgentRequest(
+          sessionState().id,
+          provider,
+          alias,
+          model,
+          worktreeId,
+          effort,
+          undefined,
+          undefined,
+          machineRef,
+          worktreePlacement,
+        ),
       )
       const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned")
       return {
@@ -6769,6 +6820,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
       return
     }
+    if (event.eventType !== "release" && event.meta && event.name === "c" && copyPromptSelection()) {
+      return
+    }
     if (event?.ctrl && event.name === "c") {
       void (activePrompt() ? requestPromptStop() : requestExit())
       return
@@ -7336,13 +7390,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         await handleKernelSessionUnavailable(event.message)
         return
       case "relay_status_changed":
-        setRelayStatusState(event.status)
         void refreshWaitingRoomData()
-        reconcileWaitingRoom(waitingRoomState())
         return
       case "remote_machines_changed":
-        setRemoteMachinesState(event.machines)
-        reconcileWaitingRoom(waitingRoomState())
+        void refreshWaitingRoomData()
         return
       case "transport_resumed":
         kernelEventController.applyTransportResumed()
@@ -7822,7 +7873,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const relayMachineRefresh = startInterval(() => {
     void refreshWaitingRoomData()
-  }, 30_000)
+  }, 2_500)
 
   onCleanup(() => {
     clearInterval(relayMachineRefresh)
@@ -7848,6 +7899,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       promptKeyBindings={PROMPT_KEYBINDINGS}
       onRootMouseUp={retainPromptFocus}
       onResponseSurfaceMouseUp={(event) => {
+        if (event.button !== MouseButton.LEFT) {
+          return
+        }
+        startTimeout(() => {
+          copySelection()
+          retainPromptFocus()
+        }, 0)
+      }}
+      onFooterMouseUp={(event) => {
         if (event.button !== MouseButton.LEFT) {
           return
         }
@@ -8272,6 +8332,32 @@ async function getRelayStatus(client: LocalIpcClient): Promise<RelayStatusView> 
   return expectVariant<{ status: RelayStatusView }>(response, "RelayStatus").status
 }
 
+async function getWaitingRoomInventory(client: LocalIpcClient): Promise<{
+  inventoryVersion: string
+  sessions: RuntimeSession[]
+  relayStatus: RelayStatusView
+  remoteMachines: RemoteMachineView[]
+  remoteKernels: RemoteKernelView[]
+}> {
+  const response = await client.send<Record<string, unknown>>(getWaitingRoomInventoryRequest())
+  const payload = expectVariant<{
+    snapshot: {
+      inventory_version: string
+      sessions: RuntimeSession[]
+      relay_status: RelayStatusView
+      remote_machines: RemoteMachineView[]
+      remote_kernels: RemoteKernelView[]
+    }
+  }>(response, "WaitingRoomInventory").snapshot
+  return {
+    inventoryVersion: payload.inventory_version,
+    sessions: normalizeRuntimeSessions(payload.sessions).sort((left, right) => right.created_at_ms - left.created_at_ms),
+    relayStatus: payload.relay_status,
+    remoteMachines: payload.remote_machines,
+    remoteKernels: payload.remote_kernels,
+  }
+}
+
 async function configureRelay(
   client: LocalIpcClient,
   relayUrl: string | null,
@@ -8547,6 +8633,34 @@ async function updateSessionConfig(
     updateSessionConfigRequest(sessionId, attachmentId, values, requiresIdle),
   )
   const payload = expectVariant<{ session: RuntimeSession, config: SessionConfigState }>(response, "SessionConfigUpdated")
+  return {
+    ...payload,
+    session: normalizeRuntimeSession(payload.session),
+  }
+}
+
+async function updateAgentConfig(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+  options: {
+    executionMode?: "build" | "plan" | null
+    clearExecutionMode?: boolean
+    permissionLevel?: "required" | "yolo" | null
+    clearPermissionLevel?: boolean
+  },
+): Promise<{ session: RuntimeSession; agent: AgentInstance }> {
+  const response = await client.send<Record<string, unknown>>(
+    updateAgentConfigRequest({
+      sessionId,
+      agentId,
+      ...(options.executionMode !== undefined ? { executionMode: options.executionMode } : {}),
+      ...(options.clearExecutionMode !== undefined ? { clearExecutionMode: options.clearExecutionMode } : {}),
+      ...(options.permissionLevel !== undefined ? { permissionLevel: options.permissionLevel } : {}),
+      ...(options.clearPermissionLevel !== undefined ? { clearPermissionLevel: options.clearPermissionLevel } : {}),
+    }),
+  )
+  const payload = expectVariant<{ session: RuntimeSession; agent: AgentInstance }>(response, "AgentConfigUpdated")
   return {
     ...payload,
     session: normalizeRuntimeSession(payload.session),

@@ -11,6 +11,8 @@ use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
 
+use arroba_relay::protocol::RelayKernelPresence;
+
 use crate::app::DaemonApp;
 use crate::config::PersistedCloudRelayProfile;
 use crate::error::DaemonError;
@@ -49,14 +51,16 @@ use crate::local::{
     SetUserConfigValueRequest, ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest,
     StartCloudRelayLoginRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
     UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
-    UpdateMcpServerRequest, UpdateSkillRequest,
+    UpdateMcpServerRequest, UpdateSkillRequest, WaitingRoomInventorySnapshot,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::capability_executor::{
     execute_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
 };
-use crate::runtime::command::{KernelCallerKind, KernelCommand, KernelCommandPriority};
+use crate::runtime::command::{
+    KernelCallerKind, KernelCommand, KernelCommandPriority, KernelCommandSource,
+};
 use crate::runtime::projection::{
     page_history_entries, AgentRuntimeProjectionStore, DaemonConfigProjectionStore,
     DaemonHealthProjection, ProviderCatalogProjectionStore, ProviderProcessProjectionStore,
@@ -366,6 +370,24 @@ impl CommandRouter {
             workspace_coordinator,
             pending_provider_launch_sessions,
         }
+    }
+
+    pub(crate) async fn local_command_caller(
+        &self,
+        source: KernelCommandSource,
+    ) -> crate::runtime::command::KernelCaller {
+        let mut caller = crate::runtime::command::KernelCaller::for_source(&source);
+        let cloud_profile = {
+            let app = self.app.lock().await;
+            app.config().cloud_relay.clone()
+        };
+        if let Some(profile) = cloud_profile {
+            caller.user_id = Some(profile.user_id);
+            caller.client_id = profile.client_id;
+            caller.machine_id = profile.machine_id;
+            caller.realm_id = Some(profile.realm_id);
+        }
+        caller
     }
 
     pub(crate) fn runtime_mcp_bind_address(&self) -> (String, u16) {
@@ -1181,6 +1203,12 @@ impl CommandRouter {
                     session: session.redacted_for_user(caller_user_id),
                 }
             }
+            LocalDaemonResponse::AgentConfigUpdated { agent, session } => {
+                LocalDaemonResponse::AgentConfigUpdated {
+                    agent,
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
             LocalDaemonResponse::SessionEnded { session } => LocalDaemonResponse::SessionEnded {
                 session: session.redacted_for_user(caller_user_id),
             },
@@ -1661,6 +1689,73 @@ impl CommandRouter {
     async fn projected_relay_status_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
         Ok(LocalDaemonResponse::RelayStatus {
             status: self.projected_relay_status().await,
+        })
+    }
+
+    async fn projected_waiting_room_inventory_response(
+        &self,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let sessions = match self
+            .execute_cold_list_sessions_request(ListSessionsRequest)
+            .await?
+        {
+            LocalDaemonResponse::SessionsListed { sessions } => sessions,
+            _response => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "build waiting room inventory",
+                    message: format!(
+                        "list sessions produced unexpected response `{}`",
+                        "unknown"
+                    ),
+                });
+            }
+        };
+        let relay_status = self.projected_relay_status().await;
+        let remote_machines = match self.projected_remote_machines_response().await? {
+            LocalDaemonResponse::RemoteMachinesListed { machines } => machines,
+            _response => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "build waiting room inventory",
+                    message: format!(
+                        "list remote machines produced unexpected response `{}`",
+                        "unknown"
+                    ),
+                });
+            }
+        };
+        let mut remote_kernels = Vec::new();
+        for machine in remote_machines
+            .iter()
+            .filter(|machine| machine.online && !machine.pending && machine.kernel_count > 0)
+        {
+            let response = self
+                .projected_remote_machine_kernels_response(machine.machine_id.clone())
+                .await?;
+            match response {
+                LocalDaemonResponse::RemoteMachineKernelsListed { kernels, .. } => {
+                    remote_kernels.extend(kernels);
+                }
+                _response => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "build waiting room inventory",
+                        message: format!(
+                            "list remote machine kernels produced unexpected response `{}`",
+                            "unknown"
+                        ),
+                    });
+                }
+            }
+        }
+        let inventory_version =
+            waiting_room_inventory_version(&sessions, &relay_status, &remote_machines, &remote_kernels)?;
+        Ok(LocalDaemonResponse::WaitingRoomInventory {
+            snapshot: WaitingRoomInventorySnapshot {
+                inventory_version,
+                sessions,
+                relay_status,
+                remote_machines,
+                remote_kernels,
+            },
         })
     }
 
@@ -3322,6 +3417,9 @@ impl CommandRouter {
                 self.projected_remote_machine_kernels_response(request.machine_ref)
                     .await
             }
+            LocalDaemonRequest::GetWaitingRoomInventory(_) => {
+                self.projected_waiting_room_inventory_response().await
+            }
             LocalDaemonRequest::ApproveRemoteMachine(request) => {
                 self.execute_approve_remote_machine_request(request).await
             }
@@ -3485,6 +3583,7 @@ impl CommandRouter {
             | LocalDaemonRequest::AttachToSession(_)
             | LocalDaemonRequest::DetachFromSession(_)
             | LocalDaemonRequest::UpdateSessionConfig(_)
+            | LocalDaemonRequest::UpdateAgentConfig(_)
             | LocalDaemonRequest::ResizeTerminal(_)
             | LocalDaemonRequest::EndSession(_)
             | LocalDaemonRequest::DeleteSession(_)
@@ -4004,6 +4103,25 @@ impl CommandRouter {
     }
 }
 
+fn waiting_room_inventory_version(
+    sessions: &[crate::session::RuntimeSession],
+    relay_status: &RelayStatus,
+    remote_machines: &[crate::local::RemoteMachineRecord],
+    remote_kernels: &[RelayKernelPresence],
+) -> Result<String, DaemonError> {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "sessions": sessions,
+        "relay_status": relay_status,
+        "remote_machines": remote_machines,
+        "remote_kernels": remote_kernels,
+    }))
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "serialize waiting room inventory snapshot",
+        message: error.to_string(),
+    })?;
+    Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(payload)))
+}
+
 fn paired_client_record(client: crate::config::PersistedClientPairing) -> PairedClientRecord {
     PairedClientRecord {
         client_id: client.client_id,
@@ -4449,6 +4567,9 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
         LocalDaemonRequest::UpdateSessionConfig(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::UpdateAgentConfig(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::GetSessionState(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -4645,6 +4766,9 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
 fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusProjectionRefresh {
     match request {
         LocalDaemonRequest::SpawnAgent(_) => FocusProjectionRefresh::AgentSpawn,
+        LocalDaemonRequest::UpdateAgentConfig(request) => FocusProjectionRefresh::SnapshotSession {
+            session_id: request.session_id.clone(),
+        },
         LocalDaemonRequest::DestroyAgent(request) => FocusProjectionRefresh::SnapshotSession {
             session_id: request.session_id.clone(),
         },
@@ -4664,6 +4788,7 @@ impl SessionProjectionRefresh {
             SessionProjectionRefresh::None => Vec::new(),
             SessionProjectionRefresh::SnapshotAgentResponse => match response {
                 LocalDaemonResponse::AgentSpawned { agent }
+                | LocalDaemonResponse::AgentConfigUpdated { agent, .. }
                 | LocalDaemonResponse::AgentDestroyed { agent }
                 | LocalDaemonResponse::AgentFocused { agent } => {
                     vec![agent.session_id().to_string()]
@@ -4732,7 +4857,9 @@ fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjection
         | LocalDaemonRequest::DetachFromSession(_)
         | LocalDaemonRequest::FocusAgent(_)
         | LocalDaemonRequest::CycleAgentFocus(_) => SessionProjectionRefresh::None,
-        LocalDaemonRequest::SpawnAgent(_) | LocalDaemonRequest::DestroyAgent(_) => {
+        LocalDaemonRequest::SpawnAgent(_)
+        | LocalDaemonRequest::UpdateAgentConfig(_)
+        | LocalDaemonRequest::DestroyAgent(_) => {
             SessionProjectionRefresh::SnapshotAgentResponse
         }
         LocalDaemonRequest::CompletePrompt(_) | LocalDaemonRequest::CancelActivePrompt(_) => {
@@ -4752,6 +4879,7 @@ fn response_sessions(response: &LocalDaemonResponse) -> Vec<crate::session::Runt
         | LocalDaemonResponse::SessionResolved { session }
         | LocalDaemonResponse::SessionState { session }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
+        | LocalDaemonResponse::AgentConfigUpdated { session, .. }
         | LocalDaemonResponse::SessionEnded { session }
         | LocalDaemonResponse::SessionAliased { session }
         | LocalDaemonResponse::WorkspaceLinkCreated { session, .. }
@@ -5938,6 +6066,8 @@ mod tests {
             provider: "claude-code".to_string(),
             model: None,
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -7066,6 +7196,8 @@ mod tests {
             provider: "claude-code".to_string(),
             model: None,
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -9594,6 +9726,8 @@ mod tests {
             provider: "claude-code".to_string(),
             model: None,
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -9995,6 +10129,8 @@ mod tests {
             provider: "dev-stub".to_string(),
             model: None,
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -10018,6 +10154,8 @@ mod tests {
             provider: "dev-stub".to_string(),
             model: None,
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -10295,6 +10433,8 @@ mod tests {
             provider: "dev-stub".to_string(),
             model: None,
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,

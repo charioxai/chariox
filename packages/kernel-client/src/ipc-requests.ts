@@ -1065,6 +1065,10 @@ export function listRemoteMachineKernelsRequest(machineRef: string) {
   }
 }
 
+export function getWaitingRoomInventoryRequest() {
+  return { GetWaitingRoomInventory: null }
+}
+
 export function approveRemoteMachineRequest(machineRef: string) {
   return {
     ApproveRemoteMachine: {
@@ -1374,6 +1378,8 @@ export function spawnAgentRequest(
   model?: string,
   worktreeId?: string,
   effort?: string,
+  executionMode?: "build" | "plan",
+  permissionLevel?: "required" | "yolo",
   machineRef?: string,
   worktreePlacement?: Record<string, unknown>,
 ) {
@@ -1384,9 +1390,31 @@ export function spawnAgentRequest(
       alias: alias ?? null,
       model: model ?? null,
       effort: effort ?? null,
+      execution_mode: executionMode ?? null,
+      permission_level: permissionLevel ?? null,
       worktree_id: worktreeId ?? null,
       machine_ref: machineRef ?? null,
       worktree_placement: worktreePlacement ?? null,
+    },
+  }
+}
+
+export function updateAgentConfigRequest(options: {
+  sessionId: string
+  agentId: string
+  executionMode?: "build" | "plan" | null
+  clearExecutionMode?: boolean
+  permissionLevel?: "required" | "yolo" | null
+  clearPermissionLevel?: boolean
+}) {
+  return {
+    UpdateAgentConfig: {
+      session_id: options.sessionId,
+      agent_id: options.agentId,
+      execution_mode: options.executionMode ?? null,
+      clear_execution_mode: options.clearExecutionMode ?? false,
+      permission_level: options.permissionLevel ?? null,
+      clear_permission_level: options.clearPermissionLevel ?? false,
     },
   }
 }

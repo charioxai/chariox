@@ -180,6 +180,8 @@ export type AgentInstance = {
   provider: string
   model: string | null
   effort?: string | null
+  execution_mode_override?: "build" | "plan" | null
+  permission_level_override?: "required" | "yolo" | null
   worktree_id: string | null
   remote_execution?: {
     worker_kernel_id: string
@@ -363,6 +365,14 @@ export type RelayKernelPresence = {
   accepting_remote_leases?: boolean
   leased_agent_count?: number
   local_session_count?: number
+}
+
+export type WaitingRoomInventorySnapshot = {
+  inventory_version: string
+  sessions: RuntimeSession[]
+  relay_status: RelayStatus
+  remote_machines: RemoteMachineRecord[]
+  remote_kernels: RelayKernelPresence[]
 }
 
 export type RuntimeProviderRun = {

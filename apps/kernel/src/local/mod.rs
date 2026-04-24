@@ -58,8 +58,9 @@ pub use api::{
     StartCloudRelayLoginRequest, StartProviderLoginRequest, StoreTransferredFileCapabilityRequest,
     SubmitPromptRequest, TeardownProviderProcessesRequest, UninstallMcpServerRequest,
     UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest,
-    UpdateSessionConfigRequest, UpdateSkillRequest, UpdateWorkflowNodeInstructionsRequest,
-    ValidateWorkflowOutputRequest,
+    UpdateAgentConfigRequest, UpdateSessionConfigRequest, UpdateSkillRequest,
+    UpdateWorkflowNodeInstructionsRequest, ValidateWorkflowOutputRequest,
+    WaitingRoomInventorySnapshot,
 };
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
