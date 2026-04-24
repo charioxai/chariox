@@ -1726,7 +1726,7 @@ impl CommandRouter {
         let mut remote_kernels = Vec::new();
         for machine in remote_machines
             .iter()
-            .filter(|machine| machine.online && !machine.pending && machine.kernel_count > 0)
+            .filter(|machine| machine.online && machine.kernel_count > 0)
         {
             let response = self
                 .projected_remote_machine_kernels_response(machine.machine_id.clone())
@@ -3283,6 +3283,11 @@ impl CommandRouter {
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request {
+            LocalDaemonRequest::RespondToInteraction(_) => Err(DaemonError::LocalTransport {
+                operation: "dispatch normal or background",
+                message: "interaction responses must be dispatched through the session runtime"
+                    .to_string(),
+            }),
             LocalDaemonRequest::LaunchProviderRun(request) => {
                 ProviderLaunchCommandExecutor::new(self.runtime_state.clone())
                     .execute(request, command_caller_user_id(&command))
@@ -4878,6 +4883,7 @@ fn response_sessions(response: &LocalDaemonResponse) -> Vec<crate::session::Runt
         LocalDaemonResponse::SessionCreated { session, .. }
         | LocalDaemonResponse::SessionResolved { session }
         | LocalDaemonResponse::SessionState { session }
+        | LocalDaemonResponse::InteractionResponded { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
         | LocalDaemonResponse::AgentConfigUpdated { session, .. }
         | LocalDaemonResponse::SessionEnded { session }

@@ -25,7 +25,8 @@ use super::{
     CreateWorkflowEndpointRequest, CreateWorkflowRequest, CreateWorkspaceLinkRequest,
     CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
     DetachWorkspaceLinkRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
-    GetDaemonHealthRequest, GetSessionStateRequest, GetWorkflowRunRequest,
+    GetDaemonHealthRequest, GetSessionStateRequest, GetWaitingRoomInventoryRequest,
+    GetWorkflowRunRequest,
     InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest, JoinSessionInviteRequest,
     LaunchProviderRunRequest, ListAgentsRequest, ListRemoteMachineKernelsRequest,
     ListRemoteMachinesRequest, ListSessionMembersRequest, ListSessionsRequest,
@@ -145,6 +146,8 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
             provider: "slow-structured".to_string(),
             model: Some("default".to_string()),
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -301,6 +304,105 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
     assert_eq!(kernels[0].kernel_id, "daemon-1");
     assert_eq!(kernels[0].available_providers, vec!["codex", "opencode"]);
     assert!(kernels[0].accepting_remote_leases);
+
+    let _ = shutdown_tx.send(());
+    server_thread.join().expect("relay thread should join");
+}
+
+#[test]
+fn waiting_room_inventory_includes_kernels_for_pending_visible_remote_machines() {
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should build");
+    let (addr, shutdown_tx, server_thread) = runtime.block_on(async {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+        let server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server_thread = thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().expect("relay runtime should build");
+            runtime.block_on(async move {
+                server
+                    .run_until(async {
+                        let _ = shutdown_rx.await;
+                    })
+                    .await
+                    .expect("relay server should run");
+            });
+        });
+        (addr, shutdown_tx, server_thread)
+    });
+
+    runtime.block_on(async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut socket, _) = connect_async(&url)
+            .await
+            .expect("daemon should connect to relay");
+        let register = DaemonRegistration {
+            auth_token: "secret".to_string(),
+            daemon_id: "daemon-pending".to_string(),
+            machine_id: "machine-pending".to_string(),
+            machine_alias: Some("pending machine".to_string()),
+            os_name: Some("macOS".to_string()),
+            kernel_started_at_ms: 10,
+            daemon_alias: Some("pending-kernel".to_string()),
+            kernel_alias: Some("default".to_string()),
+            public_key: "public-key".to_string(),
+            capabilities: vec!["kernel_ws".to_string()],
+            available_providers: vec!["codex".to_string()],
+            accepting_remote_leases: true,
+            leased_agent_count: 0,
+            local_session_count: 0,
+        };
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&arroba_relay::protocol::RelayEnvelope::DaemonRegister {
+                    registration: register,
+                })
+                .unwrap()
+                .into(),
+            ))
+            .await
+            .expect("register frame should send");
+    });
+
+    let mut config = DaemonConfig::for_tests();
+    config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    config.relay_token = Some("secret".to_string());
+    let harness = LocalRouterTestHarness::with_config(config);
+
+    let snapshot = match harness
+        .dispatch(LocalDaemonRequest::GetWaitingRoomInventory(
+            GetWaitingRoomInventoryRequest,
+        ))
+        .expect("waiting room inventory should succeed")
+    {
+        LocalDaemonResponse::WaitingRoomInventory { snapshot } => snapshot,
+        other => panic!("unexpected response: {other:?}"),
+    };
+
+    let machine = snapshot
+        .remote_machines
+        .iter()
+        .find(|machine| machine.machine_id == "machine-pending")
+        .expect("pending machine should be visible");
+    assert!(machine.pending, "pending machine should remain marked pending");
+    assert_eq!(machine.kernel_count, 1);
+    assert_eq!(snapshot.remote_kernels.len(), 1);
+    assert_eq!(snapshot.remote_kernels[0].machine_id, "machine-pending");
+    assert_eq!(snapshot.remote_kernels[0].kernel_id, "daemon-pending");
 
     let _ = shutdown_tx.send(());
     server_thread.join().expect("relay thread should join");
@@ -612,6 +714,8 @@ fn local_request_api_spawns_and_focuses_agents() {
             provider: "opencode".to_string(),
             model: Some("openai/gpt-5.4".to_string()),
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -737,6 +841,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             provider: "dev-stub".to_string(),
             model: Some("default".to_string()),
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -838,6 +944,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             provider: "opencode".to_string(),
             model: None,
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -980,6 +1088,8 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
             provider: "dev-stub".to_string(),
             model: Some("default".to_string()),
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -1171,6 +1281,8 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
             provider: "dev-stub".to_string(),
             model: Some("default".to_string()),
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -1188,6 +1300,8 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
             provider: "dev-stub".to_string(),
             model: Some("default".to_string()),
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -2150,6 +2264,8 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
             provider: "dev-invalid-pty".to_string(),
             model: Some("default".to_string()),
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -2524,6 +2640,8 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
             provider: "claude-code".to_string(),
             model: None,
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -2697,6 +2815,8 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
             provider: "claude-code".to_string(),
             model: None,
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -3857,6 +3977,8 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
             provider: "dev-stub".to_string(),
             model: Some("default".to_string()),
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
