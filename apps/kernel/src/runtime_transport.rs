@@ -23,7 +23,7 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, RelayStatus, RemoteMachineRecord};
 use crate::provider::RuntimeProviderRun;
-use crate::runtime::command::KernelCommand;
+use crate::runtime::command::{KernelCommand, KernelCommandSource};
 use crate::runtime::event_log::{EventLog, ReplayGap, ReplayOutcome};
 use crate::runtime::projection::{SessionSnapshotProjection, TransportHealthStore};
 use crate::runtime::router::CommandRouter;
@@ -543,10 +543,13 @@ async fn handle_incoming_payload(
             request,
         } => {
             runtime.transport_health.record_incoming_request();
-            let command = KernelCommand::from_local_request(
+            let caller = router.local_command_caller(KernelCommandSource::LocalCli).await;
+            let command = KernelCommand::from_local_request_with_caller(
                 command_id.unwrap_or_else(|| request_id.clone()),
-                correlation_id,
-                causation_id,
+                KernelCommandSource::LocalCli,
+                caller,
+                correlation_id.clone(),
+                causation_id.clone(),
                 &request,
             );
             let fingerprint = CommandFingerprint::from_command_and_request(&command, &request);
@@ -1050,18 +1053,12 @@ async fn relay_status_snapshot_for_events(
 async fn remote_machines_snapshot_for_events(
     app: &Arc<Mutex<DaemonApp>>,
 ) -> Result<Vec<RemoteMachineRecord>, DaemonError> {
-    let config = {
+    let remote_relay_inventory = {
         let app = app.lock().await;
-        app.config().clone()
+        app.remote_relay_inventory_projection_store()
     };
-    if config.relay_url.is_none() || config.relay_token.is_none() {
-        return Ok(Vec::new());
-    }
-    let machines = crate::transport::relay_discovery::list_live_machines(&config).await?;
-    Ok(crate::local::provider_requests::remote_machine_records(
-        machines,
-        &config.host_machine_id,
-    ))
+    let (machines, _) = remote_relay_inventory.snapshot();
+    Ok(machines)
 }
 
 pub(crate) enum WatchResult {

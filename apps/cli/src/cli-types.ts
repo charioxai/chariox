@@ -59,6 +59,7 @@ export type RuntimeSession = {
   active_prompt: PromptQueueItem | null
   queued_prompts: PromptQueueItem[]
   prompt_states?: Record<string, AgentPromptState>
+  active_interactions?: RuntimeInteraction[]
   focused_agent_id: string | null
   max_agents: number
   agents: AgentInstance[]
@@ -95,6 +96,26 @@ export type WorkspaceLinkDefinition = {
 export type AgentPromptState = {
   active_prompt: PromptQueueItem | null
   queued_prompts: PromptQueueItem[]
+}
+
+export type RuntimeInteraction = {
+  id: string
+  agent_id: string
+  kind: "choice" | "permission"
+  level: "info" | "warning" | "critical"
+  title?: string | null
+  message: string
+  choices: RuntimeInteractionChoice[]
+  timeout_sec?: number | null
+  default_on_timeout?: string | null
+  requested_at_ms: number
+}
+
+export type RuntimeInteractionChoice = {
+  id: string
+  label: string
+  reply: string
+  style?: "primary" | "secondary" | "danger" | null
 }
 
 export type SessionConfigState = {
@@ -155,6 +176,8 @@ export type AgentInstance = {
   provider: string
   model: string | null
   effort?: string | null
+  execution_mode_override?: "build" | "plan" | null
+  permission_level_override?: "required" | "yolo" | null
   worktree_id: string | null
   remote_execution?: {
     worker_kernel_id: string
@@ -573,6 +596,7 @@ export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession
   const normalized: RuntimeSession = {
     ...session,
     queued_prompts: Array.isArray(session.queued_prompts) ? session.queued_prompts : [],
+    active_interactions: Array.isArray(session.active_interactions) ? session.active_interactions : [],
   }
   if (promptStates) {
     normalized.prompt_states = promptStates

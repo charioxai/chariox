@@ -35,7 +35,7 @@ pub struct CodexClient {
 }
 
 struct CodexPermissionPolicy {
-    approval_policy: &'static str,
+    approval_policy: Value,
     sandbox: &'static str,
     sandbox_policy: Value,
     config_overrides: BTreeMap<String, Value>,
@@ -128,7 +128,7 @@ pub struct CodexThread {
     pub id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct JsonRpcMessage {
     #[serde(default)]
     id: Option<Value>,
@@ -142,7 +142,7 @@ struct JsonRpcMessage {
     error: Option<JsonRpcError>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct JsonRpcError {
     #[serde(default)]
     message: Option<String>,
@@ -279,8 +279,23 @@ impl CodexClient {
         permission_level: AgentPermissionLevel,
     ) -> Result<CodexThreadStartResponse, DaemonError> {
         let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex thread/start policy",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "write_access_mode": format!("{write_access_mode:?}"),
+                "execution_mode": format!("{execution_mode:?}"),
+                "permission_level": format!("{permission_level:?}"),
+                "approval_policy": policy.approval_policy,
+                "sandbox": policy.sandbox,
+                "cwd": cwd,
+                "model": model,
+            }),
+        );
         let mut params = json!({
             "approvalPolicy": policy.approval_policy,
+            "approvalsReviewer": "user",
             "sandbox": policy.sandbox,
             "sandboxPolicy": policy.sandbox_policy,
             "personality": "pragmatic",
@@ -313,9 +328,24 @@ impl CodexClient {
         permission_level: AgentPermissionLevel,
     ) -> Result<CodexThreadStartResponse, DaemonError> {
         let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex thread/resume policy",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "write_access_mode": format!("{write_access_mode:?}"),
+                "execution_mode": format!("{execution_mode:?}"),
+                "permission_level": format!("{permission_level:?}"),
+                "approval_policy": policy.approval_policy,
+                "sandbox": policy.sandbox,
+                "cwd": cwd,
+                "model": model,
+            }),
+        );
         let mut params = json!({
             "threadId": thread_id,
             "approvalPolicy": policy.approval_policy,
+            "approvalsReviewer": "user",
             "sandbox": policy.sandbox,
             "sandboxPolicy": policy.sandbox_policy,
             "personality": "pragmatic",
@@ -353,6 +383,7 @@ impl CodexClient {
             "threadId": thread_id,
             "input": input,
             "approvalPolicy": policy.approval_policy,
+            "approvalsReviewer": "user",
             "personality": "pragmatic",
             "sandbox": policy.sandbox,
             "sandboxPolicy": policy.sandbox_policy,
@@ -491,8 +522,21 @@ impl CodexClient {
                 return serde_json::from_value(result)
                     .map_err(|error| self.protocol_error(method, error.to_string()));
             }
-            if let Some(notification) = parse_notification(message) {
+            if let Some(notification) = parse_notification(message.clone()) {
                 buffered_notifications.push(notification);
+            } else if let Some(message_method) = message.method.as_deref() {
+                crate::logging::debug_with_fields(
+                    "daemon.provider.codex",
+                    "ignored codex message while awaiting response",
+                    json!({
+                        "provider_run_id": self.provider_run_id,
+                        "awaiting_method": method,
+                        "message_method": message_method,
+                        "has_id": message.id.is_some(),
+                        "params": message.params,
+                        "error": message.error,
+                    }),
+                );
             }
         }
     }
@@ -522,7 +566,23 @@ impl CodexClient {
                 if self.respond_to_server_request(socket, &message)? {
                     return Ok(None);
                 }
-                Ok(parse_notification(message))
+                let notification = parse_notification(message.clone());
+                if notification.is_none() {
+                    if let Some(method) = message.method.as_deref() {
+                        crate::logging::debug_with_fields(
+                            "daemon.provider.codex",
+                            "ignored codex notification",
+                            json!({
+                                "provider_run_id": self.provider_run_id,
+                                "method": method,
+                                "has_id": message.id.is_some(),
+                                "params": message.params,
+                                "error": message.error,
+                            }),
+                        );
+                    }
+                }
+                Ok(notification)
             }
             Err(tokio_tungstenite::tungstenite::Error::Io(error))
                 if matches!(
@@ -542,13 +602,13 @@ impl CodexClient {
             "id": 0,
             "method": "initialize",
             "params": {
-                "protocolVersion": 2,
                 "clientInfo": {
                     "name": "arroba-kernel",
                     "version": env!("CARGO_PKG_VERSION"),
                 },
-                "capabilities": {},
-                "notifications": [],
+                "capabilities": {
+                    "experimentalApi": true,
+                },
             },
         });
         socket
@@ -617,6 +677,7 @@ impl CodexClient {
             json!({
                 "provider_run_id": self.provider_run_id,
                 "method": method,
+                "params": message.params,
             }),
         );
         let result = match method {
@@ -624,6 +685,8 @@ impl CodexClient {
                 self.command_execution_approval_response(message)?
             }
             "item/fileChange/requestApproval" => self.file_change_approval_response(message)?,
+            "execCommandApproval" => self.exec_command_approval_response(message)?,
+            "applyPatchApproval" => self.apply_patch_approval_response(message)?,
             "item/permissions/requestApproval" => self.permissions_approval_response(message),
             "mcpServer/elicitation/request" => self.respond_to_mcp_elicitation(message),
             "item/tool/call" => self.respond_to_dynamic_tool_call(message)?,
@@ -701,6 +764,14 @@ impl CodexClient {
         message: &JsonRpcMessage,
     ) -> Result<Value, DaemonError> {
         let params = message.params.as_ref().cloned().unwrap_or_else(|| json!({}));
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex requested command approval",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "params": params,
+            }),
+        );
         let command = params
             .get("command")
             .and_then(Value::as_str)
@@ -734,6 +805,14 @@ impl CodexClient {
 
     fn file_change_approval_response(&self, message: &JsonRpcMessage) -> Result<Value, DaemonError> {
         let params = message.params.as_ref().cloned().unwrap_or_else(|| json!({}));
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex requested file change approval",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "params": params,
+            }),
+        );
         let reason = params
             .get("reason")
             .and_then(Value::as_str)
@@ -752,6 +831,108 @@ impl CodexClient {
         }
         self.request_native_permission_interaction(
             "codex-file-change-approval",
+            Some("File change approval required".to_string()),
+            body,
+            crate::session::RuntimeInteractionLevel::Critical,
+        )
+    }
+
+    fn exec_command_approval_response(
+        &self,
+        message: &JsonRpcMessage,
+    ) -> Result<Value, DaemonError> {
+        let params = message.params.as_ref().cloned().unwrap_or_else(|| json!({}));
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex requested exec command approval",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "params": params,
+            }),
+        );
+        let command = params
+            .get("command")
+            .and_then(Value::as_array)
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "<unknown command>".to_string());
+        let cwd = params
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let reason = params
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let parsed = params
+            .get("parsedCmd")
+            .map(render_pretty_json)
+            .filter(|value| !value.trim().is_empty());
+        let mut body = format!("Approve command execution?\n\n{command}");
+        if let Some(cwd) = cwd {
+            body.push_str(&format!("\n\ncwd: {cwd}"));
+        }
+        if let Some(reason) = reason {
+            body.push_str(&format!("\n\nreason: {reason}"));
+        }
+        if let Some(parsed) = parsed {
+            body.push_str(&format!("\n\nparsed:\n{parsed}"));
+        }
+        self.request_native_review_interaction(
+            "codex-exec-command-approval",
+            Some("Command approval required".to_string()),
+            body,
+            crate::session::RuntimeInteractionLevel::Warning,
+        )
+    }
+
+    fn apply_patch_approval_response(
+        &self,
+        message: &JsonRpcMessage,
+    ) -> Result<Value, DaemonError> {
+        let params = message.params.as_ref().cloned().unwrap_or_else(|| json!({}));
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex requested apply_patch approval",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "params": params,
+            }),
+        );
+        let reason = params
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let grant_root = params
+            .get("grantRoot")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let changes = params
+            .get("fileChanges")
+            .map(render_pretty_json)
+            .filter(|value| !value.trim().is_empty());
+        let mut body = "Approve file changes?".to_string();
+        if let Some(reason) = reason {
+            body.push_str(&format!("\n\nreason: {reason}"));
+        }
+        if let Some(grant_root) = grant_root {
+            body.push_str(&format!("\n\ngrant_root: {grant_root}"));
+        }
+        if let Some(changes) = changes {
+            body.push_str(&format!("\n\nchanges:\n{changes}"));
+        }
+        self.request_native_review_interaction(
+            "codex-apply-patch-approval",
             Some("File change approval required".to_string()),
             body,
             crate::session::RuntimeInteractionLevel::Critical,
@@ -811,12 +992,96 @@ impl CodexClient {
             None,
         );
         let resolution = bridge.request_blocking(session_id, interaction)?;
-        Ok(match resolution.choice_id.as_deref() {
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex native permission interaction resolved",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "interaction_prefix": prefix,
+                "status": resolution.status,
+                "choice_id": resolution.choice_id,
+                "reply": resolution.reply,
+            }),
+        );
+        Ok(Self::codex_v2_approval_decision(&resolution))
+    }
+
+    fn request_native_review_interaction(
+        &self,
+        prefix: &str,
+        title: Option<String>,
+        message: String,
+        level: crate::session::RuntimeInteractionLevel,
+    ) -> Result<Value, DaemonError> {
+        let Some(bridge) = self.native_interaction_bridge.as_ref() else {
+            return Ok(json!({ "decision": "denied" }));
+        };
+        let session_id = self.session_id.as_deref().ok_or_else(|| {
+            self.protocol_error(
+                "codex_native_review",
+                "missing session context for native approval prompt".to_string(),
+            )
+        })?;
+        let agent_id = self.agent_id.as_deref().ok_or_else(|| {
+            self.protocol_error(
+                "codex_native_review",
+                "missing agent context for native approval prompt".to_string(),
+            )
+        })?;
+        let interaction = crate::session::RuntimeInteraction::new(
+            format!("{prefix}-{}", crate::session::unix_epoch_ms()),
+            agent_id,
+            crate::session::RuntimeInteractionKind::Permission,
+            level,
+            title,
+            message,
+            vec![
+                crate::session::RuntimeInteractionChoice::new(
+                    "allow_once",
+                    "Allow once",
+                    "allow_once",
+                    Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
+                ),
+                crate::session::RuntimeInteractionChoice::new(
+                    "allow_session",
+                    "Allow for session",
+                    "allow_session",
+                    Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
+                ),
+                crate::session::RuntimeInteractionChoice::new(
+                    "deny",
+                    "Deny",
+                    "deny",
+                    Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
+                ),
+            ],
+            None,
+            None,
+        );
+        let resolution = bridge.request_blocking(session_id, interaction)?;
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex native review interaction resolved",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "interaction_prefix": prefix,
+                "status": resolution.status,
+                "choice_id": resolution.choice_id,
+                "reply": resolution.reply,
+            }),
+        );
+        Ok(Self::codex_v2_approval_decision(&resolution))
+    }
+
+    fn codex_v2_approval_decision(
+        resolution: &crate::provider::ProviderNativeInteractionResolution,
+    ) -> Value {
+        match resolution.choice_id.as_deref() {
             Some("allow_once") => json!({ "decision": "accept" }),
             Some("allow_session") => json!({ "decision": "acceptForSession" }),
             Some("deny") | None => json!({ "decision": "decline" }),
             Some(_) => json!({ "decision": "decline" }),
-        })
+        }
     }
 
     fn respond_to_dynamic_tool_call(&self, message: &JsonRpcMessage) -> Result<Value, DaemonError> {
@@ -1004,27 +1269,15 @@ fn codex_permission_policy(
     match write_access_mode {
         ProviderWriteAccessMode::Unrestricted => CodexPermissionPolicy {
             approval_policy: match permission_level {
-                AgentPermissionLevel::Required => "on-request",
-                AgentPermissionLevel::Yolo => "never",
+                AgentPermissionLevel::Required => json!("on-request"),
+                AgentPermissionLevel::Yolo => json!("never"),
             },
             sandbox: match execution_mode {
-                AgentExecutionMode::Build => {
-                    if matches!(permission_level, AgentPermissionLevel::Required) {
-                        "workspace-write"
-                    } else {
-                        "danger-full-access"
-                    }
-                }
+                AgentExecutionMode::Build => "workspace-write",
                 AgentExecutionMode::Plan => "read-only",
             },
             sandbox_policy: match execution_mode {
-                AgentExecutionMode::Build => {
-                    if matches!(permission_level, AgentPermissionLevel::Required) {
-                        json!({ "type": "workspaceWrite" })
-                    } else {
-                        json!({ "type": "dangerFullAccess" })
-                    }
-                }
+                AgentExecutionMode::Build => json!({ "type": "workspaceWrite" }),
                 AgentExecutionMode::Plan => json!({
                     "type": "readOnly",
                     "access": {
@@ -1041,7 +1294,7 @@ fn codex_permission_policy(
             config_overrides.insert("include_apply_patch_tool".to_string(), json!(false));
             config_overrides.insert("features.apply_patch_freeform".to_string(), json!(false));
             CodexPermissionPolicy {
-                approval_policy: "never",
+                approval_policy: json!("never"),
                 sandbox: "read-only",
                 sandbox_policy: json!({
                     "type": "readOnly",
@@ -1501,7 +1754,7 @@ mod tests {
     fn managed_io_permission_policy_uses_read_only_sandbox() {
         let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired, AgentExecutionMode::Build, AgentPermissionLevel::Yolo);
 
-        assert_eq!(policy.approval_policy, "never");
+        assert_eq!(policy.approval_policy, json!("never"));
         assert_eq!(policy.sandbox, "read-only");
         assert_eq!(
             policy.sandbox_policy,
@@ -1522,6 +1775,28 @@ mod tests {
             policy.config_overrides.get("features.apply_patch_freeform"),
             Some(&json!(false))
         );
+    }
+
+    #[test]
+    fn unrestricted_required_policy_enables_permission_escalation_reviews() {
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Required,
+        );
+
+        assert_eq!(
+            policy.approval_policy,
+            json!({
+                "granular": {
+                    "mcp_elicitations": true,
+                    "request_permissions": true,
+                    "rules": true,
+                    "sandbox_approval": true
+                }
+            })
+        );
+        assert_eq!(policy.sandbox, "workspace-write");
     }
 
     #[test]

@@ -4,6 +4,15 @@ pub(crate) const MANAGED_IO_INSTRUCTIONS_SOURCE_PATH: &str =
     "apps/kernel/src/provider/managed_io_instructions.md";
 
 const MANAGED_IO_INSTRUCTIONS: &str = include_str!("managed_io_instructions.md");
+const RUNTIME_INSTRUCTIONS: &str = include_str!("runtime_instructions.md");
+
+pub(crate) fn runtime_instructions() -> &'static str {
+    RUNTIME_INSTRUCTIONS.trim()
+}
+
+pub(crate) fn apply_runtime_instructions(prompt: &str) -> String {
+    format!("{}\n\n{}", runtime_instructions(), prompt)
+}
 
 pub(crate) fn managed_io_instructions() -> &'static str {
     MANAGED_IO_INSTRUCTIONS.trim()
@@ -43,8 +52,16 @@ mod tests {
         assert!(instructions.contains("arroba.read_artifact"));
         assert!(instructions.contains("arroba.write_artifact"));
         assert!(instructions.contains("arroba.edit_artifact"));
+        assert!(!instructions.ends_with('\n'));
+    }
+
+    #[test]
+    fn runtime_instructions_are_loaded_from_policy_file() {
+        let instructions = runtime_instructions();
+
         assert!(instructions.contains("list_capabilities"));
         assert!(instructions.contains("request_capability"));
+        assert!(instructions.contains("request_popup"));
         assert!(!instructions.ends_with('\n'));
     }
 
@@ -63,6 +80,14 @@ mod tests {
         let prompt = apply_managed_io_instructions("hello", &managed);
 
         assert!(prompt.starts_with(managed_io_instructions()));
+        assert!(prompt.ends_with("\n\nhello"));
+    }
+
+    #[test]
+    fn runtime_instructions_are_always_added() {
+        let prompt = apply_runtime_instructions("hello");
+
+        assert!(prompt.starts_with(runtime_instructions()));
         assert!(prompt.ends_with("\n\nhello"));
     }
 }

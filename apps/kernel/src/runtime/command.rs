@@ -310,10 +310,19 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
                 .session(&request.session_id)
                 .attachment(&request.attachment_id)
         }
+        LocalDaemonRequest::RespondToInteraction(request) => {
+            LocalRequestMetadata::new("interaction.respond", Interactive)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::UpdateSessionConfig(request) => {
             LocalRequestMetadata::new("session.config.update", Interactive)
                 .session(&request.session_id)
                 .attachment(&request.attachment_id)
+        }
+        LocalDaemonRequest::UpdateAgentConfig(request) => {
+            LocalRequestMetadata::new("agent.config.update", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
         }
         LocalDaemonRequest::AliasSession(request) => {
             LocalRequestMetadata::new("session.alias", Interactive).session(&request.session_id)
@@ -430,6 +439,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::DeleteCredentialSecret(_) => "credential.secret.delete",
         LocalDaemonRequest::ListRemoteMachines(_) => "remote_machine.list",
         LocalDaemonRequest::ListRemoteMachineKernels(_) => "remote_machine.kernel.list",
+        LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
         LocalDaemonRequest::ApproveRemoteMachine(_) => "remote_machine.approve",
         LocalDaemonRequest::ForgetRemoteMachine(_) => "remote_machine.forget",
         LocalDaemonRequest::RenameRemoteMachine(_) => "remote_machine.rename",
@@ -446,8 +456,10 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::QueryHistory(_) => "history.query",
         LocalDaemonRequest::SearchHistory(_) => "history.search",
         LocalDaemonRequest::PollRuntimeNotices(_) => "runtime_notice.poll",
+        LocalDaemonRequest::RespondToInteraction(_) => "interaction.respond",
         LocalDaemonRequest::CompletePrompt(_) => "prompt.complete",
         LocalDaemonRequest::UpdateSessionConfig(_) => "session.config.update",
+        LocalDaemonRequest::UpdateAgentConfig(_) => "agent.config.update",
         LocalDaemonRequest::PumpTerminalOutput(_) => "terminal.output.poll",
         LocalDaemonRequest::RunShellCommand(_) => "capability.shell.run",
         LocalDaemonRequest::ReadDirectoryTree(_) => "capability.dir.tree",
@@ -677,6 +689,8 @@ mod tests {
                 provider: "claude-code".to_string(),
                 model: None,
                 effort: None,
+                execution_mode: None,
+                permission_level: None,
                 worktree_id: None,
                 machine_ref: None,
                 worktree_placement: None,

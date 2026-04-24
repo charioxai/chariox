@@ -255,9 +255,11 @@ async fn dispatch_local_ipc_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let sequence = command_sequence.fetch_add(1, Ordering::Relaxed);
     let command_id = format!("ipc-{}-{sequence}", unix_epoch_ms());
-    let command = KernelCommand::from_local_request_with_source(
+    let caller = router.local_command_caller(KernelCommandSource::LocalIpc).await;
+    let command = KernelCommand::from_local_request_with_caller(
         command_id,
         KernelCommandSource::LocalIpc,
+        caller,
         None,
         None,
         &request,
@@ -448,6 +450,7 @@ mod tests {
         CreateWorkflowEndpointRequest, CreateWorkflowRequest, GetWorkflowRunRequest,
         InvokeWorkflowEndpointRequest, ListWorkflowRunsRequest,
     };
+    use crate::config::PersistedCloudRelayProfile;
     use crate::local::{
         AttachToSessionRequest, CompletePromptRequest, LaunchProviderRunRequest,
         PumpTerminalOutputRequest, RunShellCapabilityRequest, SpawnAgentRequest,
@@ -534,6 +537,59 @@ mod tests {
 
         let output = wait_for_output(&client, session.id(), attachment.id()).await;
         assert!(output.contains("ipc smoke"));
+
+        let _ = shutdown_tx.send(());
+        server
+            .await
+            .expect("server task should join")
+            .expect("server should stop cleanly");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn local_ipc_uses_linked_cloud_user_for_session_creation() {
+        let _guard = local_ipc_test_guard();
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            api_url: "https://cloud.example.test".to_string(),
+            email: "miguel@example.test".to_string(),
+            account_id: "account-1".to_string(),
+            user_id: "user-cloud".to_string(),
+            account_slug: "miguel".to_string(),
+            realm_id: "realm-1".to_string(),
+            relay_url: "ws://relay.example.test".to_string(),
+            issuer_id: "issuer-1".to_string(),
+            client_id: Some("client-1".to_string()),
+            client_alias: Some("local-cli".to_string()),
+            machine_id: Some("machine-1".to_string()),
+            machine_alias: Some("macbook".to_string()),
+            cloud_session_token: Some("session-token".to_string()),
+            cloud_session_expires_at_ms: None,
+            token_expires_at_ms: None,
+        });
+        let socket_path = config.local_socket_path.clone();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+            run_local_ipc_server(app, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+        });
+
+        wait_for_socket(&socket_path).await;
+
+        let client = LocalIpcClient::new(socket_path.clone());
+        let response = client
+            .send(&LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-ipc-cloud", "."),
+            ))
+            .expect("session create should succeed");
+        let session = match response {
+            LocalDaemonResponse::SessionCreated { session, .. } => session,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert_eq!(session.owner_user_id(), "user-cloud");
+        assert!(session.has_member("user-cloud"));
 
         let _ = shutdown_tx.send(());
         server
@@ -743,6 +799,8 @@ mod tests {
                 provider: "dev-stub".to_string(),
                 model: Some("default".to_string()),
                 effort: None,
+                execution_mode: None,
+                permission_level: None,
                 worktree_id: None,
                 machine_ref: None,
                 worktree_placement: None,
@@ -951,6 +1009,8 @@ mod tests {
                 provider: "dev-stub".to_string(),
                 model: Some("default".to_string()),
                 effort: None,
+                execution_mode: None,
+                permission_level: None,
                 worktree_id: None,
                 machine_ref: None,
                 worktree_placement: None,
@@ -968,6 +1028,8 @@ mod tests {
                 provider: "dev-stub".to_string(),
                 model: Some("default".to_string()),
                 effort: None,
+                execution_mode: None,
+                permission_level: None,
                 worktree_id: None,
                 machine_ref: None,
                 worktree_placement: None,

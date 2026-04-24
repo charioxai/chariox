@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
-use crate::provider::ProviderResumeState;
+use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderResumeState};
 use crate::session::{SessionService, SessionStatus};
 
 use super::{
@@ -74,6 +74,8 @@ impl AgentService {
             position,
         );
         agent.set_owner_user_id(request.owner_user_id);
+        agent.set_execution_mode_override(request.execution_mode_override);
+        agent.set_permission_level_override(request.permission_level_override);
         let agent_id = agent.id().to_string();
         let session_id = agent.session_id().to_string();
 
@@ -317,6 +319,27 @@ impl AgentService {
         agent.set_model(model);
         agent.set_effort(effort);
         agent.set_provider_resume_state(resume_state);
+        Ok(agent.clone())
+    }
+
+    pub fn update_agent_config(
+        &mut self,
+        agent_id: &str,
+        execution_mode_override: Option<Option<AgentExecutionMode>>,
+        permission_level_override: Option<Option<AgentPermissionLevel>>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        if let Some(execution_mode_override) = execution_mode_override {
+            agent.set_execution_mode_override(execution_mode_override);
+        }
+        if let Some(permission_level_override) = permission_level_override {
+            agent.set_permission_level_override(permission_level_override);
+        }
         Ok(agent.clone())
     }
 
@@ -576,6 +599,19 @@ impl AgentServiceStore {
     ) -> Result<AgentInstance, DaemonError> {
         self.write()
             .set_agent_runtime_profile(agent_id, provider, model, effort, resume_state)
+    }
+
+    pub fn update_agent_config(
+        &self,
+        agent_id: &str,
+        execution_mode_override: Option<Option<AgentExecutionMode>>,
+        permission_level_override: Option<Option<AgentPermissionLevel>>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().update_agent_config(
+            agent_id,
+            execution_mode_override,
+            permission_level_override,
+        )
     }
 
     pub fn bind_remote_execution(

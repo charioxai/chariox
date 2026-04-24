@@ -22,3 +22,4 @@ coverage/
 happy-main/
 opencode-dev/
 codex-main/
+.gstack/

@@ -54,6 +54,7 @@ export type RuntimeSession = {
   active_prompt: PromptQueueItem | null
   queued_prompts: PromptQueueItem[]
   prompt_states?: Record<string, AgentPromptState>
+  active_interactions?: RuntimeInteraction[]
   focused_agent_id: string | null
   max_agents: number
   agents: AgentInstance[]
@@ -108,6 +109,26 @@ export type SessionInvite = {
 export type AgentPromptState = {
   active_prompt: PromptQueueItem | null
   queued_prompts: PromptQueueItem[]
+}
+
+export type RuntimeInteraction = {
+  id: string
+  agent_id: string
+  kind: "choice" | "permission"
+  level: "info" | "warning" | "critical"
+  title?: string | null
+  message: string
+  choices: RuntimeInteractionChoice[]
+  timeout_sec?: number | null
+  default_on_timeout?: string | null
+  requested_at_ms: number
+}
+
+export type RuntimeInteractionChoice = {
+  id: string
+  label: string
+  reply: string
+  style?: "primary" | "secondary" | "danger" | null
 }
 
 export type SessionConfigState = {

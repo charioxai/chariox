@@ -60,9 +60,11 @@ pub(crate) fn initialize_opencode_runtime(
     let selection = resolve_initial_selection(run, &client)?;
 
     let allow_native_bash = workspace_write_fence_active(run);
-    let managed_io_permission = run
-        .requires_managed_io()
-        .then(|| opencode_managed_io_permission_rules(allow_native_bash));
+    let session_permission = if run.requires_managed_io() {
+        Some(opencode_managed_io_permission_rules(allow_native_bash))
+    } else {
+        Some(opencode_permission_rules(run.permission_level()))
+    };
     let resumable_session_id = run.resume_state().opencode_session_id().map(str::to_string);
     let session_id = match resumable_session_id {
         Some(session_id) if client.snapshot(&session_id).is_ok() => {
@@ -86,7 +88,7 @@ pub(crate) fn initialize_opencode_runtime(
                 }),
             );
             let session_id = client.create_session_with_retry(
-                managed_io_permission.clone(),
+                session_permission.clone(),
                 OPENCODE_SESSION_CREATE_TIMEOUT,
                 OPENCODE_SESSION_CREATE_RETRY_INTERVAL,
             )?;
@@ -102,7 +104,7 @@ pub(crate) fn initialize_opencode_runtime(
         }
         None => {
             let session_id = client.create_session_with_retry(
-                managed_io_permission.clone(),
+                session_permission.clone(),
                 OPENCODE_SESSION_CREATE_TIMEOUT,
                 OPENCODE_SESSION_CREATE_RETRY_INTERVAL,
             )?;
@@ -160,6 +162,32 @@ fn opencode_managed_io_permission_rules(allow_native_bash: bool) -> serde_json::
         );
     }
     serde_json::Value::Array(rules)
+}
+
+fn opencode_permission_rules(
+    permission_level: crate::provider::AgentPermissionLevel,
+) -> serde_json::Value {
+    let action = match permission_level {
+        crate::provider::AgentPermissionLevel::Required => "ask",
+        crate::provider::AgentPermissionLevel::Yolo => "allow",
+    };
+    serde_json::json!([
+        {
+            "permission": "edit",
+            "pattern": "*",
+            "action": action
+        },
+        {
+            "permission": "bash",
+            "pattern": "*",
+            "action": action
+        },
+        {
+            "permission": "task",
+            "pattern": "*",
+            "action": action
+        }
+    ])
 }
 
 pub(super) fn sync_opencode_run_selection_for_session(

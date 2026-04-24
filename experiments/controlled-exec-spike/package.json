@@ -1,0 +1,11 @@
+{
+  "name": "@arroba/controlled-exec-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check src/controlled-exec-harness.mjs && node --check src/permission-ledger.mjs && node --check src/interaction-gateway.mjs && node --check src/fake-agent.mjs && node --check src/controlled-exec-mcp-server.mjs && node --check src/scenarios.mjs && node --check test/controlled-exec.test.mjs",
+    "test": "node --test test/*.test.mjs",
+    "drill:fake": "node src/scenarios.mjs --mode=fake",
+    "drill:providers": "node src/scenarios.mjs --mode=providers"
+  }
+}

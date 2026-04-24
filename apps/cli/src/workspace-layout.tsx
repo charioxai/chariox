@@ -18,6 +18,7 @@ type WorkspaceLayoutProps = {
   promptAreaBackground: RGBA
   onRootMouseUp: () => void
   onResponseSurfaceMouseUp: (event: any) => void
+  onFooterMouseUp: (event: any) => void
   onResponseLayoutBoxRef: RefHandler
   onResponseRowBoxRef: IndexedRefHandler
   onPaneGridBorderRowRef: IndexedRefHandler
@@ -30,9 +31,11 @@ type WorkspaceLayoutProps = {
   onResponsePrimaryPaneRef: RefHandler
   onHistoryLoadingBoxRef: RefHandler
   onTranscriptScrollboxRef: RefHandler
+  onResponsePrimaryInteractionBoxRef: RefHandler
   onResponsePrimaryFooterBoxRef: RefHandler
   onResponseAuxiliaryPaneRef: IndexedRefHandler
   onResponseAuxiliaryScrollboxRef: IndexedRefHandler
+  onResponseAuxiliaryInteractionBoxRef: IndexedRefHandler
   onResponseAuxiliaryFooterBoxRef: IndexedRefHandler
   onCommandCenterBoxRef: RefHandler
   onPromptInputRef: RefHandler
@@ -98,6 +101,13 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
               }}
             />
             <box
+              ref={props.onResponsePrimaryInteractionBoxRef}
+              flexShrink={0}
+              flexDirection="column"
+              gap={0}
+              overflow="hidden"
+            />
+            <box
               ref={props.onResponsePrimaryFooterBoxRef}
               flexShrink={0}
               flexDirection="row"
@@ -143,6 +153,15 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                   foregroundColor: palette().border,
                 },
               }}
+            />
+            <box
+              ref={(value) => {
+                props.onResponseAuxiliaryInteractionBoxRef(paneIndex - 1, value)
+              }}
+              flexShrink={0}
+              flexDirection="column"
+              gap={0}
+              overflow="hidden"
             />
             <box
               ref={(value) => {
@@ -325,7 +344,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         </box>
       </box>
 
-      <box flexShrink={0}>
+      <box flexShrink={0} onMouseUp={props.onFooterMouseUp}>
         <box flexDirection="row" gap={1}>
           <box ref={props.onStatusIndicatorBoxRef} flexDirection="row" />
           <box ref={props.onFooterSummaryBoxRef} flexDirection="row" />

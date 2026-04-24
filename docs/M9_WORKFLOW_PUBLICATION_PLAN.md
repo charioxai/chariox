@@ -429,6 +429,19 @@ contracts as the real providers, then verifies each connector receives accepted
 workflow run metadata. It does not replace a public-reachability drill through a
 real deployed URL or tunnel.
 
+Semantic URL renderer drill:
+
+```bash
+pnpm --filter @arroba/cli run semantic-url-renderer:drill
+```
+
+This drill validates the example application discussed during M9: a normal
+static site exposes pages such as `/about` and `/contact`, while a wrapper route
+like `/about/<prompt>` starts an async published workflow, returns a loading
+page immediately, polls the workflow run, and eventually serves the workflow's
+rendered HTML output. The v1 implementation keeps the publication gateway as
+the workflow ingress and puts loading/polling behavior in the application layer.
+
 ## M9.12 Slack Connector
 
 Slack is implemented as a connector-specific ingress path on the publication

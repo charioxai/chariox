@@ -1,4 +1,5 @@
 use crate::error::DaemonError;
+use crate::provider::run_actor::{ProviderNativeInteractionBridge, ProviderNativeInteractionResolution};
 use crate::provider::opencode_client::OpenCodePart;
 use crate::terminal::TerminalOutputKind;
 use std::collections::BTreeMap;
@@ -112,9 +113,11 @@ impl OpenCodeRuntimeState {
 }
 
 pub(super) fn drain_opencode_events(
+    run: &crate::provider::RuntimeProviderRun,
     state: &mut OpenCodeRuntimeState,
-    provider_run_id: &str,
+    native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
 ) -> Result<OpenCodeEventDrainResult, DaemonError> {
+    let provider_run_id = run.id();
     let mut chunks = Vec::new();
     let mut completions = Vec::new();
     let mut prompt_completed = false;
@@ -388,6 +391,18 @@ pub(super) fn drain_opencode_events(
                     }
                 }
             }
+            Ok(OpenCodeEvent::PermissionAsked { request }) => {
+                if request.session_id != state.session_id {
+                    continue;
+                }
+                handle_permission_request(
+                    run,
+                    state,
+                    provider_run_id,
+                    native_interaction_bridge.clone(),
+                    &request,
+                )?;
+            }
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => {
                 let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
@@ -498,6 +513,164 @@ pub(super) fn drain_opencode_events(
         resolved_variant,
         resolved_usage_tokens_total,
     })
+}
+
+fn handle_permission_request(
+    run: &crate::provider::RuntimeProviderRun,
+    state: &OpenCodeRuntimeState,
+    provider_run_id: &str,
+    native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
+    request: &crate::provider::opencode_client::OpenCodePermissionRequest,
+) -> Result<(), DaemonError> {
+    crate::logging::debug_with_fields(
+        "provider.opencode.permission",
+        "received opencode permission request",
+        serde_json::json!({
+            "provider_run_id": provider_run_id,
+            "session_id": state.session_id(),
+            "request_id": request.id,
+            "permission": request.permission,
+            "tool": request.tool,
+            "command": request.command,
+            "cwd": request.cwd,
+            "patterns": request.patterns,
+        }),
+    );
+    let response = resolve_permission_interaction(run, native_interaction_bridge, request)?;
+    crate::logging::debug_with_fields(
+        "provider.opencode.permission",
+        "replying to opencode permission request",
+        serde_json::json!({
+            "provider_run_id": provider_run_id,
+            "session_id": state.session_id(),
+            "request_id": request.id,
+            "response": response,
+        }),
+    );
+    let client = OpenCodeClient::new(provider_run_id, state.base_url())?;
+    client.reply_permission(state.session_id(), &request.id, response)
+}
+
+fn resolve_permission_interaction(
+    run: &crate::provider::RuntimeProviderRun,
+    native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
+    request: &crate::provider::opencode_client::OpenCodePermissionRequest,
+) -> Result<&'static str, DaemonError> {
+    let Some(bridge) = native_interaction_bridge else {
+        return Ok("reject");
+    };
+    let Some(agent_id) = run.agent_instance_id() else {
+        return Ok("reject");
+    };
+    let level = match request.permission.as_str() {
+        "edit" | "task" => crate::session::RuntimeInteractionLevel::Critical,
+        _ => crate::session::RuntimeInteractionLevel::Warning,
+    };
+    let title = Some(format!(
+        "OpenCode {} approval required",
+        humanize_permission_name(&request.permission)
+    ));
+    let mut message = format!(
+        "Approve OpenCode {} request?",
+        humanize_permission_name(&request.permission).to_lowercase()
+    );
+    if let Some(tool) = request.tool.as_deref().filter(|value| !value.trim().is_empty()) {
+        message.push_str(&format!("\n\ntool: {tool}"));
+    }
+    if let Some(command) = request.command.as_deref().filter(|value| !value.trim().is_empty()) {
+        message.push_str(&format!("\n\ncommand: {command}"));
+    }
+    if let Some(cwd) = request.cwd.as_deref().filter(|value| !value.trim().is_empty()) {
+        message.push_str(&format!("\n\ncwd: {cwd}"));
+    }
+    if let Some(reason) = request.reason.as_deref().filter(|value| !value.trim().is_empty()) {
+        message.push_str(&format!("\n\nreason: {reason}"));
+    }
+    if !request.patterns.is_empty() {
+        message.push_str(&format!("\n\npatterns: {}", request.patterns.join(", ")));
+    }
+    let interaction = crate::session::RuntimeInteraction::new(
+        format!("opencode-permission-{}", request.id),
+        agent_id,
+        crate::session::RuntimeInteractionKind::Permission,
+        level,
+        title,
+        message,
+        vec![
+            crate::session::RuntimeInteractionChoice::new(
+                "allow_once",
+                "Allow once",
+                "allow_once",
+                Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
+            ),
+            crate::session::RuntimeInteractionChoice::new(
+                "allow_session",
+                "Allow for session",
+                "allow_session",
+                Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
+            ),
+            crate::session::RuntimeInteractionChoice::new(
+                "deny",
+                "Deny",
+                "deny",
+                Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
+            ),
+        ],
+        None,
+        None,
+    );
+    crate::logging::debug_with_fields(
+        "provider.opencode.permission",
+        "bridging opencode permission request to runtime interaction",
+        serde_json::json!({
+            "provider_run_id": run.id(),
+            "session_id": run.session_id(),
+            "agent_id": agent_id,
+            "request_id": request.id,
+            "interaction_id": interaction.id(),
+            "permission": request.permission,
+        }),
+    );
+    let resolution = bridge.request_blocking(run.session_id(), interaction)?;
+    crate::logging::debug_with_fields(
+        "provider.opencode.permission",
+        "runtime interaction resolved for opencode permission request",
+        serde_json::json!({
+            "provider_run_id": run.id(),
+            "session_id": run.session_id(),
+            "request_id": request.id,
+            "status": resolution.status,
+            "choice_id": resolution.choice_id,
+            "reply": resolution.reply,
+        }),
+    );
+    Ok(map_permission_resolution_to_opencode_response(&resolution))
+}
+
+fn map_permission_resolution_to_opencode_response(
+    resolution: &ProviderNativeInteractionResolution,
+) -> &'static str {
+    match resolution.choice_id.as_deref() {
+        Some("allow_once") => "once",
+        Some("allow_session") => "always",
+        Some("deny") | None => "reject",
+        Some(_) => "reject",
+    }
+}
+
+fn humanize_permission_name(permission: &str) -> String {
+    match permission {
+        "bash" => "Bash".to_string(),
+        "edit" => "Edit".to_string(),
+        "task" => "Task".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => "Permission".to_string(),
+            }
+        }
+    }
 }
 
 struct SnapshotRenderResult {
@@ -754,7 +927,10 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::provider::opencode_client::{OpenCodeMessage, OpenCodePart, OpenCodeToolState};
+    use crate::provider::{
+        opencode_client::{OpenCodeMessage, OpenCodePart, OpenCodeToolState},
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    };
     use crate::terminal::TerminalOutputKind;
 
     use super::{
@@ -762,6 +938,31 @@ mod tests {
         render_tool_transcript_update, OpenCodeAssistantCompletion, OpenCodeRuntimeState,
         ToolTranscriptUpdate,
     };
+
+    fn test_run() -> RuntimeProviderRun {
+        RuntimeProviderRun::new(
+            "provider-run-1",
+            &LaunchProviderRequest::new(
+                "session-1",
+                "opencode",
+                "opencode",
+                "default",
+                "opencode/test-model",
+            )
+            .with_agent_id("agent-1"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "opencode:test".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("http://localhost:1".to_string()),
+            },
+        )
+    }
 
     #[test]
     fn renders_structured_tool_update_with_input_and_output() {
@@ -945,7 +1146,7 @@ mod tests {
         )
         .expect("message update should send");
 
-        let first = drain_opencode_events(&mut state, "provider-run-1")
+        let first = drain_opencode_events(&test_run(), &mut state, None)
             .expect("first drain should succeed");
         assert_eq!(
             first.completions,
@@ -975,8 +1176,8 @@ mod tests {
         )
         .expect("idle status should send");
 
-        let result =
-            drain_opencode_events(&mut state, "provider-run-1").expect("drain should succeed");
+        let result = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("drain should succeed");
 
         assert!(!result.prompt_completed);
         assert!(result.completions.is_empty());
@@ -1004,8 +1205,8 @@ mod tests {
         )
         .expect("idle status should send");
 
-        let result =
-            drain_opencode_events(&mut state, "provider-run-1").expect("drain should succeed");
+        let result = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("drain should succeed");
 
         assert!(!result.prompt_completed);
         assert_eq!(state.active_user_message_id.as_deref(), Some("msg_user"));
@@ -1056,8 +1257,8 @@ mod tests {
         )
         .expect("idle status should send");
 
-        let result =
-            drain_opencode_events(&mut state, "provider-run-1").expect("drain should succeed");
+        let result = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("drain should succeed");
 
         assert!(!result.prompt_completed);
         assert_eq!(state.active_user_message_id.as_deref(), Some("msg_user"));
@@ -1111,7 +1312,7 @@ mod tests {
         )
         .expect("running tool update should send");
 
-        let first = drain_opencode_events(&mut state, "provider-run-1")
+        let first = drain_opencode_events(&test_run(), &mut state, None)
             .expect("first drain should succeed");
         assert!(!first.prompt_completed);
         assert!(first
@@ -1119,7 +1320,7 @@ mod tests {
             .iter()
             .any(|chunk| chunk.kind == TerminalOutputKind::ProviderTool));
 
-        let second = drain_opencode_events(&mut state, "provider-run-1")
+        let second = drain_opencode_events(&test_run(), &mut state, None)
             .expect("second drain should succeed");
         assert!(!second.prompt_completed);
 
@@ -1147,7 +1348,7 @@ mod tests {
         )
         .expect("completed tool update should send");
 
-        let third = drain_opencode_events(&mut state, "provider-run-1")
+        let third = drain_opencode_events(&test_run(), &mut state, None)
             .expect("third drain should succeed");
         assert!(!third.prompt_completed);
 
@@ -1166,7 +1367,7 @@ mod tests {
         )
         .expect("final assistant update should send");
 
-        let fourth = drain_opencode_events(&mut state, "provider-run-1")
+        let fourth = drain_opencode_events(&test_run(), &mut state, None)
             .expect("fourth drain should succeed");
         assert!(fourth.prompt_completed);
     }
@@ -1203,8 +1404,8 @@ mod tests {
         )
         .expect("idle status should send");
 
-        let result =
-            drain_opencode_events(&mut state, "provider-run-1").expect("drain should succeed");
+        let result = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("drain should succeed");
         assert!(!result.prompt_completed);
         assert_eq!(state.active_user_message_id.as_deref(), Some("msg_user"));
     }
@@ -1232,7 +1433,7 @@ mod tests {
         )
         .expect("message update should send");
 
-        let first = drain_opencode_events(&mut state, "provider-run-1")
+        let first = drain_opencode_events(&test_run(), &mut state, None)
             .expect("first drain should succeed");
         assert!(first.completions.is_empty());
         assert!(!first.prompt_completed);

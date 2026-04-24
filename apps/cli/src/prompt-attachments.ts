@@ -182,7 +182,11 @@ export function resolvePromptAttachmentEdit(
   if (normalizedSelection) {
     const matches = spans.filter((span) => span.start < normalizedSelection.end && span.end > normalizedSelection.start)
     if (matches.length === 0) {
-      return null
+      return {
+        kind: "delete-text",
+        start: normalizedSelection.start,
+        end: normalizedSelection.end,
+      }
     }
     return {
       kind: "remove-attachments",

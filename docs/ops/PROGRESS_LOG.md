@@ -2,6 +2,26 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-04-24
+
+### M12 provider-native permissions and mode defaults
+
+- Added provider-native `mode` (`build|plan`) and `permissions` (`required|yolo`) as first-class runtime launch state in the kernel, with effective resolution from session defaults plus agent overrides.
+- Added session config keys `agents.mode` and `agents.permissions`, plus agent-local override mutation through the new `UpdateAgentConfig` local daemon request/response.
+- Mapped the effective values into provider launch behavior: Codex now derives approval/sandbox policy from `mode + permissions`, while OpenCode now sets `default_agent` and native permission rules for `edit`, `bash`, and `task`.
+- Added shell commands `session mode`, `session permissions`, `agent mode`, and `agent permissions`, including `inherit` for clearing agent overrides and `context` output that shows the effective current values.
+- Added matching CLI slash commands `/session mode`, `/session permissions`, `/agent mode`, and `/agent permissions`.
+- Extended split-pane agent footers to show effective mode and permissions alongside identity/provider/model metadata.
+- Verified the slice with `cargo test --manifest-path apps/kernel/Cargo.toml --no-run`, `pnpm --filter @arroba/kernel-client run test`, and `pnpm --filter @arroba/cli run lint`.
+
+### M12 popup blocking spike validation
+
+- Extended the existing controlled-exec spike with a blocking `request_popup` path in the interaction gateway, including timeout/default-on-timeout handling and externally-resolved late answers.
+- Added fake drills proving that the popup request really blocks until timeout or later resolution, then resumes with a structured reply in the same turn.
+- Re-ran live Codex and OpenCode drills with a forced delayed popup response. Both providers waited on the popup tool call and then completed the same turn after the delayed answer arrived.
+- Verified with `cd experiments/controlled-exec-spike && npm run check`, `npm test`, `npm run drill:fake`, and `npm run drill:providers`.
+- Latest live artifacts: `experiments/controlled-exec-spike/artifacts/2026-04-24T11-19-09-661Z-provider-drill/`.
+
 ## 2026-04-19
 
 ### M7.5 Arroba Shell core skeleton
@@ -944,3 +964,4 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added M9.7 WebSocket/WSS publication support. The gateway now accepts WebSocket upgrades at `/.well-known/arroba/publication/ws`, reuses publication auth and input schema validation, invokes the same kernel workflow endpoint, streams accepted/status/final/error messages where possible, and supports WSS through the existing TLS config. Unit tests cover WS invocation and validation errors; the publication live drill covers WS and self-signed WSS.
 - Added M9.8 local IPC publication invocation. `arroba-workflow-call` can invoke exported `publication.config.json` packages or kernel-owned publications by session/publication id, validates the configured input schema, forwards to the same kernel workflow endpoint as HTTP/WebSocket, emits JSON results, and is covered by unit tests plus the publication live drill.
 - Added a Docker-backed M9 publication connector drill. `pnpm --filter @arroba/cli run publication:docker-connectors-drill` builds a checked-in Node/curl client image and verifies an external container can kick off workflow runs through HTTP, HTTPS, WS, WSS, Slack, Telegram, Discord, WhatsApp, and Signal ingress paths.
+- Added a semantic URL renderer drill. `pnpm --filter @arroba/cli run semantic-url-renderer:drill` drives session/workflow/publication setup through shell commands, uses one Codex `gpt-5.4` workflow agent, publishes an async renderer workflow, and validates that a wrapper site first serves a loading page and then serves workflow-generated HTML for `/about/<prompt>`.

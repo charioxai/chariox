@@ -1239,6 +1239,8 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
             provider: "dev-stub".to_string(),
             model: Some("sonnet".to_string()),
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,

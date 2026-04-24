@@ -142,6 +142,7 @@ import {
   teardownProviderProcessesRequest,
   uninstallMcpServerRequest,
   uninstallSkillRequest,
+  updateAgentConfigRequest,
   updateSessionConfigRequest,
   unsetUserConfigValueRequest,
   updateMcpServerRequest,
@@ -246,8 +247,8 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
         ok: true,
         message: [
           "arroba-shell commands:",
-          "session list|new|attach|use|members|invite|join",
-          "agent list|spawn|focus|cycle",
+          "session list|new|attach|use|members|invite|join|mode|permissions",
+          "agent list|spawn|focus|cycle|mode|permissions",
           "client invite create|join|list|record|revoke",
           "machine invite create|join|list|kernels|approve|rename|revoke",
           "relay status",
@@ -359,12 +360,18 @@ function formatShellContext(context: ShellContext, session: RuntimeSession | nul
   const agentLabel = currentAgent
     ? `${currentAgent.agent_ref}${currentAgent.alias ? ` (${currentAgent.alias})` : ""}${currentAgentBusy ? " (busy)" : ""}`
     : `${context.agentId ?? "-"}${currentAgentBusy ? " (busy)" : ""}`
+  const sessionMode = parseExecutionMode(session?.config_state?.values?.["agents.mode"]) ?? "build"
+  const sessionPermissions = parsePermissionLevel(session?.config_state?.values?.["agents.permissions"]) ?? "yolo"
+  const effectiveAgentMode = currentAgent?.execution_mode_override ?? sessionMode
+  const effectiveAgentPermissions = currentAgent?.permission_level_override ?? sessionPermissions
   const lines = [
     `workspace: ${context.workspace}`,
     `worktree: ${context.worktree}`,
     `session: ${context.sessionId ?? "-"}`,
     `attachment: ${context.attachmentId ?? "-"}`,
     `agent: ${agentLabel}`,
+    `mode: ${currentAgent ? `${effectiveAgentMode} (agent${currentAgent.execution_mode_override ? "-override" : "-session"})` : sessionMode}`,
+    `permissions: ${currentAgent ? `${effectiveAgentPermissions} (agent${currentAgent.permission_level_override ? "-override" : "-session"})` : sessionPermissions}`,
     `workflow: ${context.workflowId ?? "-"}`,
     `provider: ${context.provider}`,
     `model: ${context.model}`,
@@ -453,6 +460,68 @@ async function executeSessionCommand(
         { session },
       )
     }
+    case "mode": {
+      if (!context.sessionId) {
+        return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
+      }
+      const nextMode = parseExecutionMode(args[0])
+      if (!args[0]) {
+        const response = await deps.client.send(getSessionStateRequest(context.sessionId))
+        const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
+        return {
+          ok: true,
+          message: `session mode = ${parseExecutionMode(session.config_state?.values?.["agents.mode"]) ?? "build"}`,
+          data: { session },
+        }
+      }
+      if (!nextMode) {
+        return { ok: false, message: "usage: session mode <build|plan>" }
+      }
+      const attachmentId = await resolveShellAttachmentId(context, deps)
+      if (!attachmentId.ok) {
+        return { ok: false, message: attachmentId.message }
+      }
+      const response = await deps.client.send(
+        updateSessionConfigRequest(context.sessionId, attachmentId.attachmentId, { "agents.mode": nextMode }, false),
+      )
+      const payload = expectVariant<{ session: RuntimeSession; config: SessionConfigState }>(response, "SessionConfigUpdated")
+      return {
+        ok: true,
+        message: `session mode = ${nextMode}`,
+        data: payload,
+      }
+    }
+    case "permissions": {
+      if (!context.sessionId) {
+        return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
+      }
+      const nextLevel = parsePermissionLevel(args[0])
+      if (!args[0]) {
+        const response = await deps.client.send(getSessionStateRequest(context.sessionId))
+        const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
+        return {
+          ok: true,
+          message: `session permissions = ${parsePermissionLevel(session.config_state?.values?.["agents.permissions"]) ?? "yolo"}`,
+          data: { session },
+        }
+      }
+      if (!nextLevel) {
+        return { ok: false, message: "usage: session permissions <required|yolo>" }
+      }
+      const attachmentId = await resolveShellAttachmentId(context, deps)
+      if (!attachmentId.ok) {
+        return { ok: false, message: attachmentId.message }
+      }
+      const response = await deps.client.send(
+        updateSessionConfigRequest(context.sessionId, attachmentId.attachmentId, { "agents.permissions": nextLevel }, false),
+      )
+      const payload = expectVariant<{ session: RuntimeSession; config: SessionConfigState }>(response, "SessionConfigUpdated")
+      return {
+        ok: true,
+        message: `session permissions = ${nextLevel}`,
+        data: payload,
+      }
+    }
     case "members": {
       const sessionId = args[0] ?? context.sessionId
       if (!sessionId) {
@@ -519,7 +588,7 @@ async function executeSessionCommand(
       }
     }
     default:
-      return { ok: false, message: "usage: session list|new|attach|use|members|invite|join|revoke-invite" }
+      return { ok: false, message: "usage: session list|new|attach|use|members|invite|join|revoke-invite|mode|permissions" }
   }
 }
 
@@ -646,6 +715,8 @@ async function executeAgentCommand(
         model ?? context.model,
         worktree,
         context.effort,
+        undefined,
+        undefined,
         parsedSpawn.options.machineRef,
         remotePlacement,
       ))
@@ -690,8 +761,66 @@ async function executeAgentCommand(
         { agent },
       )
     }
+    case "mode": {
+      const resolved = await resolveShellAgent(context, deps, args[0])
+      if (!resolved.ok) {
+        return { ok: false, message: args[0] ? resolved.message : "usage: agent mode [agent-ref] <build|plan|inherit>" }
+      }
+      const rawValue = args.length > 1 ? args[1] : args[0] && parseExecutionMode(args[0]) == null && args[0] !== "inherit" ? undefined : args[0]
+      if (!rawValue) {
+        const response = await deps.client.send(getSessionStateRequest(sessionId))
+        const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
+        const agent = session.agents.find((entry) => entry.id === resolved.agent.id) ?? resolved.agent
+        const sessionMode = parseExecutionMode(session.config_state?.values?.["agents.mode"]) ?? "build"
+        const effectiveMode = agent.execution_mode_override ?? sessionMode
+        const source = agent.execution_mode_override ? "agent" : "session"
+        return { ok: true, message: `${formatAgentRef(agent)} mode = ${effectiveMode} (${source})`, data: { session, agent } }
+      }
+      if (rawValue !== "inherit" && !parseExecutionMode(rawValue)) {
+        return { ok: false, message: "usage: agent mode [agent-ref] <build|plan|inherit>" }
+      }
+      const response = await deps.client.send(updateAgentConfigRequest({
+        sessionId,
+        agentId: resolved.agent.id,
+        executionMode: rawValue === "inherit" ? null : parseExecutionMode(rawValue),
+        clearExecutionMode: rawValue === "inherit",
+      }))
+      const payload = expectVariant<{ agent: AgentInstance; session: RuntimeSession }>(response, "AgentConfigUpdated")
+      const sessionMode = parseExecutionMode(payload.session.config_state?.values?.["agents.mode"]) ?? "build"
+      const effectiveMode = payload.agent.execution_mode_override ?? sessionMode
+      return { ok: true, message: `${formatAgentRef(payload.agent)} mode = ${effectiveMode}${rawValue === "inherit" ? " (session)" : " (agent)"}`, data: payload }
+    }
+    case "permissions": {
+      const resolved = await resolveShellAgent(context, deps, args[0])
+      if (!resolved.ok) {
+        return { ok: false, message: args[0] ? resolved.message : "usage: agent permissions [agent-ref] <required|yolo|inherit>" }
+      }
+      const rawValue = args.length > 1 ? args[1] : args[0] && parsePermissionLevel(args[0]) == null && args[0] !== "inherit" ? undefined : args[0]
+      if (!rawValue) {
+        const response = await deps.client.send(getSessionStateRequest(sessionId))
+        const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
+        const agent = session.agents.find((entry) => entry.id === resolved.agent.id) ?? resolved.agent
+        const sessionLevel = parsePermissionLevel(session.config_state?.values?.["agents.permissions"]) ?? "yolo"
+        const effectiveLevel = agent.permission_level_override ?? sessionLevel
+        const source = agent.permission_level_override ? "agent" : "session"
+        return { ok: true, message: `${formatAgentRef(agent)} permissions = ${effectiveLevel} (${source})`, data: { session, agent } }
+      }
+      if (rawValue !== "inherit" && !parsePermissionLevel(rawValue)) {
+        return { ok: false, message: "usage: agent permissions [agent-ref] <required|yolo|inherit>" }
+      }
+      const response = await deps.client.send(updateAgentConfigRequest({
+        sessionId,
+        agentId: resolved.agent.id,
+        permissionLevel: rawValue === "inherit" ? null : parsePermissionLevel(rawValue),
+        clearPermissionLevel: rawValue === "inherit",
+      }))
+      const payload = expectVariant<{ agent: AgentInstance; session: RuntimeSession }>(response, "AgentConfigUpdated")
+      const sessionLevel = parsePermissionLevel(payload.session.config_state?.values?.["agents.permissions"]) ?? "yolo"
+      const effectiveLevel = payload.agent.permission_level_override ?? sessionLevel
+      return { ok: true, message: `${formatAgentRef(payload.agent)} permissions = ${effectiveLevel}${rawValue === "inherit" ? " (session)" : " (agent)"}`, data: payload }
+    }
     default:
-      return { ok: false, message: "usage: agent list|spawn|focus|cycle" }
+      return { ok: false, message: "usage: agent list|spawn|focus|cycle|mode|permissions" }
   }
 }
 
@@ -2946,7 +3075,23 @@ function formatAgentListSummary(agents: AgentInstance[]): string {
     return "no agents in session"
   }
   const agentList = agents
-    .map((agent) => `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${agent.state}]`)
+    .map((agent) => {
+      const mode = agent.execution_mode_override ? ` mode=${agent.execution_mode_override}` : ""
+      const permissions = agent.permission_level_override ? ` permissions=${agent.permission_level_override}` : ""
+      return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${agent.state}]${mode}${permissions}`
+    })
     .join(", ")
   return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
+}
+
+function parseExecutionMode(value: string | null | undefined): "build" | "plan" | null {
+  if (!value) return null
+  const normalized = value.trim().toLowerCase()
+  return normalized === "build" || normalized === "plan" ? normalized : null
+}
+
+function parsePermissionLevel(value: string | null | undefined): "required" | "yolo" | null {
+  if (!value) return null
+  const normalized = value.trim().toLowerCase()
+  return normalized === "required" || normalized === "yolo" ? normalized : null
 }

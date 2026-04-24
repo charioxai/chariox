@@ -2737,6 +2737,159 @@ impl SessionConfigState {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeInteractionKind {
+    Choice,
+    Permission,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeInteractionLevel {
+    Info,
+    Warning,
+    Critical,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeInteractionChoiceStyle {
+    Primary,
+    Secondary,
+    Danger,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteractionChoice {
+    id: String,
+    label: String,
+    reply: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    style: Option<RuntimeInteractionChoiceStyle>,
+}
+
+impl RuntimeInteractionChoice {
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        reply: impl Into<String>,
+        style: Option<RuntimeInteractionChoiceStyle>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            reply: reply.into(),
+            style,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn reply(&self) -> &str {
+        &self.reply
+    }
+
+    pub fn style(&self) -> Option<RuntimeInteractionChoiceStyle> {
+        self.style
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteraction {
+    id: String,
+    agent_id: String,
+    kind: RuntimeInteractionKind,
+    level: RuntimeInteractionLevel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    message: String,
+    choices: Vec<RuntimeInteractionChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timeout_sec: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_on_timeout: Option<String>,
+    requested_at_ms: u64,
+}
+
+impl RuntimeInteraction {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: impl Into<String>,
+        agent_id: impl Into<String>,
+        kind: RuntimeInteractionKind,
+        level: RuntimeInteractionLevel,
+        title: Option<String>,
+        message: impl Into<String>,
+        choices: Vec<RuntimeInteractionChoice>,
+        timeout_sec: Option<u64>,
+        default_on_timeout: Option<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            kind,
+            level,
+            title,
+            message: message.into(),
+            choices,
+            timeout_sec,
+            default_on_timeout,
+            requested_at_ms: unix_epoch_ms(),
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+
+    pub fn kind(&self) -> RuntimeInteractionKind {
+        self.kind
+    }
+
+    pub fn level(&self) -> RuntimeInteractionLevel {
+        self.level
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn choices(&self) -> &[RuntimeInteractionChoice] {
+        &self.choices
+    }
+
+    pub fn timeout_sec(&self) -> Option<u64> {
+        self.timeout_sec
+    }
+
+    pub fn default_on_timeout(&self) -> Option<&str> {
+        self.default_on_timeout.as_deref()
+    }
+
+    pub fn requested_at_ms(&self) -> u64 {
+        self.requested_at_ms
+    }
+
+    pub fn choice(&self, choice_id: &str) -> Option<&RuntimeInteractionChoice> {
+        self.choices.iter().find(|choice| choice.id() == choice_id)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PromptSubmissionOutcome {
     Started { prompt: PromptQueueItem },
@@ -2853,6 +3006,8 @@ pub struct RuntimeSession {
     attachment_ids: BTreeSet<String>,
     #[serde(flatten)]
     prompt_runtime: PromptRuntimeState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    active_interactions: Vec<RuntimeInteraction>,
     config_state: SessionConfigState,
     worktree_assignments: Vec<RuntimeWorktreeAssignment>,
     workflows: Vec<WorkflowDefinition>,
@@ -2905,6 +3060,7 @@ impl RuntimeSession {
             agents: Vec::new(),
             attachment_ids: BTreeSet::new(),
             prompt_runtime: PromptRuntimeState::default(),
+            active_interactions: Vec::new(),
             config_state: SessionConfigState::default(),
             worktree_assignments: vec![RuntimeWorktreeAssignment::new(
                 format!("worktree-assignment-{}-1", id),
@@ -3116,6 +3272,31 @@ impl RuntimeSession {
     }
     pub fn scheduler_state(&self) -> SchedulerState {
         self.prompt_runtime.scheduler_state()
+    }
+    pub fn active_interactions(&self) -> &[RuntimeInteraction] {
+        &self.active_interactions
+    }
+    pub fn active_interaction_for_agent(&self, agent_id: &str) -> Option<&RuntimeInteraction> {
+        self.active_interactions
+            .iter()
+            .find(|interaction| interaction.agent_id() == agent_id)
+    }
+    pub fn add_active_interaction(&mut self, interaction: RuntimeInteraction) {
+        self.active_interactions
+            .retain(|existing| existing.agent_id() != interaction.agent_id());
+        self.active_interactions.push(interaction);
+        self.active_interactions
+            .sort_by(|left, right| left.requested_at_ms().cmp(&right.requested_at_ms()));
+    }
+    pub fn remove_active_interaction(
+        &mut self,
+        interaction_id: &str,
+    ) -> Option<RuntimeInteraction> {
+        let index = self
+            .active_interactions
+            .iter()
+            .position(|interaction| interaction.id() == interaction_id)?;
+        Some(self.active_interactions.remove(index))
     }
     pub fn config_state(&self) -> &SessionConfigState {
         &self.config_state

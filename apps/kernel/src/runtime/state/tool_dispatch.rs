@@ -87,6 +87,7 @@ impl KernelRuntimeState {
                 crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL
                     | crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
                     | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
+                    | crate::transport::runtime_tools::REQUEST_POPUP_TOOL
             ) {
                 return self
                     .dispatch_credential_runtime_tool_call(
@@ -290,6 +291,98 @@ impl KernelRuntimeState {
                         "submitted": true,
                         "credential_id": args.credential_id,
                         "target": "current_provider_run",
+                    }),
+                })
+            }
+            crate::transport::runtime_tools::REQUEST_POPUP_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::RequestPopupArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_request_popup",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                if args.choices.len() < 2 {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_request_popup",
+                        message: "popup interactions require at least two choices".to_string(),
+                    });
+                }
+                let choices = args
+                    .choices
+                    .into_iter()
+                    .map(|choice| {
+                        crate::session::RuntimeInteractionChoice::new(
+                            choice.id,
+                            choice.label,
+                            choice.reply,
+                            choice.style,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let default_choice_id = args.default_on_timeout.clone();
+                if let Some(default_choice_id) = default_choice_id.as_deref() {
+                    if !choices.iter().any(|choice| choice.id() == default_choice_id) {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "runtime_tool_request_popup",
+                            message: format!(
+                                "default_on_timeout choice `{default_choice_id}` is not defined"
+                            ),
+                        });
+                    }
+                }
+                let interaction = crate::session::RuntimeInteraction::new(
+                    format!(
+                        "interaction-{}-{}",
+                        provider_run
+                            .agent_instance_id()
+                            .unwrap_or("agent"),
+                        crate::session::unix_epoch_ms()
+                    ),
+                    provider_run.agent_instance_id().ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "runtime_tool_request_popup",
+                        message: "provider run is not bound to an agent".to_string(),
+                    })?,
+                    crate::session::RuntimeInteractionKind::Choice,
+                    args.level
+                        .unwrap_or(crate::session::RuntimeInteractionLevel::Info),
+                    args.title,
+                    args.message,
+                    choices,
+                    args.timeout_sec,
+                    default_choice_id.clone(),
+                );
+                let interaction_id = interaction.id().to_string();
+                let session_id = provider_run.session_id().to_string();
+                let timeout_sec = interaction.timeout_sec();
+                let resolution_rx = self
+                    .create_runtime_interaction(&session_id, interaction)
+                    .await?;
+                if let Some(timeout_sec) = timeout_sec {
+                    let state = self.clone();
+                    let timeout_session_id = session_id.clone();
+                    let timeout_interaction_id = interaction_id.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(timeout_sec)).await;
+                        let _ = state
+                            .timeout_runtime_interaction(
+                                &timeout_session_id,
+                                &timeout_interaction_id,
+                            )
+                            .await;
+                    });
+                }
+                let resolution = resolution_rx.await.map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_request_popup",
+                    message: format!("popup interaction dropped before resolution: {error}"),
+                })?;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "interaction_id": interaction_id,
+                        "status": resolution.status,
+                        "choice_id": resolution.choice_id,
+                        "reply": resolution.reply,
                     }),
                 })
             }

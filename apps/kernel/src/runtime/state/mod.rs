@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -110,7 +110,19 @@ struct PendingInteractionStore {
     inner: Arc<StdMutex<BTreeMap<String, PendingInteraction>>>,
 }
 
+impl PendingMcpContinuationStore {
+    fn shared() -> Self {
+        static STORE: OnceLock<PendingMcpContinuationStore> = OnceLock::new();
+        STORE.get_or_init(PendingMcpContinuationStore::default).clone()
+    }
+}
+
 impl PendingInteractionStore {
+    fn shared() -> Self {
+        static STORE: OnceLock<PendingInteractionStore> = OnceLock::new();
+        STORE.get_or_init(PendingInteractionStore::default).clone()
+    }
+
     fn write(&self) -> StdMutexGuard<'_, BTreeMap<String, PendingInteraction>> {
         self.inner
             .lock()
@@ -197,8 +209,8 @@ impl KernelRuntimeState {
                 managed_io_external_changes: crate::io::ArtifactExternalChangeMonitor::default(),
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
-                pending_mcp_continuations: PendingMcpContinuationStore::default(),
-                pending_interactions: PendingInteractionStore::default(),
+                pending_mcp_continuations: PendingMcpContinuationStore::shared(),
+                pending_interactions: PendingInteractionStore::shared(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             },
         }

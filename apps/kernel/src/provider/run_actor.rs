@@ -1268,7 +1268,7 @@ fn execute_output_poll_command(
     if !output_poll_delay.is_zero() {
         thread::sleep(output_poll_delay);
     }
-    let drain = drain_opencode_events(&mut state, run_id);
+    let drain = drain_opencode_events(run, &mut state, native_interaction_bridge.read());
     restore_opencode_runtime_if_live(opencode_runs, cleared_runs, run_id, &slot, state);
     let drain = drain?;
     Ok(Some(ProviderPromptSignalBatch {

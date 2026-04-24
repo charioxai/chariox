@@ -72,11 +72,11 @@ test("agentPaneStatusBadge stays working while the local busy latch is active", 
 test("formatSplitPaneFooter uses alias and prompt-style model metadata", () => {
   assert.equal(
     formatSplitPaneFooter(primaryAgent, null, null),
-    "Planner • OpenAI • GPT-5.4",
+    "Planner • OpenAI • GPT-5.4 • build • yolo",
   )
   assert.equal(
     formatSplitPaneFooter(secondaryAgent, null, "gpt-5.4"),
-    "agent-b • OpenAI • GPT-5.4",
+    "agent-b • OpenAI • GPT-5.4 • build • yolo",
   )
 })
 
@@ -93,14 +93,14 @@ test("formatSplitPaneFooter prefers the active run model for the matching agent"
       activeRun,
       null,
     ),
-    "Planner • OpenAI • GPT-5.4 • High",
+    "Planner • OpenAI • GPT-5.4 • High • build • yolo",
   )
 })
 
 test("formatSplitPaneFooter prefers an override variant when idle", () => {
   assert.equal(
     formatSplitPaneFooter(primaryAgent, null, null, { variant: "high" }),
-    "Planner • OpenAI • GPT-5.4 • High",
+    "Planner • OpenAI • GPT-5.4 • High • build • yolo",
   )
 })
 
@@ -115,6 +115,8 @@ test("formatSplitPaneFooterParts mirrors the prompt footer order with an agent p
       { kind: "agent", text: "Planner" },
       { kind: "provider", text: "OpenAI" },
       { kind: "model", text: "GPT-5.4" },
+      { kind: "mode", text: "build" },
+      { kind: "permission", text: "yolo" },
     ],
   )
   assert.equal(parts[1]?.tone, "info")
@@ -142,7 +144,7 @@ test("buildSplitPaneFooterState keeps disconnected panes uniformly disconnected"
   assert.deepEqual(state.primary.badge, { label: "DISCONNECTED", tone: "disconnected" })
   assert.deepEqual(state.secondary.badge, { label: "DISCONNECTED", tone: "disconnected" })
   assert.equal(state.secondary.focused, true)
-  assert.equal(state.secondary.info, "agent-b • OpenAI • GPT-5.4")
+  assert.equal(state.secondary.info, "agent-b • OpenAI • GPT-5.4 • build • yolo")
 })
 
 test("buildSplitPaneFooterState uses activity labels and focus per pane", () => {
@@ -174,7 +176,7 @@ test("buildSplitPaneFooterState uses activity labels and focus per pane", () => 
   assert.deepEqual(state.primary.badge, { label: "IDLE", tone: "idle" })
   assert.deepEqual(state.secondary.badge, { label: "READING", tone: "working" })
   assert.equal(state.primary.focused, true)
-  assert.equal(state.primary.info, "Planner • OpenAI • GPT-5.4 • High")
+  assert.equal(state.primary.info, "Planner • OpenAI • GPT-5.4 • High • build • yolo")
 })
 
 test("buildSplitPaneFooterState keeps a pane working while its busy latch is set", () => {

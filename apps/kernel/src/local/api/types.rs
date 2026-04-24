@@ -125,6 +125,20 @@ pub struct UpdateSessionConfigRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateAgentConfigRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<crate::provider::AgentExecutionMode>,
+    #[serde(default)]
+    pub clear_execution_mode: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_level: Option<crate::provider::AgentPermissionLevel>,
+    #[serde(default)]
+    pub clear_permission_level: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetSessionStateRequest {
     pub session_id: String,
 }
@@ -150,6 +164,9 @@ pub struct ListRemoteMachinesRequest;
 pub struct ListRemoteMachineKernelsRequest {
     pub machine_ref: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetWaitingRoomInventoryRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApproveRemoteMachineRequest {
@@ -712,6 +729,13 @@ pub struct PollRuntimeNoticesRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RespondToInteractionRequest {
+    pub session_id: String,
+    pub interaction_id: String,
+    pub choice_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResizeTerminalRequest {
     pub session_id: String,
     pub cols: u16,
@@ -796,6 +820,10 @@ pub struct SpawnAgentRequest {
     pub provider: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<crate::provider::AgentExecutionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_level: Option<crate::provider::AgentPermissionLevel>,
     pub worktree_id: Option<String>,
     #[serde(default)]
     pub machine_ref: Option<String>,
@@ -1254,6 +1282,7 @@ pub enum LocalDaemonRequest {
     DeleteCredentialSecret(DeleteCredentialSecretRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
+    GetWaitingRoomInventory(GetWaitingRoomInventoryRequest),
     ApproveRemoteMachine(ApproveRemoteMachineRequest),
     ForgetRemoteMachine(ForgetRemoteMachineRequest),
     RenameRemoteMachine(RenameRemoteMachineRequest),
@@ -1271,10 +1300,12 @@ pub enum LocalDaemonRequest {
     QueryHistory(QueryHistoryRequest),
     SearchHistory(SearchHistoryRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
+    RespondToInteraction(RespondToInteractionRequest),
     SubmitPrompt(SubmitPromptRequest),
     CompletePrompt(CompletePromptRequest),
     CancelActivePrompt(CancelActivePromptRequest),
     UpdateSessionConfig(UpdateSessionConfigRequest),
+    UpdateAgentConfig(UpdateAgentConfigRequest),
     ResizeTerminal(ResizeTerminalRequest),
     PumpTerminalOutput(PumpTerminalOutputRequest),
     RunShellCommand(RunShellCapabilityRequest),
@@ -1529,6 +1560,9 @@ pub enum LocalDaemonResponse {
         machine_ref: String,
         kernels: Vec<RelayKernelPresence>,
     },
+    WaitingRoomInventory {
+        snapshot: WaitingRoomInventorySnapshot,
+    },
     RemoteMachineApproved {
         machine: RemoteMachineRecord,
     },
@@ -1579,6 +1613,10 @@ pub enum LocalDaemonResponse {
     RuntimeNotices {
         notices: Vec<RuntimeNoticeRecord>,
     },
+    InteractionResponded {
+        interaction_id: String,
+        session: RuntimeSession,
+    },
     PromptSubmitted {
         outcome: PromptSubmissionOutcome,
         session: RuntimeSession,
@@ -1591,6 +1629,10 @@ pub enum LocalDaemonResponse {
     },
     SessionConfigUpdated {
         config: SessionConfigState,
+        session: RuntimeSession,
+    },
+    AgentConfigUpdated {
+        agent: AgentInstance,
         session: RuntimeSession,
     },
     TerminalResized {
@@ -1838,4 +1880,13 @@ pub enum LocalDaemonResponse {
         workflow_run: WorkflowRun,
         session: RuntimeSession,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingRoomInventorySnapshot {
+    pub inventory_version: String,
+    pub sessions: Vec<RuntimeSession>,
+    pub relay_status: RelayStatus,
+    pub remote_machines: Vec<RemoteMachineRecord>,
+    pub remote_kernels: Vec<RelayKernelPresence>,
 }

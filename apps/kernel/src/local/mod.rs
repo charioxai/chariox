@@ -45,6 +45,7 @@ pub use api::{
     RelayStatus, RelayStatusRequest, RemoteMachineRecord, RemoveQueuedWorkflowLaunchRequest,
     RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, RemoveWorkflowWatchdogRequest,
     RenameRemoteMachineRequest, ResizeTerminalRequest, ResolveSessionRequest,
+    RespondToInteractionRequest,
     ResolveWorkflowRequest, ResumeWorkflowRunRequest, RevokeAgentCapabilityRequest,
     RevokeCloudSessionInviteRequest, RevokePairedClientRequest, RevokeSessionInviteRequest,
     RevokeWorkflowPublicationSenderRequest, RunShellCapabilityRequest, SearchHistoryRequest,

@@ -571,6 +571,8 @@ test("executeShellCommand spawns remote agent with worktree placement", async ()
         alias: "qa",
         model: "gpt-5.2",
         effort: "low",
+        execution_mode: null,
+        permission_level: null,
         worktree_id: "/remote/qa",
         machine_ref: "mac-mini",
         worktree_placement: null,

@@ -104,3 +104,17 @@ test("resolvePromptAttachmentEdit swallows delete at the end of a token", () => 
 
   assert.deepEqual(result, { kind: "noop" })
 })
+
+test("resolvePromptAttachmentEdit deletes selected plain text when no attachment tokens are selected", () => {
+  const text = "Review this prompt"
+  const result = resolvePromptAttachmentEdit(text, [], "delete", text.length, {
+    start: 11,
+    end: 4,
+  })
+
+  assert.deepEqual(result, {
+    kind: "delete-text",
+    start: 4,
+    end: 11,
+  })
+})

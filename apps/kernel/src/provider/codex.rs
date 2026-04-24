@@ -193,19 +193,23 @@ fn runtime_mcp_config(
     if request.runtime_mcp_binding.is_none() && request.mcp_servers.is_empty() {
         return Ok((Vec::new(), BTreeMap::new()));
     }
-    let model_catalog_path = write_managed_io_model_catalog(request.model.as_str())?;
-    let mut args = vec![
-        "-c".to_string(),
-        format!("model_catalog_json={:?}", model_catalog_path),
-        "-c".to_string(),
-        "features.apply_patch_freeform=false".to_string(),
-        "-c".to_string(),
-        "include_apply_patch_tool=false".to_string(),
-        "-c".to_string(),
-        "approval_policy=\"never\"".to_string(),
-        "-c".to_string(),
-        "mcp_servers={}".to_string(),
-    ];
+    let mut args = vec!["-c".to_string(), "mcp_servers={}".to_string()];
+    if request.requires_managed_io() {
+        let model_catalog_path = write_managed_io_model_catalog(request.model.as_str())?;
+        args.splice(
+            0..0,
+            [
+                "-c".to_string(),
+                format!("model_catalog_json={:?}", model_catalog_path),
+                "-c".to_string(),
+                "features.apply_patch_freeform=false".to_string(),
+                "-c".to_string(),
+                "include_apply_patch_tool=false".to_string(),
+                "-c".to_string(),
+                "approval_policy=\"never\"".to_string(),
+            ],
+        );
+    }
     let mut env = BTreeMap::new();
     let provider_mcp_servers = super::mcp_proxy::provider_facing_mcp_proxy_configs_with_bearer_env(
         &request.mcp_servers,
@@ -352,7 +356,7 @@ fn write_managed_io_model_catalog(model: &str) -> Result<PathBuf, DaemonError> {
             "priority": 0,
             "availability_nux": null,
             "upgrade": null,
-            "base_instructions": "You are Codex, a coding agent. Follow the user instructions and use available tools exactly as requested. When you need workspace file I/O in an Arroba-managed session, use the available Arroba MCP tools. Prefer short names such as read_artifact, write_artifact, edit_artifact, apply_patch, move_artifact, and delete_artifact; in Codex these may appear as mcp__arroba__read_artifact, mcp__arroba__write_artifact, and similar provider-qualified names.",
+            "base_instructions": "You are Codex, a coding agent. Follow the user instructions and use available tools exactly as requested.",
             "supports_reasoning_summaries": true,
             "default_reasoning_summary": "auto",
             "support_verbosity": true,
@@ -514,6 +518,7 @@ mod tests {
 
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
+                .with_managed_io_required()
                 .with_runtime_mcp_binding(RuntimeMcpBinding::new(
                     "http://127.0.0.1:43120/mcp",
                     "token-123",
@@ -557,6 +562,51 @@ mod tests {
             .iter()
             .any(|arg| arg == "include_apply_patch_tool=false"));
         assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "approval_policy=\"never\""));
+    }
+
+    #[test]
+    fn runtime_mcp_config_does_not_force_managed_io_overrides_for_unrestricted_launch() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-codex-resolve-test-{}-runtime-mcp-unrestricted",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_CODEX_BIN", &path);
+        std::env::set_var("ARROBA_CODEX_PORT", "43143");
+
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
+                .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+                    "http://127.0.0.1:43120/mcp",
+                    "token-123",
+                ));
+        let launch = plan_codex_launch(Some(&request)).expect("launch plan should resolve");
+
+        std::env::remove_var("ARROBA_CODEX_BIN");
+        std::env::remove_var("ARROBA_CODEX_PORT");
+        let _ = fs::remove_file(&path);
+
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg.contains("mcp_servers.arroba.url")));
+        assert!(!launch
+            .pty_args
+            .iter()
+            .any(|arg| arg.contains("model_catalog_json")));
+        assert!(!launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "features.apply_patch_freeform=false"));
+        assert!(!launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "include_apply_patch_tool=false"));
+        assert!(!launch
             .pty_args
             .iter()
             .any(|arg| arg == "approval_policy=\"never\""));

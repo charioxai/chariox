@@ -12,6 +12,8 @@ export type SplitPaneFooterAgent = {
   provider: string
   model: string | null
   effort?: string | null
+  execution_mode?: "build" | "plan" | null
+  permission_level?: "required" | "yolo" | null
   state: "Idle" | "Working" | "Focused" | "Error"
   is_processing: boolean
 }
@@ -29,6 +31,10 @@ export type SplitPaneFooterOverride = {
 
 export type SplitPaneFooterPart = PromptMetaPart | {
   kind: "agent"
+  text: string
+  tone: PromptMetaTone
+} | {
+  kind: "mode" | "permission"
   text: string
   tone: PromptMetaTone
 }
@@ -119,6 +125,8 @@ export function formatSplitPaneFooterParts(
   const metaRef = splitProviderModelRef(effectiveModel ?? "default")
   const provider = metaRef?.providerId ?? agent.provider
   const model = metaRef?.modelId ?? effectiveModel ?? "default"
+  const executionMode = agent.execution_mode ?? "build"
+  const permissionLevel = agent.permission_level ?? "yolo"
 
   return [
     {
@@ -127,6 +135,8 @@ export function formatSplitPaneFooterParts(
       tone: toneForAgent(aliasLabel),
     },
     ...formatPromptMetaParts(provider, model, effectiveVariant ?? ""),
+    { kind: "mode", text: executionMode, tone: "info" },
+    { kind: "permission", text: permissionLevel, tone: "warning" },
   ]
 }
 

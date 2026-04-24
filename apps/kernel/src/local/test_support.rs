@@ -106,6 +106,8 @@ impl LocalRouterTestHarness {
                 provider: "dev-stub".to_string(),
                 model: Some("default".to_string()),
                 effort: None,
+                execution_mode: None,
+                permission_level: None,
                 worktree_id: None,
                 machine_ref: None,
                 worktree_placement: None,

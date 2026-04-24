@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::runtime::command::{KernelCommand, KernelCommandSource};
+use crate::runtime::command::KernelCommandSource;
 use crate::runtime::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
 use crate::session::unix_epoch_ms;
 
@@ -51,15 +51,65 @@ impl LocalDaemonClient {
     pub fn send(&self, request: LocalDaemonRequest) -> Result<LocalDaemonResponse, DaemonError> {
         let sequence = self.command_sequence.fetch_add(1, Ordering::Relaxed);
         let command_id = format!("local-client-{}-{sequence}", unix_epoch_ms());
-        let command = KernelCommand::from_local_request_with_source(
-            command_id,
-            KernelCommandSource::LocalIpc,
-            None,
-            None,
-            &request,
-        );
+        self.runtime.block_on(async {
+            let caller = self.router.local_command_caller(KernelCommandSource::LocalIpc).await;
+            let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
+                command_id,
+                KernelCommandSource::LocalIpc,
+                caller,
+                None,
+                None,
+                &request,
+            );
+            self.router.dispatch(command, request).await
+        })
+    }
+}
 
-        self.runtime
-            .block_on(async { self.router.dispatch(command, request).await })
+#[cfg(test)]
+mod tests {
+    use crate::config::PersistedCloudRelayProfile;
+    use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+    use crate::session::CreateSessionRequest;
+    use crate::{DaemonApp, DaemonConfig};
+
+    use super::LocalDaemonClient;
+
+    #[test]
+    fn local_client_uses_linked_cloud_user_for_session_creation() {
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            api_url: "https://cloud.example.test".to_string(),
+            email: "miguel@example.test".to_string(),
+            account_id: "account-1".to_string(),
+            user_id: "user-cloud".to_string(),
+            account_slug: "miguel".to_string(),
+            realm_id: "realm-1".to_string(),
+            relay_url: "ws://relay.example.test".to_string(),
+            issuer_id: "issuer-1".to_string(),
+            client_id: Some("client-1".to_string()),
+            client_alias: Some("local-cli".to_string()),
+            machine_id: Some("machine-1".to_string()),
+            machine_alias: Some("macbook".to_string()),
+            cloud_session_token: Some("session-token".to_string()),
+            cloud_session_expires_at_ms: None,
+            token_expires_at_ms: None,
+        });
+        let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let client = LocalDaemonClient::new(app).expect("local daemon client should start");
+
+        let response = client
+            .send(LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                "workspace-client",
+                ".",
+            )))
+            .expect("session create should succeed");
+        let session = match response {
+            LocalDaemonResponse::SessionCreated { session, .. } => session,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        assert_eq!(session.owner_user_id(), "user-cloud");
+        assert!(session.has_member("user-cloud"));
     }
 }

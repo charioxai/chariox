@@ -39,6 +39,8 @@ pub const HTTP_REQUEST_WITH_CREDENTIAL_TOOL: &str = "arroba.http_request_with_cr
 pub const HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS: &str = "http_request_with_credential";
 pub const SEND_SECRET_TO_TERMINAL_TOOL: &str = "arroba.send_secret_to_terminal";
 pub const SEND_SECRET_TO_TERMINAL_TOOL_ALIAS: &str = "send_secret_to_terminal";
+pub const REQUEST_POPUP_TOOL: &str = "arroba.request_popup";
+pub const REQUEST_POPUP_TOOL_ALIAS: &str = "request_popup";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -194,6 +196,29 @@ pub struct SendSecretToTerminalArgs {
     pub append_newline: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestPopupChoiceArgs {
+    pub id: String,
+    pub label: String,
+    pub reply: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<crate::session::RuntimeInteractionChoiceStyle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestPopupArgs {
+    pub message: String,
+    pub choices: Vec<RequestPopupChoiceArgs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<crate::session::RuntimeInteractionLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_sec: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_on_timeout: Option<String>,
+}
+
 fn default_append_newline() -> bool {
     true
 }
@@ -305,6 +330,43 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "additionalProperties": false
             }),
         },
+        RuntimeToolSpec {
+            name: REQUEST_POPUP_TOOL.to_string(),
+            description: "Request a synchronous Arroba popup in the current agent pane. The tool call blocks until the user answers or a timeout/default resolves it, then returns the selected reply.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["message", "choices"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "message": {"type": "string"},
+                    "level": {
+                        "type": "string",
+                        "enum": ["info", "warning", "critical"]
+                    },
+                    "timeout_sec": {"type": "integer", "minimum": 1},
+                    "default_on_timeout": {"type": "string"},
+                    "choices": {
+                        "type": "array",
+                        "minItems": 2,
+                        "items": {
+                            "type": "object",
+                            "required": ["id", "label", "reply"],
+                            "properties": {
+                                "id": {"type": "string"},
+                                "label": {"type": "string"},
+                                "reply": {"type": "string"},
+                                "style": {
+                                    "type": "string",
+                                    "enum": ["primary", "secondary", "danger"]
+                                }
+                            },
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
     ];
     let aliases = canonical
         .iter()
@@ -320,6 +382,7 @@ fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         LIST_CREDENTIAL_HANDLES_TOOL => LIST_CREDENTIAL_HANDLES_TOOL_ALIAS,
         HTTP_REQUEST_WITH_CREDENTIAL_TOOL => HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS,
         SEND_SECRET_TO_TERMINAL_TOOL => SEND_SECRET_TO_TERMINAL_TOOL_ALIAS,
+        REQUEST_POPUP_TOOL => REQUEST_POPUP_TOOL_ALIAS,
         _ => return None,
     };
     let mut spec = spec.clone();
@@ -347,6 +410,11 @@ pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_send_secret_to_terminal"
         | "mcp__arroba__send_secret_to_terminal"
         | "mcp__arroba__arroba_send_secret_to_terminal" => Some(SEND_SECRET_TO_TERMINAL_TOOL),
+        REQUEST_POPUP_TOOL
+        | REQUEST_POPUP_TOOL_ALIAS
+        | "arroba_request_popup"
+        | "mcp__arroba__request_popup"
+        | "mcp__arroba__arroba_request_popup" => Some(REQUEST_POPUP_TOOL),
         _ => None,
     }
 }

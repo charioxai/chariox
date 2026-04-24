@@ -15,7 +15,9 @@ pub use types::WorkflowOutputValidationPolicy;
 pub use types::{
     unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
     PromptDetachEffect, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
-    QueuedWorkflowLaunch, QueuedWorkflowLaunchSource, RuntimeSession, RuntimeWorktreeAssignment,
+    QueuedWorkflowLaunch, QueuedWorkflowLaunchSource, RuntimeInteraction,
+    RuntimeInteractionChoice, RuntimeInteractionChoiceStyle, RuntimeInteractionKind,
+    RuntimeInteractionLevel, RuntimeSession, RuntimeWorktreeAssignment,
     SchedulerState, SessionConfigState, SessionExecutionMode, SessionInvite, SessionMember,
     SessionStatus, WorkflowArtifactRef, WorkflowCompletionSnapshot, WorkflowConsole,
     WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition,

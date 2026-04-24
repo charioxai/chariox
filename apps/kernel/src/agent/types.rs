@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::provider::ProviderResumeState;
+use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderResumeState};
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +56,10 @@ pub struct AgentInstance {
     provider: String,
     model: Option<String>,
     effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    execution_mode_override: Option<AgentExecutionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    permission_level_override: Option<AgentPermissionLevel>,
     worktree_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     remote_execution: Option<RemoteAgentBinding>,
@@ -95,6 +99,8 @@ impl AgentInstance {
             provider: provider.into(),
             model,
             effort,
+            execution_mode_override: None,
+            permission_level_override: None,
             worktree_id,
             remote_execution: None,
             provider_resume_state: ProviderResumeState::default(),
@@ -138,6 +144,14 @@ impl AgentInstance {
 
     pub fn effort(&self) -> Option<&str> {
         self.effort.as_deref()
+    }
+
+    pub fn execution_mode_override(&self) -> Option<AgentExecutionMode> {
+        self.execution_mode_override
+    }
+
+    pub fn permission_level_override(&self) -> Option<AgentPermissionLevel> {
+        self.permission_level_override
     }
 
     pub fn worktree_id(&self) -> Option<&str> {
@@ -214,6 +228,17 @@ impl AgentInstance {
         self.effort = effort;
     }
 
+    pub fn set_execution_mode_override(&mut self, execution_mode: Option<AgentExecutionMode>) {
+        self.execution_mode_override = execution_mode;
+    }
+
+    pub fn set_permission_level_override(
+        &mut self,
+        permission_level: Option<AgentPermissionLevel>,
+    ) {
+        self.permission_level_override = permission_level;
+    }
+
     pub fn set_provider_resume_state(&mut self, resume_state: ProviderResumeState) {
         self.provider_resume_state = resume_state;
     }
@@ -256,6 +281,8 @@ pub struct CreateAgentRequest {
     pub provider: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+    pub execution_mode_override: Option<AgentExecutionMode>,
+    pub permission_level_override: Option<AgentPermissionLevel>,
     pub worktree_id: Option<String>,
     pub machine_ref: Option<String>,
     pub worktree_placement: Option<GitWorktreePlacement>,
@@ -270,6 +297,8 @@ impl CreateAgentRequest {
             provider: provider.into(),
             model: None,
             effort: None,
+            execution_mode_override: None,
+            permission_level_override: None,
             worktree_id: None,
             machine_ref: None,
             worktree_placement: None,
@@ -293,6 +322,19 @@ impl CreateAgentRequest {
 
     pub fn with_effort(mut self, effort: impl Into<String>) -> Self {
         self.effort = Some(effort.into());
+        self
+    }
+
+    pub fn with_execution_mode_override(mut self, execution_mode: AgentExecutionMode) -> Self {
+        self.execution_mode_override = Some(execution_mode);
+        self
+    }
+
+    pub fn with_permission_level_override(
+        mut self,
+        permission_level: AgentPermissionLevel,
+    ) -> Self {
+        self.permission_level_override = Some(permission_level);
         self
     }
 

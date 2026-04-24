@@ -68,6 +68,21 @@ pub enum OpenCodeEvent {
         session_id: String,
         kind: String,
     },
+    PermissionAsked {
+        request: OpenCodePermissionRequest,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenCodePermissionRequest {
+    pub id: String,
+    pub session_id: String,
+    pub permission: String,
+    pub tool: Option<String>,
+    pub command: Option<String>,
+    pub cwd: Option<String>,
+    pub reason: Option<String>,
+    pub patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -370,6 +385,20 @@ struct OpenCodeSessionStatusEvent {
     status: OpenCodeSessionStatus,
 }
 
+#[derive(Debug, Deserialize)]
+struct OpenCodePermissionAskedEvent {
+    id: String,
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    permission: String,
+    #[serde(default)]
+    patterns: Vec<String>,
+    #[serde(default)]
+    metadata: serde_json::Value,
+    #[serde(default)]
+    tool: serde_json::Value,
+}
+
 impl OpenCodeClient {
     pub fn new(
         provider_run_id: impl Into<String>,
@@ -524,6 +553,20 @@ impl OpenCodeClient {
             "POST",
             &format!("/session/{session_id}/abort"),
             Some(&json!({})),
+        )?;
+        Ok(())
+    }
+
+    pub fn reply_permission(
+        &self,
+        session_id: &str,
+        permission_id: &str,
+        response: &str,
+    ) -> Result<(), DaemonError> {
+        let _: bool = self.send_json_request(
+            "POST",
+            &format!("/session/{session_id}/permissions/{permission_id}"),
+            Some(&json!({ "response": response })),
         )?;
         Ok(())
     }
@@ -851,6 +894,38 @@ fn parse_sse_event(payload: &str, provider_run_id: &str) -> Option<OpenCodeEvent
             Some(OpenCodeEvent::SessionStatus {
                 session_id: properties.session_id,
                 kind: properties.status.kind,
+            })
+        }
+        "permission.asked" => {
+            let properties: OpenCodePermissionAskedEvent =
+                serde_json::from_value(raw.properties).ok()?;
+            let metadata = properties.metadata.as_object();
+            let tool = properties
+                .tool
+                .as_object()
+                .and_then(|value| value.get("name"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Some(OpenCodeEvent::PermissionAsked {
+                request: OpenCodePermissionRequest {
+                    id: properties.id,
+                    session_id: properties.session_id,
+                    permission: properties.permission,
+                    tool,
+                    command: metadata
+                        .and_then(|value| value.get("command"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    cwd: metadata
+                        .and_then(|value| value.get("cwd"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    reason: metadata
+                        .and_then(|value| value.get("reason"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    patterns: properties.patterns,
+                },
             })
         }
         "session.error" => {

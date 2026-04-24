@@ -4,6 +4,7 @@ export ARROBA_OPENCODE_BIN=/Users/miguel/.opencode/bin/opencode
 cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli
 
 # New. CLI
+export ARROBA_CLOUD_API_URL=https://arroba-cloud-staging.osc-fr1.scalingo.io
 cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- --kernel-url ws://127.0.0.1:43119/kernel
 # daemon
 ARROBA_KERNEL_PORT=43119 \

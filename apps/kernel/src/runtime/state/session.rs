@@ -5,6 +5,9 @@
 
 use super::*;
 
+const SESSION_AGENT_MODE_CONFIG_KEY: &str = "agents.mode";
+const SESSION_AGENT_PERMISSION_CONFIG_KEY: &str = "agents.permissions";
+
 impl KernelRuntimeOwnedState {
     pub(super) fn session_snapshot(
         &self,
@@ -50,6 +53,212 @@ impl KernelRuntimeOwnedState {
                 })
         });
         session.set_active_provider_run(projected_run_id);
+    }
+
+    pub(super) fn register_runtime_interaction(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+        responder: tokio::sync::oneshot::Sender<super::PendingInteractionResolution>,
+    ) -> Result<(), DaemonError> {
+        crate::logging::debug_with_fields(
+            "runtime.interaction",
+            "register runtime interaction requested",
+            serde_json::json!({
+                "session_id": session_id,
+                "interaction_id": interaction.id(),
+                "agent_id": interaction.agent_id(),
+                "kind": format!("{:?}", interaction.kind()),
+                "pending_store_ptr": format!("{:p}", std::sync::Arc::as_ptr(&self.pending_interactions.inner)),
+                "active_interaction_count_before": self
+                    .session_store
+                    .get_session(session_id)
+                    .ok()
+                    .map(|session| session.active_interactions().len()),
+                "pending_interaction_count_before": self.pending_interactions.write().len(),
+            }),
+        );
+        let mut session = self.session_store.get_session(session_id)?;
+        if session.active_interaction_for_agent(interaction.agent_id()).is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "register runtime interaction",
+                message: format!(
+                    "agent {} already has an active interaction",
+                    interaction.agent_id()
+                ),
+            });
+        }
+        session.add_active_interaction(interaction.clone());
+        self.project_session_runtime_view(&mut session);
+        self.session_store.restore_session(session.clone());
+        self.session_projection.update(session);
+        self.pending_interactions.write().insert(
+            interaction.id().to_string(),
+            super::PendingInteraction {
+                session_id: session_id.to_string(),
+                responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
+            },
+        );
+        crate::logging::debug_with_fields(
+            "runtime.interaction",
+            "registered runtime interaction",
+            serde_json::json!({
+                "session_id": session_id,
+                "interaction_id": interaction.id(),
+                "agent_id": interaction.agent_id(),
+                "pending_store_ptr": format!("{:p}", std::sync::Arc::as_ptr(&self.pending_interactions.inner)),
+                "pending_interaction_count_after": self.pending_interactions.write().len(),
+            }),
+        );
+        Ok(())
+    }
+
+    pub(super) fn resolve_runtime_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+    ) -> Result<(), DaemonError> {
+        crate::logging::debug_with_fields(
+            "runtime.interaction",
+            "resolve runtime interaction requested",
+            serde_json::json!({
+                "session_id": session_id,
+                "interaction_id": interaction_id,
+                "choice_id": choice_id,
+                "pending_store_ptr": format!("{:p}", std::sync::Arc::as_ptr(&self.pending_interactions.inner)),
+                "pending_interaction_count_before": self.pending_interactions.write().len(),
+            }),
+        );
+        let pending = {
+            let pending = self.pending_interactions.write();
+            pending.get(interaction_id).cloned().ok_or_else(|| {
+                DaemonError::LocalTransport {
+                    operation: "resolve runtime interaction",
+                    message: format!("interaction {interaction_id} was not pending"),
+                }
+            })?
+        };
+        if pending.session_id != session_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "resolve runtime interaction",
+                message: "interaction does not belong to the requested session".to_string(),
+            });
+        }
+        let mut session = self.session_store.get_session(session_id)?;
+        let interaction = session.remove_active_interaction(interaction_id).ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "resolve runtime interaction",
+                message: format!("interaction {interaction_id} is not active in session"),
+            }
+        })?;
+        let choice = interaction.choice(choice_id).ok_or_else(|| DaemonError::LocalTransport {
+            operation: "resolve runtime interaction",
+            message: format!("interaction {interaction_id} does not define choice {choice_id}"),
+        })?;
+        let pending = self
+            .pending_interactions
+            .write()
+            .remove(interaction_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "resolve runtime interaction",
+                message: format!("interaction {interaction_id} was not pending"),
+            })?;
+        self.project_session_runtime_view(&mut session);
+        self.session_store.restore_session(session.clone());
+        self.session_projection.update(session);
+        if let Some(sender) = pending
+            .responder
+            .lock()
+            .expect("pending interaction responder mutex poisoned")
+            .take()
+        {
+            let _ = sender.send(super::PendingInteractionResolution {
+                status: "answered",
+                choice_id: Some(choice.id().to_string()),
+                reply: Some(choice.reply().to_string()),
+            });
+        }
+        crate::logging::debug_with_fields(
+            "runtime.interaction",
+            "resolved runtime interaction",
+            serde_json::json!({
+                "session_id": session_id,
+                "interaction_id": interaction_id,
+                "choice_id": choice_id,
+                "pending_interaction_count_after": self.pending_interactions.write().len(),
+            }),
+        );
+        Ok(())
+    }
+
+    pub(super) fn timeout_runtime_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+    ) -> Result<(), DaemonError> {
+        crate::logging::debug_with_fields(
+            "runtime.interaction",
+            "timeout runtime interaction requested",
+            serde_json::json!({
+                "session_id": session_id,
+                "interaction_id": interaction_id,
+                "pending_interaction_count_before": self.pending_interactions.write().len(),
+            }),
+        );
+        let pending = match self.pending_interactions.write().remove(interaction_id) {
+            Some(pending) => pending,
+            None => return Ok(()),
+        };
+        if pending.session_id != session_id {
+            return Ok(());
+        }
+        let mut session = self.session_store.get_session(session_id)?;
+        let Some(interaction) = session.remove_active_interaction(interaction_id) else {
+            return Ok(());
+        };
+        self.project_session_runtime_view(&mut session);
+        self.session_store.restore_session(session.clone());
+        self.session_projection.update(session);
+        let resolution = if let Some(default_choice_id) = interaction.default_on_timeout() {
+            if let Some(choice) = interaction.choice(default_choice_id) {
+                super::PendingInteractionResolution {
+                    status: "answered",
+                    choice_id: Some(choice.id().to_string()),
+                    reply: Some(choice.reply().to_string()),
+                }
+            } else {
+                super::PendingInteractionResolution {
+                    status: "timed_out",
+                    choice_id: None,
+                    reply: None,
+                }
+            }
+        } else {
+            super::PendingInteractionResolution {
+                status: "timed_out",
+                choice_id: None,
+                reply: None,
+            }
+        };
+        if let Some(sender) = pending
+            .responder
+            .lock()
+            .expect("pending interaction responder mutex poisoned")
+            .take()
+        {
+            let _ = sender.send(resolution);
+        }
+        crate::logging::debug_with_fields(
+            "runtime.interaction",
+            "timed out runtime interaction",
+            serde_json::json!({
+                "session_id": session_id,
+                "interaction_id": interaction_id,
+                "pending_interaction_count_after": self.pending_interactions.write().len(),
+            }),
+        );
+        Ok(())
     }
 
     pub(super) fn ensure_attachment_in_session(
@@ -129,6 +338,7 @@ impl KernelRuntimeOwnedState {
         mut request: crate::provider::LaunchProviderRequest,
         runtime_mcp_url: String,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        let session = self.session_store.get_session(&request.session_id)?;
         if request.agent_id.is_none() {
             request.agent_id = self
                 .session_store
@@ -141,31 +351,36 @@ impl KernelRuntimeOwnedState {
                         .map(|agent| agent.id().to_string())
                 });
         }
+        let agent = request
+            .agent_id
+            .as_deref()
+            .and_then(|agent_id| self.agent_store.get_agent(agent_id).ok());
+        if request.execution_mode.is_none() {
+            request = request.with_execution_mode(resolve_effective_execution_mode(
+                &session,
+                agent.as_ref(),
+            ));
+        }
+        if request.permission_level.is_none() {
+            request = request.with_permission_level(resolve_effective_permission_level(
+                &session,
+                agent.as_ref(),
+            ));
+        }
         if request.resume_state.is_none() {
-            if let Some(agent_id) = request.agent_id.as_deref() {
-                if let Ok(agent) = self.agent_store.get_agent(agent_id) {
-                    let resume_state =
-                        crate::app::sanitize_resume_state_for_launch(&request, &agent);
-                    if !resume_state.is_empty() {
-                        request = request.with_resume_state(resume_state);
-                    }
+            if let Some(agent) = agent.as_ref() {
+                let resume_state = crate::app::sanitize_resume_state_for_launch(&request, agent);
+                if !resume_state.is_empty() {
+                    request = request.with_resume_state(resume_state);
                 }
             }
         }
         if request.working_directory.is_none() {
-            let agent_worktree = request.agent_id.as_deref().and_then(|agent_id| {
-                self.agent_store
-                    .get_agent(agent_id)
-                    .ok()
-                    .and_then(|agent| agent.worktree_id().map(std::path::PathBuf::from))
-            });
+            let agent_worktree = agent
+                .as_ref()
+                .and_then(|agent| agent.worktree_id().map(std::path::PathBuf::from));
             request.working_directory = Some(agent_worktree.unwrap_or_else(|| {
-                std::path::PathBuf::from(
-                    self.session_store
-                        .get_session(&request.session_id)
-                        .map(|session| session.worktree_id().to_string())
-                        .unwrap_or_default(),
-                )
+                std::path::PathBuf::from(session.worktree_id())
             }));
         }
         if request.runtime_mcp_binding.is_none() {
@@ -196,6 +411,29 @@ impl KernelRuntimeOwnedState {
             request = request.with_mcp_servers(granted_mcp_servers);
         }
         Ok(request)
+    }
+
+    pub(super) fn update_agent_config(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        execution_mode_override: Option<Option<crate::provider::AgentExecutionMode>>,
+        permission_level_override: Option<Option<crate::provider::AgentPermissionLevel>>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        self.ensure_agent_owner(agent_id, caller_user_id, "update agent config")?;
+        self.agent_store.update_agent_config(
+            agent_id,
+            execution_mode_override,
+            permission_level_override,
+        )
     }
 
     fn granted_mcp_servers_for_launch(
@@ -792,4 +1030,34 @@ impl KernelRuntimeOwnedState {
         );
         Ok((deleted, terminated_run_ids))
     }
+}
+
+fn resolve_effective_execution_mode(
+    session: &crate::session::RuntimeSession,
+    agent: Option<&crate::agent::AgentInstance>,
+) -> crate::provider::AgentExecutionMode {
+    agent.and_then(|agent| agent.execution_mode_override())
+        .or_else(|| {
+            session
+                .config_state()
+                .values()
+                .get(SESSION_AGENT_MODE_CONFIG_KEY)
+                .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
+        })
+        .unwrap_or_default()
+}
+
+fn resolve_effective_permission_level(
+    session: &crate::session::RuntimeSession,
+    agent: Option<&crate::agent::AgentInstance>,
+) -> crate::provider::AgentPermissionLevel {
+    agent.and_then(|agent| agent.permission_level_override())
+        .or_else(|| {
+            session
+                .config_state()
+                .values()
+                .get(SESSION_AGENT_PERMISSION_CONFIG_KEY)
+                .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
+        })
+        .unwrap_or_default()
 }

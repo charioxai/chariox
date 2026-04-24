@@ -233,7 +233,81 @@ pub struct LaunchProviderRequest {
     )]
     pub write_access_mode: ProviderWriteAccessMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<AgentExecutionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_level: Option<AgentPermissionLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_state: Option<ProviderResumeState>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentExecutionMode {
+    #[default]
+    Build,
+    Plan,
+}
+
+impl AgentExecutionMode {
+    pub fn is_build(&self) -> bool {
+        matches!(self, Self::Build)
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "build" => Some(Self::Build),
+            "plan" => Some(Self::Plan),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Plan => "plan",
+        }
+    }
+}
+
+impl fmt::Display for AgentExecutionMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentPermissionLevel {
+    Required,
+    #[default]
+    Yolo,
+}
+
+impl AgentPermissionLevel {
+    pub fn is_yolo(&self) -> bool {
+        matches!(self, Self::Yolo)
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "required" => Some(Self::Required),
+            "yolo" => Some(Self::Yolo),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::Yolo => "yolo",
+        }
+    }
+}
+
+impl fmt::Display for AgentPermissionLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -276,6 +350,8 @@ impl LaunchProviderRequest {
             mcp_servers: Vec::new(),
             provider_env_remove: Vec::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
+            execution_mode: None,
+            permission_level: None,
             resume_state: None,
         }
     }
@@ -320,6 +396,16 @@ impl LaunchProviderRequest {
 
     pub fn with_managed_io_required(mut self) -> Self {
         self.write_access_mode = ProviderWriteAccessMode::ManagedIoRequired;
+        self
+    }
+
+    pub fn with_execution_mode(mut self, execution_mode: AgentExecutionMode) -> Self {
+        self.execution_mode = Some(execution_mode);
+        self
+    }
+
+    pub fn with_permission_level(mut self, permission_level: AgentPermissionLevel) -> Self {
+        self.permission_level = Some(permission_level);
         self
     }
 
@@ -396,6 +482,10 @@ pub struct RuntimeProviderRun {
         skip_serializing_if = "ProviderWriteAccessMode::is_unrestricted"
     )]
     write_access_mode: ProviderWriteAccessMode,
+    #[serde(default, skip_serializing_if = "AgentExecutionMode::is_build")]
+    execution_mode: AgentExecutionMode,
+    #[serde(default, skip_serializing_if = "AgentPermissionLevel::is_yolo")]
+    permission_level: AgentPermissionLevel,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     control_capabilities: Vec<ControlCapability>,
     #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
@@ -446,6 +536,8 @@ impl RuntimeProviderRun {
                 .map(|binding| binding.auth_token.clone()),
             mcp_servers: request.mcp_servers.clone(),
             write_access_mode: request.write_access_mode,
+            execution_mode: request.execution_mode.unwrap_or_default(),
+            permission_level: request.permission_level.unwrap_or_default(),
             control_capabilities: default_control_capabilities(
                 &request.adapter_key,
                 launch_result.endpoint_mode,
@@ -501,6 +593,8 @@ impl RuntimeProviderRun {
                 .then(|| "inferred-managed-mcp".to_string()),
             mcp_servers: Vec::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
+            execution_mode: AgentExecutionMode::default(),
+            permission_level: AgentPermissionLevel::default(),
             control_capabilities: default_control_capabilities(
                 &adapter_key,
                 AgentEndpointMode::Managed,
@@ -617,6 +711,14 @@ impl RuntimeProviderRun {
 
     pub fn write_access_mode(&self) -> ProviderWriteAccessMode {
         self.write_access_mode
+    }
+
+    pub fn execution_mode(&self) -> AgentExecutionMode {
+        self.execution_mode
+    }
+
+    pub fn permission_level(&self) -> AgentPermissionLevel {
+        self.permission_level
     }
 
     pub fn requires_managed_io(&self) -> bool {
