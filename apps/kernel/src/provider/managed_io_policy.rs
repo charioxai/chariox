@@ -4,6 +4,7 @@ pub(crate) const MANAGED_IO_INSTRUCTIONS_SOURCE_PATH: &str =
     "apps/kernel/src/provider/managed_io_instructions.md";
 
 const MANAGED_IO_INSTRUCTIONS: &str = include_str!("managed_io_instructions.md");
+const NATIVE_PERMISSION_INSTRUCTIONS: &str = include_str!("native_permission_instructions.md");
 const RUNTIME_INSTRUCTIONS: &str = include_str!("runtime_instructions.md");
 
 pub(crate) fn runtime_instructions() -> &'static str {
@@ -18,11 +19,17 @@ pub(crate) fn managed_io_instructions() -> &'static str {
     MANAGED_IO_INSTRUCTIONS.trim()
 }
 
-pub(crate) fn apply_managed_io_instructions(prompt: &str, run: &RuntimeProviderRun) -> String {
-    if !run.requires_managed_io() {
-        return prompt.to_string();
-    }
-    format!("{}\n\n{}", managed_io_instructions(), prompt)
+pub(crate) fn native_permission_instructions() -> &'static str {
+    NATIVE_PERMISSION_INSTRUCTIONS.trim()
+}
+
+pub(crate) fn apply_execution_path_instructions(prompt: &str, run: &RuntimeProviderRun) -> String {
+    let path_instructions = if run.requires_managed_io() {
+        managed_io_instructions()
+    } else {
+        native_permission_instructions()
+    };
+    format!("{}\n\n{}", path_instructions, prompt)
 }
 
 #[cfg(test)]
@@ -62,22 +69,38 @@ mod tests {
         assert!(instructions.contains("list_capabilities"));
         assert!(instructions.contains("request_capability"));
         assert!(instructions.contains("request_popup"));
+        assert!(!instructions.contains("native provider actions"));
         assert!(!instructions.ends_with('\n'));
     }
 
     #[test]
-    fn managed_io_instructions_are_added_only_for_required_runs() {
+    fn native_permission_instructions_are_loaded_from_policy_file() {
+        let instructions = native_permission_instructions();
+
+        assert!(instructions.contains("native approval request"));
+        assert!(instructions.contains("request_popup"));
+        assert!(!instructions.ends_with('\n'));
+    }
+
+    #[test]
+    fn execution_path_instructions_select_native_block_for_unmanaged_runs() {
         let unmanaged_request =
             LaunchProviderRequest::new("session", "codex", "codex", "default", "gpt-5.4");
         let unmanaged =
             RuntimeProviderRun::new("provider-run-1", &unmanaged_request, launch_result());
-        assert_eq!(apply_managed_io_instructions("hello", &unmanaged), "hello");
+        let prompt = apply_execution_path_instructions("hello", &unmanaged);
 
+        assert!(prompt.starts_with(native_permission_instructions()));
+        assert!(prompt.ends_with("\n\nhello"));
+    }
+
+    #[test]
+    fn execution_path_instructions_select_managed_block_for_required_runs() {
         let managed_request =
             LaunchProviderRequest::new("session", "agent", "codex", "default", "gpt-5.4")
                 .with_managed_io_required();
         let managed = RuntimeProviderRun::new("provider-run-2", &managed_request, launch_result());
-        let prompt = apply_managed_io_instructions("hello", &managed);
+        let prompt = apply_execution_path_instructions("hello", &managed);
 
         assert!(prompt.starts_with(managed_io_instructions()));
         assert!(prompt.ends_with("\n\nhello"));

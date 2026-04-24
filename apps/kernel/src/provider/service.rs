@@ -911,7 +911,7 @@ impl ProviderProcessService {
             });
         }
         let prompt = super::managed_io_policy::apply_runtime_instructions(prompt);
-        let prompt = super::managed_io_policy::apply_managed_io_instructions(&prompt, run);
+        let prompt = super::managed_io_policy::apply_execution_path_instructions(&prompt, run);
         self.run_actor_mailbox.spawn_submit(
             session_id,
             provider_run_id,

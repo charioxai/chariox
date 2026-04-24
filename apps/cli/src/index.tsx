@@ -539,6 +539,7 @@ type CliAutomationRequest = {
   id?: unknown
   action?: unknown
   command?: unknown
+  prompt?: unknown
   screen?: unknown
   choiceIndex?: unknown
   delta?: unknown

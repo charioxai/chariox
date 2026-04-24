@@ -999,11 +999,38 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let session = self
+            .owned
+            .session_store
+            .get_session(provider_run.session_id())?;
+        let resolved_agent_id = provider_run
+            .agent_instance_id()
+            .map(str::to_string)
+            .or_else(|| self.owned.prompt_state_owner.active_prompt_agent_id(&session));
         let workspace_context = self
             .managed_io_workspace_for_provider_run(provider_run)
             .await?;
         if !workspace_context.valid {
             return Ok(managed_io_workspace_identity_rejected(&workspace_context));
+        }
+        let permission_level = match resolved_agent_id.as_deref() {
+            Some(agent_id) => {
+                self.effective_permission_level_for_agent(provider_run.session_id(), agent_id)
+                    .await?
+            }
+            None => provider_run.permission_level(),
+        };
+        if let Some(result) = self
+            .maybe_gate_managed_io_mutation(
+                provider_run.session_id(),
+                resolved_agent_id.as_deref(),
+                permission_level,
+                tool_name,
+                &arguments,
+            )
+            .await?
+        {
+            return Ok(result);
         }
         let workspace_root = workspace_context.root.clone();
         let workspace_identity = workspace_context.identity.clone();
@@ -1574,6 +1601,24 @@ impl KernelRuntimeState {
             identity_changed: false,
             valid: true,
         };
+        let permission_level = self
+            .effective_permission_level_for_agent(
+                &context.home_session_id,
+                &context.home_agent_id,
+            )
+            .await?;
+        if let Some(result) = self
+            .maybe_gate_managed_io_mutation(
+                &context.home_session_id,
+                Some(&context.home_agent_id),
+                permission_level,
+                tool_name.as_str(),
+                &arguments,
+            )
+            .await?
+        {
+            return Ok((result, artifact_states));
+        }
         let mut coordinator = self.owned.managed_io_coordinator.lock().await;
         match tool_name.as_str() {
             crate::transport::runtime_tools::READ_ARTIFACT_TOOL => {
@@ -1940,6 +1985,210 @@ impl KernelRuntimeState {
                 Vec::new(),
             )),
         }
+    }
+
+    async fn maybe_gate_managed_io_mutation(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        permission_level: crate::provider::AgentPermissionLevel,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
+        if permission_level != crate::provider::AgentPermissionLevel::Required {
+            return Ok(None);
+        }
+        let Some(agent_id) = agent_id else {
+            return Ok(None);
+        };
+        if !managed_io_tool_requires_popup(tool_name) {
+            return Ok(None);
+        }
+        let interaction =
+            managed_io_permission_interaction(agent_id, tool_name, arguments)?;
+        let interaction_id = interaction.id().to_string();
+        let resolution = self
+            .create_runtime_interaction(session_id, interaction)
+            .await?
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "managed_io_permission_popup",
+                message: format!("managed I/O approval dropped before resolution: {error}"),
+            })?;
+        if resolution.choice_id.as_deref() == Some("allow") {
+            return Ok(None);
+        }
+        Ok(Some(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: false,
+            payload: serde_json::json!({
+                "applied": false,
+                "interaction_id": interaction_id,
+                "reason": {
+                    "kind": "permission_denied",
+                    "message": "The managed I/O operation was not approved."
+                },
+                "next_action": "Retry after approving the managed I/O request, or switch the session/agent permissions to yolo.",
+            }),
+        }))
+    }
+
+    async fn effective_permission_level_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<crate::provider::AgentPermissionLevel, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if let Some(level) = agent.permission_level_override() {
+            return Ok(level);
+        }
+        let session = self.owned.session_store.get_session(session_id)?;
+        Ok(session
+            .config_state()
+            .values()
+            .get("agents.permissions")
+            .and_then(|value| parse_permission_level_config_value(value.as_str()))
+            .unwrap_or_default())
+    }
+}
+
+fn parse_permission_level_config_value(
+    value: &str,
+) -> Option<crate::provider::AgentPermissionLevel> {
+    match value {
+        "required" => Some(crate::provider::AgentPermissionLevel::Required),
+        "yolo" => Some(crate::provider::AgentPermissionLevel::Yolo),
+        _ => None,
+    }
+}
+
+fn managed_io_tool_requires_popup(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL
+            | crate::transport::runtime_tools::APPLY_PATCH_TOOL
+            | crate::transport::runtime_tools::DELETE_ARTIFACT_TOOL
+            | crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL
+            | crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL
+    )
+}
+
+fn managed_io_permission_interaction(
+    agent_id: &str,
+    tool_name: &str,
+    arguments: &serde_json::Value,
+) -> Result<crate::session::RuntimeInteraction, DaemonError> {
+    let (title, message) = managed_io_permission_message(tool_name, arguments)?;
+    Ok(crate::session::RuntimeInteraction::new(
+        format!("managed-io-permission-{agent_id}-{}", crate::session::unix_epoch_ms()),
+        agent_id,
+        crate::session::RuntimeInteractionKind::Permission,
+        crate::session::RuntimeInteractionLevel::Warning,
+        Some(title),
+        message,
+        vec![
+            crate::session::RuntimeInteractionChoice::new(
+                "allow",
+                "Allow",
+                "allow",
+                Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
+            ),
+            crate::session::RuntimeInteractionChoice::new(
+                "deny",
+                "Deny",
+                "deny",
+                Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
+            ),
+        ],
+        None,
+        None,
+    ))
+}
+
+fn managed_io_permission_message(
+    tool_name: &str,
+    arguments: &serde_json::Value,
+) -> Result<(String, String), DaemonError> {
+    match tool_name {
+        crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL => {
+            let args = serde_json::from_value::<crate::transport::runtime_tools::ManagedEditArtifactArgs>(
+                arguments.clone(),
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "managed_io_permission_message",
+                message: format!("invalid managed edit arguments: {error}"),
+            })?;
+            Ok((
+                "Managed I/O edit approval".to_string(),
+                format!("Allow editing `{}` through Arroba managed I/O?", args.path),
+            ))
+        }
+        crate::transport::runtime_tools::APPLY_PATCH_TOOL => {
+            let args = serde_json::from_value::<crate::transport::runtime_tools::ManagedApplyPatchArgs>(
+                arguments.clone(),
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "managed_io_permission_message",
+                message: format!("invalid managed apply_patch arguments: {error}"),
+            })?;
+            let patch_preview = args
+                .patch_text
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("patch");
+            Ok((
+                "Managed I/O patch approval".to_string(),
+                format!(
+                    "Allow applying this managed I/O patch? First patch line: `{}`",
+                    patch_preview
+                ),
+            ))
+        }
+        crate::transport::runtime_tools::DELETE_ARTIFACT_TOOL => {
+            let args = serde_json::from_value::<crate::transport::runtime_tools::ManagedDeleteArtifactArgs>(
+                arguments.clone(),
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "managed_io_permission_message",
+                message: format!("invalid managed delete arguments: {error}"),
+            })?;
+            Ok((
+                "Managed I/O delete approval".to_string(),
+                format!("Allow deleting `{}` through Arroba managed I/O?", args.path),
+            ))
+        }
+        crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL => {
+            let args = serde_json::from_value::<crate::transport::runtime_tools::ManagedMoveArtifactArgs>(
+                arguments.clone(),
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "managed_io_permission_message",
+                message: format!("invalid managed move arguments: {error}"),
+            })?;
+            Ok((
+                "Managed I/O move approval".to_string(),
+                format!(
+                    "Allow moving `{}` to `{}` through Arroba managed I/O?",
+                    args.from_path, args.to_path
+                ),
+            ))
+        }
+        crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL => {
+            let args = serde_json::from_value::<crate::transport::runtime_tools::ManagedWriteArtifactArgs>(
+                arguments.clone(),
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "managed_io_permission_message",
+                message: format!("invalid managed write arguments: {error}"),
+            })?;
+            Ok((
+                "Managed I/O write approval".to_string(),
+                format!("Allow writing `{}` through Arroba managed I/O?", args.path),
+            ))
+        }
+        other => Err(DaemonError::LocalTransport {
+            operation: "managed_io_permission_message",
+            message: format!("unsupported managed I/O permission tool `{other}`"),
+        }),
     }
 }
 
