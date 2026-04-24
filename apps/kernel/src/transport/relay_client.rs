@@ -1838,7 +1838,7 @@ fn spawn_remote_inventory_projection_refresh(app: Arc<Mutex<DaemonApp>>) -> Join
 pub(crate) async fn refresh_remote_inventory_projection_for_app(
     app: &Arc<Mutex<DaemonApp>>,
 ) -> Result<(), DaemonError> {
-    let (config, projection) = {
+    let (mut config, projection) = {
         let app = app.lock().await;
         (app.config().clone(), app.remote_relay_inventory_projection_store())
     };
@@ -1846,6 +1846,7 @@ pub(crate) async fn refresh_remote_inventory_projection_for_app(
         projection.clear();
         return Ok(());
     }
+    config.relay_request_timeout_ms = config.relay_request_timeout_ms.min(2_000);
 
     let live_machines = relay_discovery::list_live_machines(&config).await?;
     let mut remote_machines =
