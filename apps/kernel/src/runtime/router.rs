@@ -79,7 +79,9 @@ use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::session::{PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
-use crate::transport::relay_client::RelayClientState;
+use crate::transport::relay_client::{
+    refresh_remote_inventory_projection_for_app, RelayClientState,
+};
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -1747,6 +1749,7 @@ impl CommandRouter {
     async fn projected_waiting_room_inventory_response(
         &self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_remote_relay_inventory_projection_fresh().await;
         let sessions = match self
             .execute_cold_list_sessions_request(ListSessionsRequest)
             .await?
@@ -1790,6 +1793,7 @@ impl CommandRouter {
     }
 
     async fn projected_remote_machines_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_remote_relay_inventory_projection_fresh().await;
         let (machines, _) = self.remote_relay_inventory_projection.snapshot();
         Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
     }
@@ -1798,6 +1802,7 @@ impl CommandRouter {
         &self,
         machine_ref: String,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_remote_relay_inventory_projection_fresh().await;
         let machine_ref =
             crate::local::provider_requests::resolve_registered_or_raw_machine_ref(&machine_ref);
         let (_, kernels) = self.remote_relay_inventory_projection.snapshot();
@@ -1813,6 +1818,34 @@ impl CommandRouter {
             machine_ref,
             kernels,
         })
+    }
+
+    async fn ensure_remote_relay_inventory_projection_fresh(&self) {
+        let connected = self.relay_state.read().await.connected();
+        if !connected {
+            return;
+        }
+        let config = self.config_projection.snapshot();
+        let now_ms = crate::session::unix_epoch_ms();
+        let stale_after_ms = (config.relay_heartbeat_ms.saturating_mul(2)).max(1_000);
+        let cooldown_ms = 1_000;
+        if !self
+            .remote_relay_inventory_projection
+            .should_request_refresh(now_ms, stale_after_ms, cooldown_ms)
+        {
+            return;
+        }
+        if let Err(error) = refresh_remote_inventory_projection_for_app(&self.app).await {
+            crate::logging::warn_with_fields(
+                "daemon.router",
+                "remote relay inventory refresh on demand failed",
+                serde_json::json!({
+                    "error": error.to_string(),
+                    "stale_after_ms": stale_after_ms,
+                    "cooldown_ms": cooldown_ms,
+                }),
+            );
+        }
     }
 
     async fn projected_relay_status(&self) -> RelayStatus {

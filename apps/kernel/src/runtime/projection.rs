@@ -79,6 +79,8 @@ pub(crate) struct RemoteRelayInventoryProjectionStore {
 struct RemoteRelayInventoryProjectionState {
     remote_machines: Vec<RemoteMachineRecord>,
     remote_kernels: Vec<RelayKernelPresence>,
+    refreshed_at_ms: u64,
+    refresh_requested_at_ms: u64,
 }
 
 impl RemoteRelayInventoryProjectionStore {
@@ -88,6 +90,28 @@ impl RemoteRelayInventoryProjectionStore {
             .lock()
             .expect("remote relay inventory projection lock should not be poisoned");
         (state.remote_machines.clone(), state.remote_kernels.clone())
+    }
+
+    pub(crate) fn should_request_refresh(
+        &self,
+        now_ms: u64,
+        stale_after_ms: u64,
+        cooldown_ms: u64,
+    ) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("remote relay inventory projection lock should not be poisoned");
+        let empty = state.remote_machines.is_empty() && state.remote_kernels.is_empty();
+        let stale = state.refreshed_at_ms == 0
+            || now_ms.saturating_sub(state.refreshed_at_ms) >= stale_after_ms;
+        let cooled_down = state.refresh_requested_at_ms == 0
+            || now_ms.saturating_sub(state.refresh_requested_at_ms) >= cooldown_ms;
+        if (empty || stale) && cooled_down {
+            state.refresh_requested_at_ms = now_ms;
+            return true;
+        }
+        false
     }
 
     pub(crate) fn update(
@@ -101,6 +125,8 @@ impl RemoteRelayInventoryProjectionStore {
             .expect("remote relay inventory projection lock should not be poisoned");
         state.remote_machines = remote_machines;
         state.remote_kernels = remote_kernels;
+        state.refreshed_at_ms = unix_epoch_ms();
+        state.refresh_requested_at_ms = state.refreshed_at_ms;
     }
 
     pub(crate) fn clear(&self) {
@@ -110,6 +136,8 @@ impl RemoteRelayInventoryProjectionStore {
             .expect("remote relay inventory projection lock should not be poisoned");
         state.remote_machines.clear();
         state.remote_kernels.clear();
+        state.refreshed_at_ms = 0;
+        state.refresh_requested_at_ms = 0;
     }
 }
 
@@ -1325,6 +1353,7 @@ mod tests {
         ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, AgentRuntimeProjectionStore,
         DaemonHealthProjection, ManagedIoHealthSnapshot, ProjectionInvariantHealthSnapshot,
         ProviderCatalogHealthSnapshot, ProviderRunActorHealthSnapshot,
+        RemoteRelayInventoryProjectionStore,
         SessionProjectionHealthSnapshot, SessionSnapshotProjection, SessionStateProjectionStore,
         TransportHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
     };
@@ -1757,6 +1786,20 @@ mod tests {
         assert_eq!(
             snapshot.worktree_collisions[0].session_ids,
             vec![first.id().to_string(), second.id().to_string()]
+        );
+    }
+
+    #[test]
+    fn remote_relay_inventory_projection_requests_refresh_when_empty_or_stale() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        assert!(projection.should_request_refresh(10_000, 5_000, 1_000));
+        assert!(
+            !projection.should_request_refresh(10_500, 5_000, 1_000),
+            "refresh should respect the cooldown while the projection remains empty"
+        );
+        assert!(
+            projection.should_request_refresh(16_000, 5_000, 1_000),
+            "stale empty projection should request another refresh after the cooldown"
         );
     }
 }

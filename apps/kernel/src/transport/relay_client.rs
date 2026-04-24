@@ -1823,7 +1823,7 @@ async fn clear_remote_inventory_projection(app: &Arc<Mutex<DaemonApp>>) {
 
 fn spawn_remote_inventory_projection_refresh(app: Arc<Mutex<DaemonApp>>) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(error) = refresh_remote_inventory_projection(&app).await {
+        if let Err(error) = refresh_remote_inventory_projection_for_app(&app).await {
             crate::logging::warn_with_fields(
                 "daemon.relay_client",
                 "remote relay inventory refresh failed",
@@ -1835,7 +1835,7 @@ fn spawn_remote_inventory_projection_refresh(app: Arc<Mutex<DaemonApp>>) -> Join
     })
 }
 
-async fn refresh_remote_inventory_projection(
+pub(crate) async fn refresh_remote_inventory_projection_for_app(
     app: &Arc<Mutex<DaemonApp>>,
 ) -> Result<(), DaemonError> {
     let (config, projection) = {
