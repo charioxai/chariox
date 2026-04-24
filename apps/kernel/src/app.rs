@@ -42,8 +42,8 @@ use crate::provider::{
 use crate::pty::PtyManager;
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
-    ProviderProcessProjectionStore, ProviderRunProjectionStore, SessionHistoryProjectionStore,
-    SessionStateProjectionStore, TransportHealthStore,
+    ProviderProcessProjectionStore, ProviderRunProjectionStore, RemoteRelayInventoryProjectionStore,
+    SessionHistoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::workspace_coordinator::{
@@ -118,6 +118,7 @@ pub struct DaemonApp {
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
+    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     transport_health: TransportHealthStore,
     workspace_coordinator: WorkspaceCoordinator,
     terminal: TerminalStreamStore,
@@ -336,6 +337,7 @@ impl DaemonApp {
             provider_catalog_projection: ProviderCatalogProjectionStore::default(),
             provider_run_projection: ProviderRunProjectionStore::default(),
             provider_process_projection: ProviderProcessProjectionStore::default(),
+            remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore::default(),
             transport_health: TransportHealthStore::default(),
             workspace_coordinator: WorkspaceCoordinator::default(),
             terminal: TerminalStreamStore::new(),
@@ -668,6 +670,12 @@ impl DaemonApp {
 
     pub(crate) fn provider_catalog_projection_store(&self) -> ProviderCatalogProjectionStore {
         self.provider_catalog_projection.clone()
+    }
+
+    pub(crate) fn remote_relay_inventory_projection_store(
+        &self,
+    ) -> RemoteRelayInventoryProjectionStore {
+        self.remote_relay_inventory_projection.clone()
     }
 
     pub(crate) fn update_provider_catalog_projection(&self, catalog: OpenCodeProviderCatalog) {

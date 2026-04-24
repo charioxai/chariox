@@ -15,7 +15,7 @@ use crate::session::{
 };
 use crate::terminal::TerminalOutputKind;
 use crate::{DaemonApp, DaemonConfig, DaemonError};
-use arroba_relay::{protocol::DaemonRegistration, RelayConfig, RelayServer};
+use arroba_relay::protocol::{RelayKernelPresence, RelayMachinePresence};
 
 use super::{
     AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasSessionRequest,
@@ -38,9 +38,6 @@ use super::{
     SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
     UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
 };
-use futures_util::SinkExt;
-use tokio::sync::oneshot;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 fn launch_slow_structured_run(app: &mut DaemonApp, session_id: &str, agent_id: &str) -> String {
     app.launch_provider(
@@ -201,77 +198,35 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
 
 #[test]
 fn local_request_api_lists_live_remote_machines_and_kernels() {
-    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should build");
-    let (addr, shutdown_tx, server_thread) = runtime.block_on(async {
-        let server = RelayServer::new(RelayConfig {
-            host: "127.0.0.1".to_string(),
-            port: 0,
-            shared_token: Some("secret".to_string()),
-        });
-        let listener = server
-            .bind_listener()
-            .await
-            .expect("relay listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        drop(listener);
-        let server = RelayServer::new(RelayConfig {
-            host: addr.ip().to_string(),
-            port: addr.port(),
-            shared_token: Some("secret".to_string()),
-        });
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let server_thread = thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().expect("relay runtime should build");
-            runtime.block_on(async move {
-                server
-                    .run_until(async {
-                        let _ = shutdown_rx.await;
-                    })
-                    .await
-                    .expect("relay server should run");
-            });
-        });
-        (addr, shutdown_tx, server_thread)
-    });
-
-    runtime.block_on(async {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let url = format!("ws://{}:{}", addr.ip(), addr.port());
-        let (mut socket, _) = connect_async(&url)
-            .await
-            .expect("daemon should connect to relay");
-        let register = DaemonRegistration {
-            auth_token: "secret".to_string(),
-            daemon_id: "daemon-1".to_string(),
-            machine_id: "machine-1".to_string(),
-            machine_alias: Some("workstation".to_string()),
-            os_name: Some("macOS".to_string()),
-            kernel_started_at_ms: 10,
-            daemon_alias: Some("mbp".to_string()),
-            kernel_alias: Some("default".to_string()),
-            public_key: "public-key".to_string(),
-            capabilities: vec!["kernel_ws".to_string()],
-            available_providers: vec!["codex".to_string(), "opencode".to_string()],
-            accepting_remote_leases: true,
-            leased_agent_count: 2,
-            local_session_count: 3,
-        };
-        socket
-            .send(Message::Text(
-                serde_json::to_string(&arroba_relay::protocol::RelayEnvelope::DaemonRegister {
-                    registration: register.clone(),
-                })
-                .unwrap()
-                .into(),
-            ))
-            .await
-            .expect("register frame should send");
-    });
-
-    let mut config = DaemonConfig::for_tests();
-    config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
-    config.relay_token = Some("secret".to_string());
+    let config = DaemonConfig::for_tests();
+    let host_machine_id = config.host_machine_id.clone();
     let harness = LocalRouterTestHarness::with_config(config);
+    harness.with_app_mut(|app| {
+        app.remote_relay_inventory_projection_store().update(
+            crate::local::provider_requests::remote_machine_records(
+                vec![RelayMachinePresence {
+                    machine_id: "machine-1".to_string(),
+                    machine_alias: Some("workstation".to_string()),
+                    kernel_count: 1,
+                    available_providers: vec!["codex".to_string(), "opencode".to_string()],
+                }],
+                &host_machine_id,
+            ),
+            vec![RelayKernelPresence {
+                kernel_id: "daemon-1".to_string(),
+                machine_id: "machine-1".to_string(),
+                machine_alias: Some("workstation".to_string()),
+                relay_alias: Some("mbp".to_string()),
+                kernel_alias: Some("default".to_string()),
+                available_providers: vec!["codex".to_string(), "opencode".to_string()],
+                capabilities: vec!["kernel_ws".to_string()],
+                accepting_remote_leases: true,
+                leased_agent_count: 2,
+                local_session_count: 3,
+                public_key: "public-key".to_string(),
+            }],
+        );
+    });
 
     let machines = match harness
         .dispatch(LocalDaemonRequest::ListRemoteMachines(
@@ -286,13 +241,14 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
         .iter()
         .find(|machine| machine.machine_id == "machine-1")
         .expect("registered machine should be listed");
-    assert_eq!(machine.machine_alias.as_deref(), Some("machine 1 (macOS)"));
+    assert_eq!(machine.machine_alias.as_deref(), Some("workstation"));
+    assert_eq!(machine.display_name, "workstation");
     assert_eq!(machine.available_providers, vec!["codex", "opencode"]);
 
     let kernels = match harness
         .dispatch(LocalDaemonRequest::ListRemoteMachineKernels(
             ListRemoteMachineKernelsRequest {
-                machine_ref: "machine 1 (macOS)".to_string(),
+                machine_ref: "workstation".to_string(),
             },
         ))
         .expect("remote machine kernels request should succeed")
@@ -304,84 +260,39 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
     assert_eq!(kernels[0].kernel_id, "daemon-1");
     assert_eq!(kernels[0].available_providers, vec!["codex", "opencode"]);
     assert!(kernels[0].accepting_remote_leases);
-
-    let _ = shutdown_tx.send(());
-    server_thread.join().expect("relay thread should join");
 }
 
 #[test]
 fn waiting_room_inventory_includes_kernels_for_pending_visible_remote_machines() {
-    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should build");
-    let (addr, shutdown_tx, server_thread) = runtime.block_on(async {
-        let server = RelayServer::new(RelayConfig {
-            host: "127.0.0.1".to_string(),
-            port: 0,
-            shared_token: Some("secret".to_string()),
-        });
-        let listener = server
-            .bind_listener()
-            .await
-            .expect("relay listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        drop(listener);
-        let server = RelayServer::new(RelayConfig {
-            host: addr.ip().to_string(),
-            port: addr.port(),
-            shared_token: Some("secret".to_string()),
-        });
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let server_thread = thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().expect("relay runtime should build");
-            runtime.block_on(async move {
-                server
-                    .run_until(async {
-                        let _ = shutdown_rx.await;
-                    })
-                    .await
-                    .expect("relay server should run");
-            });
-        });
-        (addr, shutdown_tx, server_thread)
-    });
-
-    runtime.block_on(async {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let url = format!("ws://{}:{}", addr.ip(), addr.port());
-        let (mut socket, _) = connect_async(&url)
-            .await
-            .expect("daemon should connect to relay");
-        let register = DaemonRegistration {
-            auth_token: "secret".to_string(),
-            daemon_id: "daemon-pending".to_string(),
-            machine_id: "machine-pending".to_string(),
-            machine_alias: Some("pending machine".to_string()),
-            os_name: Some("macOS".to_string()),
-            kernel_started_at_ms: 10,
-            daemon_alias: Some("pending-kernel".to_string()),
-            kernel_alias: Some("default".to_string()),
-            public_key: "public-key".to_string(),
-            capabilities: vec!["kernel_ws".to_string()],
-            available_providers: vec!["codex".to_string()],
-            accepting_remote_leases: true,
-            leased_agent_count: 0,
-            local_session_count: 0,
-        };
-        socket
-            .send(Message::Text(
-                serde_json::to_string(&arroba_relay::protocol::RelayEnvelope::DaemonRegister {
-                    registration: register,
-                })
-                .unwrap()
-                .into(),
-            ))
-            .await
-            .expect("register frame should send");
-    });
-
-    let mut config = DaemonConfig::for_tests();
-    config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
-    config.relay_token = Some("secret".to_string());
+    let config = DaemonConfig::for_tests();
+    let host_machine_id = config.host_machine_id.clone();
     let harness = LocalRouterTestHarness::with_config(config);
+    harness.with_app_mut(|app| {
+        app.remote_relay_inventory_projection_store().update(
+            crate::local::provider_requests::remote_machine_records(
+                vec![RelayMachinePresence {
+                    machine_id: "machine-pending".to_string(),
+                    machine_alias: Some("pending machine".to_string()),
+                    kernel_count: 1,
+                    available_providers: vec!["codex".to_string()],
+                }],
+                &host_machine_id,
+            ),
+            vec![RelayKernelPresence {
+                kernel_id: "daemon-pending".to_string(),
+                machine_id: "machine-pending".to_string(),
+                machine_alias: Some("pending machine".to_string()),
+                relay_alias: Some("pending-kernel".to_string()),
+                kernel_alias: Some("default".to_string()),
+                available_providers: vec!["codex".to_string()],
+                capabilities: vec!["kernel_ws".to_string()],
+                accepting_remote_leases: true,
+                leased_agent_count: 0,
+                local_session_count: 0,
+                public_key: "public-key".to_string(),
+            }],
+        );
+    });
 
     let snapshot = match harness
         .dispatch(LocalDaemonRequest::GetWaitingRoomInventory(
@@ -403,9 +314,6 @@ fn waiting_room_inventory_includes_kernels_for_pending_visible_remote_machines()
     assert_eq!(snapshot.remote_kernels.len(), 1);
     assert_eq!(snapshot.remote_kernels[0].machine_id, "machine-pending");
     assert_eq!(snapshot.remote_kernels[0].kernel_id, "daemon-pending");
-
-    let _ = shutdown_tx.send(());
-    server_thread.join().expect("relay thread should join");
 }
 
 #[test]

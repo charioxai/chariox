@@ -115,8 +115,22 @@ pub async fn run_daemon_relay_connector(
             }
         };
 
+        crate::logging::info_with_fields(
+            "daemon.relay_client",
+            "attempting relay connection",
+            serde_json::json!({
+                "relay_url": relay_url,
+            }),
+        );
         match connect_async(&relay_url).await {
             Ok((socket, _)) => {
+                crate::logging::info_with_fields(
+                    "daemon.relay_client",
+                    "relay socket connected",
+                    serde_json::json!({
+                        "relay_url": relay_url,
+                    }),
+                );
                 let (mut writer, mut reader) = socket.split();
                 let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<RelayEnvelope>();
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
@@ -142,11 +156,21 @@ pub async fn run_daemon_relay_connector(
                 };
                 if outgoing_tx.send(register).is_err() {
                     writer_task.abort();
+                    clear_remote_inventory_projection(&app).await;
                     set_disconnected(&state).await;
                     sleep(Duration::from_secs(1)).await;
                     continue;
                 }
+                crate::logging::info_with_fields(
+                    "daemon.relay_client",
+                    "relay register sent",
+                    serde_json::json!({
+                        "relay_url": relay_url,
+                    }),
+                );
                 set_connected(&state, outgoing_tx.clone()).await;
+                let mut inventory_refresh_task =
+                    Some(spawn_remote_inventory_projection_refresh(Arc::clone(&app)));
 
                 loop {
                     tokio::select! {
@@ -156,8 +180,10 @@ pub async fn run_daemon_relay_connector(
                                     reason: "daemon shutting down".to_string(),
                                 });
                                 sleep(Duration::from_millis(25)).await;
+                                abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&subscription_tasks).await;
                                 writer_task.abort();
+                                clear_remote_inventory_projection(&app).await;
                                 set_disconnected(&state).await;
                                 return;
                             }
@@ -177,22 +203,28 @@ pub async fn run_daemon_relay_connector(
                                     .await
                                     .is_err()
                                     {
+                                        abort_inventory_refresh_task(&mut inventory_refresh_task);
                                         abort_subscription_tasks(&subscription_tasks).await;
                                         writer_task.abort();
+                                        clear_remote_inventory_projection(&app).await;
                                         set_disconnected(&state).await;
                                         break;
                                     }
                                 }
                                 Some(Ok(Message::Close(_))) => {
+                                    abort_inventory_refresh_task(&mut inventory_refresh_task);
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
+                                    clear_remote_inventory_projection(&app).await;
                                     set_disconnected(&state).await;
                                     break;
                                 }
                                 Some(Ok(_)) => {}
                                 Some(Err(_)) | None => {
+                                    abort_inventory_refresh_task(&mut inventory_refresh_task);
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
+                                    clear_remote_inventory_projection(&app).await;
                                     set_disconnected(&state).await;
                                     break;
                                 }
@@ -200,8 +232,10 @@ pub async fn run_daemon_relay_connector(
                         }
                         writer_done = &mut writer_done_rx => {
                             let _ = writer_done;
+                            abort_inventory_refresh_task(&mut inventory_refresh_task);
                             abort_subscription_tasks(&subscription_tasks).await;
                             writer_task.abort();
+                            clear_remote_inventory_projection(&app).await;
                             set_disconnected(&state).await;
                             break;
                         }
@@ -211,10 +245,20 @@ pub async fn run_daemon_relay_connector(
                                 let _ = outgoing_tx.send(RelayEnvelope::Close {
                                     reason: "relay configuration changed".to_string(),
                                 });
+                                abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&subscription_tasks).await;
                                 writer_task.abort();
+                                clear_remote_inventory_projection(&app).await;
                                 set_disconnected(&state).await;
                                 break;
+                            }
+                            if inventory_refresh_task
+                                .as_ref()
+                                .is_none_or(|task| task.is_finished())
+                            {
+                                inventory_refresh_task = Some(
+                                    spawn_remote_inventory_projection_refresh(Arc::clone(&app))
+                                );
                             }
                             pump_leased_projection_events(&router, &outgoing_tx).await;
                             let heartbeat_frame = {
@@ -224,8 +268,10 @@ pub async fn run_daemon_relay_connector(
                                 }
                             };
                             if outgoing_tx.send(heartbeat_frame).is_err() {
+                                abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&subscription_tasks).await;
                                 writer_task.abort();
+                                clear_remote_inventory_projection(&app).await;
                                 set_disconnected(&state).await;
                                 break;
                             }
@@ -233,7 +279,16 @@ pub async fn run_daemon_relay_connector(
                     }
                 }
             }
-            Err(_) => {
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "relay socket connect failed",
+                    serde_json::json!({
+                        "relay_url": relay_url,
+                        "error": error.to_string(),
+                    }),
+                );
+                clear_remote_inventory_projection(&app).await;
                 set_disconnected(&state).await;
                 let reconnect_delay = sleep(Duration::from_secs(1));
                 tokio::pin!(reconnect_delay);
@@ -1318,7 +1373,6 @@ async fn handle_daemon_request(
         };
         (request, decrypted.sender_public_key, daemon_private_key)
     };
-
     let result =
         dispatch_relay_client_request(router, command_sequence, caller_identity, request).await;
     match result {
@@ -1737,6 +1791,108 @@ async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
             )),
         });
     }
+}
+
+fn abort_inventory_refresh_task(task: &mut Option<JoinHandle<()>>) {
+    if let Some(handle) = task.take() {
+        handle.abort();
+    }
+}
+
+async fn clear_remote_inventory_projection(app: &Arc<Mutex<DaemonApp>>) {
+    let projection = {
+        let app = app.lock().await;
+        app.remote_relay_inventory_projection_store()
+    };
+    projection.clear();
+}
+
+fn spawn_remote_inventory_projection_refresh(app: Arc<Mutex<DaemonApp>>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Err(error) = refresh_remote_inventory_projection(&app).await {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "remote relay inventory refresh failed",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    })
+}
+
+async fn refresh_remote_inventory_projection(
+    app: &Arc<Mutex<DaemonApp>>,
+) -> Result<(), DaemonError> {
+    let (config, projection) = {
+        let app = app.lock().await;
+        (app.config().clone(), app.remote_relay_inventory_projection_store())
+    };
+    if config.relay_url.is_none() || config.relay_token.is_none() {
+        projection.clear();
+        return Ok(());
+    }
+
+    let live_machines = relay_discovery::list_live_machines(&config).await?;
+    let mut remote_machines =
+        crate::local::provider_requests::remote_machine_records(live_machines, &config.host_machine_id);
+    let (_, previous_kernels) = projection.snapshot();
+    let known_kernel_ids = previous_kernels
+        .into_iter()
+        .map(|kernel| kernel.kernel_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut remote_kernels = Vec::new();
+    for machine in remote_machines
+        .iter()
+        .filter(|machine| machine.online && machine.kernel_count > 0)
+    {
+        let kernels =
+            relay_discovery::list_live_kernels_for_machine(&config, &machine.machine_id).await?;
+        remote_kernels.extend(validate_live_relay_kernels(&config, &known_kernel_ids, kernels).await);
+    }
+    for machine in &mut remote_machines {
+        machine.kernel_count = remote_kernels
+            .iter()
+            .filter(|kernel| kernel.machine_id == machine.machine_id)
+            .count();
+    }
+    projection.update(remote_machines, remote_kernels);
+    Ok(())
+}
+
+async fn validate_live_relay_kernels(
+    config: &crate::config::DaemonConfig,
+    known_kernel_ids: &std::collections::BTreeSet<String>,
+    kernels: Vec<arroba_relay::protocol::RelayKernelPresence>,
+) -> Vec<arroba_relay::protocol::RelayKernelPresence> {
+    let mut validated = Vec::new();
+    let mut probe_config = config.clone();
+    probe_config.relay_request_timeout_ms = probe_config.relay_request_timeout_ms.min(1_500);
+    for kernel in kernels {
+        if !known_kernel_ids.contains(&kernel.kernel_id) {
+            validated.push(kernel);
+            continue;
+        }
+        let target = ClientTarget {
+            daemon_id: Some(kernel.kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let reachable = matches!(
+            send_peer_request_via_temporary_connection(
+                &probe_config,
+                target,
+                RelayPeerRequest::Ping {
+                    value: "inventory-probe".to_string(),
+                },
+            )
+            .await,
+            Ok(RelayPeerResponse::Pong { .. })
+        );
+        if reachable {
+            validated.push(kernel);
+        }
+    }
+    validated
 }
 
 #[cfg(test)]

@@ -128,11 +128,7 @@ impl DaemonApp {
     pub(super) fn list_remote_machines_response(
         &mut self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config().clone();
-        let machines = block_on_relay_query(
-            crate::transport::relay_discovery::list_live_machines(&config),
-        )?;
-        let machines = remote_machine_records(machines, &config.host_machine_id);
+        let (machines, _) = self.remote_relay_inventory_projection_store().snapshot();
         Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
     }
 
@@ -140,11 +136,18 @@ impl DaemonApp {
         &mut self,
         request: ListRemoteMachineKernelsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config().clone();
         let machine_ref = resolve_registered_or_raw_machine_ref(&request.machine_ref);
-        let kernels = block_on_relay_query(
-            crate::transport::relay_discovery::list_live_kernels_for_machine(&config, &machine_ref),
-        )?;
+        let (_, kernels) = self.remote_relay_inventory_projection_store().snapshot();
+        let kernels = kernels
+            .into_iter()
+            .filter(|kernel| {
+                kernel.machine_id == machine_ref
+                    || kernel
+                        .machine_alias
+                        .as_deref()
+                        .is_some_and(|alias| alias == machine_ref)
+            })
+            .collect();
         Ok(LocalDaemonResponse::RemoteMachineKernelsListed {
             machine_ref,
             kernels,
@@ -258,21 +261,58 @@ pub(crate) fn launch_provider_request_from_local(
         request.model,
     )
     .with_variant(request.variant);
-    if let Some(agent_id) = request.agent_id.clone().or_else(|| {
-        app.sessions()
-            .get_session(&request.session_id)
-            .ok()
-            .and_then(|session| session.focused_agent_id().map(str::to_string))
-    }) {
+    let session = app.sessions().get_session(&request.session_id).ok();
+    let focused_agent_id = session
+        .as_ref()
+        .and_then(|session| session.focused_agent_id().map(str::to_string));
+    if let Some(agent_id) = request.agent_id.clone().or(focused_agent_id) {
         launch_request = if let Ok(agent) = app.agents().get_agent(&agent_id) {
             launch_request
                 .with_agent_id(agent_id)
                 .with_owner_user_id(agent.owner_user_id().to_string())
+                .with_execution_mode(resolve_effective_execution_mode(
+                    session.as_ref(),
+                    Some(&agent),
+                ))
+                .with_permission_level(resolve_effective_permission_level(
+                    session.as_ref(),
+                    Some(&agent),
+                ))
         } else {
             launch_request.with_agent_id(agent_id)
         };
+    } else {
+        launch_request = launch_request
+            .with_execution_mode(resolve_effective_execution_mode(session.as_ref(), None))
+            .with_permission_level(resolve_effective_permission_level(session.as_ref(), None));
     }
     launch_request
+}
+
+fn resolve_effective_execution_mode(
+    session: Option<&crate::session::RuntimeSession>,
+    agent: Option<&crate::agent::AgentInstance>,
+) -> crate::provider::AgentExecutionMode {
+    agent.and_then(|agent| agent.execution_mode_override())
+        .or_else(|| {
+            session
+                .and_then(|session| session.config_state().values().get("agents.mode"))
+                .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
+        })
+        .unwrap_or_default()
+}
+
+fn resolve_effective_permission_level(
+    session: Option<&crate::session::RuntimeSession>,
+    agent: Option<&crate::agent::AgentInstance>,
+) -> crate::provider::AgentPermissionLevel {
+    agent.and_then(|agent| agent.permission_level_override())
+        .or_else(|| {
+            session
+                .and_then(|session| session.config_state().values().get("agents.permissions"))
+                .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
+        })
+        .unwrap_or_default()
 }
 
 pub(crate) fn provider_command_catalogs_response() -> Result<LocalDaemonResponse, DaemonError> {

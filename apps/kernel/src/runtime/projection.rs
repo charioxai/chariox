@@ -4,10 +4,13 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
+use arroba_relay::protocol::RelayKernelPresence;
+
 use crate::app::DaemonApp;
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::history::SessionHistoryEntry;
+use crate::local::RemoteMachineRecord;
 use crate::provider::{OpenCodeProviderCatalog, ProviderProcessInfo, RuntimeProviderRun};
 use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
 use crate::runtime::workspace_coordinator::WorkspaceOperationClaimSnapshot;
@@ -64,6 +67,49 @@ impl DaemonConfigProjectionStore {
             .config
             .lock()
             .expect("daemon config projection lock should not be poisoned") = config;
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct RemoteRelayInventoryProjectionStore {
+    state: Arc<StdMutex<RemoteRelayInventoryProjectionState>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RemoteRelayInventoryProjectionState {
+    remote_machines: Vec<RemoteMachineRecord>,
+    remote_kernels: Vec<RelayKernelPresence>,
+}
+
+impl RemoteRelayInventoryProjectionStore {
+    pub(crate) fn snapshot(&self) -> (Vec<RemoteMachineRecord>, Vec<RelayKernelPresence>) {
+        let state = self
+            .state
+            .lock()
+            .expect("remote relay inventory projection lock should not be poisoned");
+        (state.remote_machines.clone(), state.remote_kernels.clone())
+    }
+
+    pub(crate) fn update(
+        &self,
+        remote_machines: Vec<RemoteMachineRecord>,
+        remote_kernels: Vec<RelayKernelPresence>,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("remote relay inventory projection lock should not be poisoned");
+        state.remote_machines = remote_machines;
+        state.remote_kernels = remote_kernels;
+    }
+
+    pub(crate) fn clear(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("remote relay inventory projection lock should not be poisoned");
+        state.remote_machines.clear();
+        state.remote_kernels.clear();
     }
 }
 

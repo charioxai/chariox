@@ -67,8 +67,8 @@ use crate::runtime::command::{
 use crate::runtime::projection::{
     page_history_entries, AgentRuntimeProjectionStore, DaemonConfigProjectionStore,
     DaemonHealthProjection, ProviderCatalogProjectionStore, ProviderProcessProjectionStore,
-    ProviderRunProjectionStore, SessionHistoryProjectionStore, SessionStateProjectionStore,
-    TransportHealthStore,
+    ProviderRunProjectionStore, RemoteRelayInventoryProjectionStore,
+    SessionHistoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_launch_executor::ProviderLaunchCommandExecutor;
@@ -129,6 +129,7 @@ pub(crate) struct CommandRouter {
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
     config_projection: DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     relay_state: Arc<RwLock<RelayClientState>>,
     capability_health: CapabilityExecutorHealthStore,
     capability_runtime: CapabilityRuntimeStore,
@@ -170,6 +171,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            remote_relay_inventory_projection,
             agent_runtime_projection,
             config_projection,
             session_store,
@@ -211,12 +213,14 @@ impl CommandRouter {
             terminal_stream.clone(),
             workspace_coordinator.clone(),
         );
-        provider_store.set_native_interaction_bridge(Arc::new(
-            RuntimeStateNativeInteractionBridge {
-                handle: tokio::runtime::Handle::current(),
-                state: runtime_state.clone(),
-            },
-        ));
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            provider_store.set_native_interaction_bridge(Arc::new(
+                RuntimeStateNativeInteractionBridge {
+                    handle,
+                    state: runtime_state.clone(),
+                },
+            ));
+        }
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
         let agent_runtime = AgentRuntime::new(
@@ -265,6 +269,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            remote_relay_inventory_projection,
             config_projection,
             relay_state,
             capability_health: CapabilityExecutorHealthStore::default(),
@@ -307,6 +312,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            remote_relay_inventory_projection,
             agent_runtime_projection,
             config_projection,
             session_store,
@@ -348,12 +354,14 @@ impl CommandRouter {
             terminal_stream.clone(),
             workspace_coordinator.clone(),
         );
-        provider_store.set_native_interaction_bridge(Arc::new(
-            RuntimeStateNativeInteractionBridge {
-                handle: tokio::runtime::Handle::current(),
-                state: runtime_state.clone(),
-            },
-        ));
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            provider_store.set_native_interaction_bridge(Arc::new(
+                RuntimeStateNativeInteractionBridge {
+                    handle,
+                    state: runtime_state.clone(),
+                },
+            ));
+        }
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
         let agent_runtime = AgentRuntime::new(
@@ -402,6 +410,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            remote_relay_inventory_projection,
             config_projection,
             relay_state,
             capability_health: CapabilityExecutorHealthStore::default(),
@@ -1766,29 +1775,7 @@ impl CommandRouter {
                 });
             }
         };
-        let mut remote_kernels = Vec::new();
-        for machine in remote_machines
-            .iter()
-            .filter(|machine| machine.online && machine.kernel_count > 0)
-        {
-            let response = self
-                .projected_remote_machine_kernels_response(machine.machine_id.clone())
-                .await?;
-            match response {
-                LocalDaemonResponse::RemoteMachineKernelsListed { kernels, .. } => {
-                    remote_kernels.extend(kernels);
-                }
-                _response => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "build waiting room inventory",
-                        message: format!(
-                            "list remote machine kernels produced unexpected response `{}`",
-                            "unknown"
-                        ),
-                    });
-                }
-            }
-        }
+        let (_, remote_kernels) = self.remote_relay_inventory_projection.snapshot();
         let inventory_version =
             waiting_room_inventory_version(&sessions, &relay_status, &remote_machines, &remote_kernels)?;
         Ok(LocalDaemonResponse::WaitingRoomInventory {
@@ -1803,12 +1790,7 @@ impl CommandRouter {
     }
 
     async fn projected_remote_machines_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config_projection.snapshot();
-        let machines = crate::transport::relay_discovery::list_live_machines(&config).await?;
-        let machines = crate::local::provider_requests::remote_machine_records(
-            machines,
-            &config.host_machine_id,
-        );
+        let (machines, _) = self.remote_relay_inventory_projection.snapshot();
         Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
     }
 
@@ -1816,12 +1798,17 @@ impl CommandRouter {
         &self,
         machine_ref: String,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config_projection.snapshot();
         let machine_ref =
             crate::local::provider_requests::resolve_registered_or_raw_machine_ref(&machine_ref);
-        let kernels =
-            crate::transport::relay_discovery::list_live_kernels_for_machine(&config, &machine_ref)
-                .await?;
+        let (_, kernels) = self.remote_relay_inventory_projection.snapshot();
+        let kernels = kernels
+            .into_iter()
+            .filter(|kernel| {
+                kernel.machine_id == machine_ref
+                    || kernel.machine_alias.as_deref() == Some(machine_ref.as_str())
+                    || kernel.machine_alias.as_deref() == Some(machine_ref.as_str())
+            })
+            .collect();
         Ok(LocalDaemonResponse::RemoteMachineKernelsListed {
             machine_ref,
             kernels,
@@ -4427,6 +4414,7 @@ fn router_projection_stores(
     ProviderCatalogProjectionStore,
     ProviderRunProjectionStore,
     ProviderProcessProjectionStore,
+    RemoteRelayInventoryProjectionStore,
     AgentRuntimeProjectionStore,
     DaemonConfigProjectionStore,
     crate::session::SessionStateStore,
@@ -4464,6 +4452,7 @@ fn router_projection_stores(
         app.provider_catalog_projection_store(),
         app.provider_run_projection_store(),
         app.provider_process_projection_store(),
+        app.remote_relay_inventory_projection_store(),
         app.agent_runtime_projection_store(),
         app.config_projection_store(),
         app.session_state_store(),
