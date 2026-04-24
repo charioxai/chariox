@@ -12,7 +12,8 @@ use tokio_tungstenite::tungstenite::{connect, Message, WebSocket};
 use crate::error::DaemonError;
 use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
 use crate::provider::{
-    AgentExecutionMode, AgentPermissionLevel, OpenCodeProviderCatalog, ProviderWriteAccessMode,
+    AgentExecutionMode, AgentPermissionLevel, OpenCodeProviderCatalog,
+    ProviderNativeInteractionBridge, ProviderWriteAccessMode,
 };
 
 use super::codex::CODEX_MCP_TOKEN_ENV;
@@ -20,12 +21,15 @@ use super::resolve_codex_executable;
 
 pub type CodexSocket = WebSocket<MaybeTlsStream<TcpStream>>;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CodexClient {
     provider_run_id: String,
+    session_id: Option<String>,
+    agent_id: Option<String>,
     endpoint: String,
     runtime_mcp_server_url: Option<String>,
     runtime_mcp_auth_token: Option<String>,
+    native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
     mcp_servers: Vec<ArrobaMcpServerConfig>,
     write_access_mode: ProviderWriteAccessMode,
 }
@@ -203,12 +207,25 @@ impl CodexClient {
     ) -> Result<Self, DaemonError> {
         Ok(Self {
             provider_run_id: provider_run_id.into(),
+            session_id: None,
+            agent_id: None,
             endpoint: endpoint.into(),
             runtime_mcp_server_url: None,
             runtime_mcp_auth_token: None,
+            native_interaction_bridge: None,
             mcp_servers: Vec::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
         })
+    }
+
+    pub fn with_runtime_context(
+        mut self,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+    ) -> Self {
+        self.session_id = session_id.map(str::to_string);
+        self.agent_id = agent_id.map(str::to_string);
+        self
     }
 
     pub fn with_runtime_mcp_binding(
@@ -223,6 +240,14 @@ impl CodexClient {
 
     pub fn with_mcp_servers(mut self, mcp_servers: &[ArrobaMcpServerConfig]) -> Self {
         self.mcp_servers = mcp_servers.to_vec();
+        self
+    }
+
+    pub(crate) fn with_native_interaction_bridge(
+        mut self,
+        bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
+    ) -> Self {
+        self.native_interaction_bridge = bridge;
         self
     }
 
@@ -595,8 +620,10 @@ impl CodexClient {
             }),
         );
         let result = match method {
-            "item/commandExecution/requestApproval" => json!({ "decision": "decline" }),
-            "item/fileChange/requestApproval" => json!({ "decision": "decline" }),
+            "item/commandExecution/requestApproval" => {
+                self.command_execution_approval_response(message)?
+            }
+            "item/fileChange/requestApproval" => self.file_change_approval_response(message)?,
             "item/permissions/requestApproval" => self.permissions_approval_response(message),
             "mcpServer/elicitation/request" => self.respond_to_mcp_elicitation(message),
             "item/tool/call" => self.respond_to_dynamic_tool_call(message)?,
@@ -667,6 +694,129 @@ impl CodexClient {
                 })
             }
         }
+    }
+
+    fn command_execution_approval_response(
+        &self,
+        message: &JsonRpcMessage,
+    ) -> Result<Value, DaemonError> {
+        let params = message.params.as_ref().cloned().unwrap_or_else(|| json!({}));
+        let command = params
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("<unknown command>");
+        let cwd = params
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let reason = params
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let mut body = format!("Approve command execution?\n\n{command}");
+        if let Some(cwd) = cwd {
+            body.push_str(&format!("\n\ncwd: {cwd}"));
+        }
+        if let Some(reason) = reason {
+            body.push_str(&format!("\n\nreason: {reason}"));
+        }
+        self.request_native_permission_interaction(
+            "codex-command-approval",
+            Some("Command approval required".to_string()),
+            body,
+            crate::session::RuntimeInteractionLevel::Warning,
+        )
+    }
+
+    fn file_change_approval_response(&self, message: &JsonRpcMessage) -> Result<Value, DaemonError> {
+        let params = message.params.as_ref().cloned().unwrap_or_else(|| json!({}));
+        let reason = params
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let changes = params
+            .get("changes")
+            .map(render_pretty_json)
+            .filter(|value| !value.trim().is_empty());
+        let mut body = "Approve file changes?".to_string();
+        if let Some(reason) = reason {
+            body.push_str(&format!("\n\nreason: {reason}"));
+        }
+        if let Some(changes) = changes {
+            body.push_str(&format!("\n\nchanges:\n{changes}"));
+        }
+        self.request_native_permission_interaction(
+            "codex-file-change-approval",
+            Some("File change approval required".to_string()),
+            body,
+            crate::session::RuntimeInteractionLevel::Critical,
+        )
+    }
+
+    fn request_native_permission_interaction(
+        &self,
+        prefix: &str,
+        title: Option<String>,
+        message: String,
+        level: crate::session::RuntimeInteractionLevel,
+    ) -> Result<Value, DaemonError> {
+        let Some(bridge) = self.native_interaction_bridge.as_ref() else {
+            return Ok(json!({ "decision": "decline" }));
+        };
+        let session_id = self.session_id.as_deref().ok_or_else(|| {
+            self.protocol_error(
+                "codex_native_permission",
+                "missing session context for native permission prompt".to_string(),
+            )
+        })?;
+        let agent_id = self.agent_id.as_deref().ok_or_else(|| {
+            self.protocol_error(
+                "codex_native_permission",
+                "missing agent context for native permission prompt".to_string(),
+            )
+        })?;
+        let interaction = crate::session::RuntimeInteraction::new(
+            format!("{prefix}-{}", crate::session::unix_epoch_ms()),
+            agent_id,
+            crate::session::RuntimeInteractionKind::Permission,
+            level,
+            title,
+            message,
+            vec![
+                crate::session::RuntimeInteractionChoice::new(
+                    "allow_once",
+                    "Allow once",
+                    "allow_once",
+                    Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
+                ),
+                crate::session::RuntimeInteractionChoice::new(
+                    "allow_session",
+                    "Allow for session",
+                    "allow_session",
+                    Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
+                ),
+                crate::session::RuntimeInteractionChoice::new(
+                    "deny",
+                    "Deny",
+                    "deny",
+                    Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
+                ),
+            ],
+            None,
+            None,
+        );
+        let resolution = bridge.request_blocking(session_id, interaction)?;
+        Ok(match resolution.choice_id.as_deref() {
+            Some("allow_once") => json!({ "decision": "accept" }),
+            Some("allow_session") => json!({ "decision": "acceptForSession" }),
+            Some("deny") | None => json!({ "decision": "decline" }),
+            Some(_) => json!({ "decision": "decline" }),
+        })
     }
 
     fn respond_to_dynamic_tool_call(&self, message: &JsonRpcMessage) -> Result<Value, DaemonError> {
@@ -925,6 +1075,10 @@ fn managed_io_codex_permission_grant(requested_permissions: &Value) -> Value {
         }
     }
     Value::Object(granted)
+}
+
+fn render_pretty_json(value: &Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
 fn call_runtime_mcp_tool(

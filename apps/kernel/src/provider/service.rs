@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use super::{
     codex_runtime::{initialize_codex_runtime, CodexRuntimeBinding},
     opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
-    LaunchProviderRequest, ProviderPromptSignalBatch, ProviderRegistry, ProviderRunActorMailbox,
-    ProviderRunOperationLanes, ProviderRunState, RuntimeProviderRun,
+    LaunchProviderRequest, ProviderNativeInteractionBridge, ProviderPromptSignalBatch,
+    ProviderRegistry, ProviderRunActorMailbox, ProviderRunOperationLanes, ProviderRunState,
+    RuntimeProviderRun,
 };
 
 pub struct ProviderProcessService {
@@ -50,6 +51,13 @@ impl ProviderProcessServiceStore {
 
     pub(crate) fn run_operation_lanes(&self) -> ProviderRunOperationLanes {
         self.read().run_operation_lanes()
+    }
+
+    pub(crate) fn set_native_interaction_bridge(
+        &self,
+        bridge: std::sync::Arc<dyn ProviderNativeInteractionBridge>,
+    ) {
+        self.read().set_native_interaction_bridge(bridge);
     }
 
     pub fn get_run(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
@@ -385,6 +393,13 @@ impl ProviderProcessService {
 
     pub fn registry(&self) -> &ProviderRegistry {
         &self.registry
+    }
+
+    pub(crate) fn set_native_interaction_bridge(
+        &self,
+        bridge: std::sync::Arc<dyn ProviderNativeInteractionBridge>,
+    ) {
+        self.run_actor_mailbox.set_native_interaction_bridge(bridge);
     }
 
     pub(crate) fn start_run_provider_only(
@@ -895,7 +910,8 @@ impl ProviderProcessService {
                 ),
             });
         }
-        let prompt = super::managed_io_policy::apply_managed_io_instructions(prompt, run);
+        let prompt = super::managed_io_policy::apply_runtime_instructions(prompt);
+        let prompt = super::managed_io_policy::apply_managed_io_instructions(&prompt, run);
         self.run_actor_mailbox.spawn_submit(
             session_id,
             provider_run_id,

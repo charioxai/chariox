@@ -13,7 +13,7 @@ use crate::terminal::TerminalOutputKind;
 
 use super::{
     codex_client::codex_endpoint_is_healthy, CodexClient, CodexNotification, CodexRunSelection,
-    CodexSocket, ProviderResumeState, RuntimeProviderRun,
+    CodexSocket, ProviderNativeInteractionBridge, ProviderResumeState, RuntimeProviderRun,
 };
 
 const CODEX_EVENT_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(1);
@@ -114,9 +114,12 @@ pub struct CodexRuntimeBinding {
 fn codex_client_for_run(
     run: &RuntimeProviderRun,
     endpoint: &str,
+    native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
 ) -> Result<CodexClient, DaemonError> {
     Ok(CodexClient::new(run.id(), endpoint)?
+        .with_runtime_context(Some(run.session_id()), run.agent_instance_id())
         .with_runtime_mcp_binding(run.runtime_mcp_server_url(), run.runtime_mcp_auth_token())
+        .with_native_interaction_bridge(native_interaction_bridge)
         .with_mcp_servers(run.mcp_servers())
         .with_write_access_mode(run.write_access_mode()))
 }
@@ -145,7 +148,7 @@ pub fn initialize_codex_runtime(
         }
         sleep(Duration::from_millis(100));
     }
-    let client = codex_client_for_run(run, &endpoint)?;
+    let client = codex_client_for_run(run, &endpoint, None)?;
     let mut socket = client.connect_initialized()?;
     let mut next_request_id = 1;
     let cwd = run
@@ -170,6 +173,8 @@ pub fn initialize_codex_runtime(
                 cwd.as_deref(),
                 model.as_deref(),
                 run.write_access_mode(),
+                run.execution_mode(),
+                run.permission_level(),
             );
             match resume {
                 Ok(thread) => (
@@ -197,6 +202,8 @@ pub fn initialize_codex_runtime(
                         cwd.as_deref(),
                         model.as_deref(),
                         run.write_access_mode(),
+                        run.execution_mode(),
+                        run.permission_level(),
                     )?;
                     (
                         thread.thread.id,
@@ -215,6 +222,8 @@ pub fn initialize_codex_runtime(
                 cwd.as_deref(),
                 model.as_deref(),
                 run.write_access_mode(),
+                run.execution_mode(),
+                run.permission_level(),
             )?;
             (
                 thread.thread.id,
@@ -246,7 +255,7 @@ pub fn submit_codex_prompt(
     prompt: &str,
     attachments: &[PromptAttachment],
 ) -> Result<(), DaemonError> {
-    let client = codex_client_for_run(run, state.endpoint())?;
+    let client = codex_client_for_run(run, state.endpoint(), None)?;
     let cwd = run
         .working_directory()
         .map(|path| path.to_string_lossy().to_string());
@@ -262,6 +271,8 @@ pub fn submit_codex_prompt(
         model.as_deref(),
         effort.as_deref(),
         run.write_access_mode(),
+        run.execution_mode(),
+        run.permission_level(),
         input,
         &mut state.buffered_notifications,
     ) {
@@ -293,8 +304,9 @@ pub fn abort_codex_turn(
 pub fn drain_codex_events(
     run: &RuntimeProviderRun,
     state: &mut CodexRuntimeState,
+    native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
 ) -> Result<CodexPollResult, DaemonError> {
-    let client = codex_client_for_run(run, state.endpoint())?;
+    let client = codex_client_for_run(run, state.endpoint(), native_interaction_bridge)?;
     let mut chunks = Vec::new();
     let mut completions = Vec::new();
     let mut notices = Vec::new();

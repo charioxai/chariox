@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 
 use crate::agent::AgentServiceStore;
 use crate::app::{
@@ -61,6 +61,7 @@ struct KernelRuntimeOwnedState {
     workspace_identity_monitor:
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_mcp_continuations: PendingMcpContinuationStore,
+    pending_interactions: PendingInteractionStore,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
 }
 
@@ -89,6 +90,32 @@ struct PendingMcpContinuation {
 #[derive(Debug, Clone, Default)]
 struct PendingMcpContinuationStore {
     inner: Arc<StdMutex<BTreeMap<String, PendingMcpContinuation>>>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingInteraction {
+    session_id: String,
+    responder: Arc<StdMutex<Option<oneshot::Sender<PendingInteractionResolution>>>>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingInteractionResolution {
+    pub(crate) status: &'static str,
+    pub(crate) choice_id: Option<String>,
+    pub(crate) reply: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PendingInteractionStore {
+    inner: Arc<StdMutex<BTreeMap<String, PendingInteraction>>>,
+}
+
+impl PendingInteractionStore {
+    fn write(&self) -> StdMutexGuard<'_, BTreeMap<String, PendingInteraction>> {
+        self.inner
+            .lock()
+            .expect("pending interaction mutex poisoned")
+    }
 }
 
 impl PendingMcpContinuationStore {
@@ -171,6 +198,7 @@ impl KernelRuntimeState {
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::default(),
+                pending_interactions: PendingInteractionStore::default(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             },
         }
@@ -459,6 +487,53 @@ impl KernelRuntimeState {
     ) -> Result<crate::session::SessionConfigState, DaemonError> {
         self.owned
             .update_session_config(session_id, attachment_id, values, requires_idle)
+    }
+
+    pub(crate) async fn update_agent_config(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        execution_mode_override: Option<Option<crate::provider::AgentExecutionMode>>,
+        permission_level_override: Option<Option<crate::provider::AgentPermissionLevel>>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.owned.update_agent_config(
+            session_id,
+            agent_id,
+            caller_user_id,
+            execution_mode_override,
+            permission_level_override,
+        )
+    }
+
+    pub(super) async fn create_runtime_interaction(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+    ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
+        let (tx, rx) = oneshot::channel();
+        self.owned
+            .register_runtime_interaction(session_id, interaction, tx)?;
+        Ok(rx)
+    }
+
+    pub(crate) async fn resolve_runtime_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.owned
+            .resolve_runtime_interaction(session_id, interaction_id, choice_id)
+    }
+
+    pub(crate) async fn timeout_runtime_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.owned
+            .timeout_runtime_interaction(session_id, interaction_id)
     }
 
     pub(crate) async fn alias_session(

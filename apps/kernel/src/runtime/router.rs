@@ -53,7 +53,10 @@ use crate::local::{
     UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
     UpdateMcpServerRequest, UpdateSkillRequest, WaitingRoomInventorySnapshot,
 };
-use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
+use crate::provider::{
+    ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
+    ProviderRunOperationLanes, ProviderRunState,
+};
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::capability_executor::{
     execute_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
@@ -79,6 +82,34 @@ use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
+
+struct RuntimeStateNativeInteractionBridge {
+    handle: tokio::runtime::Handle,
+    state: KernelRuntimeState,
+}
+
+impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
+    fn request_blocking(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+    ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
+        let session_id = session_id.to_string();
+        let state = self.state.clone();
+        let resolution = self.handle.block_on(async move {
+            let receiver = state.create_runtime_interaction(&session_id, interaction).await?;
+            receiver.await.map_err(|error| DaemonError::LocalTransport {
+                operation: "provider_native_interaction_bridge",
+                message: format!("interaction dropped before resolution: {error}"),
+            })
+        })?;
+        Ok(ProviderNativeInteractionResolution {
+            status: resolution.status.to_string(),
+            choice_id: resolution.choice_id,
+            reply: resolution.reply,
+        })
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct CommandRouter {
@@ -180,6 +211,12 @@ impl CommandRouter {
             terminal_stream.clone(),
             workspace_coordinator.clone(),
         );
+        provider_store.set_native_interaction_bridge(Arc::new(
+            RuntimeStateNativeInteractionBridge {
+                handle: tokio::runtime::Handle::current(),
+                state: runtime_state.clone(),
+            },
+        ));
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
         let agent_runtime = AgentRuntime::new(
@@ -311,6 +348,12 @@ impl CommandRouter {
             terminal_stream.clone(),
             workspace_coordinator.clone(),
         );
+        provider_store.set_native_interaction_bridge(Arc::new(
+            RuntimeStateNativeInteractionBridge {
+                handle: tokio::runtime::Handle::current(),
+                state: runtime_state.clone(),
+            },
+        ));
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
         let agent_runtime = AgentRuntime::new(

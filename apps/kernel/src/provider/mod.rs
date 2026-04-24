@@ -35,7 +35,8 @@ pub use opencode_client::{
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
-    ProviderRunActorMailbox, ProviderRunOperationLanes,
+    ProviderNativeInteractionBridge, ProviderNativeInteractionResolution, ProviderRunActorMailbox,
+    ProviderRunOperationLanes,
 };
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
@@ -43,8 +44,9 @@ pub(crate) use types::{
     classify_provider_terminal_failure_text, provider_requires_managed_io_by_default,
 };
 pub use types::{
-    default_provider_command_catalogs, AgentEndpointMode, ControlCapability, ControlCapabilityMode,
-    ControlOperation, LaunchProviderRequest, ProviderAssistantCompletion, ProviderCommandCatalog,
+    default_provider_command_catalogs, AgentEndpointMode, AgentExecutionMode,
+    AgentPermissionLevel, ControlCapability, ControlCapabilityMode, ControlOperation,
+    LaunchProviderRequest, ProviderAssistantCompletion, ProviderCommandCatalog,
     ProviderCommandCatalogDiscovery, ProviderCommandCatalogSource, ProviderCommandDescriptor,
     ProviderLaunchResult, ProviderProcessInfo, ProviderProcessStatus, ProviderPromptChunk,
     ProviderPromptSignalBatch, ProviderResumeState, ProviderRunState, ProviderWriteAccessMode,

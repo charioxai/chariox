@@ -9,6 +9,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::error::DaemonError;
 use crate::runtime::projection::{ActorQueueSnapshot, ProviderRunActorHealthSnapshot};
+use crate::session::RuntimeInteraction;
 use crate::session::PromptAttachment;
 
 use super::{
@@ -26,9 +27,46 @@ type CodexRuntimeSlot = Arc<Mutex<Option<CodexRuntimeState>>>;
 type OpenCodeRuntimeSlot = Arc<Mutex<Option<OpenCodeRuntimeState>>>;
 const PROVIDER_RUN_COMMAND_QUEUE_LIMIT: usize = 64;
 
+pub(crate) trait ProviderNativeInteractionBridge: Send + Sync {
+    fn request_blocking(
+        &self,
+        session_id: &str,
+        interaction: RuntimeInteraction,
+    ) -> Result<ProviderNativeInteractionResolution, DaemonError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderNativeInteractionResolution {
+    pub(crate) status: String,
+    pub(crate) choice_id: Option<String>,
+    pub(crate) reply: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ProviderNativeInteractionBridgeStore {
+    inner: Arc<Mutex<Option<Arc<dyn ProviderNativeInteractionBridge>>>>,
+}
+
+impl ProviderNativeInteractionBridgeStore {
+    fn read(&self) -> Option<Arc<dyn ProviderNativeInteractionBridge>> {
+        self.inner
+            .lock()
+            .expect("provider native interaction bridge mutex poisoned")
+            .clone()
+    }
+
+    pub(crate) fn set(&self, bridge: Arc<dyn ProviderNativeInteractionBridge>) {
+        *self
+            .inner
+            .lock()
+            .expect("provider native interaction bridge mutex poisoned") = Some(bridge);
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct ProviderRunActorMailbox {
     operation_lanes: ProviderRunOperationLanes,
+    native_interaction_bridge: ProviderNativeInteractionBridgeStore,
     workers: Arc<Mutex<BTreeMap<String, mpsc::SyncSender<ProviderRunActorCommand>>>>,
     codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
@@ -175,6 +213,13 @@ impl ProviderRunOperationLanes {
 impl ProviderRunActorMailbox {
     pub(crate) fn operation_lanes(&self) -> ProviderRunOperationLanes {
         self.operation_lanes.clone()
+    }
+
+    pub(crate) fn set_native_interaction_bridge(
+        &self,
+        bridge: Arc<dyn ProviderNativeInteractionBridge>,
+    ) {
+        self.native_interaction_bridge.set(bridge);
     }
 
     pub(crate) fn insert_codex_runtime(&self, run_id: String, state: CodexRuntimeState) {
@@ -374,6 +419,7 @@ impl ProviderRunActorMailbox {
             workers.remove(&provider_run_id).unwrap_or_else(|| {
                 Self::spawn_worker(
                     provider_run_id.clone(),
+                    self.native_interaction_bridge.clone(),
                     Arc::clone(&self.codex_runs),
                     Arc::clone(&self.opencode_runs),
                     Arc::clone(&self.cleared_runs),
@@ -590,6 +636,7 @@ impl ProviderRunActorMailbox {
             .or_insert_with(|| {
                 Self::spawn_worker(
                     provider_run_id.to_string(),
+                    self.native_interaction_bridge.clone(),
                     Arc::clone(&self.codex_runs),
                     Arc::clone(&self.opencode_runs),
                     Arc::clone(&self.cleared_runs),
@@ -607,6 +654,7 @@ impl ProviderRunActorMailbox {
 
     fn spawn_worker(
         provider_run_id: String,
+        native_interaction_bridge: ProviderNativeInteractionBridgeStore,
         codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
         opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
         cleared_runs: Arc<Mutex<BTreeSet<String>>>,
@@ -713,6 +761,7 @@ impl ProviderRunActorMailbox {
                         output_poll_delay,
                     } => {
                         let result = execute_output_poll_command(
+                            &native_interaction_bridge,
                             &codex_runs,
                             &opencode_runs,
                             &cleared_runs,
@@ -1155,6 +1204,7 @@ fn execute_selection_sync_command(
 }
 
 fn execute_output_poll_command(
+    native_interaction_bridge: &ProviderNativeInteractionBridgeStore,
     codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
@@ -1174,7 +1224,11 @@ fn execute_output_poll_command(
         if !output_poll_delay.is_zero() {
             thread::sleep(output_poll_delay);
         }
-        let poll = drain_codex_events(run, &mut state);
+        let poll = drain_codex_events(
+            run,
+            &mut state,
+            native_interaction_bridge.read(),
+        );
         restore_codex_runtime_if_live(codex_runs, cleared_runs, run_id, &slot, state);
         let poll = poll?;
         return Ok(Some(ProviderPromptSignalBatch {
