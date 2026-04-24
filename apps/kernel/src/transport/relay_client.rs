@@ -53,6 +53,7 @@ impl Default for RelayClientState {
 }
 
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 20;
+const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, JoinHandle<()>>>>;
 
@@ -122,8 +123,21 @@ pub async fn run_daemon_relay_connector(
                 "relay_url": relay_url,
             }),
         );
-        match connect_async(&relay_url).await {
-            Ok((socket, _)) => {
+        match timeout(RELAY_CONNECT_TIMEOUT, connect_async(&relay_url)).await {
+            Err(_) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "relay socket connect timed out",
+                    serde_json::json!({
+                        "relay_url": relay_url,
+                        "timeout_ms": RELAY_CONNECT_TIMEOUT.as_millis(),
+                    }),
+                );
+                set_disconnected(&state).await;
+                sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+            Ok(Ok((socket, _))) => {
                 crate::logging::info_with_fields(
                     "daemon.relay_client",
                     "relay socket connected",
@@ -279,7 +293,7 @@ pub async fn run_daemon_relay_connector(
                     }
                 }
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 crate::logging::warn_with_fields(
                     "daemon.relay_client",
                     "relay socket connect failed",
