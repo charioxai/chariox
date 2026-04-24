@@ -243,10 +243,10 @@ test("parseMcpInstallConfig supports stdio and streamable HTTP MCPs", () => {
 })
 
 test("relay cloud login stores the bootstrap profile", async () => {
-  const flashed: string[] = []
+  const notices: string[] = []
   let savedProfile: Record<string, unknown> | null = null
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    flashFooter: (message: string) => { flashed.push(message) },
+    appendNotice: (message: string) => { notices.push(message) },
     bootstrapCloudRelay: async (apiUrl: string, email: string, accountSlug?: string) => ({
       apiUrl,
       email,
@@ -265,7 +265,7 @@ test("relay cloud login stores the bootstrap profile", async () => {
   await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud login", args: ["cloud", "login", "https://cloud.example", "user@example.com", "user"] })
 
   assert.equal((savedProfile as { relayUrl?: string } | null)?.relayUrl, "wss://relay.example")
-  assert.equal(flashed.at(-1), "cloud relay profile user saved")
+  assert.equal(notices.at(-1), "cloud profile saved: user")
 })
 
 test("relay cloud login without args uses device flow", async () => {
@@ -455,7 +455,7 @@ test("relay cloud login without args prefers configured hosted api url", async (
 })
 
 test("relay cloud connect mints a daemon token and configures relay", async () => {
-  const flashed: string[] = []
+  const notices: string[] = []
   const configured: Array<{ relayUrl: string | null; relayToken: string | null }> = []
   let savedProfile: Record<string, unknown> | null = null
   const profile = {
@@ -469,7 +469,7 @@ test("relay cloud connect mints a daemon token and configures relay", async () =
     issuerId: "issuer-1",
   }
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    flashFooter: (message: string) => { flashed.push(message) },
+    appendNotice: (message: string) => { notices.push(message) },
     getCloudRelayProfile: () => profile,
     getRelayStatus: async () => ({
       configured: false,
@@ -506,11 +506,11 @@ test("relay cloud connect mints a daemon token and configures relay", async () =
 
   assert.deepEqual(configured, [{ relayUrl: "wss://relay.example", relayToken: "runtime-token" }])
   assert.equal((savedProfile as { tokenExpiresAtMs?: number } | null)?.tokenExpiresAtMs, 1234)
-  assert.equal(flashed.at(-1), "cloud relay connected: wss://relay.example")
+  assert.equal(notices.at(-1), "cloud kernel connected: wss://relay.example")
 })
 
 test("relay cloud pair-machine stores the local machine identity", async () => {
-  const flashed: string[] = []
+  const notices: string[] = []
   let savedProfile: Record<string, unknown> | null = null
   const profile = {
     apiUrl: "https://cloud.example",
@@ -523,7 +523,7 @@ test("relay cloud pair-machine stores the local machine identity", async () => {
     issuerId: "issuer-1",
   }
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    flashFooter: (message: string) => { flashed.push(message) },
+    appendNotice: (message: string) => { notices.push(message) },
     getCloudRelayProfile: () => profile,
     getRelayStatus: async () => ({
       configured: false,
@@ -548,7 +548,7 @@ test("relay cloud pair-machine stores the local machine identity", async () => {
 
   assert.equal((savedProfile as { machineId?: string } | null)?.machineId, "machine-1")
   assert.equal((savedProfile as { machineAlias?: string } | null)?.machineAlias, "laptop")
-  assert.equal(flashed.at(-1), "cloud relay machine paired as machine-1")
+  assert.equal(notices.at(-1), "cloud machine linked: machine-1")
 })
 
 test("relay cloud connect prefers paired machine tokens", async () => {

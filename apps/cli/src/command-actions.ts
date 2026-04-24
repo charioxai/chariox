@@ -771,13 +771,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       if (polled.status === "expired_token") {
-        deps.flashFooter("cloud login expired", "error")
+        deps.appendNotice("cloud login expired")
         return
       }
       intervalMs = Math.max(polled.intervalSeconds, 1) * 1000
       await sleep(intervalMs)
     }
-    deps.flashFooter("cloud login expired", "error")
+    deps.appendNotice("cloud login expired")
   }
   const formatWorkspaceLinks = (links: WorkspaceLinkDefinition[]): string => {
     if (links.length === 0) {
@@ -1797,22 +1797,21 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       if (!cloudCommand || cloudCommand === "status") {
         const profile = deps.getCloudRelayProfile?.() ?? null
         if (!profile) {
-          deps.flashFooter("cloud relay is not configured", "info")
+          deps.appendNotice("cloud is not linked. Run /cloud first.")
           return
         }
         deps.appendNotice(
           [
-            "cloud relay profile",
+            "cloud profile",
             `api=${profile.apiUrl}`,
             `email=${profile.email}`,
             `account=${profile.accountSlug} (${profile.accountId})`,
-            `realm=${profile.realmId}`,
-            `relay=${profile.relayUrl}`,
+            `cloud=${profile.realmId}`,
+            `transport=${profile.relayUrl}`,
             `client=${profile.clientId ?? "-"}`,
             `machine=${profile.machineId ?? "-"}`,
           ].join("\n"),
         )
-        deps.flashFooter(`cloud relay profile ${profile.accountSlug}`, "info")
         return
       }
       if (cloudCommand === "login" || cloudCommand === "bootstrap") {
@@ -1833,7 +1832,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         const profile = await deps.bootstrapCloudRelay(apiUrl, email, accountSlug)
         await deps.saveCloudRelayProfile(profile)
-        deps.flashFooter(`cloud relay profile ${profile.accountSlug} saved`, "info")
+        deps.appendNotice(`cloud profile saved: ${profile.accountSlug}`)
         return
       }
       if (cloudCommand === "pair") {
@@ -1843,7 +1842,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         const profile = deps.getCloudRelayProfile?.() ?? null
         if (!profile) {
-          deps.flashFooter("cloud relay profile missing; run /relay cloud login first", "error")
+          deps.appendNotice("cloud is not linked. Run /cloud first.")
           return
         }
         const alias = cloudArgs.join(" ").trim() || undefined
@@ -1853,7 +1852,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           alias,
         )
         await deps.saveCloudRelayProfile(paired)
-        deps.flashFooter(`cloud relay client paired as ${paired.clientId ?? deps.clientId}`, "info")
+        deps.appendNotice(`cloud client linked: ${paired.clientId ?? deps.clientId}`)
         return
       }
       if (cloudCommand === "pair-machine") {
@@ -1863,7 +1862,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         const profile = deps.getCloudRelayProfile?.() ?? null
         if (!profile) {
-          deps.flashFooter("cloud relay profile missing; run /relay cloud login first", "error")
+          deps.appendNotice("cloud is not linked. Run /cloud first.")
           return
         }
         const relayStatus = await deps.getRelayStatus()
@@ -1875,7 +1874,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         const alias = cloudArgs.slice(1).join(" ").trim() || relayStatus.machine_alias || undefined
         const paired = await deps.pairCloudRelayMachine(profile, machineId, alias)
         await deps.saveCloudRelayProfile(paired)
-        deps.flashFooter(`cloud relay machine paired as ${paired.machineId ?? machineId}`, "info")
+        deps.appendNotice(`cloud machine linked: ${paired.machineId ?? machineId}`)
         return
       }
       if (cloudCommand === "connect" || cloudCommand === "refresh") {
@@ -1885,7 +1884,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         const profile = deps.getCloudRelayProfile?.() ?? null
         if (!profile) {
-          deps.flashFooter("cloud relay profile missing; run /relay cloud login first", "error")
+          deps.appendNotice("cloud is not linked. Run /cloud first.")
           return
         }
         const relayStatus = await deps.getRelayStatus()
@@ -1898,7 +1897,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           tokenExpiresAtMs: issued.tokenExpiresAtMs,
         })
         await deps.refreshWaitingRoomData?.()
-        deps.flashFooter(`cloud relay connected: ${issued.relayUrl}`, "info")
+        deps.appendNotice(`cloud kernel connected: ${issued.relayUrl}`)
         return
       }
       if (cloudCommand === "client-token") {
@@ -1908,7 +1907,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         const profile = deps.getCloudRelayProfile?.() ?? null
         if (!profile) {
-          deps.flashFooter("cloud relay profile missing; run /relay cloud login first", "error")
+          deps.appendNotice("cloud is not linked. Run /cloud first.")
           return
         }
         const targetDaemonAlias = cloudArgs[0]
@@ -1931,14 +1930,14 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         deps.appendNotice(
           [
-            "cloud relay client token",
-            `relay_url=${issued.relayUrl}`,
+            "cloud client token",
+            `transport=${issued.relayUrl}`,
             `expires_at_ms=${issued.tokenExpiresAtMs}`,
             ...(sessionId ? [`session_id=${sessionId}`] : []),
             `command=arroba --relay-url ${issued.relayUrl} --relay-token ${issued.relayToken} --target-daemon-alias ${targetDaemonAlias}`,
           ].join("\n"),
         )
-        deps.flashFooter(`cloud relay client token minted for ${targetDaemonAlias}`, "info")
+        deps.appendNotice(`cloud client token minted for ${targetDaemonAlias}`)
         return
       }
       if (cloudCommand === "disable" || cloudCommand === "logout") {
@@ -1956,7 +1955,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           })
         }
         await deps.saveCloudRelayProfile(null)
-        deps.flashFooter("cloud relay profile cleared", "info")
+        deps.appendNotice("cloud link cleared")
         return
       }
       deps.flashFooter(
