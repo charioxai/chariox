@@ -357,13 +357,16 @@ test("relay cloud login without args uses device flow", async () => {
   assert.equal((savedProfiles.at(-1) as { cloudSessionToken?: string; tokenExpiresAtMs?: number } | null)?.cloudSessionToken, "session-token")
   assert.equal((savedProfiles.at(-1) as { tokenExpiresAtMs?: number } | null)?.tokenExpiresAtMs, 1234)
   assert.deepEqual(configured, [{ relayUrl: "wss://relay.example", relayToken: "relay-token" }])
-  assert.match(notices.at(-1) ?? "", /code=ABCD-EFGH/)
+  assert.ok(notices.some((message) => /code=ABCD-EFGH/.test(message)))
+  assert.equal(notices.at(-1), "cloud linked: user")
 })
 
 test("/cloud triggers hosted device login flow", async () => {
   const flashed: string[] = []
+  const notices: string[] = []
   const handlers = createCommandActionHandlers(makeCommandDeps({
     flashFooter: (message: string) => { flashed.push(message) },
+    appendNotice: (message: string) => { notices.push(message) },
     getRelayStatus: async () => ({
       configured: false,
       connected: false,
@@ -415,7 +418,9 @@ test("/cloud triggers hosted device login flow", async () => {
 
   await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
 
-  assert.equal(flashed.at(-1), "cloud linked: user")
+  assert.deepEqual(flashed, [])
+  assert.match(notices[0] ?? "", /cloud login/)
+  assert.equal(notices.at(-1), "cloud linked: user")
 })
 
 test("relay cloud login without args prefers configured hosted api url", async () => {

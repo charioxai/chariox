@@ -35,6 +35,7 @@ import type {
   PromptSubmittedPayload,
   ProviderProcessInfo,
   RuntimeAttachment,
+  RuntimeInteraction,
   RuntimeNoticeRecord,
   RuntimeProviderRun,
   RuntimeSession,
@@ -136,6 +137,7 @@ import {
   pairCloudRelayMachineRequest,
   pollCloudRelayLoginRequest,
   pollRuntimeNoticesRequest,
+  respondToInteractionRequest,
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
   revokeAgentCapabilityRequest,
@@ -538,6 +540,8 @@ type CliAutomationRequest = {
   action?: unknown
   command?: unknown
   screen?: unknown
+  choiceIndex?: unknown
+  delta?: unknown
   daemonDisconnected?: unknown
   sessionId?: unknown
   statusLine?: unknown
@@ -869,6 +873,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let responsePrimaryPane: BoxRenderable | undefined
   const responseAuxiliaryPanes: Array<BoxRenderable | undefined> = []
   const responseAuxiliaryScrollboxes: Array<ScrollBoxRenderable | undefined> = []
+  let responsePrimaryInteractionBox: BoxRenderable | undefined
+  const responseAuxiliaryInteractionBoxes: Array<BoxRenderable | undefined> = []
   let responsePrimaryFooterBox: BoxRenderable | undefined
   const responseAuxiliaryFooterBoxes: Array<BoxRenderable | undefined> = []
   let responsePrimaryFooterParts: SplitPaneFooterTextGroup = {}
@@ -876,6 +882,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let responsePrimaryFooterBadgeTexts: TextRenderable[] = []
   const responseAuxiliaryFooterBadgeTexts: Array<TextRenderable[]> = []
   const responseAuxiliaryAgentIds: Array<string | null> = []
+  const interactionChoiceSelection = new Map<string, number>()
   const agentTranscriptScrollboxes = new Map<string, ScrollBoxRenderable>()
   const agentTranscriptRenderables = new Map<string, Map<number, TranscriptEntryRenderable>>()
   const agentEmptyTranscriptRenderables = new Map<string, BoxRenderable>()
@@ -965,6 +972,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const multiAgentMode = () => isAttached() && sessionState().agents.length > 1
   const workflowScreenShowing = () => isAttached() && workspaceScreenMode() === "workflow"
   const splitAgentResponseMode = () => isAttached() && sessionState().agents.length > 1 && multiAgentResponseLayout() === "split"
+  const activeInteractionForAgent = (agentId: string | null | undefined): RuntimeInteraction | null => {
+    if (!agentId) {
+      return null
+    }
+    return sessionState().active_interactions?.find((interaction) => interaction.agent_id === agentId) ?? null
+  }
+  const focusedAgentInteraction = () => activeInteractionForAgent(focusedAgentId())
   const workflowPromptState = createMemo(() => deriveWorkflowPromptState({
     workflowScreenActive: workflowScreenShowing(),
     workflows: sessionState().workflows ?? [],
@@ -1550,10 +1564,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         await connectDetachedKernelFromWaitingRoom()
       }
       if (waitingRoomState().focus === "relay") {
-        setPromptText("/cloud")
-        promptInput?.focus()
-        syncCommandCenter("/cloud")
-        flashFooter("press Enter to link local Arroba with Cloud", "info")
+        await handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
         return
       }
       if (waitingRoomState().focus === "remote-kernel") {
@@ -3800,6 +3811,102 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     responsePrimaryFooterBox?.requestRender()
   }
 
+  const renderInteractionChoices = (
+    container: BoxRenderable,
+    interaction: RuntimeInteraction,
+    focused: boolean,
+  ) => {
+    const selectedIndex = Math.min(
+      interactionChoiceSelection.get(interaction.id) ?? 0,
+      Math.max(0, interaction.choices.length - 1),
+    )
+    interactionChoiceSelection.set(interaction.id, selectedIndex)
+    const choicesBox = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      gap: 1,
+      flexShrink: 0,
+    })
+    interaction.choices.forEach((choice, index) => {
+      const text = new TextRenderable(renderer, { wrapMode: "none" })
+      const selected = focused && index === selectedIndex
+      const tone = choice.style === "danger"
+        ? theme.error
+        : choice.style === "secondary"
+          ? theme.textMuted
+          : theme.primary
+      text.content = `${selected ? ">" : " "} ${index + 1}.${choice.label}`
+      text.fg = selected ? theme.background : tone
+      text.bg = selected ? tone : undefined
+      text.attributes = selected ? TextAttributes.BOLD : TextAttributes.NONE
+      choicesBox.add(text)
+    })
+    container.add(choicesBox)
+  }
+
+  const renderInteractionStrip = (
+    box: BoxRenderable | undefined,
+    agent: AgentInstance | null | undefined,
+  ) => {
+    if (!box) {
+      return
+    }
+    for (const child of [...box.getChildren()]) {
+      box.remove(String(child.id))
+      child.destroyRecursively?.()
+    }
+    const interaction = activeInteractionForAgent(agent?.id ?? null)
+    box.visible = Boolean(interaction)
+    box.flexDirection = "column"
+    box.gap = 0
+    box.paddingLeft = interaction ? 1 : 0
+    box.paddingRight = interaction ? 1 : 0
+    box.paddingTop = interaction ? 0 : 0
+    box.paddingBottom = interaction ? 0 : 0
+    box.backgroundColor = theme.backgroundElement
+    if (!interaction) {
+      box.requestRender?.()
+      return
+    }
+
+    const focused = agent?.id === focusedAgentId()
+    const titleLine = new TextRenderable(renderer, {
+      wrapMode: "char",
+      fg: interaction.level === "critical"
+        ? theme.error
+        : interaction.level === "warning"
+          ? theme.warning
+          : theme.info,
+      attributes: TextAttributes.BOLD,
+    })
+    const titlePrefix = interaction.level.toUpperCase()
+    titleLine.content = interaction.title
+      ? `${titlePrefix} • ${interaction.title}`
+      : titlePrefix
+    const messageLine = new TextRenderable(renderer, {
+      wrapMode: "word",
+      fg: theme.text,
+    })
+    const timeoutSuffix = interaction.timeout_sec
+      ? ` • timeout ${interaction.timeout_sec}s`
+      : ""
+    messageLine.content = `${interaction.message}${timeoutSuffix}`
+    box.add(titleLine)
+    box.add(messageLine)
+    renderInteractionChoices(box, interaction, focused)
+    box.requestRender?.()
+  }
+
+  const renderAgentInteractions = () => {
+    const visibleAgents = responseVisibleAgents()
+    renderInteractionStrip(responsePrimaryInteractionBox, visibleAgents[0] ?? null)
+    for (let slotIndex = 0; slotIndex < maxAgentsPerScreen() - 1; slotIndex += 1) {
+      renderInteractionStrip(
+        responseAuxiliaryInteractionBoxes[slotIndex],
+        visibleAgents[slotIndex + 1] ?? null,
+      )
+    }
+  }
+
   const promptMetaToneColor = (tone: PromptMetaTone) => theme[tone]
 
   const setPromptMetaRenderables = (parts: PromptMetaPart[]) => {
@@ -3976,6 +4083,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     const layoutPane = (
       pane: BoxRenderable | undefined,
+      interactionBox: BoxRenderable | undefined,
       footerBox: BoxRenderable | undefined,
       scrollbox: ScrollBoxRenderable | undefined,
       focused: boolean,
@@ -4002,11 +4110,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       pane.backgroundColor = visible && split
         ? transcriptSurfacePalette(resolveTranscriptSurfaceTone(true, focused)).panel
         : defaultBackground
+      interactionBox && (interactionBox.visible = visible && Boolean(interactionBox.getChildren().length))
       footerBox && (footerBox.visible = visible && showFooter)
       if (scrollbox) {
         scrollbox.backgroundColor = pane.backgroundColor
         scrollbox.requestRender?.()
       }
+      interactionBox?.requestRender?.()
       pane.requestRender?.()
       footerBox?.requestRender?.()
     }
@@ -4115,6 +4225,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         if (slot.paneIndex === 0) {
           layoutPane(
             primaryPane,
+            responsePrimaryInteractionBox,
             responsePrimaryFooterBox,
             transcriptScrollbox,
             slot.focused,
@@ -4132,6 +4243,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         const auxiliaryIndex = slot.paneIndex - 1
         layoutPane(
           responseAuxiliaryPanes[auxiliaryIndex],
+          responseAuxiliaryInteractionBoxes[auxiliaryIndex],
           responseAuxiliaryFooterBoxes[auxiliaryIndex],
           responseAuxiliaryScrollboxes[auxiliaryIndex],
           slot.focused,
@@ -4148,6 +4260,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         if (paneIndex === 0) {
           layoutPane(
             primaryPane,
+            responsePrimaryInteractionBox,
             responsePrimaryFooterBox,
             transcriptScrollbox,
             false,
@@ -4160,6 +4273,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         const auxiliaryIndex = paneIndex - 1
         layoutPane(
           responseAuxiliaryPanes[auxiliaryIndex],
+          responseAuxiliaryInteractionBoxes[auxiliaryIndex],
           responseAuxiliaryFooterBoxes[auxiliaryIndex],
           responseAuxiliaryScrollboxes[auxiliaryIndex],
           false,
@@ -4191,6 +4305,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
 
     renderSplitPaneFooters()
+    renderAgentInteractions()
 
     for (let auxiliaryIndex = 0; auxiliaryIndex < maxAgentsPerScreen() - 1; auxiliaryIndex += 1) {
       const paneIndex = auxiliaryIndex + 1
@@ -4322,6 +4437,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     footerSummaryBox?.requestRender()
     renderStatusIndicator()
     renderSplitPaneFooters()
+    renderAgentInteractions()
   }
 
   const shouldThrottleSessionChrome = () => (
@@ -6687,6 +6803,84 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
+  const submitFocusedInteractionChoice = async (choiceIndex?: number) => {
+    const interaction = focusedAgentInteraction()
+    if (!interaction || !isAttached()) {
+      return false
+    }
+    const resolvedChoiceIndex = Math.min(
+      choiceIndex ?? interactionChoiceSelection.get(interaction.id) ?? 0,
+      Math.max(0, interaction.choices.length - 1),
+    )
+    const choice = interaction.choices[resolvedChoiceIndex]
+    if (!choice) {
+      return false
+    }
+    interactionChoiceSelection.set(interaction.id, resolvedChoiceIndex)
+    try {
+      const response = await client.send<Record<string, unknown>>(
+        respondToInteractionRequest(sessionState().id, interaction.id, choice.id),
+      )
+      const payload = expectVariant<{ session: RuntimeSession }>(response, "InteractionResponded")
+      payload.session = normalizeRuntimeSession(payload.session)
+      applySessionState(payload.session)
+      flashFooter("interaction answered", "info")
+      return true
+    } catch (error) {
+      flashFooter(formatError(error), "error")
+      return true
+    }
+  }
+
+  const cycleFocusedInteractionChoice = (delta: number) => {
+    const interaction = focusedAgentInteraction()
+    if (!interaction) {
+      return false
+    }
+    const currentIndex = interactionChoiceSelection.get(interaction.id) ?? 0
+    const nextIndex = (currentIndex + delta + interaction.choices.length) % interaction.choices.length
+    interactionChoiceSelection.set(interaction.id, nextIndex)
+    renderAgentInteractions()
+    applyResponseLayout()
+    return true
+  }
+
+  const handleFocusedInteractionKey = (event: {
+    name: string
+    eventType?: string
+    preventDefault?: () => void
+    stopPropagation?: () => void
+  }) => {
+    const interaction = focusedAgentInteraction()
+    if (!interaction || event.eventType === "release") {
+      return false
+    }
+    if (event.name === "left" || event.name === "up") {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      return cycleFocusedInteractionChoice(-1)
+    }
+    if (event.name === "right" || event.name === "down") {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      return cycleFocusedInteractionChoice(1)
+    }
+    const numericIndex = Number.parseInt(event.name, 10)
+    if (Number.isInteger(numericIndex) && numericIndex >= 1 && numericIndex <= interaction.choices.length) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      void submitFocusedInteractionChoice(numericIndex - 1)
+      return true
+    }
+    if (event.name === "return" || event.name === "enter") {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      void submitFocusedInteractionChoice()
+      return true
+    }
+    return false
+  }
+
   useKeyboard((event) => {
     if (handleHotkeysToggleShortcut("keyboard", event)) {
       return
@@ -6791,6 +6985,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     if (event.eventType !== "release" && event.ctrl && event.name === "e") {
       void requestExit()
+      return
+    }
+    if (handleFocusedInteractionKey(event)) {
       return
     }
     if (promptInput?.focused && commandCenterOpen()) {
@@ -6900,6 +7097,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         focusedAgentId: focusedAgentId(),
         agentCount: sessionState().agents.length,
       },
+      interactions: (sessionState().active_interactions ?? []).map((interaction) => ({
+        id: interaction.id,
+        agentId: interaction.agent_id,
+        kind: interaction.kind,
+        level: interaction.level,
+        title: interaction.title,
+        message: interaction.message,
+        timeoutSec: interaction.timeout_sec,
+        defaultOnTimeout: interaction.default_on_timeout,
+        focused: focusedAgentId() === interaction.agent_id,
+        selectedChoiceIndex: interactionChoiceSelection.get(interaction.id) ?? 0,
+        choices: interaction.choices.map((choice) => ({
+          id: choice.id,
+          label: choice.label,
+          style: choice.style,
+        })),
+      })),
       waitingRoom: !isAttached()
         ? {
           state: waitingRoomState(),
@@ -7009,6 +7223,28 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         const result = await submitWorkspaceShellCommand(`@ ${command}`)
         return { result, snapshot: automationSnapshot() }
       }
+      case "submit_prompt": {
+        const prompt = typeof request.prompt === "string" ? request.prompt : ""
+        if (!prompt.trim()) {
+          throw new Error("usage: submit_prompt prompt=<text>")
+        }
+        if (isAttached()) {
+          await client.send<Record<string, unknown>>(
+            launchProviderRunRequest(
+              sessionState().id,
+              options.provider ?? "opencode",
+              options.accountProfile,
+              options.model,
+              options.effort,
+              focusedAgentId(),
+            ),
+          )
+          await maybeResize(client, sessionState().id)
+        }
+        setPromptText(prompt)
+        await submitPrompt()
+        return automationSnapshot()
+      }
       case "activate_waiting_room": {
         if (isAttached()) {
           throw new Error("cannot activate waiting room while attached")
@@ -7025,6 +7261,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
       case "snapshot":
         return automationSnapshot()
+      case "interaction_submit": {
+        const choiceIndex = typeof request.choiceIndex === "number" ? request.choiceIndex : undefined
+        await submitFocusedInteractionChoice(choiceIndex)
+        return automationSnapshot()
+      }
+      case "interaction_move": {
+        const delta = typeof request.delta === "number" ? request.delta : 0
+        if (!delta) {
+          throw new Error("usage: interaction_move delta=<signed integer>")
+        }
+        cycleFocusedInteractionChoice(delta)
+        return automationSnapshot()
+      }
       case "wait_for": {
         const timeoutMs = typeof request.timeoutMs === "number" ? request.timeoutMs : 10_000
         const intervalMs = typeof request.intervalMs === "number" ? request.intervalMs : 100
@@ -7972,6 +8221,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         rebuildTranscript()
         ensureBackgroundPollersStarted()
       }}
+      onResponsePrimaryInteractionBoxRef={(value) => {
+        responsePrimaryInteractionBox = value
+        renderAgentInteractions()
+        applyResponseLayout()
+      }}
       onResponsePrimaryFooterBoxRef={(value) => {
         responsePrimaryFooterBox = value
         renderSplitPaneFooters()
@@ -7989,6 +8243,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         logViewDebug("mounted response auxiliary scrollbox", {
           pane_index: index + 1,
         })
+        applyResponseLayout()
+      }}
+      onResponseAuxiliaryInteractionBoxRef={(index, value) => {
+        responseAuxiliaryInteractionBoxes[index] = value
+        renderAgentInteractions()
         applyResponseLayout()
       }}
       onResponseAuxiliaryFooterBoxRef={(index, value) => {
@@ -8012,6 +8271,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         ensureBackgroundPollersStarted()
       }}
       onPromptKeyDown={(event) => {
+        if (handleFocusedInteractionKey(event)) {
+          return
+        }
         if (handleCommandCenterKey(event)) {
           return
         }
@@ -8022,6 +8284,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }}
       onPromptContentChange={handlePromptContentChange}
       onPromptSubmit={() => {
+        if (focusedAgentInteraction()) {
+          void submitFocusedInteractionChoice()
+          return
+        }
         if (commandCenterOpen()) {
           if (selectCommandCenterFromSubmit()) {
             return

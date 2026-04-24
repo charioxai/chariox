@@ -35,6 +35,8 @@ const execFileAsync = promisify(execFile)
 
 const WORKFLOW_MAX_TURNS_CONFIG_KEY = "workflow.max_turns"
 const WORKFLOW_LAUNCH_POLICY_CONFIG_KEY = "workflow.launch_policy"
+const SESSION_AGENT_MODE_CONFIG_KEY = "agents.mode"
+const SESSION_AGENT_PERMISSION_CONFIG_KEY = "agents.permissions"
 const DEFAULT_HOSTED_CLOUD_API_URL = "https://cloud.arroba.dev"
 
 type FooterTone = "info" | "error"
@@ -72,6 +74,11 @@ type AgentFocusPayload = {
 }
 
 type AgentSpawnPayload = {
+  agent: AgentInstance
+  session: RuntimeSession
+}
+
+type AgentConfigUpdatePayload = {
   agent: AgentInstance
   session: RuntimeSession
 }
@@ -333,6 +340,16 @@ type CommandActionDeps = {
     values: Record<string, string>,
     requiresIdle: boolean,
   ) => Promise<{ session: RuntimeSession; config: SessionConfigState }>
+  updateAgentConfig?: (
+    sessionId: string,
+    agentId: string,
+    options: {
+      executionMode?: "build" | "plan" | null
+      clearExecutionMode?: boolean
+      permissionLevel?: "required" | "yolo" | null
+      clearPermissionLevel?: boolean
+    },
+  ) => Promise<AgentConfigUpdatePayload>
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>
   createWorkspaceLink?: (name: string) => Promise<WorkspaceLinkPayload>
@@ -526,6 +543,30 @@ export const parseMcpInstallConfig = (args: string[]): ArrobaMcpServerConfig | n
   return null
 }
 
+function parseExecutionMode(value: string | null | undefined): "build" | "plan" | null {
+  if (!value) return null
+  const normalized = value.trim().toLowerCase()
+  return normalized === "build" || normalized === "plan" ? normalized : null
+}
+
+function parsePermissionLevel(value: string | null | undefined): "required" | "yolo" | null {
+  if (!value) return null
+  const normalized = value.trim().toLowerCase()
+  return normalized === "required" || normalized === "yolo" ? normalized : null
+}
+
+function effectiveAgentExecutionMode(session: RuntimeSession, agent: AgentInstance | null | undefined): "build" | "plan" {
+  return agent?.execution_mode_override
+    ?? parseExecutionMode(session.config_state?.values?.[SESSION_AGENT_MODE_CONFIG_KEY])
+    ?? "build"
+}
+
+function effectiveAgentPermissionLevel(session: RuntimeSession, agent: AgentInstance | null | undefined): "required" | "yolo" {
+  return agent?.permission_level_override
+    ?? parsePermissionLevel(session.config_state?.values?.[SESSION_AGENT_PERMISSION_CONFIG_KEY])
+    ?? "yolo"
+}
+
 async function defaultPrepareLocalGitWorktree(options: LocalGitWorktreeOptions): Promise<string> {
   const baseDirectory = resolvePath(options.baseDirectory)
   const repoRoot = (await runGit(baseDirectory, ["rev-parse", "--show-toplevel"])).trim()
@@ -697,7 +738,6 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         opened ? "browser=opened" : "browser=manual",
       ].join("\n"),
     )
-    deps.flashFooter(opened ? "opened Arroba Cloud in browser" : `open ${started.verificationUrl}`, "info")
     let intervalMs = Math.max(started.intervalSeconds, 1) * 1000
     while (Date.now() < started.expiresAtMs) {
       const polled = await deps.pollCloudDeviceLogin(started.apiUrl, started.deviceCode)
@@ -711,21 +751,23 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
             relayStatus.machine_alias || undefined,
           )
           await deps.saveCloudRelayProfile(profile)
+          deps.appendNotice(`cloud machine linked: ${profile.machineId ?? relayStatus.machine_id}`)
         }
-        if (deps.issueCloudKernelRelayToken && deps.getRelayStatus && deps.configureRelay) {
+        if ((deps.issueCloudMachineRelayToken || deps.issueCloudKernelRelayToken) && deps.getRelayStatus && deps.configureRelay) {
           const refreshedRelayStatus = await deps.getRelayStatus()
           const issued = profile.machineId && deps.issueCloudMachineRelayToken
             ? await deps.issueCloudMachineRelayToken(profile, refreshedRelayStatus.daemon_id, profile.machineId)
-            : await deps.issueCloudKernelRelayToken(profile, refreshedRelayStatus.daemon_id)
+            : await deps.issueCloudKernelRelayToken!(profile, refreshedRelayStatus.daemon_id)
           await deps.configureRelay(issued.relayUrl, issued.relayToken)
           profile = {
             ...(issued.profile ?? profile),
             tokenExpiresAtMs: issued.tokenExpiresAtMs,
           }
           await deps.saveCloudRelayProfile(profile)
+          deps.appendNotice(`cloud kernel connected: ${issued.relayUrl}`)
         }
         await deps.refreshWaitingRoomData?.()
-        deps.flashFooter(`cloud linked: ${profile.accountSlug}`, "info")
+        deps.appendNotice(`cloud linked: ${profile.accountSlug}`)
         return
       }
       if (polled.status === "expired_token") {
@@ -1162,6 +1204,58 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         const sessions = await deps.listSessions()
         deps.appendNotice(deps.formatSessionList(sessions, deps.sessionState().id))
         deps.flashFooter(`listed ${sessions.length} session${sessions.length === 1 ? "" : "s"}`, "info")
+        return true
+      }
+      case "mode": {
+        if (!deps.attachmentState()) {
+          deps.flashFooter("must be attached to change session mode", "error")
+          return true
+        }
+        if (!value) {
+          const current = parseExecutionMode(deps.sessionState().config_state?.values?.[SESSION_AGENT_MODE_CONFIG_KEY]) ?? "build"
+          deps.flashFooter(`session mode: ${current}`, "info")
+          return true
+        }
+        const nextMode = parseExecutionMode(value)
+        if (!nextMode) {
+          deps.flashFooter("usage: /session mode <build|plan>", "error")
+          return true
+        }
+        const payload = await deps.updateSessionConfig(
+          deps.sessionState().id,
+          deps.attachmentState()!.id,
+          { [SESSION_AGENT_MODE_CONFIG_KEY]: nextMode },
+          false,
+        )
+        deps.applySessionState(payload.session)
+        await deps.refreshAgentPanes(payload.session)
+        deps.flashFooter(`session mode set to ${nextMode}`, "info")
+        return true
+      }
+      case "permissions": {
+        if (!deps.attachmentState()) {
+          deps.flashFooter("must be attached to change session permissions", "error")
+          return true
+        }
+        if (!value) {
+          const current = parsePermissionLevel(deps.sessionState().config_state?.values?.[SESSION_AGENT_PERMISSION_CONFIG_KEY]) ?? "yolo"
+          deps.flashFooter(`session permissions: ${current}`, "info")
+          return true
+        }
+        const nextLevel = parsePermissionLevel(value)
+        if (!nextLevel) {
+          deps.flashFooter("usage: /session permissions <required|yolo>", "error")
+          return true
+        }
+        const payload = await deps.updateSessionConfig(
+          deps.sessionState().id,
+          deps.attachmentState()!.id,
+          { [SESSION_AGENT_PERMISSION_CONFIG_KEY]: nextLevel },
+          false,
+        )
+        deps.applySessionState(payload.session)
+        await deps.refreshAgentPanes(payload.session)
+        deps.flashFooter(`session permissions set to ${nextLevel}`, "info")
         return true
       }
       case "delete": {
@@ -1615,9 +1709,79 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         await handleCycleAgentFocus()
         return
       }
+      case "mode": {
+        if (!deps.updateAgentConfig) {
+          deps.flashFooter("agent config updates are unavailable in this build", "error")
+          return
+        }
+        const reference = args[1]
+        const rawValue = args[2] ?? (reference && (parseExecutionMode(reference) || reference === "inherit") ? reference : undefined)
+        const resolved = deps.resolveSessionAgent(rawValue ? reference : deps.focusedAgentId() ?? undefined)
+        if (!resolved.agent) {
+          deps.flashFooter(resolved.error ?? "usage: /agent mode [agent-ref] <build|plan|inherit>", "error")
+          return
+        }
+        if (!rawValue) {
+          const effective = effectiveAgentExecutionMode(deps.sessionState(), resolved.agent)
+          const source = resolved.agent.execution_mode_override ? "agent" : "session"
+          deps.flashFooter(`${deps.formatAgentLabel(resolved.agent)} mode: ${effective} (${source})`, "info")
+          return
+        }
+        if (rawValue !== "inherit" && !parseExecutionMode(rawValue)) {
+          deps.flashFooter("usage: /agent mode [agent-ref] <build|plan|inherit>", "error")
+          return
+        }
+        const payload = await deps.updateAgentConfig(deps.sessionState().id, resolved.agent.id, {
+          executionMode: rawValue === "inherit" ? null : parseExecutionMode(rawValue),
+          clearExecutionMode: rawValue === "inherit",
+        })
+        deps.applySessionState(payload.session)
+        await deps.refreshAgentPanes(payload.session)
+        const effective = effectiveAgentExecutionMode(payload.session, payload.agent)
+        deps.flashFooter(
+          `${deps.formatAgentLabel(payload.agent)} mode: ${effective}${rawValue === "inherit" ? " (session)" : " (agent)"}`,
+          "info",
+        )
+        return
+      }
+      case "permissions": {
+        if (!deps.updateAgentConfig) {
+          deps.flashFooter("agent config updates are unavailable in this build", "error")
+          return
+        }
+        const reference = args[1]
+        const rawValue = args[2] ?? (reference && (parsePermissionLevel(reference) || reference === "inherit") ? reference : undefined)
+        const resolved = deps.resolveSessionAgent(rawValue ? reference : deps.focusedAgentId() ?? undefined)
+        if (!resolved.agent) {
+          deps.flashFooter(resolved.error ?? "usage: /agent permissions [agent-ref] <required|yolo|inherit>", "error")
+          return
+        }
+        if (!rawValue) {
+          const effective = effectiveAgentPermissionLevel(deps.sessionState(), resolved.agent)
+          const source = resolved.agent.permission_level_override ? "agent" : "session"
+          deps.flashFooter(`${deps.formatAgentLabel(resolved.agent)} permissions: ${effective} (${source})`, "info")
+          return
+        }
+        if (rawValue !== "inherit" && !parsePermissionLevel(rawValue)) {
+          deps.flashFooter("usage: /agent permissions [agent-ref] <required|yolo|inherit>", "error")
+          return
+        }
+        const payload = await deps.updateAgentConfig(deps.sessionState().id, resolved.agent.id, {
+          permissionLevel: rawValue === "inherit" ? null : parsePermissionLevel(rawValue),
+          clearPermissionLevel: rawValue === "inherit",
+        })
+        deps.applySessionState(payload.session)
+        await deps.refreshAgentPanes(payload.session)
+        const effective = effectiveAgentPermissionLevel(payload.session, payload.agent)
+        deps.flashFooter(
+          `${deps.formatAgentLabel(payload.agent)} permissions: ${effective}${rawValue === "inherit" ? " (session)" : " (agent)"}`,
+          "info",
+        )
+        return
+      }
       default:
         deps.flashFooter(
-          "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | list | cycle",
+          "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | list | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit>",
           "error",
         )
     }
