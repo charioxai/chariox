@@ -11,7 +11,9 @@ use tokio_tungstenite::tungstenite::{connect, Message, WebSocket};
 
 use crate::error::DaemonError;
 use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
-use crate::provider::{OpenCodeProviderCatalog, ProviderWriteAccessMode};
+use crate::provider::{
+    AgentExecutionMode, AgentPermissionLevel, OpenCodeProviderCatalog, ProviderWriteAccessMode,
+};
 
 use super::codex::CODEX_MCP_TOKEN_ENV;
 use super::resolve_codex_executable;
@@ -248,8 +250,10 @@ impl CodexClient {
         cwd: Option<&str>,
         model: Option<&str>,
         write_access_mode: ProviderWriteAccessMode,
+        execution_mode: AgentExecutionMode,
+        permission_level: AgentPermissionLevel,
     ) -> Result<CodexThreadStartResponse, DaemonError> {
-        let policy = codex_permission_policy(write_access_mode);
+        let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
         let mut params = json!({
             "approvalPolicy": policy.approval_policy,
             "sandbox": policy.sandbox,
@@ -280,8 +284,10 @@ impl CodexClient {
         cwd: Option<&str>,
         model: Option<&str>,
         write_access_mode: ProviderWriteAccessMode,
+        execution_mode: AgentExecutionMode,
+        permission_level: AgentPermissionLevel,
     ) -> Result<CodexThreadStartResponse, DaemonError> {
-        let policy = codex_permission_policy(write_access_mode);
+        let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
         let mut params = json!({
             "threadId": thread_id,
             "approvalPolicy": policy.approval_policy,
@@ -312,10 +318,12 @@ impl CodexClient {
         model: Option<&str>,
         effort: Option<&str>,
         write_access_mode: ProviderWriteAccessMode,
+        execution_mode: AgentExecutionMode,
+        permission_level: AgentPermissionLevel,
         input: Vec<Value>,
         buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<Value, DaemonError> {
-        let policy = codex_permission_policy(write_access_mode);
+        let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
         let mut params = json!({
             "threadId": thread_id,
             "input": input,
@@ -759,15 +767,15 @@ impl CodexClient {
 fn append_runtime_mcp_overrides(
     overrides: &mut BTreeMap<String, Value>,
     server_url: &str,
-    auth_token: &str,
+    _auth_token: &str,
 ) {
     overrides.insert(
         "mcp_servers.arroba.url".to_string(),
         json!(server_url.to_string()),
     );
     overrides.insert(
-        "mcp_servers.arroba.http_headers.Authorization".to_string(),
-        json!(format!("Bearer {auth_token}")),
+        "mcp_servers.arroba.bearer_token_env_var".to_string(),
+        json!(CODEX_MCP_TOKEN_ENV),
     );
     overrides.insert("mcp_servers.arroba.required".to_string(), json!(true));
     overrides.insert("mcp_servers.arroba.tool_timeout_sec".to_string(), json!(15));
@@ -838,12 +846,44 @@ fn append_codex_mcp_overrides(
     }
 }
 
-fn codex_permission_policy(write_access_mode: ProviderWriteAccessMode) -> CodexPermissionPolicy {
+fn codex_permission_policy(
+    write_access_mode: ProviderWriteAccessMode,
+    execution_mode: AgentExecutionMode,
+    permission_level: AgentPermissionLevel,
+) -> CodexPermissionPolicy {
     match write_access_mode {
         ProviderWriteAccessMode::Unrestricted => CodexPermissionPolicy {
-            approval_policy: "never",
-            sandbox: "danger-full-access",
-            sandbox_policy: json!({ "type": "dangerFullAccess" }),
+            approval_policy: match permission_level {
+                AgentPermissionLevel::Required => "on-request",
+                AgentPermissionLevel::Yolo => "never",
+            },
+            sandbox: match execution_mode {
+                AgentExecutionMode::Build => {
+                    if matches!(permission_level, AgentPermissionLevel::Required) {
+                        "workspace-write"
+                    } else {
+                        "danger-full-access"
+                    }
+                }
+                AgentExecutionMode::Plan => "read-only",
+            },
+            sandbox_policy: match execution_mode {
+                AgentExecutionMode::Build => {
+                    if matches!(permission_level, AgentPermissionLevel::Required) {
+                        json!({ "type": "workspaceWrite" })
+                    } else {
+                        json!({ "type": "dangerFullAccess" })
+                    }
+                }
+                AgentExecutionMode::Plan => json!({
+                    "type": "readOnly",
+                    "access": {
+                        "type": "restricted",
+                        "includePlatformDefaults": true,
+                        "readableRoots": []
+                    }
+                }),
+            },
             config_overrides: BTreeMap::new(),
         },
         ProviderWriteAccessMode::ManagedIoRequired => {
@@ -1028,9 +1068,32 @@ fn parse_runtime_mcp_response(response: &[u8]) -> Result<String, DaemonError> {
 }
 
 pub fn codex_endpoint_is_healthy(endpoint: &str) -> bool {
-    CodexClient::new("catalog", endpoint)
-        .and_then(|client| client.connect_initialized())
-        .is_ok()
+    codex_readyz_is_healthy(endpoint)
+        || CodexClient::new("catalog", endpoint)
+            .and_then(|client| client.connect_initialized())
+            .is_ok()
+}
+
+fn codex_readyz_is_healthy(endpoint: &str) -> bool {
+    let Ok(mut url) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    match url.scheme() {
+        "ws" => {
+            let _ = url.set_scheme("http");
+        }
+        "wss" => {
+            let _ = url.set_scheme("https");
+        }
+        "http" | "https" => {}
+        _ => return false,
+    }
+    url.set_path("/readyz");
+    url.set_query(None);
+    match ureq::get(url.as_str()).call() {
+        Ok(response) => response.status() == 200,
+        Err(_) => false,
+    }
 }
 
 fn codex_version() -> Result<String, DaemonError> {
@@ -1273,7 +1336,7 @@ mod tests {
     use serde_json::json;
 
     use crate::mcp::ArrobaMcpServerConfig;
-    use crate::provider::ProviderWriteAccessMode;
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderWriteAccessMode};
 
     use super::{
         codex_permission_policy, managed_io_codex_permission_grant, parse_notification,
@@ -1282,7 +1345,7 @@ mod tests {
 
     #[test]
     fn managed_io_permission_policy_uses_read_only_sandbox() {
-        let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired);
+        let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired, AgentExecutionMode::Build, AgentPermissionLevel::Yolo);
 
         assert_eq!(policy.approval_policy, "never");
         assert_eq!(policy.sandbox, "read-only");
@@ -1376,7 +1439,7 @@ mod tests {
         let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
             .expect("client should construct")
             .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"));
-        let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired);
+        let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired, AgentExecutionMode::Build, AgentPermissionLevel::Yolo);
 
         let overrides = client.thread_config_overrides(&policy).unwrap();
 
@@ -1385,8 +1448,8 @@ mod tests {
             Some(&json!("http://127.0.0.1:43120/mcp"))
         );
         assert_eq!(
-            overrides.get("mcp_servers.arroba.http_headers.Authorization"),
-            Some(&json!("Bearer token-123"))
+            overrides.get("mcp_servers.arroba.bearer_token_env_var"),
+            Some(&json!("ARROBA_MCP_TOKEN"))
         );
         assert_eq!(
             overrides.get("mcp_servers.arroba.required"),
@@ -1408,7 +1471,7 @@ mod tests {
         let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
             .expect("client should construct")
             .with_mcp_servers(&[server]);
-        let policy = codex_permission_policy(ProviderWriteAccessMode::Unrestricted);
+        let policy = codex_permission_policy(ProviderWriteAccessMode::Unrestricted, AgentExecutionMode::Build, AgentPermissionLevel::Yolo);
 
         let overrides = client.thread_config_overrides(&policy).unwrap();
 
@@ -1440,7 +1503,7 @@ mod tests {
             .expect("client should construct")
             .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"))
             .with_mcp_servers(&[server]);
-        let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired);
+        let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired, AgentExecutionMode::Build, AgentPermissionLevel::Yolo);
 
         let overrides = client.thread_config_overrides(&policy).unwrap();
 

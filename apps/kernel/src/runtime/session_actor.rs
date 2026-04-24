@@ -8,8 +8,9 @@ use crate::error::DaemonError;
 use crate::local::{
     AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest, DeleteSessionRequest,
     DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest,
-    LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest,
-    SpawnAgentRequest, UpdateSessionConfigRequest,
+    LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+    RespondToInteractionRequest, ResizeTerminalRequest, SpawnAgentRequest,
+    UpdateAgentConfigRequest, UpdateSessionConfigRequest,
 };
 use crate::runtime::command::{KernelCallerKind, KernelCommand};
 use crate::runtime::projection::{
@@ -170,6 +171,12 @@ impl SessionRuntime {
                     &request.session_id,
                     &request.attachment_id,
                 ),
+            LocalDaemonRequest::UpdateAgentConfig(request) => {
+                self.resolve_direct_session_lane_key(&request.session_id)
+            }
+            LocalDaemonRequest::RespondToInteraction(request) => {
+                self.resolve_direct_session_lane_key(&request.session_id)
+            }
             LocalDaemonRequest::AliasSession(request) => {
                 self.resolve_direct_session_lane_key(&request.session_id)
             }
@@ -543,6 +550,75 @@ impl SessionRuntimeStore {
         self.with_session_projection_action_result(result).await
     }
 
+    async fn update_agent_config(
+        &self,
+        request: UpdateAgentConfigRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let session_id = request.session_id.clone();
+        let execution_mode_override = if request.clear_execution_mode {
+            Some(None)
+        } else {
+            request.execution_mode.map(Some)
+        };
+        let permission_level_override = if request.clear_permission_level {
+            Some(None)
+        } else {
+            request.permission_level.map(Some)
+        };
+        let result = match self
+            .state
+            .update_agent_config(
+                &request.session_id,
+                &request.agent_id,
+                &caller_user_id,
+                execution_mode_override,
+                permission_level_override,
+            )
+            .await
+        {
+            Ok(agent) => self
+                .state
+                .session_snapshot(&session_id)
+                .await
+                .map(|session| LocalDaemonResponse::AgentConfigUpdated { agent, session }),
+            Err(error) => Err(error),
+        };
+        self.with_session_projection_action_result(result).await
+    }
+
+    async fn respond_to_interaction(
+        &self,
+        request: RespondToInteractionRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let session_id = request.session_id.clone();
+        let interaction_id = request.interaction_id.clone();
+        let result = match self
+            .state
+            .resolve_runtime_interaction(
+                &request.session_id,
+                &request.interaction_id,
+                &request.choice_id,
+            )
+            .await
+        {
+            Ok(()) => self.state.session_snapshot(&session_id).await.map(|session| {
+                LocalDaemonResponse::InteractionResponded {
+                    interaction_id,
+                    session,
+                }
+            }),
+            Err(error) => Err(error),
+        };
+        self.with_session_projection_action_result(result).await
+    }
+
     async fn alias_session(
         &self,
         request: AliasSessionRequest,
@@ -580,6 +656,16 @@ impl SessionRuntimeStore {
         };
         let create_request = if let Some(effort) = request.effort {
             create_request.with_effort(effort)
+        } else {
+            create_request
+        };
+        let create_request = if let Some(execution_mode) = request.execution_mode {
+            create_request.with_execution_mode_override(execution_mode)
+        } else {
+            create_request
+        };
+        let create_request = if let Some(permission_level) = request.permission_level {
+            create_request.with_permission_level_override(permission_level)
         } else {
             create_request
         };
@@ -835,6 +921,12 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::UpdateSessionConfig(request) => {
                 self.store.update_session_config(request).await
             }
+            LocalDaemonRequest::UpdateAgentConfig(request) => {
+                self.store.update_agent_config(request, caller_user_id).await
+            }
+            LocalDaemonRequest::RespondToInteraction(request) => {
+                self.store.respond_to_interaction(request).await
+            }
             LocalDaemonRequest::AliasSession(request) => self.store.alias_session(request).await,
             LocalDaemonRequest::SpawnAgent(request) => {
                 self.store.spawn_agent(request, caller_user_id).await
@@ -908,6 +1000,7 @@ fn session_response_projection_action(
 ) -> Option<SessionProjectionAction> {
     match response {
         LocalDaemonResponse::SessionCreated { session, .. }
+        | LocalDaemonResponse::AgentConfigUpdated { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
         | LocalDaemonResponse::SessionEnded { session }
         | LocalDaemonResponse::SessionAliased { session } => {
@@ -1049,6 +1142,7 @@ fn session_id_for_projection_refresh(
         Ok(LocalDaemonResponse::SessionCreated { session, .. }) => Some(session.id().to_string()),
         Ok(LocalDaemonResponse::AgentFocused { agent }) => Some(agent.session_id().to_string()),
         Ok(LocalDaemonResponse::AgentSpawned { agent })
+        | Ok(LocalDaemonResponse::AgentConfigUpdated { agent, .. })
         | Ok(LocalDaemonResponse::AgentDestroyed { agent }) => Some(agent.session_id().to_string()),
         Ok(LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) }) => {
             Some(agent.session_id().to_string())
@@ -1076,7 +1170,9 @@ impl SessionActor {
                 | LocalDaemonRequest::CycleAgentFocus(_)
                 | LocalDaemonRequest::ResizeTerminal(_)
                 | LocalDaemonRequest::PollRuntimeNotices(_)
+                | LocalDaemonRequest::RespondToInteraction(_)
                 | LocalDaemonRequest::UpdateSessionConfig(_)
+                | LocalDaemonRequest::UpdateAgentConfig(_)
                 | LocalDaemonRequest::AliasSession(_)
                 | LocalDaemonRequest::SpawnAgent(_)
                 | LocalDaemonRequest::DestroyAgent(_)
@@ -1447,6 +1543,8 @@ mod tests {
             provider: "dev-stub".to_string(),
             model: Some("default".to_string()),
             effort: None,
+            execution_mode: None,
+            permission_level: None,
             worktree_id: Some("worktree".to_string()),
             machine_ref: None,
             worktree_placement: None,
