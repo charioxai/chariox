@@ -22,6 +22,23 @@ Chronological notes to preserve execution context between contributors/agents.
 - Verified with `cd experiments/controlled-exec-spike && npm run check`, `npm test`, `npm run drill:fake`, and `npm run drill:providers`.
 - Latest live artifacts: `experiments/controlled-exec-spike/artifacts/2026-04-24T11-19-09-661Z-provider-drill/`.
 
+### M12 popup + native permission closure
+
+- Added the production popup interaction layer to Arroba proper: `request_popup` now blocks the current turn until the user answers or a timeout/default resolves.
+- Added always-injected shared runtime instructions so Arroba runtime MCP tools are advertised independently of managed-I/O mode.
+- Surfaced provider-native permissions through the same interaction model:
+  - Codex `item/commandExecution/requestApproval`
+  - OpenCode native permission events
+- Routed CLI interaction-strip answers back to provider-native approval channels and resumed the same turn after approval.
+- Fixed transient interaction lifecycle bugs by moving pending interaction / pending MCP continuation stores onto shared process-wide state.
+- Fixed Codex native approval handling by restoring the correct unrestricted `required -> on-request` mapping and the correct app-server decision vocabulary.
+- Added live drill coverage:
+  - `apps/cli/scripts/live-native-permission-drill.mjs`
+  - `apps/cli/scripts/live-popup-drill.mjs`
+- Confirmed live native permission drills for both Codex and OpenCode.
+- Confirmed live Codex popup execution on the real-home auth path and retained artifacts proving `request_popup` completed and resumed with `USER_FEEDBACK_RESULT:green`.
+- Closed M12 scope. Managed-I/O-specific permission handling, shell popup queue UX, and remote permission UX stay in later milestones.
+
 ## 2026-04-19
 
 ### M7.5 Arroba Shell core skeleton

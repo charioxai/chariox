@@ -19,6 +19,7 @@ function parseArgs(argv) {
     pollMs: DEFAULT_POLL_MS,
     keepArtifactsOnFailure: false,
     providerModels: {},
+    useRealHome: false,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -32,6 +33,7 @@ function parseArgs(argv) {
       options.providerModels[provider] = model
     }
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--use-real-home') options.useRealHome = true
     else if (arg === '--help' || arg === '-h') {
       console.log([
         'Usage: node apps/cli/scripts/live-popup-drill.mjs [options]',
@@ -42,6 +44,7 @@ function parseArgs(argv) {
         `  --poll-ms ${DEFAULT_POLL_MS}`,
         '  --provider-model PROVIDER=MODEL',
         '  --keep-artifacts-on-failure',
+        '  --use-real-home',
       ].join('\n'))
       process.exit(0)
     } else {
@@ -272,6 +275,23 @@ async function waitForTerminalText(events, needle, timeoutMs, pollMs) {
   throw new Error(`timed out waiting for terminal text ${needle}`)
 }
 
+async function waitForHistoryText(client, sessionId, agentId, needle, timeoutMs, pollMs) {
+  const { getSessionHistoryRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const history = unwrap(
+      await client.send(getSessionHistoryRequest(sessionId, 40, 80_000, null, agentId)),
+      'SessionHistory',
+    )
+    const text = (history?.entries ?? []).map((entry) => String(entry.text ?? '')).join('')
+    if (text.includes(needle)) {
+      return text
+    }
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for history text ${needle}`)
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.providers.length !== 1) {
@@ -285,7 +305,7 @@ async function main() {
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   const env = {
     ...process.env,
-    HOME: home,
+    HOME: options.useRealHome ? (process.env.HOME ?? home) : home,
     ARROBA_KERNEL_PORT: String(ports.kernelPort),
     ARROBA_MCP_PORT: String(ports.mcpPort),
     ARROBA_OPENCODE_PORT: String(ports.opencodePort),
@@ -313,6 +333,24 @@ async function main() {
     await waitForKernel(kernelUrl)
     log('kernel-ready', { kernelUrl })
 
+    const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
+    const {
+      createSessionRequest,
+      attachToSessionRequest,
+      submitPromptRequest,
+      focusAgentRequest,
+      setUserConfigValueRequest,
+    } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
+    client = new LocalIpcClient(kernelUrl)
+    for (const provider of options.providers) {
+      await client.send(setUserConfigValueRequest(`providers.managed_io.${provider}`, 'unrestricted'))
+    }
+    const session = unwrap(
+      await client.send(createSessionRequest(workspace, workspace, `popup-${options.providers[0] ?? 'codex'}`)),
+      'SessionCreated',
+    ).session
+    sessionId = session.id
+
     const cliArgs = [
       '-q',
       '/dev/null',
@@ -322,7 +360,7 @@ async function main() {
       cliDist,
       '--kernel-url', kernelUrl,
       '--automation-socket', automationSocket,
-      '--create-session',
+      '--session', sessionId,
       '--workspace', workspace,
       '--worktree', workspace,
       '--provider', options.providers[0] ?? 'codex',
@@ -338,17 +376,11 @@ async function main() {
     await waitForSocket(automationSocket)
     automation = createAutomationClient(automationSocket)
     const firstSnapshot = await automation.send('snapshot')
-    sessionId = firstSnapshot.session?.id ?? null
-    requireCondition(Boolean(sessionId), 'CLI did not create a session', firstSnapshot)
+    requireCondition(firstSnapshot.session?.id === sessionId, 'CLI did not attach to the prepared session', {
+      expectedSessionId: sessionId,
+      snapshot: firstSnapshot,
+    })
     log('cli-ready', { sessionId })
-
-    const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
-    const {
-      attachToSessionRequest,
-      submitPromptRequest,
-      focusAgentRequest,
-    } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
-    client = new LocalIpcClient(kernelUrl)
     const attachment = unwrap(await client.send(attachToSessionRequest(sessionId, `popup-drill-${Date.now()}`)), 'SessionAttached').attachment
     attachmentId = attachment.id
     const events = []
@@ -403,7 +435,7 @@ async function main() {
       requireCondition(movedInteraction?.selectedChoiceIndex === 1, 'feedback popup selection did not move', movedFeedback)
       await automation.send('interaction_submit')
       await waitForAgentIdle(client, sessionId, activeAgent.id, options.timeoutMs, options.pollMs)
-      const feedbackText = await waitForTerminalText(events.slice(beforeFeedback), 'USER_FEEDBACK_RESULT:green', options.timeoutMs, options.pollMs)
+      const feedbackText = await waitForHistoryText(client, sessionId, activeAgent.id, 'USER_FEEDBACK_RESULT:green', options.timeoutMs, options.pollMs)
       requireCondition(feedbackText.includes('USER_FEEDBACK_RESULT:green'), 'feedback popup did not resume with green reply')
       log('feedback-popup-passed', { provider })
 
@@ -435,7 +467,7 @@ async function main() {
       await automation.send('interaction_move', { delta: 1 })
       await automation.send('interaction_submit')
       await waitForAgentIdle(client, sessionId, activeAgent.id, options.timeoutMs, options.pollMs)
-      const permissionText = await waitForTerminalText(events.slice(beforePermission), 'PERMISSION_GRANTED', options.timeoutMs, options.pollMs)
+      const permissionText = await waitForHistoryText(client, sessionId, activeAgent.id, 'PERMISSION_GRANTED', options.timeoutMs, options.pollMs)
       requireCondition(permissionText.includes('PERMISSION_GRANTED'), 'permission popup did not resume with allow path')
       log('permission-popup-passed', { provider })
 
@@ -466,7 +498,7 @@ async function main() {
       const timeoutPopup = await waitForInteraction(automation, activeAgent.id, `Timeout drill ${provider}`, options.timeoutMs, options.pollMs)
       requireCondition(timeoutPopup.interaction.timeoutSec === 2, 'timeout popup timeout mismatch', timeoutPopup)
       await waitForAgentIdle(client, sessionId, activeAgent.id, options.timeoutMs, options.pollMs)
-      const timeoutText = await waitForTerminalText(events.slice(beforeTimeout), 'TIMEOUT_RESULT:answered:skip', options.timeoutMs, options.pollMs)
+      const timeoutText = await waitForHistoryText(client, sessionId, activeAgent.id, 'TIMEOUT_RESULT:answered:skip', options.timeoutMs, options.pollMs)
       requireCondition(timeoutText.includes('TIMEOUT_RESULT:answered:skip'), 'timeout popup did not resolve with default choice')
       log('timeout-popup-passed', { provider })
     }

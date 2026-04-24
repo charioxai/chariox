@@ -17,6 +17,13 @@ use super::codex_client::codex_endpoint_is_healthy;
 const CODEX_ENV_OVERRIDE: &str = "ARROBA_CODEX_BIN";
 const CODEX_PORT_OVERRIDE: &str = "ARROBA_CODEX_PORT";
 pub(crate) const CODEX_MCP_TOKEN_ENV: &str = "ARROBA_MCP_TOKEN";
+const CODEX_AUTH_ENV_VARS: &[&str] = &[
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_ORG_ID",
+    "OPENAI_ORGANIZATION",
+    "OPENAI_PROJECT",
+];
 
 pub fn resolve_codex_executable() -> Result<PathBuf, DaemonError> {
     let _guard = crate::env_lock::lock();
@@ -188,10 +195,10 @@ fn runtime_mcp_config(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<(Vec<String>, BTreeMap<String, String>), DaemonError> {
     let Some(request) = request else {
-        return Ok((Vec::new(), BTreeMap::new()));
+        return Ok((Vec::new(), inherited_codex_auth_env()));
     };
     if request.runtime_mcp_binding.is_none() && request.mcp_servers.is_empty() {
-        return Ok((Vec::new(), BTreeMap::new()));
+        return Ok((Vec::new(), inherited_codex_auth_env()));
     }
     let mut args = vec!["-c".to_string(), "mcp_servers={}".to_string()];
     if request.requires_managed_io() {
@@ -210,7 +217,7 @@ fn runtime_mcp_config(
             ],
         );
     }
-    let mut env = BTreeMap::new();
+    let mut env = inherited_codex_auth_env();
     let provider_mcp_servers = super::mcp_proxy::provider_facing_mcp_proxy_configs_with_bearer_env(
         &request.mcp_servers,
         request
@@ -243,6 +250,13 @@ fn runtime_mcp_config(
         env.insert(CODEX_MCP_TOKEN_ENV.to_string(), binding.auth_token.clone());
     }
     Ok((args, env))
+}
+
+fn inherited_codex_auth_env() -> BTreeMap<String, String> {
+    CODEX_AUTH_ENV_VARS
+        .iter()
+        .filter_map(|name| env::var(name).ok().map(|value| ((*name).to_string(), value)))
+        .collect()
 }
 
 fn append_codex_mcp_config(args: &mut Vec<String>, server: &ArrobaMcpServerConfig) {

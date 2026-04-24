@@ -110,11 +110,17 @@ This is display-only state derived from effective resolution, not from raw overr
 
 ## Popups
 
-This slice does not yet add the popup interaction system itself.
+M12 includes the blocking popup interaction system itself.
 
-It prepares the permission/mode model that the popup work will sit on top of. The popup layer will normalize provider-native permission/question requests into Arroba client surfaces in a follow-up slice.
+Delivered in this milestone:
 
-## Landed local slice
+- `request_popup` as a runtime MCP tool
+- blocking same-turn interaction resolution
+- provider-native permission requests normalized into the same interaction model
+- focused-pane CLI interaction strips for choices and approvals
+- provider answer routing back to Codex/OpenCode native approval paths
+
+## Landed
 
 Implemented:
 
@@ -123,16 +129,36 @@ Implemented:
 - shell commands for session/agent mode and permissions
 - CLI slash commands for session/agent mode and permissions
 - agent footer display of effective mode and permissions
+- blocking popup interactions via `request_popup`
+- always-injected shared runtime instructions advertising Arroba runtime tools
+- Codex native approval interception and response routing
+- OpenCode native permission interception and response routing
+- pane-local CLI interaction rendering for user feedback and provider-native permissions
+- live popup and native-permission drill scripts
 
 Validated with:
 
 - `cargo test --manifest-path apps/kernel/Cargo.toml --no-run`
 - `pnpm --filter @arroba/kernel-client run test`
 - `pnpm --filter @arroba/cli run lint`
+- controlled-exec spike fake/live drills for blocking popup semantics
+- live native permission drills for Codex and OpenCode
+- live popup drills, including Codex popup execution on the real-home provider auth path
 
-## Deferred
+## Closed Scope
 
-- popup-based permission/question response UX
+M12 is closed with:
+
+- session-level and agent-level `mode` / `permissions`
+- agent override precedence over session defaults
+- normalized provider-native permission UX for Codex and OpenCode
+- blocking Arroba popup UX for user feedback
+- same-turn continuation after popup or native permission response
+- CLI interaction-strip rendering and response submission
+
+The following are intentionally outside M12 and belong to later milestones:
+
+- managed-I/O-specific permission handling
+- shell popup queue UX
 - remote permission UX drills
-- provider-native live permission drills
-- any stricter Arroba-owned execution gate
+- any Arroba-owned execution gate beyond provider-native permissions
