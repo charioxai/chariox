@@ -52,6 +52,7 @@ use crate::local::{
     StartCloudRelayLoginRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
     UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
     UpdateMcpServerRequest, UpdateSkillRequest, WaitingRoomInventorySnapshot,
+    WaitingRoomLaunchTarget,
 };
 use crate::provider::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
@@ -1779,8 +1780,15 @@ impl CommandRouter {
             }
         };
         let (_, remote_kernels) = self.remote_relay_inventory_projection.snapshot();
+        let launch_target = infer_waiting_room_launch_target();
         let inventory_version =
-            waiting_room_inventory_version(&sessions, &relay_status, &remote_machines, &remote_kernels)?;
+            waiting_room_inventory_version(
+                &sessions,
+                &relay_status,
+                &remote_machines,
+                &remote_kernels,
+                launch_target.as_ref(),
+            )?;
         Ok(LocalDaemonResponse::WaitingRoomInventory {
             snapshot: WaitingRoomInventorySnapshot {
                 inventory_version,
@@ -1788,6 +1796,7 @@ impl CommandRouter {
                 relay_status,
                 remote_machines,
                 remote_kernels,
+                launch_target,
             },
         })
     }
@@ -4176,18 +4185,54 @@ fn waiting_room_inventory_version(
     relay_status: &RelayStatus,
     remote_machines: &[crate::local::RemoteMachineRecord],
     remote_kernels: &[RelayKernelPresence],
+    launch_target: Option<&WaitingRoomLaunchTarget>,
 ) -> Result<String, DaemonError> {
     let payload = serde_json::to_vec(&serde_json::json!({
         "sessions": sessions,
         "relay_status": relay_status,
         "remote_machines": remote_machines,
         "remote_kernels": remote_kernels,
+        "launch_target": launch_target,
     }))
     .map_err(|error| DaemonError::LocalTransport {
         operation: "serialize waiting room inventory snapshot",
         message: error.to_string(),
     })?;
     Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(payload)))
+}
+
+fn infer_waiting_room_launch_target() -> Option<WaitingRoomLaunchTarget> {
+    let cwd = std::env::current_dir().ok()?;
+    let cwd_string = cwd.display().to_string();
+    let worktree = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&cwd)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| cwd_string.clone());
+    let workspace = std::process::Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(&cwd)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(|common_dir| {
+            if let Some(stripped) = common_dir.strip_suffix("/.git") {
+                stripped.to_string()
+            } else {
+                worktree.clone()
+            }
+        })
+        .unwrap_or_else(|| cwd_string.clone());
+    Some(WaitingRoomLaunchTarget {
+        workspace_id: workspace,
+        worktree_id: worktree,
+    })
 }
 
 fn paired_client_record(client: crate::config::PersistedClientPairing) -> PairedClientRecord {

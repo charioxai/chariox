@@ -1883,10 +1883,17 @@ pub enum LocalDaemonResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingRoomLaunchTarget {
+    pub workspace_id: String,
+    pub worktree_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingRoomInventorySnapshot {
     pub inventory_version: String,
     pub sessions: Vec<RuntimeSession>,
     pub relay_status: RelayStatus,
     pub remote_machines: Vec<RemoteMachineRecord>,
     pub remote_kernels: Vec<RelayKernelPresence>,
+    pub launch_target: Option<WaitingRoomLaunchTarget>,
 }

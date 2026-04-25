@@ -394,6 +394,10 @@ export type WaitingRoomInventorySnapshot = {
   relay_status: RelayStatus
   remote_machines: RemoteMachineRecord[]
   remote_kernels: RelayKernelPresence[]
+  launch_target?: {
+    workspace_id: string
+    worktree_id: string
+  } | null
 }
 
 export type RuntimeProviderRun = {
