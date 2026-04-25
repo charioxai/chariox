@@ -27,6 +27,7 @@ pub use api::{
     GetMcpServerRequest, GetProviderAuthStatusRequest, GetProviderCatalogRequest,
     GetProviderCommandCatalogsRequest, GetProviderRunRequest, GetSessionHistoryRequest,
     GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GetWorkflowPublicationRequest,
+    CreateWorkspaceWorktreeRequest, ListWorkspaceWorktreesRequest, SearchWorkspaceDirectoriesRequest,
     GetWorkflowRunRequest, GrantAgentCapabilityRequest, ImportMcpServersRequest,
     ImportSkillsRequest, InspectGitCapabilityRequest, InstallMcpServerRequest, InstallSkillRequest,
     InvokeWorkflowEndpointRequest, IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest,
@@ -61,7 +62,7 @@ pub use api::{
     UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest,
     UpdateAgentConfigRequest, UpdateSessionConfigRequest, UpdateSkillRequest,
     UpdateWorkflowNodeInstructionsRequest, ValidateWorkflowOutputRequest,
-    WaitingRoomInventorySnapshot,
+    WaitingRoomInventorySnapshot, WaitingRoomLaunchTarget, WorkspaceWorktreeRecord,
 };
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};

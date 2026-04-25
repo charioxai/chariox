@@ -169,6 +169,23 @@ pub struct ListRemoteMachineKernelsRequest {
 pub struct GetWaitingRoomInventoryRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchWorkspaceDirectoriesRequest {
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkspaceWorktreesRequest {
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkspaceWorktreeRequest {
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApproveRemoteMachineRequest {
     pub machine_ref: String,
 }
@@ -1283,6 +1300,9 @@ pub enum LocalDaemonRequest {
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetWaitingRoomInventory(GetWaitingRoomInventoryRequest),
+    SearchWorkspaceDirectories(SearchWorkspaceDirectoriesRequest),
+    ListWorkspaceWorktrees(ListWorkspaceWorktreesRequest),
+    CreateWorkspaceWorktree(CreateWorkspaceWorktreeRequest),
     ApproveRemoteMachine(ApproveRemoteMachineRequest),
     ForgetRemoteMachine(ForgetRemoteMachineRequest),
     RenameRemoteMachine(RenameRemoteMachineRequest),
@@ -1562,6 +1582,17 @@ pub enum LocalDaemonResponse {
     },
     WaitingRoomInventory {
         snapshot: WaitingRoomInventorySnapshot,
+    },
+    WorkspaceDirectoriesSearched {
+        directories: Vec<String>,
+    },
+    WorkspaceWorktreesListed {
+        workspace_id: String,
+        worktrees: Vec<WorkspaceWorktreeRecord>,
+    },
+    WorkspaceWorktreeCreated {
+        workspace_id: String,
+        worktree: WorkspaceWorktreeRecord,
     },
     RemoteMachineApproved {
         machine: RemoteMachineRecord,
@@ -1886,6 +1917,14 @@ pub enum LocalDaemonResponse {
 pub struct WaitingRoomLaunchTarget {
     pub workspace_id: String,
     pub worktree_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceWorktreeRecord {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    pub current: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

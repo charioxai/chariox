@@ -1069,6 +1069,31 @@ export function getWaitingRoomInventoryRequest() {
   return { GetWaitingRoomInventory: null }
 }
 
+export function searchWorkspaceDirectoriesRequest(query: string, limit?: number) {
+  return {
+    SearchWorkspaceDirectories: {
+      query,
+      limit: limit ?? null,
+    },
+  }
+}
+
+export function listWorkspaceWorktreesRequest(workspaceId: string) {
+  return {
+    ListWorkspaceWorktrees: {
+      workspace_id: workspaceId,
+    },
+  }
+}
+
+export function createWorkspaceWorktreeRequest(workspaceId: string) {
+  return {
+    CreateWorkspaceWorktree: {
+      workspace_id: workspaceId,
+    },
+  }
+}
+
 export function approveRemoteMachineRequest(machineRef: string) {
   return {
     ApproveRemoteMachine: {

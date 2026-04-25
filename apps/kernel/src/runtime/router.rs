@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -32,6 +34,7 @@ use crate::local::{
     CloudSessionInviteAcceptance, CloudSessionInviteDetails, CloudSessionMember,
     ConfigureRelayRequest, ConnectCloudRelayRequest, CreateCloudSessionInviteRequest,
     CreatePairingInviteRequest, CreateSessionInviteRequest, CreateWorkspaceLinkRequest,
+    CreateWorkspaceWorktreeRequest,
     DeleteCredentialSecretRequest, DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest,
     GetMcpServerRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
     GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest,
@@ -40,19 +43,20 @@ use crate::local::{
     JoinPairingInviteRequest, JoinSessionInviteRequest, ListAgentsRequest,
     ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest, ListMcpServersRequest,
     ListProviderProcessesRequest, ListSessionMembersRequest, ListSessionsRequest,
-    ListSkillsRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
+    ListSkillsRequest, ListWorkspaceLinksRequest, ListWorkspaceWorktreesRequest,
+    LocalDaemonRequest, LocalDaemonResponse,
     LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
     PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairedClientRecord,
     PairingInviteIntent, PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest,
     PumpTerminalOutputRequest, QueryHistoryRequest, RecordPairedClientRequest, RelayStatus,
     RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
     RevokeCloudSessionInviteRequest, RevokePairedClientRequest, RevokeSessionInviteRequest,
-    SearchHistoryRequest, SessionInviteRecord, SetCredentialSecretRequest,
+    SearchHistoryRequest, SearchWorkspaceDirectoriesRequest, SessionInviteRecord, SetCredentialSecretRequest,
     SetUserConfigValueRequest, ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest,
     StartCloudRelayLoginRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
     UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
     UpdateMcpServerRequest, UpdateSkillRequest, WaitingRoomInventorySnapshot,
-    WaitingRoomLaunchTarget,
+    WaitingRoomLaunchTarget, WorkspaceWorktreeRecord,
 };
 use crate::provider::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
@@ -903,6 +907,21 @@ impl CommandRouter {
             LocalDaemonRequest::ListRemoteMachineKernels(request) => {
                 return self
                     .projected_remote_machine_kernels_response(request.machine_ref.clone())
+                    .await;
+            }
+            LocalDaemonRequest::SearchWorkspaceDirectories(request) => {
+                return self
+                    .execute_search_workspace_directories_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::ListWorkspaceWorktrees(request) => {
+                return self
+                    .execute_list_workspace_worktrees_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::CreateWorkspaceWorktree(request) => {
+                return self
+                    .execute_create_workspace_worktree_request(request.clone())
                     .await;
             }
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
@@ -1826,6 +1845,50 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::RemoteMachineKernelsListed {
             machine_ref,
             kernels,
+        })
+    }
+
+    async fn execute_search_workspace_directories_request(
+        &self,
+        request: SearchWorkspaceDirectoriesRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let limit = request.limit.unwrap_or(12).clamp(1, 50);
+        let directories = search_workspace_directories(&request.query, limit)?;
+        Ok(LocalDaemonResponse::WorkspaceDirectoriesSearched { directories })
+    }
+
+    async fn execute_list_workspace_worktrees_request(
+        &self,
+        request: ListWorkspaceWorktreesRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let launch_target = infer_waiting_room_launch_target();
+        let worktrees = list_workspace_worktrees(
+            &request.workspace_id,
+            launch_target.as_ref().map(|target| target.worktree_id.as_str()),
+        )?;
+        Ok(LocalDaemonResponse::WorkspaceWorktreesListed {
+            workspace_id: request.workspace_id,
+            worktrees,
+        })
+    }
+
+    async fn execute_create_workspace_worktree_request(
+        &self,
+        request: CreateWorkspaceWorktreeRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let path = create_waiting_room_worktree(&request.workspace_id)?;
+        let launch_target = infer_waiting_room_launch_target();
+        let worktree = WorkspaceWorktreeRecord {
+            current: launch_target
+                .as_ref()
+                .map(|target| target.worktree_id == path)
+                .unwrap_or(false),
+            branch: detect_git_branch(&path).ok(),
+            path,
+        };
+        Ok(LocalDaemonResponse::WorkspaceWorktreeCreated {
+            workspace_id: request.workspace_id,
+            worktree,
         })
     }
 
@@ -3497,6 +3560,15 @@ impl CommandRouter {
             LocalDaemonRequest::GetWaitingRoomInventory(_) => {
                 self.projected_waiting_room_inventory_response().await
             }
+            LocalDaemonRequest::SearchWorkspaceDirectories(request) => {
+                self.execute_search_workspace_directories_request(request).await
+            }
+            LocalDaemonRequest::ListWorkspaceWorktrees(request) => {
+                self.execute_list_workspace_worktrees_request(request).await
+            }
+            LocalDaemonRequest::CreateWorkspaceWorktree(request) => {
+                self.execute_create_workspace_worktree_request(request).await
+            }
             LocalDaemonRequest::ApproveRemoteMachine(request) => {
                 self.execute_approve_remote_machine_request(request).await
             }
@@ -4233,6 +4305,338 @@ fn infer_waiting_room_launch_target() -> Option<WaitingRoomLaunchTarget> {
         workspace_id: workspace,
         worktree_id: worktree,
     })
+}
+
+fn search_workspace_directories(query: &str, limit: usize) -> Result<Vec<String>, DaemonError> {
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+    let roots = workspace_search_roots();
+    let launch_target = infer_waiting_room_launch_target();
+    let normalized_query = query.trim().to_lowercase();
+
+    if let Some(target) = launch_target {
+        push_unique_path(&mut results, &mut seen, target.workspace_id);
+        push_unique_path(&mut results, &mut seen, target.worktree_id);
+    }
+
+    if normalized_query.is_empty() {
+        for root in &roots {
+            push_unique_path(&mut results, &mut seen, root.display().to_string());
+            if results.len() >= limit {
+                break;
+            }
+            if let Ok(entries) = std::fs::read_dir(root) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        push_unique_path(&mut results, &mut seen, path.display().to_string());
+                        if results.len() >= limit {
+                            break;
+                        }
+                    }
+                }
+            }
+            if results.len() >= limit {
+                break;
+            }
+        }
+        results.truncate(limit);
+        return Ok(results);
+    }
+
+    let query_pattern = normalized_query.replace('\'', "");
+    for root in roots {
+        if results.len() >= limit {
+            break;
+        }
+        let remaining = limit.saturating_sub(results.len());
+        let command = format!(
+            "find '{}' -type d -iname '*{}*' 2>/dev/null | head -n {}",
+            shell_escape_path(&root),
+            query_pattern,
+            remaining
+        );
+        let output = std::process::Command::new("sh")
+            .arg("-lc")
+            .arg(command)
+            .output()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "search workspace directories",
+                message: error.to_string(),
+            })?;
+        if !output.status.success() {
+            continue;
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                push_unique_path(&mut results, &mut seen, trimmed.to_string());
+                if results.len() >= limit {
+                    break;
+                }
+            }
+        }
+    }
+    results.truncate(limit);
+    Ok(results)
+}
+
+fn workspace_search_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+    for candidate in [
+        std::env::current_dir().ok(),
+        std::env::var_os("HOME").map(PathBuf::from),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let path = candidate;
+        if seen.insert(path.clone()) {
+            roots.push(path);
+        }
+    }
+    roots
+}
+
+fn push_unique_path(results: &mut Vec<String>, seen: &mut HashSet<String>, value: String) {
+    if value.trim().is_empty() {
+        return;
+    }
+    if seen.insert(value.clone()) {
+        results.push(value);
+    }
+}
+
+fn shell_escape_path(path: &Path) -> String {
+    path.display().to_string().replace('\'', "'\\''")
+}
+
+fn list_workspace_worktrees(
+    workspace_id: &str,
+    current_worktree: Option<&str>,
+) -> Result<Vec<WorkspaceWorktreeRecord>, DaemonError> {
+    let workspace_path = PathBuf::from(workspace_id);
+    let output = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(&workspace_path)
+        .output();
+    let Ok(output) = output else {
+        return Ok(vec![WorkspaceWorktreeRecord {
+            path: workspace_id.to_string(),
+            branch: None,
+            current: true,
+        }]);
+    };
+    if !output.status.success() {
+        return Ok(vec![WorkspaceWorktreeRecord {
+            path: workspace_id.to_string(),
+            branch: detect_git_branch(workspace_id).ok(),
+            current: true,
+        }]);
+    }
+    let current_worktree_path = current_worktree.unwrap_or(workspace_id);
+    let mut worktrees = parse_git_worktree_list(String::from_utf8_lossy(&output.stdout).as_ref())
+        .into_iter()
+        .map(|(path, branch)| WorkspaceWorktreeRecord {
+            current: same_fs_path(&path, current_worktree_path),
+            branch,
+            path,
+        })
+        .collect::<Vec<_>>();
+    if worktrees.is_empty() {
+        worktrees.push(WorkspaceWorktreeRecord {
+            path: workspace_id.to_string(),
+            branch: detect_git_branch(workspace_id).ok(),
+            current: true,
+        });
+    }
+    Ok(worktrees)
+}
+
+fn parse_git_worktree_list(stdout: &str) -> Vec<(String, Option<String>)> {
+    let mut entries = Vec::new();
+    let mut current_path: Option<String> = None;
+    let mut current_branch: Option<String> = None;
+    for raw_line in stdout.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            if let Some(path) = current_path.take() {
+                entries.push((path, current_branch.take()));
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            if let Some(path) = current_path.replace(rest.trim().to_string()) {
+                entries.push((path, current_branch.take()));
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("branch ") {
+            current_branch = Some(rest.trim().trim_start_matches("refs/heads/").to_string());
+        }
+    }
+    if let Some(path) = current_path.take() {
+        entries.push((path, current_branch.take()));
+    }
+    entries
+}
+
+fn detect_git_branch(path: &str) -> Result<String, DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "detect git branch",
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation: "detect git branch",
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn create_waiting_room_worktree(workspace_path: &str) -> Result<String, DaemonError> {
+    let repo_root = resolve_repo_root(workspace_path)?;
+    let base_ref = resolve_preferred_base_ref(&repo_root)?;
+    let description = std::env::var("ARROBA_WAITING_ROOM_WORKTREE_DESCRIPTION")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            format!(
+                "{}-session",
+                repo_root.file_name().and_then(OsStr::to_str).unwrap_or("workspace")
+            )
+        });
+    let branch_base = format!(
+        "arroba/{}-{}",
+        slugify_segment(&description),
+        timestamp_slug(),
+    );
+    let branch = resolve_available_branch_name(&repo_root, &branch_base)?;
+    let parent = repo_root.parent().unwrap_or(&repo_root);
+    let directory_base = format!(
+        "{}-{}",
+        repo_root.file_name().and_then(OsStr::to_str).unwrap_or("workspace"),
+        slugify_segment(&branch.replace('/', "-"))
+    );
+    let directory = resolve_available_worktree_directory(parent, &directory_base);
+    run_git(&repo_root, &["worktree", "add", "-b", &branch, directory.to_str().unwrap_or(""), &base_ref])?;
+    Ok(directory.display().to_string())
+}
+
+fn resolve_repo_root(workspace_path: &str) -> Result<PathBuf, DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(workspace_path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "resolve repo root",
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation: "resolve repo root",
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()))
+}
+
+fn resolve_preferred_base_ref(repo_root: &Path) -> Result<String, DaemonError> {
+    for candidate in ["main", "master"] {
+        if git_ref_exists(repo_root, &format!("refs/heads/{candidate}"))? {
+            return Ok(candidate.to_string());
+        }
+    }
+    let branch = detect_git_branch(repo_root.to_string_lossy().as_ref())?;
+    Ok(if branch == "HEAD" || branch.is_empty() {
+        "HEAD".to_string()
+    } else {
+        branch
+    })
+}
+
+fn resolve_available_branch_name(repo_root: &Path, base_name: &str) -> Result<String, DaemonError> {
+    let mut attempt = base_name.to_string();
+    let mut index = 1;
+    while git_ref_exists(repo_root, &format!("refs/heads/{attempt}"))? {
+        attempt = format!("{base_name}-{index}");
+        index += 1;
+    }
+    Ok(attempt)
+}
+
+fn resolve_available_worktree_directory(parent: &Path, base_name: &str) -> PathBuf {
+    let mut attempt = parent.join(base_name);
+    let mut index = 1;
+    while attempt.exists() {
+        attempt = parent.join(format!("{base_name}-{index}"));
+        index += 1;
+    }
+    attempt
+}
+
+fn git_ref_exists(repo_root: &Path, reference: &str) -> Result<bool, DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", reference])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "check git ref",
+            message: error.to_string(),
+        })?;
+    Ok(output.status.success())
+}
+
+fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_root)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "run git command",
+            message: error.to_string(),
+        })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(DaemonError::LocalTransport {
+            operation: "run git command",
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
+    }
+}
+
+fn slugify_segment(value: &str) -> String {
+    let slug = value
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|character| if character.is_ascii_alphanumeric() { character } else { '-' })
+        .collect::<String>();
+    slug.trim_matches('-')
+        .split('-')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+fn timestamp_slug() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    now.to_string()
+}
+
+fn same_fs_path(left: &str, right: &str) -> bool {
+    std::fs::canonicalize(left).ok() == std::fs::canonicalize(right).ok()
+        || Path::new(left) == Path::new(right)
 }
 
 fn paired_client_record(client: crate::config::PersistedClientPairing) -> PairedClientRecord {

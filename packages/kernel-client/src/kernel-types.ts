@@ -400,6 +400,12 @@ export type WaitingRoomInventorySnapshot = {
   } | null
 }
 
+export type WorkspaceWorktreeRecord = {
+  path: string
+  branch?: string | null
+  current: boolean
+}
+
 export type RuntimeProviderRun = {
   id: string
   session_id: string
