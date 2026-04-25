@@ -164,23 +164,23 @@ arroba-cli logs --follow
 ```
 
 ```bash
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs
+pnpm run start:cli -- logs
 ```
 
 ```bash
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --follow
+pnpm run start:cli -- logs --follow
 ```
 
 ```bash
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --process-kind daemon
+pnpm run start:cli -- logs --process-kind daemon
 ```
 
 ```bash
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --level error
+pnpm run start:cli -- logs --level error
 ```
 
 ```bash
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --session session-1
+pnpm run start:cli -- logs --session session-1
 ```
 
 ```bash

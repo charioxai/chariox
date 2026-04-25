@@ -23,6 +23,11 @@ Today the local baseline is two main processes:
 
 `arroba-cli` is currently a Rust launcher that builds and starts the primary TypeScript CLI from `apps/cli`.
 
+For normal local startup, use `pnpm run start:kernel` and `pnpm run start:cli`.
+Those wrappers launch the cached debug binaries directly and only rebuild when
+the Rust sources are newer than the binary. Use `cargo run ...` only when you
+are explicitly debugging the Rust layer and want Cargo to stay in the loop.
+
 ## 3. Prerequisites
 
 Required for the current local path:
@@ -56,7 +61,7 @@ Without that, the daemon will reject the corresponding managed launch path.
 Start the daemon from the repository root:
 
 ```bash
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel
+pnpm run start:kernel
 ```
 
 What it does:
@@ -71,7 +76,7 @@ What it does:
 In another terminal:
 
 ```bash
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli
+pnpm run start:cli
 ```
 
 What it does:
@@ -143,7 +148,7 @@ Interactive placement commands:
 Example:
 
 ```bash
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- \
+pnpm run start:cli -- \
   --workspace /path/to/repo \
   --worktree /path/to/repo \
   --model claude-sonnet-4 \
@@ -166,14 +171,14 @@ In terminal 1:
 
 ```bash
 export ARROBA_OPENCODE_PORT=43111
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel
+pnpm run start:kernel
 ```
 
 In terminal 2:
 
 ```bash
 export ARROBA_OPENCODE_PORT=43111
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli
+pnpm run start:cli
 ```
 
 ## 9. Current CLI Controls
@@ -212,7 +217,7 @@ Current agent-command note:
 
 Outside the TUI:
 
-- `arroba-cli logs ...` inspects the shared log root
+- `pnpm run start:cli -- logs ...` inspects the shared log root
 
 Current log viewer options:
 
@@ -243,7 +248,7 @@ Current log viewer options:
 Example:
 
 ```bash
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --follow
+pnpm run start:cli -- logs --follow
 ```
 
 ## 10. Session Selection Behavior
@@ -276,19 +281,19 @@ Examples:
 
 ```bash
 # Reattach to the newest open session for the current directory.
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli
+pnpm run start:cli
 
 # Force attachment to a specific existing session.
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- --session 7f9c2a1b
+pnpm run start:cli -- --session 7f9c2a1b
 
 # Create a new named session explicitly.
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- --create-session --alias main
+pnpm run start:cli -- --create-session --alias main
 
 # Delete a session by alias without opening the TUI.
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- --delete-session main
+pnpm run start:cli -- --delete-session main
 
 # Use a custom workspace/worktree identity, which changes auto-attach behavior.
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- \
+pnpm run start:cli -- \
   --workspace /tmp/demo-workspace \
   --worktree /tmp/demo-workspace
 ```
@@ -447,7 +452,7 @@ export BUN_BIN=/absolute/path/to/bun
 Use the built-in viewer:
 
 ```bash
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --follow
+pnpm run start:cli -- logs --follow
 ```
 
 or inspect the shared NDJSON files directly:

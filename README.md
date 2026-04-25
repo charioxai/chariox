@@ -150,6 +150,11 @@ The current local runtime is two processes:
 - `arroba-kernel`
 - `arroba-cli` (Rust shim that launches the TypeScript OpenTUI client)
 
+For normal local use, prefer `pnpm run start:kernel` and `pnpm run start:cli`.
+Those launch the cached debug binaries directly and only rebuild when the Rust
+sources are newer than the binary. Keep `cargo run ...` for lower-level Rust
+debugging when you explicitly want Cargo in the loop.
+
 OpenCode setup currently requires:
 
 - `opencode` installed locally and reachable on `PATH`, or `ARROBA_OPENCODE_BIN` set to the executable path
@@ -160,14 +165,14 @@ Example:
 
 ```bash
 export ARROBA_OPENCODE_PORT=43111
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel
+pnpm run start:kernel
 ```
 
 Then in another terminal:
 
 ```bash
 export ARROBA_OPENCODE_PORT=43111
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli
+pnpm run start:cli
 ```
 
 Direct TypeScript CLI development path:
@@ -255,8 +260,8 @@ jq 'select(.session_id=="session-1")' ~/.local/state/arroba/logs/*.ndjson
 Or use the built-in viewer:
 
 ```bash
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --follow
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --session session-1
+pnpm run start:cli -- logs --follow
+pnpm run start:cli -- logs --session session-1
 pnpm --filter @arroba/cli run dev -- logs --process-kind daemon --level error
 ```
 

@@ -5,9 +5,10 @@
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "build": "pnpm -r run build",
+    "start:kernel": "node scripts/start-kernel.mjs",
     "build:cli": "pnpm --filter @arroba/cli run build",
     "lint": "pnpm -r run lint",
-    "start:cli": "pnpm --filter @arroba/cli run start",
+    "start:cli": "node scripts/start-cli.mjs",
     "test": "pnpm -r run test",
     "test:daemon": "cargo test --manifest-path apps/kernel/Cargo.toml",
     "smoke:daemon": "cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel-harness",

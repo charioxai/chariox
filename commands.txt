@@ -1,16 +1,16 @@
 # run cli
 export ARROBA_OPENCODE_PORT=43111
 export ARROBA_OPENCODE_BIN=/Users/miguel/.opencode/bin/opencode
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli
+pnpm run start:cli
 
 # New. CLI
 export ARROBA_CLOUD_API_URL=https://arroba-cloud-staging.osc-fr1.scalingo.io
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- --kernel-url ws://127.0.0.1:43119/kernel
+pnpm run start:cli -- --kernel-url ws://127.0.0.1:43119/kernel
 # daemon
 ARROBA_KERNEL_PORT=43119 \
   ARROBA_CODEX_PORT=43252 \
   ARROBA_OPENCODE_PORT=43140 \
-  cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel
+  pnpm run start:kernel
 
 # kill all arroba-related processes
 pkill -f 'apps/kernel/target/debug/arroba-kernel'
