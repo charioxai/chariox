@@ -146,6 +146,10 @@ type WorkspaceLinkPayload = {
 type CommandActionDeps = {
   workspace: string
   worktree: string
+  getWorkspaceTarget?: () => string
+  getWorktreeTarget?: () => string
+  setWorkspaceTarget?: (workspace: string) => void
+  setWorktreeTarget?: (worktree: string) => void
   accountProfile?: string | null
   clientId?: string | null
   isAttached: () => boolean
@@ -627,6 +631,19 @@ function slugifyGitBranch(value: string): string {
     || "worktree"
 }
 
+function worktreeAliasConfigPath(worktreePath: string): string {
+  const encoded = Buffer.from(worktreePath).toString("base64url")
+  return `ui.worktree_aliases.${encoded}`
+}
+
+function suggestNamedWorktreePath(baseDirectory: string, branch: string, explicitPath?: string): string {
+  if (explicitPath?.trim()) {
+    return resolvePath(baseDirectory, explicitPath)
+  }
+  const rootName = basename(baseDirectory)
+  return resolvePath(dirname(baseDirectory), `${rootName}-${slugifyGitBranch(branch)}`)
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 function buildCloudInviteUrl(apiUrl: string, cloudInviteToken: string, localInviteToken: string): string {
@@ -942,6 +959,11 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     return Number.isInteger(count) && count > 0 ? count : null
   }
 
+  const currentWorkspaceTarget = () => deps.getWorkspaceTarget?.() ?? deps.workspace
+  const currentWorktreeTarget = () => deps.getWorktreeTarget?.() ?? deps.worktree
+  const setWorkspaceTarget = (workspace: string) => deps.setWorkspaceTarget?.(workspace)
+  const setWorktreeTarget = (worktree: string) => deps.setWorktreeTarget?.(worktree)
+
   const parsePlacementOptions = (
     args: string[],
     commandName: string,
@@ -1082,14 +1104,14 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       if (options.machineRef) {
         return options.directory
       }
-      return resolveExistingLocalDirectory(options.directory, deps.worktree, options.label)
+      return resolveExistingLocalDirectory(options.directory, currentWorktreeTarget(), options.label)
     }
     if (options.gitWorktree || options.branch || options.fromRef) {
       if (options.machineRef) {
         return options.gitWorktree
       }
       return prepareLocalGitWorktree({
-        baseDirectory: deps.worktree,
+        baseDirectory: currentWorktreeTarget(),
         targetDirectory: options.gitWorktree,
         branch: options.branch,
         fromRef: options.fromRef,
@@ -1166,10 +1188,10 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
             deps.flashFooter("usage: /session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>]", "error")
             return true
           }
-          let sessionWorktree = deps.worktree
+          let sessionWorktree = currentWorktreeTarget()
           const positionalDirectory = parsed.positional[0]
           if (positionalDirectory && !parsed.directory && !parsed.gitWorktree && !parsed.branch && !parsed.fromRef) {
-            sessionWorktree = await resolveExistingLocalDirectory(positionalDirectory, deps.worktree, "session working directory")
+            sessionWorktree = await resolveExistingLocalDirectory(positionalDirectory, currentWorktreeTarget(), "session working directory")
           } else {
             const resolvedPlacement = await resolveLocalPlacement({
               directory: parsed.directory,
@@ -1178,11 +1200,11 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
               fromRef: parsed.fromRef,
               label: "session working directory",
             })
-            sessionWorktree = resolvedPlacement ?? deps.worktree
+            sessionWorktree = resolvedPlacement ?? currentWorktreeTarget()
           }
-          const session = await deps.createSession(deps.workspace, sessionWorktree, undefined)
+          const session = await deps.createSession(currentWorkspaceTarget(), sessionWorktree, undefined)
           await deps.attachBinding(session, true)
-          const placement = sessionWorktree !== deps.worktree ? ` in ${sessionWorktree}` : ""
+          const placement = sessionWorktree !== currentWorktreeTarget() ? ` in ${sessionWorktree}` : ""
           deps.flashFooter(`attached to session ${session.alias ?? session.id}${placement}`, "info")
         } catch (error) {
           deps.flashFooter(deps.formatError(error), "error")
@@ -1194,7 +1216,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           deps.flashFooter("usage: /session attach <ref>", "error")
           return true
         }
-        const session = await deps.resolveSession(value, deps.workspace)
+        const session = await deps.resolveSession(value, currentWorkspaceTarget())
         await deps.attachBinding(session, false)
         deps.flashFooter(`attached to session ${session.alias ?? session.id}`, "info")
         return true
@@ -1264,7 +1286,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           deps.flashFooter("usage: /session delete <ref>", "error")
           return true
         }
-        const deleted = await deps.deleteSessionByRef(sessionRef, deps.workspace)
+        const deleted = await deps.deleteSessionByRef(sessionRef, currentWorkspaceTarget())
         if (deps.isAttached() && deleted.id === deps.sessionState().id) {
           deps.transitionToNoSession(`Session ${deleted.alias ?? deleted.id} was deleted.`)
         } else {
@@ -2555,13 +2577,24 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleWorkspaceCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "workspace" }>,
   ): Promise<void> => {
-    if (!deps.isAttached()) {
-      deps.flashFooter("attach to a session before managing workspace links", "error")
+    const [resource, action, ...args] = command.args
+    if (resource && resource !== "link") {
+      const previousWorktreeTarget = currentWorktreeTarget()
+      const previousWorkspaceTarget = currentWorkspaceTarget()
+      const workspacePath = resolvePath(currentWorktreeTarget(), [resource, action, ...args].filter(Boolean).join(" "))
+      setWorkspaceTarget(workspacePath)
+      if (!deps.getWorktreeTarget || previousWorktreeTarget === deps.worktree || previousWorktreeTarget === previousWorkspaceTarget) {
+        setWorktreeTarget(workspacePath)
+      }
+      deps.flashFooter(`next-session workspace set to ${workspacePath}`, "info")
       return
     }
-    const [resource, action, ...args] = command.args
     if (resource !== "link") {
-      deps.flashFooter("usage: /workspace link create|list|show|attach|detach", "error")
+      deps.flashFooter(`workspace target: ${currentWorkspaceTarget()}`, "info")
+      return
+    }
+    if (!deps.isAttached()) {
+      deps.flashFooter("attach to a session before managing workspace links", "error")
       return
     }
     if (action === "create" || action === "new") {
@@ -2598,7 +2631,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
     if (action === "attach") {
       const linkRef = args[0]
-      const repoRoot = args[1] ? resolvePath(deps.worktree, args[1]) : deps.worktree
+      const repoRoot = args[1] ? resolvePath(currentWorktreeTarget(), args[1]) : currentWorktreeTarget()
       if (!linkRef || !deps.attachWorkspaceLink) {
         deps.flashFooter("usage: /workspace link attach <name-or-id> [repo-root]", "error")
         return
@@ -2610,7 +2643,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
     if (action === "detach") {
       const linkRef = args[0]
-      const repoRoot = args[1] ? resolvePath(deps.worktree, args[1]) : deps.worktree
+      const repoRoot = args[1] ? resolvePath(currentWorktreeTarget(), args[1]) : currentWorktreeTarget()
       if (!linkRef || !deps.detachWorkspaceLink) {
         deps.flashFooter("usage: /workspace link detach <name-or-id> [repo-root]", "error")
         return
@@ -2621,6 +2654,58 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
     deps.flashFooter("usage: /workspace link create|list|show|attach|detach", "error")
+  }
+
+  const handleWorktreeCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "worktree" }>,
+  ): Promise<void> => {
+    const [action, ...args] = command.args
+    if (!action) {
+      deps.flashFooter(`worktree target: ${currentWorktreeTarget()}`, "info")
+      return
+    }
+    if (action === "name") {
+      const alias = args.join(" ").trim()
+      if (!deps.setUserConfigValue || !deps.unsetUserConfigValue) {
+        deps.flashFooter("worktree naming is unavailable in this build", "error")
+        return
+      }
+      const configPath = worktreeAliasConfigPath(currentWorktreeTarget())
+      if (!alias) {
+        await deps.unsetUserConfigValue(configPath)
+        deps.flashFooter(`cleared worktree name for ${currentWorktreeTarget()}`, "info")
+        return
+      }
+      await deps.setUserConfigValue(configPath, alias)
+      deps.flashFooter(`named ${currentWorktreeTarget()} as ${alias}`, "info")
+      return
+    }
+    if (action === "create" || action === "new") {
+      const [branch, explicitPath, ...rest] = args
+      if (!branch) {
+        deps.flashFooter("usage: /worktree create <branch> [directory] [--from <ref>]", "error")
+        return
+      }
+      let fromRef: string | undefined
+      for (let index = 0; index < rest.length; index += 1) {
+        if (rest[index] === "--from") {
+          fromRef = rest[index + 1]
+        }
+      }
+      const targetDirectory = suggestNamedWorktreePath(currentWorkspaceTarget(), branch, explicitPath)
+      const createdPath = await prepareLocalGitWorktree({
+        baseDirectory: currentWorkspaceTarget(),
+        targetDirectory,
+        branch,
+        fromRef,
+      })
+      setWorktreeTarget(createdPath)
+      deps.flashFooter(`next-session worktree set to ${createdPath}`, "info")
+      return
+    }
+    const worktreePath = resolvePath(currentWorkspaceTarget(), [action, ...args].join(" "))
+    setWorktreeTarget(worktreePath)
+    deps.flashFooter(`next-session worktree set to ${worktreePath}`, "info")
   }
 
   const handleWorkflowCommand = async (
@@ -3145,7 +3230,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
             deps.flashFooter("workflow instructions unavailable", "error")
             return
           }
-          const content = await readFile(resolvePath(deps.workspace, fileRef), "utf8")
+          const content = await readFile(resolvePath(currentWorkspaceTarget(), fileRef), "utf8")
           const payload = await deps.updateWorkflowNodeInstructions(resolved.workflow.id, node.id, content)
           deps.applySessionState(payload.session)
           deps.upsertWorkflowDefinition(payload.workflow)
@@ -3567,6 +3652,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleCloudCommand,
     handleConfigCommand,
     handleWorkspaceCommand,
+    handleWorktreeCommand,
     handleWorkflowCommand,
     handleMcpCommand,
     handleSkillCommand,

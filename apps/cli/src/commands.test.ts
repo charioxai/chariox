@@ -40,6 +40,14 @@ test("parseSlashCommand parses workspace link commands and args", () => {
   })
 })
 
+test("parseSlashCommand parses worktree commands and args", () => {
+  assert.deepEqual(parseSlashCommand("/worktree create feature/web-cli"), {
+    kind: "worktree",
+    raw: "/worktree create feature/web-cli",
+    args: ["create", "feature/web-cli"],
+  })
+})
+
 test("parseSlashCommand parses cloud commands and args", () => {
   assert.deepEqual(parseSlashCommand("/cloud invite accept token-1"), {
     kind: "cloud",
@@ -72,6 +80,7 @@ test("executeSlashCommand dispatches to the matching handler", async () => {
     onCloud: () => calls.push("cloud"),
     onConfig: () => calls.push("config"),
     onWorkspace: () => calls.push("workspace"),
+    onWorktree: () => calls.push("worktree"),
     onWorkflow: () => calls.push("workflow"),
     onMcp: () => calls.push("mcp"),
     onSkill: () => calls.push("skill"),
@@ -102,6 +111,7 @@ test("executeSlashCommand returns null for non-command input", async () => {
     onCloud: () => undefined,
     onConfig: () => undefined,
     onWorkspace: () => undefined,
+    onWorktree: () => undefined,
     onWorkflow: () => undefined,
     onMcp: () => undefined,
     onSkill: () => undefined,

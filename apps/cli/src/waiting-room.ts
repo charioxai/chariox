@@ -29,7 +29,17 @@ function formatWaitingRoomSessionTitle(session: SessionListEntry) {
   return `${session.id} (${session.alias})`
 }
 
-export type WaitingRoomFocus = "new" | "provider" | "model" | "effort" | "theme" | "session" | "relay" | "remote-kernel"
+export type WaitingRoomFocus =
+  | "new"
+  | "provider"
+  | "model"
+  | "effort"
+  | "workspace"
+  | "worktree"
+  | "theme"
+  | "session"
+  | "relay"
+  | "remote-kernel"
 
 export type WaitingRoomKeyState = {
   up: boolean
@@ -78,6 +88,11 @@ export type WaitingRoomRemoteState = {
     leased_agent_count?: number
     local_session_count?: number
   }>
+}
+
+export type WaitingRoomTargetState = {
+  workspacePath: string
+  worktreePath: string
 }
 
 export type WaitingRoomRow = {
@@ -268,6 +283,7 @@ export function waitingRoomRows(
   sessions: SessionListEntry[],
   catalog: ProviderCatalog,
   remote: WaitingRoomRemoteState = {},
+  targets?: WaitingRoomTargetState,
   themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
 ) {
   const choice = waitingRoomChoice(state, sessions, catalog)
@@ -333,6 +349,26 @@ export function waitingRoomRows(
       titleWidth,
       indent: 1,
       focused: state.focus === "effort",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
+      id: "workspace",
+      title: "Workspace",
+      value: targets?.workspacePath ?? "Set workspace path",
+      titleWidth,
+      indent: 1,
+      focused: state.focus === "workspace",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
+      id: "worktree",
+      title: "Worktree",
+      value: targets?.worktreePath ?? "Set worktree path",
+      titleWidth,
+      indent: 1,
+      focused: state.focus === "worktree",
       selectable: true,
       scrollbar: "",
     },
@@ -640,6 +676,8 @@ function waitingRoomFocusTargets(sessions: SessionListEntry[], remote: WaitingRo
     { focus: "provider" as const, sessionIndex: 0 },
     { focus: "model" as const, sessionIndex: 0 },
     { focus: "effort" as const, sessionIndex: 0 },
+    { focus: "workspace" as const, sessionIndex: 0 },
+    { focus: "worktree" as const, sessionIndex: 0 },
     ...visibleSessions.map((_, sessionIndex) => ({ focus: "session" as const, sessionIndex })),
     { focus: "relay" as const, sessionIndex: 0 },
     ...remoteKernels.map((_, remoteKernelIndex) => ({

@@ -22,6 +22,7 @@ export type ParsedSlashCommand =
   | { kind: "cloud"; raw: string; args: string[] }
   | { kind: "config"; raw: string; args: string[] }
   | { kind: "workspace"; raw: string; args: string[] }
+  | { kind: "worktree"; raw: string; args: string[] }
   | { kind: "workflow"; raw: string; args: string[] }
   | { kind: "mcp"; raw: string; args: string[] }
   | { kind: "skill"; raw: string; args: string[] }
@@ -42,6 +43,7 @@ export type SlashCommandHandlers = {
   onCloud: (command: Extract<ParsedSlashCommand, { kind: "cloud" }>) => Promise<unknown> | unknown
   onConfig: (command: Extract<ParsedSlashCommand, { kind: "config" }>) => Promise<unknown> | unknown
   onWorkspace: (command: Extract<ParsedSlashCommand, { kind: "workspace" }>) => Promise<unknown> | unknown
+  onWorktree: (command: Extract<ParsedSlashCommand, { kind: "worktree" }>) => Promise<unknown> | unknown
   onWorkflow: (command: Extract<ParsedSlashCommand, { kind: "workflow" }>) => Promise<unknown> | unknown
   onMcp: (command: Extract<ParsedSlashCommand, { kind: "mcp" }>) => Promise<unknown> | unknown
   onSkill: (command: Extract<ParsedSlashCommand, { kind: "skill" }>) => Promise<unknown> | unknown
@@ -144,6 +146,13 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       args: trimmed.replace(/^\/workspace\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
+  if (trimmed.startsWith("/worktree")) {
+    return {
+      kind: "worktree",
+      raw: trimmed,
+      args: trimmed.replace(/^\/worktree\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
   if (trimmed.startsWith("/workflow")) {
     return {
       kind: "workflow",
@@ -223,6 +232,9 @@ export async function executeSlashCommand(
     case "workspace":
       await handlers.onWorkspace(command)
       break
+    case "worktree":
+      await handlers.onWorktree(command)
+      break
     case "workflow":
       await handlers.onWorkflow(command)
       break
@@ -248,6 +260,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "cloud":
     case "config":
     case "workspace":
+    case "worktree":
     case "workflow":
     case "mcp":
     case "skill":

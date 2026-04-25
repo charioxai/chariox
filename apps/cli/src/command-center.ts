@@ -204,14 +204,26 @@ const COMMAND_TREE: CommandNode[] = [
   {
     id: "workspace",
     label: "/workspace",
-    description: "Link worktrees for shared managed I/O coordination",
+    description: "Set the next-session workspace path or manage workspace links",
     value: "/workspace ",
     children: [
+      { id: "workspace-set", label: "set", description: "Set the next-session workspace path", value: "/workspace " },
       { id: "workspace-link-create", label: "link create", description: "Create a session workspace link", value: "/workspace link create " },
       { id: "workspace-link-list", label: "link list", description: "List session workspace links", value: "/workspace link list" },
       { id: "workspace-link-show", label: "link show", description: "Show workspace link attachments", value: "/workspace link show " },
       { id: "workspace-link-attach", label: "link attach", description: "Attach the current worktree to a link", value: "/workspace link attach " },
       { id: "workspace-link-detach", label: "link detach", description: "Detach the current worktree from a link", value: "/workspace link detach " },
+    ],
+  },
+  {
+    id: "worktree",
+    label: "/worktree",
+    description: "Set, create, or name the next-session worktree",
+    value: "/worktree ",
+    children: [
+      { id: "worktree-set", label: "set", description: "Set the next-session worktree path", value: "/worktree " },
+      { id: "worktree-create", label: "create", description: "Create a new git worktree for a branch", value: "/worktree create " },
+      { id: "worktree-name", label: "name", description: "Assign a user-facing alias to the selected worktree", value: "/worktree name " },
     ],
   },
   {

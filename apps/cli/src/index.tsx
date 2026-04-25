@@ -1,6 +1,6 @@
 import path from "node:path"
 import process from "node:process"
-import { spawn } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import { unlink } from "node:fs/promises"
 import { homedir } from "node:os"
@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url"
 import { createConnection, createServer, type Server as NetServer, type Socket as NetSocket } from "node:net"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
+import { promisify } from "node:util"
 
 import { BoxRenderable, MouseButton, RGBA, ScrollBoxRenderable, SyntaxStyle, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
@@ -351,6 +352,8 @@ import {
 } from "./workspace-renderables.js"
 import parserConfig from "./parsers-config.js"
 
+const execFileAsync = promisify(execFile)
+
 const PROMPT_KEYBINDINGS = [
   { name: "return", action: "submit" },
   { name: "return", shift: true, action: "newline" },
@@ -564,6 +567,19 @@ function getLogger(component: string, fields: Record<string, unknown> = {}) {
   return processLogger?.child(component, fields) ?? null
 }
 
+async function inferWorkspaceTargetsFromLaunchDirectory(cwd: string): Promise<{ workspace: string; worktree: string }> {
+  try {
+    const { stdout: workspaceStdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd })
+    const workspace = workspaceStdout.trim()
+    if (!workspace) {
+      return { workspace: cwd, worktree: cwd }
+    }
+    return { workspace, worktree: workspace }
+  } catch {
+    return { workspace: cwd, worktree: cwd }
+  }
+}
+
 async function main() {
   const argv = process.argv.slice(2)
   if (argv[0] === "logs") {
@@ -591,8 +607,9 @@ async function main() {
       targetDaemonAlias: options.targetDaemonAlias,
     }
     : undefined)
-  const workspace = options.workspace ?? process.cwd()
-  const worktree = options.worktree ?? workspace
+  const inferredTargets = await inferWorkspaceTargetsFromLaunchDirectory(process.cwd())
+  const workspace = options.workspace ?? inferredTargets.workspace
+  const worktree = options.worktree ?? inferredTargets.worktree
   const themeRegistry = await loadThemeRegistry({
     workspace,
     onWarning: (warning) => {
@@ -803,6 +820,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       initialThemeRegistry,
     ),
   )
+  const initialWorkspaceTarget = initialSession.workspace_id || options.workspace || process.cwd()
+  const initialWorktreeTarget = initialSession.worktree_id || options.worktree || initialWorkspaceTarget
+  const [pendingWorkspaceTarget, setPendingWorkspaceTarget] = createSignal(initialWorkspaceTarget)
+  const [pendingWorktreeTarget, setPendingWorktreeTarget] = createSignal(initialWorktreeTarget)
   const [commandCenterQuery, setCommandCenterQuery] = createSignal("")
   const [commandCenterItems, setCommandCenterItems] = createSignal<CommandCenterItem[]>([])
   const [commandCenterIndex, setCommandCenterIndex] = createSignal(0)
@@ -837,8 +858,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [expandedTurnIdsByAgent, setExpandedTurnIdsByAgent] = createSignal<Record<string, number[]>>({})
   const [workspaceScreenMode, setWorkspaceScreenMode] = createSignal<WorkspaceScreenMode>("agents")
   const [workspaceShellContext, setWorkspaceShellContext] = createSignal<ShellContext>(createDefaultShellContext({
-    workspace: initialSession.workspace_id || options.workspace || process.cwd(),
-    worktree: initialSession.worktree_id || options.worktree || options.workspace || process.cwd(),
+    workspace: initialWorkspaceTarget,
+    worktree: initialWorktreeTarget,
     sessionId: initialBinding ? initialSession.id : undefined,
     agentId: initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id : undefined,
     provider: options.provider ?? "opencode",
@@ -1568,6 +1589,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         await handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
         return
       }
+      if (waitingRoomState().focus === "workspace") {
+        const command = `/workspace ${pendingWorkspaceTarget()}`
+        setPromptText(command)
+        promptInput?.focus()
+        syncCommandCenter(command)
+        flashFooter("edit the workspace path and press Enter", "info")
+        return
+      }
+      if (waitingRoomState().focus === "worktree") {
+        const command = `/worktree ${pendingWorktreeTarget()}`
+        setPromptText(command)
+        promptInput?.focus()
+        syncCommandCenter(command)
+        flashFooter("edit the worktree path and press Enter", "info")
+        return
+      }
       if (waitingRoomState().focus === "remote-kernel") {
         const kernel = remoteKernelsState()[waitingRoomState().remoteKernelIndex]
         if (!kernel) {
@@ -1590,8 +1627,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         currentModel: options.model,
       })
       if (decision.action === "create") {
-        const root = options.workspace ?? process.cwd()
-        const session = await createSession(client, root, options.worktree ?? root)
+        const session = await createSession(client, pendingWorkspaceTarget(), pendingWorktreeTarget())
         await attachBinding(session, true, decision.launch)
         flashFooter(`created session ${session.alias ?? session.id}`, "info")
         return
@@ -1823,6 +1859,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const currentModelId = () => currentProviderSelection().model
   const currentVariantId = () => currentProviderSelection().effort
+  const waitingRoomTargets = () => ({
+    workspacePath: pendingWorkspaceTarget(),
+    worktreePath: pendingWorktreeTarget(),
+  })
   const syncCommandCenter = (value = promptInput?.plainText ?? promptTextSnapshot) => {
     setCommandCenterQuery(value)
     const items = buildCommandCenterItems(value, {
@@ -5139,7 +5179,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           relay: relayStatusState(),
           machines: remoteMachinesState(),
           kernels: remoteKernelsState(),
-        }, themeRegistryState())
+        }, waitingRoomTargets(), themeRegistryState())
       transcriptScrollbox.add(emptyTranscriptRenderable)
       if (isAttached()) {
         transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: 0 })
@@ -5715,6 +5755,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleCloudCommand,
     handleConfigCommand,
     handleWorkspaceCommand,
+    handleWorktreeCommand,
     handleWorkflowCommand,
     handleMcpCommand,
     handleSkillCommand,
@@ -5722,8 +5763,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     ...(resolveConfiguredCloudRelayApiUrl(preferencesState())
       ? { cloudRelayApiUrl: resolveConfiguredCloudRelayApiUrl(preferencesState()) }
       : {}),
-    workspace: options.workspace ?? process.cwd(),
-    worktree: options.worktree ?? options.workspace ?? process.cwd(),
+    workspace: initialWorkspaceTarget,
+    worktree: initialWorktreeTarget,
+    getWorkspaceTarget: pendingWorkspaceTarget,
+    getWorktreeTarget: pendingWorktreeTarget,
+    setWorkspaceTarget: setPendingWorkspaceTarget,
+    setWorktreeTarget: setPendingWorktreeTarget,
     accountProfile: options.accountProfile,
     clientId: options.clientId,
     isAttached,
@@ -5848,43 +5893,43 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
     listMcpServers: async () => {
       const response = await client.send<Record<string, unknown>>(
-        listMcpServersRequest(options.workspace ?? process.cwd()),
+        listMcpServersRequest(pendingWorkspaceTarget()),
       )
       return expectVariant<{ mcps: ArrobaMcpServerConfig[] }>(response, "McpServersListed").mcps
     },
     installMcpServer: async (config) => {
       const response = await client.send<Record<string, unknown>>(
-        installMcpServerRequest(options.workspace ?? process.cwd(), config as unknown as Record<string, unknown>),
+        installMcpServerRequest(pendingWorkspaceTarget(), config as unknown as Record<string, unknown>),
       )
       return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServerInstalled").mcp
     },
     updateMcpServer: async (config) => {
       const response = await client.send<Record<string, unknown>>(
-        updateMcpServerRequest(options.workspace ?? process.cwd(), config as unknown as Record<string, unknown>),
+        updateMcpServerRequest(pendingWorkspaceTarget(), config as unknown as Record<string, unknown>),
       )
       return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServerUpdated").mcp
     },
     uninstallMcpServer: async (name) => {
       const response = await client.send<Record<string, unknown>>(
-        uninstallMcpServerRequest(options.workspace ?? process.cwd(), name),
+        uninstallMcpServerRequest(pendingWorkspaceTarget(), name),
       )
       return expectVariant<{ name: string }>(response, "McpServerUninstalled").name
     },
     importMcpServers: async (provider, name) => {
       const response = await client.send<Record<string, unknown>>(
-        importMcpServersRequest(options.workspace ?? process.cwd(), provider, name),
+        importMcpServersRequest(pendingWorkspaceTarget(), provider, name),
       )
       return expectVariant<{ outcome: McpImportOutcome }>(response, "McpServersImported").outcome
     },
     getMcpServer: async (name) => {
       const response = await client.send<Record<string, unknown>>(
-        getMcpServerRequest(options.workspace ?? process.cwd(), name),
+        getMcpServerRequest(pendingWorkspaceTarget(), name),
       )
       return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServer").mcp
     },
     grantAgentMcp: async (agentRef, name) => {
       const response = await client.send<Record<string, unknown>>(
-        grantAgentCapabilityRequest(options.workspace ?? process.cwd(), agentRef, "mcp", name),
+        grantAgentCapabilityRequest(pendingWorkspaceTarget(), agentRef, "mcp", name),
       )
       return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
     },
@@ -5896,43 +5941,43 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
     listSkills: async () => {
       const response = await client.send<Record<string, unknown>>(
-        listSkillsRequest(options.workspace ?? process.cwd()),
+        listSkillsRequest(pendingWorkspaceTarget()),
       )
       return expectVariant<{ skills: ArrobaSkillMetadata[] }>(response, "SkillsListed").skills
     },
     installSkill: async (sourcePath) => {
       const response = await client.send<Record<string, unknown>>(
-        installSkillRequest(options.workspace ?? process.cwd(), sourcePath),
+        installSkillRequest(pendingWorkspaceTarget(), sourcePath),
       )
       return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillInstalled").skill
     },
     updateSkill: async (sourcePath) => {
       const response = await client.send<Record<string, unknown>>(
-        updateSkillRequest(options.workspace ?? process.cwd(), sourcePath),
+        updateSkillRequest(pendingWorkspaceTarget(), sourcePath),
       )
       return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillUpdated").skill
     },
     uninstallSkill: async (name) => {
       const response = await client.send<Record<string, unknown>>(
-        uninstallSkillRequest(options.workspace ?? process.cwd(), name),
+        uninstallSkillRequest(pendingWorkspaceTarget(), name),
       )
       return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillUninstalled").skill
     },
     importSkills: async (provider, name) => {
       const response = await client.send<Record<string, unknown>>(
-        importSkillsRequest(options.workspace ?? process.cwd(), provider, name),
+        importSkillsRequest(pendingWorkspaceTarget(), provider, name),
       )
       return expectVariant<{ outcome: SkillImportOutcome }>(response, "SkillsImported").outcome
     },
     getSkill: async (name) => {
       const response = await client.send<Record<string, unknown>>(
-        getSkillRequest(options.workspace ?? process.cwd(), name),
+        getSkillRequest(pendingWorkspaceTarget(), name),
       )
       return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "Skill").skill
     },
     grantAgentSkill: async (agentRef, name) => {
       const response = await client.send<Record<string, unknown>>(
-        grantAgentCapabilityRequest(options.workspace ?? process.cwd(), agentRef, "skill", name),
+        grantAgentCapabilityRequest(pendingWorkspaceTarget(), agentRef, "skill", name),
       )
       return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
     },
@@ -6214,6 +6259,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onWorkspace: async (command) => {
         try {
           await handleWorkspaceCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onWorktree: async (command) => {
+        try {
+          await handleWorktreeCommand(command)
         } catch (error) {
           flashFooter(formatError(error), "error")
         }
@@ -6546,6 +6598,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onWorkspace: async (command) => {
         try {
           await handleWorkspaceCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onWorktree: async (command) => {
+        try {
+          await handleWorktreeCommand(command)
         } catch (error) {
           flashFooter(formatError(error), "error")
         }
@@ -7122,7 +7181,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             relay: relayStatusState(),
             machines: remoteMachinesState(),
             kernels: remoteKernelsState(),
-          }, themeRegistryState()).map((row) => ({
+          }, waitingRoomTargets(), themeRegistryState()).map((row) => ({
             id: row.id,
             title: row.title,
             value: row.value,
@@ -9088,7 +9147,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [d]      create and attach to a new session, optionally in directory d\n  /session create [d]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m] [--dir d] [--worktree d --branch b] [--machine r] spawn a new local or remote agent\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /machine list         list approved, pending, and offline remote machines\n  /machine kernels <m>  list live kernels for a remote machine\n  /machine approve <m>  approve a pending remote machine for spawning\n  /machine forget <m>   forget a registered remote machine\n  /machine rename <m> <alias> rename and approve a remote machine\n  /config show          show the Arroba user config\n  /config set <p> <v>   update the Arroba user config\n  /config managed-io [p] required|unrestricted set provider managed I/O\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show [r]    show selected workflow or workflow by id/alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run [w] <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes; /workflow add node all adds missing agents\n  /workflow edge ...    add/remove workflow edges; workflow id may be omitted\n  /workflow endpoint ... manage workflow endpoints; workflow id may be omitted\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
+    "usage: arroba-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /workspace [path]     show or set the next-session workspace path\n  /workspace link ...   manage workspace links for the attached session\n  /worktree [path]      show or set the next-session worktree path\n  /worktree create <branch> [directory] [--from <ref>] create a named git worktree\n  /worktree name [a]    set or clear the current worktree display name\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [d]      create and attach to a new session, optionally in directory d\n  /session create [d]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m] [--dir d] [--worktree d --branch b] [--machine r] spawn a new local or remote agent\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /machine list         list approved, pending, and offline remote machines\n  /machine kernels <m>  list live kernels for a remote machine\n  /machine approve <m>  approve a pending remote machine for spawning\n  /machine forget <m>   forget a registered remote machine\n  /machine rename <m> <alias> rename and approve a remote machine\n  /config show          show the Arroba user config\n  /config set <p> <v>   update the Arroba user config\n  /config managed-io [p] required|unrestricted set provider managed I/O\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show [r]    show selected workflow or workflow by id/alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run [w] <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes; /workflow add node all adds missing agents\n  /workflow edge ...    add/remove workflow edges; workflow id may be omitted\n  /workflow endpoint ... manage workflow endpoints; workflow id may be omitted\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
   )
 }
 

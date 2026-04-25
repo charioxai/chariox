@@ -671,6 +671,14 @@ impl ArrobaUserConfig {
                             })?,
                     );
             }
+            path if path.starts_with("ui.worktree_aliases.") => {
+                let key = path.trim_start_matches("ui.worktree_aliases.").trim();
+                validate_config_key_path(&format!("ui.worktree_aliases.{key}"))?;
+                self.ui.worktree_aliases.insert(
+                    key.to_string(),
+                    non_empty_config_string("ui.worktree_aliases", value)?,
+                );
+            }
             "relay.url" => self.relay.url = normalized_optional(Some(value)),
             "relay.accept_remote_leases" => {
                 self.relay.accept_remote_leases =
@@ -856,6 +864,11 @@ impl ArrobaUserConfig {
             "ui.theme" => self.ui.theme = None,
             "ui.multi_agent_response_layout" => self.ui.multi_agent_response_layout = None,
             "ui.max_agents_per_screen" => self.ui.max_agents_per_screen = None,
+            path if path.starts_with("ui.worktree_aliases.") => {
+                let key = path.trim_start_matches("ui.worktree_aliases.").trim();
+                validate_config_key_path(&format!("ui.worktree_aliases.{key}"))?;
+                self.ui.worktree_aliases.remove(key);
+            }
             "relay.url" => self.relay.url = None,
             "relay.accept_remote_leases" => self.relay.accept_remote_leases = None,
             "history.operational.backend" => {
@@ -1553,6 +1566,8 @@ pub struct UserUiConfig {
     pub multi_agent_response_layout: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_agents_per_screen: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub worktree_aliases: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
