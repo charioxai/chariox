@@ -134,7 +134,8 @@ Implemented:
 - Codex native approval interception and response routing
 - OpenCode native permission interception and response routing
 - pane-local CLI interaction rendering for user feedback and provider-native permissions
-- live popup and native-permission drill scripts
+- remote forwarding for both provider-native interactions and non-permission `request_popup` interactions
+- live popup, native-permission, remote popup, and remote permission drill scripts
 
 Validated with:
 
@@ -144,6 +145,9 @@ Validated with:
 - controlled-exec spike fake/live drills for blocking popup semantics
 - live native permission drills for Codex and OpenCode
 - live popup drills, including Codex popup execution on the real-home provider auth path
+- remote native permission drills for Codex and OpenCode
+- remote managed-I/O permission drills for Codex and OpenCode
+- remote non-permission popup drills for Codex and OpenCode
 
 ## Closed Scope
 
@@ -155,10 +159,9 @@ M12 is closed with:
 - blocking Arroba popup UX for user feedback
 - same-turn continuation after popup or native permission response
 - CLI interaction-strip rendering and response submission
+- remote leased-agent forwarding for provider-native permissions and non-permission popups
 
 The following are intentionally outside M12 and belong to later milestones:
 
 - shell popup queue UX
-- remote native-permission drill follow-on for leased worker agents
-- remote provider-specific native-permission parity fixes where providers still execute directly instead of surfacing approval events
 - any Arroba-owned execution gate beyond provider-native permissions

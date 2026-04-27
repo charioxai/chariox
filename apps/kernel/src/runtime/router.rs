@@ -848,10 +848,24 @@ impl CommandRouter {
         interaction: crate::session::RuntimeInteraction,
     ) -> Result<crate::provider::ProviderNativeInteractionResolution, DaemonError> {
         let interaction = interaction.with_agent_id(context.home_agent_id.clone());
+        let timeout = interaction
+            .timeout_sec()
+            .map(std::time::Duration::from_secs);
+        let timeout_session_id = context.home_session_id.clone();
+        let timeout_interaction_id = interaction.id().to_string();
         let receiver = self
             .runtime_state
             .create_runtime_interaction(&context.home_session_id, interaction)
             .await?;
+        if let Some(timeout) = timeout {
+            let state = self.runtime_state.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(timeout).await;
+                let _ = state
+                    .timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id)
+                    .await;
+            });
+        }
         let resolution = receiver
             .await
             .map_err(|error| DaemonError::LocalTransport {
@@ -2063,9 +2077,11 @@ impl CommandRouter {
         {
             return;
         }
-        if let Err(error) =
-            refresh_remote_inventory_projection_for_app_with_relay_state(&self.app, &self.relay_state)
-                .await
+        if let Err(error) = refresh_remote_inventory_projection_for_app_with_relay_state(
+            &self.app,
+            &self.relay_state,
+        )
+        .await
         {
             crate::logging::warn_with_fields(
                 "daemon.router",

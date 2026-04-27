@@ -18,8 +18,12 @@ function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     keepArtifactsOnFailure: false,
+    model: null,
     providerModels: {},
     useRealHome: false,
+    kernelUrl: null,
+    noSpawnDaemon: false,
+    machineRef: null,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -27,6 +31,7 @@ function parseArgs(argv) {
     else if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
+    else if (arg === '--model') options.model = argv[++i]
     else if (arg === '--provider-model') {
       const [provider, model] = argv[++i].split('=', 2)
       if (!provider || !model) throw new Error('--provider-model must use provider=model')
@@ -34,6 +39,9 @@ function parseArgs(argv) {
     }
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
     else if (arg === '--use-real-home') options.useRealHome = true
+    else if (arg === '--kernel') options.kernelUrl = argv[++i]
+    else if (arg === '--no-spawn-daemon') options.noSpawnDaemon = true
+    else if (arg === '--machine-ref') options.machineRef = argv[++i]
     else if (arg === '--help' || arg === '-h') {
       console.log([
         'Usage: node apps/cli/scripts/live-popup-drill.mjs [options]',
@@ -42,9 +50,13 @@ function parseArgs(argv) {
         `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
         `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
         `  --poll-ms ${DEFAULT_POLL_MS}`,
+        '  --model <provider model override>',
         '  --provider-model PROVIDER=MODEL',
         '  --keep-artifacts-on-failure',
         '  --use-real-home',
+        '  --kernel <ws://...> (reuse an already-running kernel)',
+        '  --no-spawn-daemon',
+        '  --machine-ref <remote machine id or alias>',
       ].join('\n'))
       process.exit(0)
     } else {
@@ -283,13 +295,30 @@ async function waitForHistoryText(client, sessionId, agentId, needle, timeoutMs,
       await client.send(getSessionHistoryRequest(sessionId, 40, 80_000, null, agentId)),
       'SessionHistory',
     )
-    const text = (history?.entries ?? []).map((entry) => String(entry.text ?? '')).join('')
+    const text = (history?.entries ?? []).map((entry) => String(entry.entry?.text ?? entry.text ?? '')).join('')
     if (text.includes(needle)) {
       return text
     }
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for history text ${needle}`)
+}
+
+async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRef, timeoutMs, pollMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const machines = unwrapVariant(await client.send(listRemoteMachinesRequest()), 'RemoteMachinesListed').machines || []
+    if (machines.some((machine) => machine.machine_id === machineRef || machine.machine_alias === machineRef || machine.display_name === machineRef)) return
+    await sleep(pollMs)
+  }
+  throw new Error(`remote machine ${machineRef} did not become visible`)
+}
+
+async function bestEffortWithTimeout(promise, timeoutMs) {
+  await Promise.race([
+    promise,
+    sleep(timeoutMs).then(() => undefined),
+  ]).catch(() => undefined)
 }
 
 async function main() {
@@ -302,7 +331,7 @@ async function main() {
   const home = path.join(rootDir, 'home')
   const automationSocket = path.join(os.tmpdir(), `arroba-popup-auto-${process.pid}-${Date.now()}.sock`)
   const ports = makePorts()
-  const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
+  const kernelUrl = options.kernelUrl ?? `ws://127.0.0.1:${ports.kernelPort}`
   const env = {
     ...process.env,
     HOME: options.useRealHome ? (process.env.HOME ?? home) : home,
@@ -329,7 +358,9 @@ async function main() {
     await mkdir(home, { recursive: true })
     const { cliDist, kernelBinary } = await ensureCliBuilt()
 
-    daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
+    if (!options.noSpawnDaemon) {
+      daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
+    }
     await waitForKernel(kernelUrl)
     log('kernel-ready', { kernelUrl })
 
@@ -339,15 +370,40 @@ async function main() {
       attachToSessionRequest,
       submitPromptRequest,
       focusAgentRequest,
+      listRemoteMachinesRequest,
+      spawnAgentRequest,
       setUserConfigValueRequest,
     } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
     client = new LocalIpcClient(kernelUrl)
     await client.send(setUserConfigValueRequest('providers.managed_io', 'unrestricted'))
+    const provider = options.providers[0] ?? 'codex'
+    const model = options.providerModels[provider] ?? options.model ?? defaultModelForProvider(provider)
     const session = unwrap(
-      await client.send(createSessionRequest(workspace, workspace, `popup-${options.providers[0] ?? 'codex'}`)),
+      await client.send(createSessionRequest(workspace, workspace, `popup-${provider}`)),
       'SessionCreated',
     ).session
     sessionId = session.id
+    let activeAgentId = session.default_agent_id ?? session.agents?.[0]?.id ?? null
+
+    if (options.machineRef) {
+      await waitForRemoteMachine(client, listRemoteMachinesRequest, options.machineRef, options.timeoutMs, options.pollMs)
+      const spawned = unwrapVariant(
+        await client.send(spawnAgentRequest(
+          sessionId,
+          provider,
+          `${provider}-remote-popup`,
+          model,
+          workspace,
+          'high',
+          'build',
+          'required',
+          options.machineRef,
+        )),
+        'AgentSpawned',
+      )
+      activeAgentId = spawned.agent?.id ?? spawned.id ?? activeAgentId
+      await client.send(focusAgentRequest(sessionId, activeAgentId))
+    }
 
     const cliArgs = [
       '-q',
@@ -361,8 +417,8 @@ async function main() {
       '--session', sessionId,
       '--workspace', workspace,
       '--worktree', workspace,
-      '--provider', options.providers[0] ?? 'codex',
-      '--model', options.providerModels[options.providers[0]] ?? defaultModelForProvider(options.providers[0] ?? 'codex'),
+      '--provider', provider,
+      '--model', model,
       '--client-id', `popup-drill-cli-${process.pid}`,
     ]
     cli = spawn('script', cliArgs, { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -386,8 +442,8 @@ async function main() {
     await client.subscribeToKernelEvents(sessionId, attachmentId)
 
     for (const provider of options.providers) {
-      const model = options.providerModels[provider] ?? defaultModelForProvider(provider)
-      const initialAgentId = firstSnapshot.session?.focusedAgentId ?? null
+      const model = options.providerModels[provider] ?? options.model ?? defaultModelForProvider(provider)
+      const initialAgentId = activeAgentId ?? firstSnapshot.session?.focusedAgentId ?? null
       requireCondition(Boolean(initialAgentId), 'CLI did not expose an initial focused agent', firstSnapshot)
       const initialContextProvider = firstSnapshot.shell?.context?.provider ?? null
       requireCondition(initialContextProvider === provider, 'CLI initial agent provider did not match requested provider', {
@@ -505,11 +561,11 @@ async function main() {
     log('success', { providers: options.providers })
   } finally {
     if (automation) {
-      await automation.send('exit').catch(() => {})
+      await bestEffortWithTimeout(automation.send('exit'), 2_000)
       automation.close()
     }
     if (client) {
-      await client.close().catch(() => {})
+      await bestEffortWithTimeout(client.close(), 5_000)
     }
     await terminateChild(cli)
     await terminateChild(daemon)

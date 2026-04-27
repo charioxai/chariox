@@ -49,7 +49,7 @@ Chronological notes to preserve execution context between contributors/agents.
   - `apps/cli/scripts/live-popup-drill.mjs`
 - Confirmed live native permission drills for both Codex and OpenCode.
 - Confirmed live Codex popup execution on the real-home auth path and retained artifacts proving `request_popup` completed and resumed with `USER_FEEDBACK_RESULT:green`.
-- Closed M12 scope. Shell popup queue UX and remote permission UX stay in later milestones.
+- Closed the initial local M12 scope. Shell popup queue UX stayed outside M12.
 
 ## 2026-04-27
 
@@ -67,7 +67,14 @@ Chronological notes to preserve execution context between contributors/agents.
   - `apps/cli/scripts/live-remote-native-permission-drill.mjs`
 - Confirmed remote managed-I/O permission drills for Codex and OpenCode. Home-kernel interaction strips now surface remote managed-I/O approval requests and resume the same remote turn after approval.
 - Fixed leased-worker provider launch propagation so remote backing provider runs now inherit the leased agent's `execution_mode` and `permission_level` when the worker launches or reloads a provider run.
-- Remote native provider permissions remain the open follow-on. Current live runs show leased-worker providers receiving the prompt and executing native `bash` directly without surfacing a provider-native approval event back through Arroba, so the remaining work is provider-session parity for native remote runs rather than relay/UI plumbing.
+- Fixed the remote native permission completion projection issue by refreshing the home session snapshot after leased prompt settlement, then confirmed remote native provider permission drills for Codex and OpenCode.
+
+### Remote popup UX follow-on
+
+- Added remote support to `apps/cli/scripts/live-popup-drill.mjs` so it can reuse an existing home kernel, spawn a leased remote agent, and drive the home CLI interaction strip against that remote agent.
+- Added `apps/cli/scripts/live-remote-popup-drill.mjs` and `pnpm --filter @arroba/cli run remote-popup:drill`.
+- Fixed non-permission `request_popup` forwarding for leased worker agents by routing worker-side runtime popup requests through the existing relay native-interaction channel to the home kernel, with timeout/default handling owned by the home interaction.
+- Confirmed remote non-permission popup drills for Codex and OpenCode. Both providers passed feedback choice, warning-level choice, and timeout/default popup paths, and each resumed the same remote turn with the selected/default reply.
 
 ## 2026-04-19
 

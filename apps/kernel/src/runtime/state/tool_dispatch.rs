@@ -358,6 +358,55 @@ impl KernelRuntimeState {
                 let interaction_id = interaction.id().to_string();
                 let session_id = provider_run.session_id().to_string();
                 let timeout_sec = interaction.timeout_sec();
+                let remote_target = self
+                    .with_app_side_effect(|app| {
+                        let mut runtime = crate::app::RemoteLeaseRuntime::new(app);
+                        runtime.native_interaction_context_for_backing_agent(
+                            provider_run.session_id(),
+                            provider_run.agent_instance_id().unwrap_or(""),
+                            provider_run.id(),
+                        )
+                    })
+                    .await;
+                if let Some((target_daemon_id, context)) = remote_target {
+                    let response = self
+                        .with_app_side_effect(|app| {
+                            app.block_on_relay_future(
+                                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                                    app.config(),
+                                    ClientTarget {
+                                        daemon_id: Some(target_daemon_id.clone()),
+                                        daemon_alias: None,
+                                    },
+                                    RelayPeerRequest::ForwardNativeInteraction {
+                                        context: context.clone(),
+                                        interaction: interaction.clone(),
+                                    },
+                                ),
+                            )
+                        })
+                        .await?;
+                    let resolution = match response {
+                        RelayPeerResponse::NativeInteractionResolved { resolution } => resolution,
+                        other => {
+                            return Err(DaemonError::LocalTransport {
+                                operation: "runtime_tool_request_popup",
+                                message: format!(
+                                    "unexpected relay response for remote popup interaction: {other:?}"
+                                ),
+                            });
+                        }
+                    };
+                    return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                        ok: true,
+                        payload: serde_json::json!({
+                            "interaction_id": interaction_id,
+                            "status": resolution.status,
+                            "choice_id": resolution.choice_id,
+                            "reply": resolution.reply,
+                        }),
+                    });
+                }
                 let resolution_rx = self
                     .create_runtime_interaction(&session_id, interaction)
                     .await?;

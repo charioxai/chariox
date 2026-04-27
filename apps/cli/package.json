@@ -8,6 +8,7 @@
     "graph:drills": "pnpm run build && node scripts/workflow-graph-drills.mjs",
     "mcp-skill:drill": "node scripts/live-mcp-skill-drill.mjs --providers opencode,codex",
     "runtime-mcp-reattach:drill": "node scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex",
+    "remote-popup:drill": "node scripts/live-remote-popup-drill.mjs --providers opencode,codex",
     "remote-skill:drill": "node scripts/live-remote-skill-drill.mjs",
     "managed-io:drill": "node scripts/live-managed-io-drill.mjs --providers opencode,codex",
     "managed-io:remote-drill": "node scripts/live-remote-managed-io-drill.mjs --providers opencode --full",
