@@ -86,7 +86,7 @@ use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::session::{PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::{
-    refresh_remote_inventory_projection_for_app, RelayClientState,
+    refresh_remote_inventory_projection_for_app_with_relay_state, RelayClientState,
 };
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -1979,7 +1979,8 @@ impl CommandRouter {
             .filter(|kernel| {
                 kernel.machine_id == machine_ref
                     || kernel.machine_alias.as_deref() == Some(machine_ref.as_str())
-                    || kernel.machine_alias.as_deref() == Some(machine_ref.as_str())
+                    || kernel.relay_alias.as_deref() == Some(machine_ref.as_str())
+                    || kernel.kernel_alias.as_deref() == Some(machine_ref.as_str())
             })
             .collect();
         Ok(LocalDaemonResponse::RemoteMachineKernelsListed {
@@ -2062,7 +2063,10 @@ impl CommandRouter {
         {
             return;
         }
-        if let Err(error) = refresh_remote_inventory_projection_for_app(&self.app).await {
+        if let Err(error) =
+            refresh_remote_inventory_projection_for_app_with_relay_state(&self.app, &self.relay_state)
+                .await
+        {
             crate::logging::warn_with_fields(
                 "daemon.router",
                 "remote relay inventory refresh on demand failed",

@@ -512,6 +512,16 @@ mod tests {
                 ClientCapabilityLevel::InteractiveStructured,
             ))
             .expect("attachment should attach");
+        let prompt = app
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(agent.id()),
+                "remote prompt",
+                Vec::new(),
+            )
+            .expect("prompt should start");
+        assert!(matches!(prompt, PromptSubmissionOutcome::Started { .. }));
 
         RemoteLeaseRuntime::new(&mut app)
             .project_remote_runtime_projection(
@@ -551,6 +561,16 @@ mod tests {
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].agent_id.as_deref(), Some(agent.id()));
         assert_eq!(completions[0].message_id, "assistant-msg-1");
+
+        let projected = app
+            .session_state_projection_store()
+            .get(session.id())
+            .expect("projection should refresh");
+        assert!(projected
+            .prompt_states()
+            .get(agent.id())
+            .and_then(|state| state.active_prompt())
+            .is_none());
     }
 
     #[test]

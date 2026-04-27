@@ -509,30 +509,6 @@ impl KernelRuntimeState {
                 }
             ),
         );
-        if session_outcome.had_active_prompt {
-            if let Some(agent_id) = exit.ended_run.agent_instance_id() {
-                let reason = format!(
-                    "provider run `{}` for `{}` ended unexpectedly",
-                    provider_run_id,
-                    exit.ended_run.provider()
-                );
-                if let Err(error) = self
-                    .activate_next_agent_substitute_after_failure(session_id, agent_id, &reason)
-                    .await
-                {
-                    crate::logging::warn_with_fields(
-                        "daemon.provider",
-                        "automatic substitute activation after provider exit failed",
-                        serde_json::json!({
-                            "session_id": session_id,
-                            "agent_id": agent_id,
-                            "provider_run_id": provider_run_id,
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
-            }
-        }
         Ok(true)
     }
 

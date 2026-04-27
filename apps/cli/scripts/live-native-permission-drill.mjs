@@ -63,6 +63,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+async function bestEffortWithTimeout(promise, timeoutMs) {
+  await Promise.race([
+    promise,
+    sleep(timeoutMs).then(() => undefined),
+  ]).catch(() => undefined)
+}
+
 function requireCondition(condition, message, details) {
   if (!condition) {
     throw new Error(`${message}${details ? `\n${JSON.stringify(details, null, 2)}` : ''}`)
@@ -477,10 +484,12 @@ async function main() {
     log('success', { provider, model })
   } finally {
     if (automation) {
-      await automation.send('exit').catch(() => {})
+      await bestEffortWithTimeout(automation.send('exit'), 2_000)
       automation.close()
     }
-    await client?.close().catch(() => {})
+    if (client) {
+      await bestEffortWithTimeout(client.close(), 5_000)
+    }
     await terminateChild(cli)
     await terminateChild(daemon)
     if (!succeeded && options.keepArtifactsOnFailure) {

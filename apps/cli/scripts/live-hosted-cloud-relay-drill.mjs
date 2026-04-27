@@ -762,7 +762,7 @@ async function waitForRemoteMachine(client, requests, machineRef) {
       const listed = unwrap(
         await Promise.race([
           client.send(requests.listRemoteMachineKernelsRequest(machineRef)),
-          sleep(2_000).then(() => { throw new Error("remote machine kernel list timeout") }),
+          sleep(15_000).then(() => { throw new Error("remote machine kernel list timeout") }),
         ]),
         "RemoteMachineKernelsListed",
       )
@@ -947,6 +947,8 @@ async function runHostedSecondKernelAssertions({
   const workerPorts = await makeWorkerPorts()
   const workerDaemonId = `hosted-worker-daemon-${process.pid}-${Date.now()}`
   const workerAlias = `hosted-worker-${process.pid}`
+  const workerHome = path.join(rootDir, "worker-home")
+  const workerArrobaHome = path.join(workerHome, ".arroba")
 
   log("second-kernel-cloud-pair-machine", { machineId: workerDaemonId, alias: workerAlias })
   await pairCloudMachineDirect({
@@ -958,8 +960,11 @@ async function runHostedSecondKernelAssertions({
     profile: ownerProfile,
     machineId: workerDaemonId,
   })
+  await mkdir(workerArrobaHome, { recursive: true })
   const workerEnv = {
     ...process.env,
+    HOME: workerHome,
+    ARROBA_HOME: workerArrobaHome,
     ARROBA_KERNEL_PORT: String(workerPorts.kernelPort),
     ARROBA_MCP_PORT: String(workerPorts.mcpPort),
     ARROBA_OPENCODE_PORT: String(workerPorts.opencodePort),
@@ -981,6 +986,7 @@ async function runHostedSecondKernelAssertions({
     log("start-second-kernel", { workerAlias })
     worker = spawnProcess(kernelPath, [], { cwd: repoRoot, env: workerEnv, name: "worker-kernel" })
 
+    log("second-kernel-client-token-request", { workerAlias })
     const workerClientToken = await issueSessionScopedClientToken(apiUrl, {
       sessionToken: ownerProfile.cloudSessionToken,
       accountId: ownerProfile.accountId,
@@ -990,6 +996,8 @@ async function runHostedSecondKernelAssertions({
       clientId: ownerClientId,
       targetDaemonAlias: workerAlias,
     })
+    log("second-kernel-client-token-issued", { workerAlias })
+    log("second-kernel-relay-target-probe", { workerAlias })
     await waitForRelayTarget(
       LocalIpcClient,
       requests,
@@ -997,6 +1005,7 @@ async function runHostedSecondKernelAssertions({
       workerClientToken,
       workerAlias,
     )
+    log("second-kernel-relay-target-ready", { workerAlias })
 
     await waitForRemoteMachine(homeClient, requests, workerDaemonId)
     const created = unwrap(

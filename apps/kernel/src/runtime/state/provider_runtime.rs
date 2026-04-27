@@ -542,8 +542,13 @@ impl KernelRuntimeState {
             }
             let _ = owned.session_snapshot(started.run.session_id());
         }
-        if let Some(agent_id) = started.run.agent_instance_id() {
-            let reason = format!("provider launch failure: {error}");
+        if let (Some(agent_id), Some(reason)) = (
+            started.run.agent_instance_id(),
+            crate::provider::classify_provider_substitutable_failure_text(
+                started.run.adapter_key(),
+                &error.to_string(),
+            ),
+        ) {
             if let Err(substitute_error) = self
                 .activate_next_agent_substitute_after_failure(
                     started.run.session_id(),
@@ -870,21 +875,25 @@ impl KernelRuntimeState {
         {
             self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
         }
-        let reason = format!("provider failure: {message}");
-        if let Err(error) = self
-            .activate_next_agent_substitute_after_failure(session_id, &agent_id, &reason)
-            .await
-        {
-            crate::logging::warn_with_fields(
-                "daemon.provider",
-                "automatic substitute activation after provider failure failed",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "agent_id": agent_id,
-                    "provider_run_id": provider_run_id,
-                    "error": error.to_string(),
-                }),
-            );
+        if let Some(reason) = crate::provider::classify_provider_substitutable_failure_text(
+            provider_run.adapter_key(),
+            message,
+        ) {
+            if let Err(error) = self
+                .activate_next_agent_substitute_after_failure(session_id, &agent_id, &reason)
+                .await
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.provider",
+                    "automatic substitute activation after provider failure failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
         Ok(())
     }

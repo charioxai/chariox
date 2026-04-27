@@ -279,6 +279,35 @@ impl ProviderCatalogCacheStore {
     }
 }
 
+fn select_remote_kernel(
+    kernels: Vec<RelayKernelPresence>,
+    machine_ref: &str,
+    provider: &str,
+) -> Option<RelayKernelPresence> {
+    kernels
+        .into_iter()
+        .filter(|kernel| {
+            kernel.machine_id == machine_ref
+                || kernel.machine_alias.as_deref() == Some(machine_ref)
+                || kernel.relay_alias.as_deref() == Some(machine_ref)
+                || kernel.kernel_alias.as_deref() == Some(machine_ref)
+        })
+        .filter(|kernel| kernel.accepting_remote_leases)
+        .filter(|kernel| {
+            kernel
+                .available_providers
+                .iter()
+                .any(|candidate| candidate == provider)
+        })
+        .min_by_key(|kernel| {
+            (
+                kernel.leased_agent_count,
+                kernel.local_session_count,
+                kernel.kernel_id.clone(),
+            )
+        })
+}
+
 impl DaemonApp {
     pub(crate) fn artifact_attachment_segment(attachment_id: &str) -> String {
         attachment_id
@@ -1325,29 +1354,19 @@ impl DaemonApp {
     ) -> Result<RelayKernelPresence, DaemonError> {
         let machine_ref = crate::config::DaemonConfig::resolve_registered_machine_ref(machine_ref)
             .unwrap_or_else(|| machine_ref.to_string());
+        let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
+        if let Some(kernel) = select_remote_kernel(projected_kernels, &machine_ref, provider) {
+            return Ok(kernel);
+        }
         let kernels = self.block_on_relay_future(
             relay_discovery::list_live_kernels_for_machine(&self.config, &machine_ref),
         )?;
-        kernels
-            .into_iter()
-            .filter(|kernel| kernel.accepting_remote_leases)
-            .filter(|kernel| {
-                kernel
-                    .available_providers
-                    .iter()
-                    .any(|candidate| candidate == provider)
-            })
-            .min_by_key(|kernel| {
-                (
-                    kernel.leased_agent_count,
-                    kernel.local_session_count,
-                    kernel.kernel_id.clone(),
-                )
-            })
-            .ok_or_else(|| DaemonError::NoRemoteKernelAvailable {
+        select_remote_kernel(kernels, &machine_ref, provider).ok_or_else(|| {
+            DaemonError::NoRemoteKernelAvailable {
                 machine_ref,
                 provider: provider.to_string(),
-            })
+            }
+        })
     }
 
     pub(crate) fn block_on_relay_future<F, T>(&self, future: F) -> Result<T, DaemonError>

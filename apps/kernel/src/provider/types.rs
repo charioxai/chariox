@@ -863,6 +863,9 @@ pub(crate) fn classify_provider_terminal_failure_text(
     if !matches!(adapter_key, "codex" | "opencode") {
         return None;
     }
+    if let Some(failure) = classify_provider_substitutable_failure_text(adapter_key, text) {
+        return Some(failure);
+    }
     let normalized = text.to_lowercase();
     let fatal_model_error = normalized.contains("unsupported model")
         || normalized.contains("invalid model")
@@ -879,6 +882,46 @@ pub(crate) fn classify_provider_terminal_failure_text(
     }
     Some(format!(
         "Provider reported a terminal model error: {}",
+        compact_provider_error_snippet(text)
+    ))
+}
+
+pub(crate) fn classify_provider_substitutable_failure_text(
+    adapter_key: &str,
+    text: &str,
+) -> Option<String> {
+    if !matches!(adapter_key, "codex" | "opencode") {
+        return None;
+    }
+    let normalized = text.to_lowercase();
+    let quota_or_billing = normalized.contains("insufficient_quota")
+        || normalized.contains("quota exceeded")
+        || normalized.contains("exceeded your current quota")
+        || normalized.contains("billing hard limit")
+        || normalized.contains("billing limit")
+        || normalized.contains("spend limit")
+        || normalized.contains("usage limit")
+        || normalized.contains("monthly limit")
+        || normalized.contains("no credits")
+        || normalized.contains("not enough credits")
+        || normalized.contains("credits exhausted")
+        || normalized.contains("credit balance")
+        || normalized.contains("out of credits");
+    let rate_or_run_limit = normalized.contains("rate_limit_exceeded")
+        || normalized.contains("rate limit exceeded")
+        || normalized.contains("rate limited")
+        || normalized.contains("too many requests")
+        || normalized.contains("http 429")
+        || normalized.contains("status 429")
+        || normalized.contains("429 too many requests")
+        || normalized.contains("run limit")
+        || normalized.contains("runs limit")
+        || normalized.contains("turn limit");
+    if !(quota_or_billing || rate_or_run_limit) {
+        return None;
+    }
+    Some(format!(
+        "Provider reported a substitutable resource limit: {}",
         compact_provider_error_snippet(text)
     ))
 }
@@ -1005,8 +1048,9 @@ impl ProviderProcessInfo {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_provider_terminal_failure_text, AgentEndpointMode, LaunchProviderRequest,
-        ProviderLaunchResult, ProviderProcessInfo, ProviderResumeState, RuntimeProviderRun,
+        classify_provider_substitutable_failure_text, classify_provider_terminal_failure_text,
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderProcessInfo,
+        ProviderResumeState, RuntimeProviderRun,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -1095,6 +1139,40 @@ mod tests {
         .is_none());
         assert!(
             classify_provider_terminal_failure_text("codex", "normal assistant output").is_none()
+        );
+    }
+
+    #[test]
+    fn substitute_classifier_detects_shared_quota_and_limit_errors() {
+        let codex_failure = classify_provider_substitutable_failure_text(
+            "codex",
+            "Error: insufficient_quota: You exceeded your current quota.",
+        )
+        .expect("codex quota error should be substitutable");
+        assert!(codex_failure.contains("substitutable resource limit"));
+
+        let opencode_failure = classify_provider_substitutable_failure_text(
+            "opencode",
+            "OpenCode error: No credits available for this account",
+        )
+        .expect("opencode credit error should be substitutable");
+        assert!(opencode_failure.contains("No credits"));
+    }
+
+    #[test]
+    fn substitute_classifier_ignores_model_auth_and_network_errors() {
+        assert!(classify_provider_substitutable_failure_text(
+            "codex",
+            "HTTP 400 Bad Request: unsupported model gpt-5.2-codex"
+        )
+        .is_none());
+        assert!(classify_provider_substitutable_failure_text(
+            "opencode",
+            "Authentication required. Please login."
+        )
+        .is_none());
+        assert!(
+            classify_provider_substitutable_failure_text("codex", "connection refused").is_none()
         );
     }
 }
