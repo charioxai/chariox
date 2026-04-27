@@ -731,7 +731,11 @@ impl DaemonApp {
             }
         }
 
-        let projected_run_id = session.focused_agent_id().and_then(|agent_id| {
+        let projected_agent_id = self
+            .prompt_state_owner
+            .active_prompt_agent_id(session)
+            .or_else(|| session.focused_agent_id().map(str::to_string));
+        let projected_run_id = projected_agent_id.as_deref().and_then(|agent_id| {
             self.providers
                 .get_run_for_agent(session.id(), agent_id)
                 .and_then(|run| match run.state() {
@@ -783,6 +787,21 @@ impl DaemonApp {
                         request = request.with_resume_state(resume_state);
                     }
                 }
+            }
+        }
+        if let Some(agent_id) = request.agent_id.as_deref() {
+            if self
+                .agents
+                .get_agent(agent_id)
+                .ok()
+                .is_some_and(|agent| agent.remote_execution().is_some())
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "launch provider run",
+                    message: format!(
+                        "agent `{agent_id}` is remote-backed and must launch its provider on the worker kernel"
+                    ),
+                });
             }
         }
         crate::logging::info_with_fields(
@@ -1259,7 +1278,10 @@ impl DaemonApp {
             return Ok(false);
         }
 
-        Ok(session.active_prompt().is_some()
+        Ok(self
+            .prompt_state_owner
+            .active_prompt_agent_id(&session)
+            .is_some()
             || session.agents().iter().any(|agent| agent.is_processing()))
     }
 
@@ -1271,7 +1293,10 @@ impl DaemonApp {
         if session.agents().len() > 1 {
             let focused_agent_id = session.focused_agent_id().map(str::to_string);
             if let Some(focused_agent_id) = focused_agent_id {
-                let has_active_prompt = session.active_prompt().is_some();
+                let active_prompt_agent_id = self
+                    .prompt_state_owner
+                    .active_prompt_agent_id(&session);
+                let has_active_prompt = active_prompt_agent_id.is_some();
                 let has_processing_agent =
                     session.agents().iter().any(|agent| agent.is_processing());
                 if !has_active_prompt {
@@ -1295,7 +1320,10 @@ impl DaemonApp {
                     }
                 }
                 if has_active_prompt || has_processing_agent {
-                    self.project_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+                    let projected_agent_id = active_prompt_agent_id
+                        .as_deref()
+                        .unwrap_or(focused_agent_id.as_str());
+                    self.project_active_provider_run_for_agent(session_id, projected_agent_id)?;
                 } else {
                     self.sync_active_provider_run_for_agent(session_id, &focused_agent_id)?;
                 }
@@ -1304,7 +1332,10 @@ impl DaemonApp {
             }
             return Ok(());
         }
-        if session.active_prompt().is_some()
+        if self
+            .prompt_state_owner
+            .active_prompt_agent_id(&session)
+            .is_some()
             || session.agents().iter().any(|agent| agent.is_processing())
         {
             return Ok(());
@@ -1342,6 +1373,14 @@ impl DaemonApp {
         }
 
         let agent = self.agents.get_agent(agent_id)?;
+        if agent.remote_execution().is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "ensure prompt provider run for agent",
+                message: format!(
+                    "agent `{agent_id}` is remote-backed and must launch its provider on the worker kernel"
+                ),
+            });
+        }
         let adapter_key = match agent.provider() {
             "default" => "opencode",
             value => value,
@@ -1350,6 +1389,21 @@ impl DaemonApp {
             "default" => "opencode",
             value => value,
         };
+        let session = self.sessions.get_session(session_id)?;
+        let execution_mode = agent.execution_mode_override().or_else(|| {
+            session
+                .config_state()
+                .values()
+                .get("agents.mode")
+                .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
+        });
+        let permission_level = agent.permission_level_override().or_else(|| {
+            session
+                .config_state()
+                .values()
+                .get("agents.permissions")
+                .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
+        });
         let mut request = LaunchProviderRequest::new(
             session_id,
             adapter_key,
@@ -1358,7 +1412,9 @@ impl DaemonApp {
             agent.model().unwrap_or("default"),
         )
         .with_agent_id(agent.id().to_string())
-        .with_variant(agent.effort().map(str::to_string));
+        .with_variant(agent.effort().map(str::to_string))
+        .with_execution_mode(execution_mode.unwrap_or_default())
+        .with_permission_level(permission_level.unwrap_or_default());
         if crate::provider::provider_requires_managed_io_by_default(provider, &self.config) {
             request = request.with_managed_io_required();
         }

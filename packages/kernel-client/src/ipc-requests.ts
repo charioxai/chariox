@@ -1019,6 +1019,10 @@ export function getUserConfigRequest() {
   return { GetUserConfig: null }
 }
 
+export function getUserConfigSchemaRequest() {
+  return { GetUserConfigSchema: null }
+}
+
 export function setUserConfigValueRequest(path: string, value: string) {
   return {
     SetUserConfigValue: {

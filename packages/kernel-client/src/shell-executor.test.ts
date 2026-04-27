@@ -344,6 +344,114 @@ test("executeShellCommand waits for prompt and renders summary blob", async () =
   assert.match(result.message ?? "", /prompt-1 summary\n {24}done ok/)
 })
 
+test("executeShellCommand renders provider tools through shared tool display for show-reply", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    attachmentId: "attach-1",
+    agentId: "agent-1",
+  })
+  let stateCalls = 0
+  const fake = fakeClient((request) => {
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [makeAgent()] } }
+    }
+    if ("SubmitPrompt" in request) {
+      return {
+        PromptSubmitted: {
+          outcome: {
+            Started: {
+              prompt: {
+                id: "prompt-1",
+                source_attachment_id: "attach-1",
+                target_agent_id: "agent-1",
+                prompt: "hello\n",
+                status: "Running",
+              },
+            },
+          },
+          session: makeSession(),
+        },
+      }
+    }
+    if ("PumpTerminalOutput" in request) {
+      return { TerminalOutputPumped: { records: [] } }
+    }
+    if ("GetSessionState" in request) {
+      stateCalls += 1
+      return {
+        SessionState: {
+          session: makeSession({
+            prompt_states: {
+              "agent-1": {
+                active_prompt: stateCalls === 1
+                  ? {
+                      id: "prompt-1",
+                      source_attachment_id: "attach-1",
+                      target_agent_id: "agent-1",
+                      prompt: "hello\n",
+                      status: "Running",
+                    }
+                  : null,
+                queued_prompts: [],
+              },
+            },
+          }),
+        },
+      }
+    }
+    if ("GetSessionHistory" in request) {
+      return {
+        SessionHistory: {
+          next_cursor: null,
+          entries: [
+            {
+              entry_index: 1,
+              fragment_start: 0,
+              fragment_end: 5,
+              total_chars: 5,
+              entry: { agent_id: "agent-1", kind: "user_prompt", text: "hello\n" },
+            },
+            {
+              entry_index: 2,
+              fragment_start: 0,
+              fragment_end: 100,
+              total_chars: 100,
+              entry: {
+                agent_id: "agent-1",
+                kind: "provider_tool",
+                text: JSON.stringify({
+                  id: "tool-read",
+                  tool: "arroba_read_artifact",
+                  status: "completed",
+                  input: { path: "seed.txt", domain: "text" },
+                  output: JSON.stringify({ content_text: "TOOL_DISPLAY_FIXTURE_SEED\n", path: "seed.txt", domain: "text" }),
+                }),
+              },
+            },
+            {
+              entry_index: 3,
+              fragment_start: 0,
+              fragment_end: 7,
+              total_chars: 7,
+              entry: { agent_id: "agent-1", kind: "provider_output", text: "done ok" },
+            },
+          ],
+        },
+      }
+    }
+    return {}
+  })
+
+  const result = await executeShellCommand(parseShellCommand("prompt hello --wait --show-reply"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /\*\*read\*\* · COMPLETED/)
+  assert.match(result.message ?? "", /TOOL_DISPLAY_FIXTURE_SEED/)
+  assert.doesNotMatch(result.message ?? "", /\[provider_tool\]/)
+})
+
 test("executeShellCommand removes shell-local variables", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",
@@ -964,10 +1072,41 @@ test("executeShellCommand mutates user config", async () => {
         if ("GetUserConfig" in request) {
           return { UserConfig: { path: "/home/.arroba/config.json", config: { version: 1, providers: { default: "codex" } } } }
         }
+        if ("GetUserConfigSchema" in request) {
+          return {
+            UserConfigSchema: {
+              entries: [
+                {
+                  path: "providers.managed_io",
+                  value_type: "enum",
+                  allowed_values: ["required", "unrestricted"],
+                  settable: true,
+                  unsettable: true,
+                  effect: "provider_reload",
+                  status: "live",
+                  description: "Global managed I/O policy.",
+                },
+              ],
+            },
+          }
+        }
+        const setConfig = "SetUserConfigValue" in request
+          ? request.SetUserConfigValue as { path?: string }
+          : null
         return {
           UserConfigUpdated: {
             path: "/home/.arroba/config.json",
-            config: { version: 1, providers: { managed_io: { codex: "required" } } },
+            config: { version: 1, providers: { managed_io: "required" } },
+            effects: setConfig?.path === "providers.managed_io"
+              ? [
+                  {
+                    kind: "provider_reload",
+                    path: "providers.managed_io",
+                    message: "managed I/O policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
+                    provider_reload: { reloaded: 1, deferred: 0, unaffected: 0 },
+                  },
+                ]
+              : [],
           },
         }
       },
@@ -975,22 +1114,32 @@ test("executeShellCommand mutates user config", async () => {
   }
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
   const pathResult = await executeShellCommand(parseShellCommand("config path"), context, { client: fake.client })
+  const keysResult = await executeShellCommand(parseShellCommand("config keys"), context, { client: fake.client })
+  const schemaResult = await executeShellCommand(parseShellCommand("config schema"), context, { client: fake.client })
   const setResult = await executeShellCommand(parseShellCommand("config set providers.default opencode"), context, { client: fake.client })
   const unsetResult = await executeShellCommand(parseShellCommand("config unset providers.default"), context, { client: fake.client })
-  const managedIoResult = await executeShellCommand(parseShellCommand("config managed-io codex on"), context, { client: fake.client })
+  const managedIoResult = await executeShellCommand(parseShellCommand("config managed-io on"), context, { client: fake.client })
   assert.equal(pathResult.ok, true)
   assert.equal(pathResult.message, "/home/.arroba/config.json")
+  assert.equal(keysResult.ok, true)
+  assert.match(keysResult.message ?? "", /providers\.managed_io/)
+  assert.equal(schemaResult.ok, true)
+  assert.equal(schemaResult.format, "json")
+  assert.match(schemaResult.message ?? "", /provider_reload/)
   assert.equal(setResult.ok, true)
   assert.match(setResult.message ?? "", /config providers.default set to opencode/)
   assert.equal(unsetResult.ok, true)
   assert.match(unsetResult.message ?? "", /config providers.default unset/)
   assert.equal(managedIoResult.ok, true)
-  assert.match(managedIoResult.message ?? "", /managed I\/O for codex set to required/)
+  assert.match(managedIoResult.message ?? "", /managed I\/O set to required/)
+  assert.match(managedIoResult.message ?? "", /provider reloads: 1 reloaded, 0 deferred, 0 unaffected/)
   assert.deepEqual(requests, [
     { GetUserConfig: null },
+    { GetUserConfigSchema: null },
+    { GetUserConfigSchema: null },
     { SetUserConfigValue: { path: "providers.default", value: "opencode" } },
     { UnsetUserConfigValue: { path: "providers.default" } },
-    { SetUserConfigValue: { path: "providers.managed_io.codex", value: "required" } },
+    { SetUserConfigValue: { path: "providers.managed_io", value: "required" } },
   ])
 })
 

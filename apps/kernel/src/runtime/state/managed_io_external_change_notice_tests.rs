@@ -209,6 +209,15 @@ fn managed_io_snapshot_id_treats_create_sentinel_as_absent() {
         managed_io_snapshot_id_from_arg(Some("__arroba_create__".to_string())),
         None
     );
+    assert_eq!(
+        managed_io_snapshot_id_from_arg(Some("create".to_string())),
+        None
+    );
+    assert_eq!(managed_io_snapshot_id_from_arg(Some("new".to_string())), None);
+    assert_eq!(
+        managed_io_snapshot_id_from_arg(Some("absent".to_string())),
+        None
+    );
     assert_eq!(managed_io_snapshot_id_from_arg(Some("*".to_string())), None);
     assert_eq!(
         managed_io_snapshot_id_from_arg(Some("snap:test".to_string())),

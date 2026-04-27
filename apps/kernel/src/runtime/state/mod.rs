@@ -28,6 +28,8 @@ use arroba_relay::protocol::ClientTarget;
 
 mod managed_io;
 use managed_io::*;
+mod provider_reload;
+pub(crate) use provider_reload::*;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
@@ -61,6 +63,7 @@ struct KernelRuntimeOwnedState {
     workspace_identity_monitor:
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_mcp_continuations: PendingMcpContinuationStore,
+    pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
 }
@@ -90,6 +93,18 @@ struct PendingMcpContinuation {
 #[derive(Debug, Clone, Default)]
 struct PendingMcpContinuationStore {
     inner: Arc<StdMutex<BTreeMap<String, PendingMcpContinuation>>>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingProviderReload {
+    session_id: String,
+    agent_id: String,
+    reason: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PendingProviderReloadStore {
+    inner: Arc<StdMutex<BTreeMap<String, PendingProviderReload>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +150,14 @@ impl PendingMcpContinuationStore {
         self.inner
             .lock()
             .expect("pending MCP continuation mutex poisoned")
+    }
+}
+
+impl PendingProviderReloadStore {
+    fn write(&self) -> StdMutexGuard<'_, BTreeMap<String, PendingProviderReload>> {
+        self.inner
+            .lock()
+            .expect("pending provider reload mutex poisoned")
     }
 }
 
@@ -210,6 +233,7 @@ impl KernelRuntimeState {
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
+                pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             },
@@ -409,7 +433,13 @@ impl KernelRuntimeState {
             .grant_agent_mcp(agent_ref, name.clone(), caller_user_id)?;
         self.append_agent_durable_event("agent.mcp_granted", &agent, Some(&name))
             .await?;
-        let _ = self.activate_agent_mcp_grants_if_idle(agent.session_id(), agent.id(), &name)?;
+        let _ = self
+            .apply_provider_reload_policy(ProviderReloadTrigger::AgentMcpGrant {
+                session_id: agent.session_id().to_string(),
+                agent_id: agent.id().to_string(),
+                name,
+            })
+            .await?;
         Ok(agent)
     }
 

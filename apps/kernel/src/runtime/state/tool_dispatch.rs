@@ -1251,6 +1251,7 @@ impl KernelRuntimeState {
                 })?;
                 let domain =
                     KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
+                let (old_text, new_text) = args.normalized_text_transform_fields();
                 let mut output = if domain == crate::io::ArtifactDomainKind::TextDocument {
                     apply_managed_patch_operations(
                         &mut coordinator,
@@ -1260,8 +1261,8 @@ impl KernelRuntimeState {
                         vec![ManagedPatchOperation::Move {
                             from_path: PathBuf::from(args.from_path),
                             to_path: PathBuf::from(args.to_path),
-                            old_text: args.old_text,
-                            new_text: args.new_text,
+                            old_text,
+                            new_text,
                         }],
                         managed_io_reservation_owner(provider_run, tool_name),
                         &self.owned.managed_io_external_changes,
@@ -1926,6 +1927,7 @@ impl KernelRuntimeState {
                 })?;
                 let domain =
                     KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
+                let (old_text, new_text) = args.normalized_text_transform_fields();
                 if domain == crate::io::ArtifactDomainKind::TextDocument {
                     apply_remote_managed_patch_operations(
                         &mut coordinator,
@@ -1934,8 +1936,8 @@ impl KernelRuntimeState {
                         vec![ManagedPatchOperation::Move {
                             from_path: PathBuf::from(args.from_path),
                             to_path: PathBuf::from(args.to_path),
-                            old_text: args.old_text,
-                            new_text: args.new_text,
+                            old_text,
+                            new_text,
                         }],
                         artifact_states,
                         crate::io::ArtifactReservationOwner::new(

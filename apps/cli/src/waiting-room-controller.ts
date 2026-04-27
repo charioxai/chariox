@@ -8,10 +8,16 @@ import type { SessionListEntry } from "./sessions.js"
 import type { ThemeRegistry } from "./theme-registry.js"
 import {
   normalizeWaitingRoomState,
+  waitingRoomRemoteKernelCanDelete,
+  waitingRoomRemoteMachineCanDelete,
   waitingRoomChoice,
   type WaitingRoomRemoteState,
   type WaitingRoomState,
 } from "./waiting-room.js"
+import {
+  clearStagedWaitingRoomWorktreeSelection,
+  stageWaitingRoomWorktreeSelection,
+} from "./waiting-room-worktrees.js"
 
 export type WaitingRoomLaunchConfig = {
   provider: BackendProviderId
@@ -32,6 +38,18 @@ export type WaitingRoomActivationDecision =
   | { action: "join"; session: SessionListEntry; launch: WaitingRoomLaunchConfig }
   | { action: "error"; message: string }
   | { action: "none" }
+
+export type WaitingRoomSessionLifecycleAction = "archive" | "delete"
+
+export type WaitingRoomSessionLifecycleDecision =
+  | { action: WaitingRoomSessionLifecycleAction; session: SessionListEntry }
+  | { action: "error"; message: string }
+
+export type WaitingRoomDeleteDecision =
+  | { action: "delete-session"; session: SessionListEntry }
+  | { action: "delete-machine"; machineId: string; label: string }
+  | { action: "delete-kernel"; kernelId: string; label: string }
+  | { action: "error"; message: string }
 
 export type WaitingRoomModelSelectionDecision =
   | {
@@ -101,8 +119,14 @@ export function deriveWaitingRoomActivationDecision(options: {
   }
 
   if (options.state.focus !== "session") {
+    const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
+    if (!worktreeSelection.ok) {
+      return { action: "error", message: worktreeSelection.message }
+    }
     return { action: "create", launch }
   }
+
+  clearStagedWaitingRoomWorktreeSelection()
 
   if (!choice.session) {
     return { action: "error", message: "no session available to join" }
@@ -112,6 +136,81 @@ export function deriveWaitingRoomActivationDecision(options: {
     action: "join",
     session: choice.session,
     launch,
+  }
+}
+
+export function deriveWaitingRoomSessionLifecycleDecision(options: {
+  action: WaitingRoomSessionLifecycleAction
+  state: WaitingRoomState
+  sessions: SessionListEntry[]
+  catalog: ProviderCatalog
+}): WaitingRoomSessionLifecycleDecision {
+  const choice = waitingRoomChoice(options.state, options.sessions, options.catalog)
+  if (options.state.focus !== "session" || !choice.session) {
+    return {
+      action: "error",
+      message: `select a session to ${options.action}`,
+    }
+  }
+
+  return {
+    action: options.action,
+    session: choice.session,
+  }
+}
+
+export function deriveWaitingRoomDeleteDecision(options: {
+  state: WaitingRoomState
+  sessions: SessionListEntry[]
+  catalog: ProviderCatalog
+  remote?: WaitingRoomRemoteState
+}): WaitingRoomDeleteDecision {
+  const choice = waitingRoomChoice(options.state, options.sessions, options.catalog, options.remote)
+  if (options.state.focus === "session" && choice.session) {
+    return {
+      action: "delete-session",
+      session: choice.session,
+    }
+  }
+
+  if (options.state.focus === "machine" && choice.remoteMachine) {
+    const label = choice.remoteMachine.display_name
+      ?? choice.remoteMachine.registry_alias
+      ?? choice.remoteMachine.machine_alias
+      ?? choice.remoteMachine.machine_id
+    if (!waitingRoomRemoteMachineCanDelete(choice.remoteMachine)) {
+      return {
+        action: "error",
+        message: `machine ${label} is active`,
+      }
+    }
+    return {
+      action: "delete-machine",
+      machineId: choice.remoteMachine.machine_id,
+      label,
+    }
+  }
+
+  if (options.state.focus === "remote-kernel" && choice.remoteKernel) {
+    const label = choice.remoteKernel.relay_alias
+      ?? choice.remoteKernel.kernel_alias
+      ?? choice.remoteKernel.kernel_id
+    if (!waitingRoomRemoteKernelCanDelete(choice.remoteKernel)) {
+      return {
+        action: "error",
+        message: `kernel ${label} is active`,
+      }
+    }
+    return {
+      action: "delete-kernel",
+      kernelId: choice.remoteKernel.kernel_id,
+      label,
+    }
+  }
+
+  return {
+    action: "error",
+    message: "select a session, inactive machine, or inactive kernel to delete",
   }
 }
 

@@ -233,6 +233,7 @@ export function formatToolDisplay(update: ToolTranscriptUpdate): ToolDisplay {
   const status = nonEmpty(update.status) ?? undefined
   const markdown = formatToolTranscriptUpdate(update)
   const patchFiles = readApplyPatchFiles(update)
+  const readBlock = readToolDisplayReadBlock(update)
   const blocks: ToolDisplayBlock[] = []
 
   if (patchFiles.length > 0) {
@@ -243,6 +244,8 @@ export function formatToolDisplay(update: ToolTranscriptUpdate): ToolDisplay {
         previewLines: buildApplyPatchNewPreview(file),
       })),
     })
+  } else if (readBlock) {
+    blocks.push(readBlock)
   } else {
     const command = readCommand(update.input)
     if (command) {
@@ -270,14 +273,15 @@ export function formatToolDisplay(update: ToolTranscriptUpdate): ToolDisplay {
   }
 
   const summary = summarizeToolDisplay(update, patchFiles, markdown)
+  const title = nativeToolDisplayTitle(tool)
   return {
     version: 1,
     tool,
     ...(status ? { status } : {}),
-    title: tool,
+    title,
     summary,
     collapsed: {
-      title: `${tool}${formatToolStatusBadge(status)}`,
+      title: `${title}${formatToolStatusBadge(status)}`,
       summary,
     },
     blocks,
@@ -294,6 +298,10 @@ function summarizeToolDisplay(update: ToolTranscriptUpdate, patchFiles: ApplyPat
   const command = readCommand(update.input)
   if (command) {
     return `$ ${command}`
+  }
+  const readInput = readReadInput(update.input)
+  if (isNativeReadTool(update.tool) && readInput?.filePath) {
+    return `${readInput.filePath}${formatReadWindow(readInput)}`
   }
   return nonEmpty(update.description)
     ?? nonEmpty(update.title)
@@ -521,7 +529,7 @@ function formatApplyPatchTranscriptUpdate(update: ToolTranscriptUpdate) {
   ].filter(Boolean)
 
   return [
-    `**${isManagedIoTool(update.tool) ? "managed I/O" : "patch"}**${formatToolStatusBadge(nonEmpty(update.status))}`,
+    `**patch**${formatToolStatusBadge(nonEmpty(update.status))}`,
     `${files.length} ${files.length === 1 ? "file" : "files"}${parts.length ? ` · ${parts.join(", ")}` : ""}`,
     ...files.slice(0, 6).map((file: ApplyPatchFile) => `- ${file.title}`),
   ].join("\n")
@@ -585,7 +593,7 @@ function readManagedIoChangeFiles(update: ToolTranscriptUpdate): ApplyPatchFile[
   }
 
   for (const source of [update.output, update.raw]) {
-    const normalized = normalizeJsonLike(source)
+    const normalized = normalizeToolOutputPayload(source)
     if (!isObjectValue(normalized)) {
       continue
     }
@@ -607,6 +615,18 @@ function readManagedIoChangeFiles(update: ToolTranscriptUpdate): ApplyPatchFile[
   return []
 }
 
+function nativeToolDisplayTitle(tool: string) {
+  const canonical = canonicalToolName(tool)
+  if (canonical === "arroba.read_artifact") return "read"
+  if (isManagedIoTool(tool)) return "patch"
+  return tool
+}
+
+function isNativeReadTool(tool: unknown) {
+  const canonical = canonicalToolName(tool)
+  return canonical === "read" || canonical === "arroba.read_artifact"
+}
+
 function isManagedIoTool(tool: unknown) {
   const canonical = canonicalToolName(tool)
   return canonical === "arroba.edit_artifact"
@@ -624,7 +644,13 @@ function canonicalToolName(tool: unknown) {
   const compact = normalized.replace(/[._-]/g, "").toLowerCase()
   if (compact === "arrobawriteartifact" || compact === "writeartifact") return "arroba.write_artifact"
   if (compact === "arrobaeditartifact" || compact === "editartifact") return "arroba.edit_artifact"
-  if (compact === "arrobaapplypatch") return "arroba.apply_patch"
+  if (
+    compact === "arrobaapplypatch"
+    || compact === "arrobapatchartifact"
+    || compact === "mcparrobapatchartifact"
+    || compact === "mcparrobaarrobapatchartifact"
+  ) return "arroba.apply_patch"
+  if (compact === "patchartifact") return "arroba.apply_patch"
   if (compact === "applypatch") return "apply_patch"
   if (compact === "arrobadeleteartifact" || compact === "deleteartifact") return "arroba.delete_artifact"
   if (compact === "arrobamoveartifact" || compact === "moveartifact") return "arroba.move_artifact"
@@ -665,6 +691,29 @@ function normalizeJsonLike(value: unknown): unknown {
   } catch {
     return value
   }
+}
+
+function normalizeToolOutputPayload(value: unknown): unknown {
+  const normalized = normalizeJsonLike(value)
+  if (!isObjectValue(normalized)) {
+    return normalized
+  }
+
+  if ("structuredContent" in normalized) {
+    return normalizeToolOutputPayload(normalized.structuredContent)
+  }
+
+  const content = normalized.content
+  if (Array.isArray(content)) {
+    const text = content
+      .map((entry) => isObjectValue(entry) && typeof entry.text === "string" ? entry.text : null)
+      .find((entry): entry is string => Boolean(entry?.trim()))
+    if (text) {
+      return normalizeToolOutputPayload(text)
+    }
+  }
+
+  return normalized
 }
 
 function readCodexFileChangeList(value: unknown): CodexFileChange[] | null {
@@ -931,8 +980,7 @@ function normalizeDiffPath(filePath: string) {
 }
 
 function formatReadTranscriptUpdate(update: ToolTranscriptUpdate) {
-  const tool = canonicalToolName(update.tool)
-  if (tool !== "read" && tool !== "arroba.read_artifact") {
+  if (!isNativeReadTool(update.tool)) {
     return null
   }
 
@@ -942,11 +990,26 @@ function formatReadTranscriptUpdate(update: ToolTranscriptUpdate) {
     return null
   }
 
-  const label = tool === "arroba.read_artifact" ? "managed I/O read" : "read"
-  const header = `**${label}**${formatToolStatusBadge(nonEmpty(update.status))}\n\`${input.filePath}${formatReadWindow(input)}\``
+  const header = `**read**${formatToolStatusBadge(nonEmpty(update.status))}\n\`${input.filePath}${formatReadWindow(input)}\``
   const body = truncateToolBlob(content)
   const fence = codeFence(body)
   return `${header}\n\n${fence}${guessPathFenceLanguage(input.filePath)}\n${body}\n${fence}`
+}
+
+function readToolDisplayReadBlock(update: ToolTranscriptUpdate): ToolDisplayBlock | null {
+  if (!isNativeReadTool(update.tool)) {
+    return null
+  }
+  const input = readReadInput(update.input)
+  const content = readReadContent(update.output) ?? readReadContent(update.raw)
+  if (!input?.filePath || content == null) {
+    return null
+  }
+  return {
+    kind: "code",
+    language: guessPathFenceLanguage(input.filePath),
+    text: truncateToolBlob(content),
+  }
 }
 
 function formatGrepTranscriptUpdate(update: ToolTranscriptUpdate) {
@@ -1126,16 +1189,18 @@ function formatReadWindow(input: { offset?: number; limit?: number }) {
 }
 
 function readReadContent(value: unknown) {
-  if (typeof value !== "string") {
+  if (typeof value !== "string" && !isObjectValue(value)) {
     return null
   }
 
-  const embedded = parseEmbeddedFileBlock(value)
-  if (embedded) {
-    return trimTrailingNewlines(embedded.content)
+  if (typeof value === "string") {
+    const embedded = parseEmbeddedFileBlock(value)
+    if (embedded) {
+      return trimTrailingNewlines(embedded.content)
+    }
   }
 
-  const normalized = normalizeJsonLike(value)
+  const normalized = normalizeToolOutputPayload(value)
   if (!isObjectValue(normalized)) {
     return null
   }

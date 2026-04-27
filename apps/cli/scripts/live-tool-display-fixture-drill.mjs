@@ -357,37 +357,113 @@ function fixtureSlug(value) {
   return value.replace(/[^a-zA-Z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64)
 }
 
-function toolNamesFromEvents(events) {
-  const names = new Set()
+function parsedToolEvents(events) {
+  const parsed = []
   for (const event of events) {
     try {
-      const parsed = JSON.parse(event)
-      if (typeof parsed.tool === 'string') names.add(parsed.tool.replace(/[._-]/g, '').toLowerCase())
+      parsed.push(JSON.parse(event))
     } catch {
       // Ignore non-JSON provider blobs; the formatter has separate fallback tests.
     }
   }
-  return names
+  return parsed
+}
+
+function toolNamesFromEvents(events) {
+  return new Set(parsedToolEvents(events)
+    .map((event) => typeof event.tool === 'string' ? event.tool.replace(/[._-]/g, '').toLowerCase() : '')
+    .filter(Boolean))
 }
 
 function assertRequiredToolFamilies(target, events) {
   const names = toolNamesFromEvents(events)
   const hasRead = [...names].some((name) => name.includes('readartifact') || name === 'read')
-  const hasPatch = [...names].some((name) => name.includes('applypatch'))
+  const hasWrite = [...names].some((name) => name.includes('writeartifact') || name === 'write')
+  const hasEdit = [...names].some((name) => name.includes('editartifact') || name === 'edit')
+  const hasPatch = [...names].some((name) => name.includes('applypatch') || name.includes('patchartifact'))
+  const hasMove = [...names].some((name) => name.includes('moveartifact') || name === 'move')
+  const hasDelete = [...names].some((name) => name.includes('deleteartifact') || name === 'delete')
   const missing = []
   if (!hasRead) missing.push('read')
-  if (!hasPatch) missing.push('apply_patch')
+  if (!hasWrite) missing.push('write')
+  if (!hasEdit) missing.push('edit')
+  if (!hasPatch) missing.push('patch')
+  if (!hasMove) missing.push('move')
+  if (!hasDelete) missing.push('delete')
   if (missing.length > 0) {
     throw new Error(`${target.provider} ${target.model} fixture is missing required tool families: ${missing.join(', ')}`)
   }
+  assertRequiredToolSuccesses(target, events)
 }
 
-function runtimeReadToolName(provider) {
-  return provider === 'opencode' ? 'arroba_read_artifact' : 'arroba.read_artifact'
+function assertRequiredToolSuccesses(target, events) {
+  const parsed = parsedToolEvents(events)
+  const requiredMutations = [
+    ['write', (name) => name.includes('writeartifact') || name === 'write'],
+    ['edit', (name) => name.includes('editartifact') || name === 'edit'],
+    ['delete', (name) => name.includes('deleteartifact') || name === 'delete'],
+    ['patch', (name) => name.includes('applypatch') || name.includes('patchartifact')],
+    ['move', (name) => name.includes('moveartifact') || name === 'move'],
+  ]
+  for (const [label, matches] of requiredMutations) {
+    const completed = parsed.find((event) =>
+      event.status === 'completed' &&
+      typeof event.tool === 'string' &&
+      matches(event.tool.replace(/[._-]/g, '').toLowerCase())
+    )
+    if (!completed) {
+      throw new Error(`${target.provider} ${target.model} fixture is missing completed ${label} event`)
+    }
+    const payload = parseToolOutputPayload(completed.output)
+    if (payload?.applied !== true) {
+      throw new Error(`${target.provider} ${target.model} ${label} event was not applied: ${JSON.stringify(payload ?? completed.output)}`)
+    }
+  }
 }
 
-function runtimePatchToolName(provider) {
-  return provider === 'opencode' ? 'arroba_apply_patch' : 'arroba.apply_patch'
+function parseToolOutputPayload(output) {
+  const normalized = parseJsonLike(output)
+  if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) return normalized
+  if (normalized.structuredContent) return parseToolOutputPayload(normalized.structuredContent)
+  if (Array.isArray(normalized.content)) {
+    const text = normalized.content
+      .map((entry) => entry && typeof entry === 'object' && typeof entry.text === 'string' ? entry.text : null)
+      .find((entry) => entry && entry.trim())
+    if (text) return parseToolOutputPayload(text)
+  }
+  return normalized
+}
+
+function parseJsonLike(value) {
+  if (typeof value !== 'string') return value
+  const trimmed = value.trim()
+  if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) return value
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return value
+  }
+}
+
+function runtimeToolNames(provider) {
+  if (provider === 'opencode') {
+    return {
+      read: 'arroba_read_artifact',
+      write: 'arroba_write_artifact',
+      edit: 'arroba_edit_artifact',
+      patch: 'arroba_patch_artifact',
+      move: 'arroba_move_artifact',
+      delete: 'arroba_delete_artifact',
+    }
+  }
+  return {
+    read: 'arroba.read_artifact',
+    write: 'arroba.write_artifact',
+    edit: 'arroba.edit_artifact',
+    patch: 'mcp__arroba__patch_artifact',
+    move: 'arroba.move_artifact',
+    delete: 'arroba.delete_artifact',
+  }
 }
 
 async function main() {
@@ -513,10 +589,12 @@ async function runTargetFixture({
   timeoutMs,
   pollMs,
 }) {
-  const readTool = runtimeReadToolName(target.provider)
-  const patchTool = runtimePatchToolName(target.provider)
+  const tools = runtimeToolNames(target.provider)
   await writeFile(path.join(workspace, 'seed.txt'), 'TOOL_DISPLAY_FIXTURE_SEED\n', 'utf8')
   await writeFile(path.join(workspace, 'patch-target.txt'), 'before\n', 'utf8')
+  await writeFile(path.join(workspace, 'delete-target.txt'), 'delete me\n', 'utf8')
+  await rm(path.join(workspace, 'write-target.txt'), { force: true }).catch(() => {})
+  await rm(path.join(workspace, 'moved-target.txt'), { force: true }).catch(() => {})
   const agent = unwrapVariant(
     await client.send(requests.spawnAgentRequest(
       session.id,
@@ -533,9 +611,11 @@ async function runTargetFixture({
     'You must actually call tools now. Do not describe, plan, or summarize the steps without calling tools.',
     'Do not print XML, JSON, markdown, or pseudo-tool-call text. Use the provider tool-call mechanism only.',
     'Keep all changes inside this disposable workspace.',
-    `Step 1: call the Arroba runtime tool \`${readTool}\` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.`,
-    'Step 2: call a search/grep tool, if available, to search for TOOL_DISPLAY_FIXTURE_SEED in this workspace.',
-    'Step 3: call a shell/bash tool, if available, to run `printf TOOL_DISPLAY_SHELL_OK\\n`.',
+    `Step 1: call the Arroba runtime tool \`${tools.read}\` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.`,
+    `Step 2: call \`${tools.write}\` exactly once with JSON arguments {"path":"write-target.txt","content_text":"write-before\\n","domain":"text"}.`,
+    `Step 3: call \`${tools.read}\` exactly once with JSON arguments {"path":"write-target.txt","domain":"text"} and remember the returned snapshot_id.`,
+    `Step 4: call \`${tools.edit}\` exactly once using that snapshot_id, with JSON arguments {"path":"write-target.txt","old_text":"write-before\\n","new_text":"write-after\\n","domain":"text","snapshot_id":"THE_SNAPSHOT_ID_FROM_STEP_3"}. Replace THE_SNAPSHOT_ID_FROM_STEP_3 with the exact snapshot_id from Step 3.`,
+    `Step 5: call \`${tools.delete}\` exactly once with JSON arguments {"path":"delete-target.txt","domain":"text"}.`,
     'Only after the required tool calls succeed, reply with TOOL_DISPLAY_FIXTURE_PHASE_1_DONE.',
     'If you cannot call any tool, reply with TOOL_DISPLAY_FIXTURE_NO_TOOLS and include the exact reason.',
   ].join('\n'), []))
@@ -561,11 +641,12 @@ async function runTargetFixture({
   })
   await client.send(requests.submitPromptRequest(session.id, attachment.id, agent.id, [
     'This is phase 2 of the Arroba tool-display fixture drill.',
-    'You must actually call the patch tool now. Do not describe or summarize without calling it.',
+    'You must actually call the patch and move tools now. Do not describe or summarize without calling them.',
     'Do not print XML, JSON, markdown, or pseudo-tool-call text. Use the provider tool-call mechanism only.',
-    `Call the Arroba runtime tool \`${patchTool}\` exactly once with JSON arguments {"patch_text":"*** Begin Patch\\n*** Update File: patch-target.txt\\n@@\\n-before\\n+after\\n*** End Patch","domain":"text"}.`,
-    'Only after the patch tool succeeds, reply with TOOL_DISPLAY_FIXTURE_DONE.',
-    'If you cannot call the patch tool, reply with TOOL_DISPLAY_FIXTURE_NO_PATCH and include the exact reason.',
+    `Step 1: call the Arroba runtime tool \`${tools.patch}\` exactly once with JSON arguments {"patch_text":"*** Begin Patch\\n*** Update File: patch-target.txt\\n@@\\n-before\\n+after\\n*** End Patch","domain":"text"}.`,
+    `Step 2: call \`${tools.move}\` exactly once with JSON arguments {"from_path":"patch-target.txt","to_path":"moved-target.txt","old_text":"after\\n","new_text":"moved-after\\n","domain":"text"}.`,
+    'Only after both tools succeed, reply with TOOL_DISPLAY_FIXTURE_DONE.',
+    'If you cannot call the patch or move tool, reply with TOOL_DISPLAY_FIXTURE_NO_PATCH and include the exact reason.',
   ].join('\n'), []))
   await waitForAgentIdle({
     client,
@@ -595,7 +676,21 @@ async function runTargetFixture({
   assertRequiredToolFamilies(target, events)
   const targetPath = path.join(outDir, fixtureFileName(target.provider, target.model))
   await writeFile(targetPath, `${events.join('\n')}\n`, 'utf8')
+  await writeRenderedFixture(targetPath, events)
   console.log(`[tool-display-fixture] ${target.provider} ${target.model}: ${events.length} tool events -> ${targetPath}`)
+}
+
+async function writeRenderedFixture(targetPath, events) {
+  try {
+    const { formatToolDisplay } = await import('@arroba/tool-display')
+    const rendered = parsedToolEvents(events)
+      .map((event) => JSON.stringify(formatToolDisplay(event)))
+    if (rendered.length > 0) {
+      await writeFile(`${targetPath}.display.jsonl`, `${rendered.join('\n')}\n`, 'utf8')
+    }
+  } catch {
+    // The drill can still capture raw fixtures before the workspace packages are built.
+  }
 }
 
 main().catch((error) => {

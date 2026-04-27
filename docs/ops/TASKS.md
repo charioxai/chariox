@@ -57,6 +57,11 @@ A lightweight, repo-native task board so contributors and future agents can cont
   - Note: Finish the local UX, pane behavior, and command flow on the OpenCode-first path before adding more client surfaces.
 - [ ] **M6-001** Add multi-platform clients on the same daemon/protocol model
   - Note: Web comes first, then iOS/Android, all reusing the semantics proven by the polished CLI.
+- [ ] **IOS-001** Add OSS iOS client
+  - Note: Build the native iOS app in the OSS repo as a kernel client, not a runtime authority. The planning baseline lives in `docs/ios/IOS_APP_PLAN.md`.
+  - Scope: SwiftUI app under `apps/ios`, direct kernel WebSocket transport, waiting room, freeform prompt/transcript, multi-agent panes, command center, optional Cloud/relay login, and simulator-driven QA.
+  - Progress: Initial SwiftUI app shell, local WebSocket request/response client, subscribe/unsubscribe event stream, session list/create/select/attach/detach, replay cursor handling, recent history loading, transcript rendering, prompt submit/cancel, agent focus/cycle controls, and the first `/session`/`/agent`/`/stop` command-center subset are implemented. Package tests cover protocol envelopes, app-model flows, and command routing; simulator tests pass.
+  - QA direction: use XcodeBuildMCP for the default build/test/run validation loop, and use iOS Simulator MCP for explicit QA/dogfooding passes when Miguel requests or confirms them. Future agents may suggest Maestro when useful, but must ask Miguel before adding it to the repo or official QA gate.
 - [ ] **M7-001** Add Claude Code, Codex, and generalized provider-adapter/protocol support
   - Note: Multi-provider expansion is intentionally the last major breadth step after OpenCode, harnessing, multi-machine behavior, and multi-platform clients are settled.
 

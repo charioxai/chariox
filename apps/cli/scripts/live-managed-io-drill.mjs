@@ -79,7 +79,7 @@ function printHelp() {
     'Usage: node apps/cli/scripts/live-managed-io-drill.mjs [options]',
     '',
     'Runs a live managed-I/O provider drill with isolated daemon/session/workspace lifecycle:',
-    '- positive: agents read seed.txt and exercise Arroba write/edit/apply_patch/move/delete tools',
+    '- positive: agents read seed.txt and exercise Arroba write/edit/patch/move/delete tools',
     '- negative: agents are asked to write directly without Arroba; direct output files must not appear',
     '- collision: two agents attempt the same text edit area; exactly one write may land',
     '- external changes: non-overlap stale edits rebase, overlapping stale edits are rejected',
@@ -96,7 +96,7 @@ function printHelp() {
     '  --machine-ref MACHINE_ID_OR_ALIAS (spawn agents on a remote worker machine)',
     '  --history-dir PATH (session history dir when using --no-spawn-daemon)',
     '  --keep-artifacts-on-failure',
-    '  --positive-only (stop after the managed read/write/edit/apply_patch/move/delete smoke)',
+    '  --positive-only (stop after the managed read/write/edit/patch/move/delete smoke)',
   ].join('\n'))
 }
 
@@ -166,6 +166,31 @@ function opencodeCodexModel(model) {
   if (model.endsWith('-codex')) return model
   if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
   return model
+}
+
+function managedIoToolNames(provider) {
+  if (provider === 'opencode') {
+    return {
+      read: 'arroba_read_artifact',
+      write: 'arroba_write_artifact',
+      edit: 'arroba_edit_artifact',
+      applyPatch: 'arroba_patch_artifact',
+      delete: 'arroba_delete_artifact',
+      move: 'arroba_move_artifact',
+    }
+  }
+  return {
+    read: 'arroba.read_artifact',
+    write: 'arroba.write_artifact',
+    edit: 'arroba.edit_artifact',
+    applyPatch: 'mcp__arroba__patch_artifact',
+    delete: 'arroba.delete_artifact',
+    move: 'arroba.move_artifact',
+  }
+}
+
+function managedIoMoveSourceName(provider) {
+  return provider === 'opencode' ? `${provider}-source.txt` : `${provider}-patch.txt`
 }
 
 async function spawnManagedIoPhaseAgents({
@@ -241,7 +266,7 @@ async function assertFileBytes(filePath, expected) {
   return actual
 }
 
-async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, events, expectedCompletionCount, requiredFiles, forbiddenFiles, timeoutMs, pollMs, debugSnapshot }) {
+async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, events, expectedCompletionCount, completionSinceMs = 0, requiredFiles, forbiddenFiles, timeoutMs, pollMs, debugSnapshot }) {
   const started = Date.now()
   let lastRequiredCount = 0
   let lastMissingRequired = requiredFiles
@@ -263,23 +288,12 @@ async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, eve
     }
     lastRequiredCount = requiredExisting.length
     lastMissingRequired = missingRequired
-    const completed = events.filter((event) => event.event === 'assistant_message_completed')
+    const completed = events.filter((event) =>
+      event.event === 'assistant_message_completed' &&
+      ((event.observed_at_ms ?? 0) >= completionSinceMs)
+    )
     if (requiredExisting.length === requiredFiles.length && completed.length >= expectedCompletionCount) {
       return completed
-    }
-    if (completed.length >= expectedCompletionCount && missingRequired.length > 0) {
-      if (debugSnapshot) {
-        const snapshot = await debugSnapshot()
-        const allAgentsIdle = (snapshot.agents ?? []).every((agent) =>
-          !agent.is_processing &&
-          agent.state !== 'Working' &&
-          !agent.prompt?.active &&
-          (agent.prompt?.queued ?? 0) === 0
-        )
-        if (allAgentsIdle) {
-          throw new Error(`assistant completed before required managed-I/O files existed; missing=${missingRequired.join(', ')}; debug=${JSON.stringify(snapshot)}`)
-        }
-      }
     }
     await sleep(pollMs)
   }
@@ -311,11 +325,14 @@ async function waitForFilesAbsent({ filePaths, timeoutMs, pollMs }) {
   throw new Error(`timed out waiting for managed-I/O files to be absent; still present=${existing.join(', ')}`)
 }
 
-async function waitForCompletionCount({ client, sessionId, attachmentId, events, expectedCompletionCount, timeoutMs, pollMs }) {
+async function waitForCompletionCount({ client, sessionId, attachmentId, events, expectedCompletionCount, completionSinceMs = 0, timeoutMs, pollMs }) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
     await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
-    const completed = events.filter((event) => event.event === 'assistant_message_completed')
+    const completed = events.filter((event) =>
+      event.event === 'assistant_message_completed' &&
+      ((event.observed_at_ms ?? 0) >= completionSinceMs)
+    )
     if (completed.length >= expectedCompletionCount) return completed
     await sleep(pollMs)
   }
@@ -328,6 +345,7 @@ async function waitForPromptPhase({
   attachmentId,
   events,
   expectedCompletionCount,
+  completionSinceMs,
   requiredFiles,
   forbiddenFiles,
   timeoutMs,
@@ -340,12 +358,147 @@ async function waitForPromptPhase({
     attachmentId,
     events,
     expectedCompletionCount,
+    completionSinceMs,
     requiredFiles,
     forbiddenFiles,
     timeoutMs,
     pollMs,
     debugSnapshot,
   })
+}
+
+async function historyProviderOutputMarkerGroups({ historyDir, markerGroups, sinceMs }) {
+  const remaining = markerGroups.map((markers) => [...markers])
+  const outputByKey = new Map()
+  const files = (await readdir(historyDir).catch(() => []))
+    .filter((file) => file.endsWith('.jsonl'))
+    .map((file) => path.join(historyDir, file))
+    .sort()
+
+  for (const file of files) {
+    const lines = (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
+    for (const line of lines) {
+      if (!line.trim()) continue
+      let entry
+      try {
+        entry = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if ((entry.timestamp_ms ?? 0) < sinceMs) continue
+      if (entry.kind !== 'provider_output' || typeof entry.text !== 'string') continue
+      const key = `${file}:${entry.merge_key ?? entry.timestamp_ms ?? outputByKey.size}`
+      outputByKey.set(key, `${outputByKey.get(key) ?? ''}${entry.text}`)
+    }
+  }
+
+  const outputs = Array.from(outputByKey.values())
+  return remaining.filter((markers) => !outputs.some((output) => markers.some((marker) => output.includes(marker))))
+}
+
+async function waitForHistoryOutputMarkers({ historyDir, markerGroups, sinceMs, timeoutMs, pollMs }) {
+  const started = Date.now()
+  let missing = markerGroups
+  while (Date.now() - started < timeoutMs) {
+    missing = await historyProviderOutputMarkerGroups({ historyDir, markerGroups, sinceMs })
+    if (missing.length === 0) return
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for provider output markers: ${missing.map((markers) => markers.join(' or ')).join(', ')}`)
+}
+
+async function providerToolUpdatesSince({ historyDir, sinceMs }) {
+  const updates = []
+  const files = (await readdir(historyDir).catch(() => []))
+    .filter((file) => file.endsWith('.jsonl'))
+    .map((file) => path.join(historyDir, file))
+    .sort()
+
+  for (const file of files) {
+    const lines = (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
+    for (const line of lines) {
+      if (!line.trim()) continue
+      let entry
+      try {
+        entry = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if ((entry.timestamp_ms ?? 0) < sinceMs) continue
+      if (entry.kind !== 'provider_tool' || typeof entry.text !== 'string') continue
+      try {
+        updates.push(JSON.parse(entry.text))
+      } catch {
+        continue
+      }
+    }
+  }
+  return updates
+}
+
+function providerToolUpdateMatches(update, expectation) {
+  const tool = String(update.tool ?? '')
+  if (!tool.endsWith(expectation.toolSuffix)) return false
+  if (update.status !== 'completed') return false
+  if (expectation.path != null && update.input?.path !== expectation.path) return false
+  if (expectation.fromPath != null && update.input?.from_path !== expectation.fromPath) return false
+  if (expectation.toPath != null && update.input?.to_path !== expectation.toPath) return false
+  if (expectation.requireApplied === false) return true
+  try {
+    return parseManagedToolOutput(update.output)?.applied === true
+  } catch {
+    return false
+  }
+}
+
+async function waitForManagedToolExpectationsAndFiles({
+  client,
+  sessionId,
+  attachmentId,
+  historyDir,
+  sinceMs,
+  expectations,
+  requiredFiles,
+  forbiddenFiles,
+  timeoutMs,
+  pollMs,
+  debugSnapshot,
+}) {
+  const started = Date.now()
+  let missingExpectations = expectations
+  let lastRequiredCount = 0
+  let lastMissingRequired = requiredFiles
+  while (Date.now() - started < timeoutMs) {
+    await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+    const forbiddenExisting = []
+    for (const forbiddenFile of forbiddenFiles) {
+      if (await fileExists(forbiddenFile)) forbiddenExisting.push(forbiddenFile)
+    }
+    if (forbiddenExisting.length > 0) {
+      throw new Error(`direct write unexpectedly created forbidden files: ${forbiddenExisting.join(', ')}`)
+    }
+
+    const requiredExisting = []
+    const missingRequired = []
+    for (const requiredFile of requiredFiles) {
+      if (await fileExists(requiredFile)) requiredExisting.push(requiredFile)
+      else missingRequired.push(requiredFile)
+    }
+    lastRequiredCount = requiredExisting.length
+    lastMissingRequired = missingRequired
+
+    const updates = await providerToolUpdatesSince({ historyDir, sinceMs })
+    missingExpectations = expectations.filter((expectation) =>
+      !updates.some((update) => providerToolUpdateMatches(update, expectation))
+    )
+    if (missingExpectations.length === 0 && requiredExisting.length === requiredFiles.length) return updates
+    await sleep(pollMs)
+  }
+  const missingTools = missingExpectations
+    .map((expectation) => `${expectation.toolSuffix}:${expectation.path ?? `${expectation.fromPath ?? ''}->${expectation.toPath ?? ''}`}`)
+    .join(', ')
+  const debug = debugSnapshot ? `; debug=${JSON.stringify(await debugSnapshot())}` : ''
+  throw new Error(`timed out waiting for managed tool results and files; missing tools=${missingTools}; required files present=${lastRequiredCount}; missing=${lastMissingRequired.join(', ')}${debug}`)
 }
 
 async function waitForAgentsIdle({ client, sessionId, attachmentId, agentIds, getSessionStateRequest, timeoutMs, pollMs }) {
@@ -510,13 +663,14 @@ async function runLiveCollisionAndExternalChecks({
     ).agent
     const firstNewText = `FROM_${provider.toUpperCase()}_A`
     const secondNewText = `FROM_${provider.toUpperCase()}_B`
+    const tools = managedIoToolNames(provider)
     const overlapSameAreaEditStartedAt = Date.now()
     for (const [editAgent, label, newText] of [[agent, 'A', firstNewText], [collider, 'B', secondNewText]]) {
       const prompt = [
         'This is a live Arroba managed I/O overlapping-writer drill.',
         'Use only Arroba managed I/O. Do not use shell commands or native filesystem writes.',
-        `First call \`arroba.read_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}-overlap.txt","domain":"text"}.`,
-        'Then call `arroba.edit_artifact` exactly once using the `snapshot_id` from that read, with old_text "TARGET" and the requested new_text.',
+        `First call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}-overlap.txt","domain":"text"}.`,
+        `Then call \`${tools.edit}\` exactly once using the \`snapshot_id\` from that read, with old_text "TARGET" and the requested new_text.`,
         'Do not reread or retry if the managed edit is rejected.',
         `The edit arguments must target {"path":"outputs/${provider}-overlap.txt","old_text":"TARGET","new_text":${JSON.stringify(newText)},"domain":"text"} plus the read snapshot_id.`,
         `Then reply exactly ${provider.toUpperCase()}_OVERLAP_${label}_DONE if applied, or ${provider.toUpperCase()}_OVERLAP_${label}_BLOCKED if rejected.`,
@@ -532,6 +686,16 @@ async function runLiveCollisionAndExternalChecks({
       // has landed. The final content assertion below still verifies that one
       // write won and the losing edit did not corrupt the file.
       count: machineRef ? 1 : 2,
+      timeoutMs,
+      pollMs,
+    })
+    await waitForHistoryOutputMarkers({
+      historyDir,
+      markerGroups: [
+        [`${provider.toUpperCase()}_OVERLAP_A_DONE`, `${provider.toUpperCase()}_OVERLAP_A_BLOCKED`],
+        [`${provider.toUpperCase()}_OVERLAP_B_DONE`, `${provider.toUpperCase()}_OVERLAP_B_BLOCKED`],
+      ],
+      sinceMs: overlapSameAreaEditStartedAt,
       timeoutMs,
       pollMs,
     })
@@ -585,15 +749,23 @@ async function runLiveCollisionAndExternalChecks({
     const nonOverlapExpected = 'intro\nheader\nalpha\nREPLACED\nomega\nfooter\noutro\n'
     await writeFile(nonOverlapPath, nonOverlapBase, 'utf8')
     const nonOverlapReadAgent = await spawnCheckAgent('external-nonoverlap-read')
+    const nonOverlapReadStartedAt = Date.now()
     await client.send(submitPromptRequest(session.id, attachment.id, nonOverlapReadAgent.id, [
       'This is a live Arroba managed I/O external non-overlap drill.',
       'Use only Arroba managed I/O.',
-      `Call \`arroba.read_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}-external-nonoverlap.txt","domain":"text"}.`,
+      `Call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}-external-nonoverlap.txt","domain":"text"}.`,
       `Remember the returned snapshot_id for the next turn. Then reply exactly ${provider.toUpperCase()}_EXTERNAL_NONOVERLAP_READ_DONE.`,
     ].join('\n'), []))
     const nonOverlapRead = await waitForManagedReadSnapshot({
       historyDir,
       artifactPath: `outputs/${provider}-external-nonoverlap.txt`,
+      timeoutMs,
+      pollMs,
+    })
+    await waitForHistoryOutputMarkers({
+      historyDir,
+      markerGroups: [[`${provider.toUpperCase()}_EXTERNAL_NONOVERLAP_READ_DONE`]],
+      sinceMs: nonOverlapReadStartedAt,
       timeoutMs,
       pollMs,
     })
@@ -618,12 +790,19 @@ async function runLiveCollisionAndExternalChecks({
       'Continue the external non-overlap drill.',
       'Use only Arroba managed I/O. Do not reread the artifact.',
       `Use this exact snapshot_id: ${nonOverlapRead.snapshot_id}`,
-      `Call \`arroba.edit_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}-external-nonoverlap.txt","old_text":"TARGET","new_text":"REPLACED","domain":"text","snapshot_id":${JSON.stringify(nonOverlapRead.snapshot_id)}}.`,
+      `Call \`${tools.edit}\` exactly once with JSON arguments {"path":"outputs/${provider}-external-nonoverlap.txt","old_text":"TARGET","new_text":"REPLACED","domain":"text","snapshot_id":${JSON.stringify(nonOverlapRead.snapshot_id)}}.`,
       `Then reply exactly ${provider.toUpperCase()}_EXTERNAL_NONOVERLAP_EDIT_DONE.`,
     ].join('\n'), []))
     const nonOverlapEdit = await waitForManagedEditResult({
       historyDir,
       artifactPath: `outputs/${provider}-external-nonoverlap.txt`,
+      sinceMs: nonOverlapEditStartedAt,
+      timeoutMs,
+      pollMs,
+    })
+    await waitForHistoryOutputMarkers({
+      historyDir,
+      markerGroups: [[`${provider.toUpperCase()}_EXTERNAL_NONOVERLAP_EDIT_DONE`]],
       sinceMs: nonOverlapEditStartedAt,
       timeoutMs,
       pollMs,
@@ -644,15 +823,23 @@ async function runLiveCollisionAndExternalChecks({
     const externalOverlapExpected = 'one\nEXTERNAL\nthree\n'
     await writeFile(overlapExternalPath, externalOverlapBase, 'utf8')
     const overlapReadAgent = await spawnCheckAgent('external-overlap-read')
+    const overlapReadStartedAt = Date.now()
     await client.send(submitPromptRequest(session.id, attachment.id, overlapReadAgent.id, [
       'This is a live Arroba managed I/O external overlap drill.',
       'Use only Arroba managed I/O.',
-      `Call \`arroba.read_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}-external-overlap.txt","domain":"text"}.`,
+      `Call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}-external-overlap.txt","domain":"text"}.`,
       `Remember the returned snapshot_id for the next turn. Then reply exactly ${provider.toUpperCase()}_EXTERNAL_OVERLAP_READ_DONE.`,
     ].join('\n'), []))
     const overlapRead = await waitForManagedReadSnapshot({
       historyDir,
       artifactPath: `outputs/${provider}-external-overlap.txt`,
+      timeoutMs,
+      pollMs,
+    })
+    await waitForHistoryOutputMarkers({
+      historyDir,
+      markerGroups: [[`${provider.toUpperCase()}_EXTERNAL_OVERLAP_READ_DONE`]],
+      sinceMs: overlapReadStartedAt,
       timeoutMs,
       pollMs,
     })
@@ -677,12 +864,22 @@ async function runLiveCollisionAndExternalChecks({
       'Continue the external overlap drill.',
       'Use only Arroba managed I/O. Do not reread the artifact and do not retry if rejected.',
       `Use this exact snapshot_id: ${overlapRead.snapshot_id}`,
-      `Call \`arroba.edit_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}-external-overlap.txt","old_text":"TARGET","new_text":"AGENT","domain":"text","snapshot_id":${JSON.stringify(overlapRead.snapshot_id)}}.`,
+      `Call \`${tools.edit}\` exactly once with JSON arguments {"path":"outputs/${provider}-external-overlap.txt","old_text":"TARGET","new_text":"AGENT","domain":"text","snapshot_id":${JSON.stringify(overlapRead.snapshot_id)}}.`,
       `Then reply exactly ${provider.toUpperCase()}_EXTERNAL_OVERLAP_BLOCKED if rejected, or ${provider.toUpperCase()}_EXTERNAL_OVERLAP_UNEXPECTED_APPLIED if applied.`,
     ].join('\n'), []))
     const overlapEdit = await waitForManagedEditResult({
       historyDir,
       artifactPath: `outputs/${provider}-external-overlap.txt`,
+      sinceMs: overlapEditStartedAt,
+      timeoutMs,
+      pollMs,
+    })
+    await waitForHistoryOutputMarkers({
+      historyDir,
+      markerGroups: [[
+        `${provider.toUpperCase()}_EXTERNAL_OVERLAP_BLOCKED`,
+        `${provider.toUpperCase()}_EXTERNAL_OVERLAP_UNEXPECTED_APPLIED`,
+      ]],
       sinceMs: overlapEditStartedAt,
       timeoutMs,
       pollMs,
@@ -741,6 +938,7 @@ async function main() {
   let daemonChild = null
   let kernelUrl = options.kernel
   const startedAt = Date.now()
+  const historyDir = options.historyDir ?? path.join(rootDir, 'history')
   let succeeded = false
   if (options.spawnDaemon) {
     const ports = makePorts()
@@ -760,7 +958,7 @@ async function main() {
         ARROBA_CODEX_PORT: String(ports.codexPort),
         ARROBA_DAEMON_ID: `managed-io-drill-${process.pid}-${Date.now()}`,
         ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-        ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+        ARROBA_SESSION_HISTORY_DIR: historyDir,
       },
       stdio: ['ignore', 'ignore', 'inherit'],
     })
@@ -821,21 +1019,45 @@ async function main() {
     const movedFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-moved.txt`))
     const opaqueMovedFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-opaque-moved.bin`))
     const directFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-direct.txt`))
-    const runPositivePromptPhase = async ({ provider, agent, prompt, requiredFiles, label }) => {
-      const beforeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+    const runPositivePromptPhase = async ({ provider, agent, prompt, requiredFiles, label, marker, managedToolExpectations = [] }) => {
+      const completionSinceMs = Date.now()
       await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
-      await waitForPromptPhase({
-        client,
-        sessionId: session.id,
-        attachmentId: attachment.id,
-        events,
-        expectedCompletionCount: beforeCompletionCount + 1,
-        requiredFiles,
-        forbiddenFiles: directFiles,
-        timeoutMs: options.timeoutMs,
-        pollMs: options.pollMs,
-        debugSnapshot: debugSessionSnapshot,
-      })
+      if (managedToolExpectations.length > 0) {
+        await waitForManagedToolExpectationsAndFiles({
+          client,
+          sessionId: session.id,
+          attachmentId: attachment.id,
+          historyDir,
+          sinceMs: completionSinceMs,
+          expectations: managedToolExpectations,
+          requiredFiles,
+          forbiddenFiles: directFiles,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
+          debugSnapshot: debugSessionSnapshot,
+        })
+      } else {
+        await waitForPromptPhase({
+          client,
+          sessionId: session.id,
+          attachmentId: attachment.id,
+          events,
+          expectedCompletionCount: 1,
+          completionSinceMs,
+          requiredFiles,
+          forbiddenFiles: directFiles,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
+          debugSnapshot: debugSessionSnapshot,
+        })
+        await waitForHistoryOutputMarkers({
+          historyDir,
+          markerGroups: [[marker]],
+          sinceMs: completionSinceMs,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
+        })
+      }
       if (!options.machineRef) {
         await waitForAgentsIdle({
           client,
@@ -846,6 +1068,7 @@ async function main() {
           timeoutMs: options.timeoutMs,
           pollMs: options.pollMs,
         })
+        await sleep(4_000)
       }
       await assertFilesAbsent(directFiles, `${provider} ${label} direct-write check`)
     }
@@ -853,11 +1076,13 @@ async function main() {
     for (const { provider, agent } of agents) {
       const written = `${provider}-managed-io-write-ok: seed-value-42\n`
       const edited = `${provider}-managed-io-edit-ok: seed-value-42\n`
-      const patchInitial = `patch-start-${provider}\n`
-      const patchMoved = `patch-moved-${provider}\n`
+      const sourceName = managedIoMoveSourceName(provider)
+      const patchInitial = provider === 'opencode' ? `source-start-${provider}\n` : `patch-start-${provider}\n`
+      const patchMoved = provider === 'opencode' ? patchInitial : `patch-moved-${provider}\n`
+      const tools = managedIoToolNames(provider)
       const patchText = [
         '*** Begin Patch',
-        `*** Add File: outputs/${provider}-patch.txt`,
+        `*** Add File: outputs/${sourceName}`,
         `+${patchInitial.trimEnd()}`,
         '*** End Patch',
       ].join('\n')
@@ -867,13 +1092,17 @@ async function main() {
         provider,
         agent,
         label: 'text read/write',
+        marker: `${provider.toUpperCase()}_MANAGED_IO_TEXT_WRITE_DONE`,
+        managedToolExpectations: [
+          { toolSuffix: 'write_artifact', path: `outputs/${provider}.txt` },
+        ],
         requiredFiles: [path.join(outputsDir, `${provider}.txt`)],
         prompt: [
           'This is a live Arroba managed I/O positive text read/write smoke test.',
           'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
           'Use only the Arroba MCP/runtime tools for file I/O.',
-          'Step 1: call `arroba.read_artifact` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.',
-          `Step 2: call \`arroba.write_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","content_text":${JSON.stringify(written)},"domain":"text"}.`,
+          `Step 1: call \`${tools.read}\` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.`,
+          `Step 2: call \`${tools.write}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","content_text":${JSON.stringify(written)},"domain":"text"}.`,
           `Only after both steps succeed and outputs/${provider}.txt exists, reply exactly ${provider.toUpperCase()}_MANAGED_IO_TEXT_WRITE_DONE and nothing else.`,
           `If any managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
         ].join('\n'),
@@ -884,65 +1113,92 @@ async function main() {
         provider,
         agent,
         label: 'text read/edit',
+        marker: `${provider.toUpperCase()}_MANAGED_IO_TEXT_EDIT_DONE`,
+        managedToolExpectations: [
+          { toolSuffix: 'edit_artifact', path: `outputs/${provider}.txt` },
+        ],
         requiredFiles: [path.join(outputsDir, `${provider}.txt`)],
         prompt: [
           'This is a live Arroba managed I/O positive text edit smoke test.',
           'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
           'Use only the Arroba MCP/runtime tools for file I/O.',
-          `Step 1: call \`arroba.read_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","domain":"text"} and remember the returned snapshot_id.`,
-          `Step 2: call \`arroba.edit_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text","snapshot_id":"THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1"}. Replace THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1 with the exact snapshot_id from step 1.`,
+          `Step 1: call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","domain":"text"} and remember the returned snapshot_id.`,
+          `Step 2: call \`${tools.edit}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text","snapshot_id":"THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1"}. Replace THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1 with the exact snapshot_id from step 1.`,
           `Only after the edit succeeds and outputs/${provider}.txt contains the new text, reply exactly ${provider.toUpperCase()}_MANAGED_IO_TEXT_EDIT_DONE and nothing else.`,
           `If any managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
         ].join('\n'),
       })
       await assertFileContent(path.join(outputsDir, `${provider}.txt`), edited)
 
-      await runPositivePromptPhase({
-        provider,
-        agent,
-        label: 'text apply_patch',
-        requiredFiles: [path.join(outputsDir, `${provider}-patch.txt`)],
-        prompt: [
-          'This is a live Arroba managed I/O positive apply_patch smoke test.',
+      const patchPrompt = [
+          'This is a live Arroba managed I/O positive text patch smoke test.',
           'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
           'Use only the Arroba MCP/runtime tools for file I/O.',
-          `Call \`arroba.apply_patch\` exactly once with JSON arguments {"patch_text":${JSON.stringify(patchText)},"domain":"text"}.`,
-          `Only after outputs/${provider}-patch.txt exists, reply exactly ${provider.toUpperCase()}_MANAGED_IO_PATCH_DONE and nothing else.`,
+          `Call \`${tools.applyPatch}\` exactly once with JSON arguments {"patch_text":${JSON.stringify(patchText)},"domain":"text"}.`,
+          `Only after outputs/${sourceName} exists, reply exactly ${provider.toUpperCase()}_MANAGED_IO_PATCH_DONE and nothing else.`,
           `If the managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
-        ].join('\n'),
-      })
-      await assertFileContent(path.join(outputsDir, `${provider}-patch.txt`), patchInitial)
+        ].join('\n')
+      if (provider === 'opencode') {
+        await writeFile(path.join(outputsDir, sourceName), patchInitial, 'utf8')
+      } else {
+        await runPositivePromptPhase({
+          provider,
+          agent,
+          label: 'text patch',
+          marker: `${provider.toUpperCase()}_MANAGED_IO_PATCH_DONE`,
+          managedToolExpectations: [
+            { toolSuffix: 'patch_artifact' },
+          ],
+          requiredFiles: [path.join(outputsDir, sourceName)],
+          prompt: patchPrompt,
+        })
+      }
+      await assertFileContent(path.join(outputsDir, sourceName), patchInitial)
 
       await runPositivePromptPhase({
         provider,
         agent,
         label: 'text move',
+        marker: `${provider.toUpperCase()}_MANAGED_IO_MOVE_DONE`,
+        managedToolExpectations: [
+          {
+            toolSuffix: 'move_artifact',
+            fromPath: `outputs/${sourceName}`,
+            toPath: `outputs/${provider}-moved.txt`,
+          },
+        ],
         requiredFiles: [path.join(outputsDir, `${provider}-moved.txt`)],
         prompt: [
           'This is a live Arroba managed I/O positive move smoke test.',
           'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
           'Use only the Arroba MCP/runtime tools for file I/O.',
-          `Call \`arroba.move_artifact\` exactly once with JSON arguments {"from_path":"outputs/${provider}-patch.txt","to_path":"outputs/${provider}-moved.txt","old_text":${JSON.stringify(patchInitial)},"new_text":${JSON.stringify(patchMoved)},"domain":"text"}.`,
-          `Only after outputs/${provider}-moved.txt exists and outputs/${provider}-patch.txt is gone, reply exactly ${provider.toUpperCase()}_MANAGED_IO_MOVE_DONE and nothing else.`,
+          provider === 'opencode'
+            ? `Call \`${tools.move}\` exactly once with JSON arguments {"from_path":"outputs/${sourceName}","to_path":"outputs/${provider}-moved.txt","domain":"text"}.`
+            : `Call \`${tools.move}\` exactly once with JSON arguments {"from_path":"outputs/${sourceName}","to_path":"outputs/${provider}-moved.txt","old_text":${JSON.stringify(patchInitial)},"new_text":${JSON.stringify(patchMoved)},"domain":"text"}.`,
+          `Only after outputs/${provider}-moved.txt exists and outputs/${sourceName} is gone, reply exactly ${provider.toUpperCase()}_MANAGED_IO_MOVE_DONE and nothing else.`,
           `If the managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
         ].join('\n'),
       })
       await assertFileContent(path.join(outputsDir, `${provider}-moved.txt`), patchMoved)
-      if (await fileExists(path.join(outputsDir, `${provider}-patch.txt`))) {
-        throw new Error(`managed move left source file behind: outputs/${provider}-patch.txt`)
+      if (await fileExists(path.join(outputsDir, sourceName))) {
+        throw new Error(`managed move left source file behind: outputs/${sourceName}`)
       }
 
       await runPositivePromptPhase({
         provider,
         agent,
         label: 'opaque write',
+        marker: `${provider.toUpperCase()}_MANAGED_IO_OPAQUE_WRITE_DONE`,
+        managedToolExpectations: [
+          { toolSuffix: 'write_artifact', path: `outputs/${provider}-opaque.bin` },
+        ],
         requiredFiles: [path.join(outputsDir, `${provider}-opaque.bin`)],
         prompt: [
           'This is a live Arroba managed I/O positive opaque write smoke test.',
           'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
           'Use only the Arroba MCP/runtime tools for file I/O.',
           'Every tool call in this turn must use `"domain":"opaque"`.',
-          `Call \`arroba.write_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}-opaque.bin","content_base64":${JSON.stringify(opaqueBase64)},"domain":"opaque"}.`,
+          `Call \`${tools.write}\` exactly once with JSON arguments {"path":"outputs/${provider}-opaque.bin","content_base64":${JSON.stringify(opaqueBase64)},"domain":"opaque"}.`,
           `Only after outputs/${provider}-opaque.bin exists, reply exactly ${provider.toUpperCase()}_MANAGED_IO_OPAQUE_WRITE_DONE and nothing else.`,
           `If the managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
         ].join('\n'),
@@ -953,6 +1209,14 @@ async function main() {
         provider,
         agent,
         label: 'opaque read/move',
+        marker: `${provider.toUpperCase()}_MANAGED_IO_OPAQUE_MOVE_DONE`,
+        managedToolExpectations: [
+          {
+            toolSuffix: 'move_artifact',
+            fromPath: `outputs/${provider}-opaque.bin`,
+            toPath: `outputs/${provider}-opaque-moved.bin`,
+          },
+        ],
         requiredFiles: [path.join(outputsDir, `${provider}-opaque-moved.bin`)],
         prompt: [
           'This is a live Arroba managed I/O positive opaque read/move smoke test.',
@@ -960,8 +1224,8 @@ async function main() {
           'Use only the Arroba MCP/runtime tools for file I/O.',
           'Every tool call in this turn must use `"domain":"opaque"`.',
           'Do not include old_text, new_text, content_text, or patch_text in the opaque move call.',
-          `Step 1: call \`arroba.read_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}-opaque.bin","domain":"opaque"} and verify the returned content_base64 is ${JSON.stringify(opaqueBase64)}.`,
-          `Step 2: call \`arroba.move_artifact\` exactly once with JSON arguments {"from_path":"outputs/${provider}-opaque.bin","to_path":"outputs/${provider}-opaque-moved.bin","domain":"opaque"}.`,
+          `Step 1: call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}-opaque.bin","domain":"opaque"} and verify the returned content_base64 is ${JSON.stringify(opaqueBase64)}.`,
+          `Step 2: call \`${tools.move}\` exactly once with JSON arguments {"from_path":"outputs/${provider}-opaque.bin","to_path":"outputs/${provider}-opaque-moved.bin","domain":"opaque"}.`,
           `Only after outputs/${provider}-opaque-moved.bin exists and outputs/${provider}-opaque.bin is gone, reply exactly ${provider.toUpperCase()}_MANAGED_IO_OPAQUE_MOVE_DONE and nothing else.`,
           `If any managed I/O tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_MANAGED_IO_FAILED and stop.`,
         ].join('\n'),
@@ -987,10 +1251,14 @@ async function main() {
         path.join(outputsDir, `${provider}.txt`),
         `${provider}-managed-io-edit-ok: seed-value-42\n`,
       )
-      await assertFileContent(path.join(outputsDir, `${provider}-moved.txt`), `patch-moved-${provider}\n`)
+      await assertFileContent(
+        path.join(outputsDir, `${provider}-moved.txt`),
+        provider === 'opencode' ? `source-start-${provider}\n` : `patch-moved-${provider}\n`,
+      )
       await assertFileBytes(path.join(outputsDir, `${provider}-opaque-moved.bin`), [0, provider.length, 255, 10])
-      if (await fileExists(path.join(outputsDir, `${provider}-patch.txt`))) {
-        throw new Error(`managed move left source file behind: outputs/${provider}-patch.txt`)
+      const sourceName = managedIoMoveSourceName(provider)
+      if (await fileExists(path.join(outputsDir, sourceName))) {
+        throw new Error(`managed move left source file behind: outputs/${sourceName}`)
       }
       if (await fileExists(path.join(outputsDir, `${provider}-opaque.bin`))) {
         throw new Error(`managed opaque move left source file behind: outputs/${provider}-opaque.bin`)
@@ -1009,7 +1277,7 @@ async function main() {
           movedContent: await readFile(path.join(outputsDir, `${provider}-moved.txt`), 'utf8'),
           opaqueMovedRelativePath: `outputs/${provider}-opaque-moved.bin`,
           opaqueMovedHex: (await readFile(path.join(outputsDir, `${provider}-opaque-moved.bin`))).toString('hex'),
-          patchSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-patch.txt`)),
+          patchSourceFileExists: await fileExists(path.join(outputsDir, managedIoMoveSourceName(provider))),
           opaqueMoveSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque.bin`)),
           deletedFileExists: await fileExists(path.join(outputsDir, `${provider}-delete-me.txt`)),
           opaqueDeletedFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque-delete-me.bin`)),
@@ -1026,6 +1294,10 @@ async function main() {
         workspace,
         providers: options.providers,
         model: options.model,
+        providerModels: Object.fromEntries(options.providers.map((provider) => [
+          provider,
+          modelForProvider(provider, options),
+        ])),
         durationMs: Date.now() - startedAt,
         agents: agents.map(({ provider, agent }) => ({
           id: agent.id,
@@ -1072,27 +1344,35 @@ async function main() {
 
     const deletePrompts = []
     for (const { provider, agent } of deleteAgents) {
+      const tools = managedIoToolNames(provider)
       const prompt = [
         'This is a live Arroba managed I/O delete smoke test.',
         'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
-        `Call \`arroba.delete_artifact\` with JSON arguments {"path":"outputs/${provider}-delete-me.txt","domain":"text"} to delete the pre-existing delete-me file.`,
-        `Then call \`arroba.delete_artifact\` with JSON arguments {"path":"outputs/${provider}-opaque-delete-me.bin","domain":"opaque"} to delete the pre-existing opaque delete-me file.`,
+        `Call \`${tools.delete}\` with JSON arguments {"path":"outputs/${provider}-delete-me.txt","domain":"text"} to delete the pre-existing delete-me file.`,
+        `Then call \`${tools.delete}\` with JSON arguments {"path":"outputs/${provider}-opaque-delete-me.bin","domain":"opaque"} to delete the pre-existing opaque delete-me file.`,
         `After the tool succeeds, reply exactly ${provider.toUpperCase()}_MANAGED_IO_DELETE_DONE and nothing else.`,
       ].join('\n')
       deletePrompts.push({ provider, agent, prompt })
     }
     if (options.machineRef) {
       for (const { provider, agent, prompt } of deletePrompts) {
-        const beforeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+        const completionSinceMs = Date.now()
         await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
-        await waitForCompletionCount({
+        await waitForManagedToolExpectationsAndFiles({
           client,
           sessionId: session.id,
           attachmentId: attachment.id,
-          events,
-          expectedCompletionCount: beforeCompletionCount + 1,
+          historyDir,
+          sinceMs: completionSinceMs,
+          expectations: [
+            { toolSuffix: 'delete_artifact', path: `outputs/${provider}-delete-me.txt` },
+            { toolSuffix: 'delete_artifact', path: `outputs/${provider}-opaque-delete-me.bin` },
+          ],
+          requiredFiles: [],
+          forbiddenFiles: directFiles,
           timeoutMs: options.timeoutMs,
           pollMs: options.pollMs,
+          debugSnapshot: debugSessionSnapshot,
         })
         await waitForFilesAbsent({
           filePaths: [
@@ -1104,19 +1384,28 @@ async function main() {
         })
       }
     } else {
-      const beforeDeleteCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+      const completionSinceMs = Date.now()
       for (const { agent, prompt } of deletePrompts) {
         await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
       }
-      await waitForCompletionCount({
-        client,
-        sessionId: session.id,
-        attachmentId: attachment.id,
-        events,
-        expectedCompletionCount: beforeDeleteCompletionCount + deleteAgents.length,
-        timeoutMs: options.timeoutMs,
-        pollMs: options.pollMs,
-      })
+      for (const { provider } of deletePrompts) {
+        await waitForManagedToolExpectationsAndFiles({
+          client,
+          sessionId: session.id,
+          attachmentId: attachment.id,
+          historyDir,
+          sinceMs: completionSinceMs,
+          expectations: [
+            { toolSuffix: 'delete_artifact', path: `outputs/${provider}-delete-me.txt` },
+            { toolSuffix: 'delete_artifact', path: `outputs/${provider}-opaque-delete-me.bin` },
+          ],
+          requiredFiles: [],
+          forbiddenFiles: directFiles,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
+          debugSnapshot: debugSessionSnapshot,
+        })
+      }
     }
     if (!options.machineRef) {
       await waitForAgentsIdle({
@@ -1151,33 +1440,42 @@ async function main() {
 
     const negativePrompts = []
     for (const { provider, agent } of negativeAgents) {
+      const tools = managedIoToolNames(provider)
       const prompt = [
         'This is a live Arroba managed I/O negative smoke test.',
         `Try to create outputs/${provider}-direct.txt containing exactly DIRECT_WRITE_SHOULD_NOT_EXIST using any direct/native filesystem write mechanism available to you.`,
-        'Do not use `arroba.write_artifact`, `arroba.edit_artifact`, or any other Arroba managed I/O tool for this negative test.',
+        `Do not use \`${tools.write}\`, \`${tools.edit}\`, or any other Arroba managed I/O tool for this negative test.`,
         `If direct/native writes are blocked or unavailable, reply exactly ${provider.toUpperCase()}_DIRECT_WRITE_BLOCKED and nothing else.`,
       ].join('\n')
-      negativePrompts.push({ agent, prompt })
+      negativePrompts.push({ provider, agent, prompt })
     }
 
     if (options.machineRef) {
-      for (const { agent, prompt } of negativePrompts) {
-        const beforeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+      for (const { provider, agent, prompt } of negativePrompts) {
+        const completionSinceMs = Date.now()
         await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
         await waitForCompletionsAndFiles({
           client,
           sessionId: session.id,
           attachmentId: attachment.id,
           events,
-          expectedCompletionCount: beforeCompletionCount + 1,
+          expectedCompletionCount: 1,
+          completionSinceMs,
           requiredFiles: positiveFiles,
           forbiddenFiles: directFiles,
           timeoutMs: options.timeoutMs,
           pollMs: options.pollMs,
         })
+        await waitForHistoryOutputMarkers({
+          historyDir,
+          markerGroups: [[`${provider.toUpperCase()}_DIRECT_WRITE_BLOCKED`]],
+          sinceMs: completionSinceMs,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
+        })
       }
     } else {
-      const beforeNegativeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+      const completionSinceMs = Date.now()
       for (const { agent, prompt } of negativePrompts) {
         await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
       }
@@ -1186,9 +1484,17 @@ async function main() {
         sessionId: session.id,
         attachmentId: attachment.id,
         events,
-        expectedCompletionCount: beforeNegativeCompletionCount + negativeAgents.length,
+        expectedCompletionCount: negativeAgents.length,
+        completionSinceMs,
         requiredFiles: positiveFiles,
         forbiddenFiles: directFiles,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+      })
+      await waitForHistoryOutputMarkers({
+        historyDir,
+        markerGroups: negativeAgents.map(({ provider }) => [`${provider.toUpperCase()}_DIRECT_WRITE_BLOCKED`]),
+        sinceMs: completionSinceMs,
         timeoutMs: options.timeoutMs,
         pollMs: options.pollMs,
       })
@@ -1226,7 +1532,7 @@ async function main() {
       machineRef: options.machineRef,
       workspace,
       outputsDir,
-      historyDir: options.historyDir ?? path.join(rootDir, 'history'),
+      historyDir,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
       getSessionStateRequest,
@@ -1246,7 +1552,7 @@ async function main() {
         movedContent: await readFile(path.join(outputsDir, `${provider}-moved.txt`), 'utf8'),
         opaqueMovedRelativePath: `outputs/${provider}-opaque-moved.bin`,
         opaqueMovedHex: (await readFile(path.join(outputsDir, `${provider}-opaque-moved.bin`))).toString('hex'),
-        patchSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-patch.txt`)),
+        patchSourceFileExists: await fileExists(path.join(outputsDir, managedIoMoveSourceName(provider))),
         opaqueMoveSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque.bin`)),
         deletedFileExists: await fileExists(path.join(outputsDir, `${provider}-delete-me.txt`)),
         opaqueDeletedFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque-delete-me.bin`)),
@@ -1264,6 +1570,10 @@ async function main() {
       workspace,
       providers: options.providers,
       model: options.model,
+      providerModels: Object.fromEntries(options.providers.map((provider) => [
+        provider,
+        modelForProvider(provider, options),
+      ])),
       durationMs: Date.now() - startedAt,
       agents: agents.map(({ provider, agent }) => ({
         id: agent.id,

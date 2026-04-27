@@ -56,9 +56,11 @@ mod tests {
     fn managed_io_instructions_are_loaded_from_policy_file() {
         let instructions = managed_io_instructions();
 
-        assert!(instructions.contains("arroba.read_artifact"));
-        assert!(instructions.contains("arroba.write_artifact"));
-        assert!(instructions.contains("arroba.edit_artifact"));
+        assert!(instructions.contains("arroba_read_artifact"));
+        assert!(instructions.contains("arroba_write_artifact"));
+        assert!(instructions.contains("arroba_edit_artifact"));
+        assert!(instructions.contains("mcp__arroba__patch_artifact"));
+        assert!(instructions.contains("Avoid any bare or OpenCode-prefixed `apply_patch`"));
         assert!(!instructions.ends_with('\n'));
     }
 

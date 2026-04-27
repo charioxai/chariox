@@ -75,6 +75,9 @@ importers:
 
   packages/kernel-client:
     dependencies:
+      '@arroba/tool-display':
+        specifier: workspace:*
+        version: link:../tool-display
       ws:
         specifier: ^8.18.3
         version: 8.20.0

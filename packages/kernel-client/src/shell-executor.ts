@@ -3,11 +3,20 @@ import { mkdir, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, resolve as resolvePath } from "node:path"
 import { promisify } from "node:util"
 
+import {
+  formatToolTranscriptUpdate,
+  mergeToolTranscriptUpdate,
+  parseToolTranscriptUpdate,
+  type ToolTranscriptUpdate,
+} from "@arroba/tool-display"
+
 import type {
   AgentInstance,
   ArrobaMcpServerConfig,
   ArrobaSkillMetadata,
+  ArrobaUserConfigSchemaPayload,
   ArrobaUserConfigPayload,
+  UserConfigSchemaEntry,
   McpImportOutcome,
   ProviderAuthStatus,
   ProviderLoginStart,
@@ -88,6 +97,7 @@ import {
   listCloudCollaboratorsRequest,
   listCloudSessionMembersRequest,
   getUserConfigRequest,
+  getUserConfigSchemaRequest,
   detachWorkspaceLinkRequest,
   listAgentsRequest,
   listMcpServersRequest,
@@ -252,7 +262,7 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
           "client invite create|join|list|record|revoke",
           "machine invite create|join|list|kernels|approve|rename|revoke",
           "relay status",
-          "config show|path|set|unset|managed-io",
+          "config show|path|keys|schema|set|unset|managed-io",
           "credential list|set|delete",
           "mcp list|show|install|update|uninstall|import|grant|revoke|grants",
           "skill list|show|install|update|uninstall|import|grant|revoke|grants",
@@ -1193,6 +1203,16 @@ async function executeConfigCommand(
     const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfig")
     return { ok: true, message: payload.path, data: payload }
   }
+  if (action === "keys" || action === "list") {
+    const response = await deps.client.send(getUserConfigSchemaRequest())
+    const payload = expectVariant<ArrobaUserConfigSchemaPayload>(response, "UserConfigSchema")
+    return { ok: true, message: formatConfigSchemaKeys(payload.entries), data: payload }
+  }
+  if (action === "schema") {
+    const response = await deps.client.send(getUserConfigSchemaRequest())
+    const payload = expectVariant<ArrobaUserConfigSchemaPayload>(response, "UserConfigSchema")
+    return { ok: true, message: JSON.stringify(payload.entries, null, 2), data: payload, format: "json" }
+  }
   if (action === "set") {
     const value = rest.join(" ").trim()
     if (!keyPath || !value) {
@@ -1200,7 +1220,11 @@ async function executeConfigCommand(
     }
     const response = await deps.client.send(setUserConfigValueRequest(keyPath, value))
     const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
-    return { ok: true, message: `config ${keyPath} set to ${value}`, data: payload }
+    return {
+      ok: true,
+      message: configMutationMessage(`config ${keyPath} set to ${value}`, payload),
+      data: payload,
+    }
   }
   if (action === "unset") {
     if (!keyPath) {
@@ -1208,25 +1232,52 @@ async function executeConfigCommand(
     }
     const response = await deps.client.send(unsetUserConfigValueRequest(keyPath))
     const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
-    return { ok: true, message: `config ${keyPath} unset`, data: payload }
+    return {
+      ok: true,
+      message: configMutationMessage(`config ${keyPath} unset`, payload),
+      data: payload,
+    }
   }
   if (action === "managed-io") {
-    const provider = keyPath ?? "default"
-    const mode = rest[0] ?? "required"
-    if (!["required", "unrestricted", "on", "off"].includes(mode)) {
-      return { ok: false, message: "usage: config managed-io [provider] required|unrestricted|on|off" }
+    const mode = keyPath ?? "required"
+    if (rest.length > 0 || !["required", "unrestricted", "on", "off"].includes(mode)) {
+      return { ok: false, message: "usage: config managed-io required|unrestricted|on|off" }
     }
     const normalizedMode = mode === "on" ? "required" : mode === "off" ? "unrestricted" : mode
-    const configPath = `providers.managed_io.${provider}`
+    const configPath = "providers.managed_io"
     const response = await deps.client.send(setUserConfigValueRequest(configPath, normalizedMode))
     const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
     return {
       ok: true,
-      message: `managed I/O for ${provider} set to ${normalizedMode}; applies on next provider launch`,
+      message: configMutationMessage(`managed I/O set to ${normalizedMode}`, payload),
       data: payload,
     }
   }
-  return { ok: false, message: "usage: config show|path|set|unset|managed-io" }
+  return { ok: false, message: "usage: config show|path|keys|schema|set|unset|managed-io" }
+}
+
+function formatConfigSchemaKeys(entries: UserConfigSchemaEntry[]): string {
+  if (entries.length === 0) {
+    return "(no config keys)"
+  }
+  return entries
+    .filter((entry) => entry.settable)
+    .map((entry) => {
+      const values = entry.allowed_values && entry.allowed_values.length > 0
+        ? ` values=${entry.allowed_values.join("|")}`
+        : ""
+      const unset = entry.unsettable ? " unset" : ""
+      return `${entry.path} (${entry.value_type}; ${entry.status}; ${entry.effect}${unset}${values})`
+    })
+    .join("\n")
+}
+
+function configMutationMessage(prefix: string, payload: ArrobaUserConfigPayload): string {
+  const effects = payload.effects ?? []
+  if (effects.length === 0) {
+    return prefix
+  }
+  return [prefix, ...effects.map((effect) => effect.message)].join("\n")
 }
 
 async function executeCredentialCommand(
@@ -2609,15 +2660,29 @@ function formatPromptSummary(history: SessionHistoryPageEntry[]): string {
 }
 
 function formatPromptReply(history: SessionHistoryPageEntry[]): string {
+  const tools = new Map<string, ToolTranscriptUpdate>()
   const reply = history
-    .map((entry) => {
-      const text = entry.entry.text.trim()
-      if (!text) return ""
-      return entry.entry.kind === "provider_output" ? text : `[${entry.entry.kind}] ${text}`
-    })
+    .map((entry) => formatPromptHistoryEntry(entry, tools))
     .filter(Boolean)
     .join("\n")
   return reply || "(no reply output)"
+}
+
+function formatPromptHistoryEntry(
+  entry: SessionHistoryPageEntry,
+  tools: Map<string, ToolTranscriptUpdate>,
+): string {
+  const text = entry.entry.text.trim()
+  if (!text) return ""
+  if (entry.entry.kind === "provider_output") return text
+  if (entry.entry.kind !== "provider_tool") return `[${entry.entry.kind}] ${text}`
+
+  const parsed = parseToolTranscriptUpdate(entry.entry.text)
+  if (!parsed) return `[${entry.entry.kind}] ${text}`
+
+  const merged = mergeToolTranscriptUpdate(tools.get(parsed.id) ?? null, parsed)
+  tools.set(parsed.id, merged)
+  return formatToolTranscriptUpdate(merged)
 }
 
 function formatPromptBlob(promptId: string, title: string, content: string): string {

@@ -14,6 +14,7 @@ const IPC_TIMEOUT_MS = 120_000
 const DEFAULT_KERNEL_EVENT_STALE_MS = 0
 const DEFAULT_KERNEL_PING_INTERVAL_MS = 5_000
 const DEFAULT_KERNEL_MAX_MISSED_PONGS = 2
+const IPC_WEBSOCKET_CLOSE_TIMEOUT_MS = 1_000
 
 type IpcEnvelope<TResponse> = {
   response: TResponse | null
@@ -615,7 +616,7 @@ export class LocalIpcClient {
         }
         settled = true
         this.setWebSocketConnectPromise(lane, null)
-        reject(new LocalIpcError(operation, error instanceof Error ? error.message : String(error)))
+        reject(new LocalIpcError(operation, formatTransportError(error, this.socketPath)))
       }
 
       socket.once("open", () => {
@@ -651,17 +652,18 @@ export class LocalIpcClient {
               }
             }
           })
-          socket.once("error", (error: Error) => {
+          socket.on("error", (error: unknown) => {
+            const message = formatTransportError(error, this.socketPath)
             const suppressed = this.getSuppressNextCloseEvent(lane)
             this.setSuppressNextCloseEvent(lane, false)
-            this.rejectPending(error.message, lane)
+            this.rejectPending(message, lane)
             this.setWebSocket(lane, null)
             this.setRelayDaemonPublicKey(lane, null)
             this.clearKernelHeartbeat(lane)
             if (!suppressed) {
               this.emitSyntheticEvent({
                 event: "transport_closed",
-                message: error.message,
+                message,
               })
               if (lane === "event") {
                 this.scheduleReconnect()
@@ -672,6 +674,7 @@ export class LocalIpcClient {
         }
 
         if (!this.isRelayMode()) {
+          socket.off("error", handleConnectError)
           finalizeOpen()
           return
         }
@@ -691,6 +694,7 @@ export class LocalIpcClient {
             }
             this.setRelayDaemonPublicKey(lane, frame.daemon_public_key)
             socket.off("message", handleRelayHandshakeMessage)
+            socket.off("error", handleConnectError)
             finalizeOpen()
             return
           }
@@ -710,7 +714,8 @@ export class LocalIpcClient {
         }
       })
 
-      socket.once("error", (error: Error) => fail("connect kernel websocket", error))
+      const handleConnectError = (error: unknown) => fail("connect kernel websocket", error)
+      socket.on("error", handleConnectError)
     })
 
     this.setWebSocketConnectPromise(lane, nextConnectPromise)
@@ -1044,8 +1049,24 @@ export class LocalIpcClient {
     }
 
     await new Promise<void>((resolve) => {
+      let settled = false
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      const finish = () => {
+        if (settled) {
+          return
+        }
+        settled = true
+        if (timeout) {
+          clearTimeout(timeout)
+        }
+        resolve()
+      }
+      timeout = setTimeout(() => {
+        socket.terminate()
+        finish()
+      }, IPC_WEBSOCKET_CLOSE_TIMEOUT_MS)
       this.setSuppressNextCloseEvent(lane, true)
-      socket.once("close", () => resolve())
+      socket.once("close", finish)
       socket.close()
     })
   }
@@ -1090,6 +1111,45 @@ function normalizeRelayRequest(
 
 function isWebSocketEndpoint(value: string) {
   return value.startsWith("ws://") || value.startsWith("wss://")
+}
+
+function formatTransportError(error: unknown, endpoint: string): string {
+  const message = extractTransportErrorMessage(error)
+  if (message) {
+    return message
+  }
+  return `websocket error at ${endpoint}`
+}
+
+function extractTransportErrorMessage(error: unknown): string | null {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+  if (typeof error === "string" && error.trim()) {
+    return error
+  }
+  if (!error || typeof error !== "object") {
+    return null
+  }
+
+  const fields = error as Record<string, unknown>
+  const nested = extractTransportErrorMessage(fields.error)
+  if (nested) {
+    return nested
+  }
+  if (typeof fields.message === "string" && fields.message.trim()) {
+    return fields.message
+  }
+  if (typeof fields.reason === "string" && fields.reason.trim()) {
+    return fields.reason
+  }
+  if (typeof fields.code === "string" && fields.code.trim()) {
+    return fields.code
+  }
+  if (typeof fields.type === "string" && fields.type.trim() && fields.type !== "error") {
+    return `websocket ${fields.type}`
+  }
+  return null
 }
 
 function normalizeWebSocketRequest(requestId: string, request: unknown) {

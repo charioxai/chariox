@@ -10,6 +10,7 @@ import {
   moveWaitingRoomFocus,
   waitingRoomRows,
 } from "./waiting-room.js"
+import { __setWaitingRoomWorktreeInventoryForTest } from "./waiting-room-worktrees.js"
 
 test("waiting room cycles model and effort from provider catalog", () => {
   const catalog = {
@@ -55,12 +56,59 @@ test("waiting room cycles selectable themes", () => {
 
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "theme")?.value, "Sober")
 
-  state = moveWaitingRoomFocus(state, [], 5)
+  state = moveWaitingRoomFocus(state, [], -1)
   assert.equal(state.focus, "theme")
 
   state = cycleWaitingRoomValue(state, [], catalog, 1)
   assert.equal(state.themeId, "matrix")
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "theme")?.value, "Matrix")
+})
+
+test("waiting room cycles existing worktrees and the create-worktree option", () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace",
+    currentWorktreePath: "/workspace",
+    options: [
+      {
+        id: "existing:/workspace",
+        kind: "existing",
+        label: "main",
+        path: "/workspace",
+        branch: "main",
+        isCurrent: true,
+      },
+      {
+        id: "existing:/workspace-feature",
+        kind: "existing",
+        label: "feature/login",
+        path: "/workspace-feature",
+        branch: "feature/login",
+        isCurrent: false,
+      },
+      {
+        id: "create-worktree",
+        kind: "create",
+        label: "Create worktree",
+      },
+    ],
+  })
+
+  try {
+    const catalog = fallbackProviderCatalog()
+    let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+
+    state = moveWaitingRoomFocus(state, [], 5)
+    assert.equal(state.focus, "worktree")
+    assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "worktree")?.value, "main")
+
+    state = cycleWaitingRoomValue(state, [], catalog, 1)
+    assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "worktree")?.value, "feature/login")
+
+    state = cycleWaitingRoomValue(state, [], catalog, 1)
+    assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "worktree")?.value, "Create worktree")
+  } finally {
+    __setWaitingRoomWorktreeInventoryForTest(null)
+  }
 })
 
 test("waiting room renders indented sections and scrolls existing sessions", () => {
@@ -78,7 +126,7 @@ test("waiting room renders indented sections and scrolls existing sessions", () 
   }))
 
   let state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
-  state = moveWaitingRoomFocus(state, sessions, 4)
+  state = moveWaitingRoomFocus(state, sessions, 6)
 
   const firstWindow = waitingRoomRows(state, sessions, catalog)
   assert.equal(firstWindow[1]?.id, "provider")
@@ -167,6 +215,17 @@ test("waiting room places join below start configuration and makes cloud relay l
   assert.equal(relayConfigure?.value, "/cloud")
   assert.equal(relayConfigure?.selectable, true)
   assert.equal(relayConfigure?.focused, true)
+
+  const cloudNoticeRows = waitingRoomRows(state, [], catalog, {
+    cloudNotice: "Opening Arroba Cloud.\nurl=https://cloud.example/terminal?view=waiting",
+    relay: {
+      configured: false,
+      connected: false,
+    },
+  })
+  assert.equal(cloudNoticeRows.find((row) => row.id === "cloud-notice:0")?.title, "Cloud status")
+  assert.equal(cloudNoticeRows.find((row) => row.id === "cloud-notice:0")?.value, "Opening Arroba Cloud.")
+  assert.equal(cloudNoticeRows.find((row) => row.id === "cloud-notice:1")?.value, "url=https://cloud.example/terminal?view=waiting")
 })
 
 test("waiting room shows relay kernels as selectable targets", () => {
@@ -200,13 +259,60 @@ test("waiting room shows relay kernels as selectable targets", () => {
     }],
   }
 
-  state = moveWaitingRoomFocus(state, [], 5, remote)
+  state = moveWaitingRoomFocus(state, [], 8, remote)
   assert.equal(state.focus, "remote-kernel")
 
   const rows = waitingRoomRows(state, [], catalog, remote)
   const kernelRow = rows.find((row) => row.id === "remote-kernel:kernel-1")
   assert.equal(kernelRow?.title, "builder-kernel @ builder")
   assert.equal(kernelRow?.value, "ready opencode,codex")
+  assert.equal(kernelRow?.selectable, true)
+  assert.equal(kernelRow?.focused, true)
+})
+
+test("waiting room makes inactive machines and kernels selectable for deletion", () => {
+  const catalog = fallbackProviderCatalog()
+  let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+  const remote = {
+    relay: {
+      configured: true,
+      connected: true,
+      relay_url: "wss://relay.example",
+    },
+    machines: [{
+      machine_id: "machine-offline",
+      machine_alias: "offline-builder",
+      display_name: "offline-builder",
+      trust_status: "approved" as const,
+      online: false,
+      pending: false,
+      kernel_count: 0,
+      available_providers: [],
+    }],
+    kernels: [{
+      kernel_id: "kernel-inactive",
+      machine_id: "machine-offline",
+      machine_alias: "offline-builder",
+      relay_alias: "inactive-kernel",
+      available_providers: ["opencode"],
+      accepting_remote_leases: false,
+      leased_agent_count: 0,
+      local_session_count: 0,
+    }],
+  }
+
+  state = moveWaitingRoomFocus(state, [], 7, remote)
+  assert.equal(state.focus, "machine")
+  let rows = waitingRoomRows(state, [], catalog, remote)
+  const machineRow = rows.find((row) => row.id === "machine:machine-offline")
+  assert.equal(machineRow?.selectable, true)
+  assert.equal(machineRow?.focused, true)
+
+  state = moveWaitingRoomFocus(state, [], 1, remote)
+  assert.equal(state.focus, "remote-kernel")
+  rows = waitingRoomRows(state, [], catalog, remote)
+  const kernelRow = rows.find((row) => row.id === "remote-kernel:kernel-inactive")
+  assert.equal(kernelRow?.value, "inactive opencode")
   assert.equal(kernelRow?.selectable, true)
   assert.equal(kernelRow?.focused, true)
 })

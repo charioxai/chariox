@@ -12,122 +12,11 @@ impl KernelRuntimeState {
         agent_id: &str,
         requested_mcp_name: &str,
     ) -> Result<bool, DaemonError> {
-        let (launch_request, runtime_init_delay_ms, terminated_run_id) = {
-            let owned = &self.owned;
-            if owned
-                .prompt_state_owner
-                .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, agent_id)
-                .is_some()
-            {
-                return Ok(false);
-            }
-            let Some(run) = owned.provider_store.get_run_for_agent(session_id, agent_id) else {
-                return Ok(false);
-            };
-            if !matches!(run.adapter_key(), "codex" | "opencode") {
-                return Ok(false);
-            }
-            let mut terminated_run_id = None;
-            if run.state() != crate::provider::ProviderRunState::Ended {
-                terminated_run_id = Some(run.id().to_string());
-                let outcome = owned
-                    .provider_store
-                    .terminate_run_provider_only(session_id, run.id())?;
-                owned.clear_active_provider_run_session_pointer(session_id, outcome.run().id())?;
-                owned.provider_run_projection.update(outcome.into_run());
-            }
-            owned.record_notice(
-                session_id,
-                None,
-                owned.attachment_store.list_session_attachment_ids(session_id),
-                format!(
-                    "Activating MCP `{requested_mcp_name}` for agent `{agent_id}` by relaunching its provider conversation."
-                ),
-            );
-            let config = owned.config_projection.snapshot();
-            let launch_request = crate::provider::LaunchProviderRequest::new(
-                session_id,
-                run.adapter_key(),
-                run.provider(),
-                run.account_profile(),
-                run.model(),
-            )
-            .with_agent_id(agent_id)
-            .with_owner_user_id(run.owner_user_id().to_string())
-            .with_variant(run.variant().map(str::to_string))
-            .with_resume_state(run.resume_state().clone());
-            let launch_request = if run.requires_managed_io() {
-                launch_request.with_managed_io_required()
-            } else {
-                launch_request
-            };
-            let launch_request =
-                owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;
-            (
-                launch_request,
-                config.provider_runtime_init_delay_ms,
-                terminated_run_id,
-            )
-        };
-
-        let state = self.clone();
-        let app = self.app.clone();
-        tokio::spawn(async move {
-            if let Some(terminated_run_id) = terminated_run_id {
-                let (_, process_key) = state
-                    .with_app_side_effect(|app| {
-                        crate::app::ProviderLaunchProcessRuntime::new(app)
-                            .remove_run(&terminated_run_id)
-                    })
-                    .await
-                    .unwrap_or((false, None));
-                state
-                    .owned
-                    .remove_provider_process_tracking_for_run(&terminated_run_id, process_key);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(12_000)).await;
-            let started = match state.owned.start_provider_launch(launch_request) {
-                Ok(started) => started,
-                Err(error) => {
-                    crate::logging::warn_with_fields(
-                        "daemon.provider",
-                        "MCP activation provider relaunch failed",
-                        serde_json::json!({ "error": error.to_string() }),
-                    );
-                    return;
-                }
-            };
-            if runtime_init_delay_ms > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(runtime_init_delay_ms)).await;
-            }
-            let spawn_result = {
-                let mut app = app.lock().await;
-                crate::app::ProviderLaunchProcessRuntime::new(&mut app)
-                    .spawn_for_launch(&started.run)
-            };
-            if let Err(error) = spawn_result {
-                state.fail_provider_launch(&started, &error).await;
-                return;
-            }
-            let run = started.run.clone();
-            let binding = tokio::task::spawn_blocking(move || {
-                crate::provider::ProviderProcessService::initialize_runtime_binding(&run)
-            })
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "initialize provider runtime",
-                message: error.to_string(),
-            });
-            match binding {
-                Ok(Ok(binding)) => {
-                    state.finish_provider_launch(&started, binding).await;
-                }
-                Ok(Err(error)) | Err(error) => {
-                    state.fail_provider_launch(&started, &error).await;
-                }
-            }
-        });
-        Ok(true)
+        let reason = format!("MCP `{requested_mcp_name}`");
+        Ok(matches!(
+            self.reload_agent_provider_if_idle(session_id, agent_id, &reason)?,
+            ProviderReloadOutcome::Reloaded
+        ))
     }
 
     pub(super) fn remember_pending_mcp_continuation(
@@ -438,12 +327,42 @@ impl KernelRuntimeState {
                 })
         }) {
             launch_request = if let Ok(agent) = self.owned.agent_store.get_agent(&agent_id) {
+                let session = self.owned.session_store.get_session(&request.session_id).ok();
+                let execution_mode = agent.execution_mode_override().or_else(|| {
+                    session
+                        .as_ref()
+                        .and_then(|session| session.config_state().values().get("agents.mode"))
+                        .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
+                });
+                let permission_level = agent.permission_level_override().or_else(|| {
+                    session
+                        .as_ref()
+                        .and_then(|session| session.config_state().values().get("agents.permissions"))
+                        .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
+                });
                 launch_request
                     .with_agent_id(agent_id)
                     .with_owner_user_id(agent.owner_user_id().to_string())
+                    .with_execution_mode(execution_mode.unwrap_or_default())
+                    .with_permission_level(permission_level.unwrap_or_default())
             } else {
                 launch_request.with_agent_id(agent_id)
             };
+        } else {
+            let session = self.owned.session_store.get_session(&request.session_id).ok();
+            let execution_mode = session
+                .as_ref()
+                .and_then(|session| session.config_state().values().get("agents.mode"))
+                .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
+                .unwrap_or_default();
+            let permission_level = session
+                .as_ref()
+                .and_then(|session| session.config_state().values().get("agents.permissions"))
+                .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
+                .unwrap_or_default();
+            launch_request = launch_request
+                .with_execution_mode(execution_mode)
+                .with_permission_level(permission_level);
         }
         launch_request
     }

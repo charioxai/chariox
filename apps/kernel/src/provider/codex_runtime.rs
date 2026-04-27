@@ -49,6 +49,13 @@ struct CodexToolTranscriptState {
     last_emitted: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct CodexPendingTurnCompletion {
+    completion: Option<CodexAssistantCompletion>,
+    terminal_failure: Option<String>,
+    notice: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct CodexToolTranscriptUpdate {
     id: String,
@@ -79,6 +86,7 @@ pub struct CodexRuntimeState {
     next_request_id: u64,
     buffered_notifications: Vec<CodexNotification>,
     active_turn_id: Option<String>,
+    pending_turn_completion: Option<CodexPendingTurnCompletion>,
     tool_items: BTreeMap<String, CodexToolTranscriptState>,
 }
 
@@ -242,6 +250,7 @@ pub fn initialize_codex_runtime(
             next_request_id,
             buffered_notifications: Vec::new(),
             active_turn_id: None,
+            pending_turn_completion: None,
             tool_items: BTreeMap::new(),
         },
         selection,
@@ -317,6 +326,7 @@ pub fn drain_codex_events(
         apply_notification(
             notification,
             &mut state.active_turn_id,
+            &mut state.pending_turn_completion,
             &mut state.tool_items,
             &mut chunks,
             &mut completions,
@@ -335,6 +345,7 @@ pub fn drain_codex_events(
         apply_notification(
             notification,
             &mut state.active_turn_id,
+            &mut state.pending_turn_completion,
             &mut state.tool_items,
             &mut chunks,
             &mut completions,
@@ -356,6 +367,7 @@ pub fn drain_codex_events(
 fn apply_notification(
     notification: CodexNotification,
     active_turn_id: &mut Option<String>,
+    pending_turn_completion: &mut Option<CodexPendingTurnCompletion>,
     tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
     chunks: &mut Vec<CodexOutputChunk>,
     completions: &mut Vec<CodexAssistantCompletion>,
@@ -402,6 +414,14 @@ fn apply_notification(
             if let Some(chunk) = sync_tool_item(tool_items, &item) {
                 chunks.push(chunk);
             }
+            maybe_complete_pending_turn(
+                pending_turn_completion,
+                tool_items,
+                completions,
+                notices,
+                prompt_completed,
+                terminal_failure,
+            );
         }
         CodexNotification::CommandExecutionOutputDelta { item_id, delta } => {
             if let Some(chunk) =
@@ -436,24 +456,39 @@ fn apply_notification(
                 return;
             }
             if !turn_id.is_empty() {
-                completions.push(CodexAssistantCompletion {
+                let completion = CodexAssistantCompletion {
                     message_id: format!("codex-turn:{turn_id}"),
                     completed_at_ms: unix_epoch_ms(),
-                });
+                };
+                let pending = CodexPendingTurnCompletion {
+                    completion: Some(completion),
+                    terminal_failure: if status == "failed" {
+                        Some(
+                            error_message
+                                .clone()
+                                .unwrap_or_else(|| "Codex turn failed".to_string()),
+                        )
+                    } else {
+                        None
+                    },
+                    notice: error_message.clone().or_else(|| {
+                        (status == "failed").then(|| "Codex turn failed".to_string())
+                    }),
+                };
+                if has_running_tool_items(tool_items) {
+                    *pending_turn_completion = Some(pending);
+                } else {
+                    complete_pending_turn(
+                        pending,
+                        completions,
+                        notices,
+                        prompt_completed,
+                        terminal_failure,
+                    );
+                }
             }
             if !turn_id.is_empty() {
                 *active_turn_id = None;
-            }
-            *prompt_completed = true;
-            if let Some(message) = error_message {
-                if status == "failed" {
-                    *terminal_failure = Some(message.clone());
-                }
-                notices.push(message);
-            } else if status == "failed" {
-                let message = "Codex turn failed".to_string();
-                *terminal_failure = Some(message.clone());
-                notices.push(message);
             }
         }
         CodexNotification::Error { message } => {
@@ -462,6 +497,59 @@ fn apply_notification(
             notices.push(message);
         }
     }
+}
+
+fn maybe_complete_pending_turn(
+    pending_turn_completion: &mut Option<CodexPendingTurnCompletion>,
+    tool_items: &BTreeMap<String, CodexToolTranscriptState>,
+    completions: &mut Vec<CodexAssistantCompletion>,
+    notices: &mut Vec<String>,
+    prompt_completed: &mut bool,
+    terminal_failure: &mut Option<String>,
+) {
+    if has_running_tool_items(tool_items) {
+        return;
+    }
+    if let Some(pending) = pending_turn_completion.take() {
+        complete_pending_turn(
+            pending,
+            completions,
+            notices,
+            prompt_completed,
+            terminal_failure,
+        );
+    }
+}
+
+fn complete_pending_turn(
+    pending: CodexPendingTurnCompletion,
+    completions: &mut Vec<CodexAssistantCompletion>,
+    notices: &mut Vec<String>,
+    prompt_completed: &mut bool,
+    terminal_failure: &mut Option<String>,
+) {
+    if let Some(completion) = pending.completion {
+        completions.push(completion);
+    }
+    if let Some(message) = pending.terminal_failure {
+        *terminal_failure = Some(message);
+    }
+    if let Some(message) = pending.notice {
+        notices.push(message);
+    }
+    *prompt_completed = true;
+}
+
+fn has_running_tool_items(tool_items: &BTreeMap<String, CodexToolTranscriptState>) -> bool {
+    tool_items.values().any(|state| {
+        normalize_codex_tool_status(
+            state
+                .item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        ) == "running"
+    })
 }
 
 fn codex_turn_id_from_start_response(response: &Value) -> Option<String> {
@@ -963,6 +1051,7 @@ mod tests {
     #[test]
     fn reasoning_and_agent_deltas_preserve_item_merge_keys() {
         let mut active_turn_id = None;
+        let mut pending_turn_completion = None;
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -976,6 +1065,7 @@ mod tests {
                 delta: "thinking".to_string(),
             },
             &mut active_turn_id,
+            &mut pending_turn_completion,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -989,6 +1079,7 @@ mod tests {
                 delta: "answer".to_string(),
             },
             &mut active_turn_id,
+            &mut pending_turn_completion,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1024,6 +1115,7 @@ mod tests {
     #[test]
     fn command_execution_updates_are_rendered_cumulatively() {
         let mut active_turn_id = None;
+        let mut pending_turn_completion = None;
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1047,6 +1139,7 @@ mod tests {
                 }),
             },
             &mut active_turn_id,
+            &mut pending_turn_completion,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1060,6 +1153,7 @@ mod tests {
                 delta: "alpha\n".to_string(),
             },
             &mut active_turn_id,
+            &mut pending_turn_completion,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1073,6 +1167,7 @@ mod tests {
                 delta: "beta\n".to_string(),
             },
             &mut active_turn_id,
+            &mut pending_turn_completion,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1096,6 +1191,7 @@ mod tests {
                 }),
             },
             &mut active_turn_id,
+            &mut pending_turn_completion,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1152,6 +1248,7 @@ mod tests {
     #[test]
     fn only_turn_completed_marks_the_prompt_as_complete() {
         let mut active_turn_id = Some("turn-1".to_string());
+        let mut pending_turn_completion = None;
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1169,6 +1266,7 @@ mod tests {
                 }),
             },
             &mut active_turn_id,
+            &mut pending_turn_completion,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1186,6 +1284,7 @@ mod tests {
                 error_message: None,
             },
             &mut active_turn_id,
+            &mut pending_turn_completion,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1200,8 +1299,85 @@ mod tests {
     }
 
     #[test]
+    fn turn_completion_waits_for_running_command_execution() {
+        let mut active_turn_id = Some("turn-1".to_string());
+        let mut pending_turn_completion = None;
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut completions = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+        let mut terminal_failure = None;
+
+        apply_notification(
+            CodexNotification::ItemStarted {
+                item: json!({
+                    "type": "commandExecution",
+                    "id": "cmd-1",
+                    "command": "pnpm test",
+                    "status": "inProgress",
+                }),
+            },
+            &mut active_turn_id,
+            &mut pending_turn_completion,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        );
+        apply_notification(
+            CodexNotification::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                status: "completed".to_string(),
+                error_message: None,
+            },
+            &mut active_turn_id,
+            &mut pending_turn_completion,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        );
+
+        assert!(!prompt_completed);
+        assert!(completions.is_empty());
+        assert!(pending_turn_completion.is_some());
+
+        apply_notification(
+            CodexNotification::ItemCompleted {
+                item: json!({
+                    "type": "commandExecution",
+                    "id": "cmd-1",
+                    "command": "pnpm test",
+                    "status": "completed",
+                    "aggregatedOutput": "ok",
+                    "exitCode": 0,
+                }),
+            },
+            &mut active_turn_id,
+            &mut pending_turn_completion,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        );
+
+        assert!(prompt_completed);
+        assert!(pending_turn_completion.is_none());
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].message_id, "codex-turn:turn-1");
+    }
+
+    #[test]
     fn stale_turn_completion_does_not_complete_prompt() {
         let mut active_turn_id = Some("current-turn".to_string());
+        let mut pending_turn_completion = None;
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1216,6 +1392,7 @@ mod tests {
                 error_message: None,
             },
             &mut active_turn_id,
+            &mut pending_turn_completion,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1232,6 +1409,7 @@ mod tests {
     #[test]
     fn interrupted_turn_is_treated_as_terminal_cancellation() {
         let mut active_turn_id = Some("turn-2".to_string());
+        let mut pending_turn_completion = None;
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1246,6 +1424,7 @@ mod tests {
                 error_message: Some("Aborted".to_string()),
             },
             &mut active_turn_id,
+            &mut pending_turn_completion,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1264,6 +1443,7 @@ mod tests {
     #[test]
     fn failed_turn_records_terminal_failure() {
         let mut active_turn_id = Some("turn-3".to_string());
+        let mut pending_turn_completion = None;
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1278,6 +1458,7 @@ mod tests {
                 error_message: Some("model rejected".to_string()),
             },
             &mut active_turn_id,
+            &mut pending_turn_completion,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1294,6 +1475,7 @@ mod tests {
     #[test]
     fn error_notification_without_active_turn_records_terminal_failure() {
         let mut active_turn_id = None;
+        let mut pending_turn_completion = None;
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1306,6 +1488,7 @@ mod tests {
                 message: "unsupported model gpt-5.2-codex".to_string(),
             },
             &mut active_turn_id,
+            &mut pending_turn_completion,
             &mut tool_items,
             &mut chunks,
             &mut completions,

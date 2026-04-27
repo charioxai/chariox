@@ -486,32 +486,26 @@ version = 1
 default = "opencode"
 model = "default"
 account_profile = "default"
-
-[providers.managed_io]
-default = "required"
-codex = "required"
-opencode = "required"
+managed_io = "required"
 ```
 
-To relax the policy for one provider:
+To relax the policy for all managed providers:
 
 ```toml
-[providers.managed_io]
-default = "required"
-opencode = "unrestricted"
-codex = "required"
+[providers]
+managed_io = "unrestricted"
 ```
 
-Remote leased agents use the same per-provider managed I/O policy as local agents. For example, setting `providers.managed_io.opencode = "unrestricted"` applies to both local OpenCode runs and remote leased OpenCode backing runs.
+Remote leased agents use the same managed I/O policy as local agents.
 
 You can also modify the same TOML through the CLI:
 
 ```text
 /config show
 /config path
-/config set providers.managed_io.opencode unrestricted
-/config managed-io codex required
-/config unset providers.managed_io.opencode
+/config set providers.managed_io unrestricted
+/config managed-io required
+/config unset providers.managed_io
 ```
 
 Agent-facing tools:

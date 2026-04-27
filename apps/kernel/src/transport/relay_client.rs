@@ -648,9 +648,15 @@ async fn handle_daemon_peer_request(
             home_kernel_id,
             home_session_id,
             home_agent_id,
+            owner_user_id,
         } => {
             let lease = router
-                .relay_create_execution_lease(&home_kernel_id, &home_session_id, &home_agent_id)
+                .relay_create_execution_lease(
+                    &home_kernel_id,
+                    &home_session_id,
+                    &home_agent_id,
+                    &owner_user_id,
+                )
                 .await;
             match lease {
                 Ok(lease) => RelayPeerResponse::ExecutionLeaseCreated { lease },
@@ -679,6 +685,8 @@ async fn handle_daemon_peer_request(
             provider,
             model,
             effort,
+            execution_mode,
+            permission_level,
             worktree_id,
             worktree_placement,
         } => {
@@ -688,6 +696,8 @@ async fn handle_daemon_peer_request(
                     &provider,
                     model,
                     effort,
+                    execution_mode,
+                    permission_level,
                     worktree_id,
                     worktree_placement,
                 )
@@ -895,6 +905,23 @@ async fn handle_daemon_peer_request(
                     result,
                     skill_package,
                 },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::ForwardNativeInteraction {
+            context,
+            interaction,
+        } => {
+            let handled = router
+                .relay_forward_native_interaction(context, interaction)
+                .await;
+            match handled {
+                Ok(resolution) => RelayPeerResponse::NativeInteractionResolved { resolution },
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,
@@ -2230,6 +2257,7 @@ mod tests {
                 home_kernel_id: config_a.daemon_id.clone(),
                 home_session_id: "session-remote-1".to_string(),
                 home_agent_id: "agent-remote-1".to_string(),
+                owner_user_id: "user-home".to_string(),
             },
         )
         .await
@@ -2369,6 +2397,7 @@ mod tests {
                 home_kernel_id: config_a.daemon_id.clone(),
                 home_session_id: home_session_id.clone(),
                 home_agent_id: home_agent_id.clone(),
+                owner_user_id: "user-home".to_string(),
             },
         )
         .await
@@ -2390,6 +2419,8 @@ mod tests {
                 provider: "opencode".to_string(),
                 model: Some("kimi2.5".to_string()),
                 effort: Some("medium".to_string()),
+                execution_mode: None,
+                permission_level: None,
                 worktree_id: None,
                 worktree_placement: None,
             },

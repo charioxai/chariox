@@ -18,9 +18,10 @@ use crate::session::CreateSessionRequest;
 use crate::terminal::TerminalOutputKind;
 use crate::transport::relay_peer::{
     RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk, RelayPromptAttachment,
-    RemoteGitObservation, RemoteGitTurnContext, RemoteManagedIoContext, RemoteMcpAvailability,
-    RemoteMcpAvailabilityStatus, RemoteMcpCheckContext, RemoteSkillMaterialization,
-    RemoteSkillSyncContext, RequiredRemoteMcp,
+    RemoteGitObservation, RemoteGitTurnContext, RemoteManagedIoContext,
+    RemoteMcpAvailability, RemoteMcpAvailabilityStatus, RemoteMcpCheckContext,
+    RemoteNativeInteractionContext, RemoteSkillMaterialization, RemoteSkillSyncContext,
+    RequiredRemoteMcp,
 };
 
 pub(crate) struct RemoteLeaseRuntime<'a> {
@@ -323,6 +324,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         home_kernel_id: &str,
         home_session_id: &str,
         home_agent_id: &str,
+        owner_user_id: &str,
     ) -> Result<ExecutionLease, DaemonError> {
         if !self.app.config.accept_remote_leases {
             return Err(DaemonError::RemoteLeasesDisabled {
@@ -339,6 +341,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             home_kernel_id.to_string(),
             home_session_id.to_string(),
             home_agent_id.to_string(),
+            owner_user_id.to_string(),
             self.app.config.daemon_id.clone(),
             self.app.config.host_machine_id.clone(),
         );
@@ -366,6 +369,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
         provider: &str,
         model: Option<String>,
         effort: Option<String>,
+        execution_mode: Option<crate::provider::AgentExecutionMode>,
+        permission_level: Option<crate::provider::AgentPermissionLevel>,
         worktree_id: Option<String>,
         worktree_placement: Option<GitWorktreePlacement>,
     ) -> Result<LeasedAgent, DaemonError> {
@@ -429,12 +434,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .ok()
             })
             .find(|session| {
-                session.workspace_id() == workspace_id && session.worktree_id() == worktree
+                session.workspace_id() == workspace_id
+                    && session.worktree_id() == worktree
+                    && session.owner_user_id() == lease.owner_user_id
             });
         let session = match existing_session {
             Some(session) => session,
             None => self.app.sessions.create_session(
-                CreateSessionRequest::new(workspace_id.clone(), worktree.clone()).with_hidden(true),
+                CreateSessionRequest::new(workspace_id.clone(), worktree.clone())
+                    .with_hidden(true)
+                    .with_owner_user_id(lease.owner_user_id.clone()),
             )?,
         };
         let session_store = self.app.session_state_store();
@@ -451,13 +460,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
         };
         let backing_agent = {
             let mut sessions = session_store.write();
-            self.app.agents.create_agent(
-                CreateAgentRequest::new(session.id(), provider)
-                    .with_worktree(session.worktree_id())
-                    .with_model(model.clone().unwrap_or_else(|| "default".to_string()))
-                    .with_effort(effort.clone().unwrap_or_else(|| "medium".to_string())),
-                &mut sessions,
-            )?
+            let mut request = CreateAgentRequest::new(session.id(), provider)
+                .with_owner_user_id(lease.owner_user_id.clone())
+                .with_worktree(session.worktree_id())
+                .with_model(model.clone().unwrap_or_else(|| "default".to_string()))
+                .with_effort(effort.clone().unwrap_or_else(|| "medium".to_string()));
+            if let Some(execution_mode) = execution_mode {
+                request = request.with_execution_mode_override(execution_mode);
+            }
+            if let Some(permission_level) = permission_level {
+                request = request.with_permission_level_override(permission_level);
+            }
+            self.app.agents.create_agent(request, &mut sessions)?
         };
         self.app.next_leased_agent_number = self.app.next_leased_agent_number.wrapping_add(1);
         let agent_id = format!(
@@ -471,6 +485,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             provider.to_string(),
             model,
             effort,
+            execution_mode,
+            permission_level,
             session.id().to_string(),
             backing_agent.id().to_string(),
             attachment.id().to_string(),
@@ -512,6 +528,33 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .history_projection
             .remove(&agent.backing_session_id);
         Ok(agent)
+    }
+
+    pub(crate) fn native_interaction_context_for_backing_agent(
+        &mut self,
+        backing_session_id: &str,
+        backing_agent_id: &str,
+        worker_provider_run_id: &str,
+    ) -> Option<(String, RemoteNativeInteractionContext)> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .values()
+            .find(|agent| {
+                agent.backing_session_id == backing_session_id
+                    && agent.backing_agent_id == backing_agent_id
+            })?
+            .clone();
+        let lease = self.app.execution_leases.get(&leased_agent.lease_id)?.clone();
+        Some((
+            lease.home_kernel_id,
+            RemoteNativeInteractionContext {
+                home_session_id: lease.home_session_id,
+                home_agent_id: lease.home_agent_id,
+                leased_agent_id: leased_agent.id,
+                worker_provider_run_id: worker_provider_run_id.to_string(),
+            },
+        ))
     }
 
     #[cfg(test)]
@@ -680,6 +723,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent: &LeasedAgent,
         required_mcps: &[RequiredRemoteMcp],
     ) -> Result<String, DaemonError> {
+        let lease = self
+            .app
+            .execution_leases
+            .get(&leased_agent.lease_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: leased_agent.lease_id.clone(),
+            })?;
         let existing = self.app.providers.get_run_for_agent(
             &leased_agent.backing_session_id,
             &leased_agent.backing_agent_id,
@@ -731,6 +782,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .unwrap_or_else(|| "default".to_string()),
         )
         .with_agent_id(&leased_agent.backing_agent_id)
+        .with_owner_user_id(lease.owner_user_id)
         .with_working_directory(std::path::PathBuf::from(
             self.app
                 .sessions
@@ -743,10 +795,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .map(|required| required.config.clone())
                 .collect(),
         );
+        if let Some(execution_mode) = leased_agent.execution_mode {
+            request = request.with_execution_mode(execution_mode);
+        }
+        if let Some(permission_level) = leased_agent.permission_level {
+            request = request.with_permission_level(permission_level);
+        }
+        if leased_agent.effort.is_some() {
+            request = request.with_variant(leased_agent.effort.clone());
+        }
         if let Some(run) = existing.as_ref() {
             request = request
-                .with_variant(run.variant().map(str::to_string))
                 .with_resume_state(run.resume_state().clone());
+            if request.variant.is_none() {
+                request = request.with_variant(run.variant().map(str::to_string));
+            }
         }
         if crate::provider::provider_requires_managed_io_by_default(
             &leased_agent.provider,
@@ -1209,7 +1272,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .into_iter()
             .map(|record| record.message)
             .collect::<Vec<_>>();
-        let completions = self
+        let mut completions = self
             .app
             .terminal
             .drain_completion_records(
@@ -1222,20 +1285,41 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 completed_at_ms: record.completed_at_ms,
             })
             .collect::<Vec<_>>();
+        let backing_prompt_active = self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .is_some();
+        let completion_already_projected = leased_agent
+            .projected_completion_provider_run_ids
+            .iter()
+            .any(|id| id == provider_run_id);
+        if completions.is_empty() && !backing_prompt_active && !completion_already_projected {
+            completions.push(RelayProjectedCompletion {
+                message_id: format!("leased-{provider_run_id}-completion"),
+                completed_at_ms: crate::session::unix_epoch_ms(),
+            });
+        }
         if !completions.is_empty() {
-            if self
-                .app
-                .prompt_owner_active_prompt_for_agent(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.backing_agent_id,
-                )?
-                .is_some()
-            {
+            if backing_prompt_active {
                 let _ = self.app.complete_active_prompt(
                     &leased_agent.backing_session_id,
                     &leased_agent.backing_agent_id,
                     Some(provider_run_id),
                 )?;
+            }
+            if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+                if !agent
+                    .projected_completion_provider_run_ids
+                    .iter()
+                    .any(|id| id == provider_run_id)
+                {
+                    agent
+                        .projected_completion_provider_run_ids
+                        .push(provider_run_id.to_string());
+                }
             }
             self.app.leased_workflow_turns.remove(provider_run_id);
         }

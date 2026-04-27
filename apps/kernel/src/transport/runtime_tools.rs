@@ -20,6 +20,7 @@ pub const EDIT_ARTIFACT_TOOL_ALIAS: &str = "edit_artifact";
 #[allow(dead_code)]
 pub const APPLY_PATCH_TOOL: &str = "arroba.apply_patch";
 pub const APPLY_PATCH_TOOL_ALIAS: &str = "apply_patch";
+pub const PATCH_ARTIFACT_TOOL_ALIAS: &str = "patch_artifact";
 #[allow(dead_code)]
 pub const WRITE_ARTIFACT_TOOL: &str = "arroba.write_artifact";
 pub const WRITE_ARTIFACT_TOOL_ALIAS: &str = "write_artifact";
@@ -228,6 +229,13 @@ fn default_http_method() -> String {
 }
 
 impl ManagedMoveArtifactArgs {
+    pub fn normalized_text_transform_fields(&self) -> (Option<String>, Option<String>) {
+        if self.old_text.as_deref() == Some("") && self.new_text.as_deref() == Some("") {
+            return (None, None);
+        }
+        (self.old_text.clone(), self.new_text.clone())
+    }
+
     pub fn has_non_text_transform_fields(&self) -> bool {
         self.old_text
             .as_deref()
@@ -506,8 +514,8 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
-            name: APPLY_PATCH_TOOL.to_string(),
-            description: "Apply an apply_patch-style text patch through Arroba managed I/O. Supports add, update, delete, and move operations atomically. Conflicting hunks are rejected with structured conflict metadata.".to_string(),
+            name: PATCH_ARTIFACT_TOOL_ALIAS.to_string(),
+            description: "Apply a text artifact patch through Arroba managed I/O. Supports add, update, delete, and move operations atomically. Conflicting hunks are rejected with structured conflict metadata.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["patch_text"],
@@ -589,7 +597,6 @@ fn managed_io_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
     let alias = match spec.name.as_str() {
         READ_ARTIFACT_TOOL => READ_ARTIFACT_TOOL_ALIAS,
         EDIT_ARTIFACT_TOOL => EDIT_ARTIFACT_TOOL_ALIAS,
-        APPLY_PATCH_TOOL => APPLY_PATCH_TOOL_ALIAS,
         DELETE_ARTIFACT_TOOL => DELETE_ARTIFACT_TOOL_ALIAS,
         MOVE_ARTIFACT_TOOL => MOVE_ARTIFACT_TOOL_ALIAS,
         WRITE_ARTIFACT_TOOL => WRITE_ARTIFACT_TOOL_ALIAS,
@@ -619,9 +626,13 @@ pub fn canonical_managed_io_tool_name(tool_name: &str) -> Option<&'static str> {
         | "mcp__arroba__arroba_edit_artifact" => Some(EDIT_ARTIFACT_TOOL),
         APPLY_PATCH_TOOL
         | APPLY_PATCH_TOOL_ALIAS
+        | PATCH_ARTIFACT_TOOL_ALIAS
         | "arroba_apply_patch"
+        | "arroba_patch_artifact"
         | "mcp__arroba__apply_patch"
-        | "mcp__arroba__arroba_apply_patch" => Some(APPLY_PATCH_TOOL),
+        | "mcp__arroba__patch_artifact"
+        | "mcp__arroba__arroba_apply_patch"
+        | "mcp__arroba__arroba_patch_artifact" => Some(APPLY_PATCH_TOOL),
         DELETE_ARTIFACT_TOOL
         | DELETE_ARTIFACT_TOOL_ALIAS
         | "arroba_delete_artifact"
@@ -765,8 +776,11 @@ mod managed_io_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == EDIT_ARTIFACT_TOOL_ALIAS));
-        assert!(specs.iter().any(|spec| spec.name == APPLY_PATCH_TOOL));
-        assert!(specs.iter().any(|spec| spec.name == APPLY_PATCH_TOOL_ALIAS));
+        assert!(!specs.iter().any(|spec| spec.name == APPLY_PATCH_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == PATCH_ARTIFACT_TOOL_ALIAS));
+        assert!(!specs.iter().any(|spec| spec.name == APPLY_PATCH_TOOL_ALIAS));
         assert!(specs.iter().any(|spec| spec.name == WRITE_ARTIFACT_TOOL));
         assert!(specs
             .iter()
@@ -820,7 +834,23 @@ mod managed_io_tests {
             Some(READ_ARTIFACT_TOOL)
         );
         assert_eq!(
+            canonical_managed_io_tool_name("read_artifact"),
+            Some(READ_ARTIFACT_TOOL)
+        );
+        assert_eq!(
+            canonical_managed_io_tool_name("edit_artifact"),
+            Some(EDIT_ARTIFACT_TOOL)
+        );
+        assert_eq!(
+            canonical_managed_io_tool_name("patch_artifact"),
+            Some(APPLY_PATCH_TOOL)
+        );
+        assert_eq!(
             canonical_managed_io_tool_name("arroba_apply_patch"),
+            Some(APPLY_PATCH_TOOL)
+        );
+        assert_eq!(
+            canonical_managed_io_tool_name("arroba_patch_artifact"),
             Some(APPLY_PATCH_TOOL)
         );
         assert_eq!(canonical_managed_io_tool_name("unknown"), None);
@@ -918,5 +948,19 @@ mod managed_io_tests {
         .expect("managed move args should parse");
 
         assert!(!args.has_non_text_transform_fields());
+    }
+
+    #[test]
+    fn managed_move_args_treat_empty_transform_pair_as_absent_for_text() {
+        let args = serde_json::from_value::<ManagedMoveArtifactArgs>(serde_json::json!({
+            "from_path": "from.txt",
+            "to_path": "to.txt",
+            "old_text": "",
+            "new_text": "",
+            "domain": "text"
+        }))
+        .expect("managed move args should parse");
+
+        assert_eq!(args.normalized_text_transform_fields(), (None, None));
     }
 }

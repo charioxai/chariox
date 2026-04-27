@@ -10,9 +10,9 @@ export const ARROBA_ASCII_ART = [
   "/_/   \\_\\_| \\_\\_| \\_\\___/|| _ ) /_/  \\_\\",
 ].join("\n")
 
-export const SESSION_NEW_HELP_TEXT = "Use arrows to choose provider, model, variant, theme, or session. Press Enter to continue."
+export const SESSION_NEW_HELP_TEXT = "Use arrows to choose provider, model, variant, worktree, theme, sessions, or remote inventory. Enter continues. A archives sessions and D deletes selected sessions or inactive remote inventory."
 export const SESSION_NEW_PLACEHOLDER = "Use the waiting room arrows to choose your next session"
-export const SESSION_NEW_FOOTER_HINT = `Waiting room • arrows move • Enter confirms • ${HOTKEY_TOGGLE_LABEL} hotkeys`
+export const SESSION_NEW_FOOTER_HINT = `Waiting room • arrows move • Enter confirms • A archives • D deletes inactive • ${HOTKEY_TOGGLE_LABEL} hotkeys`
 export const SESSION_NEW_ERROR_HINT = "No session attached. Use the waiting room to create or join a session."
 
 export type SessionListEntry = {

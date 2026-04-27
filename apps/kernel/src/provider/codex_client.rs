@@ -1269,7 +1269,7 @@ fn codex_permission_policy(
     match write_access_mode {
         ProviderWriteAccessMode::Unrestricted => CodexPermissionPolicy {
             approval_policy: match permission_level {
-                AgentPermissionLevel::Required => json!("on-request"),
+                AgentPermissionLevel::Required => json!("untrusted"),
                 AgentPermissionLevel::Yolo => json!("never"),
             },
             sandbox: match execution_mode {

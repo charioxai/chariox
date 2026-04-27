@@ -166,29 +166,17 @@ fn cli_build_inputs(cli_dir: &Path) -> Result<Vec<PathBuf>, String> {
         cli_dir.join("tsconfig.json"),
         cli_dir.join("scripts/build.mjs"),
     ];
-    let src_dir = cli_dir.join("src");
-    let entries = fs::read_dir(&src_dir).map_err(|error| {
-        format!(
-            "failed to read TypeScript CLI sources in `{}`: {error}",
-            src_dir.display()
-        )
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            format!(
-                "failed to enumerate TypeScript CLI sources in `{}`: {error}",
-                src_dir.display()
-            )
-        })?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        if matches!(
-            path.extension().and_then(|ext| ext.to_str()),
-            Some("ts") | Some("tsx")
-        ) {
-            inputs.push(path);
+    inputs.extend(collect_typescript_sources(&cli_dir.join("src"))?);
+
+    if let Some(workspace_root) = cli_dir.parent().and_then(|apps_dir| apps_dir.parent()) {
+        for package_name in ["kernel-client", "tool-display"] {
+            let package_dir = workspace_root.join("packages").join(package_name);
+            if !package_dir.exists() {
+                continue;
+            }
+            inputs.push(package_dir.join("package.json"));
+            inputs.push(package_dir.join("tsconfig.json"));
+            inputs.extend(collect_typescript_sources(&package_dir.join("src"))?);
         }
     }
     Ok(inputs)
@@ -197,33 +185,50 @@ fn cli_build_inputs(cli_dir: &Path) -> Result<Vec<PathBuf>, String> {
 fn cli_build_outputs(cli_dir: &Path) -> Result<Vec<PathBuf>, String> {
     let src_dir = cli_dir.join("src");
     let dist_dir = cli_dir.join("dist");
-    let entries = fs::read_dir(&src_dir).map_err(|error| {
+    let mut outputs = Vec::new();
+    for path in collect_typescript_sources(&src_dir)? {
+        let relative_path = path.strip_prefix(&src_dir).map_err(|error| {
+            format!(
+                "failed to resolve TypeScript CLI source path `{}`: {error}",
+                path.display()
+            )
+        })?;
+        outputs.push(dist_dir.join(relative_path).with_extension("js"));
+    }
+    Ok(outputs)
+}
+
+fn collect_typescript_sources(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = fs::read_dir(root).map_err(|error| {
         format!(
-            "failed to read TypeScript CLI sources in `{}`: {error}",
-            src_dir.display()
+            "failed to read TypeScript sources in `{}`: {error}",
+            root.display()
         )
     })?;
-    let mut outputs = Vec::new();
+    let mut sources = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|error| {
             format!(
-                "failed to enumerate TypeScript CLI sources in `{}`: {error}",
-                src_dir.display()
+                "failed to enumerate TypeScript sources in `{}`: {error}",
+                root.display()
             )
         })?;
         let path = entry.path();
+        if path.is_dir() {
+            sources.extend(collect_typescript_sources(&path)?);
+            continue;
+        }
         if !path.is_file() {
             continue;
         }
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if !(file_name.ends_with(".ts") || file_name.ends_with(".tsx")) {
-            continue;
+        if matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("ts") | Some("tsx")
+        ) {
+            sources.push(path);
         }
-        outputs.push(dist_dir.join(file_name.replace(".tsx", ".js").replace(".ts", ".js")));
     }
-    Ok(outputs)
+    Ok(sources)
 }
 
 fn newest_modified_time(paths: &[PathBuf]) -> Result<SystemTime, String> {

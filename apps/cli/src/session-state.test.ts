@@ -301,7 +301,9 @@ test("deriveDetachedCliTransitionState resets waiting room and clears session-bo
     waitingRoomState: {
       focus: "session",
       sessionIndex: 3,
+      machineIndex: 0,
       remoteKernelIndex: 0,
+      worktreeSelectionId: "existing:/workspace/tree",
       providerId: "opencode",
       modelId: "openai/gpt-5.4",
       effort: "medium",

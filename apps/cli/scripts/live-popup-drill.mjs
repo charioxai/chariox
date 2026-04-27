@@ -342,9 +342,7 @@ async function main() {
       setUserConfigValueRequest,
     } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
     client = new LocalIpcClient(kernelUrl)
-    for (const provider of options.providers) {
-      await client.send(setUserConfigValueRequest(`providers.managed_io.${provider}`, 'unrestricted'))
-    }
+    await client.send(setUserConfigValueRequest('providers.managed_io', 'unrestricted'))
     const session = unwrap(
       await client.send(createSessionRequest(workspace, workspace, `popup-${options.providers[0] ?? 'codex'}`)),
       'SessionCreated',

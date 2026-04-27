@@ -18,6 +18,9 @@ function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     keepArtifactsOnFailure: false,
+    kernelUrl: null,
+    noSpawnDaemon: false,
+    machineRef: null,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -26,6 +29,9 @@ function parseArgs(argv) {
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--kernel') options.kernelUrl = argv[++i]
+    else if (arg === '--no-spawn-daemon') options.noSpawnDaemon = true
+    else if (arg === '--machine-ref') options.machineRef = argv[++i]
     else if (arg === '--help' || arg === '-h') {
       console.log([
         'Usage: node apps/cli/scripts/live-native-permission-drill.mjs [options]',
@@ -33,6 +39,9 @@ function parseArgs(argv) {
         'Options:',
         '  --provider <codex|opencode>',
         '  --model <provider model override>',
+        '  --kernel <ws://...> (reuse an already-running kernel)',
+        '  --no-spawn-daemon',
+        '  --machine-ref <remote machine id or alias>',
         `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
         `  --poll-ms ${DEFAULT_POLL_MS}`,
         '  --keep-artifacts-on-failure',
@@ -71,7 +80,7 @@ function makePorts() {
 }
 
 function defaultModelForProvider(provider) {
-  if (provider === 'opencode') return 'openai/gpt-5.3-codex'
+  if (provider === 'opencode') return 'opencode/gpt-5.4'
   return 'gpt-5.4'
 }
 
@@ -204,16 +213,20 @@ async function terminateChild(child, signal = 'SIGTERM') {
   }
 }
 
-async function waitForInteraction(automation, agentId, containsText, timeoutMs, pollMs) {
+async function waitForSessionInteraction(client, sessionId, agentId, containsText, timeoutMs, pollMs) {
+  const { getSessionStateRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
   const deadline = Date.now() + timeoutMs
-  let snapshot = null
+  let session = null
   while (Date.now() < deadline) {
-    snapshot = await automation.send('snapshot')
-    const interaction = snapshot.interactions?.find((entry) => entry.agentId === agentId && String(entry.message ?? '').includes(containsText))
-    if (interaction) return { snapshot, interaction }
+    const response = await client.send(getSessionStateRequest(sessionId))
+    const payload = response?.SessionStateLoaded ?? response?.SessionState ?? response
+    session = payload.session ?? payload
+    const interaction = (session.active_interactions ?? []).find((entry) => entry.agent_id === agentId && String(entry.message ?? '').includes(containsText))
+      ?? (session.active_interactions ?? []).find((entry) => String(entry.message ?? '').includes(containsText))
+    if (interaction) return { session, interaction }
     await sleep(pollMs)
   }
-  throw new Error(`timed out waiting for interaction containing ${containsText}${snapshot ? `\n${JSON.stringify(snapshot, null, 2)}` : ''}`)
+  throw new Error(`timed out waiting for session interaction containing ${containsText}${session ? `\n${JSON.stringify(session, null, 2)}` : ''}`)
 }
 
 function collectTerminalText(events) {
@@ -275,15 +288,28 @@ async function waitForAgentIdle(client, sessionId, agentId, timeoutMs, pollMs) {
   throw new Error(`timed out waiting for agent ${agentId} to become idle`)
 }
 
+async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRef, timeoutMs, pollMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const payload = unwrapVariant(await client.send(listRemoteMachinesRequest()), 'RemoteMachinesListed')
+    const machines = payload.machines ?? []
+    if (machines.some((machine) => machine.machine_id === machineRef || machine.machine_alias === machineRef || machine.display_name === machineRef)) {
+      return
+    }
+    await sleep(pollMs)
+  }
+  throw new Error(`remote machine ${machineRef} did not become visible`)
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   const provider = options.provider
   const model = options.model ?? defaultModelForProvider(provider)
   const rootDir = path.join(repoRoot, 'target', 'live-native-permission-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
-  const automationSocket = path.join(os.tmpdir(), `arroba-native-permission-auto-${process.pid}-${Date.now()}.sock`)
+  const automationSocket = path.join(os.tmpdir(), `anp-${process.pid}-${Date.now()}.sock`)
   const ports = makePorts()
-  const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
+  const kernelUrl = options.kernelUrl ?? `ws://127.0.0.1:${ports.kernelPort}`
   const env = {
     ...process.env,
     HOME: process.env.HOME,
@@ -311,8 +337,10 @@ async function main() {
     await mkdir(workspace, { recursive: true })
     const { cliDist, kernelBinary } = await ensureCliBuilt()
 
-    daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
-    await waitForKernel(kernelUrl)
+    if (!options.noSpawnDaemon) {
+      daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
+      await waitForKernel(kernelUrl)
+    }
     log('kernel-ready', { kernelUrl })
 
     const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
@@ -320,7 +348,9 @@ async function main() {
       createSessionRequest,
       attachToSessionRequest,
       getSessionStateRequest,
+      listRemoteMachinesRequest,
       respondToInteractionRequest,
+      spawnAgentRequest,
       submitPromptRequest,
       focusAgentRequest,
       updateSessionConfigRequest,
@@ -328,7 +358,7 @@ async function main() {
     } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
     client = new LocalIpcClient(kernelUrl)
 
-    await client.send(setUserConfigValueRequest(`providers.managed_io.${provider}`, 'unrestricted'))
+    await client.send(setUserConfigValueRequest('providers.managed_io', 'unrestricted'))
 
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace, `native-permission-${provider}`)), 'SessionCreated').session
     sessionId = session.id
@@ -339,9 +369,30 @@ async function main() {
     client.onKernelEvent((event) => events.push({ ...event, observed_at_ms: Date.now() }))
     await client.subscribeToKernelEvents(sessionId, attachmentId)
 
+    if (options.machineRef) {
+      await waitForRemoteMachine(client, listRemoteMachinesRequest, options.machineRef, options.timeoutMs, options.pollMs)
+    }
+
     await client.send(updateSessionConfigRequest(sessionId, attachmentId, { 'agents.mode': 'build', 'agents.permissions': 'required' }, false))
-    const defaultAgentId = session.default_agent_id ?? session.agents?.[0]?.id ?? null
-    requireCondition(Boolean(defaultAgentId), 'created session did not expose a default agent', session)
+    let defaultAgentId = session.default_agent_id ?? session.agents?.[0]?.id ?? null
+    if (options.machineRef) {
+      const spawned = unwrapVariant(
+        await client.send(spawnAgentRequest(
+          sessionId,
+          provider,
+          `${provider}-remote-native`,
+          model,
+          workspace,
+          'high',
+          'build',
+          'required',
+          options.machineRef,
+        )),
+        'AgentSpawned',
+      )
+      defaultAgentId = spawned.agent?.id ?? spawned.id ?? defaultAgentId
+    }
+    requireCondition(Boolean(defaultAgentId), 'created session did not expose a usable target agent', session)
 
     const cliArgs = [
       '-q',
@@ -374,19 +425,20 @@ async function main() {
       snapshot: firstSnapshot,
     })
 
-    const activeAgentId = firstSnapshot.session?.focusedAgentId ?? defaultAgentId
+    const activeAgentId = options.machineRef ? defaultAgentId : (firstSnapshot.session?.focusedAgentId ?? defaultAgentId)
     requireCondition(Boolean(activeAgentId), 'CLI did not expose focused agent', firstSnapshot)
     await client.send(focusAgentRequest(sessionId, activeAgentId))
 
     const bashNeedle = provider === 'codex' ? 'Approve command execution?' : 'Approve OpenCode bash request?'
     const editNeedle = provider === 'codex' ? 'Approve file changes?' : 'Approve OpenCode edit request?'
+    const codexSandboxEscapePath = `/tmp/arroba-codex-native-bash-${process.pid}.txt`
     const bashPrompt = provider === 'codex'
-      ? "Use the shell to run `curl -fsSL https://example.com >/tmp/codex-native-permission-probe.txt && rm -f /tmp/codex-native-permission-probe.txt`. After the command succeeds, reply with exactly NATIVE_BASH_PERMISSION_DONE."
+      ? `Use the shell to run \`printf 'native-bash\\n' > ${codexSandboxEscapePath}\`. After the command succeeds, reply with exactly NATIVE_BASH_PERMISSION_DONE.`
       : "Use the shell to run `python3 -c \"print('native-bash')\"`. After the command succeeds, reply with exactly NATIVE_BASH_PERMISSION_DONE."
 
     const beforeBash = events.length
-    await automation.send('submit_prompt', { prompt: bashPrompt })
-    const bashInteraction = await waitForInteraction(automation, activeAgentId, bashNeedle, options.timeoutMs, options.pollMs)
+    await client.send(submitPromptRequest(sessionId, attachmentId, activeAgentId, bashPrompt))
+    const bashInteraction = await waitForSessionInteraction(client, sessionId, activeAgentId, bashNeedle, options.timeoutMs, options.pollMs)
     requireCondition(bashInteraction.interaction.level === 'warning' || bashInteraction.interaction.level === 'critical', 'unexpected bash interaction level', bashInteraction)
     log('answering-bash-interaction', {
       provider,
@@ -401,8 +453,13 @@ async function main() {
 
     const beforeEdit = events.length
     const createdFile = path.join(workspace, `${provider}-native-permission.txt`)
-    await automation.send('submit_prompt', { prompt: `Create a file named ${path.basename(createdFile)} with the exact text native-${provider}. After the write succeeds, reply with exactly NATIVE_EDIT_PERMISSION_DONE.` })
-    const editInteraction = await waitForInteraction(automation, activeAgentId, editNeedle, options.timeoutMs, options.pollMs)
+    await client.send(submitPromptRequest(
+      sessionId,
+      attachmentId,
+      activeAgentId,
+      `Create a file named ${path.basename(createdFile)} with the exact text native-${provider}. After the write succeeds, reply with exactly NATIVE_EDIT_PERMISSION_DONE.`,
+    ))
+    const editInteraction = await waitForSessionInteraction(client, sessionId, activeAgentId, editNeedle, options.timeoutMs, options.pollMs)
     requireCondition(editInteraction.interaction.level === 'critical' || editInteraction.interaction.level === 'warning', 'unexpected edit interaction level', editInteraction)
     log('answering-edit-interaction', {
       provider,

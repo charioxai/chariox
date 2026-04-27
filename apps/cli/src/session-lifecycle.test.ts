@@ -23,7 +23,9 @@ const cliOptions: CliOptions = {
 const waitingRoomState: WaitingRoomState = {
   focus: "new",
   sessionIndex: 0,
+  machineIndex: 0,
   remoteKernelIndex: 0,
+  worktreeSelectionId: "existing:/tmp/workspace",
   providerId: "opencode",
   modelId: "openai/gpt-5",
   effort: "medium",

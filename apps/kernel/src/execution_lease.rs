@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::session::unix_epoch_ms;
+use crate::session::{unix_epoch_ms, DEFAULT_LOCAL_USER_ID};
+
+fn default_lease_owner_user_id() -> String {
+    DEFAULT_LOCAL_USER_ID.to_string()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionLease {
@@ -8,6 +12,8 @@ pub struct ExecutionLease {
     pub home_kernel_id: String,
     pub home_session_id: String,
     pub home_agent_id: String,
+    #[serde(default = "default_lease_owner_user_id")]
+    pub owner_user_id: String,
     pub worker_kernel_id: String,
     pub machine_id: String,
     pub created_at_ms: u64,
@@ -20,6 +26,7 @@ impl ExecutionLease {
         home_kernel_id: String,
         home_session_id: String,
         home_agent_id: String,
+        owner_user_id: String,
         worker_kernel_id: String,
         machine_id: String,
     ) -> Self {
@@ -29,6 +36,7 @@ impl ExecutionLease {
             home_kernel_id,
             home_session_id,
             home_agent_id,
+            owner_user_id,
             worker_kernel_id,
             machine_id,
             created_at_ms: now,
@@ -45,9 +53,13 @@ pub struct LeasedAgent {
     pub provider: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+    pub execution_mode: Option<crate::provider::AgentExecutionMode>,
+    pub permission_level: Option<crate::provider::AgentPermissionLevel>,
     pub backing_session_id: String,
     pub backing_agent_id: String,
     pub backing_attachment_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projected_completion_provider_run_ids: Vec<String>,
     pub created_at_ms: u64,
 }
 
@@ -77,6 +89,8 @@ impl LeasedAgent {
         provider: String,
         model: Option<String>,
         effort: Option<String>,
+        execution_mode: Option<crate::provider::AgentExecutionMode>,
+        permission_level: Option<crate::provider::AgentPermissionLevel>,
         backing_session_id: String,
         backing_agent_id: String,
         backing_attachment_id: String,
@@ -88,9 +102,12 @@ impl LeasedAgent {
             provider,
             model,
             effort,
+            execution_mode,
+            permission_level,
             backing_session_id,
             backing_agent_id,
             backing_attachment_id,
+            projected_completion_provider_run_ids: Vec::new(),
             created_at_ms: unix_epoch_ms(),
         }
     }

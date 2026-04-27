@@ -433,6 +433,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListCloudSessionMembers(_) => "cloud_session.members.list",
         LocalDaemonRequest::ListCloudCollaborators(_) => "cloud_session.collaborators.list",
         LocalDaemonRequest::GetUserConfig(_) => "config.get",
+        LocalDaemonRequest::GetUserConfigSchema(_) => "config.schema",
         LocalDaemonRequest::SetUserConfigValue(_) => "config.set",
         LocalDaemonRequest::UnsetUserConfigValue(_) => "config.unset",
         LocalDaemonRequest::SetCredentialSecret(_) => "credential.secret.set",

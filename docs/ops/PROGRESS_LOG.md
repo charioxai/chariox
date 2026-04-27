@@ -2,6 +2,18 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-04-25
+
+### OSS iOS app planning baseline
+
+- Added `docs/ios/IOS_APP_PLAN.md` for the native OSS iOS client sub-project.
+- Captured the key boundary: iOS is a client surface like the TypeScript CLI and Cloud WEB_CLI, while the kernel remains the runtime authority for sessions, agents, workflows, provider runs, permissions, managed I/O, and relay membership.
+- Recommended native SwiftUI under `apps/ios`, direct kernel WebSocket transport through `URLSessionWebSocketTask`, Keychain for relay/cloud credentials, XCTest/XCUITest for committed tests, XcodeBuildMCP for the default build/test/run validation loop, and iOS Simulator MCP for explicit QA/dogfooding passes when requested or confirmed.
+- Documented that Maestro is a candidate tool future agents should suggest when useful, but they must ask Miguel before adding it to the repo, installing it as a project dependency, or making it part of the official QA gate.
+- Added `IOS-001` to the repo-native task board.
+- Installed SwiftUI/iOS implementation skills into `~/.codex/skills`: `swiftui-expert-skill`, `swiftui-ui-patterns`, `swiftui-view-refactor`, `swift-concurrency-expert`, `swiftui-performance-audit`, and `ios-debugger-agent`.
+- Added Codex MCP server entries for `XcodeBuildMCP` and `ios-simulator`.
+
 ## 2026-04-24
 
 ### M12 provider-native permissions and mode defaults
@@ -37,7 +49,25 @@ Chronological notes to preserve execution context between contributors/agents.
   - `apps/cli/scripts/live-popup-drill.mjs`
 - Confirmed live native permission drills for both Codex and OpenCode.
 - Confirmed live Codex popup execution on the real-home auth path and retained artifacts proving `request_popup` completed and resumed with `USER_FEEDBACK_RESULT:green`.
-- Closed M12 scope. Managed-I/O-specific permission handling, shell popup queue UX, and remote permission UX stay in later milestones.
+- Closed M12 scope. Shell popup queue UX and remote permission UX stay in later milestones.
+
+## 2026-04-27
+
+### Managed-I/O permission follow-on
+
+- Added managed-I/O permission gating for mutating Arroba runtime tools. When effective permissions are `required`, `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact` now block on an Arroba interaction before the mutation applies.
+- Split prompt assembly by execution path: all structured runs get the shared runtime instructions, unmanaged runs get the native-permissions block, and managed-I/O runs get the managed-I/O block.
+- Added `apps/cli/scripts/live-managed-io-permission-drill.mjs` and confirmed live managed-I/O permission drills for Codex and OpenCode.
+
+### Remote permission UX follow-on
+
+- Extended the local native-permission and managed-I/O permission drills so they can be driven through an already-running home kernel and a leased remote worker.
+- Added relay wrapper drills:
+  - `apps/cli/scripts/live-remote-managed-io-permission-drill.mjs`
+  - `apps/cli/scripts/live-remote-native-permission-drill.mjs`
+- Confirmed remote managed-I/O permission drills for Codex and OpenCode. Home-kernel interaction strips now surface remote managed-I/O approval requests and resume the same remote turn after approval.
+- Fixed leased-worker provider launch propagation so remote backing provider runs now inherit the leased agent's `execution_mode` and `permission_level` when the worker launches or reloads a provider run.
+- Remote native provider permissions remain the open follow-on. Current live runs show leased-worker providers receiving the prompt and executing native `bash` directly without surfacing a provider-native approval event back through Arroba, so the remaining work is provider-session parity for native remote runs rather than relay/UI plumbing.
 
 ## 2026-04-19
 
@@ -982,3 +1012,38 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added M9.8 local IPC publication invocation. `arroba-workflow-call` can invoke exported `publication.config.json` packages or kernel-owned publications by session/publication id, validates the configured input schema, forwards to the same kernel workflow endpoint as HTTP/WebSocket, emits JSON results, and is covered by unit tests plus the publication live drill.
 - Added a Docker-backed M9 publication connector drill. `pnpm --filter @arroba/cli run publication:docker-connectors-drill` builds a checked-in Node/curl client image and verifies an external container can kick off workflow runs through HTTP, HTTPS, WS, WSS, Slack, Telegram, Discord, WhatsApp, and Signal ingress paths.
 - Added a semantic URL renderer drill. `pnpm --filter @arroba/cli run semantic-url-renderer:drill` drives session/workflow/publication setup through shell commands, uses one Codex `gpt-5.4` workflow agent, publishes an async renderer workflow, and validates that a wrapper site first serves a loading page and then serves workflow-generated HTML for `/about/<prompt>`.
+
+### iOS app implementation kickoff
+
+- Added the native SwiftUI iOS app under `apps/ios` as an OSS Arroba client surface, with a minimal Xcode app shell and `ArrobaPackage` for feature code.
+- Implemented the first local-kernel client slice: typed request/response envelopes, `ListSessions`, `CreateSession`, `AttachToSession`, and a `URLSessionWebSocketTask` request path matching the TypeScript kernel-client IPC frame shape.
+- Added an `@Observable` app model and a terminal-inspired waiting-room UI with kernel URL/workspace/worktree configuration, session refresh, session creation, selected-session summary, runtime drawer, and global footer.
+- Added Swift Testing coverage for protocol encoding/decoding and model session selection, plus XCUITest launch coverage for the waiting-room UI.
+- Documented iOS local development, build/test commands, component parity rules, and QA guidance in `apps/ios/README.md`; updated `docs/ios/IOS_APP_PLAN.md` with the first implementation decisions and remaining IOS-M1 transport work.
+
+### iOS kernel event stream update
+
+- Extended the Swift kernel protocol layer with local WebSocket subscribe/unsubscribe frames, transport event frame decoding, and typed handling for `session_snapshot`, `heartbeat`, `session_unavailable`, `transport_resumed`, and `replay_gap` events.
+- Added attach-and-subscribe behavior to the waiting-room app model, including a stable iOS client id, attachment state, event cursor tracking, heartbeat timestamp, session snapshot upserts, replay-gap surfacing, and reconnect with the last received event id after stream interruptions.
+- Added Attach and Detach actions plus attachment/stream status to the SwiftUI runtime drawer while keeping the app as a kernel client rather than a runtime authority.
+- Expanded Swift Testing coverage to 8 tests and XCUITest launch coverage to include the Attach/Detach affordances; verified `swift test --package-path apps/ios/ArrobaPackage` and `xcodebuild -workspace apps/ios/Arroba.xcworkspace -scheme Arroba -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' test` pass.
+
+### iOS prompt composer update
+
+- Added the first single-agent prompt composer to the iOS waiting room. The composer requires an active attachment, sends `SubmitPrompt` to the selected session/focused agent, clears the draft only after kernel acceptance, and exposes a Stop action backed by `CancelActivePrompt`.
+- Extended Swift protocol fixtures and app model tests for prompt submission, bringing package coverage to 10 tests. The XCUITest launch smoke now asserts the prompt composer, Send, and Stop affordances exist.
+- Re-verified `swift test --package-path apps/ios/ArrobaPackage` and `xcodebuild -workspace apps/ios/Arroba.xcworkspace -scheme Arroba -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' test` pass.
+
+### iOS transcript and agent focus update
+
+- Added recent session-history loading after attach, live transcript rendering for terminal output/runtime notices/completion markers, and replay-aware auto-scroll behavior in the SwiftUI waiting-room surface.
+- Added kernel protocol coverage for `GetSessionHistory`, `FocusAgent`, `CycleAgentFocus`, `AgentFocused`, terminal output frames, and session-history responses.
+- Added runtime-drawer agent focus controls so iOS can focus a specific kernel-reported agent or cycle focus, matching the TypeScript client prompt-routing model at the request boundary.
+- Verified `swift test --package-path apps/ios/ArrobaPackage` passes with 17 Swift Testing cases and `xcodebuild -workspace apps/ios/Arroba.xcworkspace -scheme Arroba -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' build` succeeds.
+
+### iOS command-center subset update
+
+- Added the first native command-center catalog for iOS with `/session`, `/agent`, `/stop`, and `/waiting` discovery from the prompt composer.
+- Routed slash-command drafts through the existing `ArrobaAppModel` actions so `/session list`, `/session new|create`, `/session attach [ref]`, `/session detach`, `/agent list`, `/agent focus <ref>`, `/agent cycle`, `/stop`, and `/waiting` use the same typed kernel-backed request paths as the buttons and agent controls.
+- Added command feedback into the transcript as notices and kept failed freeform prompt submission behavior intact.
+- Expanded Swift Testing coverage to 20 cases for command catalog filtering plus slash command execution; verified `swift test --package-path apps/ios/ArrobaPackage` and `xcodebuild -workspace apps/ios/Arroba.xcworkspace -scheme Arroba -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' test` pass. A simulator text-entry command-center assertion was intentionally not kept because XCTest did not reliably expose the transient SwiftUI suggestion buttons; package/model coverage is the stable gate for that logic for now.

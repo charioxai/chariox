@@ -294,6 +294,7 @@ function resetWaitingRoomState(state: WaitingRoomState): WaitingRoomState {
   return {
     ...state,
     focus: "new",
+    machineIndex: 0,
     remoteKernelIndex: 0,
     introStep: 0,
     keyState: { up: false, down: false, left: false, right: false },

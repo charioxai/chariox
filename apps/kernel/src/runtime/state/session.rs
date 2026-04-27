@@ -42,7 +42,11 @@ impl KernelRuntimeOwnedState {
             }
         }
 
-        let projected_run_id = session.focused_agent_id().and_then(|agent_id| {
+        let projected_agent_id = self
+            .prompt_state_owner
+            .active_prompt_agent_id(session)
+            .or_else(|| session.focused_agent_id().map(str::to_string));
+        let projected_run_id = projected_agent_id.as_deref().and_then(|agent_id| {
             self.provider_store
                 .get_run_for_agent(session.id(), agent_id)
                 .and_then(|run| match run.state() {
@@ -355,6 +359,17 @@ impl KernelRuntimeOwnedState {
             .agent_id
             .as_deref()
             .and_then(|agent_id| self.agent_store.get_agent(agent_id).ok());
+        if let Some(agent) = agent.as_ref() {
+            if agent.remote_execution().is_some() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "launch provider run",
+                    message: format!(
+                        "agent `{}` is remote-backed and must launch its provider on the worker kernel",
+                        agent.id()
+                    ),
+                });
+            }
+        }
         if request.execution_mode.is_none() {
             request = request.with_execution_mode(resolve_effective_execution_mode(
                 &session,

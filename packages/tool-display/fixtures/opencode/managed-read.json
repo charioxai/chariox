@@ -10,7 +10,7 @@
     "output": "{\"content_text\":\"TOOL_DISPLAY_FIXTURE_SEED\\n\",\"domain\":\"text\",\"path\":\"seed.txt\"}"
   },
   "expect": {
-    "summary": "managed I/O read · COMPLETED",
+    "summary": "seed.txt",
     "blocks": ["code"]
   }
 }

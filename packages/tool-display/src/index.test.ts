@@ -46,6 +46,7 @@ test("formatToolDisplay normalizes OpenCode Arroba read tool aliases", async () 
   const display = formatToolDisplay(input)
 
   assert.equal(display.summary, expect.summary)
+  assert.equal(display.title, "read")
   assert.deepEqual(display.blocks.map((block) => block.kind), expect.blocks)
   assert.match(JSON.stringify(display.blocks), /TOOL_DISPLAY_FIXTURE_SEED/)
 })
@@ -68,6 +69,69 @@ test("formatToolDisplay accepts Codex runtime patch_text input", async () => {
   assert.equal(display.summary, expect.summary)
   assert.equal(patch?.kind, "patch")
   assert.deepEqual(patch?.files[0]?.previewLines, expect.previewLines)
+})
+
+test("formatToolDisplay unwraps live MCP envelopes for Arroba read output", () => {
+  const display = formatToolDisplay({
+    id: "call_read",
+    tool: "arroba.read_artifact",
+    status: "completed",
+    input: { path: "src/app.ts", domain: "text" },
+    output: JSON.stringify({
+      _meta: null,
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            content_text: "export const value = 1\n",
+            domain: "text",
+            path: "src/app.ts",
+          }),
+        },
+      ],
+    }),
+  })
+
+  assert.equal(display.title, "read")
+  assert.equal(display.summary, "src/app.ts")
+  assert.deepEqual(display.blocks, [
+    { kind: "code", language: "typescript", text: "export const value = 1" },
+  ])
+})
+
+test("formatToolDisplay unwraps live MCP envelopes for Arroba mutation output", () => {
+  const display = formatToolDisplay({
+    id: "call_write",
+    tool: "arroba.write_artifact",
+    status: "completed",
+    input: { path: "src/app.ts", content_text: "next()\n", domain: "text" },
+    output: JSON.stringify({
+      _meta: null,
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            applied: true,
+            change: {
+              path: "src/app.ts",
+              kind: "update",
+              diff: "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,1 +1,1 @@\n-old()\n+next()",
+              diff_truncated: false,
+            },
+          }),
+        },
+      ],
+    }),
+  })
+  const patch = display.blocks.find((block) => block.kind === "patch")
+
+  assert.equal(display.title, "patch")
+  assert.equal(display.summary, "Patched src/app.ts")
+  assert.equal(patch?.kind, "patch")
+  assert.deepEqual(patch?.files[0]?.previewLines, [
+    { kind: "meta", text: "@@ -1,1 +1,1 @@" },
+    { kind: "added", text: "next()" },
+  ])
 })
 
 test("formatToolTranscriptUpdate keeps legacy markdown summaries stable", () => {

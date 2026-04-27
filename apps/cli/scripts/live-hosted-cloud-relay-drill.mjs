@@ -107,6 +107,22 @@ async function terminateChild(child, signal = "SIGTERM") {
   }
 }
 
+async function closeClient(client, label) {
+  if (!client) return
+  let timedOut = false
+  await Promise.race([
+    client.close().catch(() => {}),
+    sleep(2_000).then(() => {
+      timedOut = true
+      log("client-close-timeout", { label })
+    }),
+  ])
+  if (timedOut) {
+    client.controlWebsocket?.terminate?.()
+    client.eventWebsocket?.terminate?.()
+  }
+}
+
 async function buildKernelIfNeeded() {
   const binary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
   const result = await run("cargo", ["build", "--manifest-path", path.join(repoRoot, "apps/kernel/Cargo.toml"), "--bin", "arroba-kernel"])
@@ -184,7 +200,9 @@ function tokenFromKernel(token, profile) {
 }
 
 function parseCloudClientTokenNotice(notices) {
-  const notice = [...notices].reverse().find((item) => item.startsWith("cloud relay client token\n"))
+  const notice = [...notices].reverse().find((item) => (
+    item.startsWith("cloud relay client token\n") || item.startsWith("cloud client token\n")
+  ))
   assert(notice, "cloud relay client-token command should append a token notice", notices)
   const fields = Object.fromEntries(
     notice
@@ -195,11 +213,12 @@ function parseCloudClientTokenNotice(notices) {
         return index === -1 ? [line, ""] : [line.slice(0, index), line.slice(index + 1)]
       }),
   )
-  assert(fields.relay_url, "client token notice should include relay_url", fields)
+  const relayUrl = fields.relay_url ?? fields.transport
+  assert(relayUrl, "client token notice should include relay_url or transport", fields)
   const tokenMatch = fields.command?.match(/\s--relay-token\s+(\S+)/)
   assert(tokenMatch?.[1], "client token command should include --relay-token", fields.command)
   return {
-    relayUrl: fields.relay_url,
+    relayUrl,
     relayToken: tokenMatch[1],
   }
 }
@@ -1159,6 +1178,8 @@ async function main() {
   const runId = `hosted-cloud-relay-${process.pid}-${Date.now()}`
   const rootDir = path.join(os.tmpdir(), runId)
   const workspace = path.join(rootDir, "workspace")
+  const homeDir = path.join(rootDir, "home")
+  const arrobaHome = path.join(homeDir, ".arroba")
   const daemonId = `hosted-daemon-${process.pid}-${Date.now()}`
   const daemonAlias = `hosted-home-${process.pid}`
   const clientId = `hosted-cli-${process.pid}-${Date.now()}`
@@ -1166,6 +1187,7 @@ async function main() {
 
   await rm(rootDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(workspace, { recursive: true })
+  await mkdir(arrobaHome, { recursive: true })
 
   let daemon = null
   let localClient = null
@@ -1189,12 +1211,16 @@ async function main() {
 
     const daemonEnv = {
       ...process.env,
+      HOME: homeDir,
+      ARROBA_HOME: arrobaHome,
       ARROBA_KERNEL_PORT: String(ports.kernelPort),
       ARROBA_MCP_PORT: String(ports.mcpPort),
       ARROBA_OPENCODE_PORT: String(ports.opencodePort),
       ARROBA_CODEX_PORT: String(ports.codexPort),
       ARROBA_DAEMON_ID: daemonId,
       ARROBA_DAEMON_ALIAS: daemonAlias,
+      ARROBA_MACHINE_ID: daemonId,
+      ARROBA_MACHINE_ALIAS: daemonAlias,
       ARROBA_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
       ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, "session-history"),
     }
@@ -1343,8 +1369,8 @@ async function main() {
       secondKernel: runSecondKernel,
     })
   } finally {
-    await remoteClient?.close().catch(() => {})
-    await localClient?.close().catch(() => {})
+    await closeClient(remoteClient, "remote")
+    await closeClient(localClient, "local")
     await terminateChild(daemon)
     await rm(rootDir, { recursive: true, force: true }).catch(() => {})
   }

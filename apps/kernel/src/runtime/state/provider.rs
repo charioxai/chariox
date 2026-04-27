@@ -86,10 +86,10 @@ impl KernelRuntimeOwnedState {
         if session.agents().len() > 1 {
             let focused_agent_id = session.focused_agent_id().map(str::to_string);
             if let Some(focused_agent_id) = focused_agent_id {
-                let has_active_prompt = self
+                let active_prompt_agent_id = self
                     .prompt_state_owner
-                    .active_prompt_agent_id(&session)
-                    .is_some();
+                    .active_prompt_agent_id(&session);
+                let has_active_prompt = active_prompt_agent_id.is_some();
                 let has_processing_agent =
                     session.agents().iter().any(|agent| agent.is_processing());
                 if !has_active_prompt {
@@ -112,7 +112,10 @@ impl KernelRuntimeOwnedState {
                     }
                 }
                 if has_active_prompt || has_processing_agent {
-                    self.project_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+                    let projected_agent_id = active_prompt_agent_id
+                        .as_deref()
+                        .unwrap_or(focused_agent_id.as_str());
+                    self.project_active_provider_run_for_agent(session_id, projected_agent_id)?;
                 } else {
                     self.sync_active_provider_run_for_agent(session_id, &focused_agent_id)?;
                 }

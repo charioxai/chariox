@@ -656,6 +656,14 @@ pub fn ensure_workflow_provider_run_for_agent(
                 .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Ended);
             if ended {
                 let agent = app.agents().get_agent(agent_id)?;
+                if agent.remote_execution().is_some() {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "ensure workflow provider run for agent",
+                        message: format!(
+                            "agent `{agent_id}` is remote-backed and must relaunch its provider on the worker kernel"
+                        ),
+                    });
+                }
                 let adapter_key = match agent.provider() {
                     "default" => "opencode",
                     value => value,
@@ -664,6 +672,21 @@ pub fn ensure_workflow_provider_run_for_agent(
                     "default" => "opencode",
                     value => value,
                 };
+                let session = app.sessions().get_session(session_id)?;
+                let execution_mode = agent.execution_mode_override().or_else(|| {
+                    session
+                        .config_state()
+                        .values()
+                        .get("agents.mode")
+                        .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
+                });
+                let permission_level = agent.permission_level_override().or_else(|| {
+                    session
+                        .config_state()
+                        .values()
+                        .get("agents.permissions")
+                        .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
+                });
                 let mut request = LaunchProviderRequest::new(
                     session_id,
                     adapter_key,
@@ -672,7 +695,9 @@ pub fn ensure_workflow_provider_run_for_agent(
                     agent.model().unwrap_or("default"),
                 )
                 .with_agent_id(agent.id().to_string())
-                .with_variant(agent.effort().map(str::to_string));
+                .with_variant(agent.effort().map(str::to_string))
+                .with_execution_mode(execution_mode.unwrap_or_default())
+                .with_permission_level(permission_level.unwrap_or_default());
                 if crate::provider::provider_requires_managed_io_by_default(provider, app.config())
                 {
                     request = request.with_managed_io_required();

@@ -19,6 +19,7 @@
     "test": "tsc -p tsconfig.json && node --test dist/*.test.js"
   },
   "dependencies": {
+    "@arroba/tool-display": "workspace:*",
     "ws": "^8.18.3"
   },
   "devDependencies": {

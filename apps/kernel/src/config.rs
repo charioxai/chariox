@@ -41,6 +41,19 @@ pub struct DaemonConfig {
     pub provider_runtime_init_delay_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserConfigSchemaEntry {
+    pub path: String,
+    pub value_type: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_values: Vec<String>,
+    pub settable: bool,
+    pub unsettable: bool,
+    pub effect: String,
+    pub status: String,
+    pub description: String,
+}
+
 impl DaemonConfig {
     pub fn load_from_env() -> Self {
         let runtime_identity = load_or_create_runtime_identity();
@@ -188,7 +201,7 @@ impl DaemonConfig {
             cloud_relay: None,
             relay_public_key,
             relay_private_key,
-            relay_heartbeat_ms: 5_000,
+            relay_heartbeat_ms: 500,
             relay_request_timeout_ms: 60_000,
             accept_remote_leases: false,
             os_user: os_user.into(),
@@ -340,12 +353,8 @@ impl DaemonConfig {
         &self.user_config_path
     }
 
-    pub fn provider_requires_managed_io(&self, provider: &str) -> bool {
-        self.user_config
-            .providers
-            .managed_io
-            .mode_for(provider)
-            .requires_managed_io()
+    pub fn provider_requires_managed_io(&self, _provider: &str) -> bool {
+        self.user_config.providers.managed_io.requires_managed_io()
     }
 
     pub fn set_user_config_value(
@@ -366,6 +375,10 @@ impl DaemonConfig {
         self.user_config.unset_value(key_path.as_ref())?;
         persist_user_config(&self.user_config_path, &self.user_config)?;
         Ok(())
+    }
+
+    pub fn user_config_schema() -> Vec<UserConfigSchemaEntry> {
+        user_config_schema_entries().to_vec()
     }
 
     pub fn persist_relay_config(&self) -> Result<(), DaemonError> {
@@ -574,6 +587,87 @@ impl DaemonConfig {
         }
         Ok(())
     }
+}
+
+fn user_config_schema_entry(
+    path: &str,
+    value_type: &str,
+    allowed_values: &[&str],
+    settable: bool,
+    unsettable: bool,
+    effect: &str,
+    status: &str,
+    description: &str,
+) -> UserConfigSchemaEntry {
+    UserConfigSchemaEntry {
+        path: path.to_string(),
+        value_type: value_type.to_string(),
+        allowed_values: allowed_values
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+        settable,
+        unsettable,
+        effect: effect.to_string(),
+        status: status.to_string(),
+        description: description.to_string(),
+    }
+}
+
+fn user_config_schema_entries() -> Vec<UserConfigSchemaEntry> {
+    vec![
+        user_config_schema_entry(
+            "providers.managed_io",
+            "enum",
+            &["required", "unrestricted"],
+            true,
+            true,
+            "provider_reload",
+            "live",
+            "Global managed I/O write-enforcement policy for supported provider runs.",
+        ),
+        user_config_schema_entry("providers.default", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted provider default; currently not used by launch defaulting."),
+        user_config_schema_entry("providers.model", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted model default; currently not used by launch defaulting."),
+        user_config_schema_entry("providers.account_profile", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted account profile default; currently not used by launch defaulting."),
+        user_config_schema_entry("providers.effort", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted effort default; currently not used by launch defaulting."),
+        user_config_schema_entry("ui.theme", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted UI theme value; terminal UI currently uses CLI preferences."),
+        user_config_schema_entry("ui.multi_agent_response_layout", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted response layout value; terminal UI currently uses CLI/session preferences."),
+        user_config_schema_entry("ui.max_agents_per_screen", "u32", &[], true, true, "no_runtime_effect", "unwired", "Persisted pane-count value; terminal UI currently uses CLI preferences."),
+        user_config_schema_entry("ui.worktree_aliases.<alias>", "string", &[], true, true, "no_runtime_effect", "unwired", "Pattern key for a worktree alias entry."),
+        user_config_schema_entry("relay.url", "string|null", &[], true, true, "no_runtime_effect", "unwired", "Persisted user-config relay URL; daemon relay connection currently uses daemon config."),
+        user_config_schema_entry("relay.accept_remote_leases", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Persisted remote-lease acceptance flag; daemon runtime currently uses daemon config."),
+        user_config_schema_entry("history.operational.backend", "enum", &["sqlite"], true, false, "restart_required", "boot", "Operational history storage backend."),
+        user_config_schema_entry("history.operational.path", "string", &[], true, true, "restart_required", "boot", "Operational history SQLite database path."),
+        user_config_schema_entry("history.operational.retention_days", "u32", &[], true, true, "no_runtime_effect", "unwired", "Retention-days setting; no pruning job currently consumes it."),
+        user_config_schema_entry("history.operational.max_size_mb", "u32", &[], true, true, "no_runtime_effect", "unwired", "Max-size setting; no pruning job currently consumes it."),
+        user_config_schema_entry("history.operational.keep_pinned_sessions", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Pinned-session retention setting; no pruning job currently consumes it."),
+        user_config_schema_entry("history.operational.archive_inactive_after_days", "u32", &[], true, true, "no_runtime_effect", "unwired", "Inactive-session archival threshold; no archival scheduler currently consumes it."),
+        user_config_schema_entry("history.operational.archive_deleted_agents", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Deleted-agent archival flag; deletion flow does not currently consume it."),
+        user_config_schema_entry("history.archive.mode", "enum", &["disabled", "external"], true, true, "none", "live", "History archive mode."),
+        user_config_schema_entry("history.archive.url", "string", &[], true, true, "none", "live", "External history archive endpoint."),
+        user_config_schema_entry("history.archive.token_env", "string", &[], true, true, "none", "live", "Environment variable name for the history archive bearer token."),
+        user_config_schema_entry("history.archive.archive_deleted_agents", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Archive-deleted-agents flag; deletion flow does not currently consume it."),
+        user_config_schema_entry("history.archive.archive_before_delete", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Archive-before-delete flag; deletion flow does not currently consume it."),
+        user_config_schema_entry("history.archive.delete_operational_after_verified_archive", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Delete-after-archive flag; no archive cleanup flow currently consumes it."),
+        user_config_schema_entry("history.archive.require_durable_acceptance", "bool", &["true", "false"], true, true, "none", "live", "Require durable archive acceptance for history events."),
+        user_config_schema_entry("artifacts.operational.backend", "enum", &["filesystem"], true, false, "none", "live", "Operational artifact storage backend."),
+        user_config_schema_entry("artifacts.operational.root", "string", &[], true, true, "none", "live", "Operational artifact filesystem root."),
+        user_config_schema_entry("artifacts.operational.index_path", "string", &[], true, true, "none", "live", "Operational artifact SQLite index path."),
+        user_config_schema_entry("artifacts.operational.retention_days", "u32", &[], true, true, "no_runtime_effect", "unwired", "Artifact retention setting; no cleanup job currently consumes it."),
+        user_config_schema_entry("artifacts.archive.mode", "enum", &["disabled", "external"], true, true, "none", "live", "Artifact archive mode."),
+        user_config_schema_entry("artifacts.archive.url", "string", &[], true, true, "none", "live", "External artifact archive endpoint."),
+        user_config_schema_entry("artifacts.archive.token_env", "string", &[], true, true, "none", "live", "Environment variable name for the artifact archive bearer token."),
+        user_config_schema_entry("artifacts.archive.require_durable_acceptance", "bool", &["true", "false"], true, true, "none", "live", "Require durable archive acceptance for artifact events."),
+        user_config_schema_entry("state.backend", "enum", &["sqlite"], true, false, "restart_required", "boot", "Durable kernel state backend."),
+        user_config_schema_entry("state.path", "string", &[], true, true, "restart_required", "boot", "Durable kernel state SQLite database path."),
+        user_config_schema_entry("state.snapshot_interval_events", "u32", &[], true, true, "none", "live", "Number of state events between durable snapshots."),
+        user_config_schema_entry("kernel.websocket_host", "string", &[], true, true, "restart_required", "boot", "Kernel websocket bind host."),
+        user_config_schema_entry("kernel.websocket_port", "port", &[], true, true, "restart_required", "boot", "Kernel websocket bind port."),
+        user_config_schema_entry("kernel.runtime_mcp_host", "string", &[], true, true, "restart_required", "boot", "Runtime MCP bind host."),
+        user_config_schema_entry("kernel.runtime_mcp_port", "port", &[], true, true, "restart_required", "boot", "Runtime MCP bind port."),
+        user_config_schema_entry("credential_vault.service", "string", &[], true, false, "none", "live", "OS keychain service namespace for vault-backed credentials."),
+        user_config_schema_entry("version", "u32", &[], true, false, "none", "internal", "User config schema version; migration-owned and not recommended for manual edits."),
+    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -833,15 +927,9 @@ impl ArrobaUserConfig {
                 self.credential_vault.service =
                     non_empty_config_string("credential_vault.service", value)?
             }
-            path if path.starts_with("providers.managed_io.") => {
-                let provider = path
-                    .trim_start_matches("providers.managed_io.")
-                    .trim()
-                    .to_string();
-                validate_config_provider_key(&provider)?;
-                self.providers
-                    .managed_io
-                    .set_mode(provider, ManagedIoMode::parse(&value)?);
+            "providers.managed_io" => {
+                self.providers.managed_io =
+                    ManagedIoConfig::from_mode(ManagedIoMode::parse(&value)?);
             }
             _ => {
                 return Err(DaemonError::InvalidConfig {
@@ -935,11 +1023,7 @@ impl ArrobaUserConfig {
             "kernel.websocket_port" => self.kernel.websocket_port = None,
             "kernel.runtime_mcp_host" => self.kernel.runtime_mcp_host = None,
             "kernel.runtime_mcp_port" => self.kernel.runtime_mcp_port = None,
-            path if path.starts_with("providers.managed_io.") => {
-                let provider = path.trim_start_matches("providers.managed_io.").trim();
-                validate_config_provider_key(provider)?;
-                self.providers.managed_io.remove_mode(provider);
-            }
+            "providers.managed_io" => self.providers.managed_io = ManagedIoConfig::default(),
             "version" => {
                 return Err(DaemonError::InvalidConfig {
                     field: "version",
@@ -1126,9 +1210,16 @@ impl Default for UserProviderConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "ManagedIoConfigSerde", into = "ManagedIoConfigSerde")]
 pub struct ManagedIoConfig {
-    #[serde(flatten)]
-    pub modes: BTreeMap<String, ManagedIoMode>,
+    pub mode: ManagedIoMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+enum ManagedIoConfigSerde {
+    Mode(ManagedIoMode),
+    LegacyModes(BTreeMap<String, ManagedIoMode>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1493,42 +1584,53 @@ impl StateBackend {
 impl Default for ManagedIoConfig {
     fn default() -> Self {
         Self {
-            modes: BTreeMap::from([
-                ("default".to_string(), ManagedIoMode::Required),
-                ("codex".to_string(), ManagedIoMode::Required),
-                ("opencode".to_string(), ManagedIoMode::Required),
-                ("dev-stub".to_string(), ManagedIoMode::Unrestricted),
-                ("managed-dev-stub".to_string(), ManagedIoMode::Required),
-            ]),
+            mode: ManagedIoMode::Required,
         }
     }
 }
 
 impl ManagedIoConfig {
-    pub fn mode_for(&self, provider: &str) -> ManagedIoMode {
-        let provider = match provider {
-            "default" => "opencode",
-            other => other,
-        };
-        self.modes
-            .get(provider)
-            .copied()
-            .unwrap_or(ManagedIoMode::Unrestricted)
+    pub fn from_mode(mode: ManagedIoMode) -> Self {
+        Self { mode }
     }
 
-    fn set_mode(&mut self, provider: String, mode: ManagedIoMode) {
-        self.modes.insert(provider, mode);
-    }
-
-    fn remove_mode(&mut self, provider: &str) {
-        self.modes.remove(provider);
+    pub fn requires_managed_io(&self) -> bool {
+        self.mode.requires_managed_io()
     }
 
     fn validate(&self) -> Result<(), DaemonError> {
-        for provider in self.modes.keys() {
-            validate_config_provider_key(provider)?;
-        }
         Ok(())
+    }
+}
+
+impl From<ManagedIoConfigSerde> for ManagedIoConfig {
+    fn from(value: ManagedIoConfigSerde) -> Self {
+        match value {
+            ManagedIoConfigSerde::Mode(mode) => Self::from_mode(mode),
+            ManagedIoConfigSerde::LegacyModes(modes) => {
+                Self::from_mode(legacy_managed_io_mode(modes))
+            }
+        }
+    }
+}
+
+impl From<ManagedIoConfig> for ManagedIoConfigSerde {
+    fn from(value: ManagedIoConfig) -> Self {
+        Self::Mode(value.mode)
+    }
+}
+
+fn legacy_managed_io_mode(modes: BTreeMap<String, ManagedIoMode>) -> ManagedIoMode {
+    if let Some(mode) = modes.get("default").copied() {
+        return mode;
+    }
+    let Some(first) = modes.values().copied().next() else {
+        return ManagedIoMode::Required;
+    };
+    if modes.values().all(|mode| *mode == first) {
+        first
+    } else {
+        ManagedIoMode::Required
     }
 }
 
@@ -1780,20 +1882,6 @@ fn validate_config_key_path(key_path: &str) -> Result<(), DaemonError> {
         return Err(DaemonError::InvalidConfig {
             field: "config_path",
             message: "path must contain dot-separated alphanumeric keys",
-        });
-    }
-    Ok(())
-}
-
-fn validate_config_provider_key(provider: &str) -> Result<(), DaemonError> {
-    validate_non_empty("providers.managed_io", provider)?;
-    if !provider
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-    {
-        return Err(DaemonError::InvalidConfig {
-            field: "providers.managed_io",
-            message: "provider keys may only contain alphanumeric characters, `_`, `-`, or `.`",
         });
     }
     Ok(())
@@ -2199,7 +2287,7 @@ injection = { kind = "query", name = "token" }
     }
 
     #[test]
-    fn managed_io_policy_defaults_to_required_for_supported_providers() {
+    fn managed_io_policy_defaults_to_required() {
         let config = DaemonConfig::new("daemon", "machine", "tester");
 
         assert!(config.provider_requires_managed_io("codex"));
@@ -2218,17 +2306,90 @@ injection = { kind = "query", name = "token" }
         config.user_config_path = path.clone();
 
         config
-            .set_user_config_value("providers.managed_io.opencode", "unrestricted")
+            .set_user_config_value("providers.managed_io", "unrestricted")
             .expect("managed I/O policy should update");
 
         assert!(!config.provider_requires_managed_io("opencode"));
-        assert!(config.provider_requires_managed_io("codex"));
+        assert!(!config.provider_requires_managed_io("codex"));
 
         let loaded = load_user_config_from_path(&path);
         assert_eq!(
-            loaded.providers.managed_io.mode_for("opencode"),
+            loaded.providers.managed_io.mode,
             ManagedIoMode::Unrestricted
         );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn user_config_schema_lists_settable_kernel_owned_keys() {
+        let schema = DaemonConfig::user_config_schema();
+        let managed_io = schema
+            .iter()
+            .find(|entry| entry.path == "providers.managed_io")
+            .expect("managed I/O schema entry should exist");
+
+        assert!(managed_io.settable);
+        assert!(managed_io.unsettable);
+        assert_eq!(managed_io.effect, "provider_reload");
+        assert_eq!(managed_io.allowed_values, vec!["required", "unrestricted"]);
+        assert!(schema
+            .iter()
+            .any(|entry| entry.path == "ui.worktree_aliases.<alias>"));
+    }
+
+    #[test]
+    fn managed_io_policy_rejects_per_provider_setter_keys() {
+        let mut config = DaemonConfig::new("daemon", "machine", "tester");
+
+        let set_error = config
+            .set_user_config_value("providers.managed_io.codex", "unrestricted")
+            .expect_err("per-provider managed I/O setters should be rejected");
+        let unset_error = config
+            .unset_user_config_value("providers.managed_io.codex")
+            .expect_err("per-provider managed I/O unsets should be rejected");
+
+        assert!(matches!(
+            set_error,
+            DaemonError::InvalidConfig {
+                field: "user_config",
+                ..
+            }
+        ));
+        assert!(matches!(
+            unset_error,
+            DaemonError::InvalidConfig {
+                field: "user_config",
+                ..
+            }
+        ));
+        assert!(config.provider_requires_managed_io("codex"));
+    }
+
+    #[test]
+    fn legacy_per_provider_managed_io_config_loads_into_global_mode() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-user-config-legacy-managed-io-test-{}-{}.toml",
+            std::process::id(),
+            generate_identity_suffix()
+        ));
+        std::fs::write(
+            &path,
+            r#"version = 1
+
+[providers]
+default = "opencode"
+
+[providers.managed_io]
+default = "required"
+opencode = "unrestricted"
+codex = "required"
+"#,
+        )
+        .expect("legacy managed I/O config should write");
+
+        let loaded = load_user_config_from_path(&path);
+        assert_eq!(loaded.providers.managed_io.mode, ManagedIoMode::Required);
 
         let _ = std::fs::remove_file(path);
     }

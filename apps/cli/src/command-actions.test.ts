@@ -288,7 +288,7 @@ test("relay cloud login without args uses device flow", async () => {
       machine_alias: "laptop",
     }),
     startCloudDeviceLogin: async (apiUrl: string, input: { clientId?: string; machineId?: string; machineAlias?: string }) => {
-      assert.equal(apiUrl, "https://cloud.arroba.dev")
+      assert.equal(apiUrl, "https://arroba-cloud-staging.osc-fr1.scalingo.io")
       assert.equal(input.clientId, "client-1")
       assert.equal(input.machineId, "machine-1")
       assert.equal(input.machineAlias, "laptop")
@@ -296,7 +296,7 @@ test("relay cloud login without args uses device flow", async () => {
         apiUrl,
         deviceCode: "dev-code",
         userCode: "ABCD-EFGH",
-        verificationUrl: "https://cloud.arroba.dev/activate?user_code=ABCD-EFGH",
+        verificationUrl: "https://arroba-cloud-staging.osc-fr1.scalingo.io/activate?user_code=ABCD-EFGH",
         expiresAtMs: Date.now() + 60_000,
         intervalSeconds: 1,
       }
@@ -307,7 +307,7 @@ test("relay cloud login without args uses device flow", async () => {
       return {
         status: "approved",
         profile: {
-          apiUrl: "https://cloud.arroba.dev",
+          apiUrl: "https://arroba-cloud-staging.osc-fr1.scalingo.io",
           email: "user@example.com",
           accountId: "account-1",
           userId: "user-1",
@@ -361,7 +361,109 @@ test("relay cloud login without args uses device flow", async () => {
   assert.equal(notices.at(-1), "cloud linked: user")
 })
 
-test("/cloud triggers hosted device login flow", async () => {
+test("/cloud opens hosted web CLI when a cloud profile already exists", async () => {
+  const flashed: string[] = []
+  const notices: string[] = []
+  const openedUrls: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    flashFooter: (message: string) => { flashed.push(message) },
+    appendCloudNotice: (message: string) => { notices.push(message) },
+    getCloudRelayProfile: () => ({
+      apiUrl: "https://cloud.example",
+      email: "user@example.com",
+      accountId: "account-1",
+      userId: "user-1",
+      accountSlug: "user",
+      realmId: "realm-1",
+      relayUrl: "wss://relay.example",
+      issuerId: "issuer-1",
+    }),
+    getRelayStatus: async () => ({
+      configured: true,
+      connected: true,
+      relay_url: "wss://relay.example",
+      relay_token_configured: true,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    startCloudDeviceLogin: async () => {
+      throw new Error("device login should not start for an existing cloud profile")
+    },
+    openExternalUrl: async (url: string) => {
+      openedUrls.push(url)
+      return true
+    },
+  }))
+
+  await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
+
+  assert.deepEqual(openedUrls, ["https://cloud.example/terminal?view=waiting"])
+  assert.match(notices[0] ?? "", /Opening Arroba Cloud/)
+  assert.doesNotMatch(notices.join("\n"), /code=|Link this machine/)
+  assert.equal(flashed.at(-1), "opened Arroba Cloud")
+})
+
+test("/cloud links instead of opening when the local kernel is not linked", async () => {
+  const notices: string[] = []
+  let startedDeviceLogin = false
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    appendCloudNotice: (message: string) => { notices.push(message) },
+    getCloudRelayProfile: () => ({
+      apiUrl: "https://cloud.example",
+      email: "user@example.com",
+      accountId: "account-1",
+      userId: "user-1",
+      accountSlug: "user",
+      realmId: "realm-1",
+      relayUrl: "wss://relay.example",
+      issuerId: "issuer-1",
+    }),
+    getRelayStatus: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    issueCloudKernelRelayToken: async () => {
+      throw new Error("cloud relay profile missing; run /relay cloud login first")
+    },
+    configureRelay: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    startCloudDeviceLogin: async () => {
+      startedDeviceLogin = true
+      return {
+        apiUrl: "https://cloud.example",
+        deviceCode: "device-code",
+        userCode: "ABCD-EFGH",
+        verificationUrl: "https://cloud.example/activate?user_code=ABCD-EFGH",
+        expiresAtMs: Date.now() + 60_000,
+        intervalSeconds: 1,
+      }
+    },
+    openExternalUrl: async () => false,
+    pollCloudDeviceLogin: async () => ({ status: "expired_token" }),
+    saveCloudRelayProfile: async () => {},
+  }))
+
+  await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
+
+  assert.equal(startedDeviceLogin, true)
+  assert.match(notices[0] ?? "", /Link this machine to Arroba Cloud/)
+  assert.doesNotMatch(notices[0] ?? "", /Opening Arroba Cloud/)
+})
+
+test("/cloud link triggers hosted device login flow", async () => {
   const flashed: string[] = []
   const notices: string[] = []
   const handlers = createCommandActionHandlers(makeCommandDeps({
@@ -416,10 +518,10 @@ test("/cloud triggers hosted device login flow", async () => {
     saveCloudRelayProfile: async () => {},
   }))
 
-  await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
+  await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud link", args: ["link"] })
 
   assert.deepEqual(flashed, [])
-  assert.match(notices[0] ?? "", /cloud login/)
+  assert.match(notices[0] ?? "", /Link this machine to Arroba Cloud/)
   assert.equal(notices.at(-1), "cloud linked: user")
 })
 
@@ -942,6 +1044,63 @@ test("provider command can switch backends and manage codex auth", async () => {
   assert.deepEqual(events, ["provider:codex"])
   assert.equal(flashedMessage, "codex reauth started • code ABCD-1234 • https://auth.openai.com/codex/device")
   assert.equal(notice, "codex reauth started • code ABCD-1234 • https://auth.openai.com/codex/device")
+})
+
+test("config command renders kernel mutation effects", async () => {
+  const notices: string[] = []
+  const flashes: string[] = []
+  const updates: Array<{ path: string; value: string }> = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    appendNotice: (message: string) => { notices.push(message) },
+    flashFooter: (message: string) => { flashes.push(message) },
+    getUserConfigSchema: async () => ({
+      entries: [
+        {
+          path: "providers.managed_io",
+          value_type: "enum",
+          allowed_values: ["required", "unrestricted"],
+          settable: true,
+          unsettable: true,
+          effect: "provider_reload",
+          status: "live",
+          description: "Global managed I/O policy.",
+        },
+      ],
+    }),
+    setUserConfigValue: async (path: string, value: string) => {
+      updates.push({ path, value })
+      return {
+        path: "/home/.arroba/config.toml",
+        config: { version: 1, providers: { managed_io: value as "required" | "unrestricted" } },
+        effects: [
+          {
+            kind: "provider_reload",
+            path,
+            message: "managed I/O policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
+            provider_reload: { reloaded: 1, deferred: 0, unaffected: 0 },
+          },
+        ],
+      }
+    },
+  }))
+
+  await handlers.handleConfigCommand({
+    kind: "config",
+    raw: "/config keys",
+    args: ["keys"],
+  })
+  await handlers.handleConfigCommand({
+    kind: "config",
+    raw: "/config managed-io off",
+    args: ["managed-io", "off"],
+  })
+
+  assert.deepEqual(updates, [{ path: "providers.managed_io", value: "unrestricted" }])
+  assert.deepEqual(notices, [
+    "providers.managed_io (enum; live; provider_reload unset values=required|unrestricted)",
+    "managed I/O policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
+  ])
+  assert.deepEqual(flashes, ["listed 1 config key", "managed I/O set to unrestricted"])
 })
 
 test("provider processes command lists and tears down safe daemon-tracked processes", async () => {

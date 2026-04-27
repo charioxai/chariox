@@ -529,6 +529,9 @@ pub struct CloudCollaborator {
 pub struct GetUserConfigRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetUserConfigSchemaRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetUserConfigValueRequest {
     pub path: String,
     pub value: String,
@@ -537,6 +540,22 @@ pub struct SetUserConfigValueRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnsetUserConfigValueRequest {
     pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserConfigProviderReloadSummary {
+    pub reloaded: u32,
+    pub deferred: u32,
+    pub unaffected: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserConfigMutationEffect {
+    pub kind: String,
+    pub path: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_reload: Option<UserConfigProviderReloadSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1293,6 +1312,7 @@ pub enum LocalDaemonRequest {
     ListCloudSessionMembers(ListCloudSessionMembersRequest),
     ListCloudCollaborators(ListCloudCollaboratorsRequest),
     GetUserConfig(GetUserConfigRequest),
+    GetUserConfigSchema(GetUserConfigSchemaRequest),
     SetUserConfigValue(SetUserConfigValueRequest),
     UnsetUserConfigValue(UnsetUserConfigValueRequest),
     SetCredentialSecret(SetCredentialSecretRequest),
@@ -1563,9 +1583,14 @@ pub enum LocalDaemonResponse {
         path: PathBuf,
         config: ArrobaUserConfig,
     },
+    UserConfigSchema {
+        entries: Vec<crate::config::UserConfigSchemaEntry>,
+    },
     UserConfigUpdated {
         path: PathBuf,
         config: ArrobaUserConfig,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        effects: Vec<UserConfigMutationEffect>,
     },
     CredentialSecretStored {
         key: String,

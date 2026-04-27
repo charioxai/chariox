@@ -678,7 +678,7 @@ test("formatToolTranscriptUpdate summarizes managed I/O diffs", () => {
       output,
     }),
     [
-      "**managed I/O** · COMPLETED",
+      "**patch** · COMPLETED",
       "1 file · 1 updated",
       "- Patched src/app.ts",
     ].join("\n"),

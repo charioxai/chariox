@@ -166,6 +166,61 @@ test("LocalIpcClient emits transport_closed when websocket closes", async (t) =>
   assert.equal(events.at(-1)?.event, "transport_closed")
 })
 
+test("LocalIpcClient close force-terminates stalled websocket close handshakes", async () => {
+  const server = new WebSocketServer({ port: 0 })
+  await once(server, "listening")
+
+  const address = server.address() as AddressInfo
+  const endpoint = `ws://127.0.0.1:${address.port}`
+
+  server.on("connection", (socket) => {
+    socket.on("message", (payload) => {
+      const frame = JSON.parse(String(payload)) as Record<string, unknown>
+      socket.send(JSON.stringify({
+        type: "response",
+        request_id: frame.request_id,
+        response: { ok: true },
+        error: null,
+      }))
+    })
+  })
+
+  const client = new LocalIpcClient(endpoint)
+  try {
+    await client.send({ hello: "world" })
+    const socket = (client as unknown as {
+      controlWebsocket: {
+        close: () => void
+        terminate: () => void
+      } | null
+    }).controlWebsocket
+    assert.ok(socket)
+
+    let closeCalled = false
+    let terminateCalled = false
+    const originalTerminate = socket.terminate.bind(socket)
+    socket.close = () => {
+      closeCalled = true
+    }
+    socket.terminate = () => {
+      terminateCalled = true
+      originalTerminate()
+    }
+
+    const startedAt = Date.now()
+    await client.close()
+
+    assert.equal(closeCalled, true)
+    assert.equal(terminateCalled, true)
+    assert.ok(Date.now() - startedAt < 2_000)
+  } finally {
+    await client.close()
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve())
+    })
+  }
+})
+
 test("LocalIpcClient preserves websocket close reasons in transport_closed events", async (t) => {
   const server = new WebSocketServer({ port: 0 })
   await once(server, "listening")

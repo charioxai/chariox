@@ -43,6 +43,7 @@ export type UiPreferences = {
   multiAgentResponseLayout?: MultiAgentResponseLayout
   maxAgentsPerScreen?: number
   theme?: ThemeName
+  hiddenRemoteKernelIds?: string[]
 }
 
 export type SessionPreferences = {

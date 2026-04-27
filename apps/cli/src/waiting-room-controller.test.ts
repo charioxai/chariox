@@ -2,30 +2,135 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { ProviderCatalog } from "./provider-catalog.js"
+import { fallbackProviderCatalog } from "./provider-catalog.js"
 import {
   deriveWaitingRoomActivationDecision,
+  deriveWaitingRoomDeleteDecision,
   deriveWaitingRoomModelSelectionDecision,
+  deriveWaitingRoomSessionLifecycleDecision,
   deriveWaitingRoomStateUpdate,
   deriveWaitingRoomVariantSelectionDecision,
 } from "./waiting-room-controller.js"
 import type { SessionListEntry } from "./sessions.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import { createWaitingRoomState, type WaitingRoomState } from "./waiting-room.js"
+import {
+  __setWaitingRoomWorktreeInventoryForTest,
+  resolvePendingWaitingRoomWorktreePath,
+} from "./waiting-room-worktrees.js"
 
-test("deriveWaitingRoomStateUpdate normalizes state and reports preference persistence", () => {
-  const currentState = waitingRoomState({
-    providerId: "opencode",
-    modelId: "openai/gpt-5.4",
-    effort: "medium",
+test("waiting room activation stages existing worktree selections for session creation", async () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace",
+    currentWorktreePath: "/workspace",
+    options: [
+      {
+        id: "existing:/workspace",
+        kind: "existing",
+        label: "main",
+        path: "/workspace",
+        branch: "main",
+        isCurrent: true,
+      },
+      {
+        id: "existing:/workspace-feature",
+        kind: "existing",
+        label: "feature/ui",
+        path: "/workspace-feature",
+        branch: "feature/ui",
+        isCurrent: false,
+      },
+      {
+        id: "create-worktree",
+        kind: "create",
+        label: "Create worktree",
+      },
+    ],
   })
 
+  try {
+    const catalog = fallbackProviderCatalog()
+    const state = {
+      ...createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high"),
+      worktreeSelectionId: "existing:/workspace-feature",
+    }
+
+    const decision = deriveWaitingRoomActivationDecision({
+      state,
+      sessions: [],
+      catalog,
+      currentProvider: "opencode",
+      currentModel: "openai/gpt-5.4",
+    })
+
+    assert.deepEqual(decision, {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "openai/gpt-5.4",
+        effort: "high",
+      },
+    })
+    assert.equal(
+      await resolvePendingWaitingRoomWorktreePath("/workspace", "/workspace"),
+      "/workspace-feature",
+    )
+  } finally {
+    __setWaitingRoomWorktreeInventoryForTest(null)
+  }
+})
+
+test("waiting room activation stages create-worktree selections for session creation", async () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace",
+    currentWorktreePath: "/workspace",
+    options: [
+      {
+        id: "existing:/workspace",
+        kind: "existing",
+        label: "main",
+        path: "/workspace",
+        branch: "main",
+        isCurrent: true,
+      },
+      {
+        id: "create-worktree",
+        kind: "create",
+        label: "Create worktree",
+      },
+    ],
+  })
+
+  try {
+    const catalog = fallbackProviderCatalog()
+    const state = {
+      ...createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high"),
+      worktreeSelectionId: "create-worktree",
+    }
+
+    const decision = deriveWaitingRoomActivationDecision({
+      state,
+      sessions: [],
+      catalog,
+      currentProvider: "opencode",
+      currentModel: "openai/gpt-5.4",
+    })
+
+    assert.equal(decision.action, "create")
+    assert.equal(
+      await resolvePendingWaitingRoomWorktreePath("/workspace", "/workspace", {
+        createWorktree: async () => "/workspace-created",
+      }),
+      "/workspace-created",
+    )
+  } finally {
+    __setWaitingRoomWorktreeInventoryForTest(null)
+  }
+})
+
+test("deriveWaitingRoomStateUpdate normalizes state and reports preference persistence", () => {
   const update = deriveWaitingRoomStateUpdate({
-    currentState,
-    nextState: waitingRoomState({
-      sessionIndex: 7,
-      providerId: "opencode",
-      modelId: "openai/gpt-5.4",
-      effort: "invalid",
-    }),
+    currentState: waitingRoomState(),
+    nextState: waitingRoomState({ sessionIndex: 7, effort: "invalid" }),
     sessions: [session("session-1"), session("session-2")],
     catalog: catalog(),
     currentProvider: "opencode",
@@ -33,48 +138,27 @@ test("deriveWaitingRoomStateUpdate normalizes state and reports preference persi
   })
 
   assert.equal(update.normalizedState.sessionIndex, 1)
-  assert.equal(update.nextProvider, "opencode")
   assert.equal(update.normalizedState.effort, "low")
-  assert.equal(update.nextModel, "openai/gpt-5.4")
-  assert.equal(update.nextEffort, "low")
   assert.equal(update.shouldPersistProviderPreferences, true)
 })
 
-test("deriveWaitingRoomActivationDecision returns create and join decisions from focus", () => {
+test("deriveWaitingRoomActivationDecision returns join and error decisions for session focus", () => {
   const sessions = [session("session-1")]
-  const createDecision = deriveWaitingRoomActivationDecision({
-    state: waitingRoomState({
-      focus: "model",
-      providerId: "opencode",
-      modelId: "anthropic/claude-sonnet-4",
-      effort: "medium",
-    }),
+  const joinDecision = deriveWaitingRoomActivationDecision({
+    state: waitingRoomState({ focus: "session" }),
     sessions,
     catalog: catalog(),
     currentProvider: "opencode",
     currentModel: "openai/gpt-5.4",
   })
-  const joinDecision = deriveWaitingRoomActivationDecision({
-    state: waitingRoomState({
-      focus: "session",
-      providerId: "opencode",
-      modelId: "openai/gpt-5.4",
-      effort: "high",
-    }),
-    sessions,
+  const errorDecision = deriveWaitingRoomActivationDecision({
+    state: waitingRoomState({ focus: "session" }),
+    sessions: [],
     catalog: catalog(),
     currentProvider: "opencode",
     currentModel: "openai/gpt-5.4",
   })
 
-  assert.deepEqual(createDecision, {
-    action: "create",
-    launch: {
-      provider: "opencode",
-      model: "anthropic/claude-sonnet-4",
-      effort: "medium",
-    },
-  })
   assert.deepEqual(joinDecision, {
     action: "join",
     session: sessions[0],
@@ -84,95 +168,167 @@ test("deriveWaitingRoomActivationDecision returns create and join decisions from
       effort: "high",
     },
   })
-})
-
-test("deriveWaitingRoomActivationDecision reports an error when join has no sessions", () => {
-  const decision = deriveWaitingRoomActivationDecision({
-    state: waitingRoomState({
-      focus: "session",
-    }),
-    sessions: [],
-    catalog: catalog(),
-    currentProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
-  })
-
-  assert.deepEqual(decision, {
+  assert.deepEqual(errorDecision, {
     action: "error",
     message: "no session available to join",
   })
 })
 
-test("deriveWaitingRoomModelSelectionDecision validates the selected model and normalizes effort", () => {
-  const decision = deriveWaitingRoomModelSelectionDecision({
+test("deriveWaitingRoomSessionLifecycleDecision selects focused sessions for archive and delete", () => {
+  const sessions = [session("session-1")]
+  const archiveDecision = deriveWaitingRoomSessionLifecycleDecision({
+    action: "archive",
+    state: waitingRoomState({ focus: "session" }),
+    sessions,
+    catalog: catalog(),
+  })
+  const deleteDecision = deriveWaitingRoomSessionLifecycleDecision({
+    action: "delete",
+    state: waitingRoomState({ focus: "session" }),
+    sessions,
+    catalog: catalog(),
+  })
+  const errorDecision = deriveWaitingRoomSessionLifecycleDecision({
+    action: "delete",
+    state: waitingRoomState({ focus: "new" }),
+    sessions,
+    catalog: catalog(),
+  })
+
+  assert.deepEqual(archiveDecision, {
+    action: "archive",
+    session: sessions[0],
+  })
+  assert.deepEqual(deleteDecision, {
+    action: "delete",
+    session: sessions[0],
+  })
+  assert.deepEqual(errorDecision, {
+    action: "error",
+    message: "select a session to delete",
+  })
+})
+
+test("deriveWaitingRoomDeleteDecision selects inactive machines and kernels", () => {
+  const sessions = [session("session-1")]
+  const machineDecision = deriveWaitingRoomDeleteDecision({
+    state: waitingRoomState({ focus: "machine" }),
+    sessions,
+    catalog: catalog(),
+    remote: {
+      machines: [{
+        machine_id: "machine-1",
+        display_name: "builder",
+        trust_status: "approved",
+        online: false,
+        pending: false,
+        kernel_count: 0,
+        available_providers: [],
+      }],
+    },
+  })
+  const kernelDecision = deriveWaitingRoomDeleteDecision({
+    state: waitingRoomState({ focus: "remote-kernel" }),
+    sessions,
+    catalog: catalog(),
+    remote: {
+      kernels: [{
+        kernel_id: "kernel-1",
+        machine_id: "machine-1",
+        relay_alias: "builder-kernel",
+        accepting_remote_leases: false,
+        leased_agent_count: 0,
+        local_session_count: 0,
+      }],
+    },
+  })
+  const activeKernelDecision = deriveWaitingRoomDeleteDecision({
+    state: waitingRoomState({ focus: "remote-kernel" }),
+    sessions,
+    catalog: catalog(),
+    remote: {
+      kernels: [{
+        kernel_id: "kernel-2",
+        machine_id: "machine-1",
+        relay_alias: "busy-kernel",
+        accepting_remote_leases: false,
+        leased_agent_count: 1,
+        local_session_count: 0,
+      }],
+    },
+  })
+
+  assert.deepEqual(machineDecision, {
+    action: "delete-machine",
+    machineId: "machine-1",
+    label: "builder",
+  })
+  assert.deepEqual(kernelDecision, {
+    action: "delete-kernel",
+    kernelId: "kernel-1",
+    label: "builder-kernel",
+  })
+  assert.deepEqual(activeKernelDecision, {
+    action: "error",
+    message: "kernel busy-kernel is active",
+  })
+})
+
+test("deriveWaitingRoomModelSelectionDecision validates models and normalizes variants", () => {
+  const success = deriveWaitingRoomModelSelectionDecision({
     modelId: "anthropic/claude-sonnet-4",
-    state: waitingRoomState({
-      providerId: "opencode",
-      modelId: "openai/gpt-5.4",
-      effort: "high",
-    }),
+    state: waitingRoomState(),
     sessions: [session("session-1")],
     catalog: catalog(),
     currentProvider: "opencode",
     configuredEffort: "high",
   })
+  const failure = deriveWaitingRoomModelSelectionDecision({
+    modelId: "missing/model",
+    state: waitingRoomState(),
+    sessions: [],
+    catalog: catalog(),
+    currentProvider: "opencode",
+    configuredEffort: "high",
+  })
 
-  assert.equal(decision.kind, "success")
-  if (decision.kind !== "success") {
-    return
+  assert.equal(success.kind, "success")
+  if (success.kind === "success") {
+    assert.equal(success.selectedModelId, "anthropic/claude-sonnet-4")
+    assert.equal(success.nextState.effort, "medium")
   }
-
-  assert.equal(decision.selectedModelId, "anthropic/claude-sonnet-4")
-  assert.equal(decision.nextState.modelId, "anthropic/claude-sonnet-4")
-  assert.equal(decision.nextState.effort, "medium")
-  assert.deepEqual(decision.launch, {
-    provider: "opencode",
-    model: "anthropic/claude-sonnet-4",
-    effort: "medium",
+  assert.deepEqual(failure, {
+    kind: "error",
+    message: "unknown model: missing/model",
   })
 })
 
 test("deriveWaitingRoomVariantSelectionDecision validates variants against the active model", () => {
-  const invalidDecision = deriveWaitingRoomVariantSelectionDecision({
-    variant: "high",
-    currentModelId: "anthropic/claude-sonnet-4",
-    currentProviderId: "opencode",
-    state: waitingRoomState({
-      providerId: "opencode",
-      modelId: "anthropic/claude-sonnet-4",
-      effort: "medium",
-    }),
-    sessions: [],
-    catalog: catalog(),
-  })
-  const validDecision = deriveWaitingRoomVariantSelectionDecision({
+  const success = deriveWaitingRoomVariantSelectionDecision({
     variant: "low",
     currentModelId: "openai/gpt-5.4",
     currentProviderId: "opencode",
-    state: waitingRoomState({
-      providerId: "opencode",
-      modelId: "openai/gpt-5.4",
-      effort: "high",
-    }),
+    state: waitingRoomState(),
+    sessions: [],
+    catalog: catalog(),
+  })
+  const failure = deriveWaitingRoomVariantSelectionDecision({
+    variant: "high",
+    currentModelId: "anthropic/claude-sonnet-4",
+    currentProviderId: "opencode",
+    state: waitingRoomState({ modelId: "anthropic/claude-sonnet-4", effort: "medium" }),
     sessions: [],
     catalog: catalog(),
   })
 
-  assert.deepEqual(invalidDecision, {
+  assert.equal(success.kind, "success")
+  if (success.kind === "success") {
+    assert.equal(success.selectedVariant, "low")
+    assert.equal(success.nextState.effort, "low")
+  }
+  assert.deepEqual(failure, {
     kind: "error",
     message: "unknown variant: high",
-  })
-  assert.equal(validDecision.kind, "success")
-  if (validDecision.kind !== "success") {
-    return
-  }
-
-  assert.equal(validDecision.selectedVariant, "low")
-  assert.equal(validDecision.nextState.effort, "low")
-  assert.deepEqual(validDecision.launch, {
-    provider: "opencode",
-    model: "openai/gpt-5.4",
-    effort: "low",
   })
 })
 
@@ -180,7 +336,9 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
   return {
     focus: "new",
     sessionIndex: 0,
+    machineIndex: 0,
     remoteKernelIndex: 0,
+    worktreeSelectionId: "existing:/workspace",
     providerId: "opencode",
     modelId: "openai/gpt-5.4",
     effort: "high",
@@ -214,10 +372,7 @@ function catalog(): ProviderCatalog {
             id: "gpt-5.4",
             name: "GPT-5.4",
             status: "active",
-            variants: {
-              medium: {},
-              high: {},
-            },
+            variants: { medium: {}, high: {} },
           },
         },
       },
@@ -229,10 +384,7 @@ function catalog(): ProviderCatalog {
             id: "gpt-5.4",
             name: "GPT-5.4",
             status: "active",
-            variants: {
-              low: {},
-              high: {},
-            },
+            variants: { low: {}, high: {} },
           },
         },
       },
@@ -244,9 +396,7 @@ function catalog(): ProviderCatalog {
             id: "claude-sonnet-4",
             name: "Claude Sonnet 4",
             status: "active",
-            variants: {
-              medium: {},
-            },
+            variants: { medium: {} },
           },
         },
       },

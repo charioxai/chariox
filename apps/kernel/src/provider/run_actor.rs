@@ -35,7 +35,7 @@ pub(crate) trait ProviderNativeInteractionBridge: Send + Sync {
     ) -> Result<ProviderNativeInteractionResolution, DaemonError>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProviderNativeInteractionResolution {
     pub(crate) status: String,
     pub(crate) choice_id: Option<String>,

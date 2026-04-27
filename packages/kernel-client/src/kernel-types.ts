@@ -144,7 +144,7 @@ export type ArrobaUserConfig = {
     model?: string
     account_profile?: string
     effort?: string
-    managed_io?: Record<string, "required" | "unrestricted">
+    managed_io?: "required" | "unrestricted"
   }
   history?: {
     operational?: {
@@ -191,6 +191,33 @@ export type ArrobaUserConfig = {
 export type ArrobaUserConfigPayload = {
   path: string
   config: ArrobaUserConfig
+  effects?: UserConfigMutationEffect[]
+}
+
+export type ArrobaUserConfigSchemaPayload = {
+  entries: UserConfigSchemaEntry[]
+}
+
+export type UserConfigSchemaEntry = {
+  path: string
+  value_type: string
+  allowed_values?: string[]
+  settable: boolean
+  unsettable: boolean
+  effect: string
+  status: string
+  description: string
+}
+
+export type UserConfigMutationEffect = {
+  kind: string
+  path: string
+  message: string
+  provider_reload?: {
+    reloaded: number
+    deferred: number
+    unaffected: number
+  } | null
 }
 
 export type AgentInstance = {

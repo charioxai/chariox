@@ -158,7 +158,7 @@ M12 is closed with:
 
 The following are intentionally outside M12 and belong to later milestones:
 
-- managed-I/O-specific permission handling
 - shell popup queue UX
-- remote permission UX drills
+- remote native-permission drill follow-on for leased worker agents
+- remote provider-specific native-permission parity fixes where providers still execute directly instead of surfacing approval events
 - any Arroba-owned execution gate beyond provider-native permissions

@@ -2836,9 +2836,11 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
         _ => panic!("unexpected local response"),
     };
 
-    harness.with_app_mut(|app| {
-        launch_slow_structured_run(app, session.id(), default_agent.id());
-        launch_slow_structured_run(app, session.id(), spawned.id());
+    let (default_run_id, spawned_run_id) = harness.with_app_mut(|app| {
+        (
+            launch_slow_structured_run(app, session.id(), default_agent.id()),
+            launch_slow_structured_run(app, session.id(), spawned.id()),
+        )
     });
 
     for agent_id in [default_agent.id(), spawned.id()] {
@@ -2859,6 +2861,26 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
             _ => panic!("unexpected local response"),
         }
     }
+
+    harness.with_app_mut(|app| {
+        for (provider_run_id, agent_id) in [
+            (default_run_id.clone(), default_agent.id().to_string()),
+            (spawned_run_id.clone(), spawned.id().to_string()),
+        ] {
+            app.providers_mut()
+                .push_finished_structured_output_poll_for_test(
+                    provider_run_id,
+                    Ok(Some(ProviderPromptSignalBatch {
+                        chunks: vec![ProviderPromptChunk {
+                            kind: TerminalOutputKind::ProviderOutput,
+                            merge_key: Some(format!("parallel-{agent_id}")),
+                            bytes: format!("parallel output for {agent_id}\n").into_bytes(),
+                        }],
+                        ..ProviderPromptSignalBatch::default()
+                    })),
+                );
+        }
+    });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut seen_agents = std::collections::BTreeSet::new();

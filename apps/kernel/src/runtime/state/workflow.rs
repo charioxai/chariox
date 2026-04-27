@@ -87,6 +87,10 @@ impl KernelRuntimeOwnedState {
         if let Some(worktree_id) = agent.worktree_id() {
             request = request.with_working_directory(std::path::PathBuf::from(worktree_id));
         }
+        request = self.prepare_provider_launch_request(
+            request,
+            self.config_projection.snapshot().runtime_mcp_url(),
+        )?;
         let run = self.provider_store.launch_run_detached(request)?;
         self.session_store
             .set_active_provider_run(session_id, Some(run.id().to_string()))?;

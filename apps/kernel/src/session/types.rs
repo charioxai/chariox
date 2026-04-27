@@ -2888,6 +2888,11 @@ impl RuntimeInteraction {
     pub fn choice(&self, choice_id: &str) -> Option<&RuntimeInteractionChoice> {
         self.choices.iter().find(|choice| choice.id() == choice_id)
     }
+
+    pub fn with_agent_id(mut self, agent_id: impl Into<String>) -> Self {
+        self.agent_id = agent_id.into();
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3186,6 +3191,10 @@ impl RuntimeSession {
     }
 
     pub fn redacted_for_user(mut self, user_id: &str) -> Self {
+        let has_unowned_agents = self
+            .agents
+            .iter()
+            .any(|agent| agent.owner_user_id() != user_id);
         let owned_agent_ids = self
             .agents
             .iter()
@@ -3200,7 +3209,9 @@ impl RuntimeSession {
         {
             self.focused_agent_id = None;
         }
-        self.active_provider_run_id = None;
+        if has_unowned_agents {
+            self.active_provider_run_id = None;
+        }
         self.prompt_runtime
             .retain_agent_ids(&owned_agent_ids, self.focused_agent_id.as_deref());
         self.workflows = self

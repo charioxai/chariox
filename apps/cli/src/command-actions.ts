@@ -2,6 +2,7 @@ import type {
   AgentInstance,
   ArrobaMcpServerConfig,
   ArrobaSkillMetadata,
+  ArrobaUserConfigSchemaPayload,
   ArrobaUserConfigPayload,
   McpImportOutcome,
   ProviderAuthStatus,
@@ -20,12 +21,12 @@ import type {
   WorkflowRun,
   WorkflowWatchdogDefinition,
   WorkspaceLinkDefinition,
+  UserConfigSchemaEntry,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { RelayCloudProfile, MultiAgentResponseLayout, UiPreferences } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { SessionListEntry } from "./sessions.js"
-import { sessionHasPromptWork } from "./session-state.js"
 import { execFile } from "node:child_process"
 import { readFile, stat } from "node:fs/promises"
 import { basename, dirname, resolve as resolvePath } from "node:path"
@@ -37,7 +38,18 @@ const WORKFLOW_MAX_TURNS_CONFIG_KEY = "workflow.max_turns"
 const WORKFLOW_LAUNCH_POLICY_CONFIG_KEY = "workflow.launch_policy"
 const SESSION_AGENT_MODE_CONFIG_KEY = "agents.mode"
 const SESSION_AGENT_PERMISSION_CONFIG_KEY = "agents.permissions"
-const DEFAULT_HOSTED_CLOUD_API_URL = "https://cloud.arroba.dev"
+const DEFAULT_HOSTED_CLOUD_API_URL = "https://arroba-cloud-staging.osc-fr1.scalingo.io"
+
+function buildHostedCloudTerminalUrl(apiUrl: string): string {
+  const url = new URL("/terminal", apiUrl)
+  url.searchParams.set("view", "waiting")
+  return url.toString()
+}
+
+function isMissingKernelCloudProfileError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes("cloud relay profile missing") || message.includes("run /relay cloud login first")
+}
 
 type FooterTone = "info" | "error"
 
@@ -164,6 +176,7 @@ type CommandActionDeps = {
   maxAgentsPerScreen: () => number
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
+  appendCloudNotice?: (message: string) => void
   formatError: (error: unknown) => string
   createSession: (workspace: string, worktree: string, alias?: string) => Promise<CreateSessionResult>
   createSessionInvite?: (
@@ -363,6 +376,7 @@ type CommandActionDeps = {
   detachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload & { detached: unknown[] }>
   saveUiPreferences: (prefs: UiPreferences) => Promise<void>
   getUserConfig?: () => Promise<ArrobaUserConfigPayload>
+  getUserConfigSchema?: () => Promise<ArrobaUserConfigSchemaPayload>
   setUserConfigValue?: (path: string, value: string) => Promise<ArrobaUserConfigPayload>
   unsetUserConfigValue?: (path: string) => Promise<ArrobaUserConfigPayload>
   rebuildTranscript: () => void
@@ -735,6 +749,83 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     const summary = skill.short_description ?? skill.description
     return `${skill.name}: ${summary}`
   }
+  const appendUserConfigEffects = (payload: ArrobaUserConfigPayload): void => {
+    const effects = payload.effects ?? []
+    if (effects.length > 0) {
+      deps.appendNotice(effects.map((effect) => effect.message).join("\n"))
+    }
+  }
+  const formatConfigSchemaKeys = (entries: UserConfigSchemaEntry[]): string => {
+    if (entries.length === 0) {
+      return "(no config keys)"
+    }
+    return entries
+      .filter((entry) => entry.settable)
+      .map((entry) => {
+        const values = entry.allowed_values && entry.allowed_values.length > 0
+          ? ` values=${entry.allowed_values.join("|")}`
+          : ""
+        const unset = entry.unsettable ? " unset" : ""
+        return `${entry.path} (${entry.value_type}; ${entry.status}; ${entry.effect}${unset}${values})`
+      })
+      .join("\n")
+  }
+  const appendCloudNotice = (message: string): void => {
+    ;(deps.appendCloudNotice ?? deps.appendNotice)(message)
+  }
+  const ensureHostedCloudRelay = async (profile: RelayCloudProfile): Promise<RelayCloudProfile> => {
+    if (!deps.getRelayStatus || !deps.configureRelay || (!deps.issueCloudMachineRelayToken && !deps.issueCloudKernelRelayToken)) {
+      return profile
+    }
+    const relayStatus = await deps.getRelayStatus()
+    if (relayStatus.configured && relayStatus.connected) {
+      return profile
+    }
+    const issued = profile.machineId && deps.issueCloudMachineRelayToken
+      ? await deps.issueCloudMachineRelayToken(profile, relayStatus.daemon_id, profile.machineId)
+      : deps.issueCloudKernelRelayToken
+        ? await deps.issueCloudKernelRelayToken(profile, relayStatus.daemon_id)
+        : null
+    if (!issued) {
+      return profile
+    }
+    await deps.configureRelay(issued.relayUrl, issued.relayToken)
+    const nextProfile = {
+      ...(issued.profile ?? profile),
+      tokenExpiresAtMs: issued.tokenExpiresAtMs,
+    }
+    await deps.saveCloudRelayProfile?.(nextProfile)
+    await deps.refreshWaitingRoomData?.()
+    return nextProfile
+  }
+  const openHostedCloud = async (): Promise<void> => {
+    const currentProfile = deps.getCloudRelayProfile?.() ?? null
+    if (!currentProfile) {
+      await startHostedCloudLink()
+      return
+    }
+    const terminalUrl = buildHostedCloudTerminalUrl(currentProfile.apiUrl)
+    let relayLine: string | null = null
+    try {
+      await ensureHostedCloudRelay(currentProfile)
+    } catch (error) {
+      if (isMissingKernelCloudProfileError(error)) {
+        await startHostedCloudLink()
+        return
+      }
+      relayLine = "relay=not connected; run /cloud link to refresh pairing"
+    }
+    const opened = await deps.openExternalUrl?.(terminalUrl)
+    appendCloudNotice(
+      [
+        "Opening Arroba Cloud.",
+        `url=${terminalUrl}`,
+        opened ? "browser=opened" : "browser=manual",
+        ...(relayLine ? [relayLine] : []),
+      ].join("\n"),
+    )
+    deps.flashFooter(opened ? "opened Arroba Cloud" : "Arroba Cloud URL ready", "info")
+  }
   const startHostedCloudLink = async (): Promise<void> => {
     if (!deps.startCloudDeviceLogin || !deps.pollCloudDeviceLogin || !deps.getRelayStatus || !deps.saveCloudRelayProfile) {
       deps.flashFooter("cloud login is unavailable in this build", "error")
@@ -747,9 +838,9 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       ...(relayStatus.machine_alias ? { machineAlias: relayStatus.machine_alias } : {}),
     })
     const opened = await deps.openExternalUrl?.(started.verificationUrl)
-    deps.appendNotice(
+    appendCloudNotice(
       [
-        "cloud login",
+        "Link this machine to Arroba Cloud.",
         `url=${started.verificationUrl}`,
         `code=${started.userCode}`,
         opened ? "browser=opened" : "browser=manual",
@@ -768,7 +859,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
             relayStatus.machine_alias || undefined,
           )
           await deps.saveCloudRelayProfile(profile)
-          deps.appendNotice(`cloud machine linked: ${profile.machineId ?? relayStatus.machine_id}`)
+          appendCloudNotice(`cloud machine linked: ${profile.machineId ?? relayStatus.machine_id}`)
         }
         if ((deps.issueCloudMachineRelayToken || deps.issueCloudKernelRelayToken) && deps.getRelayStatus && deps.configureRelay) {
           const refreshedRelayStatus = await deps.getRelayStatus()
@@ -781,20 +872,20 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
             tokenExpiresAtMs: issued.tokenExpiresAtMs,
           }
           await deps.saveCloudRelayProfile(profile)
-          deps.appendNotice(`cloud kernel connected: ${issued.relayUrl}`)
+          appendCloudNotice(`cloud kernel connected: ${issued.relayUrl}`)
         }
         await deps.refreshWaitingRoomData?.()
-        deps.appendNotice(`cloud linked: ${profile.accountSlug}`)
+        appendCloudNotice(`cloud linked: ${profile.accountSlug}`)
         return
       }
       if (polled.status === "expired_token") {
-        deps.appendNotice("cloud login expired")
+        appendCloudNotice("cloud login expired")
         return
       }
       intervalMs = Math.max(polled.intervalSeconds, 1) * 1000
       await sleep(intervalMs)
     }
-    deps.appendNotice("cloud login expired")
+    appendCloudNotice("cloud login expired")
   }
   const formatWorkspaceLinks = (links: WorkspaceLinkDefinition[]): string => {
     if (links.length === 0) {
@@ -2039,13 +2130,43 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     command: Extract<ParsedSlashCommand, { kind: "cloud" }>,
   ): Promise<void> => {
     const [area, action, ...args] = command.args
-    if (!area) {
+    if (!area || area === "open") {
+      await openHostedCloud()
+      return
+    }
+    if (area === "link" || area === "login") {
       await startHostedCloudLink()
       return
     }
     const profile = deps.getCloudRelayProfile?.() ?? null
+    if (area === "status") {
+      if (!profile) {
+        appendCloudNotice("Cloud is not linked.\nRun /cloud link to connect this machine.")
+        deps.flashFooter("cloud not linked", "info")
+        return
+      }
+      const relayStatus = await deps.getRelayStatus?.()
+      const relayState = !relayStatus
+        ? "unknown"
+        : !relayStatus.configured
+          ? "not configured"
+          : relayStatus.connected
+            ? "connected"
+            : "connecting"
+      appendCloudNotice(
+        [
+          "Cloud linked.",
+          `account=${profile.accountSlug}`,
+          `email=${profile.email}`,
+          `url=${buildHostedCloudTerminalUrl(profile.apiUrl)}`,
+          `relay=${relayState}`,
+        ].join("\n"),
+      )
+      deps.flashFooter(`cloud linked: ${profile.accountSlug}`, "info")
+      return
+    }
     if (!profile) {
-      deps.flashFooter("cloud profile missing; run /cloud first", "error")
+      deps.flashFooter("cloud profile missing; run /cloud link first", "error")
       return
     }
     if (area === "invite" && action === "create") {
@@ -2149,7 +2270,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`listed ${collaborators.length} cloud collaborator${collaborators.length === 1 ? "" : "s"}`, "info")
       return
     }
-    deps.flashFooter("usage: /cloud invite create [max-uses] | /cloud invite accept <invite-token-or-url> | /cloud members | /cloud collaborators", "error")
+    deps.flashFooter("usage: /cloud [open|link|status] | /cloud invite create [max-uses] | /cloud invite accept <invite-token-or-url> | /cloud members | /cloud collaborators", "error")
   }
 
 
@@ -2177,6 +2298,26 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`config path: ${payload.path}`, "info")
       return
     }
+    if (subcommand === "keys" || subcommand === "list") {
+      if (!deps.getUserConfigSchema) {
+        deps.flashFooter("user config schema is unavailable in this build", "error")
+        return
+      }
+      const payload = await deps.getUserConfigSchema()
+      deps.appendNotice(formatConfigSchemaKeys(payload.entries))
+      deps.flashFooter(`listed ${payload.entries.length} config key${payload.entries.length === 1 ? "" : "s"}`, "info")
+      return
+    }
+    if (subcommand === "schema") {
+      if (!deps.getUserConfigSchema) {
+        deps.flashFooter("user config schema is unavailable in this build", "error")
+        return
+      }
+      const payload = await deps.getUserConfigSchema()
+      deps.appendNotice(JSON.stringify(payload.entries, null, 2))
+      deps.flashFooter(`listed ${payload.entries.length} config schema entr${payload.entries.length === 1 ? "y" : "ies"}`, "info")
+      return
+    }
     if (subcommand === "set") {
       if (!deps.setUserConfigValue) {
         deps.flashFooter("user config updates are unavailable in this build", "error")
@@ -2187,7 +2328,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         deps.flashFooter("usage: /config set <path> <value>", "error")
         return
       }
-      await deps.setUserConfigValue(keyPath, value)
+      const payload = await deps.setUserConfigValue(keyPath, value)
+      appendUserConfigEffects(payload)
       deps.flashFooter(`config ${keyPath} set to ${value}`, "info")
       return
     }
@@ -2200,7 +2342,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         deps.flashFooter("usage: /config unset <path>", "error")
         return
       }
-      await deps.unsetUserConfigValue(keyPath)
+      const payload = await deps.unsetUserConfigValue(keyPath)
+      appendUserConfigEffects(payload)
       deps.flashFooter(`config ${keyPath} unset`, "info")
       return
     }
@@ -2209,60 +2352,21 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         deps.flashFooter("user config updates are unavailable in this build", "error")
         return
       }
-      const provider = keyPath ?? "default"
-      const mode = rest[0] ?? "required"
-      if (!["required", "unrestricted", "on", "off"].includes(mode)) {
-        deps.flashFooter("usage: /config managed-io [provider] required|unrestricted|on|off", "error")
+      const mode = keyPath ?? "required"
+      if (rest.length > 0 || !["required", "unrestricted", "on", "off"].includes(mode)) {
+        deps.flashFooter("usage: /config managed-io required|unrestricted|on|off", "error")
         return
       }
       const normalizedMode = mode === "on" ? "required" : mode === "off" ? "unrestricted" : mode
-      await deps.setUserConfigValue(`providers.managed_io.${provider}`, normalizedMode)
-      const relaunched = await relaunchFocusedProviderForManagedIoPolicy(provider)
-      deps.flashFooter(
-        relaunched
-          ? `managed I/O for ${provider} set to ${normalizedMode}; relaunched focused provider`
-          : `managed I/O for ${provider} set to ${normalizedMode}; applies on next provider launch`,
-        "info",
-      )
+      const payload = await deps.setUserConfigValue("providers.managed_io", normalizedMode)
+      appendUserConfigEffects(payload)
+      deps.flashFooter(`managed I/O set to ${normalizedMode}`, "info")
       return
     }
     deps.flashFooter(
-      "usage: /config show | path | set <path> <value> | unset <path> | managed-io [provider] required|unrestricted",
+      "usage: /config show | path | keys | schema | set <path> <value> | unset <path> | managed-io required|unrestricted",
       "error",
     )
-  }
-
-  const relaunchFocusedProviderForManagedIoPolicy = async (provider: string): Promise<boolean> => {
-    if (!deps.isAttached()) {
-      return false
-    }
-    const session = deps.sessionState()
-    if (sessionHasPromptWork(session)) {
-      deps.appendNotice("Managed I/O config updated. The active provider run keeps its launch-time write policy until the turn finishes and the provider is relaunched.")
-      return false
-    }
-    const focusedId = deps.focusedAgentId()
-    const agent = session.agents.find((candidate) => candidate.id === focusedId)
-    if (!agent) {
-      return false
-    }
-    const agentProvider = agent.provider === "default" ? "opencode" : agent.provider
-    const targetProvider = provider === "default" ? agentProvider : provider
-    if (agentProvider !== targetProvider) {
-      return false
-    }
-    const run = await deps.launchAgentProviderRun(
-      agentProvider,
-      agent.model ?? deps.currentModelId(),
-      agent.effort ?? deps.currentVariantId(),
-      agent.id,
-    )
-    deps.setProviderRunState(run)
-    const refreshedSession = await deps.refreshSessionState(session.id)
-    deps.applySessionState(refreshedSession)
-    await deps.refreshAgentPanes(refreshedSession)
-    deps.rebuildTranscript()
-    return true
   }
 
   const handleMachineCommand = async (

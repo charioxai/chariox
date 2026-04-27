@@ -24,6 +24,7 @@ import type {
   ArrobaMcpServerConfig,
   ArrobaSkillMetadata,
   ArrobaUserConfig,
+  ArrobaUserConfigSchemaPayload,
   ArrobaUserConfigPayload,
   BootstrapState,
   CaptureScreenshotResult,
@@ -114,6 +115,7 @@ import {
   getSessionStateRequest,
   getWaitingRoomInventoryRequest,
   getUserConfigRequest,
+  getUserConfigSchemaRequest,
   installMcpServerRequest,
   installSkillRequest,
   launchProviderRunRequest,
@@ -295,18 +297,29 @@ import { applyTheme, createTranscriptSyntaxStyle, EmptyBorder, setThemeRegistry,
 import { DEFAULT_THEME_REGISTRY, loadThemeRegistry } from "./theme-registry.js"
 import {
   deriveWaitingRoomActivationDecision,
+  deriveWaitingRoomDeleteDecision,
   deriveWaitingRoomModelSelectionDecision,
+  deriveWaitingRoomSessionLifecycleDecision,
   deriveWaitingRoomStateUpdate,
   deriveWaitingRoomVariantSelectionDecision,
+  type WaitingRoomDeleteDecision,
+  type WaitingRoomSessionLifecycleDecision,
+  type WaitingRoomSessionLifecycleAction,
 } from "./waiting-room-controller.js"
 import {
   createWaitingRoomState,
   cycleWaitingRoomValue,
   moveWaitingRoomFocus,
+  waitingRoomRemoteKernelCanDelete,
+  waitingRoomRemoteKernelIsAttachable,
   waitingRoomRows,
   type WaitingRoomFocus,
   type WaitingRoomState,
 } from "./waiting-room.js"
+import {
+  primeWaitingRoomWorktreeInventory,
+  resolvePendingWaitingRoomWorktreePath,
+} from "./waiting-room-worktrees.js"
 import {
   resolveWorkspaceVisibleAgents,
   resolveWorkspaceVisibleTranscriptAgentId,
@@ -364,6 +377,7 @@ const BOOTSTRAP_HISTORY_MAX_CHARS = 100_000
 const HISTORY_PAGE_ROUND_COUNT = 1
 const LIVE_TRANSCRIPT_LIMIT = 400
 const LIVE_TRANSCRIPT_MAX_CHARS = 250_000
+const WAITING_ROOM_SESSION_ACTION_CONFIRM_MS = 4_000
 const STREAM_BATCH_WINDOW_MS = 48
 const CHROME_UPDATE_THROTTLE_MS = 48
 const TURN_COMPLETION_QUIET_MS = 1_500
@@ -376,6 +390,12 @@ type HotkeyItem = {
   description: string
 }
 
+type PendingWaitingRoomSessionAction = {
+  action: WaitingRoomSessionLifecycleAction
+  targetKind: "session" | "machine" | "kernel"
+  targetId: string
+  expiresAtMs: number
+}
 
 type RelayStatusView = {
   configured: boolean
@@ -474,8 +494,10 @@ const SESSION_HOTKEYS: HotkeyItem[] = [
 ]
 
 const WAITING_ROOM_HOTKEYS: HotkeyItem[] = [
-  { keys: "Arrow keys", description: "Move through new-session options and existing sessions." },
+  { keys: "Arrow keys", description: "Move through new-session options, cycle worktrees, and browse existing sessions." },
   { keys: "Enter", description: "Create or attach to the selected session." },
+  { keys: "A", description: "Archive the selected session after confirmation." },
+  { keys: "D / Delete", description: "Delete the selected session or inactive remote inventory after confirmation." },
 ]
 
 const promptTokenStyle = SyntaxStyle.create()
@@ -569,12 +591,19 @@ function getLogger(component: string, fields: Record<string, unknown> = {}) {
 
 async function inferWorkspaceTargetsFromLaunchDirectory(cwd: string): Promise<{ workspace: string; worktree: string }> {
   try {
-    const { stdout: workspaceStdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd })
-    const workspace = workspaceStdout.trim()
-    if (!workspace) {
+    const [worktreeResult, commonDirResult] = await Promise.all([
+      execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd }),
+      execFileAsync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd }),
+    ])
+    const worktree = worktreeResult.stdout.trim()
+    const commonDir = commonDirResult.stdout.trim()
+    if (!worktree) {
       return { workspace: cwd, worktree: cwd }
     }
-    return { workspace, worktree: workspace }
+    const workspace = commonDir.endsWith("/.git")
+      ? commonDir.slice(0, -"/.git".length)
+      : worktree
+    return { workspace, worktree }
   } catch {
     return { workspace: cwd, worktree: cwd }
   }
@@ -610,6 +639,11 @@ async function main() {
   const inferredTargets = await inferWorkspaceTargetsFromLaunchDirectory(process.cwd())
   const workspace = options.workspace ?? inferredTargets.workspace
   const worktree = options.worktree ?? inferredTargets.worktree
+  await primeWaitingRoomWorktreeInventory({
+    cwd: process.cwd(),
+    workspacePath: workspace,
+    currentWorktreePath: worktree,
+  })
   const themeRegistry = await loadThemeRegistry({
     workspace,
     onWarning: (warning) => {
@@ -809,6 +843,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [relayStatusState, setRelayStatusState] = createSignal<RelayStatusView | null>(null)
   const [remoteMachinesState, setRemoteMachinesState] = createSignal<RemoteMachineView[]>([])
   const [remoteKernelsState, setRemoteKernelsState] = createSignal<RemoteKernelView[]>([])
+  const hiddenWaitingRoomKernelIds = new Set<string>(initialPreferences.ui?.hiddenRemoteKernelIds ?? [])
+  const [waitingRoomCloudNotice, setWaitingRoomCloudNotice] = createSignal<string | null>(null)
   const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
     createWaitingRoomState(
       initialSessions,
@@ -1546,6 +1582,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       sessions: availableSessions(),
       catalog: providerCatalogState(),
       remote: {
+        cloudNotice: waitingRoomCloudNotice(),
         relay: relayStatusState(),
         machines: remoteMachinesState(),
         kernels: remoteKernelsState(),
@@ -1605,6 +1642,24 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         flashFooter("edit the worktree path and press Enter", "info")
         return
       }
+      if (waitingRoomState().focus === "machine") {
+        const machine = remoteMachinesState()[waitingRoomState().machineIndex]
+        if (!machine) {
+          flashFooter("no remote machine selected", "error")
+          return
+        }
+        const label = machine.display_name ?? machine.registry_alias ?? machine.machine_alias ?? machine.machine_id
+        if (machine.online === false || machine.pending || machine.kernel_count === 0) {
+          flashFooter(`press D twice to delete machine ${label}`, "info")
+          return
+        }
+        const command = `/machine kernels ${machine.registry_alias ?? machine.machine_alias ?? machine.machine_id}`
+        setPromptText(command)
+        promptInput?.focus()
+        syncCommandCenter(command)
+        flashFooter(`press Enter to list kernels for ${label}`, "info")
+        return
+      }
       if (waitingRoomState().focus === "remote-kernel") {
         const kernel = remoteKernelsState()[waitingRoomState().remoteKernelIndex]
         if (!kernel) {
@@ -1612,6 +1667,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           return
         }
         const target = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
+        if (!waitingRoomRemoteKernelIsAttachable(kernel)) {
+          flashFooter(
+            waitingRoomRemoteKernelCanDelete(kernel)
+              ? `press D twice to delete kernel ${target}`
+              : `kernel ${target} is active`,
+            waitingRoomRemoteKernelCanDelete(kernel) ? "info" : "error",
+          )
+          return
+        }
         const command = `/relay cloud client-token ${target}`
         setPromptText(command)
         promptInput?.focus()
@@ -1649,6 +1713,178 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
   let waitingRoomDataRefresh: Promise<void> | null = null
   let waitingRoomInventoryVersion: string | null = null
+  let pendingWaitingRoomSessionAction: PendingWaitingRoomSessionAction | null = null
+  const applyWaitingRoomSessionLifecycleAction = async (action: WaitingRoomSessionLifecycleAction) => {
+    try {
+      if (!kernelConnected()) {
+        await connectDetachedKernelFromWaitingRoom()
+      }
+      const remote = {
+        cloudNotice: waitingRoomCloudNotice(),
+        relay: relayStatusState(),
+        machines: remoteMachinesState(),
+        kernels: remoteKernelsState(),
+      }
+      const decision = action === "delete"
+        ? deriveWaitingRoomDeleteDecision({
+            state: waitingRoomState(),
+            sessions: availableSessions(),
+            catalog: providerCatalogState(),
+            remote,
+          })
+        : deriveWaitingRoomSessionLifecycleDecision({
+            action,
+            state: waitingRoomState(),
+            sessions: availableSessions(),
+            catalog: providerCatalogState(),
+          })
+      if (decision.action === "error") {
+        pendingWaitingRoomSessionAction = null
+        flashFooter(decision.message, "error")
+        return
+      }
+
+      const target = waitingRoomLifecycleTarget(decision)
+      const now = Date.now()
+      const pending = pendingWaitingRoomSessionAction
+      const keyLabel = action === "archive" ? "A" : "D"
+      if (
+        !pending
+        || pending.action !== action
+        || pending.targetKind !== target.kind
+        || pending.targetId !== target.id
+        || pending.expiresAtMs <= now
+      ) {
+        pendingWaitingRoomSessionAction = {
+          action,
+          targetKind: target.kind,
+          targetId: target.id,
+          expiresAtMs: now + WAITING_ROOM_SESSION_ACTION_CONFIRM_MS,
+        }
+        flashFooter(`press ${keyLabel} again to ${target.verb} ${target.label}`, action === "delete" ? "error" : "info")
+        return
+      }
+
+      pendingWaitingRoomSessionAction = null
+      if (decision.action === "archive") {
+        const updated = await archiveSessionById(client, decision.session.id)
+        setAvailableSessions(availableSessions().filter((candidate) => candidate.id !== updated.id))
+        waitingRoomInventoryVersion = null
+        reconcileWaitingRoom(waitingRoomState())
+        await refreshWaitingRoomData()
+        flashFooter(`archived session ${formatSessionDisplayLabel(updated)}`, "info")
+        return
+      }
+      if (decision.action === "delete-session") {
+        const updated = await deleteSessionByRef(client, decision.session.id, pendingWorkspaceTarget())
+        setAvailableSessions(availableSessions().filter((candidate) => candidate.id !== updated.id))
+        waitingRoomInventoryVersion = null
+        reconcileWaitingRoom(waitingRoomState())
+        await refreshWaitingRoomData()
+        flashFooter(`deleted session ${formatSessionDisplayLabel(updated)}`, "error")
+        return
+      }
+      if (decision.action === "delete") {
+        const updated = await deleteSessionByRef(client, decision.session.id, pendingWorkspaceTarget())
+        setAvailableSessions(availableSessions().filter((candidate) => candidate.id !== updated.id))
+        waitingRoomInventoryVersion = null
+        reconcileWaitingRoom(waitingRoomState())
+        await refreshWaitingRoomData()
+        flashFooter(`deleted session ${formatSessionDisplayLabel(updated)}`, "error")
+        return
+      }
+      if (decision.action === "delete-machine") {
+        const deleted = await forgetRemoteMachine(client, decision.machineId)
+        const deletedMachineId = deleted.machine_id || decision.machineId
+        setRemoteMachinesState(remoteMachinesState().filter((machine) => machine.machine_id !== deletedMachineId))
+        setRemoteKernelsState(remoteKernelsState().filter((kernel) => kernel.machine_id !== deletedMachineId))
+        waitingRoomInventoryVersion = null
+        reconcileWaitingRoom(waitingRoomState())
+        await refreshWaitingRoomData()
+        flashFooter(`deleted machine ${decision.label}`, "error")
+        return
+      }
+      if (decision.action === "delete-kernel") {
+        hiddenWaitingRoomKernelIds.add(decision.kernelId)
+        const hiddenKernelIds = [...hiddenWaitingRoomKernelIds].sort()
+        void saveUiPreferences({ hiddenRemoteKernelIds: hiddenKernelIds })
+        setPreferencesState((current) => mergeUiPreferences(current, { hiddenRemoteKernelIds: hiddenKernelIds }))
+        setRemoteKernelsState(remoteKernelsState().filter((kernel) => kernel.kernel_id !== decision.kernelId))
+        reconcileWaitingRoom(waitingRoomState())
+        flashFooter(`deleted kernel ${decision.label}`, "error")
+      }
+    } catch (error) {
+      appLogger?.warn("waiting room session lifecycle action failed", {
+        action,
+        error: formatError(error),
+      })
+      flashFooter(formatError(error), "error")
+    }
+  }
+  const waitingRoomSessionLifecycleActionForEvent = (event: {
+    name: string
+    eventType?: string
+    ctrl?: boolean
+    meta?: boolean
+    alt?: boolean
+    super?: boolean
+  }): WaitingRoomSessionLifecycleAction | null => {
+    if (event.eventType === "release" || event.ctrl || event.meta || event.alt || event.super || promptInput?.focused) {
+      return null
+    }
+    if (event.name === "a") {
+      return "archive"
+    }
+    if (event.name === "d" || event.name === "delete") {
+      return "delete"
+    }
+    return null
+  }
+  const waitingRoomLifecycleTarget = (
+    decision: WaitingRoomSessionLifecycleDecision | WaitingRoomDeleteDecision,
+  ) => {
+    if (decision.action === "archive") {
+      return {
+        kind: "session" as const,
+        id: decision.session.id,
+        label: `session ${formatSessionDisplayLabel(decision.session)}`,
+        verb: "archive",
+      }
+    }
+    if (decision.action === "delete-session") {
+      return {
+        kind: "session" as const,
+        id: decision.session.id,
+        label: `session ${formatSessionDisplayLabel(decision.session)}`,
+        verb: "delete",
+      }
+    }
+    if (decision.action === "delete") {
+      return {
+        kind: "session" as const,
+        id: decision.session.id,
+        label: `session ${formatSessionDisplayLabel(decision.session)}`,
+        verb: "delete",
+      }
+    }
+    if (decision.action === "delete-machine") {
+      return {
+        kind: "machine" as const,
+        id: decision.machineId,
+        label: `machine ${decision.label}`,
+        verb: "delete",
+      }
+    }
+    if (decision.action === "delete-kernel") {
+      return {
+        kind: "kernel" as const,
+        id: decision.kernelId,
+        label: `kernel ${decision.label}`,
+        verb: "delete",
+      }
+    }
+    throw new Error("unsupported waiting room lifecycle decision")
+  }
   const connectDetachedKernelFromWaitingRoom = async () => {
     appLogger?.info("connecting detached cli to configured kernel endpoint")
     flashFooter("connecting to kernel...", "info")
@@ -1683,7 +1919,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAvailableSessions(snapshot.sessions)
     setRelayStatusState(snapshot.relayStatus)
     setRemoteMachinesState(snapshot.remoteMachines)
-    setRemoteKernelsState(snapshot.remoteKernels)
+    setRemoteKernelsState(snapshot.remoteKernels.filter((kernel) => (
+      !hiddenWaitingRoomKernelIds.has(kernel.kernel_id)
+      || !waitingRoomRemoteKernelCanDelete(kernel)
+    )))
     reconcileWaitingRoom(waitingRoomState())
   }
   const refreshWaitingRoomData = async () => {
@@ -3119,6 +3358,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const appendNotice = (text: string, emphasis: TranscriptEntry["emphasis"] = "muted") => {
     appendEntry({ role: "notice", text, emphasis })
     syncVisibleTranscriptPreview()
+    updateSessionChrome()
+  }
+
+  const appendCloudNotice = (text: string) => {
+    if (isAttached()) {
+      appendNotice(text)
+      return
+    }
+    setWaitingRoomCloudNotice(text)
+    rebuildTranscript()
     updateSessionChrome()
   }
 
@@ -5176,6 +5425,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             ? buildLoadingTranscriptRenderable(renderer)
             : buildEmptyTranscriptRenderable(renderer))
         : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState(), {
+          cloudNotice: waitingRoomCloudNotice(),
           relay: relayStatusState(),
           machines: remoteMachinesState(),
           kernels: remoteKernelsState(),
@@ -5783,6 +6033,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     maxAgentsPerScreen,
     flashFooter,
     appendNotice,
+    appendCloudNotice,
     formatError,
     createSession: (workspace, worktree, alias) => createSession(client, workspace, worktree, alias),
     createSessionInvite: async (sessionId, expiresInMs, maxUses) => {
@@ -5871,6 +6122,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ).collaborators
     },
     getUserConfig: () => getUserConfig(client),
+    getUserConfigSchema: () => getUserConfigSchema(client),
     setUserConfigValue: (path, value) => setUserConfigValue(client, path, value),
     unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),
     refreshWaitingRoomData,
@@ -7137,6 +7389,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         rebuildTranscript()
         return
       }
+      const sessionLifecycleAction = waitingRoomSessionLifecycleActionForEvent(event)
+      if (sessionLifecycleAction) {
+        void applyWaitingRoomSessionLifecycleAction(sessionLifecycleAction)
+        return
+      }
       if (event.eventType !== "release" && (event.name === "return" || event.name === "enter")) {
         void activateWaitingRoom()
       }
@@ -7178,6 +7435,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         ? {
           state: waitingRoomState(),
           rows: waitingRoomRows(waitingRoomState(), availableSessions(), providerCatalogState(), {
+            cloudNotice: waitingRoomCloudNotice(),
             relay: relayStatusState(),
             machines: remoteMachinesState(),
             kernels: remoteKernelsState(),
@@ -8827,13 +9085,18 @@ async function getUserConfig(client: LocalIpcClient): Promise<ArrobaUserConfigPa
   return expectVariant<{ path: string, config: ArrobaUserConfig }>(response, "UserConfig")
 }
 
+async function getUserConfigSchema(client: LocalIpcClient): Promise<ArrobaUserConfigSchemaPayload> {
+  const response = await client.send<Record<string, unknown>>(getUserConfigSchemaRequest())
+  return expectVariant<ArrobaUserConfigSchemaPayload>(response, "UserConfigSchema")
+}
+
 async function setUserConfigValue(
   client: LocalIpcClient,
   path: string,
   value: string,
 ): Promise<ArrobaUserConfigPayload> {
   const response = await client.send<Record<string, unknown>>(setUserConfigValueRequest(path, value))
-  return expectVariant<{ path: string, config: ArrobaUserConfig }>(response, "UserConfigUpdated")
+  return expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
 }
 
 async function unsetUserConfigValue(
@@ -8841,7 +9104,7 @@ async function unsetUserConfigValue(
   path: string,
 ): Promise<ArrobaUserConfigPayload> {
   const response = await client.send<Record<string, unknown>>(unsetUserConfigValueRequest(path))
-  return expectVariant<{ path: string, config: ArrobaUserConfig }>(response, "UserConfigUpdated")
+  return expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
 }
 
 async function listRemoteMachines(client: LocalIpcClient): Promise<RemoteMachineView[]> {
@@ -8880,7 +9143,8 @@ async function listRemoteMachineKernels(client: LocalIpcClient, machineRef: stri
 }
 
 async function createSession(client: LocalIpcClient, workspace: string, worktree: string, alias?: string): Promise<RuntimeSession> {
-  const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, worktree, alias))
+  const resolvedWorktree = await resolvePendingWaitingRoomWorktreePath(workspace, worktree)
+  const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, resolvedWorktree, alias))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
   return normalizeRuntimeSession(payload.session)
 }
@@ -8905,6 +9169,16 @@ async function deleteSessionByRef(client: LocalIpcClient, sessionRef: string, wo
   const response = await client.send<Record<string, unknown>>(deleteSessionRequest(sessionRef, workspace))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionDeleted")
   return normalizeRuntimeSession(payload.session)
+}
+
+async function archiveSessionById(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(endSessionRequest(sessionId))
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionEnded")
+  return normalizeRuntimeSession(payload.session)
+}
+
+function formatSessionDisplayLabel(session: { id: string; alias?: string | null }) {
+  return session.alias ?? session.id
 }
 
 async function attachToSession(
@@ -9147,7 +9421,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /workspace [path]     show or set the next-session workspace path\n  /workspace link ...   manage workspace links for the attached session\n  /worktree [path]      show or set the next-session worktree path\n  /worktree create <branch> [directory] [--from <ref>] create a named git worktree\n  /worktree name [a]    set or clear the current worktree display name\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [d]      create and attach to a new session, optionally in directory d\n  /session create [d]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m] [--dir d] [--worktree d --branch b] [--machine r] spawn a new local or remote agent\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /machine list         list approved, pending, and offline remote machines\n  /machine kernels <m>  list live kernels for a remote machine\n  /machine approve <m>  approve a pending remote machine for spawning\n  /machine forget <m>   forget a registered remote machine\n  /machine rename <m> <alias> rename and approve a remote machine\n  /config show          show the Arroba user config\n  /config set <p> <v>   update the Arroba user config\n  /config managed-io [p] required|unrestricted set provider managed I/O\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show [r]    show selected workflow or workflow by id/alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run [w] <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes; /workflow add node all adds missing agents\n  /workflow edge ...    add/remove workflow edges; workflow id may be omitted\n  /workflow endpoint ... manage workflow endpoints; workflow id may be omitted\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
+    "usage: arroba-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /workspace [path]     show or set the next-session workspace path\n  /workspace link ...   manage workspace links for the attached session\n  /worktree [path]      show or set the next-session worktree path\n  /worktree create <branch> [directory] [--from <ref>] create a named git worktree\n  /worktree name [a]    set or clear the current worktree display name\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [d]      create and attach to a new session, optionally in directory d\n  /session create [d]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m] [--dir d] [--worktree d --branch b] [--machine r] spawn a new local or remote agent\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /machine list         list approved, pending, and offline remote machines\n  /machine kernels <m>  list live kernels for a remote machine\n  /machine approve <m>  approve a pending remote machine for spawning\n  /machine forget <m>   forget a registered remote machine\n  /machine rename <m> <alias> rename and approve a remote machine\n  /config show          show the Arroba user config\n  /config keys          list settable config keys\n  /config schema        show config key metadata\n  /config set <p> <v>   update the Arroba user config\n  /config managed-io required|unrestricted set global managed I/O\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show [r]    show selected workflow or workflow by id/alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run [w] <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes; /workflow add node all adds missing agents\n  /workflow edge ...    add/remove workflow edges; workflow id may be omitted\n  /workflow endpoint ... manage workflow endpoints; workflow id may be omitted\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
   )
 }
 

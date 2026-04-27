@@ -19,6 +19,9 @@ function parseArgs(argv) {
     pollMs: DEFAULT_POLL_MS,
     keepArtifactsOnFailure: false,
     useRealHome: false,
+    kernelUrl: null,
+    noSpawnDaemon: false,
+    machineRef: null,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -28,6 +31,9 @@ function parseArgs(argv) {
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
     else if (arg === '--use-real-home') options.useRealHome = true
+    else if (arg === '--kernel') options.kernelUrl = argv[++i]
+    else if (arg === '--no-spawn-daemon') options.noSpawnDaemon = true
+    else if (arg === '--machine-ref') options.machineRef = argv[++i]
     else if (arg === '--help' || arg === '-h') {
       console.log([
         'Usage: node apps/cli/scripts/live-managed-io-permission-drill.mjs [options]',
@@ -35,6 +41,9 @@ function parseArgs(argv) {
         'Options:',
         '  --provider <codex|opencode>',
         '  --model <provider model override>',
+        '  --kernel <ws://...> (reuse an already-running kernel)',
+        '  --no-spawn-daemon',
+        '  --machine-ref <remote machine id or alias>',
         `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
         `  --poll-ms ${DEFAULT_POLL_MS}`,
         '  --keep-artifacts-on-failure',
@@ -203,16 +212,20 @@ async function terminateChild(child, signal = 'SIGTERM') {
   }
 }
 
-async function waitForInteraction(automation, agentId, containsText, timeoutMs, pollMs) {
+async function waitForSessionInteraction(client, sessionId, agentId, containsText, timeoutMs, pollMs) {
+  const { getSessionStateRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
   const deadline = Date.now() + timeoutMs
-  let snapshot = null
+  let session = null
   while (Date.now() < deadline) {
-    snapshot = await automation.send('snapshot')
-    const interaction = snapshot.interactions?.find((entry) => entry.agentId === agentId && String(entry.message ?? '').includes(containsText))
-    if (interaction) return { snapshot, interaction }
+    const response = await client.send(getSessionStateRequest(sessionId))
+    const payload = response?.SessionStateLoaded ?? response?.SessionState ?? response
+    session = payload.session ?? payload
+    const interaction = (session.active_interactions ?? []).find((entry) => entry.agent_id === agentId && String(entry.message ?? '').includes(containsText))
+      ?? (session.active_interactions ?? []).find((entry) => String(entry.message ?? '').includes(containsText))
+    if (interaction) return { session, interaction }
     await sleep(pollMs)
   }
-  throw new Error(`timed out waiting for interaction containing ${containsText}${snapshot ? `\n${JSON.stringify(snapshot, null, 2)}` : ''}`)
+  throw new Error(`timed out waiting for session interaction containing ${containsText}${session ? `\n${JSON.stringify(session, null, 2)}` : ''}`)
 }
 
 async function waitForFileContent(filePath, expectedContent, timeoutMs, pollMs) {
@@ -227,6 +240,19 @@ async function waitForFileContent(filePath, expectedContent, timeoutMs, pollMs) 
   throw new Error(`timed out waiting for file ${filePath}`)
 }
 
+async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRef, timeoutMs, pollMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const payload = unwrap(await client.send(listRemoteMachinesRequest()), 'RemoteMachinesListed')
+    const machines = payload.machines ?? []
+    if (machines.some((machine) => machine.machine_id === machineRef || machine.machine_alias === machineRef || machine.display_name === machineRef)) {
+      return
+    }
+    await sleep(pollMs)
+  }
+  throw new Error(`remote machine ${machineRef} did not become visible`)
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   const provider = options.provider
@@ -236,7 +262,7 @@ async function main() {
   const home = path.join(rootDir, 'home')
   const automationSocket = path.join(os.tmpdir(), `amiop-${process.pid}-${Date.now()}.sock`)
   const ports = makePorts()
-  const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
+  const kernelUrl = options.kernelUrl ?? `ws://127.0.0.1:${ports.kernelPort}`
   const env = {
     ...process.env,
     HOME: options.useRealHome ? (process.env.HOME ?? home) : home,
@@ -261,8 +287,10 @@ async function main() {
     await mkdir(home, { recursive: true })
     const { cliDist, kernelBinary } = await ensureCliBuilt()
 
-    daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
-    await waitForKernel(kernelUrl)
+    if (!options.noSpawnDaemon) {
+      daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
+      await waitForKernel(kernelUrl)
+    }
     log('kernel-ready', { kernelUrl })
 
     const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
@@ -270,19 +298,43 @@ async function main() {
       createSessionRequest,
       attachToSessionRequest,
       focusAgentRequest,
+      listRemoteMachinesRequest,
       respondToInteractionRequest,
+      spawnAgentRequest,
       submitPromptRequest,
       updateSessionConfigRequest,
       setUserConfigValueRequest,
     } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
     client = new LocalIpcClient(kernelUrl)
-    await client.send(setUserConfigValueRequest(`providers.managed_io.${provider}`, 'required'))
+    await client.send(setUserConfigValueRequest('providers.managed_io', 'required'))
 
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace, `managed-io-permission-${provider}`)), 'SessionCreated').session
     const sessionId = session.id
     const attachment = unwrap(await client.send(attachToSessionRequest(sessionId, `managed-io-permission-drill-${Date.now()}`)), 'SessionAttached').attachment
     const attachmentId = attachment.id
     await client.send(updateSessionConfigRequest(sessionId, attachmentId, { 'agents.mode': 'build', 'agents.permissions': 'required' }, false))
+    if (options.machineRef) {
+      await waitForRemoteMachine(client, listRemoteMachinesRequest, options.machineRef, options.timeoutMs, options.pollMs)
+    }
+
+    let targetAgentId = session.default_agent_id ?? session.agents?.[0]?.id ?? null
+    if (options.machineRef) {
+      const spawned = unwrap(
+        await client.send(spawnAgentRequest(
+          sessionId,
+          provider,
+          `${provider}-remote-managed-io`,
+          model,
+          workspace,
+          'high',
+          'build',
+          'required',
+          options.machineRef,
+        )),
+        'AgentSpawned',
+      )
+      targetAgentId = spawned.agent?.id ?? spawned.id ?? targetAgentId
+    }
 
     const cliArgs = [
       '-q',
@@ -308,7 +360,7 @@ async function main() {
     requireCondition(firstSnapshot.session?.id === sessionId, 'CLI did not attach to the prepared session', firstSnapshot)
     log('cli-ready', { sessionId })
 
-    const agentId = firstSnapshot.session?.focusedAgentId ?? session.default_agent_id ?? session.agents?.[0]?.id
+    const agentId = options.machineRef ? targetAgentId : (firstSnapshot.session?.focusedAgentId ?? targetAgentId)
     requireCondition(Boolean(agentId), 'managed I/O drill session has no focused/default agent', session)
     await client.send(focusAgentRequest(sessionId, agentId))
 
@@ -326,8 +378,9 @@ async function main() {
       ].join(' '),
     ))
 
-    const pending = await waitForInteraction(
-      automation,
+    const pending = await waitForSessionInteraction(
+      client,
+      sessionId,
       agentId,
       `Allow writing \`${targetFileName}\` through Arroba managed I/O?`,
       options.timeoutMs,

@@ -53,6 +53,14 @@ pub struct RemoteMcpCheckContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteNativeInteractionContext {
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub leased_agent_id: String,
+    pub worker_provider_run_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequiredRemoteMcp {
     pub config: ArrobaMcpServerConfig,
     pub definition_hash: String,
@@ -125,6 +133,7 @@ pub enum RelayPeerRequest {
         home_kernel_id: String,
         home_session_id: String,
         home_agent_id: String,
+        owner_user_id: String,
     },
     DestroyExecutionLease {
         lease_id: String,
@@ -134,6 +143,10 @@ pub enum RelayPeerRequest {
         provider: String,
         model: Option<String>,
         effort: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_mode: Option<crate::provider::AgentExecutionMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission_level: Option<crate::provider::AgentPermissionLevel>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         worktree_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,6 +192,10 @@ pub enum RelayPeerRequest {
         context: RemoteManagedIoContext,
         tool_name: String,
         arguments: serde_json::Value,
+    },
+    ForwardNativeInteraction {
+        context: RemoteNativeInteractionContext,
+        interaction: crate::session::RuntimeInteraction,
     },
     EnsureRemoteSkillPackages {
         context: RemoteSkillSyncContext,
@@ -236,6 +253,9 @@ pub enum RelayPeerResponse {
         result: crate::transport::runtime_tools::RuntimeToolResult,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         skill_package: Option<ArrobaSkillPackage>,
+    },
+    NativeInteractionResolved {
+        resolution: crate::provider::ProviderNativeInteractionResolution,
     },
     RemoteSkillPackagesEnsured {
         materialized: Vec<RemoteSkillMaterialization>,

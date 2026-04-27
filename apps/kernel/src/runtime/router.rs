@@ -38,7 +38,8 @@ use crate::local::{
     DeleteCredentialSecretRequest, DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest,
     GetMcpServerRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
     GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest,
-    GrantAgentCapabilityRequest, ImportMcpServersRequest, ImportSkillsRequest,
+    GetUserConfigSchemaRequest, GrantAgentCapabilityRequest, ImportMcpServersRequest,
+    ImportSkillsRequest,
     InstallMcpServerRequest, InstallSkillRequest, IssueCloudRelayClientTokenRequest,
     JoinPairingInviteRequest, JoinSessionInviteRequest, ListAgentsRequest,
     ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest, ListMcpServersRequest,
@@ -51,12 +52,14 @@ use crate::local::{
     PumpTerminalOutputRequest, QueryHistoryRequest, RecordPairedClientRequest, RelayStatus,
     RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
     RevokeCloudSessionInviteRequest, RevokePairedClientRequest, RevokeSessionInviteRequest,
-    SearchHistoryRequest, SearchWorkspaceDirectoriesRequest, SessionInviteRecord, SetCredentialSecretRequest,
-    SetUserConfigValueRequest, ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest,
+    SearchHistoryRequest, SearchWorkspaceDirectoriesRequest, SessionInviteRecord,
+    SetCredentialSecretRequest, SetUserConfigValueRequest, ShowCloudSessionInviteRequest,
+    ShowWorkspaceLinkRequest,
     StartCloudRelayLoginRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
     UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
-    UpdateMcpServerRequest, UpdateSkillRequest, WaitingRoomInventorySnapshot,
-    WaitingRoomLaunchTarget, WorkspaceWorktreeRecord,
+    UpdateMcpServerRequest, UpdateSkillRequest, UserConfigMutationEffect,
+    UserConfigProviderReloadSummary, WaitingRoomInventorySnapshot, WaitingRoomLaunchTarget,
+    WorkspaceWorktreeRecord,
 };
 use crate::provider::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
@@ -79,6 +82,7 @@ use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_launch_executor::ProviderLaunchCommandExecutor;
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::runtime::state::KernelRuntimeState;
+use crate::runtime::state::{ProviderReloadOutcome, ProviderReloadTrigger};
 use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
@@ -90,8 +94,14 @@ use crate::transport::relay_client::{
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
+enum UserConfigMutation {
+    Set { path: String, value: String },
+    Unset { path: String },
+}
+
 struct RuntimeStateNativeInteractionBridge {
     handle: tokio::runtime::Handle,
+    app: Arc<Mutex<DaemonApp>>,
     state: KernelRuntimeState,
 }
 
@@ -102,6 +112,44 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
         interaction: crate::session::RuntimeInteraction,
     ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
         let session_id = session_id.to_string();
+        let interaction_agent_id = interaction.agent_id().to_string();
+        let remote_target = self.handle.block_on(async {
+            let mut app = self.app.lock().await;
+            let target = crate::app::RemoteLeaseRuntime::new(&mut app)
+                .native_interaction_context_for_backing_agent(
+                    &session_id,
+                    &interaction_agent_id,
+                    "unknown",
+                );
+            Ok::<_, DaemonError>(target.map(|(daemon_id, context)| (app.config().clone(), daemon_id, context)))
+        })?;
+        if let Some((config, target_daemon_id, context)) = remote_target {
+            let response = self.handle.block_on(async move {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &config,
+                    arroba_relay::protocol::ClientTarget {
+                        daemon_id: Some(target_daemon_id),
+                        daemon_alias: None,
+                    },
+                    crate::transport::relay_peer::RelayPeerRequest::ForwardNativeInteraction {
+                        context,
+                        interaction,
+                    },
+                )
+                .await
+            })?;
+            return match response {
+                crate::transport::relay_peer::RelayPeerResponse::NativeInteractionResolved {
+                    resolution,
+                } => Ok(resolution),
+                other => Err(DaemonError::LocalTransport {
+                    operation: "provider_native_interaction_bridge",
+                    message: format!(
+                        "unexpected relay response for remote native interaction: {other:?}"
+                    ),
+                }),
+            };
+        }
         let state = self.state.clone();
         let resolution = self.handle.block_on(async move {
             let receiver = state.create_runtime_interaction(&session_id, interaction).await?;
@@ -116,6 +164,62 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
             reply: resolution.reply,
         })
     }
+}
+
+fn summarize_provider_reload_outcomes(
+    outcomes: &[ProviderReloadOutcome],
+) -> UserConfigProviderReloadSummary {
+    let mut summary = UserConfigProviderReloadSummary {
+        reloaded: 0,
+        deferred: 0,
+        unaffected: 0,
+    };
+    for outcome in outcomes {
+        match outcome {
+            ProviderReloadOutcome::Reloaded => summary.reloaded += 1,
+            ProviderReloadOutcome::Deferred => summary.deferred += 1,
+            ProviderReloadOutcome::Unaffected => summary.unaffected += 1,
+        }
+    }
+    summary
+}
+
+fn user_config_path_requires_daemon_restart(path: &str) -> bool {
+    matches!(
+        path,
+        "history.operational.backend"
+            | "history.operational.path"
+            | "state.backend"
+            | "state.path"
+            | "kernel.websocket_host"
+            | "kernel.websocket_port"
+            | "kernel.runtime_mcp_host"
+            | "kernel.runtime_mcp_port"
+    )
+}
+
+fn user_config_path_is_unwired(path: &str) -> bool {
+    matches!(
+        path,
+        "providers.default"
+            | "providers.model"
+            | "providers.account_profile"
+            | "providers.effort"
+            | "ui.theme"
+            | "ui.multi_agent_response_layout"
+            | "ui.max_agents_per_screen"
+            | "relay.url"
+            | "relay.accept_remote_leases"
+            | "history.operational.retention_days"
+            | "history.operational.max_size_mb"
+            | "history.operational.keep_pinned_sessions"
+            | "history.operational.archive_inactive_after_days"
+            | "history.operational.archive_deleted_agents"
+            | "history.archive.archive_deleted_agents"
+            | "history.archive.archive_before_delete"
+            | "history.archive.delete_operational_after_verified_archive"
+            | "artifacts.operational.retention_days"
+    ) || path.starts_with("ui.worktree_aliases.")
 }
 
 #[derive(Clone)]
@@ -224,6 +328,7 @@ impl CommandRouter {
             provider_store.set_native_interaction_bridge(Arc::new(
                 RuntimeStateNativeInteractionBridge {
                     handle,
+                    app: Arc::clone(&app),
                     state: runtime_state.clone(),
                 },
             ));
@@ -365,6 +470,7 @@ impl CommandRouter {
             provider_store.set_native_interaction_bridge(Arc::new(
                 RuntimeStateNativeInteractionBridge {
                     handle,
+                    app: Arc::clone(&app),
                     state: runtime_state.clone(),
                 },
             ));
@@ -556,12 +662,14 @@ impl CommandRouter {
         home_kernel_id: &str,
         home_session_id: &str,
         home_agent_id: &str,
+        owner_user_id: &str,
     ) -> Result<crate::execution_lease::ExecutionLease, DaemonError> {
         let mut app = self.app.lock().await;
         crate::app::RemoteLeaseRuntime::new(&mut app).create_execution_lease(
             home_kernel_id,
             home_session_id,
             home_agent_id,
+            owner_user_id,
         )
     }
 
@@ -579,6 +687,8 @@ impl CommandRouter {
         provider: &str,
         model: Option<String>,
         effort: Option<String>,
+        execution_mode: Option<crate::provider::AgentExecutionMode>,
+        permission_level: Option<crate::provider::AgentPermissionLevel>,
         worktree_id: Option<String>,
         worktree_placement: Option<crate::agent::GitWorktreePlacement>,
     ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
@@ -588,6 +698,8 @@ impl CommandRouter {
             provider,
             model,
             effort,
+            execution_mode,
+            permission_level,
             worktree_id,
             worktree_placement,
         )
@@ -727,6 +839,27 @@ impl CommandRouter {
             notices,
             completions,
         )
+    }
+
+    pub(crate) async fn relay_forward_native_interaction(
+        &self,
+        context: crate::transport::relay_peer::RemoteNativeInteractionContext,
+        interaction: crate::session::RuntimeInteraction,
+    ) -> Result<crate::provider::ProviderNativeInteractionResolution, DaemonError> {
+        let interaction = interaction.with_agent_id(context.home_agent_id.clone());
+        let receiver = self
+            .runtime_state
+            .create_runtime_interaction(&context.home_session_id, interaction)
+            .await?;
+        let resolution = receiver.await.map_err(|error| DaemonError::LocalTransport {
+            operation: "relay_forward_native_interaction",
+            message: format!("interaction dropped before resolution: {error}"),
+        })?;
+        Ok(crate::provider::ProviderNativeInteractionResolution {
+            status: resolution.status.to_string(),
+            choice_id: resolution.choice_id,
+            reply: resolution.reply,
+        })
     }
 
     pub(crate) async fn dispatch_authenticated_runtime_tool_call(
@@ -1082,6 +1215,9 @@ impl CommandRouter {
             }
             LocalDaemonRequest::GetUserConfig(request) => {
                 self.execute_get_user_config_request(request).await
+            }
+            LocalDaemonRequest::GetUserConfigSchema(request) => {
+                self.execute_get_user_config_schema_request(request).await
             }
             LocalDaemonRequest::SetUserConfigValue(request) => {
                 self.execute_set_user_config_value_request(request).await
@@ -2557,19 +2693,29 @@ impl CommandRouter {
         })
     }
 
+    async fn execute_get_user_config_schema_request(
+        &self,
+        _request: GetUserConfigSchemaRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::UserConfigSchema {
+            entries: crate::config::DaemonConfig::user_config_schema(),
+        })
+    }
+
     async fn execute_set_user_config_value_request(
         &self,
         request: SetUserConfigValueRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = {
-            let mut app = self.app.lock().await;
-            app.set_user_config_value(request.path, request.value)?;
-            app.config().clone()
-        };
-        self.config_projection.update(config.clone());
+        let (config, effects) = self
+            .apply_user_config_mutation(UserConfigMutation::Set {
+                path: request.path,
+                value: request.value,
+            })
+            .await?;
         Ok(LocalDaemonResponse::UserConfigUpdated {
             path: config.user_config_path().clone(),
             config: config.user_config,
+            effects,
         })
     }
 
@@ -2577,16 +2723,93 @@ impl CommandRouter {
         &self,
         request: UnsetUserConfigValueRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = {
-            let mut app = self.app.lock().await;
-            app.unset_user_config_value(request.path)?;
-            app.config().clone()
-        };
-        self.config_projection.update(config.clone());
+        let (config, effects) = self
+            .apply_user_config_mutation(UserConfigMutation::Unset { path: request.path })
+            .await?;
         Ok(LocalDaemonResponse::UserConfigUpdated {
             path: config.user_config_path().clone(),
             config: config.user_config,
+            effects,
         })
+    }
+
+    async fn apply_user_config_mutation(
+        &self,
+        mutation: UserConfigMutation,
+    ) -> Result<(crate::config::DaemonConfig, Vec<UserConfigMutationEffect>), DaemonError> {
+        let changed_path = match &mutation {
+            UserConfigMutation::Set { path, .. } | UserConfigMutation::Unset { path } => {
+                path.trim().to_string()
+            }
+        };
+        let config = {
+            let mut app = self.app.lock().await;
+            match mutation {
+                UserConfigMutation::Set { path, value } => {
+                    app.set_user_config_value(path, value)?;
+                }
+                UserConfigMutation::Unset { path } => {
+                    app.unset_user_config_value(path)?;
+                }
+            }
+            app.config().clone()
+        };
+        self.config_projection.update(config.clone());
+        let effects = self
+            .apply_user_config_mutation_effects(&changed_path)
+            .await?;
+        Ok((config, effects))
+    }
+
+    async fn apply_user_config_mutation_effects(
+        &self,
+        path: &str,
+    ) -> Result<Vec<UserConfigMutationEffect>, DaemonError> {
+        if path == "providers.managed_io" {
+            let outcomes = self
+                .runtime_state
+                .apply_provider_reload_policy(ProviderReloadTrigger::UserConfigChanged {
+                    path: path.to_string(),
+                })
+                .await?;
+            let summary = summarize_provider_reload_outcomes(&outcomes);
+            let message = if summary.reloaded == 0 && summary.deferred == 0 {
+                "managed I/O policy updated; no running provider needed reload".to_string()
+            } else {
+                format!(
+                    "managed I/O policy updated; provider reloads: {} reloaded, {} deferred, {} unaffected",
+                    summary.reloaded, summary.deferred, summary.unaffected
+                )
+            };
+            return Ok(vec![UserConfigMutationEffect {
+                kind: "provider_reload".to_string(),
+                path: path.to_string(),
+                message,
+                provider_reload: Some(summary),
+            }]);
+        }
+
+        if user_config_path_requires_daemon_restart(path) {
+            return Ok(vec![UserConfigMutationEffect {
+                kind: "restart_required".to_string(),
+                path: path.to_string(),
+                message: format!("`{path}` was updated; restart the daemon for it to take effect"),
+                provider_reload: None,
+            }]);
+        }
+
+        if user_config_path_is_unwired(path) {
+            return Ok(vec![UserConfigMutationEffect {
+                kind: "no_runtime_effect".to_string(),
+                path: path.to_string(),
+                message: format!(
+                    "`{path}` was updated, but this key is not currently wired to runtime behavior"
+                ),
+                provider_reload: None,
+            }]);
+        }
+
+        Ok(Vec::new())
     }
 
     async fn execute_set_credential_secret_request(
@@ -3537,6 +3760,9 @@ impl CommandRouter {
             }
             LocalDaemonRequest::GetUserConfig(request) => {
                 self.execute_get_user_config_request(request).await
+            }
+            LocalDaemonRequest::GetUserConfigSchema(request) => {
+                self.execute_get_user_config_schema_request(request).await
             }
             LocalDaemonRequest::SetUserConfigValue(request) => {
                 self.execute_set_user_config_value_request(request).await
