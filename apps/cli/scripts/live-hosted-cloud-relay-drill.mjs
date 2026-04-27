@@ -487,12 +487,12 @@ async function runHostedMultiUserAssertions({
     sessionId: session.id,
     targetDaemonAlias: daemonAlias,
   })
-  const ownerScopedClient = new LocalIpcClient(ownerProfile.relayUrl, {
+  const ownerScopedClient = installSendRetry(new LocalIpcClient(ownerProfile.relayUrl, {
     relayAuthToken: ownerScopedToken,
     targetDaemonAlias: daemonAlias,
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
-  })
+  }), "owner-scoped-relay")
 
   const peerClientId = `${ownerClientId}-peer`
   const thirdClientId = `${ownerClientId}-third`
@@ -558,18 +558,18 @@ async function runHostedMultiUserAssertions({
       targetDaemonAlias: daemonAlias,
     })
 
-    peerRemoteClient = new LocalIpcClient(ownerProfile.relayUrl, {
+    peerRemoteClient = installSendRetry(new LocalIpcClient(ownerProfile.relayUrl, {
       relayAuthToken: peerRelayToken,
       targetDaemonAlias: daemonAlias,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
-    })
-    thirdRemoteClient = new LocalIpcClient(ownerProfile.relayUrl, {
+    }), "peer-relay")
+    thirdRemoteClient = installSendRetry(new LocalIpcClient(ownerProfile.relayUrl, {
       relayAuthToken: thirdRelayToken,
       targetDaemonAlias: daemonAlias,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
-    })
+    }), "third-relay")
 
     await peerRemoteClient.send(requests.joinSessionInviteRequest(localInviteToken, peerProfile.userId))
     await thirdRemoteClient.send(requests.joinSessionInviteRequest(localInviteToken, thirdProfile.userId))
@@ -753,6 +753,54 @@ async function waitForRelayTarget(LocalIpcClient, requests, relayUrl, relayToken
     }
   }
   throw new Error(`relay target did not become reachable: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
+}
+
+async function sendWithRetry(client, request, label, attempts = 5) {
+  let lastError = null
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await client.send(request)
+    } catch (error) {
+      lastError = error
+      if (attempt === attempts - 1) {
+        break
+      }
+      log("client-send-retry", {
+        label,
+        attempt: attempt + 1,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      await sleep(1_000 * (attempt + 1))
+    }
+  }
+  throw lastError
+}
+
+function installSendRetry(client, label) {
+  const send = client.send.bind(client)
+  client.send = (request) => sendWithRetry({ send }, request, label)
+  return client
+}
+
+async function handleRelayCommandWithRetry(handlers, command, label, attempts = 3) {
+  let lastError = null
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await handlers.handleRelayCommand(command)
+    } catch (error) {
+      lastError = error
+      if (attempt === attempts - 1) {
+        break
+      }
+      log("relay-command-retry", {
+        label,
+        attempt: attempt + 1,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      await sleep(1_000 * (attempt + 1))
+    }
+  }
+  throw lastError
 }
 
 async function waitForRemoteMachine(client, requests, machineRef) {
@@ -1020,12 +1068,26 @@ async function runHostedSecondKernelAssertions({
     homeClient.onKernelEvent((event) => {
       eventLog.push({ ...event, observed_at_ms: Date.now() })
     })
+    log("second-kernel-subscribe-start", { sessionId: session.id, attachmentId: attachment.id })
     await homeClient.subscribeToKernelEvents(session.id, attachment.id)
+    log("second-kernel-subscribe-ready", { sessionId: session.id, attachmentId: attachment.id })
 
+    log("second-kernel-spawn-agent-start", { workerDaemonId })
     const spawned = unwrap(
-      await homeClient.send(requests.spawnAgentRequest(session.id, "dev-stub", "hosted-worker-agent", "hosted-second-kernel", workspace, "low", workerDaemonId)),
+      await homeClient.send(requests.spawnAgentRequest(
+        session.id,
+        "dev-stub",
+        "hosted-worker-agent",
+        "hosted-second-kernel",
+        workspace,
+        "low",
+        undefined,
+        undefined,
+        workerDaemonId,
+      )),
       "AgentSpawned",
     )
+    log("second-kernel-spawn-agent-ready", { workerDaemonId, agentId: spawned.agent?.id })
     assert(spawned.agent?.remote_execution?.worker_machine_id === workerDaemonId, "remote dev-stub agent should be leased to the second kernel", spawned)
     await homeClient.send(requests.submitPromptRequest(
       session.id,
@@ -1201,6 +1263,7 @@ async function main() {
   let daemon = null
   let localClient = null
   let remoteClient = null
+  let passed = false
 
   try {
     log("build-cli")
@@ -1254,42 +1317,42 @@ async function main() {
     }))
 
     log("command-cloud-login", { apiUrl })
-    await handlers.handleRelayCommand({
+    await handleRelayCommandWithRetry(handlers, {
       kind: "relay",
       raw: "/relay cloud login",
       args: ["cloud", "login"],
-    })
+    }, "cloud-login")
     assert(profileRef.current?.cloudSessionToken, "hosted cloud login should save an authenticated profile", profileRef.current)
 
     log("command-cloud-pair")
-    await handlers.handleRelayCommand({
+    await handleRelayCommandWithRetry(handlers, {
       kind: "relay",
       raw: "/relay cloud pair hosted-drill-cli",
       args: ["cloud", "pair", "hosted-drill-cli"],
-    })
+    }, "cloud-pair")
     assert(profileRef.current?.clientId === clientId, "hosted cloud pair should save client id", profileRef.current)
 
     log("command-cloud-pair-machine")
-    await handlers.handleRelayCommand({
+    await handleRelayCommandWithRetry(handlers, {
       kind: "relay",
       raw: `/relay cloud pair-machine ${daemonId} hosted-drill-machine`,
       args: ["cloud", "pair-machine", daemonId, "hosted-drill-machine"],
-    })
+    }, "cloud-pair-machine")
     assert(profileRef.current?.machineId === daemonId, "hosted cloud pair-machine should save machine id", profileRef.current)
 
     log("command-cloud-connect")
-    await handlers.handleRelayCommand({
+    await handleRelayCommandWithRetry(handlers, {
       kind: "relay",
       raw: "/relay cloud connect",
       args: ["cloud", "connect"],
-    })
+    }, "cloud-connect")
 
     log("command-cloud-client-token")
-    await handlers.handleRelayCommand({
+    await handleRelayCommandWithRetry(handlers, {
       kind: "relay",
       raw: `/relay cloud client-token ${daemonAlias}`,
       args: ["cloud", "client-token", daemonAlias],
-    })
+    }, "cloud-client-token")
     const clientRelay = parseCloudClientTokenNotice(notices)
 
     log("relay-target-probe", { relayUrl: clientRelay.relayUrl, daemonAlias })
@@ -1301,22 +1364,22 @@ async function main() {
       daemonAlias,
     )
 
-    remoteClient = new LocalIpcClient(clientRelay.relayUrl, {
+    remoteClient = installSendRetry(new LocalIpcClient(clientRelay.relayUrl, {
       relayAuthToken: clientRelay.relayToken,
       targetDaemonAlias: daemonAlias,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
-    })
+    }), "owner-relay")
 
     log("remote-session-create")
     const created = unwrap(
-      await remoteClient.send(requests.createSessionRequest(workspace, workspace)),
+      await sendWithRetry(remoteClient, requests.createSessionRequest(workspace, workspace), "remote-session-create"),
       "SessionCreated",
     )
     assert(created.session?.id, "remote cloud session creation should return a session", created)
 
     const listed = unwrap(
-      await remoteClient.send(requests.listSessionsRequest()),
+      await sendWithRetry(remoteClient, requests.listSessionsRequest(), "remote-session-list"),
       "SessionsListed",
     )
     assert(
@@ -1377,15 +1440,22 @@ async function main() {
       remoteCli: runRemoteCli,
       secondKernel: runSecondKernel,
     })
+    passed = true
   } finally {
     await closeClient(remoteClient, "remote")
     await closeClient(localClient, "local")
     await terminateChild(daemon)
-    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    if (passed) {
+      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    } else {
+      log("preserved-failed-run", { rootDir })
+    }
   }
 }
 
-main().catch((error) => {
+main().then(() => {
+  process.exit(0)
+}).catch((error) => {
   console.error(error)
   process.exitCode = 1
 })
