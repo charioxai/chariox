@@ -296,6 +296,15 @@ pub fn submit_codex_prompt(
     if let Some(turn_id) = codex_turn_id_from_start_response(&response) {
         state.active_turn_id = Some(turn_id);
     }
+    crate::logging::debug_with_fields(
+        "daemon.provider.codex",
+        "codex turn start response trace",
+        json!({
+            "provider_run_id": run.id(),
+            "active_turn_id": state.active_turn_id,
+            "response": response,
+        }),
+    );
     Ok(())
 }
 
@@ -411,6 +420,7 @@ fn apply_notification(
             });
         }
         CodexNotification::ItemStarted { item } | CodexNotification::ItemCompleted { item } => {
+            trace_codex_tool_item("item_lifecycle", &item);
             if let Some(chunk) = sync_tool_item(tool_items, &item) {
                 chunks.push(chunk);
             }
@@ -443,6 +453,14 @@ fn apply_notification(
             }
         }
         CodexNotification::TurnStarted { turn_id } => {
+            crate::logging::debug_with_fields(
+                "daemon.provider.codex",
+                "codex turn started trace",
+                json!({
+                    "previous_active_turn_id": active_turn_id,
+                    "turn_id": turn_id,
+                }),
+            );
             if !turn_id.is_empty() {
                 *active_turn_id = Some(turn_id);
             }
@@ -453,8 +471,27 @@ fn apply_notification(
             error_message,
         } => {
             if active_turn_id.as_deref() != Some(turn_id.as_str()) {
+                crate::logging::debug_with_fields(
+                    "daemon.provider.codex",
+                    "codex turn completion ignored by active turn mismatch",
+                    json!({
+                        "active_turn_id": active_turn_id,
+                        "turn_id": turn_id,
+                        "status": status,
+                        "error_message": error_message,
+                    }),
+                );
                 return;
             }
+            crate::logging::debug_with_fields(
+                "daemon.provider.codex",
+                "codex turn completion accepted",
+                json!({
+                    "turn_id": turn_id,
+                    "status": status,
+                    "has_running_tool_items": has_running_tool_items(tool_items),
+                }),
+            );
             if !turn_id.is_empty() {
                 let completion = CodexAssistantCompletion {
                     message_id: format!("codex-turn:{turn_id}"),
@@ -476,6 +513,15 @@ fn apply_notification(
                         .or_else(|| (status == "failed").then(|| "Codex turn failed".to_string())),
                 };
                 if has_running_tool_items(tool_items) {
+                    crate::logging::debug_with_fields(
+                        "daemon.provider.codex",
+                        "codex turn completion deferred by running tool items",
+                        json!({
+                            "turn_id": turn_id,
+                            "status": status,
+                            "running_tool_items": running_tool_item_summaries(tool_items),
+                        }),
+                    );
                     *pending_turn_completion = Some(pending);
                 } else {
                     complete_pending_turn(
@@ -550,6 +596,47 @@ fn has_running_tool_items(tool_items: &BTreeMap<String, CodexToolTranscriptState
                 .unwrap_or_default(),
         ) == "running"
     })
+}
+
+fn running_tool_item_summaries(
+    tool_items: &BTreeMap<String, CodexToolTranscriptState>,
+) -> Vec<Value> {
+    tool_items
+        .iter()
+        .filter_map(|(item_id, state)| {
+            let raw_status = state
+                .item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            (normalize_codex_tool_status(raw_status) == "running").then(|| {
+                json!({
+                    "id": item_id,
+                    "type": state.item.get("type").and_then(Value::as_str),
+                    "status": raw_status,
+                    "command": state.item.get("command").and_then(Value::as_str),
+                    "streamed_output_len": state.streamed_output.len(),
+                })
+            })
+        })
+        .collect()
+}
+
+fn trace_codex_tool_item(label: &str, item: &Value) {
+    crate::logging::debug_with_fields(
+        "daemon.provider.codex",
+        "codex tool item trace",
+        json!({
+            "label": label,
+            "id": item.get("id").and_then(Value::as_str),
+            "type": item.get("type").and_then(Value::as_str),
+            "status": item.get("status").and_then(Value::as_str),
+            "command": item.get("command").and_then(Value::as_str),
+            "exit_code": item.get("exitCode").and_then(Value::as_i64),
+            "process_id": item.get("processId").and_then(Value::as_str),
+            "aggregated_output_len": item.get("aggregatedOutput").and_then(Value::as_str).map(str::len),
+        }),
+    );
 }
 
 fn codex_turn_id_from_start_response(response: &Value) -> Option<String> {

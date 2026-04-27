@@ -318,6 +318,13 @@ impl AgentService {
         agent.set_provider(provider.to_string());
         agent.set_model(model);
         agent.set_effort(effort);
+        if agent.active_substitute_index().is_none() {
+            agent.set_primary_profile(
+                provider.to_string(),
+                agent.model().map(str::to_string),
+                agent.effort().map(str::to_string),
+            );
+        }
         agent.set_provider_resume_state(resume_state);
         Ok(agent.clone())
     }
@@ -419,13 +426,12 @@ impl AgentService {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: agent_id.to_string(),
             })?;
-        let profile =
-            agent
-                .activate_substitute(index, reason)
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "activate agent substitute",
-                    message: format!("agent `{agent_id}` has no substitute at index {index}"),
-                })?;
+        let profile = agent.activate_substitute(index, reason).ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "activate agent substitute",
+                message: format!("agent `{agent_id}` has no substitute at index {index}"),
+            }
+        })?;
         Ok((agent.clone(), profile))
     }
 

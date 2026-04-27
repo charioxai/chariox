@@ -114,6 +114,7 @@ import {
   listWorkflowPublicationsRequest,
   listWorkflowRunsRequest,
   listWorkflowsRequest,
+  launchProviderRunRequest,
   logoutProviderRequest,
   pumpTerminalOutputRequest,
   relayStatusRequest,
@@ -153,6 +154,7 @@ import {
   uninstallMcpServerRequest,
   uninstallSkillRequest,
   updateAgentConfigRequest,
+  updateAgentSubstitutesRequest,
   updateSessionConfigRequest,
   unsetUserConfigValueRequest,
   updateMcpServerRequest,
@@ -258,7 +260,7 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
         message: [
           "arroba-shell commands:",
           "session list|new|attach|use|members|invite|join|mode|permissions",
-          "agent list|spawn|focus|cycle|mode|permissions",
+          "agent list|spawn|focus|cycle|mode|permissions|substitute",
           "client invite create|join|list|record|revoke",
           "machine invite create|join|list|kernels|approve|rename|revoke",
           "relay status",
@@ -829,9 +831,106 @@ async function executeAgentCommand(
       const effectiveLevel = payload.agent.permission_level_override ?? sessionLevel
       return { ok: true, message: `${formatAgentRef(payload.agent)} permissions = ${effectiveLevel}${rawValue === "inherit" ? " (session)" : " (agent)"}`, data: payload }
     }
+    case "substitute":
+    case "subs":
+      return executeAgentSubstituteCommand(args, context, deps, sessionId)
     default:
-      return { ok: false, message: "usage: agent list|spawn|focus|cycle|mode|permissions" }
+      return { ok: false, message: "usage: agent list|spawn|focus|cycle|mode|permissions|substitute" }
   }
+}
+
+async function executeAgentSubstituteCommand(
+  args: string[],
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+  sessionId: string,
+): Promise<ShellCommandResult> {
+  const [subcommand = "list", ...rawArgs] = args
+  const agentFlagIndex = rawArgs.indexOf("--agent")
+  const agentRefFromFlag = agentFlagIndex >= 0 ? rawArgs[agentFlagIndex + 1] : undefined
+  const filteredArgs = agentFlagIndex >= 0
+    ? rawArgs.filter((_, index) => index !== agentFlagIndex && index !== agentFlagIndex + 1)
+    : rawArgs
+  const resolved = await resolveShellAgent(context, deps, agentRefFromFlag)
+  if (!resolved.ok) {
+    return { ok: false, message: resolved.message }
+  }
+  const agent = resolved.agent
+  if (subcommand === "list" || subcommand === "ls") {
+    return { ok: true, message: formatAgentSubstituteSummary(agent), data: { agent } }
+  }
+  const update = async (action: Record<string, unknown>) => {
+    const response = await deps.client.send(updateAgentSubstitutesRequest({
+      sessionId,
+      agentId: agent.id,
+      action: action as never,
+    }))
+    return expectVariant<{ agent: AgentInstance; session: RuntimeSession }>(response, "AgentConfigUpdated")
+  }
+  if (subcommand === "add") {
+    const provider = filteredArgs[0]
+    const model = filteredArgs[1]
+    const variantIndex = filteredArgs.indexOf("--variant")
+    const variant = variantIndex >= 0 ? filteredArgs[variantIndex + 1] : undefined
+    if (!provider || !model) {
+      return { ok: false, message: "usage: agent substitute add <provider> <model> [--variant v] [--agent a]" }
+    }
+    const payload = await update({ Add: { provider, model, variant: variant ?? null } })
+    return { ok: true, message: `${formatAgentRef(payload.agent)} substitute added: ${provider}/${model}${variant ? `/${variant}` : ""}`, data: payload }
+  }
+  if (subcommand === "remove" || subcommand === "rm") {
+    const index = Number.parseInt(filteredArgs[0] ?? "", 10)
+    if (!Number.isFinite(index)) {
+      return { ok: false, message: "usage: agent substitute remove <index> [--agent a]" }
+    }
+    const payload = await update({ Remove: { index } })
+    return { ok: true, message: `${formatAgentRef(payload.agent)} substitute ${index} removed`, data: payload }
+  }
+  if (subcommand === "clear") {
+    const payload = await update({ Clear: {} })
+    return { ok: true, message: `${formatAgentRef(payload.agent)} substitutes cleared`, data: payload }
+  }
+  if (subcommand === "timeout") {
+    const timeoutMs = parseSubstitutionTimeoutMs(filteredArgs[0])
+    if (timeoutMs === undefined && filteredArgs[0] !== "inherit" && filteredArgs[0] !== "default") {
+      return { ok: false, message: "usage: agent substitute timeout <ms|Ns|inherit> [--agent a]" }
+    }
+    const payload = await update({ SetTimeout: { timeout_ms: timeoutMs ?? null } })
+    return { ok: true, message: `${formatAgentRef(payload.agent)} substitute timeout: ${timeoutMs == null ? "default" : `${timeoutMs}ms`}`, data: payload }
+  }
+  if (subcommand === "activate") {
+    const index = Number.parseInt(filteredArgs[0] ?? "", 10)
+    if (!Number.isFinite(index)) {
+      return { ok: false, message: "usage: agent substitute activate <index> [--agent a]" }
+    }
+    const payload = await update({ Activate: { index, reason: "manual" } })
+    const profile = payload.agent.substitutes?.[index]
+    if (!profile) {
+      return { ok: false, message: `${formatAgentRef(payload.agent)} substitute ${index} is not available`, data: payload }
+    }
+    const response = await deps.client.send(launchProviderRunRequest(
+      sessionId,
+      profile.provider,
+      "default",
+      profile.model,
+      profile.variant ?? "",
+      payload.agent.id,
+    ))
+    return { ok: true, message: `${formatAgentRef(payload.agent)} activated substitute ${index}: ${profile.provider}/${profile.model}`, data: { ...payload, launch: response }, contextUpdates: { agentId: payload.agent.id } }
+  }
+  if (subcommand === "primary") {
+    const payload = await update({ Primary: {} })
+    const response = await deps.client.send(launchProviderRunRequest(
+      sessionId,
+      payload.agent.provider,
+      "default",
+      payload.agent.model ?? context.model,
+      payload.agent.effort ?? context.effort,
+      payload.agent.id,
+    ))
+    return { ok: true, message: `${formatAgentRef(payload.agent)} returned to primary profile`, data: { ...payload, launch: response }, contextUpdates: { agentId: payload.agent.id } }
+  }
+  return { ok: false, message: "usage: agent substitute list|add|remove|clear|timeout|activate|primary" }
 }
 
 type ParsedPromptArgs = {
@@ -3149,6 +3248,20 @@ function formatAgentListSummary(agents: AgentInstance[]): string {
   return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
 }
 
+function formatAgentSubstituteSummary(agent: AgentInstance): string {
+  const substitutes = agent.substitutes ?? []
+  if (substitutes.length === 0) {
+    return `${formatAgentRef(agent)} has no substitutes`
+  }
+  const lines = substitutes.map((substitute, index) => {
+    const marker = agent.active_substitute_index === index ? "*" : "-"
+    const variant = substitute.variant ? `/${substitute.variant}` : ""
+    return `${marker} ${index}: ${substitute.provider}/${substitute.model}${variant}`
+  })
+  const timeout = agent.substitution_timeout_ms == null ? "default" : `${agent.substitution_timeout_ms}ms`
+  return `${formatAgentRef(agent)} substitutes (${substitutes.length}, timeout ${timeout}):\n${lines.join("\n")}`
+}
+
 function parseExecutionMode(value: string | null | undefined): "build" | "plan" | null {
   if (!value) return null
   const normalized = value.trim().toLowerCase()
@@ -3159,4 +3272,17 @@ function parsePermissionLevel(value: string | null | undefined): "required" | "y
   if (!value) return null
   const normalized = value.trim().toLowerCase()
   return normalized === "required" || normalized === "yolo" ? normalized : null
+}
+
+function parseSubstitutionTimeoutMs(value: string | null | undefined): number | undefined {
+  if (!value || value === "inherit" || value === "default") return undefined
+  const normalized = value.trim().toLowerCase()
+  const match = normalized.match(/^(\d+)(ms|s|m)?$/)
+  if (!match) return undefined
+  const amount = Number.parseInt(match[1] ?? "", 10)
+  const unit = match[2] ?? "ms"
+  if (!Number.isFinite(amount)) return undefined
+  if (unit === "m") return amount * 60_000
+  if (unit === "s") return amount * 1_000
+  return amount
 }

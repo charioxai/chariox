@@ -86,6 +86,12 @@ pub struct AgentInstance {
     model: Option<String>,
     effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    primary_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    primary_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    primary_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     execution_mode_override: Option<AgentExecutionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     permission_level_override: Option<AgentPermissionLevel>,
@@ -136,6 +142,9 @@ impl AgentInstance {
             provider: provider.into(),
             model,
             effort,
+            primary_provider: None,
+            primary_model: None,
+            primary_effort: None,
             execution_mode_override: None,
             permission_level_override: None,
             worktree_id,
@@ -185,6 +194,28 @@ impl AgentInstance {
 
     pub fn effort(&self) -> Option<&str> {
         self.effort.as_deref()
+    }
+
+    pub fn primary_provider(&self) -> &str {
+        self.primary_provider
+            .as_deref()
+            .unwrap_or(self.provider.as_str())
+    }
+
+    pub fn primary_model(&self) -> Option<&str> {
+        if self.primary_provider.is_some() {
+            self.primary_model.as_deref()
+        } else {
+            self.model.as_deref()
+        }
+    }
+
+    pub fn primary_effort(&self) -> Option<&str> {
+        if self.primary_provider.is_some() {
+            self.primary_effort.as_deref()
+        } else {
+            self.effort.as_deref()
+        }
     }
 
     pub fn execution_mode_override(&self) -> Option<AgentExecutionMode> {
@@ -285,6 +316,17 @@ impl AgentInstance {
         self.effort = effort;
     }
 
+    pub fn set_primary_profile(
+        &mut self,
+        provider: impl Into<String>,
+        model: Option<String>,
+        effort: Option<String>,
+    ) {
+        self.primary_provider = Some(provider.into());
+        self.primary_model = model;
+        self.primary_effort = effort;
+    }
+
     pub fn set_execution_mode_override(&mut self, execution_mode: Option<AgentExecutionMode>) {
         self.execution_mode_override = execution_mode;
     }
@@ -365,6 +407,9 @@ impl AgentInstance {
         reason: impl Into<String>,
     ) -> Option<AgentSubstituteProfile> {
         let profile = self.substitutes.get(index)?.clone();
+        self.provider = profile.provider.clone();
+        self.model = Some(profile.model.clone());
+        self.effort = profile.variant.clone();
         self.active_substitute_index = Some(index);
         self.last_substitution = Some(AgentSubstitutionRecord {
             substitute_index: index,
@@ -378,6 +423,9 @@ impl AgentInstance {
     pub fn deactivate_substitute(&mut self) {
         self.active_substitute_index = None;
         self.last_substitution = None;
+        self.provider = self.primary_provider().to_string();
+        self.model = self.primary_model().map(str::to_string);
+        self.effort = self.primary_effort().map(str::to_string);
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 }
@@ -519,7 +567,7 @@ pub fn generate_agent_ref() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{calculate_agent_layout, GridPosition};
+    use super::{calculate_agent_layout, AgentInstance, AgentSubstituteProfile, GridPosition};
 
     #[test]
     fn calculate_agent_layout_expands_past_six_agents() {
@@ -535,5 +583,40 @@ mod tests {
                 GridPosition::new(1, 2, 1, 1),
             ]
         );
+    }
+
+    #[test]
+    fn substitute_deactivation_restores_primary_without_default_model() {
+        let mut agent = AgentInstance::new(
+            "agent-1",
+            "agent-1",
+            "session-1",
+            None,
+            "opencode",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        agent.set_primary_profile("opencode", None, None);
+        agent.add_substitute(AgentSubstituteProfile::new(
+            "codex",
+            "gpt-5.4",
+            Some("medium".to_string()),
+        ));
+
+        let activated = agent.activate_substitute(0, "manual");
+        assert_eq!(
+            activated.as_ref().map(|profile| profile.provider.as_str()),
+            Some("codex")
+        );
+        assert_eq!(agent.provider(), "codex");
+        assert_eq!(agent.model(), Some("gpt-5.4"));
+        assert_eq!(agent.effort(), Some("medium"));
+
+        agent.deactivate_substitute();
+        assert_eq!(agent.provider(), "opencode");
+        assert_eq!(agent.model(), None);
+        assert_eq!(agent.effort(), None);
     }
 }

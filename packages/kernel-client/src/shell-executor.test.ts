@@ -658,6 +658,84 @@ test("executeShellCommand lists agents for current session", async () => {
   assert.deepEqual((result.data as { agents: AgentInstance[] }).agents, agents)
 })
 
+test("executeShellCommand manages agent substitutes", async () => {
+  const baseAgent = makeAgent()
+  const substituteAgent = makeAgent({
+    provider: "codex",
+    model: "gpt-5.4",
+    effort: "medium",
+    substitutes: [{ provider: "codex", model: "gpt-5.4", variant: "medium" }],
+    active_substitute_index: 0,
+  })
+  const fake = fakeClient((request) => {
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [baseAgent] } }
+    }
+    if ("UpdateAgentSubstitutes" in request) {
+      const payload = request.UpdateAgentSubstitutes as {
+        action: Record<string, unknown>
+      }
+      if ("Add" in payload.action) {
+        return {
+          AgentConfigUpdated: {
+            agent: makeAgent({ substitutes: [{ provider: "codex", model: "gpt-5.4", variant: "medium" }] }),
+            session: makeSession(),
+          },
+        }
+      }
+      if ("Activate" in payload.action) {
+        return { AgentConfigUpdated: { agent: substituteAgent, session: makeSession({ agents: [substituteAgent] }) } }
+      }
+    }
+    if ("LaunchProviderRun" in request) {
+      return {
+        ProviderRunLaunchAccepted: {
+          provider_run: {
+            id: "run-sub",
+            session_id: "session-1",
+            agent_instance_id: "agent-1",
+            adapter_key: "codex",
+            provider: "codex",
+            account_profile: "default",
+            model: "gpt-5.4",
+            variant: "medium",
+            usage_tokens_total: null,
+            state: "Starting",
+          },
+        },
+      }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    agentId: "agent-1",
+  })
+  const addResult = await executeShellCommand(
+    parseShellCommand("agent substitute add codex gpt-5.4 --variant medium"),
+    context,
+    { client: fake.client },
+  )
+  const activateResult = await executeShellCommand(
+    parseShellCommand("agent substitute activate 0"),
+    context,
+    { client: fake.client },
+  )
+  assert.equal(addResult.ok, true)
+  assert.match(addResult.message ?? "", /substitute added/)
+  assert.equal(activateResult.ok, true)
+  assert.match(activateResult.message ?? "", /activated substitute 0/)
+  assert.deepEqual(fake.requests.map((request) => Object.keys(request)[0]), [
+    "ListAgents",
+    "UpdateAgentSubstitutes",
+    "ListAgents",
+    "UpdateAgentSubstitutes",
+    "LaunchProviderRun",
+  ])
+})
+
 test("executeShellCommand spawns remote agent with worktree placement", async () => {
   const agent = makeAgent({
     id: "agent-remote",

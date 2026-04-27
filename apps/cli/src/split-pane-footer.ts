@@ -12,6 +12,9 @@ export type SplitPaneFooterAgent = {
   provider: string
   model: string | null
   effort?: string | null
+  substitutes?: Array<{ provider: string; model: string; variant?: string | null }>
+  active_substitute_index?: number | null
+  last_substitution?: { reason: string } | null
   execution_mode?: "build" | "plan" | null
   permission_level?: "required" | "yolo" | null
   state: "Idle" | "Working" | "Focused" | "Error"
@@ -128,6 +131,7 @@ export function formatSplitPaneFooterParts(
   const executionMode = agent.execution_mode ?? "build"
   const permissionLevel = agent.permission_level ?? "yolo"
 
+  const substitutePart = formatSubstituteFooterPart(agent)
   return [
     {
       kind: "agent",
@@ -135,9 +139,31 @@ export function formatSplitPaneFooterParts(
       tone: toneForAgent(aliasLabel),
     },
     ...formatPromptMetaParts(provider, model, effectiveVariant ?? ""),
+    ...(substitutePart ? [substitutePart] : []),
     { kind: "mode", text: executionMode, tone: "info" },
     { kind: "permission", text: permissionLevel, tone: "warning" },
   ]
+}
+
+function formatSubstituteFooterPart(agent: SplitPaneFooterAgent): SplitPaneFooterPart | null {
+  const count = agent.substitutes?.length ?? 0
+  if (count === 0) {
+    return null
+  }
+  const active = agent.active_substitute_index
+  if (active != null && active >= 0) {
+    const reason = agent.last_substitution?.reason
+    return {
+      kind: "mode",
+      text: reason && reason !== "manual" ? `sub: ${reason}` : `sub ${active + 1}/${count}`,
+      tone: "accent",
+    }
+  }
+  return {
+    kind: "mode",
+    text: `${count} sub${count === 1 ? "" : "s"}`,
+    tone: "secondary",
+  }
 }
 
 export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(options: {

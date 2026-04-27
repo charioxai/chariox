@@ -149,7 +149,7 @@ pub enum AgentSubstituteAction {
     Remove {
         index: usize,
     },
-    Clear,
+    Clear {},
     SetTimeout {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
@@ -159,7 +159,7 @@ pub enum AgentSubstituteAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
-    Primary,
+    Primary {},
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

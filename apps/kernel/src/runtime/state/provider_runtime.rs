@@ -542,6 +542,28 @@ impl KernelRuntimeState {
             }
             let _ = owned.session_snapshot(started.run.session_id());
         }
+        if let Some(agent_id) = started.run.agent_instance_id() {
+            let reason = format!("provider launch failure: {error}");
+            if let Err(substitute_error) = self
+                .activate_next_agent_substitute_after_failure(
+                    started.run.session_id(),
+                    agent_id,
+                    &reason,
+                )
+                .await
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.provider",
+                    "automatic substitute activation after launch failure failed",
+                    serde_json::json!({
+                        "session_id": started.run.session_id(),
+                        "agent_id": agent_id,
+                        "provider_run_id": started.run.id(),
+                        "error": substitute_error.to_string(),
+                    }),
+                );
+            }
+        }
     }
 
     pub(super) async fn settle_owned_provider_prompt(
@@ -563,6 +585,17 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
         let Some(active_prompt) = active_prompt else {
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "settle provider prompt found no active prompt",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "prompt_completed": prompt_completed,
+                    "force": force,
+                }),
+            );
             if owned.clear_prompt_activity(provider_run_id) {
                 self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
@@ -605,6 +638,18 @@ impl KernelRuntimeState {
         }
 
         if !force && !prompt_completed && !owned.prompt_should_settle(provider_run_id) {
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "settle provider prompt skipped",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "prompt_completed": prompt_completed,
+                    "force": force,
+                    "active_prompt_status": active_prompt.status(),
+                }),
+            );
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: true,
                 started_next_prompt: false,
@@ -671,6 +716,19 @@ impl KernelRuntimeState {
             operation: "settle provider prompt",
             message: "owned prompt runtime could not settle provider prompt".to_string(),
         })?;
+        crate::logging::debug_with_fields(
+            "daemon.provider",
+            "settled provider prompt",
+            serde_json::json!({
+                "session_id": session_id,
+                "provider_run_id": provider_run_id,
+                "agent_id": agent_id,
+                "prompt_completed": prompt_completed,
+                "force": force,
+                "started_next": completion.completion.started_next.is_some(),
+                "released_claim": completion.released_claim,
+            }),
+        );
         if completion.completion.completed.workflow_run_id().is_some() {
             let dispatches = owned.workflow_complete_prompt(
                 session_id,
@@ -812,6 +870,22 @@ impl KernelRuntimeState {
         {
             self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
         }
+        let reason = format!("provider failure: {message}");
+        if let Err(error) = self
+            .activate_next_agent_substitute_after_failure(session_id, &agent_id, &reason)
+            .await
+        {
+            crate::logging::warn_with_fields(
+                "daemon.provider",
+                "automatic substitute activation after provider failure failed",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "provider_run_id": provider_run_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
         Ok(())
     }
 
@@ -946,6 +1020,15 @@ impl KernelRuntimeState {
         {
             let finished_run_id = finished.provider_run_id.clone();
             let is_requested_run = finished_run_id == provider_run_id;
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "drained finished structured output poll",
+                serde_json::json!({
+                    "requested_provider_run_id": provider_run_id,
+                    "finished_provider_run_id": finished_run_id,
+                    "is_requested_run": is_requested_run,
+                }),
+            );
             let poll_result = match finished.result {
                 Ok(Some(poll_result)) => poll_result,
                 Ok(None) => continue,
@@ -1033,6 +1116,18 @@ impl KernelRuntimeState {
         poll_result: crate::provider::ProviderPromptSignalBatch,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
+        crate::logging::debug_with_fields(
+            "daemon.provider",
+            "applying structured output batch",
+            serde_json::json!({
+                "session_id": session_id,
+                "provider_run_id": provider_run_id,
+                "chunks": poll_result.chunks.len(),
+                "completions": poll_result.completions.len(),
+                "prompt_completed": poll_result.prompt_completed,
+                "terminal_failure": poll_result.terminal_failure,
+            }),
+        );
         owned
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;

@@ -61,6 +61,18 @@ const COMMAND_TREE: CommandNode[] = [
       { id: "agent-focus", label: "focus", description: "Focus on a specific agent", value: "/agent focus " },
       { id: "agent-list", label: "list", description: "List all agents in the session", value: "/agent list" },
       { id: "agent-cycle", label: "cycle", description: "Cycle to next agent", value: "/agent cycle" },
+      {
+        id: "agent-substitute",
+        label: "substitute",
+        description: "Manage fallback provider profiles for the focused agent",
+        value: "/agent substitute ",
+        children: [
+          { id: "agent-substitute-list", label: "list", description: "List agent substitutes", value: "/agent substitute list" },
+          { id: "agent-substitute-add", label: "add", description: "Add a substitute provider/model", value: "/agent substitute add " },
+          { id: "agent-substitute-activate", label: "activate", description: "Manually activate a substitute", value: "/agent substitute activate " },
+          { id: "agent-substitute-primary", label: "primary", description: "Return to primary provider profile", value: "/agent substitute primary" },
+        ],
+      },
     ],
   },
   {

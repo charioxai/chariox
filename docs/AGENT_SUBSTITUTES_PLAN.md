@@ -74,6 +74,7 @@ The agent pane footer should show substitute availability and active substitute 
 3. Add TUI slash commands and footer rendering.
 4. Add shell request helpers and shell commands.
 5. Add automatic substitution hooks for eligible provider failures.
+   Implemented scope: explicit provider launch failures, classified terminal failures, and unexpected provider exits activate and launch the next configured substitute. The failed turn is not silently replayed; Arroba settles the failed provider turn first and the new run receives the normal inter-provider context handoff for subsequent prompts.
 6. Add timeout watchdog and retry active prompt without duplicate history.
+   This needs a prompt-state primitive that can rebind an already-accepted active prompt to a fresh provider run without recording duplicate user history.
 7. Run drills for manual activation, shell activation, quota fallback, timeout fallback, workflow fallback, and exhausted substitutes.
-

@@ -482,7 +482,7 @@ impl KernelRuntimeOwnedState {
             crate::local::AgentSubstituteAction::Remove { index } => {
                 self.agent_store.remove_agent_substitute(agent_id, index)
             }
-            crate::local::AgentSubstituteAction::Clear => {
+            crate::local::AgentSubstituteAction::Clear {} => {
                 self.agent_store.clear_agent_substitutes(agent_id)
             }
             crate::local::AgentSubstituteAction::SetTimeout { timeout_ms } => self
@@ -496,7 +496,7 @@ impl KernelRuntimeOwnedState {
                     reason.unwrap_or_else(|| "manual".to_string()),
                 )
                 .map(|(agent, _profile)| agent),
-            crate::local::AgentSubstituteAction::Primary => {
+            crate::local::AgentSubstituteAction::Primary {} => {
                 self.agent_store.deactivate_agent_substitute(agent_id)
             }
         }

@@ -204,8 +204,92 @@ impl KernelRuntimeState {
             )
         };
 
-        self.spawn_provider_relaunch(launch_request, runtime_init_delay_ms, terminated_run_id);
+        self.spawn_provider_relaunch(
+            launch_request,
+            runtime_init_delay_ms,
+            terminated_run_id,
+            12_000,
+        );
         Ok(ProviderReloadOutcome::Reloaded)
+    }
+
+    pub(super) async fn activate_next_agent_substitute_after_failure(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        reason: &str,
+    ) -> Result<bool, DaemonError> {
+        let (launch_request, runtime_init_delay_ms, agent) = {
+            let owned = &self.owned;
+            let current = owned.agent_store.get_agent(agent_id)?;
+            if current.remote_execution().is_some() {
+                return Ok(false);
+            }
+            let Some(substitute_index) = next_substitute_index(&current) else {
+                return Ok(false);
+            };
+            let (agent, profile) = owned.agent_store.activate_agent_substitute(
+                agent_id,
+                substitute_index,
+                reason.to_string(),
+            )?;
+            let session = owned.session_store.get_session(session_id)?;
+            let execution_mode = agent.execution_mode_override().or_else(|| {
+                session
+                    .config_state()
+                    .values()
+                    .get("agents.mode")
+                    .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
+            });
+            let permission_level = agent.permission_level_override().or_else(|| {
+                session
+                    .config_state()
+                    .values()
+                    .get("agents.permissions")
+                    .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
+            });
+            let adapter_key = match profile.provider.as_str() {
+                "default" => "opencode",
+                value => value,
+            };
+            let provider = adapter_key;
+            let config = owned.config_projection.snapshot();
+            let mut launch_request = crate::provider::LaunchProviderRequest::new(
+                session_id,
+                adapter_key,
+                provider,
+                "default",
+                profile.model.clone(),
+            )
+            .with_agent_id(agent_id)
+            .with_owner_user_id(agent.owner_user_id().to_string())
+            .with_variant(profile.variant.clone())
+            .with_execution_mode(execution_mode.unwrap_or_default())
+            .with_permission_level(permission_level.unwrap_or_default());
+            if crate::provider::provider_requires_managed_io_by_default(provider, &config) {
+                launch_request = launch_request.with_managed_io_required();
+            }
+            let launch_request =
+                owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;
+            owned.record_notice(
+                session_id,
+                None,
+                owned
+                    .attachment_store
+                    .list_session_attachment_ids(session_id),
+                format!(
+                    "Activating substitute {} for agent `{agent_id}` after {reason}.",
+                    substitute_index
+                ),
+            );
+            let _ = owned.session_snapshot(session_id)?;
+            (launch_request, config.provider_runtime_init_delay_ms, agent)
+        };
+
+        self.append_agent_durable_event("agent.substitute_activated", &agent, None)
+            .await?;
+        self.spawn_provider_relaunch(launch_request, runtime_init_delay_ms, None, 0);
+        Ok(true)
     }
 
     fn remember_pending_provider_reload(&self, session_id: &str, agent_id: &str, reason: &str) {
@@ -268,6 +352,7 @@ impl KernelRuntimeState {
         launch_request: crate::provider::LaunchProviderRequest,
         runtime_init_delay_ms: u64,
         terminated_run_id: Option<String>,
+        launch_delay_ms: u64,
     ) {
         let state = self.clone();
         let app = self.app.clone();
@@ -284,7 +369,9 @@ impl KernelRuntimeState {
                     .owned
                     .remove_provider_process_tracking_for_run(&terminated_run_id, process_key);
             }
-            tokio::time::sleep(std::time::Duration::from_millis(12_000)).await;
+            if launch_delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(launch_delay_ms)).await;
+            }
             let started = match state.owned.start_provider_launch(launch_request) {
                 Ok(started) => started,
                 Err(error) => {
@@ -327,6 +414,14 @@ impl KernelRuntimeState {
             }
         });
     }
+}
+
+fn next_substitute_index(agent: &crate::agent::AgentInstance) -> Option<usize> {
+    let next = agent
+        .active_substitute_index()
+        .map(|index| index.saturating_add(1))
+        .unwrap_or(0);
+    (next < agent.substitutes().len()).then_some(next)
 }
 
 fn user_config_path_requires_provider_reload(path: &str) -> bool {

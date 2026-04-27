@@ -1227,6 +1227,18 @@ fn execute_output_poll_command(
         let poll = drain_codex_events(run, &mut state, native_interaction_bridge.read());
         restore_codex_runtime_if_live(codex_runs, cleared_runs, run_id, &slot, state);
         let poll = poll?;
+        crate::logging::debug_with_fields(
+            "daemon.provider_run_actor",
+            "codex output poll result trace",
+            serde_json::json!({
+                "provider_run_id": run_id,
+                "chunks": poll.chunks.len(),
+                "completions": poll.completions.len(),
+                "prompt_completed": poll.prompt_completed,
+                "terminal_failure": poll.terminal_failure,
+                "notices": poll.notices.len(),
+            }),
+        );
         return Ok(Some(ProviderPromptSignalBatch {
             chunks: poll
                 .chunks
@@ -1516,6 +1528,23 @@ fn push_finished_output_poll(
     finished_output_polls: &Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
     finished: FinishedProviderOutputPollJob,
 ) {
+    crate::logging::debug_with_fields(
+        "daemon.provider_run_actor",
+        "finished output poll pushed",
+        serde_json::json!({
+            "provider_run_id": finished.provider_run_id,
+            "result_kind": match &finished.result {
+                Ok(Some(batch)) => serde_json::json!({
+                    "type": "batch",
+                    "chunks": batch.chunks.len(),
+                    "completions": batch.completions.len(),
+                    "prompt_completed": batch.prompt_completed,
+                }),
+                Ok(None) => serde_json::json!({ "type": "none" }),
+                Err(error) => serde_json::json!({ "type": "error", "error": error.to_string() }),
+            },
+        }),
+    );
     match finished_output_polls.lock() {
         Ok(mut jobs) => jobs.push(finished),
         Err(error) => {

@@ -367,6 +367,11 @@ type CommandActionDeps = {
       clearPermissionLevel?: boolean
     },
   ) => Promise<AgentConfigUpdatePayload>
+  updateAgentSubstitutes?: (
+    sessionId: string,
+    agentId: string,
+    action: Record<string, unknown>,
+  ) => Promise<AgentConfigUpdatePayload>
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>
   createWorkspaceLink?: (name: string) => Promise<WorkspaceLinkPayload>
@@ -571,6 +576,19 @@ function parsePermissionLevel(value: string | null | undefined): "required" | "y
   if (!value) return null
   const normalized = value.trim().toLowerCase()
   return normalized === "required" || normalized === "yolo" ? normalized : null
+}
+
+function parseSubstitutionTimeoutMs(value: string | null | undefined): number | undefined {
+  if (!value || value === "inherit" || value === "default") return undefined
+  const normalized = value.trim().toLowerCase()
+  const match = normalized.match(/^(\d+)(ms|s|m)?$/)
+  if (!match) return undefined
+  const amount = Number.parseInt(match[1] ?? "", 10)
+  const unit = match[2] ?? "ms"
+  if (!Number.isFinite(amount)) return undefined
+  if (unit === "m") return amount * 60_000
+  if (unit === "s") return amount * 1_000
+  return amount
 }
 
 function effectiveAgentExecutionMode(session: RuntimeSession, agent: AgentInstance | null | undefined): "build" | "plan" {
@@ -1892,9 +1910,123 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         )
         return
       }
+      case "substitute":
+      case "subs": {
+        if (!deps.updateAgentSubstitutes) {
+          deps.flashFooter("agent substitute updates are unavailable in this build", "error")
+          return
+        }
+        const subcommand = args[1] ?? "list"
+        const subArgs = args.slice(2)
+        const agentFlagIndex = subArgs.indexOf("--agent")
+        const agentRefFromFlag = agentFlagIndex >= 0 ? subArgs[agentFlagIndex + 1] : undefined
+        const filteredArgs = agentFlagIndex >= 0
+          ? subArgs.filter((_, index) => index !== agentFlagIndex && index !== agentFlagIndex + 1)
+          : subArgs
+        const resolved = deps.resolveSessionAgent(agentRefFromFlag ?? deps.focusedAgentId() ?? undefined)
+        if (!resolved.agent) {
+          deps.flashFooter(resolved.error ?? "no focused agent", "error")
+          return
+        }
+        const agent = resolved.agent
+        if (subcommand === "list" || subcommand === "ls") {
+          deps.flashFooter(formatAgentSubstituteSummary(agent), "info")
+          return
+        }
+        const applyUpdate = async (action: Record<string, unknown>) => {
+          const payload = await deps.updateAgentSubstitutes!(
+            deps.sessionState().id,
+            agent.id,
+            action,
+          )
+          deps.applySessionState(payload.session)
+          await deps.refreshAgentPanes(payload.session)
+          return payload
+        }
+        if (subcommand === "add") {
+          const provider = filteredArgs[0]
+          const model = filteredArgs[1]
+          const variantIndex = filteredArgs.indexOf("--variant")
+          const variant = variantIndex >= 0 ? filteredArgs[variantIndex + 1] : undefined
+          if (!provider || !model) {
+            deps.flashFooter("usage: /agent substitute add <provider> <model> [--variant v] [--agent a]", "error")
+            return
+          }
+          const payload = await applyUpdate({ Add: { provider, model, variant: variant ?? null } })
+          deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} substitute added: ${provider}/${model}${variant ? `/${variant}` : ""}`, "info")
+          return
+        }
+        if (subcommand === "remove" || subcommand === "rm") {
+          const index = Number.parseInt(filteredArgs[0] ?? "", 10)
+          if (!Number.isFinite(index)) {
+            deps.flashFooter("usage: /agent substitute remove <index> [--agent a]", "error")
+            return
+          }
+          const payload = await applyUpdate({ Remove: { index } })
+          deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} substitute ${index} removed`, "info")
+          return
+        }
+        if (subcommand === "clear") {
+          const payload = await applyUpdate({ Clear: {} })
+          deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} substitutes cleared`, "info")
+          return
+        }
+        if (subcommand === "timeout") {
+          const timeoutMs = parseSubstitutionTimeoutMs(filteredArgs[0])
+          if (timeoutMs === undefined && filteredArgs[0] !== "inherit" && filteredArgs[0] !== "default") {
+            deps.flashFooter("usage: /agent substitute timeout <ms|Ns|inherit> [--agent a]", "error")
+            return
+          }
+          const payload = await applyUpdate({ SetTimeout: { timeout_ms: timeoutMs ?? null } })
+          deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} substitute timeout: ${timeoutMs == null ? "default" : `${timeoutMs}ms`}`, "info")
+          return
+        }
+        if (subcommand === "activate") {
+          const index = Number.parseInt(filteredArgs[0] ?? "", 10)
+          if (!Number.isFinite(index)) {
+            deps.flashFooter("usage: /agent substitute activate <index> [--agent a]", "error")
+            return
+          }
+          const payload = await applyUpdate({ Activate: { index, reason: "manual" } })
+          const profile = payload.agent.substitutes?.[index]
+          if (!profile) {
+            deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} substitute ${index} is not available`, "error")
+            return
+          }
+          const run = await deps.launchAgentProviderRun(
+            profile.provider,
+            profile.model,
+            profile.variant ?? "",
+            payload.agent.id,
+          )
+          deps.setProviderRunState(run)
+          const refreshedSession = await deps.refreshSessionState(payload.session.id)
+          deps.applySessionState(refreshedSession)
+          await deps.refreshAgentPanes(refreshedSession)
+          deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} activated substitute ${index}: ${profile.provider}/${profile.model}`, "info")
+          return
+        }
+        if (subcommand === "primary") {
+          const payload = await applyUpdate({ Primary: {} })
+          const run = await deps.launchAgentProviderRun(
+            payload.agent.provider,
+            payload.agent.model ?? deps.currentModelId(),
+            payload.agent.effort ?? deps.currentVariantId(),
+            payload.agent.id,
+          )
+          deps.setProviderRunState(run)
+          const refreshedSession = await deps.refreshSessionState(payload.session.id)
+          deps.applySessionState(refreshedSession)
+          await deps.refreshAgentPanes(refreshedSession)
+          deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} returned to primary profile`, "info")
+          return
+        }
+        deps.flashFooter("usage: /agent substitute list|add|remove|clear|timeout|activate|primary", "error")
+        return
+      }
       default:
         deps.flashFooter(
-          "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | list | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit>",
+          "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | list | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit> | substitute ...",
           "error",
         )
     }
@@ -3791,6 +3923,24 @@ export function formatAgentListSummary(agents: AgentInstance[]): string {
     .map((agent) => `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${agent.state}]`)
     .join(", ")
   return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
+}
+
+export function formatAgentSubstituteSummary(agent: AgentInstance): string {
+  const substitutes = agent.substitutes ?? []
+  const label = `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
+  if (substitutes.length === 0) {
+    return `${label} has no substitutes`
+  }
+  const active = agent.active_substitute_index
+  const lines = substitutes.map((substitute, index) => {
+    const marker = active === index ? "*" : "-"
+    const variant = substitute.variant ? `/${substitute.variant}` : ""
+    return `${marker} ${index}: ${substitute.provider}/${substitute.model}${variant}`
+  })
+  const timeout = agent.substitution_timeout_ms == null
+    ? "default"
+    : `${agent.substitution_timeout_ms}ms`
+  return `${label} substitutes (${substitutes.length}, timeout ${timeout}):\n${lines.join("\n")}`
 }
 
 export function formatAgentCapabilityGrants(agent: AgentInstance, kind: "mcp" | "skill"): string {

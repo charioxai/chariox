@@ -159,6 +159,7 @@ import {
   unsetUserConfigValueRequest,
   updateMcpServerRequest,
   updateAgentConfigRequest,
+  updateAgentSubstitutesRequest,
   updateSessionConfigRequest,
   updateSkillRequest,
 } from "./ipc-requests.js"
@@ -6257,6 +6258,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       updateSessionConfig(client, sessionId, attachmentId, values, requiresIdle),
     updateAgentConfig: (sessionId, agentId, options) =>
       updateAgentConfig(client, sessionId, agentId, options),
+    updateAgentSubstitutes: (sessionId, agentId, action) =>
+      updateAgentSubstitutes(client, sessionId, agentId, action),
     applySessionState,
     refreshAgentPanes,
     createWorkspaceLink: async (name) => {
@@ -9258,6 +9261,26 @@ async function updateAgentConfig(
       ...(options.clearExecutionMode !== undefined ? { clearExecutionMode: options.clearExecutionMode } : {}),
       ...(options.permissionLevel !== undefined ? { permissionLevel: options.permissionLevel } : {}),
       ...(options.clearPermissionLevel !== undefined ? { clearPermissionLevel: options.clearPermissionLevel } : {}),
+    }),
+  )
+  const payload = expectVariant<{ session: RuntimeSession; agent: AgentInstance }>(response, "AgentConfigUpdated")
+  return {
+    ...payload,
+    session: normalizeRuntimeSession(payload.session),
+  }
+}
+
+async function updateAgentSubstitutes(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+  action: Record<string, unknown>,
+): Promise<{ session: RuntimeSession; agent: AgentInstance }> {
+  const response = await client.send<Record<string, unknown>>(
+    updateAgentSubstitutesRequest({
+      sessionId,
+      agentId,
+      action: action as never,
     }),
   )
   const payload = expectVariant<{ session: RuntimeSession; agent: AgentInstance }>(response, "AgentConfigUpdated")

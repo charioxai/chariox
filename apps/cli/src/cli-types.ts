@@ -203,6 +203,9 @@ export type AgentInstance = {
   provider: string
   model: string | null
   effort?: string | null
+  primary_provider?: string | null
+  primary_model?: string | null
+  primary_effort?: string | null
   execution_mode_override?: "build" | "plan" | null
   permission_level_override?: "required" | "yolo" | null
   worktree_id: string | null
