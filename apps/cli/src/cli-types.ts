@@ -214,6 +214,10 @@ export type AgentInstance = {
   } | null
   mcp_grants?: string[]
   skill_grants?: string[]
+  substitutes?: AgentSubstituteProfile[]
+  active_substitute_index?: number | null
+  last_substitution?: AgentSubstitutionRecord | null
+  substitution_timeout_ms?: number | null
   state: "Idle" | "Working" | "Focused" | "Error"
   is_processing: boolean
   grid_row: number
@@ -222,6 +226,18 @@ export type AgentInstance = {
   grid_col_span: number
   created_at_ms: number
   last_activity_at_ms: number
+}
+
+export type AgentSubstituteProfile = {
+  provider: string
+  model: string
+  variant?: string | null
+}
+
+export type AgentSubstitutionRecord = {
+  substitute_index: number
+  reason: string
+  activated_at_ms: number
 }
 
 export type PromptQueueItem = {

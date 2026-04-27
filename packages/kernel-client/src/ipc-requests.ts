@@ -1472,6 +1472,28 @@ export function updateAgentConfigRequest(options: {
   }
 }
 
+export type AgentSubstituteAction =
+  | { Add: { provider: string; model: string; variant?: string | null } }
+  | { Remove: { index: number } }
+  | { Clear: Record<string, never> }
+  | { SetTimeout: { timeout_ms?: number | null } }
+  | { Activate: { index: number; reason?: string | null } }
+  | { Primary: Record<string, never> }
+
+export function updateAgentSubstitutesRequest(options: {
+  sessionId: string
+  agentId: string
+  action: AgentSubstituteAction
+}) {
+  return {
+    UpdateAgentSubstitutes: {
+      session_id: options.sessionId,
+      agent_id: options.agentId,
+      action: options.action,
+    },
+  }
+}
+
 export function moveAgentToRemoteRequest(sessionId: string, agentRef: string, machineRef: string) {
   return {
     MoveAgentToRemote: {

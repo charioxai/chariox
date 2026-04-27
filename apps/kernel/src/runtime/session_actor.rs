@@ -1214,6 +1214,7 @@ impl SessionActor {
                 | LocalDaemonRequest::RespondToInteraction(_)
                 | LocalDaemonRequest::UpdateSessionConfig(_)
                 | LocalDaemonRequest::UpdateAgentConfig(_)
+                | LocalDaemonRequest::UpdateAgentSubstitutes(_)
                 | LocalDaemonRequest::AliasSession(_)
                 | LocalDaemonRequest::SpawnAgent(_)
                 | LocalDaemonRequest::DestroyAgent(_)
