@@ -375,8 +375,14 @@ impl KernelRuntimeOwnedState {
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
         {
+            let prompt_with_handoff = self.prompt_with_pending_context_handoff(
+                session_id,
+                agent_id,
+                started_next.source_attachment_id(),
+                started_next.prompt(),
+            );
             let provider_prompt =
-                self.apply_granted_skill_summary(session_id, agent_id, started_next.prompt())?;
+                self.apply_granted_skill_summary(session_id, agent_id, &prompt_with_handoff)?;
             if let Err(error) = self.provider_store.enqueue_structured_prompt_submit(
                 session_id.to_string(),
                 provider_run_id.clone(),
@@ -503,8 +509,14 @@ impl KernelRuntimeOwnedState {
                 .provider_store
                 .run_uses_structured_prompt_io(&provider_run)
             {
+                let prompt_with_handoff = self.prompt_with_pending_context_handoff(
+                    session_id,
+                    agent_id,
+                    started_next.source_attachment_id(),
+                    started_next.prompt(),
+                );
                 let provider_prompt =
-                    self.apply_granted_skill_summary(session_id, agent_id, started_next.prompt())?;
+                    self.apply_granted_skill_summary(session_id, agent_id, &prompt_with_handoff)?;
                 self.provider_store.enqueue_structured_prompt_submit(
                     session_id.to_string(),
                     provider_run_id.to_string(),

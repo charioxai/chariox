@@ -6,7 +6,7 @@ use crate::session::{SessionService, SessionStatus};
 
 use super::{
     calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
-    AgentStore, CreateAgentRequest, GridPosition, RemoteAgentBinding,
+    AgentStore, AgentSubstituteProfile, CreateAgentRequest, GridPosition, RemoteAgentBinding,
 };
 
 #[derive(Debug, Clone)]
@@ -343,6 +343,106 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    pub fn add_agent_substitute(
+        &mut self,
+        agent_id: &str,
+        profile: AgentSubstituteProfile,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.add_substitute(profile);
+        Ok(agent.clone())
+    }
+
+    pub fn remove_agent_substitute(
+        &mut self,
+        agent_id: &str,
+        index: usize,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        if agent.remove_substitute(index).is_none() {
+            return Err(DaemonError::LocalTransport {
+                operation: "remove agent substitute",
+                message: format!("agent `{agent_id}` has no substitute at index {index}"),
+            });
+        }
+        Ok(agent.clone())
+    }
+
+    pub fn clear_agent_substitutes(
+        &mut self,
+        agent_id: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.clear_substitutes();
+        Ok(agent.clone())
+    }
+
+    pub fn set_agent_substitution_timeout(
+        &mut self,
+        agent_id: &str,
+        timeout_ms: Option<u64>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_substitution_timeout_ms(timeout_ms);
+        Ok(agent.clone())
+    }
+
+    pub fn activate_agent_substitute(
+        &mut self,
+        agent_id: &str,
+        index: usize,
+        reason: impl Into<String>,
+    ) -> Result<(AgentInstance, AgentSubstituteProfile), DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        let profile =
+            agent
+                .activate_substitute(index, reason)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "activate agent substitute",
+                    message: format!("agent `{agent_id}` has no substitute at index {index}"),
+                })?;
+        Ok((agent.clone(), profile))
+    }
+
+    pub fn deactivate_agent_substitute(
+        &mut self,
+        agent_id: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.deactivate_substitute();
+        Ok(agent.clone())
+    }
+
     pub fn bind_remote_execution(
         &mut self,
         agent_id: &str,
@@ -612,6 +712,52 @@ impl AgentServiceStore {
             execution_mode_override,
             permission_level_override,
         )
+    }
+
+    pub fn add_agent_substitute(
+        &self,
+        agent_id: &str,
+        profile: AgentSubstituteProfile,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().add_agent_substitute(agent_id, profile)
+    }
+
+    pub fn remove_agent_substitute(
+        &self,
+        agent_id: &str,
+        index: usize,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().remove_agent_substitute(agent_id, index)
+    }
+
+    pub fn clear_agent_substitutes(&self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
+        self.write().clear_agent_substitutes(agent_id)
+    }
+
+    pub fn set_agent_substitution_timeout(
+        &self,
+        agent_id: &str,
+        timeout_ms: Option<u64>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .set_agent_substitution_timeout(agent_id, timeout_ms)
+    }
+
+    pub fn activate_agent_substitute(
+        &self,
+        agent_id: &str,
+        index: usize,
+        reason: impl Into<String>,
+    ) -> Result<(AgentInstance, AgentSubstituteProfile), DaemonError> {
+        self.write()
+            .activate_agent_substitute(agent_id, index, reason)
+    }
+
+    pub fn deactivate_agent_substitute(
+        &self,
+        agent_id: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().deactivate_agent_substitute(agent_id)
     }
 
     pub fn bind_remote_execution(

@@ -678,10 +678,16 @@ impl KernelRuntimeState {
             self.observe_git_before_prompt_dispatch(dispatch, &provider_run)
                 .await;
             owned.note_prompt_started(&dispatch.provider_run_id);
+            let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.source_attachment_id,
+                &dispatch.prompt,
+            );
             let provider_prompt = owned.apply_granted_skill_summary(
                 &dispatch.session_id,
                 &dispatch.agent_id,
-                &dispatch.prompt,
+                &prompt_with_handoff,
             )?;
             return owned.provider_store.enqueue_structured_prompt_submit(
                 dispatch.session_id.clone(),
@@ -704,10 +710,16 @@ impl KernelRuntimeState {
                 });
             }
         }
+        let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            &dispatch.source_attachment_id,
+            &dispatch.prompt,
+        );
         let provider_prompt = owned.apply_granted_skill_summary(
             &dispatch.session_id,
             &dispatch.agent_id,
-            &dispatch.prompt,
+            &prompt_with_handoff,
         )?;
         self.observe_git_before_prompt_dispatch(dispatch, &provider_run)
             .await;

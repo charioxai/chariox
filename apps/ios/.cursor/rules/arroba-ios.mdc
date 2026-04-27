@@ -1,0 +1,59 @@
+---
+description: "Arroba iOS architecture, SwiftUI implementation, and QA rules."
+globs: ["apps/ios/**/*"]
+alwaysApply: true
+---
+
+# Arroba iOS Rules
+
+## Product Boundary
+
+- The iOS app is an OSS Arroba client surface, like the terminal CLI and Cloud
+  WEB_CLI.
+- The kernel is the runtime authority for sessions, agents, workflow runs,
+  provider state, permissions, managed I/O, relay membership, and prompt
+  routing.
+- Runtime-changing actions must go through kernel or relay-backed kernel
+  requests.
+- Client-local state is limited to view state, drafts, local preferences,
+  selected addresses, cached projections, and secure credentials.
+
+## Project Layout
+
+- Open `apps/ios/Arroba.xcworkspace` in Xcode.
+- Keep `apps/ios/Arroba/` as a minimal app shell.
+- Put feature code in `apps/ios/ArrobaPackage/Sources/ArrobaFeature/`.
+- Put package tests in
+  `apps/ios/ArrobaPackage/Tests/ArrobaFeatureTests/`.
+- Put simulator UI tests in `apps/ios/ArrobaUITests/`.
+
+## Swift And UI
+
+- Target iOS 17+ for the first implementation slice.
+- Prefer SwiftUI, Swift Concurrency, and `@Observable` state.
+- Keep views small, composable, and touch-accessible.
+- Preserve conceptual parity with CLI/WEB_CLI components while adapting layout
+  for iPhone, iPad, accessibility, and native navigation.
+- Do not introduce TCA, SwiftData, or another large dependency unless the need
+  is clear and documented.
+- Store Cloud/relay credentials in Keychain when those features are added.
+- Keep UserDefaults limited to non-secret preferences.
+
+## Protocol Parity
+
+- Keep Swift request/response models aligned with `packages/kernel-client`.
+- Cover protocol shapes with tests or fixtures before expanding UI behavior.
+- Do not invent client-only runtime semantics that would drift from CLI or
+  WEB_CLI behavior.
+
+## Validation And QA
+
+- Use XcodeBuildMCP as the default build/test/run validation path when
+  available.
+- If MCP tools are not exposed in the current session, use the documented
+  `xcodebuild` commands in `apps/ios/README.md`.
+- Use iOS Simulator MCP for explicit QA/dogfooding when Miguel asks for QA or
+  confirms a proposed QA pass.
+- Suggest Maestro when readable mobile smoke flows or exploratory regression
+  scripts would help, but ask Miguel before installing it, adding it to the
+  repo, or making it part of the official QA gate.

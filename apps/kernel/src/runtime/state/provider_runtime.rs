@@ -327,7 +327,11 @@ impl KernelRuntimeState {
                 })
         }) {
             launch_request = if let Ok(agent) = self.owned.agent_store.get_agent(&agent_id) {
-                let session = self.owned.session_store.get_session(&request.session_id).ok();
+                let session = self
+                    .owned
+                    .session_store
+                    .get_session(&request.session_id)
+                    .ok();
                 let execution_mode = agent.execution_mode_override().or_else(|| {
                     session
                         .as_ref()
@@ -337,7 +341,9 @@ impl KernelRuntimeState {
                 let permission_level = agent.permission_level_override().or_else(|| {
                     session
                         .as_ref()
-                        .and_then(|session| session.config_state().values().get("agents.permissions"))
+                        .and_then(|session| {
+                            session.config_state().values().get("agents.permissions")
+                        })
                         .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
                 });
                 launch_request
@@ -349,7 +355,11 @@ impl KernelRuntimeState {
                 launch_request.with_agent_id(agent_id)
             };
         } else {
-            let session = self.owned.session_store.get_session(&request.session_id).ok();
+            let session = self
+                .owned
+                .session_store
+                .get_session(&request.session_id)
+                .ok();
             let execution_mode = session
                 .as_ref()
                 .and_then(|session| session.config_state().values().get("agents.mode"))

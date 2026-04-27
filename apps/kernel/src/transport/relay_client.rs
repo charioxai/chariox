@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, timeout};
+use tokio::time::{sleep, timeout, MissedTickBehavior};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use arroba_relay::protocol::{
@@ -54,6 +54,7 @@ impl Default for RelayClientState {
 
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+static TEMPORARY_PEER_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, JoinHandle<()>>>>;
 
@@ -185,6 +186,8 @@ pub async fn run_daemon_relay_connector(
                 set_connected(&state, outgoing_tx.clone()).await;
                 let mut inventory_refresh_task =
                     Some(spawn_remote_inventory_projection_refresh(Arc::clone(&app)));
+                let mut heartbeat_interval = tokio::time::interval(heartbeat);
+                heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
                 loop {
                     tokio::select! {
@@ -253,7 +256,7 @@ pub async fn run_daemon_relay_connector(
                             set_disconnected(&state).await;
                             break;
                         }
-                        _ = sleep(heartbeat) => {
+                        _ = heartbeat_interval.tick() => {
                             let still_configured = router.relay_is_configured_for_url(&relay_url);
                             if !still_configured {
                                 let _ = outgoing_tx.send(RelayEnvelope::Close {
@@ -1228,9 +1231,10 @@ pub async fn send_peer_request_via_temporary_connection(
                 message: error.to_string(),
             })?;
     let request_id = format!(
-        "daemon-peer-tmp-{}-{}",
+        "daemon-peer-tmp-{}-{}-{}",
         std::process::id(),
-        crate::session::unix_epoch_ms()
+        crate::session::unix_epoch_ms(),
+        TEMPORARY_PEER_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
     let register = RelayEnvelope::DaemonRegister {
         registration: arroba_relay::protocol::DaemonRegistration {
@@ -1867,7 +1871,10 @@ pub(crate) async fn refresh_remote_inventory_projection_for_app(
 ) -> Result<(), DaemonError> {
     let (mut config, projection) = {
         let app = app.lock().await;
-        (app.config().clone(), app.remote_relay_inventory_projection_store())
+        (
+            app.config().clone(),
+            app.remote_relay_inventory_projection_store(),
+        )
     };
     if config.relay_url.is_none() || config.relay_token.is_none() {
         projection.clear();
@@ -1876,8 +1883,10 @@ pub(crate) async fn refresh_remote_inventory_projection_for_app(
     config.relay_request_timeout_ms = config.relay_request_timeout_ms.min(2_000);
 
     let live_machines = relay_discovery::list_live_machines(&config).await?;
-    let mut remote_machines =
-        crate::local::provider_requests::remote_machine_records(live_machines, &config.host_machine_id);
+    let mut remote_machines = crate::local::provider_requests::remote_machine_records(
+        live_machines,
+        &config.host_machine_id,
+    );
     let (_, previous_kernels) = projection.snapshot();
     let known_kernel_ids = previous_kernels
         .into_iter()
@@ -1890,7 +1899,8 @@ pub(crate) async fn refresh_remote_inventory_projection_for_app(
     {
         let kernels =
             relay_discovery::list_live_kernels_for_machine(&config, &machine.machine_id).await?;
-        remote_kernels.extend(validate_live_relay_kernels(&config, &known_kernel_ids, kernels).await);
+        remote_kernels
+            .extend(validate_live_relay_kernels(&config, &known_kernel_ids, kernels).await);
     }
     for machine in &mut remote_machines {
         machine.kernel_count = remote_kernels
@@ -1952,8 +1962,10 @@ mod tests {
     use crate::local::{
         AttachToSessionRequest, DetachFromSessionRequest, FocusAgentRequest,
         GetSessionStateRequest, ListSessionsRequest, LocalDaemonResponse, ResizeTerminalRequest,
-        ResolveSessionRequest, UpdateSessionConfigRequest, ValidateWorkflowOutputRequest,
+        ResolveSessionRequest, RespondToInteractionRequest, UpdateSessionConfigRequest,
+        ValidateWorkflowOutputRequest,
     };
+    use crate::runtime::command::KernelCommand;
     use crate::session::CreateSessionRequest;
     use crate::transport::relay_crypto;
     use crate::transport::relay_discovery;
@@ -3131,6 +3143,188 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_connection() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let server = Arc::new(RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        }));
+        let registry = server.registry();
+        let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+        let server_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move {
+                server
+                    .run_until(async {
+                        let _ = server_shutdown_rx.await;
+                    })
+                    .await
+                    .expect("relay server should run");
+            })
+        };
+
+        let mut config_home = DaemonConfig::for_tests();
+        config_home.daemon_id = "daemon-home".to_string();
+        config_home.daemon_alias = Some("home".to_string());
+        config_home.host_machine_id = "machine-home".to_string();
+        config_home.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        config_home.relay_token = Some("secret".to_string());
+        config_home.relay_heartbeat_ms = 50;
+        let app_home = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap"),
+        ));
+        let state_home = Arc::new(RwLock::new(RelayClientState::default()));
+        let (shutdown_home_tx, shutdown_home_rx) = watch::channel(false);
+        let connector_home = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app_home),
+            Arc::clone(&state_home),
+            shutdown_home_rx,
+        ));
+
+        let mut config_worker = DaemonConfig::for_tests();
+        config_worker.daemon_id = "daemon-worker".to_string();
+        config_worker.daemon_alias = Some("worker".to_string());
+        config_worker.host_machine_id = "machine-worker".to_string();
+        config_worker.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        config_worker.relay_token = Some("secret".to_string());
+        config_worker.relay_heartbeat_ms = 50;
+        let app_worker = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),
+        ));
+        let state_worker = Arc::new(RwLock::new(RelayClientState::default()));
+        let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
+        let connector_worker = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app_worker),
+            Arc::clone(&state_worker),
+            shutdown_worker_rx,
+        ));
+
+        wait_for_daemon_registration(registry.clone(), &config_home.daemon_id).await;
+        wait_for_daemon_registration(registry.clone(), &config_worker.daemon_id).await;
+
+        let (home_session_id, home_agent_id) = {
+            let mut app = app_home.lock().await;
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
+                .expect("home session should be created");
+            (session.id().to_string(), agent.id().to_string())
+        };
+        let interaction = crate::session::RuntimeInteraction::new(
+            "native-test-interaction",
+            "worker-agent",
+            crate::session::RuntimeInteractionKind::Permission,
+            crate::session::RuntimeInteractionLevel::Warning,
+            Some("Synthetic permission".to_string()),
+            "Approve synthetic forwarded native interaction?",
+            vec![
+                crate::session::RuntimeInteractionChoice::new(
+                    "allow_once",
+                    "Allow",
+                    "allowed once",
+                    Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
+                ),
+                crate::session::RuntimeInteractionChoice::new(
+                    "deny",
+                    "Deny",
+                    "denied",
+                    Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
+                ),
+            ],
+            None,
+            None,
+        );
+        let context = crate::transport::relay_peer::RemoteNativeInteractionContext {
+            home_session_id: home_session_id.clone(),
+            home_agent_id: home_agent_id.clone(),
+            leased_agent_id: "leased-agent-test".to_string(),
+            worker_provider_run_id: "provider-run-test".to_string(),
+        };
+
+        let worker_request = {
+            let config_worker = config_worker.clone();
+            tokio::spawn(async move {
+                send_peer_request_via_temporary_connection(
+                    &config_worker,
+                    ClientTarget {
+                        daemon_id: Some("daemon-home".to_string()),
+                        daemon_alias: None,
+                    },
+                    RelayPeerRequest::ForwardNativeInteraction {
+                        context,
+                        interaction,
+                    },
+                )
+                .await
+            })
+        };
+
+        let interaction_id =
+            wait_for_active_interaction(Arc::clone(&app_home), &home_session_id, &home_agent_id)
+                .await;
+        let respond_request =
+            crate::local::LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
+                session_id: home_session_id.clone(),
+                interaction_id,
+                choice_id: "allow_once".to_string(),
+            });
+        let provider_runtime_lanes = {
+            let app = app_home.lock().await;
+            app.provider_run_operation_lanes()
+        };
+        let router = CommandRouter::with_interactive_capacity_and_provider_lanes(
+            Arc::clone(&app_home),
+            INTERACTIVE_COMMAND_QUEUE_LIMIT,
+            provider_runtime_lanes,
+        );
+        router
+            .dispatch(
+                KernelCommand::from_local_request(
+                    "respond-native-test",
+                    None,
+                    None,
+                    &respond_request,
+                ),
+                respond_request,
+            )
+            .await
+            .expect("home interaction response should be accepted");
+
+        let response = worker_request
+            .await
+            .expect("worker peer request task should join")
+            .expect("worker should receive native interaction response");
+        match response {
+            RelayPeerResponse::NativeInteractionResolved { resolution } => {
+                assert_eq!(resolution.status, "answered");
+                assert_eq!(resolution.choice_id.as_deref(), Some("allow_once"));
+                assert_eq!(resolution.reply.as_deref(), Some("allowed once"));
+            }
+            other => panic!("unexpected peer response: {other:?}"),
+        }
+
+        let _ = shutdown_home_tx.send(true);
+        let _ = shutdown_worker_tx.send(true);
+        connector_home.await.expect("home connector should join");
+        connector_worker
+            .await
+            .expect("worker connector should join");
+        let _ = server_shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn proxied_session_requests_are_handled_through_relay() {
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
@@ -3851,6 +4045,25 @@ mod tests {
             sleep(Duration::from_millis(25)).await;
         }
         panic!("daemon `{daemon_id}` did not register with relay");
+    }
+
+    async fn wait_for_active_interaction(
+        app: Arc<Mutex<DaemonApp>>,
+        session_id: &str,
+        agent_id: &str,
+    ) -> String {
+        for _ in 0..80 {
+            {
+                let app = app.lock().await;
+                if let Ok(session) = app.sessions().get_session(session_id) {
+                    if let Some(interaction) = session.active_interaction_for_agent(agent_id) {
+                        return interaction.id().to_string();
+                    }
+                }
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+        panic!("interaction for agent `{agent_id}` did not become active");
     }
 
     async fn send_client_envelope<S>(

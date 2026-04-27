@@ -293,7 +293,8 @@ fn resolve_effective_execution_mode(
     session: Option<&crate::session::RuntimeSession>,
     agent: Option<&crate::agent::AgentInstance>,
 ) -> crate::provider::AgentExecutionMode {
-    agent.and_then(|agent| agent.execution_mode_override())
+    agent
+        .and_then(|agent| agent.execution_mode_override())
         .or_else(|| {
             session
                 .and_then(|session| session.config_state().values().get("agents.mode"))
@@ -306,7 +307,8 @@ fn resolve_effective_permission_level(
     session: Option<&crate::session::RuntimeSession>,
     agent: Option<&crate::agent::AgentInstance>,
 ) -> crate::provider::AgentPermissionLevel {
-    agent.and_then(|agent| agent.permission_level_override())
+    agent
+        .and_then(|agent| agent.permission_level_override())
         .or_else(|| {
             session
                 .and_then(|session| session.config_state().values().get("agents.permissions"))

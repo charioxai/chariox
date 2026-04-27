@@ -34,6 +34,35 @@ pub struct GridPosition {
     pub col_span: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSubstituteProfile {
+    pub provider: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+}
+
+impl AgentSubstituteProfile {
+    pub fn new(
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        variant: Option<String>,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            model: model.into(),
+            variant,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSubstitutionRecord {
+    pub substitute_index: usize,
+    pub reason: String,
+    pub activated_at_ms: u64,
+}
+
 impl GridPosition {
     pub fn new(row: u32, col: u32, row_span: u32, col_span: u32) -> Self {
         Self {
@@ -69,6 +98,14 @@ pub struct AgentInstance {
     mcp_grants: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     skill_grants: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    substitutes: Vec<AgentSubstituteProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active_substitute_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_substitution: Option<AgentSubstitutionRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    substitution_timeout_ms: Option<u64>,
     state: AgentState,
     is_processing: bool,
     position: GridPosition,
@@ -106,6 +143,10 @@ impl AgentInstance {
             provider_resume_state: ProviderResumeState::default(),
             mcp_grants: Vec::new(),
             skill_grants: Vec::new(),
+            substitutes: Vec::new(),
+            active_substitute_index: None,
+            last_substitution: None,
+            substitution_timeout_ms: None,
             state: AgentState::Idle,
             is_processing: false,
             position,
@@ -172,6 +213,22 @@ impl AgentInstance {
 
     pub fn skill_grants(&self) -> &[String] {
         &self.skill_grants
+    }
+
+    pub fn substitutes(&self) -> &[AgentSubstituteProfile] {
+        &self.substitutes
+    }
+
+    pub fn active_substitute_index(&self) -> Option<usize> {
+        self.active_substitute_index
+    }
+
+    pub fn last_substitution(&self) -> Option<&AgentSubstitutionRecord> {
+        self.last_substitution.as_ref()
+    }
+
+    pub fn substitution_timeout_ms(&self) -> Option<u64> {
+        self.substitution_timeout_ms
     }
 
     pub fn state(&self) -> AgentState {
@@ -269,6 +326,59 @@ impl AgentInstance {
 
     pub fn revoke_skill(&mut self, name: &str) {
         self.skill_grants.retain(|grant| grant != name);
+    }
+
+    pub fn add_substitute(&mut self, profile: AgentSubstituteProfile) {
+        self.substitutes.push(profile);
+        self.last_activity_at_ms = crate::session::unix_epoch_ms();
+    }
+
+    pub fn remove_substitute(&mut self, index: usize) -> Option<AgentSubstituteProfile> {
+        if index >= self.substitutes.len() {
+            return None;
+        }
+        let removed = self.substitutes.remove(index);
+        self.active_substitute_index = match self.active_substitute_index {
+            Some(active) if active == index => None,
+            Some(active) if active > index => Some(active - 1),
+            other => other,
+        };
+        self.last_activity_at_ms = crate::session::unix_epoch_ms();
+        Some(removed)
+    }
+
+    pub fn clear_substitutes(&mut self) {
+        self.substitutes.clear();
+        self.active_substitute_index = None;
+        self.last_substitution = None;
+        self.last_activity_at_ms = crate::session::unix_epoch_ms();
+    }
+
+    pub fn set_substitution_timeout_ms(&mut self, timeout_ms: Option<u64>) {
+        self.substitution_timeout_ms = timeout_ms;
+        self.last_activity_at_ms = crate::session::unix_epoch_ms();
+    }
+
+    pub fn activate_substitute(
+        &mut self,
+        index: usize,
+        reason: impl Into<String>,
+    ) -> Option<AgentSubstituteProfile> {
+        let profile = self.substitutes.get(index)?.clone();
+        self.active_substitute_index = Some(index);
+        self.last_substitution = Some(AgentSubstitutionRecord {
+            substitute_index: index,
+            reason: reason.into(),
+            activated_at_ms: crate::session::unix_epoch_ms(),
+        });
+        self.last_activity_at_ms = crate::session::unix_epoch_ms();
+        Some(profile)
+    }
+
+    pub fn deactivate_substitute(&mut self) {
+        self.active_substitute_index = None;
+        self.last_substitution = None;
+        self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 }
 

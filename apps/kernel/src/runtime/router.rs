@@ -33,33 +33,30 @@ use crate::local::{
     CloudRelayLoginStart, CloudRelayProfile, CloudRelayRuntimeToken, CloudSessionInvite,
     CloudSessionInviteAcceptance, CloudSessionInviteDetails, CloudSessionMember,
     ConfigureRelayRequest, ConnectCloudRelayRequest, CreateCloudSessionInviteRequest,
-    CreatePairingInviteRequest, CreateSessionInviteRequest, CreateWorkspaceLinkRequest,
-    CreateWorkspaceWorktreeRequest,
-    DeleteCredentialSecretRequest, DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest,
-    GetMcpServerRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
-    GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest,
-    GetUserConfigSchemaRequest, GrantAgentCapabilityRequest, ImportMcpServersRequest,
-    ImportSkillsRequest,
+    CreatePairingInviteRequest, CreateSessionInviteRequest, CreateWorkspaceDirectoryRequest,
+    CreateWorkspaceLinkRequest, CreateWorkspaceWorktreeRequest, DeleteCredentialSecretRequest,
+    DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GetMcpServerRequest,
+    GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+    GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
+    GrantAgentCapabilityRequest, ImportMcpServersRequest, ImportSkillsRequest,
     InstallMcpServerRequest, InstallSkillRequest, IssueCloudRelayClientTokenRequest,
     JoinPairingInviteRequest, JoinSessionInviteRequest, ListAgentsRequest,
     ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest, ListMcpServersRequest,
     ListProviderProcessesRequest, ListSessionMembersRequest, ListSessionsRequest,
     ListSkillsRequest, ListWorkspaceLinksRequest, ListWorkspaceWorktreesRequest,
-    LocalDaemonRequest, LocalDaemonResponse,
-    LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
-    PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairedClientRecord,
-    PairingInviteIntent, PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest,
-    PumpTerminalOutputRequest, QueryHistoryRequest, RecordPairedClientRequest, RelayStatus,
-    RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
-    RevokeCloudSessionInviteRequest, RevokePairedClientRequest, RevokeSessionInviteRequest,
-    SearchHistoryRequest, SearchWorkspaceDirectoriesRequest, SessionInviteRecord,
-    SetCredentialSecretRequest, SetUserConfigValueRequest, ShowCloudSessionInviteRequest,
-    ShowWorkspaceLinkRequest,
-    StartCloudRelayLoginRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
-    UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
-    UpdateMcpServerRequest, UpdateSkillRequest, UserConfigMutationEffect,
-    UserConfigProviderReloadSummary, WaitingRoomInventorySnapshot, WaitingRoomLaunchTarget,
-    WorkspaceWorktreeRecord,
+    LocalDaemonRequest, LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest,
+    MoveAgentToRemoteRequest, PairCloudRelayClientRequest, PairCloudRelayMachineRequest,
+    PairedClientRecord, PairingInviteIntent, PairingInviteRecord, PairingJoinRecord,
+    PollCloudRelayLoginRequest, PumpTerminalOutputRequest, QueryHistoryRequest,
+    RecordPairedClientRequest, RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest,
+    RevokeAgentCapabilityRequest, RevokeCloudSessionInviteRequest, RevokePairedClientRequest,
+    RevokeSessionInviteRequest, SearchHistoryRequest, SearchWorkspaceDirectoriesRequest,
+    SessionInviteRecord, SetCredentialSecretRequest, SetUserConfigValueRequest,
+    ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest, StartCloudRelayLoginRequest,
+    StartProviderLoginRequest, TeardownProviderProcessesRequest, UninstallMcpServerRequest,
+    UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
+    UserConfigMutationEffect, UserConfigProviderReloadSummary, WaitingRoomInventorySnapshot,
+    WaitingRoomLaunchTarget, WorkspaceWorktreeRecord,
 };
 use crate::provider::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
@@ -75,8 +72,8 @@ use crate::runtime::command::{
 use crate::runtime::projection::{
     page_history_entries, AgentRuntimeProjectionStore, DaemonConfigProjectionStore,
     DaemonHealthProjection, ProviderCatalogProjectionStore, ProviderProcessProjectionStore,
-    ProviderRunProjectionStore, RemoteRelayInventoryProjectionStore,
-    SessionHistoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
+    ProviderRunProjectionStore, RemoteRelayInventoryProjectionStore, SessionHistoryProjectionStore,
+    SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_launch_executor::ProviderLaunchCommandExecutor;
@@ -121,7 +118,9 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
                     &interaction_agent_id,
                     "unknown",
                 );
-            Ok::<_, DaemonError>(target.map(|(daemon_id, context)| (app.config().clone(), daemon_id, context)))
+            Ok::<_, DaemonError>(
+                target.map(|(daemon_id, context)| (app.config().clone(), daemon_id, context)),
+            )
         })?;
         if let Some((config, target_daemon_id, context)) = remote_target {
             let response = self.handle.block_on(async move {
@@ -152,7 +151,9 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
         }
         let state = self.state.clone();
         let resolution = self.handle.block_on(async move {
-            let receiver = state.create_runtime_interaction(&session_id, interaction).await?;
+            let receiver = state
+                .create_runtime_interaction(&session_id, interaction)
+                .await?;
             receiver.await.map_err(|error| DaemonError::LocalTransport {
                 operation: "provider_native_interaction_bridge",
                 message: format!("interaction dropped before resolution: {error}"),
@@ -851,10 +852,12 @@ impl CommandRouter {
             .runtime_state
             .create_runtime_interaction(&context.home_session_id, interaction)
             .await?;
-        let resolution = receiver.await.map_err(|error| DaemonError::LocalTransport {
-            operation: "relay_forward_native_interaction",
-            message: format!("interaction dropped before resolution: {error}"),
-        })?;
+        let resolution = receiver
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "relay_forward_native_interaction",
+                message: format!("interaction dropped before resolution: {error}"),
+            })?;
         Ok(crate::provider::ProviderNativeInteractionResolution {
             status: resolution.status.to_string(),
             choice_id: resolution.choice_id,
@@ -1045,6 +1048,11 @@ impl CommandRouter {
             LocalDaemonRequest::SearchWorkspaceDirectories(request) => {
                 return self
                     .execute_search_workspace_directories_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::CreateWorkspaceDirectory(request) => {
+                return self
+                    .execute_create_workspace_directory_request(request.clone())
                     .await;
             }
             LocalDaemonRequest::ListWorkspaceWorktrees(request) => {
@@ -1914,10 +1922,7 @@ impl CommandRouter {
             _response => {
                 return Err(DaemonError::LocalTransport {
                     operation: "build waiting room inventory",
-                    message: format!(
-                        "list sessions produced unexpected response `{}`",
-                        "unknown"
-                    ),
+                    message: format!("list sessions produced unexpected response `{}`", "unknown"),
                 });
             }
         };
@@ -1936,14 +1941,13 @@ impl CommandRouter {
         };
         let (_, remote_kernels) = self.remote_relay_inventory_projection.snapshot();
         let launch_target = infer_waiting_room_launch_target();
-        let inventory_version =
-            waiting_room_inventory_version(
-                &sessions,
-                &relay_status,
-                &remote_machines,
-                &remote_kernels,
-                launch_target.as_ref(),
-            )?;
+        let inventory_version = waiting_room_inventory_version(
+            &sessions,
+            &relay_status,
+            &remote_machines,
+            &remote_kernels,
+            launch_target.as_ref(),
+        )?;
         Ok(LocalDaemonResponse::WaitingRoomInventory {
             snapshot: WaitingRoomInventorySnapshot {
                 inventory_version,
@@ -1993,6 +1997,14 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::WorkspaceDirectoriesSearched { directories })
     }
 
+    async fn execute_create_workspace_directory_request(
+        &self,
+        request: CreateWorkspaceDirectoryRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let directory = create_workspace_directory(&request.path)?;
+        Ok(LocalDaemonResponse::WorkspaceDirectoryCreated { directory })
+    }
+
     async fn execute_list_workspace_worktrees_request(
         &self,
         request: ListWorkspaceWorktreesRequest,
@@ -2000,7 +2012,9 @@ impl CommandRouter {
         let launch_target = infer_waiting_room_launch_target();
         let worktrees = list_workspace_worktrees(
             &request.workspace_id,
-            launch_target.as_ref().map(|target| target.worktree_id.as_str()),
+            launch_target
+                .as_ref()
+                .map(|target| target.worktree_id.as_str()),
         )?;
         Ok(LocalDaemonResponse::WorkspaceWorktreesListed {
             workspace_id: request.workspace_id,
@@ -2012,7 +2026,12 @@ impl CommandRouter {
         &self,
         request: CreateWorkspaceWorktreeRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let path = create_waiting_room_worktree(&request.workspace_id)?;
+        let path = create_waiting_room_worktree(
+            &request.workspace_id,
+            request.path.as_deref(),
+            request.branch.as_deref(),
+            request.base_ref.as_deref(),
+        )?;
         let launch_target = infer_waiting_room_launch_target();
         let worktree = WorkspaceWorktreeRecord {
             current: launch_target
@@ -2397,6 +2416,7 @@ impl CommandRouter {
                 "machineId": request.machine_id,
                 "userId": profile.user_id,
                 "alias": request.alias,
+                "runtimeProfile": self.machine_runtime_profile_payload().await,
             }),
         )
         .await?;
@@ -2665,6 +2685,43 @@ impl CommandRouter {
             });
         }
         Ok(profile)
+    }
+
+    async fn machine_runtime_profile_payload(&self) -> serde_json::Value {
+        let config = self.config_projection.snapshot();
+        let user_config = config.user_config.clone();
+        let provider_catalog = if let Some(catalog) = self
+            .provider_catalog_projection
+            .get(PROVIDER_CATALOG_CACHE_TTL)
+        {
+            serde_json::to_value(catalog).ok()
+        } else {
+            tokio::task::spawn_blocking({
+                let config = config.clone();
+                move || load_provider_catalog(config)
+            })
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|catalog| serde_json::to_value(catalog).ok())
+        };
+        let launch_target = infer_waiting_room_launch_target();
+        serde_json::json!({
+            "profileVersion": 1,
+            "providerCatalog": provider_catalog,
+            "userConfig": {
+                "providers": user_config.providers,
+                "ui": user_config.ui,
+            },
+            "defaultWorkspaceId": launch_target.as_ref().map(|target| target.workspace_id.clone()),
+            "defaultWorktreeId": launch_target.as_ref().map(|target| target.worktree_id.clone()),
+            "workspaces": launch_target.as_ref().map(|target| serde_json::json!([{
+                "workspaceId": target.workspace_id,
+                "worktreeId": target.worktree_id,
+            }])),
+            "os": std::env::consts::OS,
+            "homeDir": std::env::var("HOME").ok(),
+        })
     }
 
     async fn persist_cloud_profile(
@@ -3787,13 +3844,19 @@ impl CommandRouter {
                 self.projected_waiting_room_inventory_response().await
             }
             LocalDaemonRequest::SearchWorkspaceDirectories(request) => {
-                self.execute_search_workspace_directories_request(request).await
+                self.execute_search_workspace_directories_request(request)
+                    .await
+            }
+            LocalDaemonRequest::CreateWorkspaceDirectory(request) => {
+                self.execute_create_workspace_directory_request(request)
+                    .await
             }
             LocalDaemonRequest::ListWorkspaceWorktrees(request) => {
                 self.execute_list_workspace_worktrees_request(request).await
             }
             LocalDaemonRequest::CreateWorkspaceWorktree(request) => {
-                self.execute_create_workspace_worktree_request(request).await
+                self.execute_create_workspace_worktree_request(request)
+                    .await
             }
             LocalDaemonRequest::ApproveRemoteMachine(request) => {
                 self.execute_approve_remote_machine_request(request).await
@@ -3959,6 +4022,7 @@ impl CommandRouter {
             | LocalDaemonRequest::DetachFromSession(_)
             | LocalDaemonRequest::UpdateSessionConfig(_)
             | LocalDaemonRequest::UpdateAgentConfig(_)
+            | LocalDaemonRequest::UpdateAgentSubstitutes(_)
             | LocalDaemonRequest::ResizeTerminal(_)
             | LocalDaemonRequest::EndSession(_)
             | LocalDaemonRequest::DeleteSession(_)
@@ -4538,11 +4602,24 @@ fn search_workspace_directories(query: &str, limit: usize) -> Result<Vec<String>
     let mut seen = HashSet::new();
     let roots = workspace_search_roots();
     let launch_target = infer_waiting_room_launch_target();
-    let normalized_query = query.trim().to_lowercase();
+    let trimmed_query = query.trim();
+    let normalized_query = trimmed_query.to_lowercase();
 
     if let Some(target) = launch_target {
-        push_unique_path(&mut results, &mut seen, target.workspace_id);
-        push_unique_path(&mut results, &mut seen, target.worktree_id);
+        push_matching_path(
+            &mut results,
+            &mut seen,
+            target.workspace_id,
+            &normalized_query,
+            limit,
+        );
+        push_matching_path(
+            &mut results,
+            &mut seen,
+            target.worktree_id,
+            &normalized_query,
+            limit,
+        );
     }
 
     if normalized_query.is_empty() {
@@ -4570,38 +4647,20 @@ fn search_workspace_directories(query: &str, limit: usize) -> Result<Vec<String>
         return Ok(results);
     }
 
-    let query_pattern = normalized_query.replace('\'', "");
+    if looks_like_path_query(trimmed_query) {
+        append_directory_completion(&mut results, &mut seen, trimmed_query, limit)?;
+        results.truncate(limit);
+        return Ok(results);
+    }
+
     for root in roots {
-        if results.len() >= limit {
-            break;
-        }
-        let remaining = limit.saturating_sub(results.len());
-        let command = format!(
-            "find '{}' -type d -iname '*{}*' 2>/dev/null | head -n {}",
-            shell_escape_path(&root),
-            query_pattern,
-            remaining
-        );
-        let output = std::process::Command::new("sh")
-            .arg("-lc")
-            .arg(command)
-            .output()
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "search workspace directories",
-                message: error.to_string(),
-            })?;
-        if !output.status.success() {
-            continue;
-        }
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                push_unique_path(&mut results, &mut seen, trimmed.to_string());
-                if results.len() >= limit {
-                    break;
-                }
-            }
-        }
+        append_matching_directory_children(
+            &mut results,
+            &mut seen,
+            &root,
+            &normalized_query,
+            limit,
+        )?;
     }
     results.truncate(limit);
     Ok(results)
@@ -4634,8 +4693,154 @@ fn push_unique_path(results: &mut Vec<String>, seen: &mut HashSet<String>, value
     }
 }
 
-fn shell_escape_path(path: &Path) -> String {
-    path.display().to_string().replace('\'', "'\\''")
+fn push_matching_path(
+    results: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    value: String,
+    normalized_query: &str,
+    limit: usize,
+) {
+    if results.len() >= limit {
+        return;
+    }
+    if normalized_query.is_empty() || value.to_lowercase().contains(normalized_query) {
+        push_unique_path(results, seen, value);
+    }
+}
+
+fn looks_like_path_query(query: &str) -> bool {
+    query.starts_with('/') || query.starts_with("~/") || query == "~" || query.contains('/')
+}
+
+fn append_directory_completion(
+    results: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    query: &str,
+    limit: usize,
+) -> Result<(), DaemonError> {
+    let expanded = expand_workspace_query_path(query);
+    if expanded.is_dir() {
+        push_unique_path(results, seen, expanded.display().to_string());
+    }
+    let prefix = if query.ends_with('/') {
+        String::new()
+    } else {
+        expanded
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("")
+            .to_lowercase()
+    };
+    let parent = if query.ends_with('/') || expanded.is_dir() {
+        expanded
+    } else {
+        expanded
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("/"))
+    };
+    append_matching_directory_children(results, seen, &parent, &prefix, limit)
+}
+
+fn append_matching_directory_children(
+    results: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    parent: &Path,
+    normalized_query: &str,
+    limit: usize,
+) -> Result<(), DaemonError> {
+    if results.len() >= limit || !parent.is_dir() {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(parent).map_err(|error| DaemonError::LocalTransport {
+        operation: "search workspace directories",
+        message: error.to_string(),
+    })?;
+    let mut matches = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("")
+            .to_lowercase();
+        if normalized_query.is_empty() || name.contains(normalized_query) {
+            matches.push(path);
+        }
+    }
+    matches.sort_by(|left, right| {
+        let left_name = left
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("")
+            .to_lowercase();
+        let right_name = right
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("")
+            .to_lowercase();
+        let left_prefix = normalized_query.is_empty() || left_name.starts_with(normalized_query);
+        let right_prefix = normalized_query.is_empty() || right_name.starts_with(normalized_query);
+        right_prefix
+            .cmp(&left_prefix)
+            .then_with(|| left_name.cmp(&right_name))
+    });
+    for path in matches {
+        push_unique_path(results, seen, path.display().to_string());
+        if results.len() >= limit {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn expand_workspace_query_path(query: &str) -> PathBuf {
+    if query == "~" {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(query));
+    }
+    if let Some(rest) = query.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(query)
+}
+
+fn create_workspace_directory(path: &str) -> Result<String, DaemonError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "create workspace directory",
+            message: "workspace path is required".to_string(),
+        });
+    }
+    let expanded = expand_workspace_query_path(trimmed);
+    let directory = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "create workspace directory",
+                message: error.to_string(),
+            })?
+            .join(expanded)
+    };
+    if directory.exists() && !directory.is_dir() {
+        return Err(DaemonError::LocalTransport {
+            operation: "create workspace directory",
+            message: format!("{} exists and is not a directory", directory.display()),
+        });
+    }
+    std::fs::create_dir_all(&directory).map_err(|error| DaemonError::LocalTransport {
+        operation: "create workspace directory",
+        message: error.to_string(),
+    })?;
+    Ok(directory.display().to_string())
 }
 
 fn list_workspace_worktrees(
@@ -4726,16 +4931,28 @@ fn detect_git_branch(path: &str) -> Result<String, DaemonError> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn create_waiting_room_worktree(workspace_path: &str) -> Result<String, DaemonError> {
+fn create_waiting_room_worktree(
+    workspace_path: &str,
+    requested_path: Option<&str>,
+    requested_branch: Option<&str>,
+    requested_base_ref: Option<&str>,
+) -> Result<String, DaemonError> {
     let repo_root = resolve_repo_root(workspace_path)?;
-    let base_ref = resolve_preferred_base_ref(&repo_root)?;
+    let base_ref = requested_base_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or(resolve_preferred_base_ref(&repo_root)?);
     let description = std::env::var("ARROBA_WAITING_ROOM_WORKTREE_DESCRIPTION")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| {
             format!(
                 "{}-session",
-                repo_root.file_name().and_then(OsStr::to_str).unwrap_or("workspace")
+                repo_root
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .unwrap_or("workspace")
             )
         });
     let branch_base = format!(
@@ -4743,15 +4960,38 @@ fn create_waiting_room_worktree(workspace_path: &str) -> Result<String, DaemonEr
         slugify_segment(&description),
         timestamp_slug(),
     );
-    let branch = resolve_available_branch_name(&repo_root, &branch_base)?;
+    let branch = match requested_branch
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => value.to_string(),
+        None => resolve_available_branch_name(&repo_root, &branch_base)?,
+    };
     let parent = repo_root.parent().unwrap_or(&repo_root);
     let directory_base = format!(
         "{}-{}",
-        repo_root.file_name().and_then(OsStr::to_str).unwrap_or("workspace"),
+        repo_root
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("workspace"),
         slugify_segment(&branch.replace('/', "-"))
     );
-    let directory = resolve_available_worktree_directory(parent, &directory_base);
-    run_git(&repo_root, &["worktree", "add", "-b", &branch, directory.to_str().unwrap_or(""), &base_ref])?;
+    let directory = requested_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| resolve_requested_worktree_directory(parent, value))
+        .unwrap_or_else(|| resolve_available_worktree_directory(parent, &directory_base));
+    run_git(
+        &repo_root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &branch,
+            directory.to_str().unwrap_or(""),
+            &base_ref,
+        ],
+    )?;
     Ok(directory.display().to_string())
 }
 
@@ -4770,7 +5010,9 @@ fn resolve_repo_root(workspace_path: &str) -> Result<PathBuf, DaemonError> {
             message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         });
     }
-    Ok(PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()))
+    Ok(PathBuf::from(
+        String::from_utf8_lossy(&output.stdout).trim(),
+    ))
 }
 
 fn resolve_preferred_base_ref(repo_root: &Path) -> Result<String, DaemonError> {
@@ -4805,6 +5047,15 @@ fn resolve_available_worktree_directory(parent: &Path, base_name: &str) -> PathB
         index += 1;
     }
     attempt
+}
+
+fn resolve_requested_worktree_directory(parent: &Path, value: &str) -> PathBuf {
+    let expanded = expand_workspace_query_path(value);
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        parent.join(expanded)
+    }
 }
 
 fn git_ref_exists(repo_root: &Path, reference: &str) -> Result<bool, DaemonError> {
@@ -4843,7 +5094,13 @@ fn slugify_segment(value: &str) -> String {
         .trim()
         .to_lowercase()
         .chars()
-        .map(|character| if character.is_ascii_alphanumeric() { character } else { '-' })
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
         .collect::<String>();
     slug.trim_matches('-')
         .split('-')
@@ -5312,7 +5569,10 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
         LocalDaemonRequest::UpdateSessionConfig(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::UpdateAgentConfig(request) => Some(
+        LocalDaemonRequest::UpdateAgentConfig(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::UpdateAgentSubstitutes(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::GetSessionState(request) => Some(SessionMembershipScope::SessionId(
@@ -5514,6 +5774,11 @@ fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusProjectionRefr
         LocalDaemonRequest::UpdateAgentConfig(request) => FocusProjectionRefresh::SnapshotSession {
             session_id: request.session_id.clone(),
         },
+        LocalDaemonRequest::UpdateAgentSubstitutes(request) => {
+            FocusProjectionRefresh::SnapshotSession {
+                session_id: request.session_id.clone(),
+            }
+        }
         LocalDaemonRequest::DestroyAgent(request) => FocusProjectionRefresh::SnapshotSession {
             session_id: request.session_id.clone(),
         },
@@ -5604,9 +5869,8 @@ fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjection
         | LocalDaemonRequest::CycleAgentFocus(_) => SessionProjectionRefresh::None,
         LocalDaemonRequest::SpawnAgent(_)
         | LocalDaemonRequest::UpdateAgentConfig(_)
-        | LocalDaemonRequest::DestroyAgent(_) => {
-            SessionProjectionRefresh::SnapshotAgentResponse
-        }
+        | LocalDaemonRequest::UpdateAgentSubstitutes(_)
+        | LocalDaemonRequest::DestroyAgent(_) => SessionProjectionRefresh::SnapshotAgentResponse,
         LocalDaemonRequest::CompletePrompt(_) | LocalDaemonRequest::CancelActivePrompt(_) => {
             SessionProjectionRefresh::None
         }

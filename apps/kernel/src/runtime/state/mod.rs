@@ -28,6 +28,8 @@ use arroba_relay::protocol::ClientTarget;
 
 mod managed_io;
 use managed_io::*;
+mod context_handoff;
+use context_handoff::*;
 mod provider_reload;
 pub(crate) use provider_reload::*;
 
@@ -62,6 +64,7 @@ struct KernelRuntimeOwnedState {
     managed_io_external_changes: crate::io::ArtifactExternalChangeMonitor,
     workspace_identity_monitor:
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
+    pending_agent_context_handoffs: PendingAgentContextHandoffStore,
     pending_mcp_continuations: PendingMcpContinuationStore,
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
@@ -128,7 +131,9 @@ struct PendingInteractionStore {
 impl PendingMcpContinuationStore {
     fn shared() -> Self {
         static STORE: OnceLock<PendingMcpContinuationStore> = OnceLock::new();
-        STORE.get_or_init(PendingMcpContinuationStore::default).clone()
+        STORE
+            .get_or_init(PendingMcpContinuationStore::default)
+            .clone()
     }
 }
 
@@ -232,6 +237,7 @@ impl KernelRuntimeState {
                 managed_io_external_changes: crate::io::ArtifactExternalChangeMonitor::default(),
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
+                pending_agent_context_handoffs: PendingAgentContextHandoffStore::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
@@ -546,6 +552,17 @@ impl KernelRuntimeState {
             execution_mode_override,
             permission_level_override,
         )
+    }
+
+    pub(crate) async fn update_agent_substitutes(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        action: crate::local::AgentSubstituteAction,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.owned
+            .update_agent_substitutes(session_id, agent_id, caller_user_id, action)
     }
 
     pub(super) async fn create_runtime_interaction(

@@ -255,7 +255,11 @@ fn runtime_mcp_config(
 fn inherited_codex_auth_env() -> BTreeMap<String, String> {
     CODEX_AUTH_ENV_VARS
         .iter()
-        .filter_map(|name| env::var(name).ok().map(|value| ((*name).to_string(), value)))
+        .filter_map(|name| {
+            env::var(name)
+                .ok()
+                .map(|value| ((*name).to_string(), value))
+        })
         .collect()
 }
 

@@ -1353,9 +1353,9 @@ mod tests {
         ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, AgentRuntimeProjectionStore,
         DaemonHealthProjection, ManagedIoHealthSnapshot, ProjectionInvariantHealthSnapshot,
         ProviderCatalogHealthSnapshot, ProviderRunActorHealthSnapshot,
-        RemoteRelayInventoryProjectionStore,
-        SessionProjectionHealthSnapshot, SessionSnapshotProjection, SessionStateProjectionStore,
-        TransportHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
+        RemoteRelayInventoryProjectionStore, SessionProjectionHealthSnapshot,
+        SessionSnapshotProjection, SessionStateProjectionStore, TransportHealthSnapshot,
+        WorkspaceCoordinationHealthSnapshot,
     };
     use crate::session::CreateSessionRequest;
     use crate::terminal::TerminalStreamHealthSnapshot;

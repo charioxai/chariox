@@ -9,8 +9,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::error::DaemonError;
 use crate::runtime::projection::{ActorQueueSnapshot, ProviderRunActorHealthSnapshot};
-use crate::session::RuntimeInteraction;
 use crate::session::PromptAttachment;
+use crate::session::RuntimeInteraction;
 
 use super::{
     codex_runtime::{abort_codex_turn, drain_codex_events, submit_codex_prompt},
@@ -1224,11 +1224,7 @@ fn execute_output_poll_command(
         if !output_poll_delay.is_zero() {
             thread::sleep(output_poll_delay);
         }
-        let poll = drain_codex_events(
-            run,
-            &mut state,
-            native_interaction_bridge.read(),
-        );
+        let poll = drain_codex_events(run, &mut state, native_interaction_bridge.read());
         restore_codex_runtime_if_live(codex_runs, cleared_runs, run_id, &slot, state);
         let poll = poll?;
         return Ok(Some(ProviderPromptSignalBatch {

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -546,28 +546,35 @@ impl CodexClient {
         socket: &mut CodexSocket,
         timeout: Duration,
     ) -> Result<Option<CodexNotification>, DaemonError> {
-        set_socket_timeouts(socket, Some(timeout), Some(Duration::from_secs(5)))?;
-        match socket.read() {
-            Ok(message) => {
-                let raw = match message {
-                    Message::Text(text) => text.to_string(),
-                    Message::Binary(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-                    Message::Ping(_) | Message::Pong(_) => return Ok(None),
-                    Message::Close(_) => {
-                        return Ok(Some(CodexNotification::Error {
-                            message: "Codex app-server closed the websocket".to_string(),
-                        }));
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            set_socket_timeouts(socket, Some(remaining), Some(Duration::from_secs(5)))?;
+            match socket.read() {
+                Ok(message) => {
+                    let raw = match message {
+                        Message::Text(text) => text.to_string(),
+                        Message::Binary(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                        Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+                        Message::Close(_) => {
+                            return Ok(Some(CodexNotification::Error {
+                                message: "Codex app-server closed the websocket".to_string(),
+                            }));
+                        }
+                    };
+                    let message: JsonRpcMessage = serde_json::from_str(&raw).map_err(|error| {
+                        self.protocol_error("codex_notification_parse", error.to_string())
+                    })?;
+                    if self.respond_to_server_request(socket, &message)? {
+                        continue;
                     }
-                    Message::Frame(_) => return Ok(None),
-                };
-                let message: JsonRpcMessage = serde_json::from_str(&raw).map_err(|error| {
-                    self.protocol_error("codex_notification_parse", error.to_string())
-                })?;
-                if self.respond_to_server_request(socket, &message)? {
-                    return Ok(None);
-                }
-                let notification = parse_notification(message.clone());
-                if notification.is_none() {
+                    let notification = parse_notification(message.clone());
+                    if let Some(notification) = notification {
+                        return Ok(Some(notification));
+                    }
                     if let Some(method) = message.method.as_deref() {
                         crate::logging::debug_with_fields(
                             "daemon.provider.codex",
@@ -581,18 +588,18 @@ impl CodexClient {
                             }),
                         );
                     }
+                    continue;
                 }
-                Ok(notification)
+                Err(tokio_tungstenite::tungstenite::Error::Io(error))
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Ok(None);
+                }
+                Err(error) => return Err(self.protocol_error("codex_read", error.to_string())),
             }
-            Err(tokio_tungstenite::tungstenite::Error::Io(error))
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                Ok(None)
-            }
-            Err(error) => Err(self.protocol_error("codex_read", error.to_string())),
         }
     }
 
@@ -763,7 +770,11 @@ impl CodexClient {
         &self,
         message: &JsonRpcMessage,
     ) -> Result<Value, DaemonError> {
-        let params = message.params.as_ref().cloned().unwrap_or_else(|| json!({}));
+        let params = message
+            .params
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         crate::logging::info_with_fields(
             "daemon.provider.codex",
             "codex requested command approval",
@@ -803,8 +814,15 @@ impl CodexClient {
         )
     }
 
-    fn file_change_approval_response(&self, message: &JsonRpcMessage) -> Result<Value, DaemonError> {
-        let params = message.params.as_ref().cloned().unwrap_or_else(|| json!({}));
+    fn file_change_approval_response(
+        &self,
+        message: &JsonRpcMessage,
+    ) -> Result<Value, DaemonError> {
+        let params = message
+            .params
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         crate::logging::info_with_fields(
             "daemon.provider.codex",
             "codex requested file change approval",
@@ -841,7 +859,11 @@ impl CodexClient {
         &self,
         message: &JsonRpcMessage,
     ) -> Result<Value, DaemonError> {
-        let params = message.params.as_ref().cloned().unwrap_or_else(|| json!({}));
+        let params = message
+            .params
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         crate::logging::info_with_fields(
             "daemon.provider.codex",
             "codex requested exec command approval",
@@ -898,7 +920,11 @@ impl CodexClient {
         &self,
         message: &JsonRpcMessage,
     ) -> Result<Value, DaemonError> {
-        let params = message.params.as_ref().cloned().unwrap_or_else(|| json!({}));
+        let params = message
+            .params
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         crate::logging::info_with_fields(
             "daemon.provider.codex",
             "codex requested apply_patch approval",
@@ -1752,7 +1778,11 @@ mod tests {
 
     #[test]
     fn managed_io_permission_policy_uses_read_only_sandbox() {
-        let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired, AgentExecutionMode::Build, AgentPermissionLevel::Yolo);
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::ManagedIoRequired,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
 
         assert_eq!(policy.approval_policy, json!("never"));
         assert_eq!(policy.sandbox, "read-only");
@@ -1868,7 +1898,11 @@ mod tests {
         let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
             .expect("client should construct")
             .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"));
-        let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired, AgentExecutionMode::Build, AgentPermissionLevel::Yolo);
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::ManagedIoRequired,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
 
         let overrides = client.thread_config_overrides(&policy).unwrap();
 
@@ -1900,7 +1934,11 @@ mod tests {
         let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
             .expect("client should construct")
             .with_mcp_servers(&[server]);
-        let policy = codex_permission_policy(ProviderWriteAccessMode::Unrestricted, AgentExecutionMode::Build, AgentPermissionLevel::Yolo);
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
 
         let overrides = client.thread_config_overrides(&policy).unwrap();
 
@@ -1932,7 +1970,11 @@ mod tests {
             .expect("client should construct")
             .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"))
             .with_mcp_servers(&[server]);
-        let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired, AgentExecutionMode::Build, AgentPermissionLevel::Yolo);
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::ManagedIoRequired,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
 
         let overrides = client.thread_config_overrides(&policy).unwrap();
 

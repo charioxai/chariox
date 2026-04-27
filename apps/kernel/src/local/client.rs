@@ -52,7 +52,10 @@ impl LocalDaemonClient {
         let sequence = self.command_sequence.fetch_add(1, Ordering::Relaxed);
         let command_id = format!("local-client-{}-{sequence}", unix_epoch_ms());
         self.runtime.block_on(async {
-            let caller = self.router.local_command_caller(KernelCommandSource::LocalIpc).await;
+            let caller = self
+                .router
+                .local_command_caller(KernelCommandSource::LocalIpc)
+                .await;
             let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
                 command_id,
                 KernelCommandSource::LocalIpc,
@@ -99,10 +102,9 @@ mod tests {
         let client = LocalDaemonClient::new(app).expect("local daemon client should start");
 
         let response = client
-            .send(LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-client",
-                ".",
-            )))
+            .send(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-client", "."),
+            ))
             .expect("session create should succeed");
         let session = match response {
             LocalDaemonResponse::SessionCreated { session, .. } => session,

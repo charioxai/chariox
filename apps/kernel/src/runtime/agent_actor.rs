@@ -748,9 +748,7 @@ mod tests {
         SubmitPromptRequest,
     };
     use crate::provider::{LaunchProviderRequest, ProviderRunOperationLanes};
-    use crate::runtime::agent_actor::{
-        materialize_inline_prompt_attachments, AgentRuntime,
-    };
+    use crate::runtime::agent_actor::{materialize_inline_prompt_attachments, AgentRuntime};
     use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::runtime::prompt_state::PromptStateOwner;
     use crate::runtime::session_actor::FocusedAgentProjection;
@@ -771,12 +769,9 @@ mod tests {
         )
         .with_contents_base64(base64::engine::general_purpose::STANDARD.encode("hello artifact"));
 
-        let materialized = materialize_inline_prompt_attachments(
-            "session/one",
-            "agent:one",
-            vec![attachment],
-        )
-        .expect("inline attachment should materialize");
+        let materialized =
+            materialize_inline_prompt_attachments("session/one", "agent:one", vec![attachment])
+                .expect("inline attachment should materialize");
 
         assert_eq!(materialized.len(), 1);
         let path = materialized[0]

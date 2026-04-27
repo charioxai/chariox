@@ -86,9 +86,8 @@ impl KernelRuntimeOwnedState {
         if session.agents().len() > 1 {
             let focused_agent_id = session.focused_agent_id().map(str::to_string);
             if let Some(focused_agent_id) = focused_agent_id {
-                let active_prompt_agent_id = self
-                    .prompt_state_owner
-                    .active_prompt_agent_id(&session);
+                let active_prompt_agent_id =
+                    self.prompt_state_owner.active_prompt_agent_id(&session);
                 let has_active_prompt = active_prompt_agent_id.is_some();
                 let has_processing_agent =
                     session.agents().iter().any(|agent| agent.is_processing());
@@ -412,6 +411,10 @@ impl KernelRuntimeOwnedState {
         started: &crate::app::StartedProviderLaunch,
         binding: Option<crate::provider::ProviderRuntimeBinding>,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
+        let previous_active_run = started
+            .previous_active_run_id
+            .as_deref()
+            .and_then(|run_id| self.provider_store.get_run(run_id).ok());
         if let Some(binding) = binding {
             self.provider_store
                 .apply_runtime_binding(started.run.id(), binding)?;
@@ -445,6 +448,9 @@ impl KernelRuntimeOwnedState {
                 run.variant().map(str::to_string),
                 run.resume_state().clone(),
             )?;
+        }
+        if let Some(previous_active_run) = previous_active_run.as_ref() {
+            self.prepare_provider_switch_context_handoff(previous_active_run, &run);
         }
         self.provider_run_projection.update(run.clone());
         Ok(run)

@@ -139,6 +139,37 @@ pub struct UpdateAgentConfigRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentSubstituteAction {
+    Add {
+        provider: String,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        variant: Option<String>,
+    },
+    Remove {
+        index: usize,
+    },
+    Clear,
+    SetTimeout {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
+    Activate {
+        index: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    Primary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateAgentSubstitutesRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    pub action: AgentSubstituteAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetSessionStateRequest {
     pub session_id: String,
 }
@@ -176,6 +207,11 @@ pub struct SearchWorkspaceDirectoriesRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkspaceDirectoryRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListWorkspaceWorktreesRequest {
     pub workspace_id: String,
 }
@@ -183,6 +219,12 @@ pub struct ListWorkspaceWorktreesRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateWorkspaceWorktreeRequest {
     pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1321,6 +1363,7 @@ pub enum LocalDaemonRequest {
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetWaitingRoomInventory(GetWaitingRoomInventoryRequest),
     SearchWorkspaceDirectories(SearchWorkspaceDirectoriesRequest),
+    CreateWorkspaceDirectory(CreateWorkspaceDirectoryRequest),
     ListWorkspaceWorktrees(ListWorkspaceWorktreesRequest),
     CreateWorkspaceWorktree(CreateWorkspaceWorktreeRequest),
     ApproveRemoteMachine(ApproveRemoteMachineRequest),
@@ -1346,6 +1389,7 @@ pub enum LocalDaemonRequest {
     CancelActivePrompt(CancelActivePromptRequest),
     UpdateSessionConfig(UpdateSessionConfigRequest),
     UpdateAgentConfig(UpdateAgentConfigRequest),
+    UpdateAgentSubstitutes(UpdateAgentSubstitutesRequest),
     ResizeTerminal(ResizeTerminalRequest),
     PumpTerminalOutput(PumpTerminalOutputRequest),
     RunShellCommand(RunShellCapabilityRequest),
@@ -1610,6 +1654,9 @@ pub enum LocalDaemonResponse {
     },
     WorkspaceDirectoriesSearched {
         directories: Vec<String>,
+    },
+    WorkspaceDirectoryCreated {
+        directory: String,
     },
     WorkspaceWorktreesListed {
         workspace_id: String,

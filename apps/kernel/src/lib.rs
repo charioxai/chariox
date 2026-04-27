@@ -448,6 +448,57 @@ mod tests {
     }
 
     #[test]
+    fn leased_projection_pump_forwards_completion_after_provider_run_ends() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                Some("sonnet".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+
+        let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+            .submit_leased_prompt(&leased_agent.id, "remote leased prompt\n", Vec::new())
+            .expect("leased prompt should submit");
+        match outcome {
+            PromptSubmissionOutcome::Started { .. } => {}
+            other => panic!("unexpected prompt submission outcome: {other:?}"),
+        }
+        app.complete_active_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            Some(&provider_run_id),
+        )
+        .expect("backing prompt should settle first");
+        let ended = app
+            .providers_mut()
+            .terminate_run_provider_only(&leased_agent.backing_session_id, &provider_run_id)
+            .expect("provider run should end")
+            .into_run();
+        app.update_provider_run_projection(ended);
+
+        let events = RemoteLeaseRuntime::new(&mut app)
+            .pump_leased_runtime_projections()
+            .expect("leased projection pump should run");
+
+        assert_eq!(events.len(), 1);
+        let (_target_kernel_id, event) = &events[0];
+        let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = event;
+        assert_eq!(completions.len(), 1);
+    }
+
+    #[test]
     fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");

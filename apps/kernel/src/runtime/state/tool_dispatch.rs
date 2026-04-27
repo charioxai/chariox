@@ -322,7 +322,10 @@ impl KernelRuntimeState {
                     .collect::<Vec<_>>();
                 let default_choice_id = args.default_on_timeout.clone();
                 if let Some(default_choice_id) = default_choice_id.as_deref() {
-                    if !choices.iter().any(|choice| choice.id() == default_choice_id) {
+                    if !choices
+                        .iter()
+                        .any(|choice| choice.id() == default_choice_id)
+                    {
                         return Err(DaemonError::LocalTransport {
                             operation: "runtime_tool_request_popup",
                             message: format!(
@@ -334,14 +337,14 @@ impl KernelRuntimeState {
                 let interaction = crate::session::RuntimeInteraction::new(
                     format!(
                         "interaction-{}-{}",
-                        provider_run
-                            .agent_instance_id()
-                            .unwrap_or("agent"),
+                        provider_run.agent_instance_id().unwrap_or("agent"),
                         crate::session::unix_epoch_ms()
                     ),
-                    provider_run.agent_instance_id().ok_or_else(|| DaemonError::LocalTransport {
-                        operation: "runtime_tool_request_popup",
-                        message: "provider run is not bound to an agent".to_string(),
+                    provider_run.agent_instance_id().ok_or_else(|| {
+                        DaemonError::LocalTransport {
+                            operation: "runtime_tool_request_popup",
+                            message: "provider run is not bound to an agent".to_string(),
+                        }
                     })?,
                     crate::session::RuntimeInteractionKind::Choice,
                     args.level
@@ -372,10 +375,15 @@ impl KernelRuntimeState {
                             .await;
                     });
                 }
-                let resolution = resolution_rx.await.map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_request_popup",
-                    message: format!("popup interaction dropped before resolution: {error}"),
-                })?;
+                let resolution =
+                    resolution_rx
+                        .await
+                        .map_err(|error| DaemonError::LocalTransport {
+                            operation: "runtime_tool_request_popup",
+                            message: format!(
+                                "popup interaction dropped before resolution: {error}"
+                            ),
+                        })?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
@@ -1006,7 +1014,11 @@ impl KernelRuntimeState {
         let resolved_agent_id = provider_run
             .agent_instance_id()
             .map(str::to_string)
-            .or_else(|| self.owned.prompt_state_owner.active_prompt_agent_id(&session));
+            .or_else(|| {
+                self.owned
+                    .prompt_state_owner
+                    .active_prompt_agent_id(&session)
+            });
         let workspace_context = self
             .managed_io_workspace_for_provider_run(provider_run)
             .await?;
@@ -1603,10 +1615,7 @@ impl KernelRuntimeState {
             valid: true,
         };
         let permission_level = self
-            .effective_permission_level_for_agent(
-                &context.home_session_id,
-                &context.home_agent_id,
-            )
+            .effective_permission_level_for_agent(&context.home_session_id, &context.home_agent_id)
             .await?;
         if let Some(result) = self
             .maybe_gate_managed_io_mutation(
@@ -2006,8 +2015,7 @@ impl KernelRuntimeState {
         if !managed_io_tool_requires_popup(tool_name) {
             return Ok(None);
         }
-        let interaction =
-            managed_io_permission_interaction(agent_id, tool_name, arguments)?;
+        let interaction = managed_io_permission_interaction(agent_id, tool_name, arguments)?;
         let interaction_id = interaction.id().to_string();
         let resolution = self
             .create_runtime_interaction(session_id, interaction)
@@ -2081,7 +2089,10 @@ fn managed_io_permission_interaction(
 ) -> Result<crate::session::RuntimeInteraction, DaemonError> {
     let (title, message) = managed_io_permission_message(tool_name, arguments)?;
     Ok(crate::session::RuntimeInteraction::new(
-        format!("managed-io-permission-{agent_id}-{}", crate::session::unix_epoch_ms()),
+        format!(
+            "managed-io-permission-{agent_id}-{}",
+            crate::session::unix_epoch_ms()
+        ),
         agent_id,
         crate::session::RuntimeInteractionKind::Permission,
         crate::session::RuntimeInteractionLevel::Warning,
@@ -2112,9 +2123,9 @@ fn managed_io_permission_message(
 ) -> Result<(String, String), DaemonError> {
     match tool_name {
         crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL => {
-            let args = serde_json::from_value::<crate::transport::runtime_tools::ManagedEditArtifactArgs>(
-                arguments.clone(),
-            )
+            let args = serde_json::from_value::<
+                crate::transport::runtime_tools::ManagedEditArtifactArgs,
+            >(arguments.clone())
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "managed_io_permission_message",
                 message: format!("invalid managed edit arguments: {error}"),
@@ -2125,9 +2136,9 @@ fn managed_io_permission_message(
             ))
         }
         crate::transport::runtime_tools::APPLY_PATCH_TOOL => {
-            let args = serde_json::from_value::<crate::transport::runtime_tools::ManagedApplyPatchArgs>(
-                arguments.clone(),
-            )
+            let args = serde_json::from_value::<
+                crate::transport::runtime_tools::ManagedApplyPatchArgs,
+            >(arguments.clone())
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "managed_io_permission_message",
                 message: format!("invalid managed apply_patch arguments: {error}"),
@@ -2146,9 +2157,9 @@ fn managed_io_permission_message(
             ))
         }
         crate::transport::runtime_tools::DELETE_ARTIFACT_TOOL => {
-            let args = serde_json::from_value::<crate::transport::runtime_tools::ManagedDeleteArtifactArgs>(
-                arguments.clone(),
-            )
+            let args = serde_json::from_value::<
+                crate::transport::runtime_tools::ManagedDeleteArtifactArgs,
+            >(arguments.clone())
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "managed_io_permission_message",
                 message: format!("invalid managed delete arguments: {error}"),
@@ -2159,9 +2170,9 @@ fn managed_io_permission_message(
             ))
         }
         crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL => {
-            let args = serde_json::from_value::<crate::transport::runtime_tools::ManagedMoveArtifactArgs>(
-                arguments.clone(),
-            )
+            let args = serde_json::from_value::<
+                crate::transport::runtime_tools::ManagedMoveArtifactArgs,
+            >(arguments.clone())
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "managed_io_permission_message",
                 message: format!("invalid managed move arguments: {error}"),
@@ -2175,9 +2186,9 @@ fn managed_io_permission_message(
             ))
         }
         crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL => {
-            let args = serde_json::from_value::<crate::transport::runtime_tools::ManagedWriteArtifactArgs>(
-                arguments.clone(),
-            )
+            let args = serde_json::from_value::<
+                crate::transport::runtime_tools::ManagedWriteArtifactArgs,
+            >(arguments.clone())
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "managed_io_permission_message",
                 message: format!("invalid managed write arguments: {error}"),

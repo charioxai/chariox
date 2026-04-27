@@ -8,9 +8,9 @@ use crate::error::DaemonError;
 use crate::local::{
     AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest, DeleteSessionRequest,
     DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest,
-    LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-    RespondToInteractionRequest, ResizeTerminalRequest, SpawnAgentRequest,
-    UpdateAgentConfigRequest, UpdateSessionConfigRequest,
+    LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest,
+    RespondToInteractionRequest, SpawnAgentRequest, UpdateAgentConfigRequest,
+    UpdateAgentSubstitutesRequest, UpdateSessionConfigRequest,
 };
 use crate::runtime::command::{KernelCallerKind, KernelCommand};
 use crate::runtime::projection::{
@@ -172,6 +172,9 @@ impl SessionRuntime {
                     &request.attachment_id,
                 ),
             LocalDaemonRequest::UpdateAgentConfig(request) => {
+                self.resolve_direct_session_lane_key(&request.session_id)
+            }
+            LocalDaemonRequest::UpdateAgentSubstitutes(request) => {
                 self.resolve_direct_session_lane_key(&request.session_id)
             }
             LocalDaemonRequest::RespondToInteraction(request) => {
@@ -590,6 +593,35 @@ impl SessionRuntimeStore {
         self.with_session_projection_action_result(result).await
     }
 
+    async fn update_agent_substitutes(
+        &self,
+        request: UpdateAgentSubstitutesRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let session_id = request.session_id.clone();
+        let result = match self
+            .state
+            .update_agent_substitutes(
+                &request.session_id,
+                &request.agent_id,
+                &caller_user_id,
+                request.action,
+            )
+            .await
+        {
+            Ok(agent) => self
+                .state
+                .session_snapshot(&session_id)
+                .await
+                .map(|session| LocalDaemonResponse::AgentConfigUpdated { agent, session }),
+            Err(error) => Err(error),
+        };
+        self.with_session_projection_action_result(result).await
+    }
+
     async fn respond_to_interaction(
         &self,
         request: RespondToInteractionRequest,
@@ -608,12 +640,14 @@ impl SessionRuntimeStore {
             )
             .await
         {
-            Ok(()) => self.state.session_snapshot(&session_id).await.map(|session| {
-                LocalDaemonResponse::InteractionResponded {
+            Ok(()) => self
+                .state
+                .session_snapshot(&session_id)
+                .await
+                .map(|session| LocalDaemonResponse::InteractionResponded {
                     interaction_id,
                     session,
-                }
-            }),
+                }),
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await
@@ -922,7 +956,14 @@ impl SessionRuntimeCommandExecutor {
                 self.store.update_session_config(request).await
             }
             LocalDaemonRequest::UpdateAgentConfig(request) => {
-                self.store.update_agent_config(request, caller_user_id).await
+                self.store
+                    .update_agent_config(request, caller_user_id)
+                    .await
+            }
+            LocalDaemonRequest::UpdateAgentSubstitutes(request) => {
+                self.store
+                    .update_agent_substitutes(request, caller_user_id)
+                    .await
             }
             LocalDaemonRequest::RespondToInteraction(request) => {
                 self.store.respond_to_interaction(request).await

@@ -1082,6 +1082,14 @@ export function searchWorkspaceDirectoriesRequest(query: string, limit?: number)
   }
 }
 
+export function createWorkspaceDirectoryRequest(path: string) {
+  return {
+    CreateWorkspaceDirectory: {
+      path,
+    },
+  }
+}
+
 export function listWorkspaceWorktreesRequest(workspaceId: string) {
   return {
     ListWorkspaceWorktrees: {
@@ -1090,10 +1098,16 @@ export function listWorkspaceWorktreesRequest(workspaceId: string) {
   }
 }
 
-export function createWorkspaceWorktreeRequest(workspaceId: string) {
+export function createWorkspaceWorktreeRequest(
+  workspaceId: string,
+  options: { path?: string; branch?: string; baseRef?: string } = {},
+) {
   return {
     CreateWorkspaceWorktree: {
       workspace_id: workspaceId,
+      path: options.path ?? null,
+      branch: options.branch ?? null,
+      base_ref: options.baseRef ?? null,
     },
   }
 }

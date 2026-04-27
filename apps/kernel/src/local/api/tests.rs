@@ -26,17 +26,16 @@ use super::{
     CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
     DetachWorkspaceLinkRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
     GetDaemonHealthRequest, GetSessionStateRequest, GetWaitingRoomInventoryRequest,
-    GetWorkflowRunRequest,
-    InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest, JoinSessionInviteRequest,
-    LaunchProviderRunRequest, ListAgentsRequest, ListRemoteMachineKernelsRequest,
-    ListRemoteMachinesRequest, ListSessionMembersRequest, ListSessionsRequest,
-    ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceLinksRequest, LocalDaemonRequest,
-    LocalDaemonResponse, PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest,
-    ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
-    ResolveSessionRequest, ResolveWorkflowRequest, ResumeWorkflowRunRequest,
-    RevokeSessionInviteRequest, RunShellCapabilityRequest, ShowWorkspaceLinkRequest,
-    SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
-    UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
+    GetWorkflowRunRequest, InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest,
+    JoinSessionInviteRequest, LaunchProviderRunRequest, ListAgentsRequest,
+    ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, ListSessionMembersRequest,
+    ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceLinksRequest,
+    LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+    ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
+    RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
+    ResumeWorkflowRunRequest, RevokeSessionInviteRequest, RunShellCapabilityRequest,
+    ShowWorkspaceLinkRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
+    SubmitPromptRequest, UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
 };
 
 fn launch_slow_structured_run(app: &mut DaemonApp, session_id: &str, agent_id: &str) -> String {
@@ -309,7 +308,10 @@ fn waiting_room_inventory_includes_kernels_for_pending_visible_remote_machines()
         .iter()
         .find(|machine| machine.machine_id == "machine-pending")
         .expect("pending machine should be visible");
-    assert!(machine.pending, "pending machine should remain marked pending");
+    assert!(
+        machine.pending,
+        "pending machine should remain marked pending"
+    );
     assert_eq!(machine.kernel_count, 1);
     assert_eq!(snapshot.remote_kernels.len(), 1);
     assert_eq!(snapshot.remote_kernels[0].machine_id, "machine-pending");
@@ -2807,11 +2809,13 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness
-        .dispatch(LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
-            session_id: session.id().to_string(),
-            client_id: "client-1".to_string(),
-            capability_level: ClientCapabilityLevel::FullTerminal,
-        }))
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-1".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
         .expect("attachment should attach")
     {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,

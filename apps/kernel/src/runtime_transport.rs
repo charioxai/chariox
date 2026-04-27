@@ -543,7 +543,9 @@ async fn handle_incoming_payload(
             request,
         } => {
             runtime.transport_health.record_incoming_request();
-            let caller = router.local_command_caller(KernelCommandSource::LocalCli).await;
+            let caller = router
+                .local_command_caller(KernelCommandSource::LocalCli)
+                .await;
             let command = KernelCommand::from_local_request_with_caller(
                 command_id.unwrap_or_else(|| request_id.clone()),
                 KernelCommandSource::LocalCli,

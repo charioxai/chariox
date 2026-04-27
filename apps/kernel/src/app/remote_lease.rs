@@ -18,10 +18,9 @@ use crate::session::CreateSessionRequest;
 use crate::terminal::TerminalOutputKind;
 use crate::transport::relay_peer::{
     RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk, RelayPromptAttachment,
-    RemoteGitObservation, RemoteGitTurnContext, RemoteManagedIoContext,
-    RemoteMcpAvailability, RemoteMcpAvailabilityStatus, RemoteMcpCheckContext,
-    RemoteNativeInteractionContext, RemoteSkillMaterialization, RemoteSkillSyncContext,
-    RequiredRemoteMcp,
+    RemoteGitObservation, RemoteGitTurnContext, RemoteManagedIoContext, RemoteMcpAvailability,
+    RemoteMcpAvailabilityStatus, RemoteMcpCheckContext, RemoteNativeInteractionContext,
+    RemoteSkillMaterialization, RemoteSkillSyncContext, RequiredRemoteMcp,
 };
 
 pub(crate) struct RemoteLeaseRuntime<'a> {
@@ -545,7 +544,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     && agent.backing_agent_id == backing_agent_id
             })?
             .clone();
-        let lease = self.app.execution_leases.get(&leased_agent.lease_id)?.clone();
+        let lease = self
+            .app
+            .execution_leases
+            .get(&leased_agent.lease_id)?
+            .clone();
         Some((
             lease.home_kernel_id,
             RemoteNativeInteractionContext {
@@ -805,8 +808,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             request = request.with_variant(leased_agent.effort.clone());
         }
         if let Some(run) = existing.as_ref() {
-            request = request
-                .with_resume_state(run.resume_state().clone());
+            request = request.with_resume_state(run.resume_state().clone());
             if request.variant.is_none() {
                 request = request.with_variant(run.variant().map(str::to_string));
             }
@@ -894,6 +896,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 &leased_agent.backing_session_id,
                 &leased_agent.backing_agent_id,
             )
+            .or_else(|| {
+                self.app.providers.get_latest_run_for_agent(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                )
+            })
             .map(|run| run.id().to_string()))
     }
 
@@ -1352,6 +1360,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     &leased_agent.backing_session_id,
                     &leased_agent.backing_agent_id,
                 )
+                .or_else(|| {
+                    self.app.providers.get_latest_run_for_agent(
+                        &leased_agent.backing_session_id,
+                        &leased_agent.backing_agent_id,
+                    )
+                })
                 .map(|run| run.id().to_string())
             else {
                 continue;

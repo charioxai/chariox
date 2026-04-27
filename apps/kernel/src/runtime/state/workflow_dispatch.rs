@@ -339,12 +339,12 @@ impl KernelRuntimeOwnedState {
                 provider_diagnostic
             {
                 (
-                        crate::session::WorkflowFailureKind::ProviderFailure,
-                        diagnostic.clone(),
-                        format!(
-                            "Workflow run `{workflow_run_id}` failed after provider turn failure: {diagnostic}"
-                        ),
-                    )
+                    crate::session::WorkflowFailureKind::ProviderFailure,
+                    diagnostic.clone(),
+                    format!(
+                        "Workflow run `{workflow_run_id}` failed after provider turn failure: {diagnostic}"
+                    ),
+                )
             } else {
                 (
                     crate::session::WorkflowFailureKind::MissingStructuredOutput,

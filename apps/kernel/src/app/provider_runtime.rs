@@ -1293,9 +1293,8 @@ impl DaemonApp {
         if session.agents().len() > 1 {
             let focused_agent_id = session.focused_agent_id().map(str::to_string);
             if let Some(focused_agent_id) = focused_agent_id {
-                let active_prompt_agent_id = self
-                    .prompt_state_owner
-                    .active_prompt_agent_id(&session);
+                let active_prompt_agent_id =
+                    self.prompt_state_owner.active_prompt_agent_id(&session);
                 let has_active_prompt = active_prompt_agent_id.is_some();
                 let has_processing_agent =
                     session.agents().iter().any(|agent| agent.is_processing());

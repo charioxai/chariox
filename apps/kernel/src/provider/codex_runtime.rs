@@ -471,9 +471,9 @@ fn apply_notification(
                     } else {
                         None
                     },
-                    notice: error_message.clone().or_else(|| {
-                        (status == "failed").then(|| "Codex turn failed".to_string())
-                    }),
+                    notice: error_message
+                        .clone()
+                        .or_else(|| (status == "failed").then(|| "Codex turn failed".to_string())),
                 };
                 if has_running_tool_items(tool_items) {
                     *pending_turn_completion = Some(pending);

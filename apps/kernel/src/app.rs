@@ -42,8 +42,9 @@ use crate::provider::{
 use crate::pty::PtyManager;
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
-    ProviderProcessProjectionStore, ProviderRunProjectionStore, RemoteRelayInventoryProjectionStore,
-    SessionHistoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
+    ProviderProcessProjectionStore, ProviderRunProjectionStore,
+    RemoteRelayInventoryProjectionStore, SessionHistoryProjectionStore,
+    SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::workspace_coordinator::{

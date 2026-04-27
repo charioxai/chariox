@@ -324,6 +324,11 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
+        LocalDaemonRequest::UpdateAgentSubstitutes(request) => {
+            LocalRequestMetadata::new("agent.substitutes.update", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::AliasSession(request) => {
             LocalRequestMetadata::new("session.alias", Interactive).session(&request.session_id)
         }
@@ -442,6 +447,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListRemoteMachineKernels(_) => "remote_machine.kernel.list",
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
         LocalDaemonRequest::SearchWorkspaceDirectories(_) => "workspace.directory.search",
+        LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",
         LocalDaemonRequest::ListWorkspaceWorktrees(_) => "workspace.worktree.list",
         LocalDaemonRequest::CreateWorkspaceWorktree(_) => "workspace.worktree.create",
         LocalDaemonRequest::ApproveRemoteMachine(_) => "remote_machine.approve",
@@ -464,6 +470,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CompletePrompt(_) => "prompt.complete",
         LocalDaemonRequest::UpdateSessionConfig(_) => "session.config.update",
         LocalDaemonRequest::UpdateAgentConfig(_) => "agent.config.update",
+        LocalDaemonRequest::UpdateAgentSubstitutes(_) => "agent.substitutes.update",
         LocalDaemonRequest::PumpTerminalOutput(_) => "terminal.output.poll",
         LocalDaemonRequest::RunShellCommand(_) => "capability.shell.run",
         LocalDaemonRequest::ReadDirectoryTree(_) => "capability.dir.tree",

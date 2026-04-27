@@ -17,6 +17,20 @@ export type IssueCloudRelayTokenInput = {
   machineId?: string
 }
 
+export type CloudMachineRuntimeProfile = {
+  targetRef?: string
+  profileVersion?: number
+  providerCatalog?: unknown
+  userConfig?: unknown
+  defaultWorkspaceId?: string
+  defaultWorktreeId?: string
+  workspaces?: unknown
+  worktrees?: unknown
+  os?: string
+  homeDir?: string
+  reportedAt?: string
+}
+
 export type StartCloudDeviceLoginInput = {
   apiUrl: string
   clientId?: string
@@ -177,6 +191,7 @@ export async function pairCloudRelayMachine(
   profile: RelayCloudProfile,
   machineId: string,
   alias?: string,
+  runtimeProfile?: CloudMachineRuntimeProfile,
 ): Promise<RelayCloudProfile> {
   const pairing = await postJson<{ token: string }>(profile.apiUrl, "/pairing-tokens", {
     accountId: profile.accountId,
@@ -189,6 +204,7 @@ export async function pairCloudRelayMachine(
     machineId,
     userId: profile.userId,
     ...(alias ? { alias } : {}),
+    ...(runtimeProfile ? { runtimeProfile } : {}),
   })
   return {
     ...profile,

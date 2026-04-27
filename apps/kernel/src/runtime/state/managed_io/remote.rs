@@ -472,10 +472,13 @@ pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
                     let Some((_range, updated)) =
                         replace_unique_text(&source, &old_text, &new_text)
                     else {
-                        return Ok((managed_patch_rejected(
-                            from_path,
-                            "move patch old text was not found exactly once in the current artifact",
-                        ), Vec::new()));
+                        return Ok((
+                            managed_patch_rejected(
+                                from_path,
+                                "move patch old text was not found exactly once in the current artifact",
+                            ),
+                            Vec::new(),
+                        ));
                     };
                     source = updated;
                 }

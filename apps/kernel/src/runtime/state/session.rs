@@ -83,7 +83,10 @@ impl KernelRuntimeOwnedState {
             }),
         );
         let mut session = self.session_store.get_session(session_id)?;
-        if session.active_interaction_for_agent(interaction.agent_id()).is_some() {
+        if session
+            .active_interaction_for_agent(interaction.agent_id())
+            .is_some()
+        {
             return Err(DaemonError::LocalTransport {
                 operation: "register runtime interaction",
                 message: format!(
@@ -136,12 +139,13 @@ impl KernelRuntimeOwnedState {
         );
         let pending = {
             let pending = self.pending_interactions.write();
-            pending.get(interaction_id).cloned().ok_or_else(|| {
-                DaemonError::LocalTransport {
+            pending
+                .get(interaction_id)
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
                     operation: "resolve runtime interaction",
                     message: format!("interaction {interaction_id} was not pending"),
-                }
-            })?
+                })?
         };
         if pending.session_id != session_id {
             return Err(DaemonError::LocalTransport {
@@ -150,16 +154,18 @@ impl KernelRuntimeOwnedState {
             });
         }
         let mut session = self.session_store.get_session(session_id)?;
-        let interaction = session.remove_active_interaction(interaction_id).ok_or_else(|| {
-            DaemonError::LocalTransport {
+        let interaction = session
+            .remove_active_interaction(interaction_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
                 operation: "resolve runtime interaction",
                 message: format!("interaction {interaction_id} is not active in session"),
-            }
-        })?;
-        let choice = interaction.choice(choice_id).ok_or_else(|| DaemonError::LocalTransport {
-            operation: "resolve runtime interaction",
-            message: format!("interaction {interaction_id} does not define choice {choice_id}"),
-        })?;
+            })?;
+        let choice = interaction
+            .choice(choice_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "resolve runtime interaction",
+                message: format!("interaction {interaction_id} does not define choice {choice_id}"),
+            })?;
         let pending = self
             .pending_interactions
             .write()
@@ -371,10 +377,8 @@ impl KernelRuntimeOwnedState {
             }
         }
         if request.execution_mode.is_none() {
-            request = request.with_execution_mode(resolve_effective_execution_mode(
-                &session,
-                agent.as_ref(),
-            ));
+            request = request
+                .with_execution_mode(resolve_effective_execution_mode(&session, agent.as_ref()));
         }
         if request.permission_level.is_none() {
             request = request.with_permission_level(resolve_effective_permission_level(
@@ -394,9 +398,9 @@ impl KernelRuntimeOwnedState {
             let agent_worktree = agent
                 .as_ref()
                 .and_then(|agent| agent.worktree_id().map(std::path::PathBuf::from));
-            request.working_directory = Some(agent_worktree.unwrap_or_else(|| {
-                std::path::PathBuf::from(session.worktree_id())
-            }));
+            request.working_directory = Some(
+                agent_worktree.unwrap_or_else(|| std::path::PathBuf::from(session.worktree_id())),
+            );
         }
         if request.runtime_mcp_binding.is_none() {
             let shared_auth_token = request
@@ -449,6 +453,53 @@ impl KernelRuntimeOwnedState {
             execution_mode_override,
             permission_level_override,
         )
+    }
+
+    pub(super) fn update_agent_substitutes(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        action: crate::local::AgentSubstituteAction,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        self.ensure_agent_owner(agent_id, caller_user_id, "update agent substitutes")?;
+        match action {
+            crate::local::AgentSubstituteAction::Add {
+                provider,
+                model,
+                variant,
+            } => self.agent_store.add_agent_substitute(
+                agent_id,
+                crate::agent::AgentSubstituteProfile::new(provider, model, variant),
+            ),
+            crate::local::AgentSubstituteAction::Remove { index } => {
+                self.agent_store.remove_agent_substitute(agent_id, index)
+            }
+            crate::local::AgentSubstituteAction::Clear => {
+                self.agent_store.clear_agent_substitutes(agent_id)
+            }
+            crate::local::AgentSubstituteAction::SetTimeout { timeout_ms } => self
+                .agent_store
+                .set_agent_substitution_timeout(agent_id, timeout_ms),
+            crate::local::AgentSubstituteAction::Activate { index, reason } => self
+                .agent_store
+                .activate_agent_substitute(
+                    agent_id,
+                    index,
+                    reason.unwrap_or_else(|| "manual".to_string()),
+                )
+                .map(|(agent, _profile)| agent),
+            crate::local::AgentSubstituteAction::Primary => {
+                self.agent_store.deactivate_agent_substitute(agent_id)
+            }
+        }
     }
 
     fn granted_mcp_servers_for_launch(
@@ -1051,7 +1102,8 @@ fn resolve_effective_execution_mode(
     session: &crate::session::RuntimeSession,
     agent: Option<&crate::agent::AgentInstance>,
 ) -> crate::provider::AgentExecutionMode {
-    agent.and_then(|agent| agent.execution_mode_override())
+    agent
+        .and_then(|agent| agent.execution_mode_override())
         .or_else(|| {
             session
                 .config_state()
@@ -1066,7 +1118,8 @@ fn resolve_effective_permission_level(
     session: &crate::session::RuntimeSession,
     agent: Option<&crate::agent::AgentInstance>,
 ) -> crate::provider::AgentPermissionLevel {
-    agent.and_then(|agent| agent.permission_level_override())
+    agent
+        .and_then(|agent| agent.permission_level_override())
         .or_else(|| {
             session
                 .config_state()

@@ -255,7 +255,9 @@ async fn dispatch_local_ipc_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let sequence = command_sequence.fetch_add(1, Ordering::Relaxed);
     let command_id = format!("ipc-{}-{sequence}", unix_epoch_ms());
-    let caller = router.local_command_caller(KernelCommandSource::LocalIpc).await;
+    let caller = router
+        .local_command_caller(KernelCommandSource::LocalIpc)
+        .await;
     let command = KernelCommand::from_local_request_with_caller(
         command_id,
         KernelCommandSource::LocalIpc,
@@ -445,12 +447,12 @@ mod tests {
     use tokio::sync::oneshot;
 
     use crate::attachment::ClientCapabilityLevel;
+    use crate::config::PersistedCloudRelayProfile;
     use crate::local::api::{
         AddWorkflowEdgeRequest, AddWorkflowNodeRequest, CancelWorkflowRunRequest,
         CreateWorkflowEndpointRequest, CreateWorkflowRequest, GetWorkflowRunRequest,
         InvokeWorkflowEndpointRequest, ListWorkflowRunsRequest,
     };
-    use crate::config::PersistedCloudRelayProfile;
     use crate::local::{
         AttachToSessionRequest, CompletePromptRequest, LaunchProviderRunRequest,
         PumpTerminalOutputRequest, RunShellCapabilityRequest, SpawnAgentRequest,
