@@ -25,6 +25,7 @@
     "workflow-to-workflow-publication:drill": "pnpm --filter @arroba/server run build && pnpm --filter @arroba/kernel-client run build && node scripts/live-workflow-to-workflow-publication-drill.mjs",
     "relay-identity:drill": "node scripts/live-relay-identity-security-drill.mjs",
     "cloud-relay:drill": "pnpm run build && node scripts/live-cloud-relay-drill.mjs",
+    "hosted-terminal-pairing-tui:drill": "node scripts/live-hosted-terminal-pairing-tui-drill.mjs",
     "multi-user-workflow:drill": "node scripts/live-multi-user-workflow-drill.mjs",
     "multi-user-cli-workflow:drill": "pnpm run build && node scripts/live-multi-user-cli-workflow-drill.mjs",
     "multi-user-freeform-relay:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-relay-freeform-multi-user-drill.mjs",

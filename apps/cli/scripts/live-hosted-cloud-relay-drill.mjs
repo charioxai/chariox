@@ -14,6 +14,10 @@ const pollTimeoutMs = Number(process.env.ARROBA_CLOUD_HOSTED_POLL_TIMEOUT_MS ?? 
 const runMultiUser = process.env.ARROBA_CLOUD_HOSTED_MULTI_USER === "1"
 const runSecondKernel = process.env.ARROBA_CLOUD_HOSTED_SECOND_KERNEL === "1"
 const runRemoteCli = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI === "1"
+const runRemoteCliPairing = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_PAIRING === "1"
+const remoteCliPairingProvider = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_PROVIDER ?? "codex"
+const remoteCliPairingModel = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_MODEL ?? "gpt-5.2-codex"
+const remoteCliPairingEffort = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_EFFORT ?? "low"
 const remoteCliHost = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_HOST ?? "root@195.201.123.115"
 const remoteCliKey = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_KEY ?? path.join(os.homedir(), ".ssh/arroba_hetzner_staging")
 const remoteCliRepo = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_REPO ?? "/opt/arroba-cli-drill"
@@ -858,6 +862,22 @@ async function waitForCompletion(eventLog, timeoutMs, baselineCount = 0) {
   throw new Error("timed out waiting for assistant completion")
 }
 
+async function waitForHistoryText(client, requests, sessionId, agentId, needle, timeoutMs, pollMs = 2_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const history = unwrap(
+      await client.send(requests.getSessionHistoryRequest(sessionId, 60, 120_000, null, agentId ?? null)),
+      "SessionHistory",
+    )
+    const text = (history.entries ?? [])
+      .map((entry) => String(entry.entry?.text ?? entry.text ?? ""))
+      .join("")
+    if (text.includes(needle)) return text
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for history text ${needle}`)
+}
+
 async function waitForRemoteSocket(socketPath, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs
   let lastError = null
@@ -905,6 +925,159 @@ socket.write(JSON.stringify(request) + "\\n");
     throw new Error(`remote automation ${action} rejected: ${response.error ?? "unknown error"}`)
   }
   return response.data
+}
+
+async function runHostedRemoteCliPairingAssertions({
+  requests,
+  homeClient,
+  verificationClient,
+  workspace,
+}) {
+  const remoteId = `${process.pid}-${Date.now()}`
+  const remoteAlias = `hosted-pairing-cli-${remoteId}`
+  const remoteWorkspace = `/tmp/arroba-hosted-pairing-cli-${remoteId}`
+  const remoteSocket = `/tmp/arroba-hosted-pairing-cli-${remoteId}.sock`
+  const marker = `HOSTED_ORPHAN_PAIRING_REAL_AGENT_OK_${remoteId.replace(/[^a-zA-Z0-9]/g, "_")}`
+  const pairing = unwrap(
+    await homeClient.send(requests.createTerminalPairingLinkRequest("cli", remoteAlias, 15 * 60 * 1000)),
+    "TerminalPairingLinkCreated",
+  ).pairing
+  assert(pairing?.pairing_link, "terminal pairing link should be created", pairing)
+  assert(pairing.terminal_id, "terminal pairing should include terminal id", pairing)
+
+  const remoteCommand = [
+    "set -e",
+    "export PATH=/root/.bun/bin:/opt/node-v22/bin:$PATH",
+    "export ARROBA_TEST_TUI=1",
+    `mkdir -p ${shellQuote(remoteWorkspace)}`,
+    `cd ${shellQuote(path.posix.join(remoteCliRepo, "apps/cli"))}`,
+    [
+      "bun",
+      "dist/index.js",
+      "--terminal-pairing-link",
+      shellQuote(pairing.pairing_link),
+      "--automation-socket",
+      shellQuote(remoteSocket),
+      "--create-session",
+      "--alias",
+      shellQuote(remoteAlias),
+      "--workspace",
+      shellQuote(workspace),
+      "--worktree",
+      shellQuote(workspace),
+      "--provider",
+      shellQuote(remoteCliPairingProvider),
+      "--model",
+      shellQuote(remoteCliPairingModel),
+      "--effort",
+      shellQuote(remoteCliPairingEffort),
+    ].join(" "),
+  ].join("; ")
+
+  let remoteCli = null
+  const eventLog = []
+  try {
+    log("remote-cli-pairing-start", {
+      host: remoteCliHost,
+      repo: remoteCliRepo,
+      alias: remoteAlias,
+      terminalId: pairing.terminal_id,
+      provider: remoteCliPairingProvider,
+      model: remoteCliPairingModel,
+    })
+    remoteCli = spawnProcess("ssh", sshArgs(remoteCommand, { tty: true }), {
+      cwd: repoRoot,
+      env: process.env,
+      name: "remote-cli-pairing",
+    })
+    try {
+      await waitForRemoteSocket(remoteSocket)
+    } catch (error) {
+      throw new Error(`${error instanceof Error ? error.message : String(error)}\nremote alias: ${remoteAlias}`)
+    }
+
+    await remoteAutomation(remoteSocket, "ping")
+    const snapshot = await remoteAutomation(remoteSocket, "wait_for", { screen: "agents", timeoutMs: 10_000 })
+    assert(snapshot.session?.id, "paired orphan CLI should attach to a session", snapshot)
+    assert(
+      snapshot.session?.focusedAgentId,
+      "paired orphan CLI should create a focused real-provider agent",
+      snapshot,
+    )
+
+    const terminals = unwrap(
+      await homeClient.send(requests.listTerminalsRequest()),
+      "TerminalsListed",
+    ).terminals ?? []
+    assert(
+      terminals.some((terminal) => terminal.terminal_id === pairing.terminal_id && terminal.terminal_type === "cli"),
+      "home kernel should list the paired CLI terminal",
+      { pairing, terminals },
+    )
+
+    const listed = unwrap(
+      await verificationClient.send(requests.listSessionsRequest()),
+      "SessionsListed",
+    )
+    const remoteSession = listed.sessions?.find((session) => session.alias === remoteAlias)
+    assert(remoteSession, "home kernel should list the session created by the paired orphan CLI", {
+      remoteAlias,
+      sessions: listed.sessions,
+    })
+    assert(remoteSession.id === snapshot.session.id, "paired CLI snapshot should match home kernel session", {
+      snapshotSession: snapshot.session,
+      remoteSession,
+    })
+
+    const agents = unwrap(
+      await verificationClient.send(requests.listAgentsRequest(remoteSession.id)),
+      "AgentsListed",
+    ).agents ?? []
+    const focusedAgent = agents.find((agent) => agent.id === snapshot.session.focusedAgentId)
+    assert(
+      focusedAgent && focusedAgent.provider === remoteCliPairingProvider && focusedAgent.provider !== "dev-stub",
+      "paired orphan CLI should use the configured real provider, not dev-stub",
+      { focusedAgent, agents, expectedProvider: remoteCliPairingProvider },
+    )
+
+    const attachment = unwrap(
+      await verificationClient.send(requests.attachToSessionRequest(remoteSession.id, `hosted-pairing-verify-${Date.now()}`)),
+      "SessionAttached",
+    ).attachment
+    verificationClient.onKernelEvent((event) => {
+      eventLog.push({ ...event, observed_at_ms: Date.now() })
+    })
+    await verificationClient.subscribeToKernelEvents(remoteSession.id, attachment.id)
+
+    await remoteAutomation(remoteSocket, "submit_prompt", {
+      prompt: `Reply with exactly ${marker} and nothing else.`,
+      timeoutMs: pollTimeoutMs,
+    })
+    await waitForCompletion(eventLog, pollTimeoutMs, 0)
+    await waitForHistoryText(
+      verificationClient,
+      requests,
+      remoteSession.id,
+      snapshot.session.focusedAgentId,
+      marker,
+      pollTimeoutMs,
+    )
+
+    await remoteAutomation(remoteSocket, "exit").catch(() => {})
+    await verificationClient.send(requests.endSessionRequest(remoteSession.id)).catch(() => {})
+    log("remote-cli-pairing-pass", {
+      host: remoteCliHost,
+      sessionId: remoteSession.id,
+      alias: remoteAlias,
+      terminalId: pairing.terminal_id,
+      provider: remoteCliPairingProvider,
+      model: remoteCliPairingModel,
+      marker,
+    })
+  } finally {
+    await terminateChild(remoteCli)
+    await runSsh(`rm -f ${shellQuote(remoteSocket)}; rm -rf ${shellQuote(remoteWorkspace)}`).catch(() => {})
+  }
 }
 
 async function runHostedRemoteCliAssertions({
@@ -1277,6 +1450,9 @@ async function main() {
   const workspace = path.join(rootDir, "workspace")
   const homeDir = path.join(rootDir, "home")
   const arrobaHome = path.join(homeDir, ".arroba")
+  const xdgConfigHome = path.join(homeDir, ".config")
+  const xdgStateHome = path.join(homeDir, ".local", "state")
+  const xdgRuntimeDir = path.join(homeDir, "run")
   const daemonId = `hosted-daemon-${process.pid}-${Date.now()}`
   const daemonAlias = `hosted-home-${process.pid}`
   const clientId = `hosted-cli-${process.pid}-${Date.now()}`
@@ -1285,6 +1461,9 @@ async function main() {
   await rm(rootDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(workspace, { recursive: true })
   await mkdir(arrobaHome, { recursive: true })
+  await mkdir(xdgConfigHome, { recursive: true })
+  await mkdir(xdgStateHome, { recursive: true })
+  await mkdir(xdgRuntimeDir, { recursive: true })
 
   let daemon = null
   let localClient = null
@@ -1309,7 +1488,10 @@ async function main() {
 
     const daemonEnv = {
       ...process.env,
-      HOME: homeDir,
+      HOME: os.homedir(),
+      XDG_CONFIG_HOME: xdgConfigHome,
+      XDG_STATE_HOME: xdgStateHome,
+      XDG_RUNTIME_DIR: xdgRuntimeDir,
       ARROBA_HOME: arrobaHome,
       ARROBA_KERNEL_PORT: String(ports.kernelPort),
       ARROBA_MCP_PORT: String(ports.mcpPort),
@@ -1425,6 +1607,15 @@ async function main() {
       })
     }
 
+    if (runRemoteCliPairing) {
+      await runHostedRemoteCliPairingAssertions({
+        requests,
+        homeClient: localClient,
+        verificationClient: remoteClient,
+        workspace,
+      })
+    }
+
     if (runMultiUser) {
       await runHostedMultiUserAssertions({
         LocalIpcClient,
@@ -1465,6 +1656,7 @@ async function main() {
       sessionId: created.session.id,
       multiUser: runMultiUser,
       remoteCli: runRemoteCli,
+      remoteCliPairing: runRemoteCliPairing,
       secondKernel: runSecondKernel,
     })
     passed = true

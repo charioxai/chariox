@@ -3456,7 +3456,78 @@ impl CommandRouter {
                 message: "relay URL must be configured before creating a terminal pairing link"
                     .to_string(),
             })?;
-        let relay_token =
+        let issued_at_ms = current_unix_ms();
+        let expires_at_ms =
+            issued_at_ms.saturating_add(request.expires_in_ms.unwrap_or(15 * 60 * 1000));
+        let invite_id = random_hex_id();
+        let pairing_code = random_pairing_code();
+        let terminal_id = format!("{}-{}", terminal_type.as_str(), random_hex_id());
+        let target_daemon_id = config.daemon_id.clone();
+        let target_daemon_alias = config.daemon_alias.clone().or(request.alias);
+        let relay_token = if let Some(profile) = config.cloud_relay.clone().filter(|profile| {
+            profile.relay_url == relay_url
+                && (profile.cloud_session_token.is_some() || profile.machine_credential.is_some())
+        }) {
+            let pairing: CloudPairingTokenResponse = match post_cloud_json(
+                profile.api_url.clone(),
+                "/pairing-tokens",
+                serde_json::json!({
+                    "accountId": profile.account_id,
+                    "createdByUserId": profile.user_id,
+                    "subjectKind": "client",
+                }),
+            )
+            .await
+            {
+                Ok(pairing) => pairing,
+                Err(error) => {
+                    self.clear_cloud_profile_if_stale(&error).await?;
+                    return Err(error);
+                }
+            };
+            if let Err(error) = post_cloud_json::<serde_json::Value>(
+                profile.api_url.clone(),
+                "/clients/pair",
+                serde_json::json!({
+                    "accountId": profile.account_id,
+                    "token": pairing.token,
+                    "clientId": terminal_id,
+                    "userId": profile.user_id,
+                    "alias": format!("{} terminal", terminal_type.as_str()),
+                }),
+            )
+            .await
+            {
+                self.clear_cloud_profile_if_stale(&error).await?;
+                return Err(error);
+            }
+            let mut allowed_targets = vec![target_daemon_id.clone()];
+            if let Some(alias) = target_daemon_alias.clone() {
+                if !allowed_targets.iter().any(|target| target == &alias) {
+                    allowed_targets.push(alias);
+                }
+            }
+            match issue_cloud_runtime_token(
+                &profile,
+                &terminal_id,
+                "client",
+                Some(allowed_targets),
+                Some(terminal_id.clone()),
+                profile
+                    .machine_credential
+                    .as_ref()
+                    .and(profile.machine_id.clone()),
+                None,
+            )
+            .await
+            {
+                Ok(issued) => issued.token,
+                Err(error) => {
+                    self.clear_cloud_profile_if_stale(&error).await?;
+                    return Err(error);
+                }
+            }
+        } else {
             config
                 .relay_token
                 .clone()
@@ -3465,21 +3536,16 @@ impl CommandRouter {
                     message:
                         "relay token must be configured before creating a terminal pairing link"
                             .to_string(),
-                })?;
-        let issued_at_ms = current_unix_ms();
-        let expires_at_ms =
-            issued_at_ms.saturating_add(request.expires_in_ms.unwrap_or(15 * 60 * 1000));
-        let invite_id = random_hex_id();
-        let pairing_code = random_pairing_code();
-        let terminal_id = format!("{}-{}", terminal_type.as_str(), random_hex_id());
+                })?
+        };
         let token = PairingInviteToken {
             version: 1,
             intent: PairingInviteIntent::Client,
             invite_id: invite_id.clone(),
             relay_url: relay_url.clone(),
             relay_token,
-            target_daemon_id: config.daemon_id.clone(),
-            target_daemon_alias: config.daemon_alias.clone().or(request.alias),
+            target_daemon_id,
+            target_daemon_alias,
             issuer_machine_id: config.host_machine_id,
             issued_at_ms,
             expires_at_ms,
