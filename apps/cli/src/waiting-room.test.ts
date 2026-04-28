@@ -111,7 +111,7 @@ test("waiting room cycles existing worktrees and the create-worktree option", ()
   }
 })
 
-test("waiting room renders indented sections and scrolls existing sessions", () => {
+test("waiting room renders indented sections and only previews the last two active sessions", () => {
   const catalog = fallbackProviderCatalog()
   const baseCreatedAt = Date.UTC(2026, 3, 6, 10, 0)
   const sessions = Array.from({ length: MAX_VISIBLE_WAITING_ROOM_SESSIONS + 3 }, (_, index) => ({
@@ -137,28 +137,33 @@ test("waiting room renders indented sections and scrolls existing sessions", () 
   assert.equal(firstWindow[5]?.id, "worktree")
   assert.equal(firstWindow[6]?.id, "join-header")
   assert.equal(firstWindow[6]?.indent, 0)
+  assert.equal(firstWindow[6]?.focused, true)
+  assert.equal(firstWindow[6]?.value, "Press Enter")
   assert.equal(firstWindow.at(-1)?.id, "theme")
   assert.equal(firstWindow.at(-1)?.indent, 0)
   assert.deepEqual(
     firstWindow.find((row) => row.id === "session-header")?.columns?.map((cell) => cell.trim()),
     ["Status", "Last used", "Created at"],
   )
-  const firstSessionRow = firstWindow.find((row) => row.id === "session:session-1")
-  assert.equal(firstSessionRow?.title, "session-1 (alpha)")
+  const firstSessionRow = firstWindow.find((row) => row.id === "session:session-5")
+  assert.equal(firstSessionRow?.title, "session-5")
   assert.deepEqual(
     firstSessionRow?.columns?.map((cell) => cell.trim()),
-    ["Active", "2026-04-06 11:00 UTC", "2026-04-06 10:00 UTC"],
+    ["Active", "2026-04-06 11:04 UTC", "2026-04-06 10:04 UTC"],
   )
   assert.equal(firstWindow.filter((row) => row.id.startsWith("session:")).length, MAX_VISIBLE_WAITING_ROOM_SESSIONS)
-  assert.equal(firstWindow.some((row) => row.scrollbar === "#"), true)
+  assert.equal(firstWindow.some((row) => row.id === "session:session-3"), false)
 
   for (let step = 0; step < MAX_VISIBLE_WAITING_ROOM_SESSIONS; step += 1) {
     state = moveWaitingRoomFocus(state, sessions, 1)
   }
 
   const scrolledWindow = waitingRoomRows(state, sessions, catalog)
-  assert.equal(scrolledWindow.find((row) => row.focused)?.title, "session-11")
-  assert.equal(scrolledWindow.find((row) => row.id.startsWith("session:"))?.title, "session-2")
+  assert.equal(scrolledWindow.find((row) => row.focused)?.title, "session-4")
+  assert.deepEqual(scrolledWindow.filter((row) => row.id.startsWith("session:")).map((row) => row.title), [
+    "session-5",
+    "session-4",
+  ])
 })
 
 test("waiting room renders session rows with alias text", () => {

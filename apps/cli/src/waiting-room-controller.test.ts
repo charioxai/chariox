@@ -175,7 +175,7 @@ test("deriveWaitingRoomActivationDecision returns join and error decisions for s
 })
 
 test("deriveWaitingRoomSessionLifecycleDecision selects focused sessions for archive and delete", () => {
-  const sessions = [session("session-1")]
+  const sessions = [session("session-1"), session("session-2")]
   const archiveDecision = deriveWaitingRoomSessionLifecycleDecision({
     action: "archive",
     state: waitingRoomState({ focus: "session" }),
@@ -184,7 +184,13 @@ test("deriveWaitingRoomSessionLifecycleDecision selects focused sessions for arc
   })
   const deleteDecision = deriveWaitingRoomSessionLifecycleDecision({
     action: "delete",
-    state: waitingRoomState({ focus: "session" }),
+    state: waitingRoomState({ focus: "session", sessionIndex: 1 }),
+    sessions,
+    catalog: catalog(),
+  })
+  const archiveAllDecision = deriveWaitingRoomSessionLifecycleDecision({
+    action: "archive",
+    state: waitingRoomState({ focus: "join-sessions" }),
     sessions,
     catalog: catalog(),
   })
@@ -201,11 +207,29 @@ test("deriveWaitingRoomSessionLifecycleDecision selects focused sessions for arc
   })
   assert.deepEqual(deleteDecision, {
     action: "delete",
-    session: sessions[0],
+    session: sessions[1],
+  })
+  assert.deepEqual(archiveAllDecision, {
+    action: "archive-all",
+    sessions,
   })
   assert.deepEqual(errorDecision, {
     action: "error",
     message: "select a session to delete",
+  })
+})
+
+test("deriveWaitingRoomDeleteDecision deletes all sessions from join header", () => {
+  const sessions = [session("session-1"), session("session-2")]
+  const decision = deriveWaitingRoomDeleteDecision({
+    state: waitingRoomState({ focus: "join-sessions" }),
+    sessions,
+    catalog: catalog(),
+  })
+
+  assert.deepEqual(decision, {
+    action: "delete-all-sessions",
+    sessions,
   })
 })
 

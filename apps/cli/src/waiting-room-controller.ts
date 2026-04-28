@@ -43,10 +43,12 @@ export type WaitingRoomSessionLifecycleAction = "archive" | "delete"
 
 export type WaitingRoomSessionLifecycleDecision =
   | { action: WaitingRoomSessionLifecycleAction; session: SessionListEntry }
+  | { action: "archive-all"; sessions: SessionListEntry[] }
   | { action: "error"; message: string }
 
 export type WaitingRoomDeleteDecision =
   | { action: "delete-session"; session: SessionListEntry }
+  | { action: "delete-all-sessions"; sessions: SessionListEntry[] }
   | { action: "delete-machine"; machineId: string; label: string }
   | { action: "delete-kernel"; kernelId: string; label: string }
   | { action: "error"; message: string }
@@ -118,6 +120,11 @@ export function deriveWaitingRoomActivationDecision(options: {
     effort: choice.effort,
   }
 
+  if (options.state.focus === "join-sessions") {
+    clearStagedWaitingRoomWorktreeSelection()
+    return { action: "none" }
+  }
+
   if (options.state.focus !== "session") {
     const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
     if (!worktreeSelection.ok) {
@@ -146,6 +153,19 @@ export function deriveWaitingRoomSessionLifecycleDecision(options: {
   catalog: ProviderCatalog
 }): WaitingRoomSessionLifecycleDecision {
   const choice = waitingRoomChoice(options.state, options.sessions, options.catalog)
+  if (options.state.focus === "join-sessions" && options.action === "archive") {
+    const sessions = options.sessions.filter((session) => session.status !== "Ended")
+    if (sessions.length === 0) {
+      return {
+        action: "error",
+        message: "no sessions available to archive",
+      }
+    }
+    return {
+      action: "archive-all",
+      sessions,
+    }
+  }
   if (options.state.focus !== "session" || !choice.session) {
     return {
       action: "error",
@@ -166,6 +186,20 @@ export function deriveWaitingRoomDeleteDecision(options: {
   remote?: WaitingRoomRemoteState
 }): WaitingRoomDeleteDecision {
   const choice = waitingRoomChoice(options.state, options.sessions, options.catalog, options.remote)
+  if (options.state.focus === "join-sessions") {
+    const sessions = options.sessions.filter((session) => session.status !== "Ended")
+    if (sessions.length === 0) {
+      return {
+        action: "error",
+        message: "no sessions available to delete",
+      }
+    }
+    return {
+      action: "delete-all-sessions",
+      sessions,
+    }
+  }
+
   if (options.state.focus === "session" && choice.session) {
     return {
       action: "delete-session",

@@ -849,7 +849,7 @@ impl ProviderProcessService {
             return Ok(());
         }
         self.run_actor_mailbox
-            .spawn_selection_sync(provider_run_id.to_string())
+            .spawn_selection_sync(provider_run_id.to_string(), run)
     }
 
     pub(crate) fn apply_finished_provider_run_selection_sync_jobs(&mut self) {

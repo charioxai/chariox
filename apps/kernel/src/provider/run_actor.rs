@@ -135,6 +135,7 @@ enum ProviderRunActorCommand {
     },
     SyncSelection {
         provider_run_id: String,
+        run: RuntimeProviderRun,
     },
     PollOutput {
         provider_run_id: String,
@@ -454,10 +455,15 @@ impl ProviderRunActorMailbox {
         }
     }
 
-    pub(crate) fn spawn_selection_sync(&self, provider_run_id: String) -> Result<(), DaemonError> {
+    pub(crate) fn spawn_selection_sync(
+        &self,
+        provider_run_id: String,
+        run: RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::SyncSelection {
             provider_run_id: provider_run_id.clone(),
+            run,
         }) {
             Ok(()) => {
                 self.operation_lanes.record_command_enqueued();
@@ -746,9 +752,12 @@ impl ProviderRunActorMailbox {
                         clear_runtime_state(&codex_runs, &opencode_runs, &provider_run_id, true);
                         break;
                     }
-                    ProviderRunActorCommand::SyncSelection { provider_run_id } => {
+                    ProviderRunActorCommand::SyncSelection {
+                        provider_run_id,
+                        run,
+                    } => {
                         let result =
-                            execute_selection_sync_command(&opencode_runs, &provider_run_id);
+                            execute_selection_sync_command(&opencode_runs, &provider_run_id, &run);
                         let finished = FinishedProviderRunSelectionSyncJob {
                             provider_run_id,
                             result,
@@ -964,7 +973,7 @@ mod tests {
         let mailbox = mailbox_with_full_run_queue("run-1");
 
         let error = mailbox
-            .spawn_selection_sync("run-1".to_string())
+            .spawn_selection_sync("run-1".to_string(), runtime_run("run-1"))
             .expect_err("full provider actor queue should reject selection sync");
 
         assert_eq!(
@@ -1187,6 +1196,7 @@ fn execute_terminate_command(
 fn execute_selection_sync_command(
     opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     run_id: &str,
+    run: &RuntimeProviderRun,
 ) -> Result<OpenCodeRunSelection, DaemonError> {
     let slot = opencode_slot(opencode_runs, run_id)?;
     let (base_url, session_id) = {
@@ -1200,7 +1210,13 @@ fn execute_selection_sync_command(
             })?;
         (state.base_url().to_string(), state.session_id().to_string())
     };
-    sync_opencode_run_selection_for_session(run_id, &base_url, &session_id)
+    sync_opencode_run_selection_for_session(
+        run_id,
+        &base_url,
+        &session_id,
+        run.model(),
+        run.variant(),
+    )
 }
 
 fn execute_output_poll_command(

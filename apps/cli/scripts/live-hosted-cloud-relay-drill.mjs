@@ -58,16 +58,20 @@ function spawnProcess(command, args, options) {
     stdio: ["ignore", "pipe", "pipe"],
   })
   const name = options.name ?? path.basename(command)
-  child.stdout.on("data", (chunk) => {
-    for (const line of chunk.toString().trimEnd().split("\n").filter(Boolean)) {
-      log(`${name}:stdout`, line)
-    }
-  })
-  child.stderr.on("data", (chunk) => {
-    for (const line of chunk.toString().trimEnd().split("\n").filter(Boolean)) {
-      log(`${name}:stderr`, line)
-    }
-  })
+  if (options.logStdout !== false) {
+    child.stdout.on("data", (chunk) => {
+      for (const line of chunk.toString().trimEnd().split("\n").filter(Boolean)) {
+        log(`${name}:stdout`, line)
+      }
+    })
+  }
+  if (options.logStderr !== false) {
+    child.stderr.on("data", (chunk) => {
+      for (const line of chunk.toString().trimEnd().split("\n").filter(Boolean)) {
+        log(`${name}:stderr`, line)
+      }
+    })
+  }
   child.on("exit", (code, signal) => {
     log(`${name}:exit`, { code, signal })
   })
@@ -1092,6 +1096,7 @@ async function runHostedRemoteCliPairingAssertions({
       cwd: repoRoot,
       env: process.env,
       name: "local-cli-pairing",
+      logStdout: false,
     })
     await waitForLocalSocket(localSocket)
     localAutomation = createAutomationClient(localSocket)
@@ -1116,6 +1121,7 @@ async function runHostedRemoteCliPairingAssertions({
       cwd: repoRoot,
       env: process.env,
       name: "remote-cli-pairing",
+      logStdout: false,
     })
     try {
       await waitForRemoteSocket(remoteSocket)
@@ -1207,8 +1213,8 @@ async function runHostedRemoteCliPairingAssertions({
 
     await localAutomation.send("exit").catch(() => {})
     await remoteAutomation(remoteSocket, "exit").catch(() => {})
-    await verificationClient.send(requests.endSessionRequest(localSession.id)).catch(() => {})
-    await verificationClient.send(requests.endSessionRequest(remoteSession.id)).catch(() => {})
+    await homeClient.send(requests.endSessionRequest(localSession.id)).catch(() => {})
+    await homeClient.send(requests.endSessionRequest(remoteSession.id)).catch(() => {})
     log("remote-cli-pairing-pass", {
       host: remoteCliHost,
       localSessionId: localSession.id,

@@ -77,7 +77,7 @@ import {
 import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
 import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
 import { copyTextToClipboard } from "./clipboard.js"
-import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent } from "./hotkeys.js"
+import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent, shouldHandleWaitingRoomKeyEvent } from "./hotkeys.js"
 import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { executeShellLine } from "@arroba/kernel-client/shell-script"
@@ -395,7 +395,7 @@ type HotkeyItem = {
 
 type PendingWaitingRoomSessionAction = {
   action: WaitingRoomSessionLifecycleAction
-  targetKind: "session" | "machine" | "kernel"
+  targetKind: "session" | "sessions" | "machine" | "kernel"
   targetId: string
   expiresAtMs: number
 }
@@ -521,10 +521,10 @@ const SESSION_HOTKEYS: HotkeyItem[] = [
 ]
 
 const WAITING_ROOM_HOTKEYS: HotkeyItem[] = [
-  { keys: "Arrow keys", description: "Move through new-session options, cycle worktrees, and browse existing sessions." },
-  { keys: "Enter", description: "Create or attach to the selected session." },
-  { keys: "A", description: "Archive the selected session after confirmation." },
-  { keys: "D / Delete", description: "Delete the selected session or inactive remote inventory after confirmation." },
+  { keys: "Arrow keys", description: "Move through options and browse the visible session preview." },
+  { keys: "Enter", description: "Create, attach, or open the full session list from Join Existing Session." },
+  { keys: "A", description: "Archive the selected session, or all sessions from Join Existing Session, after confirmation." },
+  { keys: "D / Delete", description: "Delete the selected session, all sessions, or inactive remote inventory after confirmation." },
 ]
 
 const promptTokenStyle = SyntaxStyle.create()
@@ -876,6 +876,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [terminalPairingOpen, setTerminalPairingOpen] = createSignal(false)
   const [terminalPairingState, setTerminalPairingState] = createSignal<TerminalPairingLinkView | null>(null)
   const [terminalPairingQrLines, setTerminalPairingQrLines] = createSignal<string[]>([])
+  const [sessionBrowserOpen, setSessionBrowserOpen] = createSignal(false)
+  const [sessionBrowserIndex, setSessionBrowserIndex] = createSignal(0)
   const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
     createWaitingRoomState(
       initialSessions,
@@ -1728,6 +1730,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         await openTerminalPairingDialog()
         return
       }
+      if (waitingRoomState().focus === "join-sessions") {
+        openSessionBrowserDialog()
+        return
+      }
       const decision = deriveWaitingRoomActivationDecision({
         state: waitingRoomState(),
         sessions: availableSessions(),
@@ -1759,11 +1765,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let waitingRoomDataRefresh: Promise<void> | null = null
   let waitingRoomInventoryVersion: string | null = null
   let pendingWaitingRoomSessionAction: PendingWaitingRoomSessionAction | null = null
-  const applyWaitingRoomSessionLifecycleAction = async (action: WaitingRoomSessionLifecycleAction) => {
+  const applyWaitingRoomSessionLifecycleAction = async (
+    action: WaitingRoomSessionLifecycleAction,
+    stateOverride?: WaitingRoomState,
+  ) => {
     try {
       if (!kernelConnected()) {
         await connectDetachedKernelFromWaitingRoom()
       }
+      const effectiveState = stateOverride ?? waitingRoomState()
       const remote = {
         cloudNotice: waitingRoomCloudNotice(),
         relay: relayStatusState(),
@@ -1773,14 +1783,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
       const decision = action === "delete"
         ? deriveWaitingRoomDeleteDecision({
-            state: waitingRoomState(),
+            state: effectiveState,
             sessions: availableSessions(),
             catalog: providerCatalogState(),
             remote,
           })
         : deriveWaitingRoomSessionLifecycleDecision({
             action,
-            state: waitingRoomState(),
+            state: effectiveState,
             sessions: availableSessions(),
             catalog: providerCatalogState(),
           })
@@ -1821,6 +1831,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         flashFooter(`archived session ${formatSessionDisplayLabel(updated)}`, "info")
         return
       }
+      if (decision.action === "archive-all") {
+        const archived = []
+        for (const session of decision.sessions) {
+          archived.push(await archiveSessionById(client, session.id))
+        }
+        const archivedIds = new Set(archived.map((session) => session.id))
+        setAvailableSessions(availableSessions().filter((candidate) => !archivedIds.has(candidate.id)))
+        waitingRoomInventoryVersion = null
+        reconcileWaitingRoom({ ...waitingRoomState(), focus: "new", sessionIndex: 0 })
+        await refreshWaitingRoomData()
+        if (sessionBrowserOpen()) {
+          closeSessionBrowserDialog()
+        }
+        flashFooter(`archived ${archived.length} session${archived.length === 1 ? "" : "s"}`, "info")
+        return
+      }
       if (decision.action === "delete-session") {
         const updated = await deleteSessionByRef(client, decision.session.id, pendingWorkspaceTarget())
         setAvailableSessions(availableSessions().filter((candidate) => candidate.id !== updated.id))
@@ -1828,6 +1854,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         reconcileWaitingRoom(waitingRoomState())
         await refreshWaitingRoomData()
         flashFooter(`deleted session ${formatSessionDisplayLabel(updated)}`, "error")
+        return
+      }
+      if (decision.action === "delete-all-sessions") {
+        const deleted = []
+        for (const session of decision.sessions) {
+          deleted.push(await deleteSessionByRef(client, session.id, pendingWorkspaceTarget()))
+        }
+        const deletedIds = new Set(deleted.map((session) => session.id))
+        setAvailableSessions(availableSessions().filter((candidate) => !deletedIds.has(candidate.id)))
+        waitingRoomInventoryVersion = null
+        reconcileWaitingRoom({ ...waitingRoomState(), focus: "new", sessionIndex: 0 })
+        await refreshWaitingRoomData()
+        if (sessionBrowserOpen()) {
+          closeSessionBrowserDialog()
+        }
+        flashFooter(`deleted ${deleted.length} session${deleted.length === 1 ? "" : "s"}`, "error")
         return
       }
       if (decision.action === "delete") {
@@ -1886,6 +1928,81 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     return null
   }
+  const handleSessionBrowserKey = (event: {
+    name: string
+    eventType?: string
+    ctrl?: boolean
+    meta?: boolean
+    alt?: boolean
+    super?: boolean
+  }) => {
+    if (!sessionBrowserOpen() || event.eventType === "release" || event.ctrl || event.meta || event.alt || event.super) {
+      return false
+    }
+    const sessions = sessionBrowserSessions()
+    if (event.name === "escape") {
+      closeSessionBrowserDialog()
+      return true
+    }
+    if (event.name === "up" || event.name === "down") {
+      if (sessions.length > 0) {
+        setSessionBrowserIndex((index) => {
+          const next = event.name === "up" ? index - 1 : index + 1
+          return ((next % sessions.length) + sessions.length) % sessions.length
+        })
+        renderHotkeysOverlay()
+      }
+      return true
+    }
+    const selectedIndex = normalizeSessionBrowserIndex()
+    const selected = sessions[selectedIndex]
+    if (!selected) {
+      flashFooter("no sessions available", "error")
+      return true
+    }
+    if (event.name === "return" || event.name === "enter") {
+      const state = { ...waitingRoomState(), focus: "session" as const, sessionIndex: selectedIndex }
+      const decision = deriveWaitingRoomActivationDecision({
+        state,
+        sessions: availableSessions(),
+        catalog: providerCatalogState(),
+        currentProvider: (options.provider ?? "opencode") as BackendProviderId,
+        currentModel: options.model,
+      })
+      if (decision.action !== "join") {
+        flashFooter(decision.action === "error" ? decision.message : "select a session to join", "error")
+        return true
+      }
+      closeSessionBrowserDialog()
+      void attachBinding(decision.session, false, decision.launch).then(
+        () => flashFooter(`attached to session ${decision.session.alias ?? decision.session.id}`, "info"),
+        (error) => flashFooter(formatError(error), "error"),
+      )
+      return true
+    }
+    const lifecycleAction = event.name === "a"
+      ? "archive"
+      : event.name === "d" || event.name === "delete"
+        ? "delete"
+        : null
+    if (lifecycleAction) {
+      void applyWaitingRoomSessionLifecycleAction(lifecycleAction, {
+        ...waitingRoomState(),
+        focus: "session",
+        sessionIndex: selectedIndex,
+      }).then(() => {
+        const nextLength = sessionBrowserSessions().length
+        if (nextLength === 0) {
+          closeSessionBrowserDialog()
+        } else {
+          setSessionBrowserIndex((index) => Math.min(index, nextLength - 1))
+          renderHotkeysOverlay()
+        }
+      })
+      return true
+    }
+    return true
+  }
   const waitingRoomLifecycleTarget = (
     decision: WaitingRoomSessionLifecycleDecision | WaitingRoomDeleteDecision,
   ) => {
@@ -1897,11 +2014,27 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         verb: "archive",
       }
     }
+    if (decision.action === "archive-all") {
+      return {
+        kind: "sessions" as const,
+        id: "all",
+        label: `${decision.sessions.length} session${decision.sessions.length === 1 ? "" : "s"}`,
+        verb: "archive",
+      }
+    }
     if (decision.action === "delete-session") {
       return {
         kind: "session" as const,
         id: decision.session.id,
         label: `session ${formatSessionDisplayLabel(decision.session)}`,
+        verb: "delete",
+      }
+    }
+    if (decision.action === "delete-all-sessions") {
+      return {
+        kind: "sessions" as const,
+        id: "all",
+        label: `${decision.sessions.length} session${decision.sessions.length === 1 ? "" : "s"}`,
         verb: "delete",
       }
     }
@@ -2150,6 +2283,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     worktreePath: pendingWorktreeTarget(),
   })
   const syncCommandCenter = (value = promptInput?.plainText ?? promptTextSnapshot) => {
+    const previousValue = commandCenterQuery()
     setCommandCenterQuery(value)
     const items = buildCommandCenterItems(value, {
       providerCatalog: providerCatalogState(),
@@ -2160,7 +2294,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       currentVariant: currentVariantId(),
     })
     setCommandCenterItems(items)
-    setCommandCenterIndex((index) => nextCommandCenterIndex(index, items, value))
+    setCommandCenterIndex((index) => nextCommandCenterIndex(index, items, value, previousValue))
     renderCommandCenter()
   }
   const commandCenterOpen = () => commandCenterItems().length > 0 && commandCenterQuery().startsWith("/")
@@ -2850,6 +2984,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ? { title: "Session", items: SESSION_HOTKEYS }
       : { title: "Waiting room", items: WAITING_ROOM_HOTKEYS },
   ]
+  const sessionBrowserSessions = () => availableSessions()
+    .filter((session) => session.status !== "Ended")
+    .slice()
+    .sort((left, right) => sessionBrowserSortTime(right) - sessionBrowserSortTime(left))
+  const normalizeSessionBrowserIndex = () => {
+    const sessions = sessionBrowserSessions()
+    const index = Math.min(Math.max(0, sessionBrowserIndex()), Math.max(0, sessions.length - 1))
+    if (index !== sessionBrowserIndex()) {
+      setSessionBrowserIndex(index)
+    }
+    return index
+  }
   const renderHotkeysOverlay = () => {
     if (!hotkeysOverlayBox) {
       return
@@ -2858,7 +3004,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       hotkeysOverlayBox.remove(child.id)
       child.destroyRecursively()
     }
-    if (!hotkeysOpen() && !terminalPairingOpen()) {
+    if (!hotkeysOpen() && !terminalPairingOpen() && !sessionBrowserOpen()) {
       hotkeysOverlayBox.requestRender()
       return
     }
@@ -2874,11 +3020,85 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       backgroundColor: RGBA.fromInts(0, 0, 0, 150),
     })
     scrim.onMouseUp = () => {
-      if (terminalPairingOpen()) {
+      if (sessionBrowserOpen()) {
+        closeSessionBrowserDialog()
+      } else if (terminalPairingOpen()) {
         closeTerminalPairingDialog()
       } else {
         closeHotkeys()
       }
+    }
+
+    if (sessionBrowserOpen()) {
+      const sessions = sessionBrowserSessions()
+      const panel = new BoxRenderable(renderer, {
+        width: Math.min(112, Math.max(78, Math.floor(dimensions().width * 0.78))),
+        maxWidth: dimensions().width - 4,
+        backgroundColor: theme.backgroundPanel,
+        paddingTop: 1,
+        paddingBottom: 1,
+        paddingLeft: 2,
+        paddingRight: 2,
+        flexDirection: "column",
+        gap: 1,
+      })
+      panel.onMouseUp = (event) => {
+        event.stopPropagation()
+      }
+      const header = new BoxRenderable(renderer, {
+        flexDirection: "row",
+        justifyContent: "space-between",
+      })
+      header.add(new TextRenderable(renderer, {
+        content: "All Sessions",
+        attributes: TextAttributes.BOLD,
+        fg: theme.text,
+      }))
+      header.add(new TextRenderable(renderer, {
+        content: "Enter opens • A/D confirm • Esc closes",
+        fg: theme.textMuted,
+      }))
+      panel.add(header)
+      if (sessions.length === 0) {
+        panel.add(new TextRenderable(renderer, {
+          content: "No sessions available.",
+          fg: theme.textMuted,
+        }))
+      } else {
+        const index = normalizeSessionBrowserIndex()
+        const statusWidth = Math.max("Status".length, ...sessions.map((session) => sessionBrowserStatus(session).length))
+        const lastUsedWidth = Math.max("Last used".length, "0000-00-00 00:00 UTC".length)
+        const createdAtWidth = Math.max("Created at".length, "0000-00-00 00:00 UTC".length)
+        panel.add(new TextRenderable(renderer, {
+          content: `  ${"Session".padEnd(30, " ")} ${"Status".padEnd(statusWidth, " ")}  ${"Last used".padEnd(lastUsedWidth, " ")}  ${"Created at".padEnd(createdAtWidth, " ")}`,
+          fg: theme.textMuted,
+          wrapMode: "none",
+        }))
+        const maxRows = Math.max(4, Math.min(14, dimensions().height - 12))
+        const start = Math.min(Math.max(0, index - maxRows + 1), Math.max(0, sessions.length - maxRows))
+        for (const [offset, session] of sessions.slice(start, start + maxRows).entries()) {
+          const rowIndex = start + offset
+          const selected = rowIndex === index
+          const title = sessionBrowserTitle(session)
+          const content = `${selected ? ">" : " "} ${title.padEnd(30, " ")} ${sessionBrowserStatus(session).padEnd(statusWidth, " ")}  ${sessionBrowserTimestamp(session.last_used_at_ms ?? null).padEnd(lastUsedWidth, " ")}  ${sessionBrowserTimestamp(session.created_at_ms ?? null).padEnd(createdAtWidth, " ")}`
+          panel.add(new TextRenderable(renderer, {
+            content,
+            fg: selected ? theme.primary : theme.text,
+            ...(selected ? { attributes: TextAttributes.BOLD } : {}),
+            wrapMode: "none",
+          }))
+        }
+        if (sessions.length > maxRows) {
+          panel.add(new TextRenderable(renderer, {
+            content: `${start + 1}-${Math.min(sessions.length, start + maxRows)} of ${sessions.length}`,
+            fg: theme.textMuted,
+          }))
+        }
+      }
+      scrim.add(panel)
+      hotkeysOverlayBox.add(scrim)
+      hotkeysOverlayBox.requestRender()
+      return
     }
 
     if (terminalPairingOpen()) {
@@ -3069,6 +3289,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       hotkeysFocus = null
     }, 1)
   }
+  const closeSessionBrowserDialog = () => {
+    if (!sessionBrowserOpen()) {
+      return
+    }
+    const restoreTarget = hotkeysFocus
+    setSessionBrowserOpen(false)
+    renderHotkeysOverlay()
+    startTimeout(() => {
+      if (restoreTarget && !restoreTarget.isDestroyed) {
+        restoreTarget.focus()
+      }
+      hotkeysFocus = null
+    }, 1)
+  }
   const openHotkeys = () => {
     if (hotkeysOpen()) {
       return
@@ -3128,6 +3362,29 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       flashFooter(formatError(error), "error")
     }
   }
+  const openSessionBrowserDialog = () => {
+    if (sessionBrowserOpen()) {
+      return
+    }
+    const sessions = sessionBrowserSessions()
+    if (sessions.length === 0) {
+      flashFooter("no sessions available to join", "error")
+      return
+    }
+    const focused = (renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null
+    hotkeysFocus = focused && !focused.isDestroyed
+      ? focused
+      : promptInput && !promptInput.isDestroyed
+        ? promptInput
+        : null
+    hotkeysFocus?.blur()
+    setHotkeysOpen(false)
+    setTerminalPairingOpen(false)
+    setSessionBrowserIndex(Math.min(Math.max(0, waitingRoomState().sessionIndex), sessions.length - 1))
+    setSessionBrowserOpen(true)
+    renderHotkeysOverlay()
+    flashFooter("select a session to open, archive, or delete", "info")
+  }
   const toggleHotkeys = () => {
     hotkeyDebug(`toggle open=${hotkeysOpen()} current=${describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null)?.type ?? "none"}`)
     appLogger?.debug("toggleHotkeys invoked", {
@@ -3141,6 +3398,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     if (terminalPairingOpen()) {
       closeTerminalPairingDialog()
+    }
+    if (sessionBrowserOpen()) {
+      closeSessionBrowserDialog()
     }
     openHotkeys()
   }
@@ -7388,6 +7648,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       closeHotkeys()
       return
     }
+    if (sessionBrowserOpen() && event.name === "escape") {
+      event.preventDefault()
+      event.stopPropagation()
+      closeSessionBrowserDialog()
+      return
+    }
     if (terminalPairingOpen() && event.name === "escape") {
       event.preventDefault()
       event.stopPropagation()
@@ -7406,7 +7672,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       void (activePrompt() ? requestPromptStop() : requestExit())
       return
     }
-    if (hotkeysOpen() || terminalPairingOpen()) {
+    if (hotkeysOpen() || terminalPairingOpen() || sessionBrowserOpen()) {
       event.preventDefault()
       event.stopPropagation()
     }
@@ -7482,12 +7748,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!event) {
       return
     }
-    if (event.eventType !== "release" && (hotkeysOpen() || terminalPairingOpen()) && event.name === "escape") {
-      if (terminalPairingOpen()) {
+    if (event.eventType !== "release" && (hotkeysOpen() || terminalPairingOpen() || sessionBrowserOpen()) && event.name === "escape") {
+      if (sessionBrowserOpen()) {
+        closeSessionBrowserDialog()
+      } else if (terminalPairingOpen()) {
         closeTerminalPairingDialog()
       } else {
         closeHotkeys()
       }
+      return
+    }
+    if (handleSessionBrowserKey(event)) {
       return
     }
     if (event.eventType !== "release" && event.ctrl && event.name === "e") {
@@ -7504,7 +7775,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     if (event.eventType !== "release" && event.ctrl && event.name === "p") {
-      if (hotkeysOpen() || terminalPairingOpen()) {
+      if (hotkeysOpen() || terminalPairingOpen() || sessionBrowserOpen()) {
         return
       }
       toggleWorkspaceScreen()
@@ -7512,7 +7783,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     if (shouldCycleFocusOnTabEvent(event, {
       attached: isAttached(),
-      hotkeysOpen: hotkeysOpen() || terminalPairingOpen(),
+      hotkeysOpen: hotkeysOpen() || terminalPairingOpen() || sessionBrowserOpen(),
       promptFocused: Boolean(promptInput?.focused),
       commandCenterOpen: commandCenterOpen(),
       commandCenterQuery: commandCenterQuery(),
@@ -7531,7 +7802,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       void (activePrompt() ? requestPromptStop() : requestExit())
       return
     }
-    if (hotkeysOpen() || terminalPairingOpen()) {
+    if (hotkeysOpen() || terminalPairingOpen() || sessionBrowserOpen()) {
       return
     }
     if (event.eventType !== "release" && promptInput?.focused) {
@@ -7550,7 +7821,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       navigatePromptTurns(event.name === "up" ? "previous" : "next")
       return
     }
-    if (!isAttached()) {
+    if (shouldHandleWaitingRoomKeyEvent(event, {
+      attached: isAttached(),
+      hotkeysOpen: hotkeysOpen() || terminalPairingOpen() || sessionBrowserOpen(),
+      promptFocused: Boolean(promptInput?.focused),
+      commandCenterOpen: commandCenterOpen(),
+      commandCenterQuery: commandCenterQuery(),
+    })) {
       const keyName = event.name === "up" || event.name === "down" || event.name === "left" || event.name === "right"
         ? event.name
         : null
@@ -9490,6 +9767,31 @@ async function archiveSessionById(client: LocalIpcClient, sessionId: string): Pr
 
 function formatSessionDisplayLabel(session: { id: string; alias?: string | null }) {
   return session.alias ?? session.id
+}
+
+function sessionBrowserTitle(session: { id: string; alias?: string | null }) {
+  return (session.alias ? `${session.id} (${session.alias})` : session.id).slice(0, 30)
+}
+
+function sessionBrowserStatus(session: { status: string }) {
+  return session.status.charAt(0).toUpperCase() + session.status.slice(1).toLowerCase()
+}
+
+function sessionBrowserTimestamp(value: number | null) {
+  if (value === null) {
+    return "-"
+  }
+  const date = new Date(value)
+  const year = date.getUTCFullYear()
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0")
+  const day = String(date.getUTCDate()).padStart(2, "0")
+  const hours = String(date.getUTCHours()).padStart(2, "0")
+  const minutes = String(date.getUTCMinutes()).padStart(2, "0")
+  return `${year}-${month}-${day} ${hours}:${minutes} UTC`
+}
+
+function sessionBrowserSortTime(session: { last_used_at_ms?: number | null; created_at_ms?: number | null }) {
+  return session.last_used_at_ms ?? session.created_at_ms ?? 0
 }
 
 async function attachToSession(

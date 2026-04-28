@@ -6,7 +6,8 @@ use crate::session::PromptAttachment;
 use rand::distributions::{Alphanumeric, DistString};
 
 use super::{
-    workspace_write_fence_active, OpenCodeClient, ProviderResumeState, RuntimeProviderRun,
+    opencode_client::OpenCodeConfiguredDefaults, workspace_write_fence_active, OpenCodeClient,
+    OpenCodeMessage, ProviderResumeState, RuntimeProviderRun,
 };
 use crate::provider::opencode_runtime::OpenCodeRuntimeState;
 
@@ -194,23 +195,48 @@ pub(super) fn sync_opencode_run_selection_for_session(
     provider_run_id: &str,
     base_url: &str,
     session_id: &str,
+    requested_model: &str,
+    requested_variant: Option<&str>,
 ) -> Result<OpenCodeRunSelection, DaemonError> {
     let client = OpenCodeClient::new(provider_run_id, base_url)?;
     let defaults = client.configured_defaults()?;
     let messages = client.messages(session_id)?;
 
-    Ok(OpenCodeRunSelection {
+    Ok(resolve_sync_selection(
+        &messages,
+        defaults,
+        requested_model,
+        requested_variant,
+    ))
+}
+
+fn resolve_sync_selection(
+    messages: &[OpenCodeMessage],
+    defaults: OpenCodeConfiguredDefaults,
+    requested_model: &str,
+    requested_variant: Option<&str>,
+) -> OpenCodeRunSelection {
+    OpenCodeRunSelection {
         model: messages
             .iter()
             .rev()
             .find_map(|message| message.info.resolved_model())
-            .or(defaults.model),
+            .or_else(|| {
+                (requested_model == "default")
+                    .then_some(defaults.model)
+                    .flatten()
+            }),
         variant: messages
             .iter()
             .rev()
             .find_map(|message| message.info.resolved_variant())
-            .or(defaults.variant),
-    })
+            .or_else(|| {
+                requested_variant
+                    .is_none()
+                    .then_some(defaults.variant)
+                    .flatten()
+            }),
+    }
 }
 
 pub(super) fn abort_opencode_session(
@@ -226,7 +252,25 @@ pub(super) fn abort_opencode_session(
 mod tests {
     use serde_json::json;
 
-    use super::opencode_managed_io_permission_rules;
+    use super::{
+        next_opencode_message_id, opencode_managed_io_permission_rules, resolve_sync_selection,
+        OpenCodeConfiguredDefaults, OpenCodeMessage,
+    };
+
+    fn message(provider_id: &str, model_id: &str, variant: &str) -> OpenCodeMessage {
+        serde_json::from_value(json!({
+            "info": {
+                "id": "msg-1",
+                "sessionID": "session-1",
+                "role": "assistant",
+                "providerID": provider_id,
+                "modelID": model_id,
+                "variant": variant
+            },
+            "parts": []
+        }))
+        .expect("message should parse")
+    }
 
     #[test]
     fn managed_io_permission_rules_block_direct_writes() {
@@ -273,7 +317,7 @@ mod tests {
 
     #[test]
     fn generated_message_ids_use_opencode_sortable_timestamp_width() {
-        let id = super::next_opencode_message_id();
+        let id = next_opencode_message_id();
 
         assert!(id.starts_with("msg_"));
         assert_eq!(id.len(), 30);
@@ -282,12 +326,63 @@ mod tests {
 
     #[test]
     fn generated_message_ids_sort_after_current_opencode_ids() {
-        let id = super::next_opencode_message_id();
+        let id = next_opencode_message_id();
 
         assert!(
             id.as_str() > "msg_d0000000000000000000000000",
             "generated id {id} should sort in OpenCode's current ascending range"
         );
+    }
+
+    #[test]
+    fn sync_selection_does_not_let_defaults_override_explicit_launch_selection() {
+        let selection = resolve_sync_selection(
+            &[],
+            OpenCodeConfiguredDefaults {
+                model: Some("openai/gpt-5.4".to_string()),
+                variant: Some("medium".to_string()),
+                ..OpenCodeConfiguredDefaults::default()
+            },
+            "openai/gpt-5.4",
+            Some("high"),
+        );
+
+        assert_eq!(selection.model, None);
+        assert_eq!(selection.variant, None);
+    }
+
+    #[test]
+    fn sync_selection_still_uses_message_metadata_for_explicit_runs() {
+        let selection = resolve_sync_selection(
+            &[message("openai", "gpt-5.4", "low")],
+            OpenCodeConfiguredDefaults {
+                model: Some("openai/gpt-5.4".to_string()),
+                variant: Some("medium".to_string()),
+                ..OpenCodeConfiguredDefaults::default()
+            },
+            "openai/gpt-5.4",
+            Some("high"),
+        );
+
+        assert_eq!(selection.model.as_deref(), Some("openai/gpt-5.4"));
+        assert_eq!(selection.variant.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn sync_selection_uses_defaults_only_for_unspecified_launch_fields() {
+        let selection = resolve_sync_selection(
+            &[],
+            OpenCodeConfiguredDefaults {
+                model: Some("openai/gpt-5.4".to_string()),
+                variant: Some("medium".to_string()),
+                ..OpenCodeConfiguredDefaults::default()
+            },
+            "default",
+            None,
+        );
+
+        assert_eq!(selection.model.as_deref(), Some("openai/gpt-5.4"));
+        assert_eq!(selection.variant.as_deref(), Some("medium"));
     }
 }
 

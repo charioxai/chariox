@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { HOTKEY_TOGGLE_LABEL, isHotkeysToggleEvent, shouldCycleFocusOnTabEvent } from "./hotkeys.js"
+import { HOTKEY_TOGGLE_LABEL, isHotkeysToggleEvent, shouldCycleFocusOnTabEvent, shouldHandleWaitingRoomKeyEvent } from "./hotkeys.js"
 
 test("isHotkeysToggleEvent matches Ctrl+T", () => {
   assert.equal(isHotkeysToggleEvent({ name: "t", ctrl: true }, "linux"), true)
@@ -47,5 +47,31 @@ test("shouldCycleFocusOnTabEvent suppresses Tab focus cycling while command cent
     promptFocused: true,
     commandCenterOpen: false,
     commandCenterQuery: "regular prompt",
+  }), true)
+})
+
+test("shouldHandleWaitingRoomKeyEvent yields to prompt-owned command input", () => {
+  assert.equal(shouldHandleWaitingRoomKeyEvent({ name: "enter" }, {
+    attached: false,
+    hotkeysOpen: false,
+    promptFocused: true,
+    commandCenterOpen: true,
+    commandCenterQuery: "/cloud status",
+  }), false)
+
+  assert.equal(shouldHandleWaitingRoomKeyEvent({ name: "enter" }, {
+    attached: false,
+    hotkeysOpen: false,
+    promptFocused: true,
+    commandCenterOpen: false,
+    commandCenterQuery: "/cloud status",
+  }), false)
+
+  assert.equal(shouldHandleWaitingRoomKeyEvent({ name: "enter" }, {
+    attached: false,
+    hotkeysOpen: false,
+    promptFocused: false,
+    commandCenterOpen: false,
+    commandCenterQuery: "",
   }), true)
 })

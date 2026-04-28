@@ -21,7 +21,7 @@ import {
   normalizeWaitingRoomWorktreeSelectionId,
 } from "./waiting-room-worktrees.js"
 
-export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = 10
+export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = 2
 const WAITING_ROOM_ROW_TITLE_MIN_WIDTH = 24
 const WAITING_ROOM_STATUS_MIN_WIDTH = "Status".length
 const WAITING_ROOM_TIMESTAMP_MIN_WIDTH = "0000-00-00 00:00 UTC".length
@@ -42,6 +42,7 @@ export type WaitingRoomFocus =
   | "workspace"
   | "worktree"
   | "theme"
+  | "join-sessions"
   | "session"
   | "relay"
   | "machine"
@@ -173,14 +174,17 @@ export function normalizeWaitingRoomState(
   remote: WaitingRoomRemoteState = {},
 ) {
   const visibleSessions = waitingRoomSessions(sessions)
+  const previewSessions = waitingRoomPreviewSessions(sessions)
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const terminals = waitingRoomTerminals(remote)
   const providerId = normalizeBackendProvider(state.providerId)
   const selected = selectConfiguredModel(catalog, state.modelId, providerId)
   const efforts = waitingRoomEfforts(selected)
-  const focus = visibleSessions.length === 0 && state.focus === "session"
+  const focus = (visibleSessions.length === 0 && (state.focus === "session" || state.focus === "join-sessions"))
     ? "new"
+    : previewSessions.length === 0 && state.focus === "session"
+      ? "join-sessions"
     : remoteMachines.length === 0 && state.focus === "machine"
       ? "relay"
       : remoteKernels.length === 0 && state.focus === "remote-kernel"
@@ -342,9 +346,10 @@ export function waitingRoomRows(
   const choice = waitingRoomChoice(state, sessions, catalog)
   const modelOptions = catalogModelOptions(catalog, state.providerId)
   const visibleSessions = waitingRoomSessions(sessions)
-  const sessionWindow = waitingRoomSessionWindow(state, visibleSessions)
-  const sessionScrollbar = renderWaitingRoomScrollbar(sessionWindow.count, visibleSessions.length, sessionWindow.start)
-  const windowSessions = visibleSessions.slice(sessionWindow.start, sessionWindow.start + sessionWindow.count)
+  const previewSessions = waitingRoomPreviewSessions(sessions)
+  const sessionWindow = { start: 0, count: previewSessions.length }
+  const sessionScrollbar = renderWaitingRoomScrollbar(sessionWindow.count, previewSessions.length, sessionWindow.start)
+  const windowSessions = previewSessions
   const allSessionTitles = visibleSessions.map(formatWaitingRoomSessionTitle)
   const terminals = waitingRoomTerminals(remote)
   const terminalTitles = terminals.map(formatWaitingRoomTerminalTitle)
@@ -436,10 +441,10 @@ export function waitingRoomRows(
     {
       id: "join-header",
       title: "Join Existing Session",
-      value: "",
+      value: visibleSessions.length > 0 ? "Press Enter" : "",
       titleWidth,
       indent: 0,
-      focused: false,
+      focused: state.focus === "join-sessions",
       selectable: true,
       scrollbar: "",
     },
@@ -474,7 +479,7 @@ export function waitingRoomRows(
     })
 
     for (const [offset, session] of windowSessions.entries()) {
-      const sessionIndex = sessionWindow.start + offset
+      const sessionIndex = visibleSessions.findIndex((candidate) => candidate.id === session.id)
       rows.push({
         id: `session:${session.id}`,
         title: formatWaitingRoomSessionTitle(session),
@@ -806,11 +811,23 @@ function modulo(value: number, size: number) {
 }
 
 function waitingRoomSessions(sessions: SessionListEntry[]) {
-  return sessions.filter((session) => session.status !== "Ended")
+  return sessions
+    .filter((session) => session.status !== "Ended")
+    .slice()
+    .sort((left, right) => sessionSortTime(right) - sessionSortTime(left))
+}
+
+export function waitingRoomPreviewSessions(sessions: SessionListEntry[]) {
+  return waitingRoomSessions(sessions).slice(0, MAX_VISIBLE_WAITING_ROOM_SESSIONS)
+}
+
+function sessionSortTime(session: SessionListEntry) {
+  return session.last_used_at_ms ?? session.created_at_ms ?? 0
 }
 
 function waitingRoomFocusTargets(sessions: SessionListEntry[], remote: WaitingRoomRemoteState = {}) {
   const visibleSessions = waitingRoomSessions(sessions)
+  const previewSessions = waitingRoomPreviewSessions(sessions)
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const terminals = waitingRoomTerminals(remote)
@@ -821,7 +838,11 @@ function waitingRoomFocusTargets(sessions: SessionListEntry[], remote: WaitingRo
     { focus: "effort" as const, sessionIndex: 0 },
     { focus: "workspace" as const, sessionIndex: 0 },
     { focus: "worktree" as const, sessionIndex: 0 },
-    ...visibleSessions.map((_, sessionIndex) => ({ focus: "session" as const, sessionIndex })),
+    ...(visibleSessions.length > 0 ? [{ focus: "join-sessions" as const, sessionIndex: 0 }] : []),
+    ...previewSessions.map((session) => ({
+      focus: "session" as const,
+      sessionIndex: Math.max(0, visibleSessions.findIndex((candidate) => candidate.id === session.id)),
+    })),
     { focus: "relay" as const, sessionIndex: 0 },
     ...remoteMachines.map((_, machineIndex) => ({
       focus: "machine" as const,

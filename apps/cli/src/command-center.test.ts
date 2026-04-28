@@ -235,6 +235,21 @@ test("nextCommandCenterIndex selects exact parent groups instead of preserving s
   assert.equal(nextCommandCenterIndex(2, items, "/workflow "), 0)
 })
 
+test("nextCommandCenterIndex preserves selection when the same exact query is resynced", () => {
+  const items = buildCommandCenterItems("/workflow", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "openai/gpt-5.4",
+    currentVariant: "high",
+  })
+
+  assert.equal(items[0]?.kind, "group")
+  assert.equal(items[2]?.kind, "command")
+  assert.equal(nextCommandCenterIndex(2, items, "/workflow", "/workflow"), 2)
+})
+
 test("buildCommandCenterItems exposes the focused provider namespace", () => {
   const items = buildCommandCenterItems("/codex", {
     providerCatalog: fallbackProviderCatalog(),

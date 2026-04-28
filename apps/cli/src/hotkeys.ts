@@ -10,6 +10,8 @@ export type TabFocusCycleContext = {
   commandCenterQuery: string
 }
 
+export type WaitingRoomKeyContext = TabFocusCycleContext
+
 export type HotkeysToggleMatch = {
   matched: boolean
   normalizedName: string
@@ -66,6 +68,22 @@ export function shouldCycleFocusOnTabEvent(
     return false
   }
   if (context.promptFocused && (context.commandCenterOpen || context.commandCenterQuery.startsWith("/"))) {
+    return false
+  }
+  return true
+}
+
+export function shouldHandleWaitingRoomKeyEvent(
+  event: ShortcutEvent,
+  context: WaitingRoomKeyContext,
+) {
+  if (context.attached || context.hotkeysOpen) {
+    return false
+  }
+  if (context.commandCenterOpen) {
+    return false
+  }
+  if (context.promptFocused && context.commandCenterQuery.trim().length > 0) {
     return false
   }
   return true
