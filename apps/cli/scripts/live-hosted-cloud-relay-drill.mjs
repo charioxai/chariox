@@ -413,6 +413,11 @@ async function waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace
   throw new Error(`local daemon did not become ready: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
 }
 
+async function allowDevStubProvider(client, requests, label) {
+  log("allow-dev-stub-provider", { label })
+  await client.send(requests.setUserConfigValueRequest("providers.managed_io", "unrestricted"))
+}
+
 async function manualCloudDeviceLogin({ role, clientId, clientAlias, localClient, requests }) {
   log(`${role}-cloud-login-start`, { apiUrl })
   const login = unwrap(
@@ -904,6 +909,7 @@ socket.write(JSON.stringify(request) + "\\n");
 
 async function runHostedRemoteCliAssertions({
   requests,
+  homeClient,
   verificationClient,
   relayUrl,
   relayToken,
@@ -951,6 +957,7 @@ async function runHostedRemoteCliAssertions({
 
   let remoteCli = null
   try {
+    await allowDevStubProvider(homeClient, requests, "remote-cli-home-kernel")
     log("remote-cli-start", { host: remoteCliHost, repo: remoteCliRepo, alias: remoteAlias })
     remoteCli = spawnProcess("ssh", sshArgs(remoteCommand, { tty: true }), {
       cwd: repoRoot,
@@ -1038,10 +1045,19 @@ async function runHostedSecondKernelAssertions({
   }
 
   let worker = null
+  let workerClient = null
   const eventLog = []
   try {
     log("start-second-kernel", { workerAlias })
     worker = spawnProcess(kernelPath, [], { cwd: repoRoot, env: workerEnv, name: "worker-kernel" })
+    const workerKernelUrl = `ws://127.0.0.1:${workerPorts.kernelPort}/kernel`
+    await waitForLocalDaemon(LocalIpcClient, requests, workerKernelUrl, workspace)
+    workerClient = new LocalIpcClient(workerKernelUrl, {
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    await allowDevStubProvider(homeClient, requests, "second-kernel-home")
+    await allowDevStubProvider(workerClient, requests, "second-kernel-worker")
 
     log("second-kernel-client-token-request", { workerAlias })
     const workerClientToken = await issueSessionScopedClientToken(apiUrl, {
@@ -1118,6 +1134,7 @@ async function runHostedSecondKernelAssertions({
       completedPromptId: completed.completion?.completed?.id ?? null,
     })
   } finally {
+    await closeClient(workerClient, "worker")
     await terminateChild(worker)
   }
 }
@@ -1400,6 +1417,7 @@ async function main() {
     if (runRemoteCli) {
       await runHostedRemoteCliAssertions({
         requests,
+        homeClient: localClient,
         verificationClient: remoteClient,
         relayUrl: clientRelay.relayUrl,
         relayToken: clientRelay.relayToken,
