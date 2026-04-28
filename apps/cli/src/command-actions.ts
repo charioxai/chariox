@@ -39,6 +39,8 @@ const WORKFLOW_LAUNCH_POLICY_CONFIG_KEY = "workflow.launch_policy"
 const SESSION_AGENT_MODE_CONFIG_KEY = "agents.mode"
 const SESSION_AGENT_PERMISSION_CONFIG_KEY = "agents.permissions"
 const DEFAULT_HOSTED_CLOUD_API_URL = "https://arroba-cloud-staging.osc-fr1.scalingo.io"
+const HOSTED_CLOUD_RELAY_CONNECT_TIMEOUT_MS = 8_000
+const HOSTED_CLOUD_RELAY_CONNECT_POLL_MS = 500
 
 function buildHostedCloudTerminalUrl(apiUrl: string): string {
   const url = new URL("/terminal", apiUrl)
@@ -51,7 +53,34 @@ function isMissingKernelCloudProfileError(error: unknown): boolean {
   return message.includes("cloud relay profile missing") || message.includes("run /relay cloud login first")
 }
 
+function isRefreshableCloudLinkError(error: unknown): boolean {
+  if (isMissingKernelCloudProfileError(error)) {
+    return true
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes("identity_revoked")
+    || message.includes("Subject has been revoked")
+    || message.includes("session_expired")
+    || message.includes("invalid_session")
+    || message.includes("cloud relay request failed with 401")
+}
+
 type FooterTone = "info" | "error"
+
+type RelayStatus = {
+  configured: boolean
+  connected: boolean
+  relay_url?: string | null
+  relay_token_configured: boolean
+  daemon_id: string
+  machine_id: string
+  machine_alias?: string | null
+}
+
+type HostedCloudRelayEnsureResult = {
+  profile: RelayCloudProfile
+  status: RelayStatus | null
+}
 
 type LocalGitWorktreeOptions = {
   baseDirectory: string
@@ -204,24 +233,10 @@ type CommandActionDeps = {
   getProviderAuthStatus?: (provider: string) => Promise<ProviderAuthStatus>
   startProviderLogin?: (provider: string) => Promise<ProviderLoginStart>
   logoutProvider?: (provider: string) => Promise<{ provider: string }>
-  getRelayStatus?: () => Promise<{
-    configured: boolean
-    connected: boolean
-    relay_url?: string | null
-    relay_token_configured: boolean
-    daemon_id: string
-    machine_id: string
-    machine_alias?: string | null
-  }>
-  configureRelay?: (relayUrl: string | null, relayToken: string | null) => Promise<{
-    configured: boolean
-    connected: boolean
-    relay_url?: string | null
-    relay_token_configured: boolean
-    daemon_id: string
-    machine_id: string
-    machine_alias?: string | null
-  }>
+  getRelayStatus?: () => Promise<RelayStatus>
+  configureRelay?: (relayUrl: string | null, relayToken: string | null) => Promise<RelayStatus>
+  cloudRelayConnectTimeoutMs?: number
+  cloudRelayConnectPollMs?: number
   refreshWaitingRoomData?: () => Promise<void>
   getCloudRelayProfile?: () => RelayCloudProfile | null
   saveCloudRelayProfile?: (profile: RelayCloudProfile | null) => Promise<void>
@@ -791,13 +806,37 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const appendCloudNotice = (message: string): void => {
     ;(deps.appendCloudNotice ?? deps.appendNotice)(message)
   }
-  const ensureHostedCloudRelay = async (profile: RelayCloudProfile): Promise<RelayCloudProfile> => {
+  const waitForHostedCloudRelayConnection = async (status: RelayStatus | null): Promise<RelayStatus | null> => {
+    if (!deps.getRelayStatus || status?.connected) {
+      return status
+    }
+    const timeoutMs = deps.cloudRelayConnectTimeoutMs ?? HOSTED_CLOUD_RELAY_CONNECT_TIMEOUT_MS
+    const pollMs = deps.cloudRelayConnectPollMs ?? HOSTED_CLOUD_RELAY_CONNECT_POLL_MS
+    const deadline = Date.now() + Math.max(timeoutMs, 0)
+    let latest = status
+    while (!latest?.connected && Date.now() < deadline) {
+      await sleep(Math.max(pollMs, 1))
+      latest = await deps.getRelayStatus()
+    }
+    return latest
+  }
+  const formatCloudRelayPendingNotice = (
+    status: RelayStatus | null,
+    relayUrl: string | null | undefined,
+  ): string => [
+    "cloud machine linked, but the kernel is not online in Cloud yet.",
+    `relay=${status?.connected ? "connected" : "not connected"}`,
+    `relay_url=${status?.relay_url ?? relayUrl ?? "-"}`,
+    `machine=${status?.machine_id ?? "-"}`,
+    "next=keep this CLI running; run /cloud link if the link was revoked or /cloud status to check again.",
+  ].join("\n")
+  const ensureHostedCloudRelay = async (profile: RelayCloudProfile): Promise<HostedCloudRelayEnsureResult> => {
     if (!deps.getRelayStatus || !deps.configureRelay || (!deps.issueCloudMachineRelayToken && !deps.issueCloudKernelRelayToken)) {
-      return profile
+      return { profile, status: null }
     }
     const relayStatus = await deps.getRelayStatus()
     if (relayStatus.configured && relayStatus.connected) {
-      return profile
+      return { profile, status: relayStatus }
     }
     const issued = profile.machineId && deps.issueCloudMachineRelayToken
       ? await deps.issueCloudMachineRelayToken(profile, relayStatus.daemon_id, profile.machineId)
@@ -805,16 +844,17 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         ? await deps.issueCloudKernelRelayToken(profile, relayStatus.daemon_id)
         : null
     if (!issued) {
-      return profile
+      return { profile, status: relayStatus }
     }
-    await deps.configureRelay(issued.relayUrl, issued.relayToken)
+    const configuredStatus = await deps.configureRelay(issued.relayUrl, issued.relayToken)
     const nextProfile = {
       ...(issued.profile ?? profile),
       tokenExpiresAtMs: issued.tokenExpiresAtMs,
     }
     await deps.saveCloudRelayProfile?.(nextProfile)
+    const connectedStatus = await waitForHostedCloudRelayConnection(configuredStatus)
     await deps.refreshWaitingRoomData?.()
-    return nextProfile
+    return { profile: nextProfile, status: connectedStatus ?? configuredStatus }
   }
   const openHostedCloud = async (): Promise<void> => {
     const currentProfile = deps.getCloudRelayProfile?.() ?? null
@@ -825,13 +865,25 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     const terminalUrl = buildHostedCloudTerminalUrl(currentProfile.apiUrl)
     let relayLine: string | null = null
     try {
-      await ensureHostedCloudRelay(currentProfile)
+      const ensured = await ensureHostedCloudRelay(currentProfile)
+      if (ensured.status && !ensured.status.connected) {
+        relayLine = formatCloudRelayPendingNotice(ensured.status, ensured.profile.relayUrl)
+      }
     } catch (error) {
       if (isMissingKernelCloudProfileError(error)) {
         await startHostedCloudLink()
         return
       }
-      relayLine = "relay=not connected; run /cloud link to refresh pairing"
+      if (isRefreshableCloudLinkError(error)) {
+        appendCloudNotice("Cloud link needs refresh. Starting link flow.")
+        await startHostedCloudLink()
+        return
+      }
+      relayLine = [
+        "cloud relay could not be refreshed.",
+        `error=${deps.formatError(error)}`,
+        "next=run /cloud link to refresh pairing.",
+      ].join("\n")
     }
     const opened = await deps.openExternalUrl?.(terminalUrl)
     appendCloudNotice(
@@ -884,13 +936,18 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           const issued = profile.machineId && deps.issueCloudMachineRelayToken
             ? await deps.issueCloudMachineRelayToken(profile, refreshedRelayStatus.daemon_id, profile.machineId)
             : await deps.issueCloudKernelRelayToken!(profile, refreshedRelayStatus.daemon_id)
-          await deps.configureRelay(issued.relayUrl, issued.relayToken)
+          const configuredStatus = await deps.configureRelay(issued.relayUrl, issued.relayToken)
           profile = {
             ...(issued.profile ?? profile),
             tokenExpiresAtMs: issued.tokenExpiresAtMs,
           }
           await deps.saveCloudRelayProfile(profile)
-          appendCloudNotice(`cloud kernel connected: ${issued.relayUrl}`)
+          const connectedStatus = await waitForHostedCloudRelayConnection(configuredStatus)
+          appendCloudNotice(
+            connectedStatus?.connected
+              ? `cloud kernel connected: ${issued.relayUrl}`
+              : formatCloudRelayPendingNotice(connectedStatus ?? configuredStatus, issued.relayUrl),
+          )
         }
         await deps.refreshWaitingRoomData?.()
         appendCloudNotice(`cloud linked: ${profile.accountSlug}`)
@@ -2133,16 +2190,37 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           return
         }
         const relayStatus = await deps.getRelayStatus()
-        const issued = profile.machineId && deps.issueCloudMachineRelayToken
-          ? await deps.issueCloudMachineRelayToken(profile, relayStatus.daemon_id, profile.machineId)
-          : await deps.issueCloudKernelRelayToken(profile, relayStatus.daemon_id)
-        await deps.configureRelay(issued.relayUrl, issued.relayToken)
+        let issued: { relayUrl: string; relayToken: string; tokenExpiresAtMs: number; profile?: RelayCloudProfile }
+        try {
+          issued = profile.machineId && deps.issueCloudMachineRelayToken
+            ? await deps.issueCloudMachineRelayToken(profile, relayStatus.daemon_id, profile.machineId)
+            : await deps.issueCloudKernelRelayToken(profile, relayStatus.daemon_id)
+        } catch (error) {
+          if (isRefreshableCloudLinkError(error)) {
+            deps.appendNotice(
+              [
+                "cloud link needs refresh.",
+                `error=${deps.formatError(error)}`,
+                "next=run /cloud link to reconnect this machine.",
+              ].join("\n"),
+            )
+            deps.flashFooter("cloud link needs refresh", "error")
+            return
+          }
+          throw error
+        }
+        const configuredStatus = await deps.configureRelay(issued.relayUrl, issued.relayToken)
         await deps.saveCloudRelayProfile({
           ...(issued.profile ?? profile),
           tokenExpiresAtMs: issued.tokenExpiresAtMs,
         })
+        const connectedStatus = await waitForHostedCloudRelayConnection(configuredStatus)
         await deps.refreshWaitingRoomData?.()
-        deps.appendNotice(`cloud kernel connected: ${issued.relayUrl}`)
+        deps.appendNotice(
+          connectedStatus?.connected
+            ? `cloud kernel connected: ${issued.relayUrl}`
+            : formatCloudRelayPendingNotice(connectedStatus ?? configuredStatus, issued.relayUrl),
+        )
         return
       }
       if (cloudCommand === "client-token") {
@@ -2284,16 +2362,23 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           ? "not configured"
           : relayStatus.connected
             ? "connected"
-            : "connecting"
-      appendCloudNotice(
-        [
-          "Cloud linked.",
-          `account=${profile.accountSlug}`,
-          `email=${profile.email}`,
-          `url=${buildHostedCloudTerminalUrl(profile.apiUrl)}`,
-          `relay=${relayState}`,
-        ].join("\n"),
-      )
+            : "not connected"
+      const lines = [
+        "Cloud linked.",
+        `account=${profile.accountSlug}`,
+        `email=${profile.email}`,
+        `url=${buildHostedCloudTerminalUrl(profile.apiUrl)}`,
+        `relay=${relayState}`,
+      ]
+      if (relayStatus) {
+        lines.push(`relay_url=${relayStatus.relay_url ?? profile.relayUrl ?? "-"}`)
+        lines.push(`machine=${relayStatus.machine_id}`)
+      }
+      if (relayStatus && !relayStatus.connected) {
+        lines.push("kernel=offline in Cloud")
+        lines.push("next=keep this CLI running; run /cloud link if the link was revoked or /relay cloud connect after the relay is reachable.")
+      }
+      appendCloudNotice(lines.join("\n"))
       deps.flashFooter(`cloud linked: ${profile.accountSlug}`, "info")
       return
     }

@@ -382,15 +382,20 @@ async fn handle_connection(
                             registration.daemon_id.clone(),
                         );
                         registered_daemon_key = Some(daemon_key.clone());
+                        let mut replaced_senders = Vec::new();
                         let mut guard = registry.write().await;
                         guard.peers.retain(|_, peer| {
-                            !(peer.role == RelayConnectionRole::Daemon
+                            let replace = peer.role == RelayConnectionRole::Daemon
                                 && peer.realm_id.as_deref() == Some(identity.realm_id.as_str())
                                 && peer
                                     .daemon_registration
                                     .as_ref()
                                     .map(|candidate| candidate.daemon_id.as_str())
-                                    == Some(registration.daemon_id.as_str()))
+                                    == Some(registration.daemon_id.as_str());
+                            if replace {
+                                replaced_senders.push(peer.sender.clone());
+                            }
+                            !replace
                         });
                         guard.peers.insert(
                             peer_addr,
@@ -403,6 +408,10 @@ async fn handle_connection(
                             },
                         );
                         guard.daemons.insert(daemon_key, registration);
+                        drop(guard);
+                        for sender in replaced_senders {
+                            send_close(&sender, "daemon reconnected".to_string());
+                        }
                     }
                     RelayEnvelope::DaemonHeartbeat {
                         daemon_id,
@@ -1087,7 +1096,7 @@ async fn remove_peer(
     Vec<(mpsc::UnboundedSender<Message>, String, String)>,
 ) {
     let mut guard = registry.write().await;
-    guard.peers.remove(&peer_addr);
+    let removed_peer = guard.peers.remove(&peer_addr);
     let client_subscription_ids = guard
         .subscriptions
         .iter()
@@ -1098,6 +1107,20 @@ async fn remove_peer(
         guard.subscriptions.remove(&subscription_id);
     }
     if let Some(daemon_key) = daemon_key {
+        let removed_current_daemon = removed_peer
+            .as_ref()
+            .is_some_and(|peer| {
+                peer.role == RelayConnectionRole::Daemon
+                    && peer.realm_id.as_deref() == Some(daemon_key.realm_id.as_str())
+                    && peer
+                        .daemon_registration
+                        .as_ref()
+                        .map(|registration| registration.daemon_id.as_str())
+                        == Some(daemon_key.daemon_id.as_str())
+            });
+        if !removed_current_daemon {
+            return (Vec::new(), Vec::new());
+        }
         guard.daemons.remove(daemon_key);
         let daemon_subscription_ids = guard
             .subscriptions
@@ -1465,6 +1488,123 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconnecting_daemon_replaces_stale_socket_without_removing_live_registration() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let registry = server.registry();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_until(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut first_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("first daemon should connect to relay");
+        let register = RelayEnvelope::DaemonRegister {
+            registration: test_registration("daemon-1", "machine-1", "macOS", 10),
+        };
+        first_socket
+            .send(Message::Text(
+                serde_json::to_string(&register)
+                    .expect("register envelope should serialize")
+                    .into(),
+            ))
+            .await
+            .expect("first register frame should send");
+        sleep(Duration::from_millis(50)).await;
+
+        let (mut second_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("second daemon should connect to relay");
+        second_socket
+            .send(Message::Text(
+                serde_json::to_string(&register)
+                    .expect("register envelope should serialize")
+                    .into(),
+            ))
+            .await
+            .expect("second register frame should send");
+        sleep(Duration::from_millis(50)).await;
+
+        {
+            let guard = registry.read().await;
+            assert_eq!(guard.daemon_count(), 1);
+            assert_eq!(guard.peer_count(), 1);
+            assert!(guard.daemon("daemon-1").is_some());
+        }
+
+        first_socket.close(None).await.expect("first socket should close");
+        sleep(Duration::from_millis(50)).await;
+
+        {
+            let guard = registry.read().await;
+            assert_eq!(guard.daemon_count(), 1);
+            assert_eq!(guard.peer_count(), 1);
+            assert!(guard.daemon("daemon-1").is_some());
+        }
+
+        second_socket
+            .close(None)
+            .await
+            .expect("second socket should close");
+        sleep(Duration::from_millis(50)).await;
+
+        {
+            let guard = registry.read().await;
+            assert_eq!(guard.daemon_count(), 0);
+            assert_eq!(guard.peer_count(), 0);
+        }
+
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    async fn connect_async_with_retry(
+        url: &str,
+    ) -> Result<
+        (
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+            tokio_tungstenite::tungstenite::handshake::client::Response,
+        ),
+        tokio_tungstenite::tungstenite::Error,
+    > {
+        let mut last_error = None;
+        for _ in 0..20 {
+            match connect_async(url).await {
+                Ok(socket) => return Ok(socket),
+                Err(error) => {
+                    last_error = Some(error);
+                    sleep(Duration::from_millis(10)).await;
+                }
+            }
+        }
+        Err(last_error.expect("connect retry should record an error"))
     }
 
     #[tokio::test(flavor = "multi_thread")]
