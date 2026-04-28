@@ -38,6 +38,7 @@
   "dependencies": {
     "@opentui/core": "0.1.87",
     "@opentui/solid": "0.1.87",
+    "qrcode-terminal": "^0.12.0",
     "solid-js": "^1.9.9",
     "ws": "^8.18.3",
     "@arroba/kernel-client": "workspace:*",

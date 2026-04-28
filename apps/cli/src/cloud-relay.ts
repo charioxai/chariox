@@ -124,6 +124,7 @@ export async function pollCloudDeviceLogin(
     profile?: RelayCloudProfile & { email: string }
     cloudSessionToken?: string
     cloudSessionExpiresAt?: string
+    machineCredential?: string
   }>(apiUrl, "/auth/device/poll", { deviceCode })
   if (payload.status === "authorization_pending") {
     return {
@@ -143,6 +144,7 @@ export async function pollCloudDeviceLogin(
     profile: {
       ...payload.profile,
       apiUrl: normalizeApiUrl(apiUrl),
+      ...(payload.machineCredential ? { machineCredential: payload.machineCredential } : {}),
       cloudSessionToken: payload.cloudSessionToken,
       cloudSessionExpiresAtMs: Date.parse(payload.cloudSessionExpiresAt),
     },
@@ -221,7 +223,8 @@ export async function issueCloudRelayToken(
     tokenId: string
     expiresAt: string
   }>(input.profile.apiUrl, "/relay/token", {
-    sessionToken: input.profile.cloudSessionToken,
+    sessionToken: input.profile.machineCredential ? undefined : input.profile.cloudSessionToken,
+    machineCredential: input.profile.machineCredential,
     accountId: input.profile.accountId,
     subject: input.subject,
     subjectKind: input.subjectKind,

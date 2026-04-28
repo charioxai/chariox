@@ -48,6 +48,10 @@ impl SessionStateStore {
         self.read().list_sessions()
     }
 
+    pub(crate) fn list_all_sessions(&self) -> Vec<RuntimeSession> {
+        self.read().list_all_sessions()
+    }
+
     pub(crate) fn create_session(
         &self,
         request: CreateSessionRequest,

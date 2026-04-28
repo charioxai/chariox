@@ -60,8 +60,13 @@ function isRefreshableCloudLinkError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return message.includes("identity_revoked")
     || message.includes("Subject has been revoked")
+    || message.includes("session_invalid")
     || message.includes("session_expired")
     || message.includes("invalid_session")
+    || message.includes("realm_not_found")
+    || message.includes("account_deleted")
+    || message.includes("user_deleted")
+    || message.includes("cloud_api_code=session_invalid")
     || message.includes("cloud relay request failed with 401")
 }
 
@@ -225,6 +230,7 @@ type CommandActionDeps = {
   resolveSession: (reference: string, workspace: string) => Promise<ResolveSessionResult>
   listSessions: () => Promise<RuntimeSession[]>
   deleteSessionByRef: (reference: string, workspace: string) => Promise<DeleteSessionResult>
+  deleteKernel?: () => Promise<{ kernelId: string; deletedSessions: RuntimeSession[] }>
   assignSessionAlias?: (sessionId: string, alias: string) => Promise<RuntimeSession>
   transitionToNoSession: (message: string) => void
   applyModelSelection: (value: string) => Promise<void>
@@ -2690,6 +2696,30 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     deps.flashFooter("usage: /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine rename <machine-ref> <alias>", "error")
   }
 
+  const handleKernelCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "kernel" }>,
+  ): Promise<void> => {
+    const [subcommand, ...args] = command.args
+    if (subcommand === "delete") {
+      if (!deps.deleteKernel) {
+        deps.flashFooter("kernel delete is unavailable in this build", "error")
+        return
+      }
+      if (args.length > 0) {
+        deps.flashFooter("usage: /kernel delete", "error")
+        return
+      }
+      const deleted = await deps.deleteKernel()
+      if (deps.isAttached() && deleted.deletedSessions.some((session) => session.id === deps.sessionState().id)) {
+        deps.transitionToNoSession(`Kernel ${deleted.kernelId} was deleted.`)
+        return
+      }
+      deps.flashFooter(`deleted kernel ${deleted.kernelId} (${deleted.deletedSessions.length} session${deleted.deletedSessions.length === 1 ? "" : "s"})`, "info")
+      return
+    }
+    deps.flashFooter("usage: /kernel delete", "error")
+  }
+
   const formatMcpDetails = (mcp: ArrobaMcpServerConfig): string => JSON.stringify(mcp, null, 2)
   const formatSkillDetails = (skill: ArrobaSkillMetadata): string => [
     `${skill.name}: ${skill.description}`,
@@ -3968,6 +3998,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleViewCommand,
     handleCycleAgentFocus,
     handleAgentCommand,
+    handleKernelCommand,
     handleMachineCommand,
     handleRelayCommand,
     handleCloudCommand,

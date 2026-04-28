@@ -305,6 +305,7 @@ export type CloudRelayProfile = {
   client_alias?: string | null
   machine_id?: string | null
   machine_alias?: string | null
+  machine_credential?: string | null
   cloud_session_token?: string | null
   cloud_session_expires_at_ms?: number | null
   token_expires_at_ms?: number | null
@@ -393,12 +394,14 @@ export type RemoteMachineRecord = {
 export type PairedClientRecord = {
   client_id: string
   alias?: string | null
+  terminal_type?: TerminalType | null
   public_key_thumbprint: string
   paired_at_ms: number
   revoked: boolean
 }
 
 export type PairingInviteIntent = "client" | "machine"
+export type TerminalType = "cli" | "web" | "ios" | "android"
 
 export type PairingInviteRecord = {
   intent: PairingInviteIntent
@@ -421,6 +424,27 @@ export type PairingJoinRecord = {
   paired_at_ms: number
 }
 
+export type TerminalRecord = {
+  terminal_id: string
+  terminal_type: TerminalType
+  alias?: string | null
+  paired_at_ms: number
+  revoked: boolean
+}
+
+export type TerminalPairingLinkRecord = {
+  terminal_id: string
+  pairing_link: string
+  pairing_code: string
+  invite_id: string
+  relay_url: string
+  target_daemon_id: string
+  target_daemon_alias?: string | null
+  terminal_type: TerminalType
+  issued_at_ms: number
+  expires_at_ms: number
+}
+
 export type RelayKernelPresence = {
   kernel_id: string
   machine_id: string
@@ -440,6 +464,7 @@ export type WaitingRoomInventorySnapshot = {
   relay_status: RelayStatus
   remote_machines: RemoteMachineRecord[]
   remote_kernels: RelayKernelPresence[]
+  terminals?: TerminalRecord[]
   launch_target?: {
     workspace_id: string
     worktree_id: string

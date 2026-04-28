@@ -1081,7 +1081,12 @@ impl KernelRuntimeOwnedState {
             .read()
             .resolve_session_ref(session_ref, workspace_id)?;
         let session_id = session.id().to_string();
-        let (ended, terminated_run_ids) = self.end_session(&session_id)?;
+        let (ended, terminated_run_ids) =
+            if session.status() == crate::session::SessionStatus::Ended {
+                (session, Vec::new())
+            } else {
+                self.end_session(&session_id)?
+            };
         let mut deleted = self.session_store.delete_session(ended.id())?;
         deleted.set_agents(ended.agents().to_vec());
         self.history_projection.remove(deleted.id());

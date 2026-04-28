@@ -564,6 +564,7 @@ mod tests {
             client_alias: Some("local-cli".to_string()),
             machine_id: Some("machine-1".to_string()),
             machine_alias: Some("macbook".to_string()),
+            machine_credential: None,
             cloud_session_token: Some("session-token".to_string()),
             cloud_session_expires_at_ms: None,
             token_expires_at_ms: None,

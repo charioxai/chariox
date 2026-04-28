@@ -318,6 +318,10 @@ impl SessionService {
         self.store.visible_non_ended_sessions().cloned().collect()
     }
 
+    pub fn list_all_sessions(&self) -> Vec<RuntimeSession> {
+        self.store.list()
+    }
+
     pub fn list_workflows(&self, session_id: &str) -> Result<Vec<WorkflowDefinition>, DaemonError> {
         Ok(self.get_session(session_id)?.workflows().to_vec())
     }

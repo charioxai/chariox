@@ -152,6 +152,10 @@ export function deleteSessionRequest(sessionRef: string, workspaceId?: string) {
   }
 }
 
+export function deleteKernelRequest() {
+  return { DeleteKernel: null }
+}
+
 export function aliasSessionRequest(sessionId: string, alias: string) {
   return {
     AliasSession: {
@@ -1141,14 +1145,50 @@ export function createPairingInviteRequest(
   intent: "client" | "machine",
   alias: string | null = null,
   expiresInMs: number | null = null,
+  terminalType: "cli" | "web" | "ios" | "android" | null = null,
 ) {
   return {
     CreatePairingInvite: {
       intent,
       alias,
       expires_in_ms: expiresInMs,
+      ...(terminalType ? { terminal_type: terminalType } : {}),
     },
   }
+}
+
+export function createTerminalPairingLinkRequest(
+  terminalType: "cli" | "web" | "ios" | "android" | null = "cli",
+  alias: string | null = null,
+  expiresInMs: number | null = null,
+) {
+  return {
+    CreateTerminalPairingLink: {
+      terminal_type: terminalType,
+      alias,
+      expires_in_ms: expiresInMs,
+    },
+  }
+}
+
+export function joinTerminalPairingLinkRequest(
+  pairingLink: string,
+  terminalId: string | null = null,
+  terminalType: "cli" | "web" | "ios" | "android" | null = null,
+  alias: string | null = null,
+) {
+  return {
+    JoinTerminalPairingLink: {
+      pairing_link: pairingLink,
+      terminal_id: terminalId,
+      terminal_type: terminalType,
+      alias,
+    },
+  }
+}
+
+export function listTerminalsRequest() {
+  return { ListTerminals: null }
 }
 
 export function joinPairingInviteRequest(

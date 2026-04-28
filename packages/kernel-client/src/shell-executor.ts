@@ -77,6 +77,7 @@ import {
   createWorkflowWatchdogRequest,
   createSessionRequest,
   deleteCredentialSecretRequest,
+  deleteKernelRequest,
   focusAgentRequest,
   getMcpServerRequest,
   getProviderAuthStatusRequest,
@@ -214,6 +215,8 @@ export async function executeShellCommand(
       return executeSessionCommand(parsed, context, deps)
     case "agent":
       return executeAgentCommand(parsed, context, deps)
+    case "kernel":
+      return executeKernelCommand(parsed, context, deps)
     case "client":
       return executeClientCommand(parsed, deps)
     case "machine":
@@ -260,6 +263,7 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
         message: [
           "arroba-shell commands:",
           "session list|new|attach|use|members|invite|join|mode|permissions",
+          "kernel delete",
           "agent list|spawn|focus|cycle|mode|permissions|substitute",
           "client invite create|join|list|record|revoke",
           "machine invite create|join|list|kernels|approve|rename|revoke",
@@ -682,6 +686,30 @@ async function executeWorkspaceCommand(
     }
     default:
       return { ok: false, message: "usage: workspace link create|list|show|attach|detach" }
+  }
+}
+
+async function executeKernelCommand(
+  parsed: ParsedShellCommand,
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const [action, ...args] = parsed.args
+  if (action !== "delete" || args.length > 0) {
+    return { ok: false, message: "usage: kernel delete" }
+  }
+  const response = await deps.client.send(deleteKernelRequest())
+  const payload = expectVariant<{ kernel_id: string; deleted_sessions: RuntimeSession[] }>(response, "KernelDeleted")
+  const deletedCurrentSession = context.sessionId
+    ? payload.deleted_sessions.some((session) => session.id === context.sessionId)
+    : false
+  return {
+    ok: true,
+    message: `deleted kernel ${payload.kernel_id} (${payload.deleted_sessions.length} session${payload.deleted_sessions.length === 1 ? "" : "s"})`,
+    contextUpdates: deletedCurrentSession
+      ? { sessionId: undefined, attachmentId: undefined, agentId: undefined }
+      : undefined,
+    data: payload,
   }
 }
 

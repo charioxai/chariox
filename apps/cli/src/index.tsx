@@ -95,6 +95,7 @@ import {
   createSessionRequest,
   createWorkspaceLinkRequest,
   cycleAgentFocusRequest,
+  deleteKernelRequest,
   deleteSessionRequest,
   destroyAgentRequest,
   detachFromSessionRequest,
@@ -133,6 +134,7 @@ import {
   acceptCloudSessionInviteRequest,
   createCloudSessionInviteRequest,
   createSessionInviteRequest,
+  createTerminalPairingLinkRequest,
   joinSessionInviteRequest,
   listCloudCollaboratorsRequest,
   listCloudSessionMembersRequest,
@@ -421,6 +423,7 @@ type KernelCloudRelayProfile = {
   client_alias?: string | null
   machine_id?: string | null
   machine_alias?: string | null
+  machine_credential?: string | null
   cloud_session_token?: string | null
   cloud_session_expires_at_ms?: number | null
   token_expires_at_ms?: number | null
@@ -471,6 +474,29 @@ type RemoteKernelView = {
   accepting_remote_leases?: boolean
   leased_agent_count?: number
   local_session_count?: number
+}
+
+type TerminalTypeView = "cli" | "web" | "ios" | "android"
+
+type TerminalView = {
+  terminal_id: string
+  terminal_type: TerminalTypeView
+  alias?: string | null
+  paired_at_ms: number
+  revoked: boolean
+}
+
+type TerminalPairingLinkView = {
+  terminal_id: string
+  pairing_link: string
+  pairing_code: string
+  invite_id: string
+  relay_url: string
+  target_daemon_id: string
+  target_daemon_alias?: string | null
+  terminal_type: TerminalTypeView
+  issued_at_ms: number
+  expires_at_ms: number
 }
 
 type HotkeySection = {
@@ -844,8 +870,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [relayStatusState, setRelayStatusState] = createSignal<RelayStatusView | null>(null)
   const [remoteMachinesState, setRemoteMachinesState] = createSignal<RemoteMachineView[]>([])
   const [remoteKernelsState, setRemoteKernelsState] = createSignal<RemoteKernelView[]>([])
+  const [terminalsState, setTerminalsState] = createSignal<TerminalView[]>([])
   const hiddenWaitingRoomKernelIds = new Set<string>(initialPreferences.ui?.hiddenRemoteKernelIds ?? [])
   const [waitingRoomCloudNotice, setWaitingRoomCloudNotice] = createSignal<string | null>(null)
+  const [terminalPairingOpen, setTerminalPairingOpen] = createSignal(false)
+  const [terminalPairingState, setTerminalPairingState] = createSignal<TerminalPairingLinkView | null>(null)
+  const [terminalPairingQrLines, setTerminalPairingQrLines] = createSignal<string[]>([])
   const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
     createWaitingRoomState(
       initialSessions,
@@ -1587,6 +1617,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         relay: relayStatusState(),
         machines: remoteMachinesState(),
         kernels: remoteKernelsState(),
+        terminals: terminalsState(),
       },
       themeRegistry: themeRegistryState(),
       currentProvider: (options.provider ?? "opencode") as BackendProviderId,
@@ -1684,6 +1715,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         flashFooter(`press Enter to mint a relay token for ${target}`, "info")
         return
       }
+      if (waitingRoomState().focus === "terminal") {
+        const terminal = terminalsState()[waitingRoomState().terminalIndex]
+        if (!terminal) {
+          flashFooter("no terminal selected", "error")
+          return
+        }
+        flashFooter(`${terminal.terminal_id} is a ${formatTerminalTypeLabel(terminal.terminal_type)}`, "info")
+        return
+      }
+      if (waitingRoomState().focus === "add-terminal") {
+        await openTerminalPairingDialog()
+        return
+      }
       const decision = deriveWaitingRoomActivationDecision({
         state: waitingRoomState(),
         sessions: availableSessions(),
@@ -1725,6 +1769,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         relay: relayStatusState(),
         machines: remoteMachinesState(),
         kernels: remoteKernelsState(),
+        terminals: terminalsState(),
       }
       const decision = action === "delete"
         ? deriveWaitingRoomDeleteDecision({
@@ -1924,6 +1969,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       !hiddenWaitingRoomKernelIds.has(kernel.kernel_id)
       || !waitingRoomRemoteKernelCanDelete(kernel)
     )))
+    setTerminalsState(snapshot.terminals)
     reconcileWaitingRoom(waitingRoomState())
   }
   const refreshWaitingRoomData = async () => {
@@ -2812,7 +2858,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       hotkeysOverlayBox.remove(child.id)
       child.destroyRecursively()
     }
-    if (!hotkeysOpen()) {
+    if (!hotkeysOpen() && !terminalPairingOpen()) {
       hotkeysOverlayBox.requestRender()
       return
     }
@@ -2828,7 +2874,81 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       backgroundColor: RGBA.fromInts(0, 0, 0, 150),
     })
     scrim.onMouseUp = () => {
-      closeHotkeys()
+      if (terminalPairingOpen()) {
+        closeTerminalPairingDialog()
+      } else {
+        closeHotkeys()
+      }
+    }
+
+    if (terminalPairingOpen()) {
+      const pairing = terminalPairingState()
+      const panel = new BoxRenderable(renderer, {
+        width: Math.min(96, Math.max(72, Math.floor(dimensions().width * 0.72))),
+        maxWidth: dimensions().width - 4,
+        backgroundColor: theme.backgroundPanel,
+        paddingTop: 1,
+        paddingBottom: 1,
+        paddingLeft: 2,
+        paddingRight: 2,
+        flexDirection: "column",
+        gap: 1,
+      })
+      panel.onMouseUp = (event) => {
+        event.stopPropagation()
+      }
+      const header = new BoxRenderable(renderer, {
+        flexDirection: "row",
+        justifyContent: "space-between",
+      })
+      header.add(new TextRenderable(renderer, {
+        content: "Add New Terminal",
+        attributes: TextAttributes.BOLD,
+        fg: theme.text,
+      }))
+      header.add(new TextRenderable(renderer, {
+        content: "Esc closes",
+        fg: theme.textMuted,
+      }))
+      panel.add(header)
+      if (!pairing) {
+        panel.add(new TextRenderable(renderer, {
+          content: "Creating pairing link...",
+          fg: theme.textMuted,
+        }))
+      } else {
+        panel.add(new TextRenderable(renderer, {
+          content: `Type: ${formatTerminalTypeLabel(pairing.terminal_type)}   Code: ${pairing.pairing_code}`,
+          fg: theme.primary,
+          attributes: TextAttributes.BOLD,
+        }))
+        panel.add(new TextRenderable(renderer, {
+          content: `Expires: ${formatPairingExpiry(pairing.expires_at_ms)}`,
+          fg: theme.textMuted,
+        }))
+        const qr = terminalPairingQrLines()
+        if (qr.length > 0) {
+          panel.add(new TextRenderable(renderer, {
+            content: qr.join("\n"),
+            fg: theme.text,
+          }))
+        }
+        panel.add(new TextRenderable(renderer, {
+          content: "Pairing link",
+          fg: theme.primary,
+          attributes: TextAttributes.BOLD,
+        }))
+        for (const line of wrapPairingLink(pairing.pairing_link, Math.max(36, Math.min(88, dimensions().width - 10)))) {
+          panel.add(new TextRenderable(renderer, {
+            content: line,
+            fg: theme.text,
+          }))
+        }
+      }
+      scrim.add(panel)
+      hotkeysOverlayBox.add(scrim)
+      hotkeysOverlayBox.requestRender()
+      return
     }
 
     const panel = new BoxRenderable(renderer, {
@@ -2935,6 +3055,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       hotkeysFocus = null
     }, 1)
   }
+  const closeTerminalPairingDialog = () => {
+    if (!terminalPairingOpen()) {
+      return
+    }
+    const restoreTarget = hotkeysFocus
+    setTerminalPairingOpen(false)
+    renderHotkeysOverlay()
+    startTimeout(() => {
+      if (restoreTarget && !restoreTarget.isDestroyed) {
+        restoreTarget.focus()
+      }
+      hotkeysFocus = null
+    }, 1)
+  }
   const openHotkeys = () => {
     if (hotkeysOpen()) {
       return
@@ -2966,6 +3100,34 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
     })
   }
+  const openTerminalPairingDialog = async () => {
+    if (terminalPairingOpen()) {
+      return
+    }
+    const focused = (renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null
+    hotkeysFocus = focused && !focused.isDestroyed
+      ? focused
+      : promptInput && !promptInput.isDestroyed
+        ? promptInput
+        : null
+    hotkeysFocus?.blur()
+    setTerminalPairingState(null)
+    setTerminalPairingQrLines([])
+    setHotkeysOpen(false)
+    setTerminalPairingOpen(true)
+    renderHotkeysOverlay()
+    try {
+      const pairing = await createTerminalPairingLink(client, "cli")
+      const qrLines = await renderTerminalPairingQr(pairing.pairing_link)
+      setTerminalPairingState(pairing)
+      setTerminalPairingQrLines(qrLines)
+      renderHotkeysOverlay()
+      flashFooter("terminal pairing link created", "info")
+    } catch (error) {
+      closeTerminalPairingDialog()
+      flashFooter(formatError(error), "error")
+    }
+  }
   const toggleHotkeys = () => {
     hotkeyDebug(`toggle open=${hotkeysOpen()} current=${describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null)?.type ?? "none"}`)
     appLogger?.debug("toggleHotkeys invoked", {
@@ -2976,6 +3138,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (hotkeysOpen()) {
       closeHotkeys()
       return
+    }
+    if (terminalPairingOpen()) {
+      closeTerminalPairingDialog()
     }
     openHotkeys()
   }
@@ -5430,6 +5595,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           relay: relayStatusState(),
           machines: remoteMachinesState(),
           kernels: remoteKernelsState(),
+          terminals: terminalsState(),
         }, waitingRoomTargets(), themeRegistryState())
       transcriptScrollbox.add(emptyTranscriptRenderable)
       if (isAttached()) {
@@ -6001,6 +6167,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleViewCommand,
     handleCycleAgentFocus,
     handleAgentCommand,
+    handleKernelCommand,
     handleMachineCommand,
     handleRelayCommand,
     handleCloudCommand,
@@ -6059,6 +6226,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     resolveSession: (reference, workspace) => resolveSession(client, reference, workspace),
     listSessions: () => listSessions(client),
     deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),
+    deleteKernel: () => deleteKernel(client),
     assignSessionAlias: (sessionId, alias) => aliasSession(client, sessionId, alias),
     transitionToNoSession,
     applyProviderSelection,
@@ -6483,6 +6651,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           flashFooter(formatError(error), "error")
         }
       },
+      onKernel: async (command) => {
+        try {
+          await handleKernelCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
       onMachine: async (command) => {
         try {
           await handleMachineCommand(command)
@@ -6818,6 +6993,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onAgent: async (command) => {
         try {
           await handleAgentCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onKernel: async (command) => {
+        try {
+          await handleKernelCommand(command)
         } catch (error) {
           flashFooter(formatError(error), "error")
         }
@@ -7206,6 +7388,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       closeHotkeys()
       return
     }
+    if (terminalPairingOpen() && event.name === "escape") {
+      event.preventDefault()
+      event.stopPropagation()
+      closeTerminalPairingDialog()
+      return
+    }
     if (event.ctrl && event.name === "e") {
       event.preventDefault()
       event.stopPropagation()
@@ -7218,7 +7406,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       void (activePrompt() ? requestPromptStop() : requestExit())
       return
     }
-    if (hotkeysOpen()) {
+    if (hotkeysOpen() || terminalPairingOpen()) {
       event.preventDefault()
       event.stopPropagation()
     }
@@ -7294,8 +7482,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!event) {
       return
     }
-    if (event.eventType !== "release" && hotkeysOpen() && event.name === "escape") {
-      closeHotkeys()
+    if (event.eventType !== "release" && (hotkeysOpen() || terminalPairingOpen()) && event.name === "escape") {
+      if (terminalPairingOpen()) {
+        closeTerminalPairingDialog()
+      } else {
+        closeHotkeys()
+      }
       return
     }
     if (event.eventType !== "release" && event.ctrl && event.name === "e") {
@@ -7312,7 +7504,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     if (event.eventType !== "release" && event.ctrl && event.name === "p") {
-      if (hotkeysOpen()) {
+      if (hotkeysOpen() || terminalPairingOpen()) {
         return
       }
       toggleWorkspaceScreen()
@@ -7320,7 +7512,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     if (shouldCycleFocusOnTabEvent(event, {
       attached: isAttached(),
-      hotkeysOpen: hotkeysOpen(),
+      hotkeysOpen: hotkeysOpen() || terminalPairingOpen(),
       promptFocused: Boolean(promptInput?.focused),
       commandCenterOpen: commandCenterOpen(),
       commandCenterQuery: commandCenterQuery(),
@@ -7339,7 +7531,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       void (activePrompt() ? requestPromptStop() : requestExit())
       return
     }
-    if (hotkeysOpen()) {
+    if (hotkeysOpen() || terminalPairingOpen()) {
       return
     }
     if (event.eventType !== "release" && promptInput?.focused) {
@@ -7377,12 +7569,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
                   relay: relayStatusState(),
                   machines: remoteMachinesState(),
                   kernels: remoteKernelsState(),
+                  terminals: terminalsState(),
                 })
               : keyName === "down"
                 ? moveWaitingRoomFocus(next, availableSessions(), 1, {
                     relay: relayStatusState(),
                     machines: remoteMachinesState(),
                     kernels: remoteKernelsState(),
+                    terminals: terminalsState(),
                   })
                 : cycleWaitingRoomValue(next, availableSessions(), providerCatalogState(), keyName === "left" ? -1 : 1, themeRegistryState()),
           )
@@ -7442,6 +7636,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             relay: relayStatusState(),
             machines: remoteMachinesState(),
             kernels: remoteKernelsState(),
+            terminals: terminalsState(),
           }, waitingRoomTargets(), themeRegistryState()).map((row) => ({
             id: row.id,
             title: row.title,
@@ -8753,6 +8948,44 @@ function isSessionUnavailableError(error: unknown): boolean {
     || /cannot perform `[^`]+` while ended/i.test(message)
 }
 
+function isTerminalPairingLink(value: string) {
+  return value.trim().startsWith("arroba-terminal-pair-v1.")
+}
+
+function applyTerminalPairingLinkOptions(options: CliOptions, pairingLink: string) {
+  const parsed = parseTerminalPairingLink(pairingLink)
+  options.relayUrl = parsed.relayUrl
+  options.relayToken = parsed.relayToken
+  options.targetDaemonId = parsed.targetDaemonId
+  if (parsed.targetDaemonAlias) {
+    options.targetDaemonAlias = parsed.targetDaemonAlias
+  }
+  options.clientId = parsed.terminalId ?? options.clientId
+}
+
+function parseTerminalPairingLink(pairingLink: string) {
+  const payload = pairingLink.trim().replace(/^arroba-terminal-pair-v1[.]/, "")
+  let decoded: Record<string, unknown>
+  try {
+    decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>
+  } catch (error) {
+    throw new Error(`invalid terminal pairing link: ${formatError(error)}`)
+  }
+  const relayUrl = typeof decoded.relay_url === "string" ? decoded.relay_url : ""
+  const relayToken = typeof decoded.relay_token === "string" ? decoded.relay_token : ""
+  const targetDaemonId = typeof decoded.target_daemon_id === "string" ? decoded.target_daemon_id : ""
+  if (!relayUrl || !relayToken || !targetDaemonId) {
+    throw new Error("invalid terminal pairing link: missing relay target details")
+  }
+  return {
+    relayUrl,
+    relayToken,
+    targetDaemonId,
+    targetDaemonAlias: typeof decoded.target_daemon_alias === "string" ? decoded.target_daemon_alias : undefined,
+    terminalId: typeof decoded.terminal_id === "string" ? decoded.terminal_id : undefined,
+  }
+}
+
 function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
     clientId: `arroba-cli-${process.pid}`,
@@ -8763,7 +8996,7 @@ function parseArgs(args: string[]): CliOptions {
   }
 
   for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index]
+    const arg = args[index] ?? ""
     const next = () => {
       const value = args[index + 1]
       if (!value) {
@@ -8801,6 +9034,10 @@ function parseArgs(args: string[]): CliOptions {
       case "--target-daemon-alias":
         options.targetDaemonAlias = next()
         break
+      case "--terminal-pairing-link":
+      case "--pairing-link":
+        applyTerminalPairingLinkOptions(options, next())
+        break
       case "--create-session":
         options.createSession = true
         break
@@ -8836,6 +9073,10 @@ function parseArgs(args: string[]): CliOptions {
         printUsage()
         process.exit(0)
       default:
+        if (isTerminalPairingLink(arg)) {
+          applyTerminalPairingLinkOptions(options, arg)
+          break
+        }
         throw new Error(`unknown argument ${arg}`)
     }
   }
@@ -8925,6 +9166,7 @@ async function getWaitingRoomInventory(client: LocalIpcClient): Promise<{
   relayStatus: RelayStatusView
   remoteMachines: RemoteMachineView[]
   remoteKernels: RemoteKernelView[]
+  terminals: TerminalView[]
 }> {
   const response = await client.send<Record<string, unknown>>(getWaitingRoomInventoryRequest())
   const payload = expectVariant<{
@@ -8934,6 +9176,7 @@ async function getWaitingRoomInventory(client: LocalIpcClient): Promise<{
       relay_status: RelayStatusView
       remote_machines: RemoteMachineView[]
       remote_kernels: RemoteKernelView[]
+      terminals?: TerminalView[]
     }
   }>(response, "WaitingRoomInventory").snapshot
   return {
@@ -8942,6 +9185,7 @@ async function getWaitingRoomInventory(client: LocalIpcClient): Promise<{
     relayStatus: payload.relay_status,
     remoteMachines: payload.remote_machines,
     remoteKernels: payload.remote_kernels,
+    terminals: payload.terminals ?? [],
   }
 }
 
@@ -9077,9 +9321,54 @@ function relayCloudProfileFromKernel(profile: KernelCloudRelayProfile) {
     ...(profile.client_alias ? { clientAlias: profile.client_alias } : {}),
     ...(profile.machine_id ? { machineId: profile.machine_id } : {}),
     ...(profile.machine_alias ? { machineAlias: profile.machine_alias } : {}),
+    ...(profile.machine_credential ? { machineCredential: profile.machine_credential } : {}),
     ...(profile.cloud_session_token ? { cloudSessionToken: profile.cloud_session_token } : {}),
     ...(profile.cloud_session_expires_at_ms ? { cloudSessionExpiresAtMs: profile.cloud_session_expires_at_ms } : {}),
     ...(profile.token_expires_at_ms ? { tokenExpiresAtMs: profile.token_expires_at_ms } : {}),
+  }
+}
+
+function formatTerminalTypeLabel(value: TerminalTypeView) {
+  switch (value) {
+    case "web":
+      return "Web terminal"
+    case "ios":
+      return "iOS terminal"
+    case "android":
+      return "Android terminal"
+    case "cli":
+    default:
+      return "CLI"
+  }
+}
+
+function formatPairingExpiry(expiresAtMs: number) {
+  return new Date(expiresAtMs).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  })
+}
+
+function wrapPairingLink(value: string, width: number) {
+  const normalizedWidth = Math.max(24, width)
+  const lines: string[] = []
+  for (let index = 0; index < value.length; index += normalizedWidth) {
+    lines.push(value.slice(index, index + normalizedWidth))
+  }
+  return lines.length > 0 ? lines : [value]
+}
+
+async function renderTerminalPairingQr(pairingLink: string) {
+  try {
+    const qrcode = await import("qrcode-terminal")
+    let output = ""
+    qrcode.generate(pairingLink, { small: true }, (qr) => {
+      output = qr
+    })
+    return output.split("\n").filter((line) => line.trim().length > 0)
+  } catch {
+    return []
   }
 }
 
@@ -9145,6 +9434,16 @@ async function listRemoteMachineKernels(client: LocalIpcClient, machineRef: stri
   return payload.kernels
 }
 
+async function createTerminalPairingLink(
+  client: LocalIpcClient,
+  terminalType: TerminalTypeView = "cli",
+): Promise<TerminalPairingLinkView> {
+  const response = await client.send<Record<string, unknown>>(
+    createTerminalPairingLinkRequest(terminalType),
+  )
+  return expectVariant<{ pairing: TerminalPairingLinkView }>(response, "TerminalPairingLinkCreated").pairing
+}
+
 async function createSession(client: LocalIpcClient, workspace: string, worktree: string, alias?: string): Promise<RuntimeSession> {
   const resolvedWorktree = await resolvePendingWaitingRoomWorktreePath(workspace, worktree)
   const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, resolvedWorktree, alias))
@@ -9172,6 +9471,15 @@ async function deleteSessionByRef(client: LocalIpcClient, sessionRef: string, wo
   const response = await client.send<Record<string, unknown>>(deleteSessionRequest(sessionRef, workspace))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionDeleted")
   return normalizeRuntimeSession(payload.session)
+}
+
+async function deleteKernel(client: LocalIpcClient): Promise<{ kernelId: string; deletedSessions: RuntimeSession[] }> {
+  const response = await client.send<Record<string, unknown>>(deleteKernelRequest())
+  const payload = expectVariant<{ kernel_id: string; deleted_sessions: RuntimeSession[] }>(response, "KernelDeleted")
+  return {
+    kernelId: payload.kernel_id,
+    deletedSessions: payload.deleted_sessions.map(normalizeRuntimeSession),
+  }
 }
 
 async function archiveSessionById(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
@@ -9444,7 +9752,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /workspace [path]     show or set the next-session workspace path\n  /workspace link ...   manage workspace links for the attached session\n  /worktree [path]      show or set the next-session worktree path\n  /worktree create <branch> [directory] [--from <ref>] create a named git worktree\n  /worktree name [a]    set or clear the current worktree display name\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [d]      create and attach to a new session, optionally in directory d\n  /session create [d]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m] [--dir d] [--worktree d --branch b] [--machine r] spawn a new local or remote agent\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /machine list         list approved, pending, and offline remote machines\n  /machine kernels <m>  list live kernels for a remote machine\n  /machine approve <m>  approve a pending remote machine for spawning\n  /machine forget <m>   forget a registered remote machine\n  /machine rename <m> <alias> rename and approve a remote machine\n  /config show          show the Arroba user config\n  /config keys          list settable config keys\n  /config schema        show config key metadata\n  /config set <p> <v>   update the Arroba user config\n  /config managed-io required|unrestricted set global managed I/O\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show [r]    show selected workflow or workflow by id/alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run [w] <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes; /workflow add node all adds missing agents\n  /workflow edge ...    add/remove workflow edges; workflow id may be omitted\n  /workflow endpoint ... manage workflow endpoints; workflow id may be omitted\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
+    "usage: arroba-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--terminal-pairing-link LINK] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /workspace [path]     show or set the next-session workspace path\n  /workspace link ...   manage workspace links for the attached session\n  /worktree [path]      show or set the next-session worktree path\n  /worktree create <branch> [directory] [--from <ref>] create a named git worktree\n  /worktree name [a]    set or clear the current worktree display name\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [d]      create and attach to a new session, optionally in directory d\n  /session create [d]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m] [--dir d] [--worktree d --branch b] [--machine r] spawn a new local or remote agent\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /machine list         list approved, pending, and offline remote machines\n  /machine kernels <m>  list live kernels for a remote machine\n  /machine approve <m>  approve a pending remote machine for spawning\n  /machine forget <m>   forget a registered remote machine\n  /machine rename <m> <alias> rename and approve a remote machine\n  /config show          show the Arroba user config\n  /config keys          list settable config keys\n  /config schema        show config key metadata\n  /config set <p> <v>   update the Arroba user config\n  /config managed-io required|unrestricted set global managed I/O\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show [r]    show selected workflow or workflow by id/alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run [w] <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes; /workflow add node all adds missing agents\n  /workflow edge ...    add/remove workflow edges; workflow id may be omitted\n  /workflow endpoint ... manage workflow endpoints; workflow id may be omitted\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
   )
 }
 

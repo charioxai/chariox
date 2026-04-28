@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::DaemonError;
 use crate::transport::relay_crypto;
@@ -56,9 +57,17 @@ pub struct UserConfigSchemaEntry {
 
 impl DaemonConfig {
     pub fn load_from_env() -> Self {
-        let runtime_identity = load_or_create_runtime_identity();
         let user_config_path = Self::default_user_config_path();
         let user_config = load_user_config_from_path(&user_config_path);
+        let kernel_websocket_host =
+            env::var("ARROBA_KERNEL_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let kernel_websocket_port = env::var("ARROBA_KERNEL_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(43118);
+        let runtime_identity =
+            load_or_create_runtime_identity(&kernel_websocket_host, kernel_websocket_port);
+        let persisted_config = load_persisted_relay_config();
         let daemon_id = env::var("ARROBA_DAEMON_ID")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -69,12 +78,8 @@ impl DaemonConfig {
             local_socket_path: env::var_os("ARROBA_DAEMON_SOCKET")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| Self::default_local_socket_path(&daemon_id)),
-            kernel_websocket_host: env::var("ARROBA_KERNEL_HOST")
-                .unwrap_or_else(|_| "127.0.0.1".to_string()),
-            kernel_websocket_port: env::var("ARROBA_KERNEL_PORT")
-                .ok()
-                .and_then(|value| value.parse::<u16>().ok())
-                .unwrap_or(43118),
+            kernel_websocket_host,
+            kernel_websocket_port,
             kernel_websocket_queue_capacity: env::var("ARROBA_KERNEL_QUEUE_CAPACITY")
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
@@ -133,13 +138,17 @@ impl DaemonConfig {
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
-                .or_else(|| load_persisted_relay_config().and_then(|config| config.relay_url)),
+                .or_else(|| persisted_config.clone().and_then(|config| config.relay_url)),
             relay_token: env::var("ARROBA_RELAY_TOKEN")
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
-                .or_else(|| load_persisted_relay_config().and_then(|config| config.relay_token)),
-            cloud_relay: load_persisted_relay_config().and_then(|config| config.cloud_relay),
+                .or_else(|| {
+                    persisted_config
+                        .clone()
+                        .and_then(|config| config.relay_token)
+                }),
+            cloud_relay: persisted_config.and_then(|config| config.cloud_relay),
             relay_public_key: runtime_identity.relay_public_key,
             relay_private_key: runtime_identity.relay_private_key,
             relay_heartbeat_ms: env::var("ARROBA_RELAY_HEARTBEAT_MS")
@@ -295,7 +304,7 @@ impl DaemonConfig {
     }
 
     pub fn default_session_history_root() -> PathBuf {
-        default_state_dir().join("sessions")
+        default_config_dir().join("sessions")
     }
 
     pub fn operational_history_path(&self) -> PathBuf {
@@ -305,7 +314,7 @@ impl DaemonConfig {
             .path
             .as_deref()
             .map(expand_user_path)
-            .unwrap_or_else(|| default_state_dir().join("history").join("operational.db"))
+            .unwrap_or_else(|| default_config_dir().join("history").join("operational.db"))
     }
 
     pub fn operational_artifact_root(&self) -> PathBuf {
@@ -334,14 +343,31 @@ impl DaemonConfig {
             .path
             .as_deref()
             .map(expand_user_path)
-            .unwrap_or_else(|| default_state_dir().join("state").join("kernel.db"))
+            .unwrap_or_else(|| {
+                default_config_dir()
+                    .join("kernels")
+                    .join(&self.daemon_id)
+                    .join("state.db")
+            })
     }
 
     pub fn default_runtime_identity_path() -> PathBuf {
         default_state_dir().join("daemon").join("identity.json")
     }
 
+    pub fn default_machine_identity_path() -> PathBuf {
+        default_config_dir().join("machine").join("identity.json")
+    }
+
+    pub fn default_kernel_registry_path() -> PathBuf {
+        default_config_dir().join("kernels").join("registry.json")
+    }
+
     pub fn default_daemon_config_path() -> PathBuf {
+        default_config_dir().join("daemon").join("config.json")
+    }
+
+    fn legacy_daemon_config_path() -> PathBuf {
         default_state_dir().join("daemon").join("config.json")
     }
 
@@ -447,14 +473,26 @@ impl DaemonConfig {
         alias: Option<String>,
         paired_at_ms: u64,
     ) -> Result<PersistedClientPairing, DaemonError> {
+        Self::record_paired_terminal(client_id, public_key_thumbprint, alias, paired_at_ms, "cli")
+    }
+
+    pub fn record_paired_terminal(
+        client_id: impl Into<String>,
+        public_key_thumbprint: impl Into<String>,
+        alias: Option<String>,
+        paired_at_ms: u64,
+        terminal_type: impl Into<String>,
+    ) -> Result<PersistedClientPairing, DaemonError> {
         let client_id = client_id.into();
         let public_key_thumbprint = public_key_thumbprint.into().trim().to_string();
+        let terminal_type = normalized_terminal_type(&terminal_type.into());
         validate_non_empty("client_id", &client_id)?;
         validate_non_empty("public_key_thumbprint", &public_key_thumbprint)?;
         let mut persisted = load_persisted_daemon_config();
         let entry = upsert_client_pairing(&mut persisted.clients, &client_id);
         entry.alias = normalized_optional(alias).or_else(|| entry.alias.clone());
         entry.public_key_thumbprint = public_key_thumbprint;
+        entry.terminal_type = terminal_type;
         entry.paired_at_ms = paired_at_ms;
         entry.revoked = false;
         let saved = entry.clone();
@@ -1729,6 +1767,8 @@ pub struct PersistedCloudRelayProfile {
     #[serde(default)]
     pub machine_alias: Option<String>,
     #[serde(default)]
+    pub machine_credential: Option<String>,
+    #[serde(default)]
     pub cloud_session_token: Option<String>,
     #[serde(default)]
     pub cloud_session_expires_at_ms: Option<u64>,
@@ -1756,6 +1796,8 @@ pub struct PersistedClientPairing {
     pub client_id: String,
     #[serde(default)]
     pub alias: Option<String>,
+    #[serde(default = "default_terminal_type")]
+    pub terminal_type: String,
     #[serde(default)]
     pub public_key_thumbprint: String,
     #[serde(default)]
@@ -1764,10 +1806,32 @@ pub struct PersistedClientPairing {
     pub revoked: bool,
 }
 
+fn default_terminal_type() -> String {
+    "cli".to_string()
+}
+
+fn normalized_terminal_type(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "web" | "web_terminal" | "web-terminal" => "web".to_string(),
+        "ios" | "ios_terminal" | "ios-terminal" => "ios".to_string(),
+        "android" | "android_terminal" | "android-terminal" => "android".to_string(),
+        _ => "cli".to_string(),
+    }
+}
+
 fn load_persisted_relay_config() -> Option<PersistedDaemonConfig> {
-    let path = DaemonConfig::default_daemon_config_path();
-    let payload = fs::read_to_string(path).ok()?;
-    serde_json::from_str::<PersistedDaemonConfig>(&payload).ok()
+    for path in [
+        DaemonConfig::default_daemon_config_path(),
+        DaemonConfig::legacy_daemon_config_path(),
+    ] {
+        let Ok(payload) = fs::read_to_string(path) else {
+            continue;
+        };
+        if let Ok(config) = serde_json::from_str::<PersistedDaemonConfig>(&payload) {
+            return Some(config);
+        }
+    }
+    None
 }
 
 fn load_persisted_daemon_config() -> PersistedDaemonConfig {
@@ -1856,6 +1920,7 @@ fn upsert_client_pairing<'a>(
     entries.push(PersistedClientPairing {
         client_id: client_id.to_string(),
         alias: None,
+        terminal_type: default_terminal_type(),
         public_key_thumbprint: String::new(),
         paired_at_ms: 0,
         revoked: false,
@@ -1952,31 +2017,141 @@ struct RuntimeIdentity {
     relay_private_key: String,
 }
 
-fn load_or_create_runtime_identity() -> RuntimeIdentity {
-    let path = DaemonConfig::default_runtime_identity_path();
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MachineIdentity {
+    machine_id: String,
+    #[serde(default)]
+    machine_alias: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct KernelRegistry {
+    #[serde(default = "kernel_registry_version")]
+    version: u32,
+    #[serde(default)]
+    machine_id: String,
+    #[serde(default)]
+    kernels: BTreeMap<String, KernelIdentityRecord>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct KernelIdentityRecord {
+    kernel_id: String,
+    #[serde(default)]
+    kernel_alias: Option<String>,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    port: u16,
+    #[serde(default)]
+    relay_public_key: String,
+    #[serde(default)]
+    relay_private_key: String,
+    #[serde(default)]
+    created_at_ms: u64,
+    #[serde(default)]
+    last_seen_at_ms: u64,
+}
+
+fn kernel_registry_version() -> u32 {
+    1
+}
+
+fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeIdentity {
+    let machine_identity = load_or_create_machine_identity();
+    let endpoint_key = kernel_identity_key(host, port);
+    let registry_path = DaemonConfig::default_kernel_registry_path();
+    let mut registry = fs::read_to_string(&registry_path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<KernelRegistry>(&contents).ok())
+        .unwrap_or_else(|| KernelRegistry {
+            version: kernel_registry_version(),
+            machine_id: machine_identity.machine_id.clone(),
+            kernels: BTreeMap::new(),
+        });
+    if registry.version == 0 {
+        registry.version = kernel_registry_version();
+    }
+    if registry.machine_id.trim().is_empty() {
+        registry.machine_id = machine_identity.machine_id.clone();
+    }
+
+    let now_ms = now_unix_ms();
+    let record = registry.kernels.entry(endpoint_key).or_insert_with(|| {
+        let legacy_identity = load_legacy_runtime_identity().filter(|identity| {
+            is_default_kernel_endpoint(host, port)
+                && identity.machine_id == machine_identity.machine_id
+                && !identity_is_invalid(identity)
+        });
+        if let Some(identity) = legacy_identity {
+            return KernelIdentityRecord {
+                kernel_id: identity.daemon_id,
+                kernel_alias: identity.daemon_alias,
+                host: host.trim().to_string(),
+                port,
+                relay_public_key: identity.relay_public_key,
+                relay_private_key: identity.relay_private_key,
+                created_at_ms: now_ms,
+                last_seen_at_ms: now_ms,
+            };
+        }
+
+        let relay_private_key = relay_crypto::generate_private_key_base64();
+        let relay_public_key = relay_crypto::public_key_from_private_key_base64(&relay_private_key)
+            .unwrap_or_default();
+        KernelIdentityRecord {
+            kernel_id: format!("kernel-{}", generate_identity_suffix()),
+            kernel_alias: None,
+            host: host.trim().to_string(),
+            port,
+            relay_public_key,
+            relay_private_key,
+            created_at_ms: now_ms,
+            last_seen_at_ms: now_ms,
+        }
+    });
+    if record.host.trim().is_empty() {
+        record.host = host.trim().to_string();
+    }
+    if record.port == 0 {
+        record.port = port;
+    }
+    record.last_seen_at_ms = now_ms;
+    let record_snapshot = record.clone();
+    let identity = RuntimeIdentity {
+        daemon_id: record_snapshot.kernel_id.clone(),
+        machine_id: machine_identity.machine_id.clone(),
+        machine_alias: machine_identity.machine_alias,
+        daemon_alias: record_snapshot.kernel_alias.clone(),
+        relay_public_key: record_snapshot.relay_public_key.clone(),
+        relay_private_key: record_snapshot.relay_private_key.clone(),
+    };
+
+    persist_kernel_registry(&registry_path, &registry);
+    persist_kernel_identity(&identity, &record_snapshot);
+    identity
+}
+
+fn load_or_create_machine_identity() -> MachineIdentity {
+    let path = DaemonConfig::default_machine_identity_path();
     if let Ok(contents) = fs::read_to_string(&path) {
-        if let Ok(identity) = serde_json::from_str::<RuntimeIdentity>(&contents) {
-            if !identity.daemon_id.trim().is_empty()
-                && !identity.machine_id.trim().is_empty()
-                && !identity.relay_public_key.trim().is_empty()
-                && !identity.relay_private_key.trim().is_empty()
-            {
+        if let Ok(identity) = serde_json::from_str::<MachineIdentity>(&contents) {
+            if !identity.machine_id.trim().is_empty() {
                 return identity;
             }
         }
     }
 
-    let relay_private_key = relay_crypto::generate_private_key_base64();
-    let relay_public_key =
-        relay_crypto::public_key_from_private_key_base64(&relay_private_key).unwrap_or_default();
-    let identity = RuntimeIdentity {
-        daemon_id: format!("daemon-{}", generate_identity_suffix()),
-        machine_id: format!("machine-{}", generate_identity_suffix()),
-        machine_alias: None,
-        daemon_alias: None,
-        relay_public_key,
-        relay_private_key,
-    };
+    let identity = load_legacy_runtime_identity()
+        .filter(|identity| !identity.machine_id.trim().is_empty())
+        .map(|identity| MachineIdentity {
+            machine_id: identity.machine_id,
+            machine_alias: identity.machine_alias,
+        })
+        .unwrap_or_else(|| MachineIdentity {
+            machine_id: format!("machine-{}", generate_identity_suffix()),
+            machine_alias: None,
+        });
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -1984,6 +2159,60 @@ fn load_or_create_runtime_identity() -> RuntimeIdentity {
         let _ = fs::write(&path, contents);
     }
     identity
+}
+
+fn load_legacy_runtime_identity() -> Option<RuntimeIdentity> {
+    let path = DaemonConfig::default_runtime_identity_path();
+    let contents = fs::read_to_string(path).ok()?;
+    let identity = serde_json::from_str::<RuntimeIdentity>(&contents).ok()?;
+    if identity_is_invalid(&identity) {
+        return None;
+    }
+    Some(identity)
+}
+
+fn identity_is_invalid(identity: &RuntimeIdentity) -> bool {
+    identity.daemon_id.trim().is_empty()
+        || identity.machine_id.trim().is_empty()
+        || identity.relay_public_key.trim().is_empty()
+        || identity.relay_private_key.trim().is_empty()
+}
+
+fn persist_kernel_registry(path: &PathBuf, registry: &KernelRegistry) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(contents) = serde_json::to_string_pretty(registry) {
+        let _ = fs::write(path, contents);
+    }
+}
+
+fn persist_kernel_identity(identity: &RuntimeIdentity, record: &KernelIdentityRecord) {
+    let path = default_config_dir()
+        .join("kernels")
+        .join(&identity.daemon_id)
+        .join("identity.json");
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(contents) = serde_json::to_string_pretty(record) {
+        let _ = fs::write(path, contents);
+    }
+}
+
+fn kernel_identity_key(host: &str, port: u16) -> String {
+    format!("{}:{port}", host.trim().to_ascii_lowercase())
+}
+
+fn is_default_kernel_endpoint(host: &str, port: u16) -> bool {
+    port == 43118 && matches!(host.trim(), "127.0.0.1" | "localhost")
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn generate_identity_suffix() -> String {
@@ -2096,6 +2325,7 @@ fn validate_optional_nonzero(field: &'static str, value: Option<u32>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
 
     #[test]
     fn for_tests_uses_fixed_runtime_identity() {
@@ -2123,6 +2353,51 @@ mod tests {
         assert!(identity.machine_id.starts_with("machine-"));
         assert!(identity.daemon_id.len() > "daemon-".len());
         assert!(identity.machine_id.len() > "machine-".len());
+    }
+
+    #[test]
+    fn runtime_identity_is_stable_per_host_port() {
+        let _guard = env_test_guard().lock().expect("env test guard poisoned");
+        let temp_home = std::env::temp_dir().join(format!(
+            "arroba-config-identity-test-{}",
+            generate_identity_suffix()
+        ));
+        let old_home = env::var_os("HOME");
+        let old_xdg_config_home = env::var_os("XDG_CONFIG_HOME");
+        let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
+        let old_kernel_host = env::var_os("ARROBA_KERNEL_HOST");
+        let old_kernel_port = env::var_os("ARROBA_KERNEL_PORT");
+        unsafe {
+            env::set_var("HOME", &temp_home);
+            env::remove_var("XDG_CONFIG_HOME");
+            env::remove_var("XDG_STATE_HOME");
+            env::set_var("ARROBA_KERNEL_HOST", "127.0.0.1");
+            env::set_var("ARROBA_KERNEL_PORT", "43118");
+        }
+
+        let default_identity = DaemonConfig::load_from_env();
+        let restarted_default = DaemonConfig::load_from_env();
+        unsafe {
+            env::set_var("ARROBA_KERNEL_PORT", "43119");
+        }
+        let other_port = DaemonConfig::load_from_env();
+
+        unsafe {
+            restore_env_var("HOME", old_home);
+            restore_env_var("XDG_CONFIG_HOME", old_xdg_config_home);
+            restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
+            restore_env_var("ARROBA_KERNEL_HOST", old_kernel_host);
+            restore_env_var("ARROBA_KERNEL_PORT", old_kernel_port);
+        }
+        let _ = fs::remove_dir_all(temp_home);
+
+        assert_eq!(default_identity.daemon_id, restarted_default.daemon_id);
+        assert_eq!(
+            default_identity.host_machine_id,
+            restarted_default.host_machine_id
+        );
+        assert_eq!(default_identity.host_machine_id, other_port.host_machine_id);
+        assert_ne!(default_identity.daemon_id, other_port.daemon_id);
     }
 
     #[test]
@@ -2494,5 +2769,17 @@ codex = "required"
         assert!(config
             .durable_state_path()
             .ends_with(".arroba/custom/state.db"));
+    }
+
+    fn env_test_guard() -> &'static Mutex<()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD.get_or_init(|| Mutex::new(()))
+    }
+
+    unsafe fn restore_env_var(key: &str, value: Option<std::ffi::OsString>) {
+        match value {
+            Some(value) => env::set_var(key, value),
+            None => env::remove_var(key),
+        }
     }
 }

@@ -46,6 +46,8 @@ export type WaitingRoomFocus =
   | "relay"
   | "machine"
   | "remote-kernel"
+  | "terminal"
+  | "add-terminal"
 
 export type WaitingRoomKeyState = {
   up: boolean
@@ -59,6 +61,7 @@ export type WaitingRoomState = {
   sessionIndex: number
   machineIndex: number
   remoteKernelIndex: number
+  terminalIndex: number
   worktreeSelectionId: string
   providerId: BackendProviderId
   modelId: string
@@ -101,6 +104,17 @@ export type WaitingRoomRemoteState = {
   } | null
   machines?: WaitingRoomRemoteMachine[]
   kernels?: WaitingRoomRemoteKernel[]
+  terminals?: WaitingRoomTerminal[]
+}
+
+export type WaitingRoomTerminalType = "cli" | "web" | "ios" | "android"
+
+export type WaitingRoomTerminal = {
+  terminal_id: string
+  terminal_type: WaitingRoomTerminalType
+  alias?: string | null
+  paired_at_ms: number
+  revoked: boolean
 }
 
 export type WaitingRoomTargetState = {
@@ -136,6 +150,7 @@ export function createWaitingRoomState(
       sessionIndex: 0,
       machineIndex: 0,
       remoteKernelIndex: 0,
+      terminalIndex: 0,
       worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(),
       providerId,
       modelId: selected?.id ?? model,
@@ -160,6 +175,7 @@ export function normalizeWaitingRoomState(
   const visibleSessions = waitingRoomSessions(sessions)
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
+  const terminals = waitingRoomTerminals(remote)
   const providerId = normalizeBackendProvider(state.providerId)
   const selected = selectConfiguredModel(catalog, state.modelId, providerId)
   const efforts = waitingRoomEfforts(selected)
@@ -169,6 +185,8 @@ export function normalizeWaitingRoomState(
       ? "relay"
       : remoteKernels.length === 0 && state.focus === "remote-kernel"
         ? "relay"
+        : terminals.length === 0 && state.focus === "terminal"
+          ? "add-terminal"
         : state.focus
   return {
     ...state,
@@ -177,6 +195,7 @@ export function normalizeWaitingRoomState(
     sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
     machineIndex: remoteMachines.length === 0 ? 0 : modulo(state.machineIndex, remoteMachines.length),
     remoteKernelIndex: remoteKernels.length === 0 ? 0 : modulo(state.remoteKernelIndex, remoteKernels.length),
+    terminalIndex: terminals.length === 0 ? 0 : modulo(state.terminalIndex, terminals.length),
     worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(state.worktreeSelectionId),
     modelId: selected?.id ?? state.modelId,
     effort: efforts.includes(state.effort) ? state.effort : efforts[0] ?? "",
@@ -209,6 +228,7 @@ export function moveWaitingRoomFocus(
       && (target.focus !== "session" || target.sessionIndex === state.sessionIndex)
       && (target.focus !== "machine" || target.machineIndex === state.machineIndex)
       && (target.focus !== "remote-kernel" || target.remoteKernelIndex === state.remoteKernelIndex)
+      && (target.focus !== "terminal" || target.terminalIndex === state.terminalIndex)
     )),
   )
   const next = order[modulo(currentIndex + delta, order.length)] ?? order[0]
@@ -222,6 +242,7 @@ export function moveWaitingRoomFocus(
     sessionIndex: next.focus === "session" ? next.sessionIndex : state.sessionIndex,
     machineIndex: next.focus === "machine" ? next.machineIndex : state.machineIndex,
     remoteKernelIndex: next.focus === "remote-kernel" ? next.remoteKernelIndex : state.remoteKernelIndex,
+    terminalIndex: next.focus === "terminal" ? next.terminalIndex : state.terminalIndex,
   }
 }
 
@@ -298,10 +319,12 @@ export function waitingRoomChoice(
   const model = waitingRoomModel(state, catalog)
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
+  const terminals = waitingRoomTerminals(remote)
   return {
     session: visibleSessions[state.sessionIndex] ?? null,
     remoteMachine: remoteMachines[state.machineIndex] ?? null,
     remoteKernel: remoteKernels[state.remoteKernelIndex] ?? null,
+    terminal: terminals[state.terminalIndex] ?? null,
     providerId: state.providerId,
     model,
     effort: state.effort,
@@ -323,6 +346,8 @@ export function waitingRoomRows(
   const sessionScrollbar = renderWaitingRoomScrollbar(sessionWindow.count, visibleSessions.length, sessionWindow.start)
   const windowSessions = visibleSessions.slice(sessionWindow.start, sessionWindow.start + sessionWindow.count)
   const allSessionTitles = visibleSessions.map(formatWaitingRoomSessionTitle)
+  const terminals = waitingRoomTerminals(remote)
+  const terminalTitles = terminals.map(formatWaitingRoomTerminalTitle)
   const selectedWorktreeLabel = describeWaitingRoomWorktreeSelection(
     state.worktreeSelectionId,
     targets?.worktreePath,
@@ -344,6 +369,8 @@ export function waitingRoomRows(
   const titleWidth = Math.max(
     WAITING_ROOM_ROW_TITLE_MIN_WIDTH,
     ...allSessionTitles.map((title) => Math.max(0, title.length)),
+    ...terminalTitles.map((title) => Math.max(0, title.length)),
+    "Add New Terminal".length,
   )
   const rows: WaitingRoomRow[] = [
     {
@@ -468,6 +495,7 @@ export function waitingRoomRows(
 
   rows.push(
     ...waitingRoomRemoteRows(state, remote, titleWidth),
+    ...waitingRoomTerminalRows(state, remote, titleWidth),
     {
       id: "theme",
       title: "Theme",
@@ -479,6 +507,68 @@ export function waitingRoomRows(
       scrollbar: "",
     },
   )
+
+  return rows
+}
+
+function waitingRoomTerminalRows(
+  state: WaitingRoomState,
+  remote: WaitingRoomRemoteState,
+  titleWidth: number,
+): WaitingRoomRow[] {
+  const terminals = waitingRoomTerminals(remote)
+  const typeWidth = Math.max(
+    "Type".length,
+    ...terminals.map((terminal) => formatWaitingRoomTerminalType(terminal.terminal_type).length),
+  )
+  const rows: WaitingRoomRow[] = [
+    {
+      id: "terminals-header",
+      title: "Terminals",
+      value: "",
+      titleWidth,
+      indent: 0,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    },
+    {
+      id: "terminal-columns",
+      title: "Terminal ID",
+      value: "",
+      titleWidth,
+      columns: [formatWaitingRoomColumnHeader("Type", typeWidth)],
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    },
+  ]
+
+  for (const [index, terminal] of terminals.entries()) {
+    rows.push({
+      id: `terminal:${terminal.terminal_id}`,
+      title: formatWaitingRoomTerminalTitle(terminal),
+      value: formatWaitingRoomTerminalType(terminal.terminal_type),
+      titleWidth,
+      columns: [formatWaitingRoomColumn(formatWaitingRoomTerminalType(terminal.terminal_type), typeWidth)],
+      indent: 1,
+      focused: state.focus === "terminal" && state.terminalIndex === index,
+      selectable: true,
+      scrollbar: "",
+    })
+  }
+
+  rows.push({
+    id: "add-terminal",
+    title: "Add New Terminal",
+    value: "Press Enter",
+    titleWidth,
+    indent: 1,
+    focused: state.focus === "add-terminal",
+    selectable: true,
+    scrollbar: "",
+  })
 
   return rows
 }
@@ -630,6 +720,10 @@ export function waitingRoomRemoteKernels(remote: WaitingRoomRemoteState) {
   return remote.kernels ?? []
 }
 
+export function waitingRoomTerminals(remote: WaitingRoomRemoteState) {
+  return remote.terminals ?? []
+}
+
 export function waitingRoomRemoteMachineCanDelete(machine: WaitingRoomRemoteMachine) {
   return machine.online === false
     || machine.pending === true
@@ -719,6 +813,7 @@ function waitingRoomFocusTargets(sessions: SessionListEntry[], remote: WaitingRo
   const visibleSessions = waitingRoomSessions(sessions)
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
+  const terminals = waitingRoomTerminals(remote)
   return [
     { focus: "new" as const, sessionIndex: 0 },
     { focus: "provider" as const, sessionIndex: 0 },
@@ -738,10 +833,17 @@ function waitingRoomFocusTargets(sessions: SessionListEntry[], remote: WaitingRo
       sessionIndex: 0,
       remoteKernelIndex,
     })),
+    ...terminals.map((_, terminalIndex) => ({
+      focus: "terminal" as const,
+      sessionIndex: 0,
+      terminalIndex,
+    })),
+    { focus: "add-terminal" as const, sessionIndex: 0 },
     { focus: "theme" as const, sessionIndex: 0 },
   ].map((target) => ({
     machineIndex: 0,
     remoteKernelIndex: 0,
+    terminalIndex: 0,
     ...target,
   }))
 }
@@ -776,6 +878,25 @@ function formatTitleCase(value: string) {
 
 function formatSessionStatus(value: string) {
   return formatTitleCase(value.toLowerCase())
+}
+
+function formatWaitingRoomTerminalTitle(terminal: WaitingRoomTerminal) {
+  const label = terminal.alias ? `${terminal.terminal_id} (${terminal.alias})` : terminal.terminal_id
+  return terminal.revoked ? `${label} (revoked)` : label
+}
+
+function formatWaitingRoomTerminalType(value: WaitingRoomTerminalType) {
+  switch (value) {
+    case "web":
+      return "Web terminal"
+    case "ios":
+      return "iOS terminal"
+    case "android":
+      return "Android terminal"
+    case "cli":
+    default:
+      return "CLI"
+  }
 }
 
 function formatSessionTimestamp(value: number | null) {

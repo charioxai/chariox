@@ -379,6 +379,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
     sessionIndex: 0,
     machineIndex: 0,
     remoteKernelIndex: 0,
+  terminalIndex: 0,
     worktreeSelectionId: "existing:/workspace",
     providerId: "opencode",
     modelId: "openai/gpt-5.4",

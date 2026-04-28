@@ -22,20 +22,21 @@ use super::{
     AliasWorkflowEndpointRequest, AliasWorkflowRequest, AttachToSessionRequest,
     AttachWorkspaceLinkRequest, CancelActivePromptRequest, CancelWorkflowRunRequest,
     CaptureScreenshotCapabilityRequest, CompletePromptRequest, CreateSessionInviteRequest,
-    CreateWorkflowEndpointRequest, CreateWorkflowRequest, CreateWorkspaceLinkRequest,
-    CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
-    DetachWorkspaceLinkRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
-    GetDaemonHealthRequest, GetSessionStateRequest, GetWaitingRoomInventoryRequest,
-    GetWorkflowRunRequest, InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest,
-    JoinSessionInviteRequest, LaunchProviderRunRequest, ListAgentsRequest,
-    ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, ListSessionMembersRequest,
-    ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceLinksRequest,
-    LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-    ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
-    RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
-    ResumeWorkflowRunRequest, RevokeSessionInviteRequest, RunShellCapabilityRequest,
-    ShowWorkspaceLinkRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
-    SubmitPromptRequest, UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
+    CreateTerminalPairingLinkRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
+    CreateWorkspaceLinkRequest, CycleAgentFocusRequest, DeleteSessionRequest,
+    DetachFromSessionRequest, DetachWorkspaceLinkRequest, EditFileCapabilityRequest,
+    EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest, GetSessionStateRequest,
+    GetWaitingRoomInventoryRequest, GetWorkflowRunRequest, InspectGitCapabilityRequest,
+    InvokeWorkflowEndpointRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
+    LaunchProviderRunRequest, ListAgentsRequest, ListRemoteMachineKernelsRequest,
+    ListRemoteMachinesRequest, ListSessionMembersRequest, ListSessionsRequest,
+    ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceLinksRequest, LocalDaemonRequest,
+    LocalDaemonResponse, PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest,
+    ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
+    ResolveSessionRequest, ResolveWorkflowRequest, ResumeWorkflowRunRequest,
+    RevokeSessionInviteRequest, RunShellCapabilityRequest, ShowWorkspaceLinkRequest,
+    SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
+    UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
 };
 
 fn launch_slow_structured_run(app: &mut DaemonApp, session_id: &str, agent_id: &str) -> String {
@@ -320,6 +321,66 @@ fn waiting_room_inventory_includes_kernels_for_pending_visible_remote_machines()
         snapshot.launch_target.is_some(),
         "waiting room inventory should include the inferred launch target"
     );
+}
+
+#[test]
+fn terminal_pairing_link_adds_terminal_to_waiting_room_inventory() {
+    let mut config = DaemonConfig::for_tests();
+    config.relay_url = Some("ws://relay.local".to_string());
+    config.relay_token = Some("relay-token".to_string());
+    let harness = LocalRouterTestHarness::with_config(config);
+
+    let pairing = match harness
+        .dispatch(LocalDaemonRequest::CreateTerminalPairingLink(
+            CreateTerminalPairingLinkRequest {
+                terminal_type: Some(TerminalType::Web),
+                alias: Some("browser".to_string()),
+                expires_in_ms: Some(60_000),
+            },
+        ))
+        .expect("terminal pairing link should be created")
+    {
+        LocalDaemonResponse::TerminalPairingLinkCreated { pairing } => pairing,
+        other => panic!("unexpected response: {other:?}"),
+    };
+
+    assert!(pairing.pairing_link.starts_with("arroba-terminal-pair-v1."));
+    assert_eq!(pairing.terminal_type, TerminalType::Web);
+    assert_eq!(pairing.relay_url, "ws://relay.local");
+    assert_eq!(pairing.pairing_code.len(), "ABCD-EFGH".len());
+
+    let snapshot = match harness
+        .dispatch(LocalDaemonRequest::GetWaitingRoomInventory(
+            GetWaitingRoomInventoryRequest,
+        ))
+        .expect("waiting room inventory should succeed")
+    {
+        LocalDaemonResponse::WaitingRoomInventory { snapshot } => snapshot,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let terminal = snapshot
+        .terminals
+        .iter()
+        .find(|terminal| terminal.terminal_id == pairing.terminal_id)
+        .expect("paired terminal should be listed");
+    assert_eq!(terminal.terminal_type, TerminalType::Web);
+
+    let joined = match harness
+        .dispatch(LocalDaemonRequest::JoinTerminalPairingLink(
+            JoinTerminalPairingLinkRequest {
+                pairing_link: pairing.pairing_link,
+                terminal_id: None,
+                terminal_type: None,
+                alias: Some("browser paired".to_string()),
+            },
+        ))
+        .expect("terminal pairing link should redeem")
+    {
+        LocalDaemonResponse::TerminalPairingLinkJoined { terminal, .. } => terminal,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    assert_eq!(joined.terminal_id, pairing.terminal_id);
+    assert_eq!(joined.terminal_type, TerminalType::Web);
 }
 
 #[test]

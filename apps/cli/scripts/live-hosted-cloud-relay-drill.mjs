@@ -184,6 +184,7 @@ function profileFromKernel(profile, expiresAt) {
     ...(profile.client_alias ? { clientAlias: profile.client_alias } : {}),
     ...(profile.machine_id ? { machineId: profile.machine_id } : {}),
     ...(profile.machine_alias ? { machineAlias: profile.machine_alias } : {}),
+    ...(profile.machine_credential ? { machineCredential: profile.machine_credential } : {}),
     ...(profile.cloud_session_token ? { cloudSessionToken: profile.cloud_session_token } : {}),
     ...(expiresAt ? { cloudSessionExpiresAtMs: Date.parse(expiresAt) } : {}),
   }
@@ -762,7 +763,7 @@ async function sendWithRetry(client, request, label, attempts = 5) {
       return await client.send(request)
     } catch (error) {
       lastError = error
-      if (attempt === attempts - 1) {
+      if (!isRetryableClientSendError(error) || attempt === attempts - 1) {
         break
       }
       log("client-send-retry", {
@@ -774,6 +775,14 @@ async function sendWithRetry(client, request, label, attempts = 5) {
     }
   }
   throw lastError
+}
+
+function isRetryableClientSendError(error) {
+  if (error?.retryable === true) {
+    return true
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  return /ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|websocket closed|connection_closed/i.test(message)
 }
 
 function installSendRetry(client, label) {

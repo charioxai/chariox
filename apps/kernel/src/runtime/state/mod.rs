@@ -699,6 +699,24 @@ impl KernelRuntimeState {
         Ok(session)
     }
 
+    pub(crate) async fn delete_current_kernel_sessions(
+        &self,
+    ) -> Result<Vec<crate::session::RuntimeSession>, DaemonError> {
+        let session_ids: Vec<String> = self
+            .owned
+            .session_store
+            .list_all_sessions()
+            .into_iter()
+            .map(|session| session.id().to_string())
+            .collect();
+        let mut deleted_sessions = Vec::with_capacity(session_ids.len());
+        for session_id in session_ids {
+            let session = self.delete_session_ref(&session_id, None).await?;
+            deleted_sessions.push(session);
+        }
+        Ok(deleted_sessions)
+    }
+
     pub(crate) async fn execute_workflow_request(
         &self,
         request: LocalDaemonRequest,

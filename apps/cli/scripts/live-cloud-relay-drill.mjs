@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
-import { mkdir, rm } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -15,6 +15,7 @@ const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgresql://arroba:arroba@localhost:5432/arroba_cloud"
 const CLOUD_SECRET = "arroba-cloud-live-drill-secret"
 const CLOUD_ISSUER = "arroba-cloud-live-drill"
+const machineCredentialOnly = process.env.ARROBA_CLOUD_MACHINE_CREDENTIAL_ONLY === "1"
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -302,8 +303,8 @@ async function postJsonWithHeaders(url, body, headers = {}) {
   return response.json().catch(() => null)
 }
 
-async function getJsonWithHeaders(url) {
-  const response = await fetch(url)
+async function getJsonWithHeaders(url, headers = {}) {
+  const response = await fetch(url, { headers })
   if (!response.ok) {
     throw new Error(`GET ${url} failed with ${response.status}: ${await response.text()}`)
   }
@@ -311,6 +312,25 @@ async function getJsonWithHeaders(url) {
     body: await response.json(),
     headers: response.headers,
   }
+}
+
+async function getJson(url) {
+  return (await getJsonWithHeaders(url)).body
+}
+
+async function waitForCloudRelayTarget(apiUrl, { accountId, realmId, daemonId, status }, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastTargets = null
+  while (Date.now() < deadline) {
+    const listed = await getJson(
+      `${apiUrl}/relay/targets?accountId=${encodeURIComponent(accountId)}&realmId=${encodeURIComponent(realmId)}`,
+    )
+    lastTargets = listed.targets ?? []
+    const target = lastTargets.find((entry) => entry.daemonId === daemonId)
+    if (target?.status === status) return target
+    await sleep(250)
+  }
+  throw new Error(`timed out waiting for cloud relay target ${daemonId} to become ${status}\n${JSON.stringify(lastTargets, null, 2)}`)
 }
 
 async function browserMutationHeaders(apiUrl, identity) {
@@ -322,6 +342,104 @@ async function browserMutationHeaders(apiUrl, identity) {
     "csrf-token": csrf.body.csrfToken,
     "x-arroba-test-auth0-identity": JSON.stringify(identity),
   }
+}
+
+function browserIdentity(runId) {
+  return {
+    provider: "auth0",
+    providerSubject: `auth0|${runId}`,
+    email: `${runId}@example.com`,
+    emailVerified: true,
+    displayName: runId,
+  }
+}
+
+function browserSessionHeaders(runId, cloudSessionToken) {
+  return {
+    cookie: `arroba_cloud_session=${cloudSessionToken}`,
+    "x-arroba-test-auth0-identity": JSON.stringify(browserIdentity(runId)),
+  }
+}
+
+function browserIdentityHeaders(runId) {
+  return {
+    "x-arroba-test-auth0-identity": JSON.stringify(browserIdentity(runId)),
+  }
+}
+
+async function openWebCliInventoryStream(apiUrl, headers) {
+  const controller = new AbortController()
+  const response = await fetch(`${apiUrl}/web-cli/inventory/stream?intervalMs=500`, {
+    headers,
+    signal: controller.signal,
+  })
+  if (!response.ok || !response.body) {
+    throw new Error(`GET /web-cli/inventory/stream failed with ${response.status}: ${await response.text()}`)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+
+  async function nextEvent(timeoutMs = 5_000) {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const boundary = buffer.indexOf("\n\n")
+      if (boundary >= 0) {
+        const raw = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary + 2)
+        const event = raw.match(/^event: (.+)$/m)?.[1] ?? "message"
+        const dataText = raw.match(/^data: (.+)$/m)?.[1] ?? "{}"
+        return { event, data: JSON.parse(dataText) }
+      }
+      const remaining = Math.max(1, deadline - Date.now())
+      const result = await Promise.race([
+        reader.read(),
+        sleep(remaining).then(() => ({ timeout: true })),
+      ])
+      if ("timeout" in result) break
+      if (result.done) {
+        throw new Error("web cli inventory stream closed")
+      }
+      buffer += decoder.decode(result.value, { stream: true })
+    }
+    throw new Error("timed out waiting for web cli inventory stream event")
+  }
+
+  return {
+    async waitForKernelStatus(daemonId, status, timeoutMs = 10_000) {
+      const deadline = Date.now() + timeoutMs
+      let lastState = null
+      while (Date.now() < deadline) {
+        const { event, data } = await nextEvent(Math.max(1, deadline - Date.now()))
+        if (event !== "state") continue
+        lastState = data
+        const kernel = Array.isArray(data.kernels)
+          ? data.kernels.find((entry) => entry.daemonId === daemonId || entry.kernelRef === daemonId)
+          : null
+        if (kernel?.status === status) {
+          return { state: data, kernel }
+        }
+      }
+      throw new Error(`timed out waiting for web cli stream kernel ${daemonId} to become ${status}\n${JSON.stringify(lastState, null, 2)}`)
+    },
+    async close() {
+      controller.abort()
+      await reader.cancel().catch(() => {})
+    },
+  }
+}
+
+async function removePersistedCloudSessionToken(configHome) {
+  const configPath = path.join(configHome, "arroba", "daemon", "config.json")
+  const config = JSON.parse(await readFile(configPath, "utf8"))
+  assert(config.cloud_relay?.machine_credential, "persisted cloud profile should include machine credential before token removal", config.cloud_relay)
+  delete config.cloud_relay.cloud_session_token
+  delete config.cloud_relay.cloud_session_expires_at_ms
+  delete config.cloud_relay.token_expires_at_ms
+  delete config.relay_url
+  delete config.relay_token
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8")
+  return configPath
 }
 
 function profileFromKernel(profile, expiresAt) {
@@ -339,6 +457,7 @@ function profileFromKernel(profile, expiresAt) {
     ...(profile.client_alias ? { clientAlias: profile.client_alias } : {}),
     ...(profile.machine_id ? { machineId: profile.machine_id } : {}),
     ...(profile.machine_alias ? { machineAlias: profile.machine_alias } : {}),
+    ...(profile.machine_credential ? { machineCredential: profile.machine_credential } : {}),
     ...(profile.cloud_session_token ? { cloudSessionToken: profile.cloud_session_token } : {}),
     ...(expiresAt ? { cloudSessionExpiresAtMs: Date.parse(expiresAt) } : {}),
   }
@@ -355,7 +474,9 @@ function tokenFromKernel(token, profile) {
 }
 
 function parseCloudClientTokenNotice(notices) {
-  const notice = [...notices].reverse().find((item) => item.startsWith("cloud relay client token\n"))
+  const notice = [...notices].reverse().find((item) => (
+    item.startsWith("cloud relay client token\n") || item.startsWith("cloud client token\n")
+  ))
   assert(notice, "cloud relay client-token command should append a token notice", notices)
   const fields = Object.fromEntries(
     notice
@@ -366,12 +487,13 @@ function parseCloudClientTokenNotice(notices) {
         return index === -1 ? [line, ""] : [line.slice(0, index), line.slice(index + 1)]
       }),
   )
-  assert(fields.relay_url, "client token notice should include relay_url", fields)
+  const relayUrl = fields.relay_url ?? fields.transport
+  assert(relayUrl, "client token notice should include relay_url or transport", fields)
   assert(fields.command, "client token notice should include command", fields)
   const tokenMatch = fields.command.match(/\s--relay-token\s+(\S+)/)
   assert(tokenMatch?.[1], "client token command should include --relay-token", fields.command)
   return {
-    relayUrl: fields.relay_url,
+    relayUrl,
     relayToken: tokenMatch[1],
   }
 }
@@ -521,6 +643,8 @@ async function main() {
   const runId = `cloud-relay-${process.pid}-${Date.now()}`
   const rootDir = path.join(os.tmpdir(), runId)
   const workspace = path.join(rootDir, "workspace")
+  const home = path.join(rootDir, "home")
+  const configHome = path.join(rootDir, "xdg-config")
   const daemonId = `cloud-daemon-${process.pid}-${Date.now()}`
   const daemonAlias = `cloud-home-${process.pid}`
   const clientId = `cloud-cli-${process.pid}-${Date.now()}`
@@ -546,6 +670,9 @@ async function main() {
   }
   const daemonEnv = {
     ...process.env,
+    HOME: home,
+    XDG_CONFIG_HOME: configHome,
+    XDG_STATE_HOME: path.join(rootDir, "xdg-state"),
     ARROBA_KERNEL_PORT: String(ports.kernelPort),
     ARROBA_MCP_PORT: String(ports.mcpPort),
     ARROBA_OPENCODE_PORT: String(ports.opencodePort),
@@ -571,6 +698,9 @@ async function main() {
   let cloudServer = null
   let localClient = null
   let remoteClient = null
+  let webCliStream = null
+  const profileRef = { current: null }
+  const notices = []
   const db = cloudDb.createCloudDatabase({ databaseUrl: DATABASE_URL })
 
   try {
@@ -580,10 +710,15 @@ async function main() {
       throw new Error(`arroba cli build failed\n${cliBuild.stdout}\n${cliBuild.stderr}`)
     }
 
-    log("build-cloud")
-    const cloudBuild = await run("pnpm", ["run", "build"], { cwd: cloudRoot, env: cloudEnv })
-    if (cloudBuild.code !== 0) {
-      throw new Error(`arroba-cloud build failed\n${cloudBuild.stdout}\n${cloudBuild.stderr}`)
+    log("build-cloud-db")
+    const cloudDbBuild = await run("pnpm", ["--filter", "@arroba-cloud/db", "run", "build"], { cwd: cloudRoot, env: cloudEnv })
+    if (cloudDbBuild.code !== 0) {
+      throw new Error(`arroba-cloud db build failed\n${cloudDbBuild.stdout}\n${cloudDbBuild.stderr}`)
+    }
+    log("build-cloud-api")
+    const cloudApiBuild = await run("pnpm", ["--filter", "@arroba-cloud/api", "run", "build"], { cwd: cloudRoot, env: cloudEnv })
+    if (cloudApiBuild.code !== 0) {
+      throw new Error(`arroba-cloud api build failed\n${cloudApiBuild.stdout}\n${cloudApiBuild.stderr}`)
     }
     const migrate = await run("pnpm", ["--filter", "@arroba-cloud/db", "run", "prisma:migrate"], {
       cwd: cloudRoot,
@@ -613,9 +748,7 @@ async function main() {
     await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace)
     localClient = new LocalIpcClient(kernelUrl)
 
-    const profileRef = { current: null }
-    const notices = []
-    const handlers = commandActions.createCommandActionHandlers(createMinimalCommandDeps({
+    let handlers = commandActions.createCommandActionHandlers(createMinimalCommandDeps({
       apiUrl,
       runId,
       workspace,
@@ -634,6 +767,7 @@ async function main() {
       args: ["cloud", "login"],
     })
     assert(profileRef.current?.accountSlug === runId, "cloud login command should save the profile", profileRef.current)
+    assert(profileRef.current?.machineCredential, "cloud login should save the machine credential", profileRef.current)
 
     log("command-cloud-pair")
     await handlers.handleRelayCommand({
@@ -644,12 +778,15 @@ async function main() {
     assert(profileRef.current?.clientId === clientId, "cloud pair command should save client id", profileRef.current)
 
     log("command-cloud-pair-machine")
+    const linkedMachineId = profileRef.current?.machineId
+    assert(linkedMachineId, "cloud login should link the local machine id before pair-machine", profileRef.current)
     await handlers.handleRelayCommand({
       kind: "relay",
-      raw: `/relay cloud pair-machine ${daemonId} drill-machine`,
-      args: ["cloud", "pair-machine", daemonId, "drill-machine"],
+      raw: `/relay cloud pair-machine ${linkedMachineId} drill-machine`,
+      args: ["cloud", "pair-machine", linkedMachineId, "drill-machine"],
     })
-    assert(profileRef.current?.machineId === daemonId, "cloud pair-machine command should save machine id", profileRef.current)
+    assert(profileRef.current?.machineId === linkedMachineId, "cloud pair-machine command should preserve machine id", profileRef.current)
+    assert(profileRef.current?.machineCredential, "cloud pair-machine should preserve the machine credential", profileRef.current)
 
     log("command-cloud-connect")
     await handlers.handleRelayCommand({
@@ -657,6 +794,62 @@ async function main() {
       raw: "/relay cloud connect",
       args: ["cloud", "connect"],
     })
+    const onlineTarget = await waitForCloudRelayTarget(apiUrl, {
+      accountId: profileRef.current.accountId,
+      realmId: profileRef.current.realmId,
+      daemonId,
+      status: "ONLINE",
+    })
+    assert(onlineTarget.machineId === linkedMachineId, "cloud presence should associate the target with the linked machine", onlineTarget)
+
+    if (machineCredentialOnly) {
+      log("web-cli-stream-online")
+      webCliStream = await openWebCliInventoryStream(
+        apiUrl,
+        browserIdentityHeaders(runId),
+      )
+      const initialWebCliKernel = await webCliStream.waitForKernelStatus(daemonId, "ONLINE")
+      assert(initialWebCliKernel.kernel.machineId === linkedMachineId, "web cli stream should expose the online linked kernel", initialWebCliKernel.kernel)
+
+      log("cloud-machine-credential-restart")
+      await localClient.close().catch(() => {})
+      localClient = null
+      await terminateChild(daemon, "SIGINT")
+      daemon = null
+      log("web-cli-stream-offline")
+      const offlineWebCliKernel = await webCliStream.waitForKernelStatus(daemonId, "OFFLINE")
+      assert(offlineWebCliKernel.kernel.machineId === linkedMachineId, "web cli stream should expose the disconnected kernel", offlineWebCliKernel.kernel)
+      const strippedConfigPath = await removePersistedCloudSessionToken(configHome)
+      log("cloud-session-token-removed", { configPath: strippedConfigPath })
+      daemon = spawnProcess(kernelPath, [], { cwd: repoRoot, env: daemonEnv, name: "kernel" })
+      await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace)
+      localClient = new LocalIpcClient(kernelUrl)
+      await waitForCloudRelayTarget(apiUrl, {
+        accountId: profileRef.current.accountId,
+        realmId: profileRef.current.realmId,
+        daemonId,
+        status: "ONLINE",
+      })
+      log("web-cli-stream-reonline")
+      const reonlineWebCliKernel = await webCliStream.waitForKernelStatus(daemonId, "ONLINE")
+      assert(reonlineWebCliKernel.kernel.machineId === linkedMachineId, "web cli stream should expose the reconnected kernel", reonlineWebCliKernel.kernel)
+      const restartedRelayStatus = unwrap(
+        await localClient.send(requests.relayStatusRequest()),
+        "RelayStatus",
+      ).status
+      assert(restartedRelayStatus.connected, "restarted kernel should reconnect to cloud relay using machine credential", restartedRelayStatus)
+      handlers = commandActions.createCommandActionHandlers(createMinimalCommandDeps({
+        apiUrl,
+        runId,
+        workspace,
+        clientId,
+        localClient,
+        requests,
+        cloudRelay,
+        profileRef,
+        notices,
+      }))
+    }
 
     log("command-cloud-client-token")
     await handlers.handleRelayCommand({
@@ -702,6 +895,11 @@ async function main() {
       "remote cloud client should list the created session",
       listed,
     )
+
+    if (machineCredentialOnly) {
+      console.log("live cloud machine credential drill passed")
+      return
+    }
 
     log("cloud-shared-session-invite")
     const localInvite = unwrap(
@@ -979,9 +1177,20 @@ async function main() {
 
     console.log("live cloud relay drill passed")
   } finally {
+    const accountId = profileRef?.current?.accountId
+    const realmId = profileRef?.current?.realmId
+    await webCliStream?.close().catch(() => {})
     await remoteClient?.close().catch(() => {})
     await localClient?.close().catch(() => {})
-    await terminateChild(daemon)
+    await terminateChild(daemon, "SIGINT")
+    if (accountId && realmId) {
+      await waitForCloudRelayTarget(apiUrl, {
+        accountId,
+        realmId,
+        daemonId,
+        status: "OFFLINE",
+      }, 10_000).catch((error) => log("cloud-offline-presence-timeout", { message: error.message }))
+    }
     await terminateChild(relay)
     await terminateChild(cloudServer)
     await db.account.deleteMany({ where: { slug: { in: [runId, `${runId}-peer`, `${runId}-third`] } } }).catch(() => {})

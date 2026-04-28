@@ -95,8 +95,19 @@ pub async fn run_daemon_relay_connector(
 
     loop {
         if *shutdown.borrow() {
+            let _ = router.publish_cloud_kernel_presence(false).await;
             set_disconnected(&state).await;
             return;
+        }
+
+        if let Err(error) = router.ensure_cloud_relay_connection().await {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "failed to refresh cloud relay token",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
         }
 
         let (relay_url, heartbeat) = {
@@ -201,6 +212,7 @@ pub async fn run_daemon_relay_connector(
                     tokio::select! {
                         changed = shutdown.changed() => {
                             if changed.is_ok() && *shutdown.borrow() {
+                                let _ = router.publish_cloud_kernel_presence(false).await;
                                 let _ = outgoing_tx.send(RelayEnvelope::Close {
                                     reason: "daemon shutting down".to_string(),
                                 });
@@ -1105,14 +1117,14 @@ async fn emit_leased_projection_event(
     )
 }
 
-#[cfg(test)]
-pub async fn send_peer_request_via_relay(
-    app: &Arc<Mutex<DaemonApp>>,
+pub async fn send_peer_request_to_known_kernel_via_relay(
+    config: &crate::config::DaemonConfig,
     state: &Arc<RwLock<RelayClientState>>,
     target: ClientTarget,
+    target_public_key: &str,
     request: RelayPeerRequest,
 ) -> Result<RelayPeerResponse, DaemonError> {
-    let target_ref = target
+    let _target_ref = target
         .daemon_id
         .as_deref()
         .or(target.daemon_alias.as_deref())
@@ -1120,18 +1132,13 @@ pub async fn send_peer_request_via_relay(
             operation: "send relay peer request",
             message: "peer target must include daemon id or alias".to_string(),
         })?;
-    let config = {
-        let app = app.lock().await;
-        app.config().clone()
-    };
-    let kernel = relay_discovery::get_live_kernel(&config, target_ref).await?;
     let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize relay peer request",
         message: error.to_string(),
     })?;
     let encrypted_request = relay_crypto::encrypt_payload_for_peer(
         &config.relay_private_key,
-        &kernel.public_key,
+        target_public_key,
         &plaintext,
     )?;
     let (request_id, response_rx, outgoing_tx) = {
@@ -1216,6 +1223,30 @@ pub async fn send_peer_request_via_relay(
             message: error.to_string(),
         }
     })
+}
+
+#[cfg(test)]
+pub async fn send_peer_request_via_relay(
+    app: &Arc<Mutex<DaemonApp>>,
+    state: &Arc<RwLock<RelayClientState>>,
+    target: ClientTarget,
+    request: RelayPeerRequest,
+) -> Result<RelayPeerResponse, DaemonError> {
+    let target_ref = target
+        .daemon_id
+        .as_deref()
+        .or(target.daemon_alias.as_deref())
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "send relay peer request",
+            message: "peer target must include daemon id or alias".to_string(),
+        })?;
+    let config = {
+        let app = app.lock().await;
+        app.config().clone()
+    };
+    let kernel = relay_discovery::get_live_kernel(&config, target_ref).await?;
+    send_peer_request_to_known_kernel_via_relay(&config, state, target, &kernel.public_key, request)
+        .await
 }
 
 pub async fn send_peer_request_via_temporary_connection(

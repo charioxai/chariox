@@ -22,6 +22,8 @@ pub struct RelayCallerIdentity {
     pub subject: String,
     pub subject_kind: RelaySubjectKind,
     #[serde(default)]
+    pub expires_at_ms: u64,
+    #[serde(default)]
     pub token_id: Option<String>,
     #[serde(default)]
     pub user_id: Option<String>,
@@ -35,6 +37,7 @@ impl From<VerifiedRelayIdentity> for RelayCallerIdentity {
             realm_id: identity.realm_id,
             subject: identity.subject,
             subject_kind: identity.subject_kind,
+            expires_at_ms: identity.expires_at_ms,
             token_id: identity.token_id,
             user_id: identity.user_id,
             public_key_thumbprint: identity.public_key_thumbprint,

@@ -52,8 +52,10 @@ use crate::runtime::workspace_coordinator::{
 };
 use crate::session::{CreateSessionRequest, RuntimeSession, SessionService, SessionStateStore};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
-use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_client::RelayClientState;
+use crate::transport::relay_client::{
+    send_peer_request_to_known_kernel_via_relay, send_peer_request_via_temporary_connection,
+};
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 pub(crate) use kernel_agent::KernelAgentService;
@@ -414,14 +416,30 @@ impl DaemonApp {
                 operation: "durable_state.restore_snapshot",
                 message: error.to_string(),
             })?;
+        let restored_session_ids: std::collections::BTreeSet<String> = snapshot
+            .sessions
+            .iter()
+            .filter(|session| self.session_belongs_to_current_kernel(session))
+            .map(|session| session.id().to_string())
+            .collect();
         for session in snapshot.sessions {
+            if !restored_session_ids.contains(session.id()) {
+                continue;
+            }
             self.sessions.restore_session(session);
         }
         for agent in snapshot.agents {
+            if !restored_session_ids.contains(agent.session_id()) {
+                continue;
+            }
             self.agents.restore_agent(agent);
         }
         self.refresh_restored_session_projections()?;
         Ok(())
+    }
+
+    fn session_belongs_to_current_kernel(&self, session: &RuntimeSession) -> bool {
+        session.host_daemon_id() == self.config.daemon_id
     }
 
     fn refresh_restored_session_projections(&self) -> Result<(), DaemonError> {
@@ -491,6 +509,9 @@ impl DaemonApp {
                     "session",
                     "durable_state.restore_session",
                 )?;
+                if !self.session_belongs_to_current_kernel(&session) {
+                    return Ok(());
+                }
                 let default_agent: AgentInstance = decode_durable_payload_field(
                     &event,
                     "default_agent",
@@ -506,12 +527,18 @@ impl DaemonApp {
                     "session",
                     "durable_state.restore_session_update",
                 )?;
+                if !self.session_belongs_to_current_kernel(&session) {
+                    return Ok(());
+                }
                 self.sessions.restore_session(session.clone());
                 self.update_session_projection(session);
             }
             "agent.created" => {
                 let agent: AgentInstance =
                     decode_durable_payload_field(&event, "agent", "durable_state.restore_agent")?;
+                if self.sessions.get_session(agent.session_id()).is_err() {
+                    return Ok(());
+                }
                 self.agents.restore_agent(agent);
             }
             "agent.mcp_granted"
@@ -525,6 +552,9 @@ impl DaemonApp {
                     "agent",
                     "durable_state.restore_agent_update",
                 )?;
+                if self.sessions.get_session(agent.session_id()).is_err() {
+                    return Ok(());
+                }
                 self.agents.restore_agent(agent);
             }
             "session.ended" => {
@@ -533,6 +563,9 @@ impl DaemonApp {
                     "session",
                     "durable_state.restore_ended_session",
                 )?;
+                if !self.session_belongs_to_current_kernel(&session) {
+                    return Ok(());
+                }
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
                 self.sessions.restore_session(session.clone());
@@ -544,6 +577,9 @@ impl DaemonApp {
                     "session",
                     "durable_state.restore_deleted_session",
                 )?;
+                if !self.session_belongs_to_current_kernel(&session) {
+                    return Ok(());
+                }
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
                 self.sessions.remove_restored_session(session.id());
@@ -1066,28 +1102,33 @@ impl DaemonApp {
             daemon_id: Some(worker_kernel.kernel_id.clone()),
             daemon_alias: None,
         };
-        let lease = match self.block_on_relay_future(send_peer_request_via_temporary_connection(
-            &self.config,
-            target.clone(),
-            RelayPeerRequest::CreateExecutionLease {
-                home_kernel_id: self.config.daemon_id.clone(),
-                home_session_id: agent.session_id().to_string(),
-                home_agent_id: agent.id().to_string(),
-                owner_user_id: agent.owner_user_id().to_string(),
-            },
-        ))? {
-            RelayPeerResponse::ExecutionLeaseCreated { lease } => lease,
-            other => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "create remote execution lease",
-                    message: format!("unexpected peer response: {other:?}"),
-                });
-            }
-        };
-        let leased_agent =
-            match self.block_on_relay_future(send_peer_request_via_temporary_connection(
+        let lease =
+            match self.block_on_relay_future(send_peer_request_to_known_kernel_via_relay(
                 &self.config,
+                &self.relay_client_state,
                 target.clone(),
+                &worker_kernel.public_key,
+                RelayPeerRequest::CreateExecutionLease {
+                    home_kernel_id: self.config.daemon_id.clone(),
+                    home_session_id: agent.session_id().to_string(),
+                    home_agent_id: agent.id().to_string(),
+                    owner_user_id: agent.owner_user_id().to_string(),
+                },
+            ))? {
+                RelayPeerResponse::ExecutionLeaseCreated { lease } => lease,
+                other => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "create remote execution lease",
+                        message: format!("unexpected peer response: {other:?}"),
+                    });
+                }
+            };
+        let leased_agent = match self.block_on_relay_future(
+            send_peer_request_to_known_kernel_via_relay(
+                &self.config,
+                &self.relay_client_state,
+                target.clone(),
+                &worker_kernel.public_key,
                 RelayPeerRequest::SpawnLeasedAgent {
                     lease_id: lease.id.clone(),
                     provider: agent.provider().to_string(),
@@ -1098,32 +1139,37 @@ impl DaemonApp {
                     worktree_id: agent.worktree_id().map(ToOwned::to_owned),
                     worktree_placement,
                 },
-            )) {
-                Ok(RelayPeerResponse::LeasedAgentSpawned { leased_agent }) => leased_agent,
-                Ok(other) => {
-                    let _ = self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                        &self.config,
-                        target,
-                        RelayPeerRequest::DestroyExecutionLease {
-                            lease_id: lease.id.clone(),
-                        },
-                    ));
-                    return Err(DaemonError::LocalTransport {
-                        operation: "spawn remote leased agent",
-                        message: format!("unexpected peer response: {other:?}"),
-                    });
-                }
-                Err(error) => {
-                    let _ = self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                        &self.config,
-                        target,
-                        RelayPeerRequest::DestroyExecutionLease {
-                            lease_id: lease.id.clone(),
-                        },
-                    ));
-                    return Err(error);
-                }
-            };
+            ),
+        ) {
+            Ok(RelayPeerResponse::LeasedAgentSpawned { leased_agent }) => leased_agent,
+            Ok(other) => {
+                let _ = self.block_on_relay_future(send_peer_request_to_known_kernel_via_relay(
+                    &self.config,
+                    &self.relay_client_state,
+                    target,
+                    &worker_kernel.public_key,
+                    RelayPeerRequest::DestroyExecutionLease {
+                        lease_id: lease.id.clone(),
+                    },
+                ));
+                return Err(DaemonError::LocalTransport {
+                    operation: "spawn remote leased agent",
+                    message: format!("unexpected peer response: {other:?}"),
+                });
+            }
+            Err(error) => {
+                let _ = self.block_on_relay_future(send_peer_request_to_known_kernel_via_relay(
+                    &self.config,
+                    &self.relay_client_state,
+                    target,
+                    &worker_kernel.public_key,
+                    RelayPeerRequest::DestroyExecutionLease {
+                        lease_id: lease.id.clone(),
+                    },
+                ));
+                return Err(error);
+            }
+        };
         let bound = self.agents.bind_remote_execution(
             agent.id(),
             RemoteAgentBinding {
@@ -1459,4 +1505,39 @@ fn prompt_idle_timeout() -> Duration {
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(750),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::CreateSessionRequest;
+
+    #[test]
+    fn durable_restore_keeps_sessions_bound_to_their_kernel_id() {
+        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+            "shared-kernel-state-{}.db",
+            crate::session::unix_epoch_ms()
+        ));
+        let mut config_a = DaemonConfig::for_tests();
+        config_a.daemon_id = "kernel-a".to_string();
+        config_a.user_config.state.path = Some(state_path.display().to_string());
+        let session_id = {
+            let mut app = DaemonApp::bootstrap(config_a.clone()).expect("kernel a should boot");
+            let (session, _) = app
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            session.id().to_string()
+        };
+
+        let mut config_b = DaemonConfig::for_tests();
+        config_b.daemon_id = "kernel-b".to_string();
+        config_b.user_config.state.path = Some(state_path.display().to_string());
+        let app_b = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
+        assert!(app_b.sessions().list_sessions().is_empty());
+
+        let app_a = DaemonApp::bootstrap(config_a).expect("kernel a should reboot");
+        assert!(app_a.sessions().get_session(&session_id).is_ok());
+
+        let _ = std::fs::remove_file(state_path);
+    }
 }

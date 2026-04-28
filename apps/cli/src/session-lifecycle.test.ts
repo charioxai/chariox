@@ -25,6 +25,7 @@ const waitingRoomState: WaitingRoomState = {
   sessionIndex: 0,
   machineIndex: 0,
   remoteKernelIndex: 0,
+  terminalIndex: 0,
   worktreeSelectionId: "existing:/tmp/workspace",
   providerId: "opencode",
   modelId: "openai/gpt-5",

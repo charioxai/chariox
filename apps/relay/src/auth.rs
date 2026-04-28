@@ -85,6 +85,7 @@ pub struct VerifiedRelayIdentity {
     pub subject_kind: RelaySubjectKind,
     pub allowed_actions: Vec<RelayAction>,
     pub allowed_targets: Option<Vec<String>>,
+    pub expires_at_ms: u64,
     pub token_id: Option<String>,
     pub user_id: Option<String>,
     pub public_key_thumbprint: Option<String>,
@@ -98,6 +99,7 @@ impl VerifiedRelayIdentity {
             subject_kind: subject_kind_for_action(action),
             allowed_actions: vec![action],
             allowed_targets: None,
+            expires_at_ms: u64::MAX,
             token_id: None,
             user_id: None,
             public_key_thumbprint: None,
@@ -369,8 +371,8 @@ fn decode_jwt_hmac_token_parts(token: &str) -> Result<DecodedScopedToken, RelayA
 }
 
 fn parse_cloud_jwt_claims(payload: &[u8]) -> Result<RelayTokenClaims, RelayAuthError> {
-    let claims =
-        serde_json::from_slice::<CloudJwtClaims>(payload).map_err(|_| RelayAuthError::InvalidToken)?;
+    let claims = serde_json::from_slice::<CloudJwtClaims>(payload)
+        .map_err(|_| RelayAuthError::InvalidToken)?;
     Ok(RelayTokenClaims {
         issuer: claims.iss,
         subject: claims.sub,
@@ -436,6 +438,7 @@ fn identity_from_claims(claims: RelayTokenClaims) -> VerifiedRelayIdentity {
         subject_kind: claims.subject_kind,
         allowed_actions: claims.allowed_actions,
         allowed_targets: claims.allowed_targets,
+        expires_at_ms: claims.expires_at_ms,
         token_id: Some(claims.token_id),
         user_id: claims.user_id,
         public_key_thumbprint: claims.public_key_thumbprint,
@@ -759,12 +762,10 @@ mod tests {
             "client_id": "client-1",
             "public_key_thumbprint": "thumbprint",
         });
-        let header_b64 = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&header).expect("jwt header should serialize"),
-        );
-        let claims_b64 = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&claims).expect("jwt claims should serialize"),
-        );
+        let header_b64 = URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&header).expect("jwt header should serialize"));
+        let claims_b64 = URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).expect("jwt claims should serialize"));
         let signing_input = format!("{header_b64}.{claims_b64}");
         let signature =
             URL_SAFE_NO_PAD.encode(sign_hmac(b"issuer-secret", signing_input.as_bytes()).unwrap());
@@ -786,7 +787,10 @@ mod tests {
         assert_eq!(identity.subject, "client-1");
         assert_eq!(identity.subject_kind, RelaySubjectKind::Client);
         assert_eq!(identity.token_id.as_deref(), Some("token-1"));
-        assert_eq!(identity.public_key_thumbprint.as_deref(), Some("thumbprint"));
+        assert_eq!(
+            identity.public_key_thumbprint.as_deref(),
+            Some("thumbprint")
+        );
     }
 
     #[test]
@@ -805,12 +809,10 @@ mod tests {
             "exp": 20,
             "jti": "token-1",
         });
-        let header_b64 = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&header).expect("jwt header should serialize"),
-        );
-        let claims_b64 = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&claims).expect("jwt claims should serialize"),
-        );
+        let header_b64 = URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&header).expect("jwt header should serialize"));
+        let claims_b64 = URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).expect("jwt claims should serialize"));
         let signing_input = format!("{header_b64}.{claims_b64}");
         let signature =
             URL_SAFE_NO_PAD.encode(sign_hmac(b"issuer-secret", signing_input.as_bytes()).unwrap());

@@ -3,6 +3,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -361,6 +362,7 @@ async fn handle_connection(
         }
     });
     let mut registered_daemon_key: Option<DaemonKey> = None;
+    let token_expiry_generation = Arc::new(AtomicU64::new(0));
 
     while let Some(message) = reader.next().await {
         let message = message.map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -377,6 +379,11 @@ async fn handle_connection(
                             RelayAction::DaemonRegister,
                             None,
                         )?;
+                        schedule_token_expiry_close(
+                            &outgoing_tx,
+                            &token_expiry_generation,
+                            identity.expires_at_ms,
+                        );
                         let daemon_key = DaemonKey::new(
                             identity.realm_id.clone(),
                             registration.daemon_id.clone(),
@@ -430,6 +437,11 @@ async fn handle_connection(
                                 RelayAction::DaemonHeartbeat,
                                 Some(daemon_id.as_str()),
                             )?;
+                            schedule_token_expiry_close(
+                                &outgoing_tx,
+                                &token_expiry_generation,
+                                identity.expires_at_ms,
+                            );
                             if identity.realm_id != current_daemon_key.realm_id {
                                 break;
                             }
@@ -455,6 +467,11 @@ async fn handle_connection(
                                 .as_deref()
                                 .or(target.daemon_alias.as_deref()),
                         )?;
+                        schedule_token_expiry_close(
+                            &outgoing_tx,
+                            &token_expiry_generation,
+                            identity.expires_at_ms,
+                        );
                         let Some(daemon_key) =
                             resolve_target_daemon_key(&registry, &identity.realm_id, &target).await
                         else {
@@ -1107,17 +1124,15 @@ async fn remove_peer(
         guard.subscriptions.remove(&subscription_id);
     }
     if let Some(daemon_key) = daemon_key {
-        let removed_current_daemon = removed_peer
-            .as_ref()
-            .is_some_and(|peer| {
-                peer.role == RelayConnectionRole::Daemon
-                    && peer.realm_id.as_deref() == Some(daemon_key.realm_id.as_str())
-                    && peer
-                        .daemon_registration
-                        .as_ref()
-                        .map(|registration| registration.daemon_id.as_str())
-                        == Some(daemon_key.daemon_id.as_str())
-            });
+        let removed_current_daemon = removed_peer.as_ref().is_some_and(|peer| {
+            peer.role == RelayConnectionRole::Daemon
+                && peer.realm_id.as_deref() == Some(daemon_key.realm_id.as_str())
+                && peer
+                    .daemon_registration
+                    .as_ref()
+                    .map(|registration| registration.daemon_id.as_str())
+                    == Some(daemon_key.daemon_id.as_str())
+        });
         if !removed_current_daemon {
             return (Vec::new(), Vec::new());
         }
@@ -1215,6 +1230,34 @@ fn send_envelope(
 
 fn send_close(sender: &mpsc::UnboundedSender<Message>, reason: String) {
     let _ = send_envelope(sender, &RelayEnvelope::Close { reason });
+}
+
+fn schedule_token_expiry_close(
+    sender: &mpsc::UnboundedSender<Message>,
+    generation: &Arc<AtomicU64>,
+    expires_at_ms: u64,
+) {
+    if expires_at_ms == u64::MAX {
+        return;
+    }
+    let generation_id = generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let sender = sender.clone();
+    let generation = Arc::clone(generation);
+    let now_ms = current_unix_ms();
+    let delay = Duration::from_millis(expires_at_ms.saturating_sub(now_ms));
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        if generation.load(Ordering::SeqCst) == generation_id {
+            send_close(&sender, "relay token expired".to_string());
+        }
+    });
+}
+
+fn current_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
@@ -1557,7 +1600,10 @@ mod tests {
             assert!(guard.daemon("daemon-1").is_some());
         }
 
-        first_socket.close(None).await.expect("first socket should close");
+        first_socket
+            .close(None)
+            .await
+            .expect("first socket should close");
         sleep(Duration::from_millis(50)).await;
 
         {

@@ -354,6 +354,7 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
         LocalDaemonRequest::DeleteSession(request) => {
             LocalRequestMetadata::new("session.delete", Interactive).session(&request.session_ref)
         }
+        LocalDaemonRequest::DeleteKernel(_) => LocalRequestMetadata::new("kernel.delete", Normal),
         LocalDaemonRequest::SpawnAgent(request) => {
             LocalRequestMetadata::new("agent.spawn", Interactive).session(&request.session_id)
         }
@@ -455,6 +456,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RenameRemoteMachine(_) => "remote_machine.rename",
         LocalDaemonRequest::CreatePairingInvite(_) => "pairing_invite.create",
         LocalDaemonRequest::JoinPairingInvite(_) => "pairing_invite.join",
+        LocalDaemonRequest::CreateTerminalPairingLink(_) => "terminal_pairing_link.create",
+        LocalDaemonRequest::JoinTerminalPairingLink(_) => "terminal_pairing_link.join",
+        LocalDaemonRequest::ListTerminals(_) => "terminal.list",
         LocalDaemonRequest::ListPairedClients(_) => "paired_client.list",
         LocalDaemonRequest::RecordPairedClient(_) => "paired_client.record",
         LocalDaemonRequest::RevokePairedClient(_) => "paired_client.revoke",
@@ -556,6 +560,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::CycleAgentFocus(_)
         | LocalDaemonRequest::EndSession(_)
         | LocalDaemonRequest::DeleteSession(_)
+        | LocalDaemonRequest::DeleteKernel(_)
         | LocalDaemonRequest::GetDaemonHealth(_)
         | LocalDaemonRequest::GetSessionHistory(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),
@@ -811,6 +816,7 @@ mod tests {
                 realm_id: "realm-1".to_string(),
                 subject: "client-1".to_string(),
                 subject_kind: RelaySubjectKind::Client,
+                expires_at_ms: 20,
                 token_id: Some("token-1".to_string()),
                 user_id: Some("user-1".to_string()),
                 public_key_thumbprint: Some("thumbprint-1".to_string()),

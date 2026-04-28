@@ -17,6 +17,7 @@ export type ParsedSlashCommand =
   | { kind: "variant"; raw: string; value: string }
   | { kind: "view"; raw: string; value: string }
   | { kind: "agent"; raw: string; args: string[] }
+  | { kind: "kernel"; raw: string; args: string[] }
   | { kind: "machine"; raw: string; args: string[] }
   | { kind: "relay"; raw: string; args: string[] }
   | { kind: "cloud"; raw: string; args: string[] }
@@ -38,6 +39,7 @@ export type SlashCommandHandlers = {
   onVariant: (command: Extract<ParsedSlashCommand, { kind: "variant" }>) => Promise<unknown> | unknown
   onView: (command: Extract<ParsedSlashCommand, { kind: "view" }>) => Promise<unknown> | unknown
   onAgent: (command: Extract<ParsedSlashCommand, { kind: "agent" }>) => Promise<unknown> | unknown
+  onKernel: (command: Extract<ParsedSlashCommand, { kind: "kernel" }>) => Promise<unknown> | unknown
   onMachine: (command: Extract<ParsedSlashCommand, { kind: "machine" }>) => Promise<unknown> | unknown
   onRelay: (command: Extract<ParsedSlashCommand, { kind: "relay" }>) => Promise<unknown> | unknown
   onCloud: (command: Extract<ParsedSlashCommand, { kind: "cloud" }>) => Promise<unknown> | unknown
@@ -109,6 +111,13 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       kind: "agent",
       raw: trimmed,
       args: trimmed.replace(/^\/agent\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
+  if (trimmed.startsWith("/kernel")) {
+    return {
+      kind: "kernel",
+      raw: trimmed,
+      args: trimmed.replace(/^\/kernel\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
   if (trimmed.startsWith("/machine")) {
@@ -217,6 +226,9 @@ export async function executeSlashCommand(
     case "agent":
       await handlers.onAgent(command)
       break
+    case "kernel":
+      await handlers.onKernel(command)
+      break
     case "machine":
       await handlers.onMachine(command)
       break
@@ -255,6 +267,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "variant":
     case "view":
     case "agent":
+    case "kernel":
     case "machine":
     case "relay":
     case "cloud":

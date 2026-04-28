@@ -33,30 +33,32 @@ use crate::local::{
     CloudRelayLoginStart, CloudRelayProfile, CloudRelayRuntimeToken, CloudSessionInvite,
     CloudSessionInviteAcceptance, CloudSessionInviteDetails, CloudSessionMember,
     ConfigureRelayRequest, ConnectCloudRelayRequest, CreateCloudSessionInviteRequest,
-    CreatePairingInviteRequest, CreateSessionInviteRequest, CreateWorkspaceDirectoryRequest,
-    CreateWorkspaceLinkRequest, CreateWorkspaceWorktreeRequest, DeleteCredentialSecretRequest,
-    DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GetMcpServerRequest,
-    GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-    GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
-    GrantAgentCapabilityRequest, ImportMcpServersRequest, ImportSkillsRequest,
-    InstallMcpServerRequest, InstallSkillRequest, IssueCloudRelayClientTokenRequest,
-    JoinPairingInviteRequest, JoinSessionInviteRequest, ListAgentsRequest,
-    ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest, ListMcpServersRequest,
-    ListProviderProcessesRequest, ListSessionMembersRequest, ListSessionsRequest,
-    ListSkillsRequest, ListWorkspaceLinksRequest, ListWorkspaceWorktreesRequest,
-    LocalDaemonRequest, LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest,
-    MoveAgentToRemoteRequest, PairCloudRelayClientRequest, PairCloudRelayMachineRequest,
-    PairedClientRecord, PairingInviteIntent, PairingInviteRecord, PairingJoinRecord,
-    PollCloudRelayLoginRequest, PumpTerminalOutputRequest, QueryHistoryRequest,
-    RecordPairedClientRequest, RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest,
-    RevokeAgentCapabilityRequest, RevokeCloudSessionInviteRequest, RevokePairedClientRequest,
-    RevokeSessionInviteRequest, SearchHistoryRequest, SearchWorkspaceDirectoriesRequest,
-    SessionInviteRecord, SetCredentialSecretRequest, SetUserConfigValueRequest,
-    ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest, StartCloudRelayLoginRequest,
-    StartProviderLoginRequest, TeardownProviderProcessesRequest, UninstallMcpServerRequest,
-    UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
-    UserConfigMutationEffect, UserConfigProviderReloadSummary, WaitingRoomInventorySnapshot,
-    WaitingRoomLaunchTarget, WorkspaceWorktreeRecord,
+    CreatePairingInviteRequest, CreateSessionInviteRequest, CreateTerminalPairingLinkRequest,
+    CreateWorkspaceDirectoryRequest, CreateWorkspaceLinkRequest, CreateWorkspaceWorktreeRequest,
+    DeleteCredentialSecretRequest, DeleteKernelRequest, DetachWorkspaceLinkRequest,
+    ForgetRemoteMachineRequest, GetMcpServerRequest, GetProviderAuthStatusRequest,
+    GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest,
+    GetUserConfigRequest, GetUserConfigSchemaRequest, GrantAgentCapabilityRequest,
+    ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
+    IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest, JoinSessionInviteRequest,
+    JoinTerminalPairingLinkRequest, ListAgentsRequest, ListCloudCollaboratorsRequest,
+    ListCloudSessionMembersRequest, ListMcpServersRequest, ListProviderProcessesRequest,
+    ListSessionMembersRequest, ListSessionsRequest, ListSkillsRequest, ListWorkspaceLinksRequest,
+    ListWorkspaceWorktreesRequest, LocalDaemonRequest, LocalDaemonResponse,
+    LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
+    PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairedClientRecord,
+    PairingInviteIntent, PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest,
+    PumpTerminalOutputRequest, QueryHistoryRequest, RecordPairedClientRequest, RelayStatus,
+    RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
+    RevokeCloudSessionInviteRequest, RevokePairedClientRequest, RevokeSessionInviteRequest,
+    SearchHistoryRequest, SearchWorkspaceDirectoriesRequest, SessionInviteRecord,
+    SetCredentialSecretRequest, SetUserConfigValueRequest, ShowCloudSessionInviteRequest,
+    ShowWorkspaceLinkRequest, StartCloudRelayLoginRequest, StartProviderLoginRequest,
+    TeardownProviderProcessesRequest, TerminalPairingLinkRecord, TerminalRecord, TerminalType,
+    UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
+    UpdateMcpServerRequest, UpdateSkillRequest, UserConfigMutationEffect,
+    UserConfigProviderReloadSummary, WaitingRoomInventorySnapshot, WaitingRoomLaunchTarget,
+    WorkspaceWorktreeRecord,
 };
 use crate::provider::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
@@ -90,6 +92,8 @@ use crate::transport::relay_client::{
 };
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
+const CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS: u64 = 300_000;
+const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
 
 enum UserConfigMutation {
     Set { path: String, value: String },
@@ -598,6 +602,123 @@ impl CommandRouter {
 
     pub(crate) fn relay_config_snapshot(&self) -> crate::config::DaemonConfig {
         self.config_projection.snapshot()
+    }
+
+    pub(crate) async fn ensure_cloud_relay_connection(&self) -> Result<(), DaemonError> {
+        let config = self.config_projection.snapshot();
+        let Some(profile) = config.cloud_relay.clone() else {
+            return Ok(());
+        };
+        if profile.cloud_session_token.is_none() && profile.machine_credential.is_none() {
+            return Ok(());
+        }
+        let now_ms = crate::session::unix_epoch_ms();
+        let token_is_fresh = config.relay_url.as_deref() == Some(profile.relay_url.as_str())
+            && config.relay_token.is_some()
+            && profile.token_expires_at_ms.is_some_and(|expires_at| {
+                expires_at > now_ms + CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS
+            });
+        if token_is_fresh {
+            self.publish_cloud_kernel_presence(true).await?;
+            return Ok(());
+        }
+
+        let (subject, subject_kind, machine_id) =
+            if let Some(machine_id) = profile.machine_id.clone() {
+                (machine_id.clone(), "machine", Some(machine_id))
+            } else {
+                (config.daemon_id, "kernel", None)
+            };
+        let issued = match issue_cloud_runtime_token(
+            &profile,
+            &subject,
+            subject_kind,
+            None,
+            None,
+            machine_id,
+            None,
+        )
+        .await
+        {
+            Ok(issued) => issued,
+            Err(error) => {
+                self.clear_cloud_profile_if_stale(&error).await?;
+                return Err(error);
+            }
+        };
+        let mut updated_profile = profile.clone();
+        updated_profile.token_expires_at_ms = Some(now_ms + CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS);
+        let mut app = self.app.lock().await;
+        app.configure_relay(Some(profile.relay_url), Some(issued.token))?;
+        app.persist_cloud_relay_profile(Some(updated_profile))?;
+        drop(app);
+        self.publish_cloud_kernel_presence(true).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn publish_cloud_kernel_presence(
+        &self,
+        online: bool,
+    ) -> Result<(), DaemonError> {
+        let config = self.config_projection.snapshot();
+        let Some(profile) = config.cloud_relay else {
+            return Ok(());
+        };
+        let Some(machine_id) = profile.machine_id.clone() else {
+            return Ok(());
+        };
+        if profile.cloud_session_token.is_none() && profile.machine_credential.is_none() {
+            return Ok(());
+        }
+        let mut body = serde_json::Map::new();
+        if let Some(machine_credential) = profile.machine_credential.clone() {
+            body.insert(
+                "machineCredential".to_string(),
+                serde_json::Value::String(machine_credential),
+            );
+        } else if let Some(session_token) = profile.cloud_session_token.clone() {
+            body.insert(
+                "sessionToken".to_string(),
+                serde_json::Value::String(session_token),
+            );
+        }
+        body.insert(
+            "accountId".to_string(),
+            serde_json::Value::String(profile.account_id),
+        );
+        body.insert(
+            "realmId".to_string(),
+            serde_json::Value::String(profile.realm_id),
+        );
+        body.insert(
+            "machineId".to_string(),
+            serde_json::Value::String(machine_id),
+        );
+        body.insert(
+            "kernelId".to_string(),
+            serde_json::Value::String(config.daemon_id),
+        );
+        if let Some(alias) = config.daemon_alias {
+            body.insert("kernelAlias".to_string(), serde_json::Value::String(alias));
+        }
+        body.insert(
+            "status".to_string(),
+            serde_json::Value::String(if online { "ONLINE" } else { "OFFLINE" }.to_string()),
+        );
+        body.insert(
+            "metadata".to_string(),
+            serde_json::json!({
+                "host": config.kernel_websocket_host,
+                "port": config.kernel_websocket_port,
+            }),
+        );
+        let _: serde_json::Value = post_cloud_json(
+            profile.api_url,
+            "/kernels/presence",
+            serde_json::Value::Object(body),
+        )
+        .await?;
+        Ok(())
     }
 
     pub(crate) fn relay_daemon_id(&self) -> String {
@@ -1253,6 +1374,9 @@ impl CommandRouter {
             LocalDaemonRequest::DeleteCredentialSecret(request) => {
                 self.execute_delete_credential_secret_request(request).await
             }
+            LocalDaemonRequest::DeleteKernel(request) => {
+                self.execute_delete_kernel_request(request).await
+            }
             LocalDaemonRequest::ApproveRemoteMachine(request) => {
                 self.execute_approve_remote_machine_request(request).await
             }
@@ -1299,6 +1423,15 @@ impl CommandRouter {
             LocalDaemonRequest::JoinPairingInvite(request) => {
                 self.execute_join_pairing_invite_request(request).await
             }
+            LocalDaemonRequest::CreateTerminalPairingLink(request) => {
+                self.execute_create_terminal_pairing_link_request(request)
+                    .await
+            }
+            LocalDaemonRequest::JoinTerminalPairingLink(request) => {
+                self.execute_join_terminal_pairing_link_request(request)
+                    .await
+            }
+            LocalDaemonRequest::ListTerminals(_) => self.execute_list_terminals_request().await,
             LocalDaemonRequest::ListPairedClients(_) => {
                 self.execute_list_paired_clients_request().await
             }
@@ -1955,11 +2088,13 @@ impl CommandRouter {
         };
         let (_, remote_kernels) = self.remote_relay_inventory_projection.snapshot();
         let launch_target = infer_waiting_room_launch_target();
+        let terminals = paired_terminal_records();
         let inventory_version = waiting_room_inventory_version(
             &sessions,
             &relay_status,
             &remote_machines,
             &remote_kernels,
+            &terminals,
             launch_target.as_ref(),
         )?;
         Ok(LocalDaemonResponse::WaitingRoomInventory {
@@ -1969,6 +2104,7 @@ impl CommandRouter {
                 relay_status,
                 remote_machines,
                 remote_kernels,
+                terminals,
                 launch_target,
             },
         })
@@ -2315,6 +2451,7 @@ impl CommandRouter {
                     client_alias: profile.client_alias,
                     machine_id: profile.machine_id,
                     machine_alias: profile.machine_alias,
+                    machine_credential: response.machine_credential,
                     cloud_session_token: Some(session_token),
                     cloud_session_expires_at_ms: None,
                     token_expires_at_ms: None,
@@ -2472,7 +2609,8 @@ impl CommandRouter {
             None,
         )
         .await?;
-        profile.token_expires_at_ms = None;
+        profile.token_expires_at_ms =
+            Some(crate::session::unix_epoch_ms() + CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS);
         let saved = self.persist_cloud_profile(profile.clone()).await?;
         {
             let mut app = self.app.lock().await;
@@ -2498,7 +2636,7 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let mut profile = self.required_cloud_relay_profile()?;
         if profile.client_id.is_none() {
-            let pairing: CloudPairingTokenResponse = post_cloud_json(
+            let pairing: CloudPairingTokenResponse = match post_cloud_json(
                 profile.api_url.clone(),
                 "/pairing-tokens",
                 serde_json::json!({
@@ -2507,8 +2645,15 @@ impl CommandRouter {
                     "subjectKind": "client",
                 }),
             )
-            .await?;
-            post_cloud_json::<serde_json::Value>(
+            .await
+            {
+                Ok(pairing) => pairing,
+                Err(error) => {
+                    self.clear_cloud_profile_if_stale(&error).await?;
+                    return Err(error);
+                }
+            };
+            if let Err(error) = post_cloud_json::<serde_json::Value>(
                 profile.api_url.clone(),
                 "/clients/pair",
                 serde_json::json!({
@@ -2518,7 +2663,11 @@ impl CommandRouter {
                     "userId": profile.user_id,
                 }),
             )
-            .await?;
+            .await
+            {
+                self.clear_cloud_profile_if_stale(&error).await?;
+                return Err(error);
+            }
             profile.client_id = Some(request.client_id.clone());
             profile = self.persist_cloud_profile(profile).await?;
         }
@@ -2526,16 +2675,26 @@ impl CommandRouter {
             .client_id
             .clone()
             .unwrap_or_else(|| request.client_id.clone());
-        let issued = issue_cloud_runtime_token(
+        let issued = match issue_cloud_runtime_token(
             &profile,
             &client_id,
             "client",
             Some(vec![request.target_daemon_alias]),
             Some(client_id.clone()),
-            None,
+            profile
+                .machine_credential
+                .as_ref()
+                .and(profile.machine_id.clone()),
             request.session_id,
         )
-        .await?;
+        .await
+        {
+            Ok(issued) => issued,
+            Err(error) => {
+                self.clear_cloud_profile_if_stale(&error).await?;
+                return Err(error);
+            }
+        };
         let token = CloudRelayRuntimeToken {
             relay_url: profile.relay_url.clone(),
             relay_token: issued.token,
@@ -2552,7 +2711,7 @@ impl CommandRouter {
         request: CreateCloudSessionInviteRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let profile = self.required_cloud_relay_profile_with_session()?;
-        let invite: CloudSessionInviteResponse = post_cloud_json(
+        let invite: CloudSessionInviteResponse = match post_cloud_json(
             profile.api_url.clone(),
             "/sessions/invites",
             serde_json::json!({
@@ -2564,7 +2723,14 @@ impl CommandRouter {
                 "maxUses": request.max_uses,
             }),
         )
-        .await?;
+        .await
+        {
+            Ok(invite) => invite,
+            Err(error) => {
+                self.clear_cloud_profile_if_stale(&error).await?;
+                return Err(error);
+            }
+        };
         Ok(LocalDaemonResponse::CloudSessionInviteCreated {
             invite: cloud_session_invite_from_response(invite),
         })
@@ -2593,7 +2759,7 @@ impl CommandRouter {
         request: AcceptCloudSessionInviteRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let profile = self.required_cloud_relay_profile_with_session()?;
-        let acceptance: CloudSessionInviteAcceptanceResponse = post_cloud_json_dynamic(
+        let acceptance: CloudSessionInviteAcceptanceResponse = match post_cloud_json_dynamic(
             profile.api_url.clone(),
             format!(
                 "/sessions/invites/{}/accept",
@@ -2603,7 +2769,14 @@ impl CommandRouter {
                 "sessionToken": profile.cloud_session_token,
             }),
         )
-        .await?;
+        .await
+        {
+            Ok(acceptance) => acceptance,
+            Err(error) => {
+                self.clear_cloud_profile_if_stale(&error).await?;
+                return Err(error);
+            }
+        };
         Ok(LocalDaemonResponse::CloudSessionInviteAccepted {
             acceptance: cloud_session_invite_acceptance_from_response(acceptance),
         })
@@ -2614,7 +2787,7 @@ impl CommandRouter {
         request: RevokeCloudSessionInviteRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let profile = self.required_cloud_relay_profile_with_session()?;
-        let revoked: CloudSessionInviteRevokedResponse = post_cloud_json(
+        let revoked: CloudSessionInviteRevokedResponse = match post_cloud_json(
             profile.api_url.clone(),
             "/sessions/invites/revoke",
             serde_json::json!({
@@ -2624,7 +2797,14 @@ impl CommandRouter {
                 "inviteId": request.invite_id,
             }),
         )
-        .await?;
+        .await
+        {
+            Ok(revoked) => revoked,
+            Err(error) => {
+                self.clear_cloud_profile_if_stale(&error).await?;
+                return Err(error);
+            }
+        };
         Ok(LocalDaemonResponse::CloudSessionInviteRevoked {
             invite_id: revoked.invite_id,
             status: revoked.status,
@@ -2636,7 +2816,7 @@ impl CommandRouter {
         request: ListCloudSessionMembersRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let profile = self.required_cloud_relay_profile_with_session()?;
-        let listed: CloudSessionMembersResponse = get_cloud_json(
+        let listed: CloudSessionMembersResponse = match get_cloud_json(
             profile.api_url.clone(),
             format!(
                 "/sessions/members?sessionToken={}&accountId={}&sessionId={}",
@@ -2645,7 +2825,14 @@ impl CommandRouter {
                 cloud_url_component(&request.session_id),
             ),
         )
-        .await?;
+        .await
+        {
+            Ok(listed) => listed,
+            Err(error) => {
+                self.clear_cloud_profile_if_stale(&error).await?;
+                return Err(error);
+            }
+        };
         Ok(LocalDaemonResponse::CloudSessionMembersListed {
             session_id: listed.session_id,
             members: listed
@@ -2661,7 +2848,7 @@ impl CommandRouter {
         _request: ListCloudCollaboratorsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let profile = self.required_cloud_relay_profile_with_session()?;
-        let listed: CloudCollaboratorsResponse = get_cloud_json(
+        let listed: CloudCollaboratorsResponse = match get_cloud_json(
             profile.api_url.clone(),
             format!(
                 "/collaborators/recent?sessionToken={}&accountId={}",
@@ -2669,7 +2856,14 @@ impl CommandRouter {
                 cloud_url_component(&profile.account_id),
             ),
         )
-        .await?;
+        .await
+        {
+            Ok(listed) => listed,
+            Err(error) => {
+                self.clear_cloud_profile_if_stale(&error).await?;
+                return Err(error);
+            }
+        };
         Ok(LocalDaemonResponse::CloudCollaboratorsListed {
             collaborators: listed
                 .collaborators
@@ -2757,6 +2951,21 @@ impl CommandRouter {
             app.config().clone()
         });
         Ok(profile)
+    }
+
+    async fn clear_cloud_profile_if_stale(&self, error: &DaemonError) -> Result<(), DaemonError> {
+        if !is_stale_cloud_link_error(error) {
+            return Ok(());
+        }
+        {
+            let mut app = self.app.lock().await;
+            app.persist_cloud_relay_profile(None)?;
+        }
+        self.config_projection.update({
+            let app = self.app.lock().await;
+            app.config().clone()
+        });
+        Ok(())
     }
 
     async fn execute_get_user_config_request(
@@ -2913,6 +3122,18 @@ impl CommandRouter {
         );
         service.delete_vault_secret(&request.key)?;
         Ok(LocalDaemonResponse::CredentialSecretDeleted { key: request.key })
+    }
+
+    async fn execute_delete_kernel_request(
+        &self,
+        _request: DeleteKernelRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let kernel_id = self.config_projection.snapshot().daemon_id;
+        let deleted_sessions = self.runtime_state.delete_current_kernel_sessions().await?;
+        Ok(LocalDaemonResponse::KernelDeleted {
+            kernel_id,
+            deleted_sessions,
+        })
     }
 
     async fn execute_approve_remote_machine_request(
@@ -3200,6 +3421,11 @@ impl CommandRouter {
             issuer_machine_id: config.host_machine_id,
             issued_at_ms,
             expires_at_ms,
+            terminal_type: request
+                .terminal_type
+                .map(|terminal_type| terminal_type.as_str().to_string()),
+            pairing_code: request.terminal_type.map(|_| random_pairing_code()),
+            terminal_id: None,
         };
         let invite_token = encode_pairing_invite_token(&token)?;
         Ok(LocalDaemonResponse::PairingInviteCreated {
@@ -3210,6 +3436,75 @@ impl CommandRouter {
                 relay_url,
                 target_daemon_id: token.target_daemon_id,
                 target_daemon_alias: token.target_daemon_alias,
+                issued_at_ms,
+                expires_at_ms,
+            },
+        })
+    }
+
+    async fn execute_create_terminal_pairing_link_request(
+        &self,
+        request: CreateTerminalPairingLinkRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let terminal_type = request.terminal_type.unwrap_or(TerminalType::Cli);
+        let config = self.config_projection.snapshot();
+        let relay_url = config
+            .relay_url
+            .clone()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "create terminal pairing link",
+                message: "relay URL must be configured before creating a terminal pairing link"
+                    .to_string(),
+            })?;
+        let relay_token =
+            config
+                .relay_token
+                .clone()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "create terminal pairing link",
+                    message:
+                        "relay token must be configured before creating a terminal pairing link"
+                            .to_string(),
+                })?;
+        let issued_at_ms = current_unix_ms();
+        let expires_at_ms =
+            issued_at_ms.saturating_add(request.expires_in_ms.unwrap_or(15 * 60 * 1000));
+        let invite_id = random_hex_id();
+        let pairing_code = random_pairing_code();
+        let terminal_id = format!("{}-{}", terminal_type.as_str(), random_hex_id());
+        let token = PairingInviteToken {
+            version: 1,
+            intent: PairingInviteIntent::Client,
+            invite_id: invite_id.clone(),
+            relay_url: relay_url.clone(),
+            relay_token,
+            target_daemon_id: config.daemon_id.clone(),
+            target_daemon_alias: config.daemon_alias.clone().or(request.alias),
+            issuer_machine_id: config.host_machine_id,
+            issued_at_ms,
+            expires_at_ms,
+            terminal_type: Some(terminal_type.as_str().to_string()),
+            pairing_code: Some(pairing_code.clone()),
+            terminal_id: Some(terminal_id.clone()),
+        };
+        let pairing_link = encode_terminal_pairing_link(&token)?;
+        let _ = crate::config::DaemonConfig::record_paired_terminal(
+            terminal_id.clone(),
+            format!("pairing-link:{invite_id}"),
+            token.target_daemon_alias.clone(),
+            issued_at_ms,
+            terminal_type.as_str(),
+        )?;
+        Ok(LocalDaemonResponse::TerminalPairingLinkCreated {
+            pairing: TerminalPairingLinkRecord {
+                terminal_id,
+                pairing_link,
+                pairing_code,
+                invite_id,
+                relay_url,
+                target_daemon_id: token.target_daemon_id,
+                target_daemon_alias: token.target_daemon_alias,
+                terminal_type,
                 issued_at_ms,
                 expires_at_ms,
             },
@@ -3230,7 +3525,10 @@ impl CommandRouter {
         }
         let config = self.config_projection.snapshot();
         let subject_id = request.subject_id.unwrap_or_else(|| match token.intent {
-            PairingInviteIntent::Client => format!("client-{}", random_hex_id()),
+            PairingInviteIntent::Client => token
+                .terminal_id
+                .clone()
+                .unwrap_or_else(|| format!("client-{}", random_hex_id())),
             PairingInviteIntent::Machine => config.host_machine_id.clone(),
         });
         let public_key_thumbprint = request
@@ -3238,11 +3536,12 @@ impl CommandRouter {
             .unwrap_or_else(|| public_key_thumbprint(&config.relay_public_key));
         match token.intent {
             PairingInviteIntent::Client => {
-                crate::config::DaemonConfig::record_paired_client(
+                crate::config::DaemonConfig::record_paired_terminal(
                     subject_id.clone(),
                     public_key_thumbprint.clone(),
                     request.alias.clone(),
                     now_ms,
+                    token.terminal_type.as_deref().unwrap_or("cli"),
                 )?;
             }
             PairingInviteIntent::Machine => {
@@ -3272,6 +3571,62 @@ impl CommandRouter {
         })
     }
 
+    async fn execute_join_terminal_pairing_link_request(
+        &self,
+        request: JoinTerminalPairingLinkRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let token = decode_pairing_invite_token(&request.pairing_link)?;
+        let now_ms = current_unix_ms();
+        if token.expires_at_ms <= now_ms {
+            return Err(DaemonError::LocalTransport {
+                operation: "join terminal pairing link",
+                message: "terminal pairing link is expired".to_string(),
+            });
+        }
+        if token.intent != PairingInviteIntent::Client {
+            return Err(DaemonError::LocalTransport {
+                operation: "join terminal pairing link",
+                message: "pairing link is not for a terminal".to_string(),
+            });
+        }
+        let config = self.config_projection.snapshot();
+        let terminal_type = request
+            .terminal_type
+            .or_else(|| token.terminal_type.as_deref().map(terminal_type_from_str))
+            .unwrap_or(TerminalType::Cli);
+        let terminal_id = request
+            .terminal_id
+            .or(token.terminal_id.clone())
+            .unwrap_or_else(|| format!("{}-{}", terminal_type.as_str(), random_hex_id()));
+        let public_key_thumbprint = public_key_thumbprint(&config.relay_public_key);
+        let client = crate::config::DaemonConfig::record_paired_terminal(
+            terminal_id.clone(),
+            public_key_thumbprint.clone(),
+            request.alias.clone(),
+            now_ms,
+            terminal_type.as_str(),
+        )?;
+        let terminal = terminal_record(client);
+        Ok(LocalDaemonResponse::TerminalPairingLinkJoined {
+            terminal,
+            pairing: PairingJoinRecord {
+                intent: PairingInviteIntent::Client,
+                subject_id: terminal_id,
+                relay_url: token.relay_url,
+                target_daemon_id: token.target_daemon_id,
+                alias: request.alias,
+                public_key_thumbprint,
+                paired_at_ms: now_ms,
+            },
+        })
+    }
+
+    async fn execute_list_terminals_request(&self) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::TerminalsListed {
+            terminals: paired_terminal_records(),
+        })
+    }
+
     async fn execute_list_paired_clients_request(
         &self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -3287,11 +3642,12 @@ impl CommandRouter {
         request: RecordPairedClientRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let paired_at_ms = request.paired_at_ms.unwrap_or_else(current_unix_ms);
-        let client = crate::config::DaemonConfig::record_paired_client(
+        let client = crate::config::DaemonConfig::record_paired_terminal(
             request.client_id,
             request.public_key_thumbprint,
             request.alias,
             paired_at_ms,
+            request.terminal_type.unwrap_or(TerminalType::Cli).as_str(),
         )?;
         Ok(LocalDaemonResponse::PairedClientRecorded {
             client: paired_client_record(client),
@@ -3853,6 +4209,9 @@ impl CommandRouter {
             LocalDaemonRequest::DeleteCredentialSecret(request) => {
                 self.execute_delete_credential_secret_request(request).await
             }
+            LocalDaemonRequest::DeleteKernel(request) => {
+                self.execute_delete_kernel_request(request).await
+            }
             LocalDaemonRequest::ListRemoteMachines(_) => {
                 self.projected_remote_machines_response().await
             }
@@ -3924,6 +4283,15 @@ impl CommandRouter {
             LocalDaemonRequest::JoinPairingInvite(request) => {
                 self.execute_join_pairing_invite_request(request).await
             }
+            LocalDaemonRequest::CreateTerminalPairingLink(request) => {
+                self.execute_create_terminal_pairing_link_request(request)
+                    .await
+            }
+            LocalDaemonRequest::JoinTerminalPairingLink(request) => {
+                self.execute_join_terminal_pairing_link_request(request)
+                    .await
+            }
+            LocalDaemonRequest::ListTerminals(_) => self.execute_list_terminals_request().await,
             LocalDaemonRequest::ListPairedClients(_) => {
                 self.execute_list_paired_clients_request().await
             }
@@ -4487,6 +4855,19 @@ impl CommandRouter {
                     .remove_session_lane(session.id())
                     .await;
             }
+            LocalDaemonResponse::KernelDeleted {
+                deleted_sessions, ..
+            } => {
+                for session in deleted_sessions {
+                    self.agent_runtime.remove_session_state(session.id());
+                    self.agent_runtime
+                        .remove_agent_lanes(session.agents().iter().map(|agent| agent.id()))
+                        .await;
+                    self.workflow_runtime
+                        .remove_session_lane(session.id())
+                        .await;
+                }
+            }
             _ => {}
         }
     }
@@ -4567,6 +4948,7 @@ fn waiting_room_inventory_version(
     relay_status: &RelayStatus,
     remote_machines: &[crate::local::RemoteMachineRecord],
     remote_kernels: &[RelayKernelPresence],
+    terminals: &[TerminalRecord],
     launch_target: Option<&WaitingRoomLaunchTarget>,
 ) -> Result<String, DaemonError> {
     let payload = serde_json::to_vec(&serde_json::json!({
@@ -4574,6 +4956,7 @@ fn waiting_room_inventory_version(
         "relay_status": relay_status,
         "remote_machines": remote_machines,
         "remote_kernels": remote_kernels,
+        "terminals": terminals,
         "launch_target": launch_target,
     }))
     .map_err(|error| DaemonError::LocalTransport {
@@ -5143,12 +5526,40 @@ fn same_fs_path(left: &str, right: &str) -> bool {
 }
 
 fn paired_client_record(client: crate::config::PersistedClientPairing) -> PairedClientRecord {
+    let terminal_type = terminal_type_from_str(&client.terminal_type);
     PairedClientRecord {
         client_id: client.client_id,
         alias: client.alias,
+        terminal_type: Some(terminal_type),
         public_key_thumbprint: client.public_key_thumbprint,
         paired_at_ms: client.paired_at_ms,
         revoked: client.revoked,
+    }
+}
+
+fn paired_terminal_records() -> Vec<TerminalRecord> {
+    crate::config::DaemonConfig::client_pairing_entries()
+        .into_iter()
+        .map(terminal_record)
+        .collect()
+}
+
+fn terminal_record(client: crate::config::PersistedClientPairing) -> TerminalRecord {
+    TerminalRecord {
+        terminal_id: client.client_id,
+        terminal_type: terminal_type_from_str(&client.terminal_type),
+        alias: client.alias,
+        paired_at_ms: client.paired_at_ms,
+        revoked: client.revoked,
+    }
+}
+
+fn terminal_type_from_str(value: &str) -> TerminalType {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "web" | "web_terminal" | "web-terminal" => TerminalType::Web,
+        "ios" | "ios_terminal" | "ios-terminal" => TerminalType::Ios,
+        "android" | "android_terminal" | "android-terminal" => TerminalType::Android,
+        _ => TerminalType::Cli,
     }
 }
 
@@ -5242,23 +5653,38 @@ struct PairingInviteToken {
     issuer_machine_id: String,
     issued_at_ms: u64,
     expires_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pairing_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_id: Option<String>,
 }
 
 fn encode_pairing_invite_token(token: &PairingInviteToken) -> Result<String, DaemonError> {
+    encode_pairing_invite_token_with_prefix("arroba-invite-v1", token)
+}
+
+fn encode_terminal_pairing_link(token: &PairingInviteToken) -> Result<String, DaemonError> {
+    encode_pairing_invite_token_with_prefix("arroba-terminal-pair-v1", token)
+}
+
+fn encode_pairing_invite_token_with_prefix(
+    prefix: &str,
+    token: &PairingInviteToken,
+) -> Result<String, DaemonError> {
     let payload = serde_json::to_vec(token).map_err(|error| DaemonError::LocalTransport {
         operation: "encode pairing invite",
         message: error.to_string(),
     })?;
-    Ok(format!(
-        "arroba-invite-v1.{}",
-        URL_SAFE_NO_PAD.encode(payload)
-    ))
+    Ok(format!("{prefix}.{}", URL_SAFE_NO_PAD.encode(payload)))
 }
 
 fn decode_pairing_invite_token(token: &str) -> Result<PairingInviteToken, DaemonError> {
-    let payload = token
-        .trim()
+    let trimmed = token.trim();
+    let payload = trimmed
         .strip_prefix("arroba-invite-v1.")
+        .or_else(|| trimmed.strip_prefix("arroba-terminal-pair-v1."))
         .ok_or_else(|| DaemonError::LocalTransport {
             operation: "decode pairing invite",
             message: "pairing invite token has an unsupported format".to_string(),
@@ -5288,6 +5714,17 @@ fn random_hex_id() -> String {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn random_pairing_code() -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let mut bytes = [0u8; 8];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let value: String = bytes
+        .iter()
+        .map(|byte| ALPHABET[(*byte as usize) % ALPHABET.len()] as char)
+        .collect();
+    format!("{}-{}", &value[..4], &value[4..])
 }
 
 fn public_key_thumbprint(public_key: &str) -> String {
@@ -5954,6 +6391,12 @@ fn should_update_agent_runtime_projection_from_response(response: &LocalDaemonRe
 fn response_removed_session_ids(response: &LocalDaemonResponse) -> Vec<&str> {
     match response {
         LocalDaemonResponse::SessionDeleted { session } => vec![session.id()],
+        LocalDaemonResponse::KernelDeleted {
+            deleted_sessions, ..
+        } => deleted_sessions
+            .iter()
+            .map(|session| session.id())
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -5994,6 +6437,7 @@ struct CloudDevicePollResponse {
     profile: Option<CloudDeviceProfileResponse>,
     cloud_session_token: Option<String>,
     cloud_session_expires_at: Option<String>,
+    machine_credential: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -6171,7 +6615,12 @@ async fn issue_cloud_runtime_token(
     session_id: Option<String>,
 ) -> Result<CloudRuntimeTokenResponse, DaemonError> {
     let mut body = serde_json::Map::new();
-    if let Some(session_token) = profile.cloud_session_token.clone() {
+    if let Some(machine_credential) = profile.machine_credential.clone() {
+        body.insert(
+            "machineCredential".to_string(),
+            serde_json::Value::String(machine_credential),
+        );
+    } else if let Some(session_token) = profile.cloud_session_token.clone() {
         body.insert(
             "sessionToken".to_string(),
             serde_json::Value::String(session_token),
@@ -6192,6 +6641,10 @@ async fn issue_cloud_runtime_token(
     body.insert(
         "realmId".to_string(),
         serde_json::Value::String(profile.realm_id.clone()),
+    );
+    body.insert(
+        "ttlMs".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS)),
     );
     body.insert(
         "userId".to_string(),
@@ -6243,6 +6696,7 @@ fn cloud_profile_from_persisted(profile: &PersistedCloudRelayProfile) -> CloudRe
         client_alias: profile.client_alias.clone(),
         machine_id: profile.machine_id.clone(),
         machine_alias: profile.machine_alias.clone(),
+        machine_credential: profile.machine_credential.clone(),
         cloud_session_token: profile.cloud_session_token.clone(),
         cloud_session_expires_at_ms: profile.cloud_session_expires_at_ms,
         token_expires_at_ms: profile.token_expires_at_ms,
@@ -6367,6 +6821,8 @@ fn cloud_transport_error(error: ureq::Error) -> DaemonError {
             let body = response.into_string().unwrap_or_default();
             if body.is_empty() {
                 format!("cloud relay request failed with {status}")
+            } else if let Some(code) = cloud_api_error_code(&body) {
+                format!("cloud relay request failed with {status}: cloud_api_code={code}: {body}")
             } else {
                 format!("cloud relay request failed with {status}: {body}")
             }
@@ -6377,6 +6833,42 @@ fn cloud_transport_error(error: ureq::Error) -> DaemonError {
         operation: "cloud relay request",
         message,
     }
+}
+
+fn cloud_api_error_code(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|payload| {
+            payload
+                .get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(|code| code.as_str())
+                .map(str::to_string)
+        })
+}
+
+fn is_stale_cloud_link_error(error: &DaemonError) -> bool {
+    let message = match error {
+        DaemonError::LocalTransport { message, .. } => message.as_str(),
+        _ => return false,
+    };
+    [
+        "cloud_api_code=session_invalid",
+        "cloud_api_code=identity_revoked",
+        "cloud_api_code=realm_not_found",
+        "cloud_api_code=account_deleted",
+        "cloud_api_code=user_deleted",
+        "\"code\":\"session_invalid\"",
+        "\"code\":\"identity_revoked\"",
+        "\"code\":\"realm_not_found\"",
+        "\"code\":\"account_deleted\"",
+        "\"code\":\"user_deleted\"",
+        "invalid_session",
+        "cloud relay request failed with 401",
+        "cloud relay request failed with 403",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 #[cfg(test)]
@@ -6393,8 +6885,8 @@ mod tests {
         AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasSessionRequest,
         AttachToSessionRequest, CancelActivePromptRequest, CompletePromptRequest,
         CreateWorkflowEndpointRequest, CreateWorkflowRequest, CycleAgentFocusRequest,
-        DeleteSessionRequest, DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest,
-        FocusAgentRequest, GetDaemonHealthRequest, GetProviderAuthStatusRequest,
+        DeleteKernelRequest, DeleteSessionRequest, DestroyAgentRequest, DetachFromSessionRequest,
+        EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest, GetProviderAuthStatusRequest,
         GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderRunRequest,
         GetSessionHistoryRequest, GetSessionStateRequest, InvokeWorkflowEndpointRequest,
         LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
@@ -11025,6 +11517,75 @@ mod tests {
             LocalDaemonResponse::SessionsListed { sessions } => {
                 assert!(sessions.is_empty());
             }
+            _ => panic!("unexpected list response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_kernel_removes_current_kernel_sessions_from_projection() {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new(
+                "workspace-kernel-delete",
+                "worktree-kernel-delete",
+            ))
+            .expect("session should create");
+        let session_id = session.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_response = router
+            .dispatch(
+                KernelCommand::from_local_request(
+                    "cmd-list-before-kernel-delete",
+                    None,
+                    None,
+                    &list_request,
+                ),
+                list_request,
+            )
+            .await
+            .expect("list before kernel delete should resolve");
+        match list_response {
+            LocalDaemonResponse::SessionsListed { sessions } => {
+                assert_eq!(sessions.len(), 1);
+                assert_eq!(sessions[0].id(), session_id);
+            }
+            _ => panic!("unexpected list response"),
+        }
+
+        let delete_request = LocalDaemonRequest::DeleteKernel(DeleteKernelRequest);
+        let delete_response = router
+            .dispatch(
+                KernelCommand::from_local_request("cmd-delete-kernel", None, None, &delete_request),
+                delete_request,
+            )
+            .await
+            .expect("kernel delete should resolve");
+        match delete_response {
+            LocalDaemonResponse::KernelDeleted {
+                deleted_sessions, ..
+            } => assert_eq!(deleted_sessions.len(), 1),
+            _ => panic!("unexpected kernel delete response"),
+        }
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_response = router
+            .dispatch(
+                KernelCommand::from_local_request(
+                    "cmd-list-after-kernel-delete",
+                    None,
+                    None,
+                    &list_request,
+                ),
+                list_request,
+            )
+            .await
+            .expect("list after kernel delete should resolve");
+        match list_response {
+            LocalDaemonResponse::SessionsListed { sessions } => assert!(sessions.is_empty()),
             _ => panic!("unexpected list response"),
         }
     }

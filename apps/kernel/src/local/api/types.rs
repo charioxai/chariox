@@ -250,6 +250,26 @@ pub enum PairingInviteIntent {
     Machine,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalType {
+    Cli,
+    Web,
+    Ios,
+    Android,
+}
+
+impl TerminalType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Web => "web",
+            Self::Ios => "ios",
+            Self::Android => "android",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreatePairingInviteRequest {
     pub intent: PairingInviteIntent,
@@ -257,6 +277,29 @@ pub struct CreatePairingInviteRequest {
     pub alias: Option<String>,
     #[serde(default)]
     pub expires_in_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_type: Option<TerminalType>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateTerminalPairingLinkRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_type: Option<TerminalType>,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub expires_in_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JoinTerminalPairingLinkRequest {
+    pub pairing_link: String,
+    #[serde(default)]
+    pub terminal_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_type: Option<TerminalType>,
+    #[serde(default)]
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -299,11 +342,16 @@ pub struct PairingJoinRecord {
 pub struct ListPairedClientsRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListTerminalsRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordPairedClientRequest {
     pub client_id: String,
     pub public_key_thumbprint: String,
     #[serde(default)]
     pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_type: Option<TerminalType>,
     #[serde(default)]
     pub paired_at_ms: Option<u64>,
 }
@@ -318,9 +366,36 @@ pub struct PairedClientRecord {
     pub client_id: String,
     #[serde(default)]
     pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_type: Option<TerminalType>,
     pub public_key_thumbprint: String,
     pub paired_at_ms: u64,
     pub revoked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalRecord {
+    pub terminal_id: String,
+    pub terminal_type: TerminalType,
+    #[serde(default)]
+    pub alias: Option<String>,
+    pub paired_at_ms: u64,
+    pub revoked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalPairingLinkRecord {
+    pub terminal_id: String,
+    pub pairing_link: String,
+    pub pairing_code: String,
+    pub invite_id: String,
+    pub relay_url: String,
+    pub target_daemon_id: String,
+    #[serde(default)]
+    pub target_daemon_alias: Option<String>,
+    pub terminal_type: TerminalType,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -464,6 +539,8 @@ pub struct CloudRelayProfile {
     pub machine_id: Option<String>,
     #[serde(default)]
     pub machine_alias: Option<String>,
+    #[serde(default)]
+    pub machine_credential: Option<String>,
     #[serde(default)]
     pub cloud_session_token: Option<String>,
     #[serde(default)]
@@ -836,6 +913,9 @@ pub struct DeleteSessionRequest {
     pub session_ref: String,
     pub workspace_id: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteKernelRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunShellCapabilityRequest {
@@ -1371,6 +1451,9 @@ pub enum LocalDaemonRequest {
     RenameRemoteMachine(RenameRemoteMachineRequest),
     CreatePairingInvite(CreatePairingInviteRequest),
     JoinPairingInvite(JoinPairingInviteRequest),
+    CreateTerminalPairingLink(CreateTerminalPairingLinkRequest),
+    JoinTerminalPairingLink(JoinTerminalPairingLinkRequest),
+    ListTerminals(ListTerminalsRequest),
     ListPairedClients(ListPairedClientsRequest),
     RecordPairedClient(RecordPairedClientRequest),
     RevokePairedClient(RevokePairedClientRequest),
@@ -1401,6 +1484,7 @@ pub enum LocalDaemonRequest {
     StoreTransferredFile(StoreTransferredFileCapabilityRequest),
     EndSession(EndSessionRequest),
     DeleteSession(DeleteSessionRequest),
+    DeleteKernel(DeleteKernelRequest),
     AliasSession(AliasSessionRequest),
     SpawnAgent(SpawnAgentRequest),
     MoveAgentToRemote(MoveAgentToRemoteRequest),
@@ -1681,6 +1765,16 @@ pub enum LocalDaemonResponse {
     PairingInviteJoined {
         pairing: PairingJoinRecord,
     },
+    TerminalPairingLinkCreated {
+        pairing: TerminalPairingLinkRecord,
+    },
+    TerminalPairingLinkJoined {
+        terminal: TerminalRecord,
+        pairing: PairingJoinRecord,
+    },
+    TerminalsListed {
+        terminals: Vec<TerminalRecord>,
+    },
     PairedClientsListed {
         clients: Vec<PairedClientRecord>,
     },
@@ -1772,6 +1866,10 @@ pub enum LocalDaemonResponse {
     },
     SessionDeleted {
         session: RuntimeSession,
+    },
+    KernelDeleted {
+        kernel_id: String,
+        deleted_sessions: Vec<RuntimeSession>,
     },
     SessionAliased {
         session: RuntimeSession,
@@ -2006,5 +2104,7 @@ pub struct WaitingRoomInventorySnapshot {
     pub relay_status: RelayStatus,
     pub remote_machines: Vec<RemoteMachineRecord>,
     pub remote_kernels: Vec<RelayKernelPresence>,
+    #[serde(default)]
+    pub terminals: Vec<TerminalRecord>,
     pub launch_target: Option<WaitingRoomLaunchTarget>,
 }
