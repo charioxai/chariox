@@ -878,6 +878,81 @@ async function waitForHistoryText(client, requests, sessionId, agentId, needle, 
   throw new Error(`timed out waiting for history text ${needle}`)
 }
 
+async function waitForSession(client, requests, sessionId, timeoutMs = 20_000, pollMs = 500) {
+  const deadline = Date.now() + timeoutMs
+  let lastListed = null
+  while (Date.now() < deadline) {
+    const listed = unwrap(
+      await client.send(requests.listSessionsRequest()),
+      "SessionsListed",
+    )
+    lastListed = listed
+    const session = (listed.sessions ?? []).find((candidate) => candidate.id === sessionId)
+    if (session) return session
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for session ${sessionId}\n${JSON.stringify(lastListed, null, 2)}`)
+}
+
+async function waitForLocalSocket(socketPath, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      const socket = net.createConnection(socketPath)
+      await new Promise((resolve, reject) => {
+        socket.once("connect", resolve)
+        socket.once("error", reject)
+      })
+      socket.destroy()
+      return
+    } catch (error) {
+      lastError = error
+      await sleep(250)
+    }
+  }
+  throw new Error(`local automation socket did not become ready: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
+}
+
+function createAutomationClient(socketPath) {
+  const socket = net.createConnection(socketPath)
+  socket.setEncoding("utf8")
+  let nextId = 1
+  let buffer = ""
+  const pending = new Map()
+  socket.on("data", (chunk) => {
+    buffer += chunk
+    while (buffer.includes("\n")) {
+      const newline = buffer.indexOf("\n")
+      const line = buffer.slice(0, newline).trim()
+      buffer = buffer.slice(newline + 1)
+      if (!line) continue
+      const response = JSON.parse(line)
+      const deferred = pending.get(response.id)
+      if (!deferred) continue
+      pending.delete(response.id)
+      if (response.ok) deferred.resolve(response.data)
+      else deferred.reject(new Error(response.error ?? "automation command failed"))
+    }
+  })
+  socket.on("error", (error) => {
+    for (const deferred of pending.values()) deferred.reject(error)
+    pending.clear()
+  })
+  return {
+    send(action, fields = {}) {
+      const id = nextId++
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject })
+        socket.write(`${JSON.stringify({ id, action, ...fields })}\n`)
+      })
+    },
+    close() {
+      socket.destroy()
+    },
+  }
+}
+
 async function waitForRemoteSocket(socketPath, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs
   let lastError = null
@@ -932,12 +1007,16 @@ async function runHostedRemoteCliPairingAssertions({
   homeClient,
   verificationClient,
   workspace,
+  kernelUrl,
 }) {
   const remoteId = `${process.pid}-${Date.now()}`
+  const localAlias = `hosted-pairing-local-cli-${remoteId}`
   const remoteAlias = `hosted-pairing-cli-${remoteId}`
   const remoteWorkspace = `/tmp/arroba-hosted-pairing-cli-${remoteId}`
+  const localSocket = path.join(os.tmpdir(), `arroba-hosted-local-cli-${remoteId}.sock`)
   const remoteSocket = `/tmp/arroba-hosted-pairing-cli-${remoteId}.sock`
-  const marker = `HOSTED_ORPHAN_PAIRING_REAL_AGENT_OK_${remoteId.replace(/[^a-zA-Z0-9]/g, "_")}`
+  const localMarker = `HOSTED_PAIRING_LOCAL_CLI_OK_${remoteId.replace(/[^a-zA-Z0-9]/g, "_")}`
+  const remoteMarker = `HOSTED_PAIRING_REMOTE_CLI_OK_${remoteId.replace(/[^a-zA-Z0-9]/g, "_")}`
   const pairing = unwrap(
     await homeClient.send(requests.createTerminalPairingLinkRequest("cli", remoteAlias, 15 * 60 * 1000)),
     "TerminalPairingLinkCreated",
@@ -974,9 +1053,57 @@ async function runHostedRemoteCliPairingAssertions({
     ].join(" "),
   ].join("; ")
 
+  let localCli = null
+  let localAutomation = null
   let remoteCli = null
-  const eventLog = []
   try {
+    log("local-cli-pairing-start", {
+      alias: localAlias,
+      provider: remoteCliPairingProvider,
+      model: remoteCliPairingModel,
+    })
+    localCli = spawnProcess("script", [
+      "-q",
+      "/dev/null",
+      "env",
+      "ARROBA_TEST_TUI=1",
+      "bun",
+      path.join(cliRoot, "dist/index.js"),
+      "--kernel-url",
+      kernelUrl,
+      "--automation-socket",
+      localSocket,
+      "--create-session",
+      "--alias",
+      localAlias,
+      "--workspace",
+      workspace,
+      "--worktree",
+      workspace,
+      "--provider",
+      remoteCliPairingProvider,
+      "--model",
+      remoteCliPairingModel,
+      "--effort",
+      remoteCliPairingEffort,
+      "--client-id",
+      `hosted-local-pairing-cli-${remoteId}`,
+    ], {
+      cwd: repoRoot,
+      env: process.env,
+      name: "local-cli-pairing",
+    })
+    await waitForLocalSocket(localSocket)
+    localAutomation = createAutomationClient(localSocket)
+    await localAutomation.send("ping")
+    const localSnapshot = await localAutomation.send("wait_for", { screen: "agents", timeoutMs: 10_000 })
+    assert(localSnapshot.session?.id, "local TUI should create and attach to a session", localSnapshot)
+    assert(
+      localSnapshot.session?.focusedAgentId,
+      "local TUI should create a focused real-provider agent",
+      localSnapshot,
+    )
+
     log("remote-cli-pairing-start", {
       host: remoteCliHost,
       repo: remoteCliRepo,
@@ -997,12 +1124,12 @@ async function runHostedRemoteCliPairingAssertions({
     }
 
     await remoteAutomation(remoteSocket, "ping")
-    const snapshot = await remoteAutomation(remoteSocket, "wait_for", { screen: "agents", timeoutMs: 10_000 })
-    assert(snapshot.session?.id, "paired orphan CLI should attach to a session", snapshot)
+    const remoteSnapshot = await remoteAutomation(remoteSocket, "wait_for", { screen: "agents", timeoutMs: 10_000 })
+    assert(remoteSnapshot.session?.id, "paired orphan CLI should attach to a session", remoteSnapshot)
     assert(
-      snapshot.session?.focusedAgentId,
+      remoteSnapshot.session?.focusedAgentId,
       "paired orphan CLI should create a focused real-provider agent",
-      snapshot,
+      remoteSnapshot,
     )
 
     const terminals = unwrap(
@@ -1015,67 +1142,90 @@ async function runHostedRemoteCliPairingAssertions({
       { pairing, terminals },
     )
 
+    await waitForSession(homeClient, requests, localSnapshot.session.id)
+    await waitForSession(verificationClient, requests, localSnapshot.session.id)
+    await waitForSession(homeClient, requests, remoteSnapshot.session.id)
+    await waitForSession(verificationClient, requests, remoteSnapshot.session.id)
+
     const listed = unwrap(
       await verificationClient.send(requests.listSessionsRequest()),
       "SessionsListed",
     )
+    const localSession = listed.sessions?.find((session) => session.id === localSnapshot.session.id)
     const remoteSession = listed.sessions?.find((session) => session.alias === remoteAlias)
+    assert(localSession, "hosted relay client should list the session created by the local TUI", {
+      localAlias,
+      sessions: listed.sessions,
+    })
     assert(remoteSession, "home kernel should list the session created by the paired orphan CLI", {
       remoteAlias,
       sessions: listed.sessions,
     })
-    assert(remoteSession.id === snapshot.session.id, "paired CLI snapshot should match home kernel session", {
-      snapshotSession: snapshot.session,
+    assert(remoteSession.id === remoteSnapshot.session.id, "paired CLI snapshot should match home kernel session", {
+      snapshotSession: remoteSnapshot.session,
       remoteSession,
     })
 
-    const agents = unwrap(
+    const localAgents = unwrap(
+      await verificationClient.send(requests.listAgentsRequest(localSession.id)),
+      "AgentsListed",
+    ).agents ?? []
+    const localFocusedAgent = localAgents.find((agent) => agent.id === localSnapshot.session.focusedAgentId)
+    assert(
+      localFocusedAgent && localFocusedAgent.provider === remoteCliPairingProvider && localFocusedAgent.provider !== "dev-stub",
+      "local TUI should use the configured real provider, not dev-stub",
+      { localFocusedAgent, localAgents, expectedProvider: remoteCliPairingProvider },
+    )
+
+    const remoteAgents = unwrap(
       await verificationClient.send(requests.listAgentsRequest(remoteSession.id)),
       "AgentsListed",
     ).agents ?? []
-    const focusedAgent = agents.find((agent) => agent.id === snapshot.session.focusedAgentId)
+    const remoteFocusedAgent = remoteAgents.find((agent) => agent.id === remoteSnapshot.session.focusedAgentId)
     assert(
-      focusedAgent && focusedAgent.provider === remoteCliPairingProvider && focusedAgent.provider !== "dev-stub",
+      remoteFocusedAgent && remoteFocusedAgent.provider === remoteCliPairingProvider && remoteFocusedAgent.provider !== "dev-stub",
       "paired orphan CLI should use the configured real provider, not dev-stub",
-      { focusedAgent, agents, expectedProvider: remoteCliPairingProvider },
+      { remoteFocusedAgent, remoteAgents, expectedProvider: remoteCliPairingProvider },
     )
 
-    const attachment = unwrap(
-      await verificationClient.send(requests.attachToSessionRequest(remoteSession.id, `hosted-pairing-verify-${Date.now()}`)),
-      "SessionAttached",
-    ).attachment
-    verificationClient.onKernelEvent((event) => {
-      eventLog.push({ ...event, observed_at_ms: Date.now() })
+    await localAutomation.send("submit_prompt", {
+      prompt: `Reply with exactly ${localMarker} and nothing else.`,
     })
-    await verificationClient.subscribeToKernelEvents(remoteSession.id, attachment.id)
+    await Promise.all([
+      waitForHistoryText(homeClient, requests, localSession.id, localSnapshot.session.focusedAgentId, localMarker, pollTimeoutMs),
+      waitForHistoryText(verificationClient, requests, localSession.id, localSnapshot.session.focusedAgentId, localMarker, pollTimeoutMs),
+    ])
 
     await remoteAutomation(remoteSocket, "submit_prompt", {
-      prompt: `Reply with exactly ${marker} and nothing else.`,
+      prompt: `Reply with exactly ${remoteMarker} and nothing else.`,
       timeoutMs: pollTimeoutMs,
     })
-    await waitForCompletion(eventLog, pollTimeoutMs, 0)
-    await waitForHistoryText(
-      verificationClient,
-      requests,
-      remoteSession.id,
-      snapshot.session.focusedAgentId,
-      marker,
-      pollTimeoutMs,
-    )
+    await Promise.all([
+      waitForHistoryText(homeClient, requests, remoteSession.id, remoteSnapshot.session.focusedAgentId, remoteMarker, pollTimeoutMs),
+      waitForHistoryText(verificationClient, requests, remoteSession.id, remoteSnapshot.session.focusedAgentId, remoteMarker, pollTimeoutMs),
+    ])
 
+    await localAutomation.send("exit").catch(() => {})
     await remoteAutomation(remoteSocket, "exit").catch(() => {})
+    await verificationClient.send(requests.endSessionRequest(localSession.id)).catch(() => {})
     await verificationClient.send(requests.endSessionRequest(remoteSession.id)).catch(() => {})
     log("remote-cli-pairing-pass", {
       host: remoteCliHost,
-      sessionId: remoteSession.id,
-      alias: remoteAlias,
+      localSessionId: localSession.id,
+      remoteSessionId: remoteSession.id,
+      localAlias,
+      remoteAlias,
       terminalId: pairing.terminal_id,
       provider: remoteCliPairingProvider,
       model: remoteCliPairingModel,
-      marker,
+      localMarker,
+      remoteMarker,
     })
   } finally {
+    localAutomation?.close()
+    await terminateChild(localCli)
     await terminateChild(remoteCli)
+    await rm(localSocket, { force: true }).catch(() => {})
     await runSsh(`rm -f ${shellQuote(remoteSocket)}; rm -rf ${shellQuote(remoteWorkspace)}`).catch(() => {})
   }
 }
@@ -1613,6 +1763,7 @@ async function main() {
         homeClient: localClient,
         verificationClient: remoteClient,
         workspace,
+        kernelUrl,
       })
     }
 
