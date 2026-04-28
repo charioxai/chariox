@@ -11,7 +11,6 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use arroba_relay::protocol::{
     ClientTarget, EncryptedRelayPayload, RelayCallerIdentity, RelayEnvelope, RelayError,
-    RelayKernelPresence, RelayMachinePresence, RelayMetadataQuery,
 };
 
 use crate::app::DaemonApp;
@@ -33,7 +32,6 @@ pub struct RelayClientState {
     connected: bool,
     outgoing_tx: Option<mpsc::UnboundedSender<RelayEnvelope>>,
     pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
-    pending_metadata_requests: BTreeMap<String, oneshot::Sender<RelayEnvelope>>,
     next_peer_request_id: u64,
 }
 
@@ -49,7 +47,6 @@ impl Default for RelayClientState {
             connected: false,
             outgoing_tx: None,
             pending_peer_requests: BTreeMap::new(),
-            pending_metadata_requests: BTreeMap::new(),
             next_peer_request_id: 0,
         }
     }
@@ -60,7 +57,6 @@ const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const REMOTE_INVENTORY_RELAY_TIMEOUT_MS: u64 = 10_000;
 const REMOTE_INVENTORY_KERNEL_PROBE_TIMEOUT_MS: u64 = 5_000;
 static TEMPORARY_PEER_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
-static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, JoinHandle<()>>>>;
 
@@ -110,11 +106,15 @@ pub async fn run_daemon_relay_connector(
             );
         }
 
-        let (relay_url, heartbeat) = {
+        let (relay_url, relay_token, heartbeat) = {
             let config = router.relay_config_snapshot();
             match (config.relay_url.clone(), config.relay_token.clone()) {
-                (Some(relay_url), Some(_)) => {
-                    (relay_url, Duration::from_millis(config.relay_heartbeat_ms))
+                (Some(relay_url), Some(relay_token)) => {
+                    (
+                        relay_url,
+                        relay_token,
+                        Duration::from_millis(config.relay_heartbeat_ms),
+                    )
                 }
                 _ => {
                     set_disconnected(&state).await;
@@ -277,7 +277,7 @@ pub async fn run_daemon_relay_connector(
                             break;
                         }
                         _ = heartbeat_interval.tick() => {
-                            let still_configured = router.relay_is_configured_for_url(&relay_url);
+                            let still_configured = router.relay_is_configured_for(&relay_url, &relay_token);
                             if !still_configured {
                                 let _ = outgoing_tx.send(RelayEnvelope::Close {
                                     reason: "relay configuration changed".to_string(),
@@ -510,27 +510,7 @@ async fn handle_incoming_envelope(
                 },
             )?;
         }
-        RelayEnvelope::ClientMetadataResponse {
-            request_id,
-            machines,
-            kernels,
-            kernel,
-            error,
-        } => {
-            let sender = {
-                let mut guard = state.write().await;
-                guard.pending_metadata_requests.remove(&request_id)
-            };
-            if let Some(sender) = sender {
-                let _ = sender.send(RelayEnvelope::ClientMetadataResponse {
-                    request_id,
-                    machines,
-                    kernels,
-                    kernel,
-                    error,
-                });
-            }
-        }
+        RelayEnvelope::ClientMetadataResponse { .. } => {}
         RelayEnvelope::Close { reason } => {
             return Err(DaemonError::LocalTransport {
                 operation: "relay closed connection",
@@ -1882,14 +1862,11 @@ async fn set_connected(
 }
 
 async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
-    let (pending_peer, pending_metadata) = {
+    let pending_peer = {
         let mut guard = state.write().await;
         guard.connected = false;
         guard.outgoing_tx = None;
-        (
-            std::mem::take(&mut guard.pending_peer_requests),
-            std::mem::take(&mut guard.pending_metadata_requests),
-        )
+        std::mem::take(&mut guard.pending_peer_requests)
     };
     for (_, sender) in pending_peer {
         let _ = sender.send(RelayPeerResponseEnvelope {
@@ -1898,19 +1875,6 @@ async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
             error: Some(relay_error(
                 "relay_disconnected",
                 "relay connection closed before peer response arrived",
-                true,
-            )),
-        });
-    }
-    for (request_id, sender) in pending_metadata {
-        let _ = sender.send(RelayEnvelope::ClientMetadataResponse {
-            request_id,
-            machines: None,
-            kernels: None,
-            kernel: None,
-            error: Some(relay_error(
-                "relay_disconnected",
-                "relay connection closed before metadata response arrived",
                 true,
             )),
         });
@@ -1933,11 +1897,11 @@ async fn clear_remote_inventory_projection(app: &Arc<Mutex<DaemonApp>>) {
 
 fn spawn_remote_inventory_projection_refresh(
     app: Arc<Mutex<DaemonApp>>,
-    state: Arc<RwLock<RelayClientState>>,
+    _state: Arc<RwLock<RelayClientState>>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(error) =
-            refresh_remote_inventory_projection_for_app_with_relay_state(&app, &state).await
+            refresh_remote_inventory_projection_for_app_with_relay_state(&app).await
         {
             crate::logging::warn_with_fields(
                 "daemon.relay_client",
@@ -1950,136 +1914,8 @@ fn spawn_remote_inventory_projection_refresh(
     })
 }
 
-fn relay_metadata_error(operation: &'static str, message: impl Into<String>) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation,
-        message: message.into(),
-    }
-}
-
-async fn query_relay_metadata_via_connected_daemon(
-    state: &Arc<RwLock<RelayClientState>>,
-    auth_token: String,
-    query: RelayMetadataQuery,
-    timeout_ms: u64,
-) -> Result<RelayEnvelope, DaemonError> {
-    let request_id = format!(
-        "relay-meta-daemon-{}-{}",
-        std::process::id(),
-        RELAY_METADATA_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed) + 1
-    );
-    let (response_tx, response_rx) = oneshot::channel();
-    let outgoing_tx = {
-        let mut guard = state.write().await;
-        let outgoing_tx = guard.outgoing_tx.clone().ok_or_else(|| {
-            relay_metadata_error("relay metadata query", "relay is not connected")
-        })?;
-        guard
-            .pending_metadata_requests
-            .insert(request_id.clone(), response_tx);
-        outgoing_tx
-    };
-    if outgoing_tx
-        .send(RelayEnvelope::ClientMetadataRequest {
-            request_id: request_id.clone(),
-            auth_token,
-            query,
-        })
-        .is_err()
-    {
-        let mut guard = state.write().await;
-        guard.pending_metadata_requests.remove(&request_id);
-        return Err(relay_metadata_error(
-            "relay metadata query",
-            "relay connection is not writable",
-        ));
-    }
-    match timeout(Duration::from_millis(timeout_ms), response_rx).await {
-        Ok(Ok(response)) => Ok(response),
-        Ok(Err(_)) => Err(relay_metadata_error(
-            "relay metadata query",
-            "relay metadata response was cancelled",
-        )),
-        Err(_) => {
-            let mut guard = state.write().await;
-            guard.pending_metadata_requests.remove(&request_id);
-            Err(relay_metadata_error(
-                "relay metadata query",
-                format!("timed out after {timeout_ms}ms"),
-            ))
-        }
-    }
-}
-
-async fn list_live_machines_via_connected_daemon(
-    state: &Arc<RwLock<RelayClientState>>,
-    config: &crate::config::DaemonConfig,
-) -> Result<Vec<RelayMachinePresence>, DaemonError> {
-    let auth_token = config.relay_token.clone().ok_or_else(|| {
-        relay_metadata_error("relay metadata query", "relay_token is not configured")
-    })?;
-    match query_relay_metadata_via_connected_daemon(
-        state,
-        auth_token,
-        RelayMetadataQuery::ListLiveMachines,
-        config.relay_request_timeout_ms,
-    )
-    .await?
-    {
-        RelayEnvelope::ClientMetadataResponse {
-            machines: Some(machines),
-            error: None,
-            ..
-        } => Ok(machines),
-        RelayEnvelope::ClientMetadataResponse {
-            error: Some(error), ..
-        } => Err(relay_metadata_error("list_live_machines", error.message)),
-        other => Err(relay_metadata_error(
-            "list_live_machines",
-            format!("unexpected relay response: {other:?}"),
-        )),
-    }
-}
-
-async fn list_live_kernels_for_machine_via_connected_daemon(
-    state: &Arc<RwLock<RelayClientState>>,
-    config: &crate::config::DaemonConfig,
-    machine_ref: &str,
-) -> Result<Vec<RelayKernelPresence>, DaemonError> {
-    let auth_token = config.relay_token.clone().ok_or_else(|| {
-        relay_metadata_error("relay metadata query", "relay_token is not configured")
-    })?;
-    match query_relay_metadata_via_connected_daemon(
-        state,
-        auth_token,
-        RelayMetadataQuery::ListLiveKernelsForMachine {
-            machine_ref: machine_ref.to_string(),
-        },
-        config.relay_request_timeout_ms,
-    )
-    .await?
-    {
-        RelayEnvelope::ClientMetadataResponse {
-            kernels: Some(kernels),
-            error: None,
-            ..
-        } => Ok(kernels),
-        RelayEnvelope::ClientMetadataResponse {
-            error: Some(error), ..
-        } => Err(relay_metadata_error(
-            "list_live_kernels_for_machine",
-            error.message,
-        )),
-        other => Err(relay_metadata_error(
-            "list_live_kernels_for_machine",
-            format!("unexpected relay response: {other:?}"),
-        )),
-    }
-}
-
 pub(crate) async fn refresh_remote_inventory_projection_for_app_with_relay_state(
     app: &Arc<Mutex<DaemonApp>>,
-    state: &Arc<RwLock<RelayClientState>>,
 ) -> Result<(), DaemonError> {
     let (mut config, projection) = {
         let app = app.lock().await;
@@ -2096,7 +1932,7 @@ pub(crate) async fn refresh_remote_inventory_projection_for_app_with_relay_state
         .relay_request_timeout_ms
         .min(REMOTE_INVENTORY_RELAY_TIMEOUT_MS);
 
-    let live_machines = list_live_machines_via_connected_daemon(state, &config).await?;
+    let live_machines = relay_discovery::list_live_machines(&config).await?;
     let mut remote_machines = crate::local::provider_requests::remote_machine_records(
         live_machines,
         &config.host_machine_id,
@@ -2111,9 +1947,8 @@ pub(crate) async fn refresh_remote_inventory_projection_for_app_with_relay_state
         .iter()
         .filter(|machine| machine.online && machine.kernel_count > 0)
     {
-        let kernels =
-            list_live_kernels_for_machine_via_connected_daemon(state, &config, &machine.machine_id)
-                .await?;
+        let kernels = relay_discovery::list_live_kernels_for_machine(&config, &machine.machine_id)
+            .await?;
         remote_kernels
             .extend(validate_live_relay_kernels(&config, &known_kernel_ids, kernels).await);
     }

@@ -734,9 +734,10 @@ impl CommandRouter {
         app.relay_registration()
     }
 
-    pub(crate) fn relay_is_configured_for_url(&self, relay_url: &str) -> bool {
+    pub(crate) fn relay_is_configured_for(&self, relay_url: &str, relay_token: &str) -> bool {
         let config = self.config_projection.snapshot();
-        config.relay_url.as_deref() == Some(relay_url) && config.relay_token.is_some()
+        config.relay_url.as_deref() == Some(relay_url)
+            && config.relay_token.as_deref() == Some(relay_token)
     }
 
     pub(crate) async fn ensure_relay_subscription_attachment(
@@ -2215,7 +2216,6 @@ impl CommandRouter {
         }
         if let Err(error) = refresh_remote_inventory_projection_for_app_with_relay_state(
             &self.app,
-            &self.relay_state,
         )
         .await
         {
