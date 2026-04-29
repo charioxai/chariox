@@ -186,16 +186,6 @@ impl KernelRuntimeOwnedState {
                     prompt.prompt(),
                     prompt.attachments(),
                 );
-                if let Err(error) = self.acquire_provider_prompt_claim(
-                    &session_id,
-                    provider_run_id,
-                    &target_agent_id,
-                    Some(prompt.source_attachment_id()),
-                ) {
-                    let _ = self.cancel_active_prompt_only(&session_id, &target_agent_id);
-                    let _ = self.clear_prompt_activity(provider_run_id);
-                    return Err(error);
-                }
                 dispatch = Some(crate::app::KernelPromptDispatch {
                     session_id: session_id.clone(),
                     provider_run_id: provider_run_id.to_string(),
@@ -340,13 +330,6 @@ impl KernelRuntimeOwnedState {
         if provider_run.state() != crate::provider::ProviderRunState::Running {
             return Ok(None);
         }
-        self.acquire_provider_prompt_claim(
-            session_id,
-            &provider_run_id,
-            agent_id,
-            Some(next_queued_prompt.source_attachment_id()),
-        )?;
-
         let completed = self
             .prompt_state_owner
             .complete_active_prompt_only(&session, agent_id)
@@ -469,12 +452,6 @@ impl KernelRuntimeOwnedState {
                 let provider_run =
                     self.ensure_provider_run_in_session(session_id, provider_run_id)?;
                 if provider_run.state() == crate::provider::ProviderRunState::Running {
-                    self.acquire_provider_prompt_claim(
-                        session_id,
-                        provider_run_id,
-                        agent_id,
-                        Some(next_prompt.source_attachment_id()),
-                    )?;
                     self.prompt_state_owner.activate_next_queued_prompt(
                         &self.session_store.get_session(session_id)?,
                         agent_id,
@@ -1129,35 +1106,6 @@ impl KernelRuntimeOwnedState {
                         .unwrap_or(false)
             })
             .unwrap_or(false)
-    }
-
-    pub(super) fn acquire_provider_prompt_claim(
-        &self,
-        session_id: &str,
-        provider_run_id: &str,
-        agent_id: &str,
-        attachment_id: Option<&str>,
-    ) -> Result<(), DaemonError> {
-        if self.prompt_workspace_claims.contains(provider_run_id) {
-            return Ok(());
-        }
-        let session = self.session_store.get_session(session_id)?;
-        let workspace_id = session.workspace_id().to_string();
-        let worktree_id = self
-            .agent_store
-            .get_agent(agent_id)
-            .ok()
-            .and_then(|agent| agent.worktree_id().map(str::to_string))
-            .unwrap_or_else(|| session.worktree_id().to_string());
-        let claim = self.workspace_coordinator.acquire_provider_prompt_claim(
-            workspace_id,
-            worktree_id,
-            session_id,
-            attachment_id.map(str::to_string),
-        )?;
-        self.prompt_workspace_claims
-            .insert(provider_run_id.to_string(), claim);
-        Ok(())
     }
 
     pub(super) fn acquire_workflow_node_workspace_claim(

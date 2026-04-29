@@ -186,7 +186,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### M4.5 prompt ownership hard-center update
 
-- Moved the single-agent slow-structured local prompt submit path onto owned `CompatibilityRuntimeState` stores, including user history append, prompt-owner submit/mirror mutation, queued notice emission, prompt echo, provider prompt claim acquisition, and dispatch preparation without waiting on the compatibility app mutex.
+- Moved the single-agent slow-structured local prompt submit path onto owned `CompatibilityRuntimeState` stores, including user history append, prompt-owner submit/mirror mutation, queued notice emission, prompt echo, and dispatch preparation without waiting on the compatibility app mutex.
 - Added owned queued prompt advancement for the same single-agent slow-structured path, including expected queue-front activation, provider claim acquisition, structured submit enqueue, prompt activity tracking, and session/agent-runtime projection refresh.
 - Kept multi-agent structured prompt scheduling, PTY prompt delivery, provider launch-on-submit, remote prompt submit, workflow-owned prompt progression, and broad provider dispatch semantics on the existing compatibility/provider/workflow paths until points 4 and 5 own those side effects.
 - Verified the slice with `cargo test` in `apps/kernel`: 338 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
@@ -286,7 +286,7 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added transport health projection counters for kernel websocket pressure: active connections/subscriptions, incoming requests, emitted events, replay gaps, inbound overload rejections, outgoing queue overflows, and slow-consumer closes are now exposed through `GetDaemonHealth`.
 - Added a workspace coordination health baseline: active worktree claims and same-workspace worktree collisions are now reported from the warmed session projection through `GetDaemonHealth`.
 - Added initial `WorkspaceCoordinator` enforcement for explicit file-writing capabilities. `EditFile` and `StoreTransferredFile` now acquire scoped worktree write claims, reject overlapping same-workspace/worktree writes with a retryable workspace-claim conflict, publish active operation claims through daemon health, and release claims on operation completion.
-- Added provider prompt lifecycle worktree claims. Active local provider prompts now acquire provider-prompt operation claims before dispatch, reject cross-session same-workspace/worktree prompt conflicts, publish those claims through daemon health, and release them through the existing prompt cleanup path on completion, cancellation, dispatch failure, and session cleanup.
+- Removed provider prompt lifecycle worktree claims. Active local provider prompts no longer acquire whole-worktree claims, so independent sessions can dispatch prompts in the same workspace/worktree; explicit write capabilities and workflow node dispatch remain claim-coordinated.
 - Promoted workspace claims into the workflow scheduler. Claims now expose `read`/`write` mode metadata, workflow node dispatch acquires an exclusive `workflow_node_dispatch` write claim before provider submission, blocked nodes move to `BlockedOnWorkspaceClaim`, and claim release retries blocked workflow nodes instead of failing temporary contention.
 - Clarified the claim strategy after review: current claims should remain a coarse safety/scheduler layer while M4.5 finishes actor/projection ownership. Deeper I/O coordination, including file-level claims, port claims, harness sandboxing, coordinator-owned patch application, and automatic patch rebase loops, is intentionally deferred to the final coordination slice.
 - Removed the duplicate `AgentRuntimePromptStateStore` shadow after review. `AgentRuntimeProjectionStore` is now the single warm prompt-state read model for active-owner routing, queue-front preview, daemon health, and projection-first reads while `PromptStateOwner` is the mutation authority and compatibility session state remains the mirror.
@@ -692,7 +692,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### M4.5 prompt dispatch and terminal cleanup update
 
-- Kept provider-prompt worktree claim admission synchronous, so cross-session same-worktree prompt conflicts still fail before `PromptSubmitted`.
+- Removed provider-prompt worktree claim admission from prompt submit, so cross-session same-worktree prompts are no longer rejected before `PromptSubmitted`.
 - Moved local provider prompt PTY writes and provider actor enqueue work into the spawned provider-run operation dispatch after owner-backed prompt mutation, reducing work done inline by the per-agent mailbox response path.
 - Added session-runtime terminal cleanup on session end/delete so terminal input, pending output, notices, completions, and terminal backlog health do not retain stale records for removed sessions.
 - Added CLI request helpers for `CompletePrompt` and `AckWorkflowTurn` so deterministic live drills can use the public kernel API once the non-I/O runtime slices are complete.
@@ -755,7 +755,7 @@ Chronological notes to preserve execution context between contributors/agents.
 ### M4.5 compatibility deletion update
 
 - Started point 7 as deletion, not quarantine: removed the test-only no-owned `CompatibilityRuntimeState::new` constructor and moved the remaining actor/executor regressions onto owned runtime-state construction so the old generic fallback can no longer be instantiated by tests.
-- Tightened the owned workflow claim lifecycle by blocking entry-node dispatch on workspace-claim conflicts, releasing workflow-node claims on completion/cancellation/validation-stop, and retrying blocked workflow work after either provider-prompt or workflow-node claim release.
+- Tightened the owned workflow claim lifecycle by blocking entry-node dispatch on workspace-claim conflicts, releasing workflow-node claims on completion/cancellation/validation-stop, and retrying blocked workflow work after workflow-node claim release.
 - Verified the deletion slice with the full daemon lib suite plus runtime, WebSocket, and relay transport integration suites.
 
 ### M4.5 runtime fallback deletion closure

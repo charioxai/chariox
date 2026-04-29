@@ -233,12 +233,6 @@ impl KernelRuntimeOwnedState {
                 operation: "advance queued prompt",
             });
         }
-        self.acquire_provider_prompt_claim(
-            session_id,
-            provider_run_id,
-            agent_id,
-            Some(next_prompt.source_attachment_id()),
-        )?;
         let started_next = self
             .prompt_state_owner
             .activate_next_queued_prompt(&session, agent_id, Some(next_prompt.id()))?

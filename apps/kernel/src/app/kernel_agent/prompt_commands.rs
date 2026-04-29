@@ -335,19 +335,6 @@ impl<'a> KernelAgentService<'a> {
                     prompt.prompt(),
                     prompt.attachments(),
                 );
-                if let Err(error) = self.acquire_provider_prompt_claim(
-                    &submitted.admission.session_id,
-                    provider_run_id,
-                    &submitted.admission.target_agent_id,
-                    prompt.source_attachment_id(),
-                ) {
-                    self.cancel_active_after_prompt_start_failure(
-                        &submitted.admission.session_id,
-                        &submitted.admission.target_agent_id,
-                        provider_run_id,
-                    );
-                    return Err(error);
-                }
                 dispatch = Some(KernelPromptDispatch {
                     session_id: submitted.admission.session_id.clone(),
                     provider_run_id: provider_run_id.to_string(),
@@ -695,21 +682,6 @@ impl<'a> KernelAgentService<'a> {
         );
     }
 
-    pub(crate) fn acquire_provider_prompt_claim(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-        agent_id: &str,
-        attachment_id: &str,
-    ) -> Result<(), DaemonError> {
-        self.app.acquire_prompt_workspace_claim(
-            session_id,
-            provider_run_id,
-            agent_id,
-            Some(attachment_id),
-        )
-    }
-
     pub(crate) fn cancel_active_after_prompt_start_failure(
         &mut self,
         session_id: &str,
@@ -781,25 +753,6 @@ impl<'a> KernelAgentService<'a> {
                     return Ok(None);
                 }
             };
-            if let Err(error) = self.acquire_provider_prompt_claim(
-                session_id,
-                &provider_run_id,
-                &target_agent_id,
-                peeked.source_attachment_id(),
-            ) {
-                self.app.record_notice(
-                    session_id,
-                    Some(&provider_run_id),
-                    self.app.attachments.list_session_attachment_ids(session_id),
-                    format!(
-                        "Deferred queued prompt `{}` because worktree coordination rejected provider dispatch: {}",
-                        peeked.id(),
-                        error
-                    ),
-                );
-                return Ok(None);
-            }
-
             let (_session, next_candidate) = self.activate_next_queued_prompt_for_mirror(
                 session_id,
                 &target_agent_id,

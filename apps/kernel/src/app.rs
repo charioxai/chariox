@@ -786,35 +786,6 @@ impl DaemonApp {
         self.workspace_coordinator.clone()
     }
 
-    pub(crate) fn acquire_prompt_workspace_claim(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-        agent_id: &str,
-        attachment_id: Option<&str>,
-    ) -> Result<(), DaemonError> {
-        if self.prompt_workspace_claims.contains(provider_run_id) {
-            return Ok(());
-        }
-        let session = self.sessions.get_session(session_id)?;
-        let workspace_id = session.workspace_id().to_string();
-        let worktree_id = self
-            .agents
-            .get_agent(agent_id)
-            .ok()
-            .and_then(|agent| agent.worktree_id().map(str::to_string))
-            .unwrap_or_else(|| session.worktree_id().to_string());
-        let claim = self.workspace_coordinator.acquire_provider_prompt_claim(
-            workspace_id,
-            worktree_id,
-            session_id,
-            attachment_id.map(str::to_string),
-        )?;
-        self.prompt_workspace_claims
-            .insert(provider_run_id.to_string(), claim);
-        Ok(())
-    }
-
     pub(crate) fn acquire_workflow_node_workspace_claim(
         &mut self,
         session_id: &str,

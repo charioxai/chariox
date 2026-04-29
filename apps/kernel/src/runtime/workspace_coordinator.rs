@@ -76,7 +76,6 @@ impl WorkspaceCoordinator {
             attachment_id,
             operation,
             WorkspaceClaimMode::Read,
-            WorkspaceClaimConflictPolicy::Exclusive,
         )
     }
 
@@ -95,25 +94,6 @@ impl WorkspaceCoordinator {
             attachment_id,
             operation,
             WorkspaceClaimMode::Write,
-            WorkspaceClaimConflictPolicy::Exclusive,
-        )
-    }
-
-    pub(crate) fn acquire_provider_prompt_claim(
-        &self,
-        workspace_id: impl Into<String>,
-        worktree_id: impl Into<String>,
-        session_id: impl Into<String>,
-        attachment_id: Option<String>,
-    ) -> Result<WorkspaceClaimGuard, DaemonError> {
-        self.acquire_claim(
-            workspace_id,
-            worktree_id,
-            session_id,
-            attachment_id,
-            "provider_prompt",
-            WorkspaceClaimMode::Write,
-            WorkspaceClaimConflictPolicy::AllowSameSessionProviderPrompts,
         )
     }
 
@@ -125,7 +105,6 @@ impl WorkspaceCoordinator {
         attachment_id: Option<String>,
         operation: &'static str,
         mode: WorkspaceClaimMode,
-        conflict_policy: WorkspaceClaimConflictPolicy,
     ) -> Result<WorkspaceClaimGuard, DaemonError> {
         let workspace_id = workspace_id.into();
         let worktree_id = normalize_worktree_id(worktree_id.into());
@@ -137,7 +116,7 @@ impl WorkspaceCoordinator {
         if let Some(conflict) = state.claims.values().find(|claim| {
             claim.workspace_id == workspace_id
                 && claim.worktree_id == worktree_id
-                && conflict_policy.conflicts_with(claim, &session_id, operation, mode)
+                && claims_conflict(claim, mode)
         }) {
             return Err(DaemonError::WorkspaceClaimConflict {
                 workspace_id,
@@ -199,32 +178,11 @@ impl WorkspaceCoordinator {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum WorkspaceClaimConflictPolicy {
-    Exclusive,
-    AllowSameSessionProviderPrompts,
-}
-
-impl WorkspaceClaimConflictPolicy {
-    fn conflicts_with(
-        self,
-        existing: &WorkspaceOperationClaimSnapshot,
-        requested_session_id: &str,
-        requested_operation: &str,
-        requested_mode: WorkspaceClaimMode,
-    ) -> bool {
-        if existing.mode == WorkspaceClaimMode::Read && requested_mode == WorkspaceClaimMode::Read {
-            return false;
-        }
-        match self {
-            Self::Exclusive => true,
-            Self::AllowSameSessionProviderPrompts => {
-                !(existing.session_id == requested_session_id
-                    && existing.operation == "provider_prompt"
-                    && requested_operation == "provider_prompt")
-            }
-        }
-    }
+fn claims_conflict(
+    existing: &WorkspaceOperationClaimSnapshot,
+    requested_mode: WorkspaceClaimMode,
+) -> bool {
+    !(existing.mode == WorkspaceClaimMode::Read && requested_mode == WorkspaceClaimMode::Read)
 }
 
 fn normalize_worktree_id(worktree_id: String) -> String {
@@ -287,37 +245,6 @@ mod tests {
         }
 
         assert!(coordinator.active_claims().is_empty());
-    }
-
-    #[test]
-    fn provider_prompt_claims_allow_same_session_but_reject_cross_session() {
-        let coordinator = WorkspaceCoordinator::default();
-        let _claim = coordinator
-            .acquire_provider_prompt_claim(
-                "workspace",
-                "worktree",
-                "session-1",
-                Some("attachment-1".to_string()),
-            )
-            .expect("first prompt claim should acquire");
-        let _same_session_claim = coordinator
-            .acquire_provider_prompt_claim(
-                "workspace",
-                "worktree",
-                "session-1",
-                Some("attachment-2".to_string()),
-            )
-            .expect("same-session prompt claim should acquire");
-
-        let conflict = coordinator
-            .acquire_provider_prompt_claim(
-                "workspace",
-                "worktree",
-                "session-2",
-                Some("attachment-3".to_string()),
-            )
-            .expect_err("cross-session prompt claim should conflict");
-        assert!(conflict.to_string().contains("workspace claim conflict"));
     }
 
     #[test]

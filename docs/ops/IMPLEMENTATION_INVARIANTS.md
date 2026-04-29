@@ -22,7 +22,7 @@ This checklist is the merge gate for M4.5 runtime slices and later coordination/
 ## Cleanup
 
 - Any session close/delete path must clean up provider runs, terminal buffers, prompt workspace claims, workflow lanes, agent lanes, and warmed projections.
-- Any prompt terminal path, including completion, cancellation, provider dispatch failure, idle settlement, and session cleanup, must release provider prompt workspace claims.
+- Any workflow prompt terminal path, including completion, cancellation, provider dispatch failure, idle settlement, and session cleanup, must release workflow-node workspace claims.
 - Provider runtime cleanup must preserve tombstone/generation checks so slow provider I/O cannot restore stale runtime state.
 - Workflow blocked-on-claim retries must be triggered only after the relevant claim releases, and terminal workflow states must not keep retry registrations alive.
 
