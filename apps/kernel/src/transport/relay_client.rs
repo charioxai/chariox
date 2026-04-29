@@ -16,12 +16,15 @@ use arroba_relay::protocol::{
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
+use crate::provider::RuntimeProviderRun;
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+use crate::runtime::projection::SessionSnapshotProjection;
 use crate::runtime::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
 use crate::runtime_transport::{
     event_is_relevant_to_attachment, event_session_id, KernelEvent, WatchResult,
     RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS,
 };
+use crate::session::RuntimeSession;
 use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{RelayPeerEvent, RelayPeerRequest, RelayPeerResponse};
@@ -109,13 +112,11 @@ pub async fn run_daemon_relay_connector(
         let (relay_url, relay_token, heartbeat) = {
             let config = router.relay_config_snapshot();
             match (config.relay_url.clone(), config.relay_token.clone()) {
-                (Some(relay_url), Some(relay_token)) => {
-                    (
-                        relay_url,
-                        relay_token,
-                        Duration::from_millis(config.relay_heartbeat_ms),
-                    )
-                }
+                (Some(relay_url), Some(relay_token)) => (
+                    relay_url,
+                    relay_token,
+                    Duration::from_millis(config.relay_heartbeat_ms),
+                ),
                 _ => {
                     set_disconnected(&state).await;
                     let wait = sleep(Duration::from_secs(1));
@@ -230,6 +231,7 @@ pub async fn run_daemon_relay_connector(
                                 Some(Ok(Message::Text(payload))) => {
                                     if handle_incoming_envelope(
                                         &router,
+                                        &app,
                                         &command_sequence,
                                         &state,
                                         &outgoing_tx,
@@ -347,6 +349,7 @@ pub async fn run_daemon_relay_connector(
 
 async fn handle_incoming_envelope(
     router: &Arc<CommandRouter>,
+    app: &Arc<Mutex<DaemonApp>>,
     command_sequence: &Arc<AtomicU64>,
     state: &Arc<RwLock<RelayClientState>>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
@@ -460,6 +463,7 @@ async fn handle_incoming_envelope(
             replay_recent_relay_events(
                 event_runtime,
                 router,
+                app,
                 outgoing_tx,
                 &relay_subscription_id,
                 &client_public_key,
@@ -1622,6 +1626,7 @@ async fn run_relay_subscription_loop(
 ) {
     let mut previous_snapshot = None;
     let mut tick: u64 = 0;
+    let event_stream_id = relay_subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
         let watch_result = router
@@ -1647,6 +1652,7 @@ async fn run_relay_subscription_loop(
                         &subscription_id,
                         &client_public_key,
                         &event_runtime,
+                        &event_stream_id,
                         KernelEvent::TerminalOutput { records },
                     )
                     .await
@@ -1661,6 +1667,7 @@ async fn run_relay_subscription_loop(
                         &subscription_id,
                         &client_public_key,
                         &event_runtime,
+                        &event_stream_id,
                         KernelEvent::RuntimeNotices { notices },
                     )
                     .await
@@ -1675,6 +1682,7 @@ async fn run_relay_subscription_loop(
                         &subscription_id,
                         &client_public_key,
                         &event_runtime,
+                        &event_stream_id,
                         KernelEvent::AssistantMessageCompleted {
                             session_id: completion.session_id,
                             provider_run_id: completion.provider_run_id,
@@ -1698,6 +1706,7 @@ async fn run_relay_subscription_loop(
                         &subscription_id,
                         &client_public_key,
                         &event_runtime,
+                        &event_stream_id,
                         KernelEvent::SessionSnapshot {
                             session: Box::new(snapshot.0),
                             provider_run: Box::new(snapshot.1),
@@ -1716,6 +1725,7 @@ async fn run_relay_subscription_loop(
                         &subscription_id,
                         &client_public_key,
                         &event_runtime,
+                        &event_stream_id,
                         KernelEvent::Heartbeat {
                             session_id: session_id.clone(),
                         },
@@ -1733,6 +1743,7 @@ async fn run_relay_subscription_loop(
                     &subscription_id,
                     &client_public_key,
                     &event_runtime,
+                    &event_stream_id,
                     KernelEvent::SessionUnavailable {
                         session_id: session_id.clone(),
                         message,
@@ -1754,6 +1765,7 @@ async fn emit_relay_event(
     subscription_id: &str,
     client_public_key: &str,
     event_runtime: &Arc<RelayEventRuntime>,
+    event_stream_id: &str,
     event: KernelEvent,
 ) -> Result<(), DaemonError> {
     let daemon_private_key = router.relay_private_key();
@@ -1764,9 +1776,11 @@ async fn emit_relay_event(
     let encrypted_event =
         relay_crypto::encrypt_payload_for_peer(&daemon_private_key, client_public_key, &plaintext)?;
     let event_id = event_runtime.event_counter.fetch_add(1, Ordering::Relaxed) + 1;
-    if let Some(session_id) = event_session_id(&event) {
+    if event_session_id(&event).is_some() {
         let mut recent_events = event_runtime.recent_events.lock().await;
-        let entry = recent_events.entry(session_id.to_string()).or_default();
+        let entry = recent_events
+            .entry(event_stream_id.to_string())
+            .or_default();
         entry.push_back(PersistedRelayEvent {
             event_id,
             event: event.clone(),
@@ -1778,9 +1792,14 @@ async fn emit_relay_event(
     send_relay_event_frame(outgoing_tx, subscription_id, event_id, encrypted_event)
 }
 
+fn relay_subscription_event_stream_id(session_id: &str, attachment_id: &str) -> String {
+    format!("session:{session_id}:attachment:{attachment_id}")
+}
+
 async fn replay_recent_relay_events(
     event_runtime: &Arc<RelayEventRuntime>,
     router: &Arc<CommandRouter>,
+    app: &Arc<Mutex<DaemonApp>>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     subscription_id: &str,
     client_public_key: &str,
@@ -1791,12 +1810,49 @@ async fn replay_recent_relay_events(
     let Some(cursor) = resume_from_event_id else {
         return Ok(());
     };
+    let event_stream_id = relay_subscription_event_stream_id(session_id, attachment_id);
     let recent_events = event_runtime.recent_events.lock().await;
-    let events = recent_events
-        .get(session_id)
+    let retained = recent_events.get(&event_stream_id);
+    let first_retained_event_id = retained
+        .and_then(|events| events.front())
+        .map(|event| event.event_id);
+    let latest_event_id = retained
+        .and_then(|events| events.back())
+        .map(|event| event.event_id);
+    let events = retained
         .map(|events| events.iter().cloned().collect::<Vec<_>>())
         .unwrap_or_default();
     drop(recent_events);
+    if events.is_empty() || first_retained_event_id.is_some_and(|first| cursor < first) {
+        emit_relay_event(
+            router,
+            outgoing_tx,
+            subscription_id,
+            client_public_key,
+            event_runtime,
+            &event_stream_id,
+            KernelEvent::ReplayGap {
+                session_id: session_id.to_string(),
+                requested_from_event_id: cursor,
+                first_retained_event_id,
+                latest_event_id,
+                message: "Replay cursor is outside the retained relay event window; refresh the session projection.".to_string(),
+            },
+        )
+        .await?;
+        emit_relay_replay_gap_snapshot(
+            app,
+            router,
+            outgoing_tx,
+            subscription_id,
+            client_public_key,
+            event_runtime,
+            session_id,
+            attachment_id,
+        )
+        .await?;
+        return Ok(());
+    }
     for persisted in events {
         if persisted.event_id <= cursor {
             continue;
@@ -1828,12 +1884,66 @@ async fn replay_recent_relay_events(
         subscription_id,
         client_public_key,
         event_runtime,
+        &event_stream_id,
         KernelEvent::TransportResumed {
             session_id: session_id.to_string(),
             resumed_from_event_id: Some(cursor),
         },
     )
     .await
+}
+
+async fn emit_relay_replay_gap_snapshot(
+    app: &Arc<Mutex<DaemonApp>>,
+    router: &Arc<CommandRouter>,
+    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    subscription_id: &str,
+    client_public_key: &str,
+    event_runtime: &Arc<RelayEventRuntime>,
+    session_id: &str,
+    attachment_id: &str,
+) -> Result<(), DaemonError> {
+    let event_stream_id = relay_subscription_event_stream_id(session_id, attachment_id);
+    let snapshot = {
+        let mut app = app.lock().await;
+        build_relay_session_snapshot(&mut app, session_id)
+    };
+    match snapshot {
+        Ok((session, provider_run)) => {
+            emit_relay_event(
+                router,
+                outgoing_tx,
+                subscription_id,
+                client_public_key,
+                event_runtime,
+                &event_stream_id,
+                KernelEvent::SessionSnapshot {
+                    session: Box::new(session),
+                    provider_run: Box::new(provider_run),
+                },
+            )
+            .await?;
+        }
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "failed to build replay gap session snapshot",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn build_relay_session_snapshot(
+    app: &mut DaemonApp,
+    session_id: &str,
+) -> Result<(RuntimeSession, Option<RuntimeProviderRun>), DaemonError> {
+    let projection = SessionSnapshotProjection::from_daemon_app(app, session_id, 0)?;
+    Ok((projection.session, projection.provider_run))
 }
 
 fn send_relay_event_frame(
@@ -1900,8 +2010,7 @@ fn spawn_remote_inventory_projection_refresh(
     _state: Arc<RwLock<RelayClientState>>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(error) =
-            refresh_remote_inventory_projection_for_app_with_relay_state(&app).await
+        if let Err(error) = refresh_remote_inventory_projection_for_app_with_relay_state(&app).await
         {
             crate::logging::warn_with_fields(
                 "daemon.relay_client",
@@ -1947,8 +2056,8 @@ pub(crate) async fn refresh_remote_inventory_projection_for_app_with_relay_state
         .iter()
         .filter(|machine| machine.online && machine.kernel_count > 0)
     {
-        let kernels = relay_discovery::list_live_kernels_for_machine(&config, &machine.machine_id)
-            .await?;
+        let kernels =
+            relay_discovery::list_live_kernels_for_machine(&config, &machine.machine_id).await?;
         remote_kernels
             .extend(validate_live_relay_kernels(&config, &known_kernel_ids, kernels).await);
     }
@@ -3829,6 +3938,87 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn relay_subscription_emits_replay_gap_and_snapshot_for_stale_cursor() {
+        let config = DaemonConfig::for_tests();
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
+        ));
+        let created_session_id = {
+            let mut app = app.lock().await;
+            create_test_session(&mut app, "workspace-relay-test", "worktree-relay-test")
+        };
+        let attachment_id = {
+            let mut app = app.lock().await;
+            attach_test_client(
+                &mut app,
+                &created_session_id,
+                "relay-client",
+                ClientCapabilityLevel::MessageTransport,
+            )
+        };
+        let provider_runtime_lanes = {
+            let app = app.lock().await;
+            app.provider_run_operation_lanes()
+        };
+        let router = Arc::new(CommandRouter::with_interactive_capacity_and_provider_lanes(
+            Arc::clone(&app),
+            INTERACTIVE_COMMAND_QUEUE_LIMIT,
+            provider_runtime_lanes,
+        ));
+        let event_runtime = Arc::new(RelayEventRuntime::default());
+        event_runtime.event_counter.store(10, Ordering::Relaxed);
+        {
+            let mut recent = event_runtime.recent_events.lock().await;
+            recent.insert(
+                relay_subscription_event_stream_id(&created_session_id, &attachment_id),
+                VecDeque::from([PersistedRelayEvent {
+                    event_id: 10,
+                    event: KernelEvent::Heartbeat {
+                        session_id: created_session_id.clone(),
+                    },
+                }]),
+            );
+        }
+
+        let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel();
+        let subscription_private_key = relay_crypto::generate_private_key_base64();
+        let subscription_public_key =
+            relay_crypto::public_key_from_private_key_base64(&subscription_private_key)
+                .expect("subscription public key should derive");
+
+        replay_recent_relay_events(
+            &event_runtime,
+            &router,
+            &app,
+            &outgoing_tx,
+            "subscription-1",
+            &subscription_public_key,
+            &created_session_id,
+            &attachment_id,
+            Some(1),
+        )
+        .await
+        .expect("stale replay should emit recovery events");
+
+        let gap =
+            decrypt_relay_event_from_channel(&mut outgoing_rx, &subscription_private_key).await;
+        assert_eq!(gap.0, 11);
+        assert_eq!(gap.1["event"], serde_json::json!("replay_gap"));
+        assert_eq!(gap.1["requested_from_event_id"], serde_json::json!(1));
+        assert_eq!(gap.1["first_retained_event_id"], serde_json::json!(10));
+        assert_eq!(gap.1["latest_event_id"], serde_json::json!(10));
+
+        let snapshot =
+            decrypt_relay_event_from_channel(&mut outgoing_rx, &subscription_private_key).await;
+        assert_eq!(snapshot.0, 12);
+        assert_eq!(snapshot.1["event"], serde_json::json!("session_snapshot"));
+        assert_eq!(
+            snapshot.1["session"]["id"],
+            serde_json::json!(created_session_id)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn interactive_session_requests_are_handled_through_relay() {
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
@@ -4352,6 +4542,34 @@ mod tests {
             if envelope.1["event"] == serde_json::json!(expected_event) {
                 return envelope;
             }
+        }
+    }
+
+    async fn decrypt_relay_event_from_channel(
+        outgoing_rx: &mut mpsc::UnboundedReceiver<RelayEnvelope>,
+        client_private_key: &str,
+    ) -> (u64, serde_json::Value) {
+        match outgoing_rx
+            .recv()
+            .await
+            .expect("relay event should be emitted")
+        {
+            RelayEnvelope::DaemonEvent {
+                event_id,
+                encrypted_event,
+                ..
+            } => {
+                let decrypted = relay_crypto::decrypt_payload_for_private_key(
+                    client_private_key,
+                    &encrypted_event,
+                )
+                .expect("event should decrypt");
+                (
+                    event_id,
+                    serde_json::from_slice(&decrypted.plaintext).expect("event should deserialize"),
+                )
+            }
+            other => panic!("unexpected relay envelope: {other:?}"),
         }
     }
 

@@ -173,6 +173,8 @@ fn dev_stub_pty_args(model: &str) -> Vec<String> {
             1843,
         )),
         "semantic-url-renderer-stub" => Some(dev_stub_semantic_renderer_script()),
+        "slow-first-output-drill" => Some(dev_stub_slow_first_output_script()),
+        "large-output-drill" => Some(dev_stub_large_output_script()),
         _ => None,
     }
     .unwrap_or_else(|| "cat".to_string());
@@ -182,7 +184,11 @@ fn dev_stub_pty_args(model: &str) -> Vec<String> {
 fn is_dev_stub_workflow_drill_model(model: &str) -> bool {
     matches!(
         model,
-        "workflow-drill-node-1" | "workflow-drill-node-2" | "semantic-url-renderer-stub"
+        "workflow-drill-node-1"
+            | "workflow-drill-node-2"
+            | "semantic-url-renderer-stub"
+            | "slow-first-output-drill"
+            | "large-output-drill"
     )
 }
 
@@ -206,6 +212,35 @@ fn dev_stub_semantic_renderer_script() -> String {
     format!(
         "while true; do sleep 2; printf '%s\\n%s\\n%s\\n' '```json' '{}' '```'; done",
         payload
+    )
+}
+
+fn dev_stub_slow_first_output_script() -> String {
+    let delay_ms = std::env::var("ARROBA_DEV_STUB_FIRST_OUTPUT_DELAY_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(35_000)
+        .min(300_000);
+    let delay_seconds = delay_ms as f64 / 1000.0;
+    format!(
+        "stty -echo 2>/dev/null || true; while IFS= read -r _line; do sleep {delay_seconds}; printf 'slow-first-output-drill complete\\n'; done"
+    )
+}
+
+fn dev_stub_large_output_script() -> String {
+    let line_count = std::env::var("ARROBA_DEV_STUB_LARGE_OUTPUT_LINES")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(1_000)
+        .min(100_000);
+    let line_bytes = std::env::var("ARROBA_DEV_STUB_LARGE_OUTPUT_LINE_BYTES")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(128)
+        .clamp(32, 4096);
+    let payload_bytes = line_bytes.saturating_sub(31);
+    format!(
+        "stty -echo 2>/dev/null || true; while IFS= read -r _line; do i=1; while [ \"$i\" -le {line_count} ]; do printf 'large-output-drill %06d ' \"$i\"; printf '%*s' {payload_bytes} '' | tr ' ' x; printf '\\n'; i=$((i + 1)); done; done"
     )
 }
 

@@ -838,6 +838,8 @@ async fn run_subscription_loop(
     let mut previous_relay_status: Option<RelayStatus> = None;
     let mut previous_remote_machines: Option<Vec<RemoteMachineRecord>> = None;
     let mut tick: u64 = 0;
+    let event_stream_id =
+        subscription_event_stream_id(&subscription.session_id, &subscription.attachment_id);
 
     loop {
         let watch_result = {
@@ -865,6 +867,7 @@ async fn run_subscription_loop(
                         &close_tx,
                         &close_requested,
                         KernelEvent::TerminalOutput { records },
+                        Some(&event_stream_id),
                         Some(&subscription.session_id),
                         Some(&subscription.attachment_id),
                     )
@@ -879,6 +882,7 @@ async fn run_subscription_loop(
                         &close_tx,
                         &close_requested,
                         KernelEvent::RuntimeNotices { notices },
+                        Some(&event_stream_id),
                         Some(&subscription.session_id),
                         Some(&subscription.attachment_id),
                     )
@@ -900,6 +904,7 @@ async fn run_subscription_loop(
                             message_id: completion.message_id,
                             completed_at_ms: completion.completed_at_ms,
                         },
+                        Some(&event_stream_id),
                         Some(&subscription.session_id),
                         Some(&subscription.attachment_id),
                     )
@@ -919,6 +924,7 @@ async fn run_subscription_loop(
                             session: Box::new(snapshot.0),
                             provider_run: Box::new(snapshot.1),
                         },
+                        Some(&event_stream_id),
                         Some(&subscription.session_id),
                         Some(&subscription.attachment_id),
                     )
@@ -936,6 +942,7 @@ async fn run_subscription_loop(
                         KernelEvent::Heartbeat {
                             session_id: subscription.session_id.clone(),
                         },
+                        Some(&event_stream_id),
                         Some(&subscription.session_id),
                         Some(&subscription.attachment_id),
                     )
@@ -954,6 +961,7 @@ async fn run_subscription_loop(
                                     &close_tx,
                                     &close_requested,
                                     KernelEvent::RelayStatusChanged { status },
+                                    Some(&event_stream_id),
                                     Some(&subscription.session_id),
                                     Some(&subscription.attachment_id),
                                 )
@@ -987,6 +995,7 @@ async fn run_subscription_loop(
                                     &close_tx,
                                     &close_requested,
                                     KernelEvent::RemoteMachinesChanged { machines },
+                                    Some(&event_stream_id),
                                     Some(&subscription.session_id),
                                     Some(&subscription.attachment_id),
                                 )
@@ -1020,6 +1029,7 @@ async fn run_subscription_loop(
                         session_id: subscription.session_id.clone(),
                         message,
                     },
+                    Some(&event_stream_id),
                     Some(&subscription.session_id),
                     Some(&subscription.attachment_id),
                 )
@@ -1164,10 +1174,13 @@ async fn emit_kernel_event(
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: &Arc<AtomicBool>,
     event: KernelEvent,
+    event_stream_id: Option<&str>,
     session_id: Option<&str>,
     attachment_id: Option<&str>,
 ) -> bool {
-    let stream_id = event_stream_id(&event, session_id);
+    let stream_id = event_stream_id
+        .map(str::to_string)
+        .or_else(|| event_stream_id_for_event(&event, session_id));
     let event_id = if let Some(stream_id) = stream_id.as_deref() {
         runtime
             .event_log
@@ -1216,7 +1229,7 @@ async fn replay_recent_events(
     let Some(cursor) = resume_from_event_id else {
         return ReplaySubscriptionResult::NoCursor;
     };
-    let stream_id = session_stream_id(session_id);
+    let stream_id = subscription_event_stream_id(session_id, attachment_id);
     let replay = runtime.event_log.replay_after(&stream_id, cursor).await;
 
     let events = match replay {
@@ -1235,6 +1248,7 @@ async fn replay_recent_events(
                     latest_event_id: gap.latest_event_id,
                     message: "Replay cursor is outside the retained kernel event window; refresh the session projection.".to_string(),
                 },
+                Some(&stream_id),
                 Some(session_id),
                 Some(attachment_id),
             )
@@ -1302,6 +1316,7 @@ async fn emit_replay_gap_snapshot(
     session_id: &str,
     attachment_id: &str,
 ) {
+    let event_stream_id = subscription_event_stream_id(session_id, attachment_id);
     let snapshot = {
         let mut app = app.lock().await;
         build_session_snapshot(&mut app, session_id)
@@ -1317,6 +1332,7 @@ async fn emit_replay_gap_snapshot(
                     session: Box::new(session),
                     provider_run: Box::new(provider_run),
                 },
+                Some(&event_stream_id),
                 Some(session_id),
                 Some(attachment_id),
             )
@@ -1478,7 +1494,10 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
     }
 }
 
-fn event_stream_id(event: &KernelEvent, fallback_session_id: Option<&str>) -> Option<String> {
+fn event_stream_id_for_event(
+    event: &KernelEvent,
+    fallback_session_id: Option<&str>,
+) -> Option<String> {
     event_session_id(event)
         .or(fallback_session_id)
         .map(session_stream_id)
@@ -1487,6 +1506,10 @@ fn event_stream_id(event: &KernelEvent, fallback_session_id: Option<&str>) -> Op
 
 fn session_stream_id(session_id: &str) -> String {
     format!("session:{session_id}")
+}
+
+fn subscription_event_stream_id(session_id: &str, attachment_id: &str) -> String {
+    format!("session:{session_id}:attachment:{attachment_id}")
 }
 
 pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id: &str) -> bool {

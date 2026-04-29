@@ -1069,7 +1069,7 @@ async fn handle_connection(
     }
     .await;
 
-    let (disconnect_errors, disconnect_peer_errors) =
+    let (disconnect_errors, disconnect_peer_errors, disconnect_subscription_senders) =
         remove_peer(&registry, peer_addr, registered_daemon_key.as_ref()).await;
     for (sender, request_id) in disconnect_errors {
         let _ = send_envelope(
@@ -1099,6 +1099,10 @@ async fn handle_connection(
                 )),
             },
         );
+    }
+    for sender in disconnect_subscription_senders {
+        send_close(&sender, "target daemon disconnected from relay".to_string());
+        let _ = sender.try_send(Message::Close(None));
     }
     drop(outgoing_tx);
     writer_task.abort();
@@ -1175,6 +1179,7 @@ async fn remove_peer(
 ) -> (
     Vec<(RelaySender, String)>,
     Vec<(RelaySender, String, String)>,
+    Vec<RelaySender>,
 ) {
     let mut guard = registry.write().await;
     let removed_peer = guard.peers.remove(&peer_addr);
@@ -1198,18 +1203,33 @@ async fn remove_peer(
                     == Some(daemon_key.daemon_id.as_str())
         });
         if !removed_current_daemon {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), Vec::new());
         }
         guard.daemons.remove(daemon_key);
-        let daemon_subscription_ids = guard
+        let daemon_subscriptions = guard
             .subscriptions
             .iter()
             .filter(|(_, active)| &active.daemon_key == daemon_key)
-            .map(|(subscription_id, _)| subscription_id.clone())
+            .map(|(subscription_id, active)| (subscription_id.clone(), active.client_addr))
             .collect::<Vec<_>>();
-        for subscription_id in daemon_subscription_ids {
+        let mut subscription_client_addrs = daemon_subscriptions
+            .iter()
+            .map(|(_, client_addr)| *client_addr)
+            .collect::<Vec<_>>();
+        subscription_client_addrs.sort();
+        subscription_client_addrs.dedup();
+        for (subscription_id, _) in daemon_subscriptions {
             guard.subscriptions.remove(&subscription_id);
         }
+        let subscription_client_senders = subscription_client_addrs
+            .into_iter()
+            .filter_map(|client_addr| {
+                guard
+                    .peers
+                    .get(&client_addr)
+                    .map(|peer| peer.sender.clone())
+            })
+            .collect::<Vec<_>>();
         let doomed_request_ids = guard
             .pending_requests
             .iter()
@@ -1250,9 +1270,9 @@ async fn remove_peer(
                 }
             }
         }
-        return (client_errors, daemon_errors);
+        return (client_errors, daemon_errors, subscription_client_senders);
     }
-    (Vec::new(), Vec::new())
+    (Vec::new(), Vec::new(), Vec::new())
 }
 
 fn verify_relay_token(
@@ -1773,6 +1793,7 @@ mod tests {
             ))
             .await
             .expect("register frame should send");
+        sleep(Duration::from_millis(50)).await;
 
         let (mut client_socket, _) = connect_async(&url)
             .await
