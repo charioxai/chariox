@@ -375,6 +375,19 @@ export type SessionHistoryEntry = {
   text: string
 }
 
+export type PromptInputHistoryEntry = {
+  sequence: number
+  timestamp_ms: number
+  session_id: string
+  source_attachment_id?: string | null
+  kind: "prompt" | "command"
+  text: string
+}
+
+export type PromptInputHistoryPage = {
+  entries: PromptInputHistoryEntry[]
+}
+
 export type TranscriptEntry = {
   id: number
   role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "notice" | "turn_toggle"

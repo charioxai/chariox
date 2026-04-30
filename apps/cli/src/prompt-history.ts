@@ -1,4 +1,4 @@
-import type { SessionHistoryPageEntry } from "./cli-types.js"
+import type { PromptInputHistoryEntry, SessionHistoryPageEntry } from "./cli-types.js"
 
 export type PromptHistoryDirection = "previous" | "next"
 
@@ -115,6 +115,16 @@ export function extractPromptHistoryEntries(
       continue
     }
     prompts = pushPromptHistoryEntry(prompts, entry.entry.text)
+  }
+  return prompts
+}
+
+export function extractPromptInputHistoryEntries(
+  historyEntries: readonly PromptInputHistoryEntry[],
+): string[] {
+  let prompts: string[] = []
+  for (const entry of [...historyEntries].sort((left, right) => left.sequence - right.sequence)) {
+    prompts = pushPromptHistoryEntry(prompts, entry.text)
   }
   return prompts
 }

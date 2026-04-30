@@ -845,6 +845,38 @@ pub struct GetSessionHistoryRequest {
     pub before_entry_char_offset: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptInputHistoryEntryKind {
+    Prompt,
+    Command,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptInputHistoryEntry {
+    pub sequence: u64,
+    pub timestamp_ms: u64,
+    pub session_id: String,
+    pub source_attachment_id: Option<String>,
+    pub kind: PromptInputHistoryEntryKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetPromptInputHistoryRequest {
+    pub session_id: String,
+    pub after_sequence: Option<u64>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordPromptInputHistoryRequest {
+    pub session_id: String,
+    pub attachment_id: Option<String>,
+    pub kind: PromptInputHistoryEntryKind,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct QueryHistoryRequest {
     pub session_id: Option<String>,
@@ -1463,6 +1495,8 @@ pub enum LocalDaemonRequest {
     ListProviderProcesses(ListProviderProcessesRequest),
     TeardownProviderProcesses(TeardownProviderProcessesRequest),
     GetSessionHistory(GetSessionHistoryRequest),
+    GetPromptInputHistory(GetPromptInputHistoryRequest),
+    RecordPromptInputHistory(RecordPromptInputHistoryRequest),
     QueryHistory(QueryHistoryRequest),
     SearchHistory(SearchHistoryRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
@@ -1802,6 +1836,12 @@ pub enum LocalDaemonResponse {
     SessionHistory {
         entries: Vec<SessionHistoryPageEntry>,
         next_cursor: Option<SessionHistoryCursor>,
+    },
+    PromptInputHistory {
+        entries: Vec<PromptInputHistoryEntry>,
+    },
+    PromptInputHistoryRecorded {
+        entry: PromptInputHistoryEntry,
     },
     HistoryEvents {
         events: Vec<HistoryEvent>,

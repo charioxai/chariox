@@ -371,6 +371,18 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
             }
             metadata
         }
+        LocalDaemonRequest::GetPromptInputHistory(request) => {
+            LocalRequestMetadata::new("prompt_input_history.get", Background)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::RecordPromptInputHistory(request) => {
+            let mut metadata = LocalRequestMetadata::new("prompt_input_history.record", Normal)
+                .session(&request.session_id);
+            if let Some(attachment_id) = request.attachment_id.as_deref() {
+                metadata = metadata.attachment(attachment_id);
+            }
+            metadata
+        }
         LocalDaemonRequest::GetDaemonHealth(_) => {
             LocalRequestMetadata::new("daemon.health.get", Normal)
         }
@@ -469,6 +481,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::TeardownProviderProcesses(_) => "provider_process.teardown",
         LocalDaemonRequest::QueryHistory(_) => "history.query",
         LocalDaemonRequest::SearchHistory(_) => "history.search",
+        LocalDaemonRequest::GetPromptInputHistory(_) => "prompt_input_history.get",
+        LocalDaemonRequest::RecordPromptInputHistory(_) => "prompt_input_history.record",
         LocalDaemonRequest::PollRuntimeNotices(_) => "runtime_notice.poll",
         LocalDaemonRequest::RespondToInteraction(_) => "interaction.respond",
         LocalDaemonRequest::CompletePrompt(_) => "prompt.complete",

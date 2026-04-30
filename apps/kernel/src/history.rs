@@ -41,6 +41,7 @@ pub enum HistoryEventKind {
     GitWorktreeDirty,
     GitWorktreeClean,
     GitPushDetected,
+    PromptInput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1289,6 +1290,7 @@ fn history_event_kind_key(kind: HistoryEventKind) -> &'static str {
         HistoryEventKind::GitWorktreeDirty => "git_worktree_dirty",
         HistoryEventKind::GitWorktreeClean => "git_worktree_clean",
         HistoryEventKind::GitPushDetected => "git_push_detected",
+        HistoryEventKind::PromptInput => "prompt_input",
     }
 }
 

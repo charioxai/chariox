@@ -596,6 +596,21 @@ export type SessionHistoryEntry = {
   text: string
 }
 
+export type PromptInputHistoryEntryKind = "prompt" | "command"
+
+export type PromptInputHistoryEntry = {
+  sequence: number
+  timestamp_ms: number
+  session_id: string
+  source_attachment_id?: string | null
+  kind: PromptInputHistoryEntryKind
+  text: string
+}
+
+export type PromptInputHistoryPage = {
+  entries: PromptInputHistoryEntry[]
+}
+
 export type HistoryEventKind =
   | "user_prompt"
   | "provider_output"
@@ -619,6 +634,7 @@ export type HistoryEventKind =
   | "git_worktree_dirty"
   | "git_worktree_clean"
   | "git_push_detected"
+  | "prompt_input"
 
 export type HistoryEventRole = "user" | "assistant" | "tool" | "system"
 

@@ -1293,6 +1293,36 @@ export function getSessionHistoryRequest(
   }
 }
 
+export function getPromptInputHistoryRequest(
+  sessionId: string,
+  afterSequence?: number | null,
+  limit?: number | null,
+) {
+  return {
+    GetPromptInputHistory: {
+      session_id: sessionId,
+      after_sequence: afterSequence ?? null,
+      limit: limit ?? null,
+    },
+  }
+}
+
+export function recordPromptInputHistoryRequest(
+  sessionId: string,
+  attachmentId: string | null,
+  kind: "prompt" | "command",
+  text: string,
+) {
+  return {
+    RecordPromptInputHistory: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      kind,
+      text,
+    },
+  }
+}
+
 export function queryHistoryRequest(query: HistoryQueryPayload) {
   return {
     QueryHistory: {

@@ -34,6 +34,7 @@ import type {
   ProviderLoginStart,
   ProviderLogoutResult,
   PromptAttachmentPart,
+  PromptInputHistoryPage,
   PromptSubmittedPayload,
   ProviderProcessInfo,
   RuntimeAttachment,
@@ -111,6 +112,7 @@ import {
   getProviderCatalogRequest,
   getProviderCommandCatalogsRequest,
   getProviderRunRequest,
+  getPromptInputHistoryRequest,
   getSkillRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
@@ -143,6 +145,7 @@ import {
   pollCloudRelayLoginRequest,
   pollRuntimeNoticesRequest,
   respondToInteractionRequest,
+  recordPromptInputHistoryRequest,
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
   revokeAgentCapabilityRequest,
@@ -219,6 +222,7 @@ import {
 } from "./response-panes.js"
 import {
   extractPromptHistoryEntries,
+  extractPromptInputHistoryEntries,
   isProgrammaticPromptContentEcho,
   navigatePromptHistory,
   promptHistoryDirectionForKey,
@@ -711,6 +715,7 @@ async function main() {
         tryGetProviderRun,
         catchUpAttachedSession,
         getSessionHistory,
+        getPromptInputHistory,
         resolveVisibleAgentId: (session, nextPreferences) => {
           const focusedAgentId = session.focused_agent_id ?? session.agents[0]?.id ?? null
           return selectResponsePaneAgents(
@@ -1043,6 +1048,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let mountedTranscriptAgentId = initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id ?? null : null
   let hydratedPromptHistorySessionId: string | null | undefined
   let promptHistoryHydrationGeneration = 0
+  let promptInputHistoryLatestSequence = 0
+  let promptInputHistoryRefreshInFlight: Promise<void> | null = null
+  let pendingPromptInputHistoryRefresh: ReturnType<typeof startTimeout> | undefined
   let promptTextSnapshot = initialPromptDraft
   let promptTextMuting = false
   let promptDropPending = false
@@ -2707,17 +2715,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     sessionId: string,
     generation: number,
   ) => {
-    const pagePromptHistory: string[][] = []
-    let cursor: SessionHistoryCursor | null = null
-
-    for (;;) {
-      const historyPage = await getSessionHistory(client, sessionId, cursor, null)
-      pagePromptHistory.push(extractPromptHistoryEntries(historyPage.entries))
-      if (historyPage.next_cursor === null) {
-        break
-      }
-      cursor = historyPage.next_cursor
-    }
+    const promptInputHistory = await getPromptInputHistory(client, sessionId)
 
     if (generation !== promptHistoryHydrationGeneration) {
       return
@@ -2726,12 +2724,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
 
-    let nextEntries: string[] = []
-    for (const pageEntries of pagePromptHistory.reverse()) {
-      for (const prompt of pageEntries) {
-        nextEntries = pushPromptHistoryEntry(nextEntries, prompt)
-      }
-    }
+    const nextEntries = extractPromptInputHistoryEntries(promptInputHistory.entries)
+    promptInputHistoryLatestSequence = maxPromptInputHistorySequence(promptInputHistory.entries)
 
     setPromptHistoryEntries(nextEntries)
     setPromptHistoryIndex(null)
@@ -2740,6 +2734,80 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       promptHistory: nextEntries,
     }))
     await saveSessionPromptState(sessionId, { promptHistory: nextEntries })
+  }
+  const appendSharedPromptInputHistory = (
+    sessionId: string,
+    entries: readonly PromptInputHistoryPage["entries"][number][],
+  ) => {
+    if (attachmentState()?.session_id !== sessionId || entries.length === 0) {
+      return
+    }
+    const currentEntries = promptHistoryEntries()
+    let nextEntries = currentEntries
+    for (const entry of [...entries].sort((left, right) => left.sequence - right.sequence)) {
+      promptInputHistoryLatestSequence = Math.max(promptInputHistoryLatestSequence, entry.sequence)
+      nextEntries = pushPromptHistoryEntry(nextEntries, entry.text)
+    }
+    if (promptHistoryEntryListsEqual(nextEntries, currentEntries)) {
+      return
+    }
+    setPromptHistoryEntries(nextEntries)
+    void persistSessionPromptState(sessionId, {
+      promptHistory: nextEntries,
+    }).catch((error) => {
+      appLogger?.warn("failed to persist shared prompt input history", {
+        session_id: sessionId,
+        error: formatError(error),
+      })
+    })
+  }
+  const appendPromptEchoToSharedHistory = (text: string) => {
+    const sessionId = attachmentState()?.session_id
+    if (!sessionId) {
+      return
+    }
+    const currentEntries = promptHistoryEntries()
+    const nextPromptHistoryEntries = pushPromptHistoryEntry(currentEntries, text)
+    if (promptHistoryEntryListsEqual(nextPromptHistoryEntries, currentEntries)) {
+      return
+    }
+    setPromptHistoryEntries(nextPromptHistoryEntries)
+    void persistSessionPromptState(sessionId, {
+      promptHistory: nextPromptHistoryEntries,
+    }).catch((error) => {
+      appLogger?.warn("failed to persist prompt echo history", {
+        session_id: sessionId,
+        error: formatError(error),
+      })
+    })
+  }
+  const refreshSharedPromptInputHistory = async (sessionId: string) => {
+    if (promptInputHistoryRefreshInFlight) {
+      return promptInputHistoryRefreshInFlight
+    }
+    promptInputHistoryRefreshInFlight = getPromptInputHistory(client, sessionId, promptInputHistoryLatestSequence, 500)
+      .then((history) => {
+        appendSharedPromptInputHistory(sessionId, history.entries)
+      })
+      .finally(() => {
+        promptInputHistoryRefreshInFlight = null
+      })
+    return promptInputHistoryRefreshInFlight
+  }
+  const scheduleSharedPromptInputHistoryRefresh = () => {
+    const sessionId = attachmentState()?.session_id
+    if (!sessionId || pendingPromptInputHistoryRefresh) {
+      return
+    }
+    pendingPromptInputHistoryRefresh = startTimeout(() => {
+      pendingPromptInputHistoryRefresh = undefined
+      void refreshSharedPromptInputHistory(sessionId).catch((error) => {
+        appLogger?.warn("failed to refresh shared prompt input history", {
+          session_id: sessionId,
+          error: formatError(error),
+        })
+      })
+    }, 1500)
   }
   const clearPendingPromptDraftPersist = () => {
     if (pendingPromptDraftPersist) {
@@ -2815,6 +2883,26 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         error: formatError(error),
       })
     })
+    const attachmentId = attachmentState()?.id ?? null
+    if (rawPrompt.trimStart().startsWith("/")) {
+      void client.send<Record<string, unknown>>(recordPromptInputHistoryRequest(
+        sessionId,
+        attachmentId,
+        "command",
+        rawPrompt.trimEnd(),
+      )).then((response) => {
+        const payload = expectVariant<{ entry: PromptInputHistoryPage["entries"][number] }>(
+          response,
+          "PromptInputHistoryRecorded",
+        )
+        appendSharedPromptInputHistory(sessionId, [payload.entry])
+      }).catch((error) => {
+        appLogger?.warn("failed to record shared prompt input history", {
+          session_id: sessionId,
+          error: formatError(error),
+        })
+      })
+    }
   }
   const syncPromptTextSnapshot = () => {
     promptTextSnapshot = promptInput?.plainText ?? ""
@@ -4176,6 +4264,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const processTerminalOutputRecord = (record: TerminalOutputRecord) => {
+    if (record.kind === "prompt_echo") {
+      appendPromptEchoToSharedHistory(Buffer.from(record.bytes).toString("utf8"))
+    }
     kernelEventController.processTerminalOutputRecord(record)
   }
 
@@ -8420,6 +8511,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       case "session_snapshot":
         recordDaemonActivity("kernel_session_snapshot")
+        scheduleSharedPromptInputHistoryRefresh()
         await applyKernelSessionSnapshot(
           normalizeRuntimeSession(event.session as RuntimeSession),
           (event.provider_run as RuntimeProviderRun | null) ?? null,
@@ -8427,6 +8519,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       case "heartbeat":
         recordDaemonActivity("kernel_heartbeat")
+        scheduleSharedPromptInputHistoryRefresh()
         return
       case "session_unavailable":
         await handleKernelSessionUnavailable(event.message)
@@ -8439,6 +8532,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       case "transport_resumed":
         kernelEventController.applyTransportResumed()
+        scheduleSharedPromptInputHistoryRefresh()
         void resyncAttachedKernelState("transport_resumed")
         return
       case "replay_gap":
@@ -8852,6 +8946,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     if (pendingSessionChromeFlush) {
       clearTimeout(pendingSessionChromeFlush)
+    }
+    if (pendingPromptInputHistoryRefresh) {
+      clearTimeout(pendingPromptInputHistoryRefresh)
     }
   })
 
@@ -9910,6 +10007,26 @@ async function getSessionHistory(
     getSessionHistoryRequest(sessionId, HISTORY_PAGE_ROUND_COUNT, BOOTSTRAP_HISTORY_MAX_CHARS, cursor, agentId),
   )
   return expectVariant<SessionHistoryPage>(response, "SessionHistory")
+}
+
+async function getPromptInputHistory(
+  client: LocalIpcClient,
+  sessionId: string,
+  afterSequence: number | null = null,
+  limit = 5000,
+): Promise<PromptInputHistoryPage> {
+  const response = await client.send<Record<string, unknown>>(
+    getPromptInputHistoryRequest(sessionId, afterSequence, limit),
+  )
+  return expectVariant<PromptInputHistoryPage>(response, "PromptInputHistory")
+}
+
+function maxPromptInputHistorySequence(entries: readonly PromptInputHistoryPage["entries"][number][]) {
+  return entries.reduce((max, entry) => Math.max(max, entry.sequence), 0)
+}
+
+function promptHistoryEntryListsEqual(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length && left.every((entry, index) => entry === right[index])
 }
 
 async function catchUpAttachedSession(

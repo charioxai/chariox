@@ -220,6 +220,7 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
                 }
             }
             HistoryEventKind::ProviderReasoning
+            | HistoryEventKind::PromptInput
             | HistoryEventKind::SessionCreated
             | HistoryEventKind::AgentCreated
             | HistoryEventKind::AgentMoved

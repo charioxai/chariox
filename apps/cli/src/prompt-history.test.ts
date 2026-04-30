@@ -5,6 +5,7 @@ import {
   cursorIsOnFirstPromptLine,
   cursorIsOnLastPromptLine,
   extractPromptHistoryEntries,
+  extractPromptInputHistoryEntries,
   isProgrammaticPromptContentEcho,
   navigatePromptHistory,
   promptHistoryDirectionForKey,
@@ -73,6 +74,38 @@ test("extractPromptHistoryEntries rebuilds full prompts from fragmented session 
       },
     ]),
     ["git status", "git log"],
+  )
+})
+
+test("extractPromptInputHistoryEntries merges prompts and slash commands by kernel sequence", () => {
+  assert.deepEqual(
+    extractPromptInputHistoryEntries([
+      {
+        sequence: 3,
+        timestamp_ms: 30,
+        session_id: "session-1",
+        source_attachment_id: "cli-2",
+        kind: "prompt",
+        text: "git diff\n",
+      },
+      {
+        sequence: 2,
+        timestamp_ms: 20,
+        session_id: "session-1",
+        source_attachment_id: "cli-1",
+        kind: "command",
+        text: "/agent list\n",
+      },
+      {
+        sequence: 1,
+        timestamp_ms: 10,
+        session_id: "session-1",
+        source_attachment_id: "cli-1",
+        kind: "prompt",
+        text: "git status",
+      },
+    ]),
+    ["git status", "/agent list", "git diff"],
   )
 })
 

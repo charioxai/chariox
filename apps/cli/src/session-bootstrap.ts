@@ -1,6 +1,6 @@
 import type { ArrobaLogger } from "./logging.js"
 import type { ArrobaPreferences } from "./preferences.js"
-import { extractPromptHistoryEntries, pushPromptHistoryEntry } from "./prompt-history.js"
+import { extractPromptHistoryEntries, extractPromptInputHistoryEntries, pushPromptHistoryEntry } from "./prompt-history.js"
 import { fallbackProviderCatalog, type ProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs, type ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { selectAttachableSession, decideBootstrapAction } from "./sessions.js"
@@ -8,6 +8,7 @@ import { selectAttachableSession, decideBootstrapAction } from "./sessions.js"
 import type {
   CliOptions,
   BootstrapState,
+  PromptInputHistoryEntry,
   RuntimeAttachment,
   RuntimeProviderRun,
   RuntimeSession,
@@ -53,6 +54,10 @@ type BootstrapDeps = {
     cursor?: SessionHistoryCursor | null,
     agentId?: string | null,
   ) => Promise<{ entries: SessionHistoryPageEntry[]; next_cursor: SessionHistoryCursor | null }>
+  getPromptInputHistory?: (
+    client: LocalIpcClient,
+    sessionId: string,
+  ) => Promise<{ entries: PromptInputHistoryEntry[] }>
   resolveVisibleAgentId: (session: RuntimeSession, preferences: ArrobaPreferences) => string | null
   prepareHistoryEntries: (entries: SessionHistoryPageEntry[], session: RuntimeSession) => TranscriptEntry[]
 }
@@ -220,8 +225,12 @@ async function hydrateAttachedHistory(
 async function loadSessionPromptHistory(
   client: LocalIpcClient,
   sessionId: string,
-  deps: Pick<BootstrapDeps, "getSessionHistory">,
+  deps: Pick<BootstrapDeps, "getSessionHistory" | "getPromptInputHistory">,
 ) {
+  if (deps.getPromptInputHistory) {
+    const history = await deps.getPromptInputHistory(client, sessionId)
+    return extractPromptInputHistoryEntries(history.entries)
+  }
   const promptHistoryPages: string[][] = []
   let cursor: SessionHistoryCursor | null = null
 
