@@ -3,6 +3,7 @@ use std::env;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -14,6 +15,7 @@ use crate::provider::{
 
 const OPENCODE_ENV_OVERRIDE: &str = "ARROBA_OPENCODE_BIN";
 const OPENCODE_PORT_OVERRIDE: &str = "ARROBA_OPENCODE_PORT";
+static OPENCODE_MANAGED_CATALOG_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
 
 pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
     let _guard = crate::env_lock::lock();
@@ -153,12 +155,13 @@ pub fn ensure_opencode_catalog_endpoint() -> Result<String, DaemonError> {
     if let Some(working_directory) = launch.working_directory.as_ref() {
         command.current_dir(working_directory);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|error| DaemonError::LocalTransport {
+    let mut child = command.spawn().map_err(|error| {
+        clear_opencode_managed_catalog_port_if_unset();
+        DaemonError::LocalTransport {
             operation: "ensure_opencode_catalog_endpoint",
             message: format!("failed to start OpenCode server: {error}"),
-        })?;
+        }
+    })?;
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -172,12 +175,14 @@ pub fn ensure_opencode_catalog_endpoint() -> Result<String, DaemonError> {
                 message: format!("failed to poll OpenCode server startup: {error}"),
             })?
         {
+            clear_opencode_managed_catalog_port_if_unset();
             return Err(DaemonError::LocalTransport {
                 operation: "ensure_opencode_catalog_endpoint",
                 message: format!("OpenCode server exited before becoming healthy: {status}"),
             });
         }
         if Instant::now() >= deadline {
+            clear_opencode_managed_catalog_port_if_unset();
             return Err(DaemonError::LocalTransport {
                 operation: "ensure_opencode_catalog_endpoint",
                 message: format!(
@@ -319,20 +324,38 @@ fn endpoint_is_healthy(base_url: &str) -> bool {
 }
 
 fn resolve_opencode_port() -> Result<u16, DaemonError> {
-    let Some(value) = env::var_os(OPENCODE_PORT_OVERRIDE) else {
-        return Err(DaemonError::InvalidConfig {
-            field: "ARROBA_OPENCODE_PORT",
-            message: "must be set to an explicit OpenCode server TCP port",
-        });
-    };
+    if let Some(value) = env::var_os(OPENCODE_PORT_OVERRIDE) {
+        let value = value.to_string_lossy().into_owned();
+        return value
+            .parse::<u16>()
+            .map_err(|_| DaemonError::InvalidConfig {
+                field: "ARROBA_OPENCODE_PORT",
+                message: "must be a valid TCP port",
+            });
+    }
 
-    let value = value.to_string_lossy().into_owned();
-    value
-        .parse::<u16>()
-        .map_err(|_| DaemonError::InvalidConfig {
-            field: "ARROBA_OPENCODE_PORT",
-            message: "must be a valid TCP port",
-        })
+    let port = OPENCODE_MANAGED_CATALOG_PORT.get_or_init(|| Mutex::new(None));
+    let mut guard = port.lock().map_err(|error| DaemonError::LocalTransport {
+        operation: "opencode_managed_catalog_port",
+        message: error.to_string(),
+    })?;
+    if let Some(port) = *guard {
+        return Ok(port);
+    }
+    let reserved = reserve_unused_port()?;
+    *guard = Some(reserved);
+    Ok(reserved)
+}
+
+fn clear_opencode_managed_catalog_port_if_unset() {
+    if env::var_os(OPENCODE_PORT_OVERRIDE).is_some() {
+        return;
+    }
+    if let Some(port) = OPENCODE_MANAGED_CATALOG_PORT.get() {
+        if let Ok(mut guard) = port.lock() {
+            *guard = None;
+        }
+    }
 }
 
 fn resolve_candidate(candidate: PathBuf, treat_as_literal_path: bool) -> Option<PathBuf> {
@@ -356,15 +379,12 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::mcp::ArrobaMcpServerConfig;
+    use crate::provider::{AgentEndpointMode, LaunchProviderRequest, RuntimeMcpBinding};
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
-
-    use crate::DaemonError;
-
-    use crate::mcp::ArrobaMcpServerConfig;
-    use crate::provider::{AgentEndpointMode, LaunchProviderRequest, RuntimeMcpBinding};
 
     use super::{
         ensure_opencode_catalog_endpoint, plan_opencode_launch, resolve_opencode_executable,
@@ -691,11 +711,11 @@ mod tests {
     }
 
     #[test]
-    fn requires_explicit_opencode_port_override() {
+    fn plans_catalog_launch_without_explicit_opencode_port_override() {
         let _guard = env_guard();
         let previous_bin = std::env::var_os("ARROBA_OPENCODE_BIN");
         let path = std::env::temp_dir().join(format!(
-            "arroba-opencode-resolve-test-{}-missing-port",
+            "arroba-opencode-resolve-test-{}-managed-catalog-port",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
@@ -703,7 +723,7 @@ mod tests {
         let previous_port = std::env::var_os("ARROBA_OPENCODE_PORT");
         std::env::remove_var("ARROBA_OPENCODE_PORT");
 
-        let error = plan_opencode_launch(None).expect_err("missing override should fail");
+        let launch = plan_opencode_launch(None).expect("managed catalog port should resolve");
 
         if let Some(previous_bin) = previous_bin {
             std::env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
@@ -717,16 +737,11 @@ mod tests {
             std::env::remove_var("ARROBA_OPENCODE_PORT");
         }
 
-        match error {
-            DaemonError::InvalidConfig { field, message } => {
-                assert_eq!(field, "ARROBA_OPENCODE_PORT");
-                assert_eq!(
-                    message,
-                    "must be set to an explicit OpenCode server TCP port"
-                );
-            }
-            other => panic!("unexpected error: {other}"),
-        }
+        assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
+        assert!(launch
+            .structured_endpoint
+            .as_deref()
+            .is_some_and(|endpoint| endpoint.starts_with("http://127.0.0.1:")));
     }
 
     #[test]

@@ -2127,6 +2127,12 @@ pub enum LocalDaemonResponse {
 pub struct WaitingRoomLaunchTarget {
     pub workspace_id: String,
     pub worktree_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2134,6 +2140,8 @@ pub struct WorkspaceWorktreeRecord {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     pub current: bool,
 }
 

@@ -5,6 +5,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -17,6 +18,7 @@ use super::codex_client::codex_endpoint_is_healthy;
 const CODEX_ENV_OVERRIDE: &str = "ARROBA_CODEX_BIN";
 const CODEX_PORT_OVERRIDE: &str = "ARROBA_CODEX_PORT";
 pub(crate) const CODEX_MCP_TOKEN_ENV: &str = "ARROBA_MCP_TOKEN";
+static CODEX_MANAGED_CATALOG_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
 const CODEX_AUTH_ENV_VARS: &[&str] = &[
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
@@ -134,12 +136,13 @@ pub fn ensure_codex_catalog_endpoint() -> Result<String, DaemonError> {
     if let Some(working_directory) = launch.working_directory.as_ref() {
         command.current_dir(working_directory);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|error| DaemonError::LocalTransport {
+    let mut child = command.spawn().map_err(|error| {
+        clear_codex_managed_catalog_port_if_unset();
+        DaemonError::LocalTransport {
             operation: "ensure_codex_catalog_endpoint",
             message: format!("failed to start Codex app-server: {error}"),
-        })?;
+        }
+    })?;
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -153,12 +156,14 @@ pub fn ensure_codex_catalog_endpoint() -> Result<String, DaemonError> {
                 message: format!("failed to poll Codex app-server startup: {error}"),
             })?
         {
+            clear_codex_managed_catalog_port_if_unset();
             return Err(DaemonError::LocalTransport {
                 operation: "ensure_codex_catalog_endpoint",
                 message: format!("Codex app-server exited before becoming healthy: {status}"),
             });
         }
         if Instant::now() >= deadline {
+            clear_codex_managed_catalog_port_if_unset();
             return Err(DaemonError::LocalTransport {
                 operation: "ensure_codex_catalog_endpoint",
                 message: format!(
@@ -408,20 +413,38 @@ fn write_managed_io_model_catalog(model: &str) -> Result<PathBuf, DaemonError> {
 }
 
 fn resolve_codex_port() -> Result<u16, DaemonError> {
-    let Some(value) = env::var_os(CODEX_PORT_OVERRIDE) else {
-        return Err(DaemonError::InvalidConfig {
-            field: "ARROBA_CODEX_PORT",
-            message: "must be set to an explicit Codex app-server TCP port",
-        });
-    };
+    if let Some(value) = env::var_os(CODEX_PORT_OVERRIDE) {
+        let value = value.to_string_lossy().into_owned();
+        return value
+            .parse::<u16>()
+            .map_err(|_| DaemonError::InvalidConfig {
+                field: "ARROBA_CODEX_PORT",
+                message: "must be a valid TCP port",
+            });
+    }
 
-    let value = value.to_string_lossy().into_owned();
-    value
-        .parse::<u16>()
-        .map_err(|_| DaemonError::InvalidConfig {
-            field: "ARROBA_CODEX_PORT",
-            message: "must be a valid TCP port",
-        })
+    let port = CODEX_MANAGED_CATALOG_PORT.get_or_init(|| Mutex::new(None));
+    let mut guard = port.lock().map_err(|error| DaemonError::LocalTransport {
+        operation: "codex_managed_catalog_port",
+        message: error.to_string(),
+    })?;
+    if let Some(port) = *guard {
+        return Ok(port);
+    }
+    let reserved = reserve_unused_port()?;
+    *guard = Some(reserved);
+    Ok(reserved)
+}
+
+fn clear_codex_managed_catalog_port_if_unset() {
+    if env::var_os(CODEX_PORT_OVERRIDE).is_some() {
+        return;
+    }
+    if let Some(port) = CODEX_MANAGED_CATALOG_PORT.get() {
+        if let Ok(mut guard) = port.lock() {
+            *guard = None;
+        }
+    }
 }
 
 fn reserve_unused_port() -> Result<u16, DaemonError> {
@@ -521,6 +544,30 @@ mod tests {
             launch.structured_endpoint.as_deref(),
             Some("ws://127.0.0.1:43142")
         );
+    }
+
+    #[test]
+    fn plans_codex_catalog_launch_without_explicit_port_override() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-codex-resolve-test-{}-managed-catalog-port",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_CODEX_BIN", &path);
+        std::env::remove_var("ARROBA_CODEX_PORT");
+
+        let launch = plan_codex_launch(None).expect("managed catalog port should resolve");
+
+        std::env::remove_var("ARROBA_CODEX_BIN");
+        std::env::remove_var("ARROBA_CODEX_PORT");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
+        assert!(launch
+            .structured_endpoint
+            .as_deref()
+            .is_some_and(|endpoint| endpoint.starts_with("ws://127.0.0.1:")));
     }
 
     #[test]

@@ -2196,12 +2196,21 @@ impl CommandRouter {
             request.base_ref.as_deref(),
         )?;
         let launch_target = infer_waiting_room_launch_target();
+        let branch = detect_git_branch(&path).ok();
         let worktree = WorkspaceWorktreeRecord {
             current: launch_target
                 .as_ref()
                 .map(|target| target.worktree_id == path)
                 .unwrap_or(false),
-            branch: detect_git_branch(&path).ok(),
+            branch: branch.clone(),
+            label: worktree_display_label(
+                &path,
+                launch_target
+                    .as_ref()
+                    .map(|target| target.workspace_id.as_str())
+                    .unwrap_or(&request.workspace_id),
+                branch.as_deref(),
+            ),
             path,
         };
         Ok(LocalDaemonResponse::WorkspaceWorktreeCreated {
@@ -5173,7 +5182,11 @@ fn infer_waiting_room_launch_target() -> Option<WaitingRoomLaunchTarget> {
             }
         })
         .unwrap_or_else(|| cwd_string.clone());
+    let branch = detect_git_branch(&worktree).ok();
     Some(WaitingRoomLaunchTarget {
+        workspace_label: workspace_display_label(&workspace),
+        directory: Some(workspace.clone()),
+        worktree_label: worktree_display_label(&worktree, &workspace, branch.as_deref()),
         workspace_id: workspace,
         worktree_id: worktree,
     })
@@ -5438,13 +5451,16 @@ fn list_workspace_worktrees(
         return Ok(vec![WorkspaceWorktreeRecord {
             path: workspace_id.to_string(),
             branch: None,
+            label: worktree_display_label(workspace_id, workspace_id, None),
             current: true,
         }]);
     };
     if !output.status.success() {
+        let branch = detect_git_branch(workspace_id).ok();
         return Ok(vec![WorkspaceWorktreeRecord {
             path: workspace_id.to_string(),
-            branch: detect_git_branch(workspace_id).ok(),
+            label: worktree_display_label(workspace_id, workspace_id, branch.as_deref()),
+            branch,
             current: true,
         }]);
     }
@@ -5453,14 +5469,17 @@ fn list_workspace_worktrees(
         .into_iter()
         .map(|(path, branch)| WorkspaceWorktreeRecord {
             current: same_fs_path(&path, current_worktree_path),
+            label: worktree_display_label(&path, workspace_id, branch.as_deref()),
             branch,
             path,
         })
         .collect::<Vec<_>>();
     if worktrees.is_empty() {
+        let branch = detect_git_branch(workspace_id).ok();
         worktrees.push(WorkspaceWorktreeRecord {
             path: workspace_id.to_string(),
-            branch: detect_git_branch(workspace_id).ok(),
+            label: worktree_display_label(workspace_id, workspace_id, branch.as_deref()),
+            branch,
             current: true,
         });
     }
@@ -5511,6 +5530,79 @@ fn detect_git_branch(path: &str) -> Result<String, DaemonError> {
         });
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn workspace_display_label(workspace_path: &str) -> Option<String> {
+    git_command_output(workspace_path, &["remote", "get-url", "origin"])
+        .as_deref()
+        .and_then(repo_label_from_remote_url)
+        .or_else(|| {
+            Path::new(workspace_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        })
+}
+
+fn repo_label_from_remote_url(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches(".git");
+    let candidate = if let Some(rest) = trimmed.strip_prefix("git@") {
+        rest.split_once(':').map(|(_, path)| path.to_string())
+    } else if let Some((_, path)) = trimmed.split_once("://") {
+        let mut parts = path.split('/').collect::<Vec<_>>();
+        if parts.len() >= 3 {
+            Some(parts.split_off(parts.len() - 2).join("/"))
+        } else {
+            None
+        }
+    } else {
+        None
+    }?;
+    let parts = candidate
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return None;
+    }
+    Some(format!(
+        "{}/{}",
+        parts[parts.len() - 2],
+        parts[parts.len() - 1]
+    ))
+}
+
+fn worktree_display_label(
+    path: &str,
+    workspace_path: &str,
+    branch: Option<&str>,
+) -> Option<String> {
+    let branch = branch
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter(|value| *value != "HEAD")
+        .unwrap_or("detached");
+    if same_fs_path(path, workspace_path) {
+        return Some(branch.to_string());
+    }
+    let name = Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|value| !value.is_empty())?;
+    Some(format!("{name} / {branch}"))
+}
+
+fn git_command_output(path: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!value.is_empty()).then_some(value)
 }
 
 fn create_waiting_room_worktree(

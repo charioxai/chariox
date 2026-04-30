@@ -468,12 +468,16 @@ export type WaitingRoomInventorySnapshot = {
   launch_target?: {
     workspace_id: string
     worktree_id: string
+    workspace_label?: string | null
+    directory?: string | null
+    worktree_label?: string | null
   } | null
 }
 
 export type WorkspaceWorktreeRecord = {
   path: string
   branch?: string | null
+  label?: string | null
   current: boolean
 }
 

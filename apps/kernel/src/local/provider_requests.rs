@@ -331,32 +331,53 @@ pub(crate) fn load_provider_catalog(
     }
 
     let mut catalogs = Vec::new();
+    let mut source_errors = Vec::new();
 
-    if let Ok(endpoint) = ensure_opencode_catalog_endpoint() {
-        if let Ok(client) = OpenCodeClient::new("catalog", endpoint) {
-            if let Ok(catalog) = client.provider_catalog() {
-                catalogs.push(catalog);
-            }
-        }
+    match ensure_opencode_catalog_endpoint() {
+        Ok(endpoint) => match OpenCodeClient::new("catalog", endpoint) {
+            Ok(client) => match client.provider_catalog() {
+                Ok(catalog) => catalogs.push(catalog),
+                Err(error) => source_errors.push(format!("opencode catalog request: {error}")),
+            },
+            Err(error) => source_errors.push(format!("opencode client: {error}")),
+        },
+        Err(error) => source_errors.push(format!("opencode endpoint: {error}")),
     }
-    if let Ok(endpoint) = ensure_codex_catalog_endpoint() {
-        if let Ok(client) = CodexClient::new("catalog", endpoint) {
-            if let Ok(catalog) = client.provider_catalog() {
-                catalogs.push(catalog);
-            }
-        }
+    match ensure_codex_catalog_endpoint() {
+        Ok(endpoint) => match CodexClient::new("catalog", endpoint) {
+            Ok(client) => match client.provider_catalog() {
+                Ok(catalog) => catalogs.push(catalog),
+                Err(error) => source_errors.push(format!("codex catalog request: {error}")),
+            },
+            Err(error) => source_errors.push(format!("codex client: {error}")),
+        },
+        Err(error) => source_errors.push(format!("codex endpoint: {error}")),
     }
 
     let remote_machines = if config.relay_url.is_some() && config.relay_token.is_some() {
-        block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
+        match block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
             &config,
-        ))
-        .unwrap_or_default()
+        )) {
+            Ok(machines) => machines,
+            Err(error) => {
+                source_errors.push(format!("relay live machines: {error}"));
+                Vec::new()
+            }
+        }
     } else {
         Vec::new()
     };
     let approved_remote_machines =
         approved_live_remote_machines(&remote_machines, &config.host_machine_id);
+    if !source_errors.is_empty() {
+        crate::logging::warn_with_fields(
+            "daemon.local",
+            "Some provider catalog sources were unavailable",
+            serde_json::json!({
+                "source_errors": &source_errors,
+            }),
+        );
+    }
 
     let mut catalog = merge_provider_catalogs(catalogs)
         .or_else(|| {
@@ -364,7 +385,14 @@ pub(crate) fn load_provider_catalog(
         })
         .ok_or_else(|| DaemonError::LocalTransport {
             operation: "get_provider_catalog",
-            message: "no provider catalog sources were reachable".to_string(),
+            message: if source_errors.is_empty() {
+                "no provider catalog sources were reachable".to_string()
+            } else {
+                format!(
+                    "no provider catalog sources were reachable: {}",
+                    source_errors.join("; ")
+                )
+            },
         })?;
     annotate_remote_machine_providers(
         &mut catalog,
