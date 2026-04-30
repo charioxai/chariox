@@ -41,6 +41,6 @@ Do not merge protocol shape changes without the version bump and test update.
 - Keep core behavior below clients, in kernel services and shared protocol contracts.
 - Do not implement behavior only in the web app or only in the TUI unless explicitly marked temporary.
 - Prefer one shared protocol path across local TUI, remote TUI, web, and native clients.
-- For browser relay runtime, require direct `wss://` browser-to-relay connectivity in hosted environments.
+- Hosted Cloud relay runtime should use the Caddy-fronted `wss://` relay URL for browser, kernel, remote TUI, and kernel-to-kernel remote-agent connections. Local and self-hosted relay setups may keep using `ws://`.
 - Use heartbeat freshness for relay target selection; stale targets must not be treated as online.
 - Preserve local/dev/self-host compatibility where practical, but fail loudly when hosted Cloud configuration violates the runtime architecture.

@@ -608,6 +608,21 @@ impl CommandRouter {
         self.config_projection.snapshot()
     }
 
+    pub(crate) fn cloud_relay_token_refresh_due(&self) -> bool {
+        let config = self.config_projection.snapshot();
+        let Some(profile) = config.cloud_relay else {
+            return false;
+        };
+        if profile.cloud_session_token.is_none() && profile.machine_credential.is_none() {
+            return false;
+        }
+        config.relay_url.as_deref() != Some(profile.relay_url.as_str())
+            || config.relay_token.is_none()
+            || profile.token_expires_at_ms.is_none_or(|expires_at| {
+                expires_at <= crate::session::unix_epoch_ms() + CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS
+            })
+    }
+
     pub(crate) async fn ensure_cloud_relay_connection(&self) -> Result<(), DaemonError> {
         let config = self.config_projection.snapshot();
         let Some(profile) = config.cloud_relay.clone() else {
@@ -736,12 +751,6 @@ impl CommandRouter {
     pub(crate) async fn relay_registration(&self) -> arroba_relay::protocol::DaemonRegistration {
         let mut app = self.app.lock().await;
         app.relay_registration()
-    }
-
-    pub(crate) fn relay_is_configured_for(&self, relay_url: &str, relay_token: &str) -> bool {
-        let config = self.config_projection.snapshot();
-        config.relay_url.as_deref() == Some(relay_url)
-            && config.relay_token.as_deref() == Some(relay_token)
     }
 
     pub(crate) async fn ensure_relay_subscription_attachment(

@@ -57,11 +57,34 @@ impl Default for RelayClientState {
 
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const REMOTE_INVENTORY_RELAY_TIMEOUT_MS: u64 = 10_000;
 const REMOTE_INVENTORY_KERNEL_PROBE_TIMEOUT_MS: u64 = 5_000;
 static TEMPORARY_PEER_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, JoinHandle<()>>>>;
+
+#[derive(Debug, PartialEq, Eq)]
+enum RelayConfigContinuity {
+    Continue,
+    TokenRotated(String),
+    Reconnect,
+}
+
+fn relay_config_continuity(
+    active_relay_url: &str,
+    active_relay_token: &str,
+    config: &crate::config::DaemonConfig,
+) -> RelayConfigContinuity {
+    if config.relay_url.as_deref() != Some(active_relay_url) || config.relay_token.is_none() {
+        return RelayConfigContinuity::Reconnect;
+    }
+    match config.relay_token.as_deref() {
+        Some(token) if token == active_relay_token => RelayConfigContinuity::Continue,
+        Some(token) => RelayConfigContinuity::TokenRotated(token.to_string()),
+        None => RelayConfigContinuity::Reconnect,
+    }
+}
 
 #[derive(Debug, Clone)]
 struct PersistedRelayEvent {
@@ -109,7 +132,7 @@ pub async fn run_daemon_relay_connector(
             );
         }
 
-        let (relay_url, relay_token, heartbeat) = {
+        let (relay_url, mut active_relay_token, heartbeat) = {
             let config = router.relay_config_snapshot();
             match (config.relay_url.clone(), config.relay_token.clone()) {
                 (Some(relay_url), Some(relay_token)) => (
@@ -208,6 +231,9 @@ pub async fn run_daemon_relay_connector(
                 ));
                 let mut heartbeat_interval = tokio::time::interval(heartbeat);
                 heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                let mut token_refresh_interval =
+                    tokio::time::interval(CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL);
+                token_refresh_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
                 loop {
                     tokio::select! {
@@ -278,9 +304,66 @@ pub async fn run_daemon_relay_connector(
                             set_disconnected(&state).await;
                             break;
                         }
+                        _ = token_refresh_interval.tick() => {
+                            if router.cloud_relay_token_refresh_due() {
+                                if let Err(error) = router.ensure_cloud_relay_connection().await {
+                                    crate::logging::warn_with_fields(
+                                        "daemon.relay_client",
+                                        "failed to refresh cloud relay token",
+                                        serde_json::json!({
+                                            "relay_url": relay_url,
+                                            "error": error.to_string(),
+                                        }),
+                                    );
+                                }
+                            }
+                            match relay_config_continuity(
+                                &relay_url,
+                                &active_relay_token,
+                                &router.relay_config_snapshot(),
+                            ) {
+                                RelayConfigContinuity::Continue => {}
+                                RelayConfigContinuity::TokenRotated(next_token) => {
+                                    active_relay_token = next_token;
+                                    crate::logging::info_with_fields(
+                                        "daemon.relay_client",
+                                        "relay token rotated on active socket",
+                                        serde_json::json!({
+                                            "relay_url": relay_url,
+                                        }),
+                                    );
+                                }
+                                RelayConfigContinuity::Reconnect => {
+                                    let _ = outgoing_tx.send(RelayEnvelope::Close {
+                                        reason: "relay configuration changed".to_string(),
+                                    });
+                                    abort_inventory_refresh_task(&mut inventory_refresh_task);
+                                    abort_subscription_tasks(&subscription_tasks).await;
+                                    writer_task.abort();
+                                    clear_remote_inventory_projection(&app).await;
+                                    set_disconnected(&state).await;
+                                    break;
+                                }
+                            }
+                        }
                         _ = heartbeat_interval.tick() => {
-                            let still_configured = router.relay_is_configured_for(&relay_url, &relay_token);
-                            if !still_configured {
+                            match relay_config_continuity(
+                                &relay_url,
+                                &active_relay_token,
+                                &router.relay_config_snapshot(),
+                            ) {
+                                RelayConfigContinuity::Continue => {}
+                                RelayConfigContinuity::TokenRotated(next_token) => {
+                                    active_relay_token = next_token;
+                                    crate::logging::info_with_fields(
+                                        "daemon.relay_client",
+                                        "relay token rotated on active socket",
+                                        serde_json::json!({
+                                            "relay_url": relay_url,
+                                        }),
+                                    );
+                                }
+                                RelayConfigContinuity::Reconnect => {
                                 let _ = outgoing_tx.send(RelayEnvelope::Close {
                                     reason: "relay configuration changed".to_string(),
                                 });
@@ -290,6 +373,7 @@ pub async fn run_daemon_relay_connector(
                                 clear_remote_inventory_projection(&app).await;
                                 set_disconnected(&state).await;
                                 break;
+                                }
                             }
                             if inventory_refresh_task
                                 .as_ref()
@@ -2165,6 +2249,35 @@ mod tests {
             .expect("session should attach")
             .id()
             .to_string()
+    }
+
+    #[test]
+    fn relay_config_continuity_keeps_active_socket_for_token_rotation() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example/ws".to_string());
+        config.relay_token = Some("new-token".to_string());
+
+        assert_eq!(
+            relay_config_continuity("wss://relay.example/ws", "old-token", &config),
+            RelayConfigContinuity::TokenRotated("new-token".to_string())
+        );
+    }
+
+    #[test]
+    fn relay_config_continuity_reconnects_for_url_changes_or_disabled_relay() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example/ws".to_string());
+        config.relay_token = Some("token".to_string());
+        assert_eq!(
+            relay_config_continuity("wss://other.example/ws", "token", &config),
+            RelayConfigContinuity::Reconnect
+        );
+
+        config.relay_token = None;
+        assert_eq!(
+            relay_config_continuity("wss://relay.example/ws", "token", &config),
+            RelayConfigContinuity::Reconnect
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

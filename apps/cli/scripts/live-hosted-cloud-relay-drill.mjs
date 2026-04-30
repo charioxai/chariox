@@ -15,6 +15,7 @@ const runMultiUser = process.env.ARROBA_CLOUD_HOSTED_MULTI_USER === "1"
 const runSecondKernel = process.env.ARROBA_CLOUD_HOSTED_SECOND_KERNEL === "1"
 const runRemoteCli = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI === "1"
 const runRemoteCliPairing = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_PAIRING === "1"
+const runTokenRotation = process.env.ARROBA_CLOUD_HOSTED_TOKEN_ROTATION === "1"
 const remoteCliPairingProvider = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_PROVIDER ?? "codex"
 const remoteCliPairingModel = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_MODEL ?? "gpt-5.2-codex"
 const remoteCliPairingEffort = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_EFFORT ?? "low"
@@ -1468,6 +1469,58 @@ async function runHostedSecondKernelAssertions({
   }
 }
 
+async function runHostedTokenRotationAssertions({
+  requests,
+  homeClient,
+  verificationClient,
+  sessionId,
+}) {
+  log("token-rotation-start", { sessionId })
+  const assertSessionReachable = async (label) => {
+    const listed = unwrap(
+      await verificationClient.send(requests.listSessionsRequest()),
+      "SessionsListed",
+    )
+    assert(
+      (listed.sessions ?? []).some((session) => session.id === sessionId),
+      `token rotation probe should list session during ${label}`,
+      listed,
+    )
+  }
+
+  await assertSessionReachable("before-rotation")
+  let probeCount = 0
+  let probeFailure = null
+  const probeUntilMs = Date.now() + 15_000
+  const probeTask = (async () => {
+    while (Date.now() < probeUntilMs) {
+      try {
+        await assertSessionReachable("rotation")
+        probeCount += 1
+      } catch (error) {
+        probeFailure = error
+        break
+      }
+      await sleep(100)
+    }
+  })()
+
+  await sleep(500)
+  const rotated = unwrap(
+    await homeClient.send(requests.connectCloudRelayRequest()),
+    "CloudRelayConnected",
+  )
+  log("token-rotation-issued", {
+    tokenExpiresAt: rotated.token?.token_expires_at ?? null,
+  })
+  await probeTask
+  if (probeFailure) {
+    throw probeFailure
+  }
+  await assertSessionReachable("after-rotation")
+  log("token-rotation-pass", { probeCount })
+}
+
 function createHostedCommandDeps({
   workspace,
   clientId,
@@ -1773,6 +1826,15 @@ async function main() {
       })
     }
 
+    if (runTokenRotation) {
+      await runHostedTokenRotationAssertions({
+        requests,
+        homeClient: localClient,
+        verificationClient: remoteClient,
+        sessionId: created.session.id,
+      })
+    }
+
     if (runMultiUser) {
       await runHostedMultiUserAssertions({
         LocalIpcClient,
@@ -1815,6 +1877,7 @@ async function main() {
       remoteCli: runRemoteCli,
       remoteCliPairing: runRemoteCliPairing,
       secondKernel: runSecondKernel,
+      tokenRotation: runTokenRotation,
     })
     passed = true
   } finally {

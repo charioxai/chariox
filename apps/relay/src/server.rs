@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
+use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
@@ -392,10 +393,28 @@ async fn handle_connection(
                     if (!first_message_received && elapsed >= RELAY_FIRST_MESSAGE_TIMEOUT)
                         || elapsed >= RELAY_IDLE_TIMEOUT
                     {
+                        relay_log(
+                            "warn",
+                            "relay_connection_timeout",
+                            json!({
+                                "peer_addr": peer_addr.to_string(),
+                                "reason": if !first_message_received { "first_message" } else { "idle" },
+                                "elapsed_ms": elapsed.as_millis(),
+                            }),
+                        );
                         send_close(&outgoing_tx, "relay connection idle timeout".to_string());
                         break;
                     }
                     if last_ping_at > last_read_at && last_ping_at.elapsed() >= RELAY_PONG_TIMEOUT {
+                        relay_log(
+                            "warn",
+                            "relay_connection_timeout",
+                            json!({
+                                "peer_addr": peer_addr.to_string(),
+                                "reason": "heartbeat",
+                                "elapsed_ms": last_ping_at.elapsed().as_millis(),
+                            }),
+                        );
                         send_close(&outgoing_tx, "relay heartbeat timeout".to_string());
                         break;
                     }
@@ -525,6 +544,14 @@ async fn handle_connection(
                                 resolve_target_daemon_key(&registry, &identity.realm_id, &target)
                                     .await
                             else {
+                                log_target_not_connected(
+                                    "client_connect",
+                                    &registry,
+                                    peer_addr,
+                                    &identity.realm_id,
+                                    &target,
+                                )
+                                .await;
                                 send_close(
                                     &outgoing_tx,
                                     "target daemon is not connected to relay".to_string(),
@@ -619,6 +646,14 @@ async fn handle_connection(
                             )
                             .await
                             else {
+                                log_target_not_connected(
+                                    "daemon_peer_request",
+                                    &registry,
+                                    peer_addr,
+                                    &requester_daemon_key.realm_id,
+                                    &target,
+                                )
+                                .await;
                                 send_envelope(
                                     &outgoing_tx,
                                     &RelayEnvelope::DaemonPeerResponse {
@@ -656,6 +691,14 @@ async fn handle_connection(
                                     .await
                                     .pending_daemon_peer_requests
                                     .remove(&relay_request_id);
+                                log_daemon_sender_missing(
+                                    "daemon_peer_request",
+                                    &registry,
+                                    peer_addr,
+                                    &target_daemon_key,
+                                    &relay_request_id,
+                                )
+                                .await;
                                 send_envelope(
                                     &outgoing_tx,
                                     &RelayEnvelope::DaemonPeerResponse {
@@ -699,6 +742,14 @@ async fn handle_connection(
                             )
                             .await
                             else {
+                                log_target_not_connected(
+                                    "daemon_peer_event",
+                                    &registry,
+                                    peer_addr,
+                                    &requester_daemon_key.realm_id,
+                                    &target,
+                                )
+                                .await;
                                 continue;
                             };
                             let daemon_sender = {
@@ -725,6 +776,14 @@ async fn handle_connection(
                             let Some(daemon_key) =
                                 resolve_target_daemon_key(&registry, &realm_id, &target).await
                             else {
+                                log_target_not_connected(
+                                    "client_request",
+                                    &registry,
+                                    peer_addr,
+                                    &realm_id,
+                                    &target,
+                                )
+                                .await;
                                 send_envelope(
                                     &outgoing_tx,
                                     &RelayEnvelope::ClientResponse {
@@ -762,6 +821,14 @@ async fn handle_connection(
                                     .await
                                     .pending_requests
                                     .remove(&relay_request_id);
+                                log_daemon_sender_missing(
+                                    "client_request",
+                                    &registry,
+                                    peer_addr,
+                                    &daemon_key,
+                                    &relay_request_id,
+                                )
+                                .await;
                                 send_envelope(
                                     &outgoing_tx,
                                     &RelayEnvelope::ClientResponse {
@@ -798,6 +865,14 @@ async fn handle_connection(
                             let Some(daemon_key) =
                                 resolve_target_daemon_key(&registry, &realm_id, &target).await
                             else {
+                                log_target_not_connected(
+                                    "client_subscribe",
+                                    &registry,
+                                    peer_addr,
+                                    &realm_id,
+                                    &target,
+                                )
+                                .await;
                                 send_envelope(
                                     &outgoing_tx,
                                     &RelayEnvelope::ClientResponse {
@@ -837,6 +912,14 @@ async fn handle_connection(
                                     .await
                                     .pending_requests
                                     .remove(&relay_request_id);
+                                log_daemon_sender_missing(
+                                    "client_subscribe",
+                                    &registry,
+                                    peer_addr,
+                                    &daemon_key,
+                                    &relay_request_id,
+                                )
+                                .await;
                                 send_envelope(
                                     &outgoing_tx,
                                     &RelayEnvelope::ClientResponse {
@@ -873,38 +956,40 @@ async fn handle_connection(
                                 "relay-request-{}",
                                 relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
                             );
+                            let active = {
+                                let guard = registry.read().await;
+                                guard.subscriptions.get(&subscription_id).cloned()
+                            };
+                            let Some(active) = active else {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(relay_error(
+                                            "subscription_not_found",
+                                            "relay subscription is not active",
+                                            false,
+                                        )),
+                                    },
+                                )?;
+                                continue;
+                            };
+                            let daemon_key = active.daemon_key.clone();
                             let daemon_sender = {
                                 let mut guard = registry.write().await;
-                                let Some(active) =
-                                    guard.subscriptions.get(&subscription_id).cloned()
-                                else {
-                                    drop(guard);
-                                    send_envelope(
-                                        &outgoing_tx,
-                                        &RelayEnvelope::ClientResponse {
-                                            request_id,
-                                            encrypted_response: None,
-                                            error: Some(relay_error(
-                                                "subscription_not_found",
-                                                "relay subscription is not active",
-                                                false,
-                                            )),
-                                        },
-                                    )?;
-                                    continue;
-                                };
                                 guard.pending_requests.insert(
                                     relay_request_id.clone(),
                                     PendingClientRequest {
                                         client_addr: peer_addr,
                                         client_request_id: request_id.clone(),
-                                        daemon_key: active.daemon_key.clone(),
+                                        daemon_key: daemon_key.clone(),
                                         kind: PendingRequestKind::Unsubscribe {
                                             subscription_id: subscription_id.clone(),
                                         },
                                     },
                                 );
-                                resolve_daemon_sender_locked(&guard, &active.daemon_key)
+                                resolve_daemon_sender_locked(&guard, &daemon_key)
                             };
                             let Some(daemon_sender) = daemon_sender else {
                                 registry
@@ -912,6 +997,14 @@ async fn handle_connection(
                                     .await
                                     .pending_requests
                                     .remove(&relay_request_id);
+                                log_daemon_sender_missing(
+                                    "client_unsubscribe",
+                                    &registry,
+                                    peer_addr,
+                                    &daemon_key,
+                                    &relay_request_id,
+                                )
+                                .await;
                                 send_envelope(
                                     &outgoing_tx,
                                     &RelayEnvelope::ClientResponse {
@@ -1071,6 +1164,29 @@ async fn handle_connection(
 
     let (disconnect_errors, disconnect_peer_errors, disconnect_subscription_senders) =
         remove_peer(&registry, peer_addr, registered_daemon_key.as_ref()).await;
+    if connection_result.is_err()
+        || registered_daemon_key.is_some()
+        || !disconnect_errors.is_empty()
+        || !disconnect_peer_errors.is_empty()
+        || !disconnect_subscription_senders.is_empty()
+    {
+        relay_log(
+            if connection_result.is_err() {
+                "warn"
+            } else {
+                "info"
+            },
+            "relay_peer_removed",
+            json!({
+                "peer_addr": peer_addr.to_string(),
+                "daemon_key": registered_daemon_key.as_ref().map(daemon_key_log_value),
+                "client_request_errors": disconnect_errors.len(),
+                "daemon_peer_request_errors": disconnect_peer_errors.len(),
+                "subscription_closes": disconnect_subscription_senders.len(),
+                "error": connection_result.as_ref().err().map(|error| error.to_string()),
+            }),
+        );
+    }
     for (sender, request_id) in disconnect_errors {
         let _ = send_envelope(
             &sender,
@@ -1128,6 +1244,55 @@ async fn resolve_target_daemon_key(
             key.realm_id == realm_id && registration.daemon_alias.as_ref() == Some(alias)
         })
         .map(|(key, _)| key.clone())
+}
+
+async fn log_target_not_connected(
+    operation: &str,
+    registry: &Arc<RwLock<RelayRegistry>>,
+    peer_addr: SocketAddr,
+    realm_id: &str,
+    target: &ClientTarget,
+) {
+    let guard = registry.read().await;
+    relay_log(
+        "warn",
+        "relay_target_not_connected",
+        json!({
+            "operation": operation,
+            "peer_addr": peer_addr.to_string(),
+            "realm_id": realm_id,
+            "target": target_log_value(target),
+            "peer_count": guard.peer_count(),
+            "daemon_count": guard.daemon_count(),
+            "pending_request_count": guard.pending_request_count(),
+            "subscription_count": guard.subscription_count(),
+        }),
+    );
+}
+
+async fn log_daemon_sender_missing(
+    operation: &str,
+    registry: &Arc<RwLock<RelayRegistry>>,
+    peer_addr: SocketAddr,
+    daemon_key: &DaemonKey,
+    relay_request_id: &str,
+) {
+    let guard = registry.read().await;
+    relay_log(
+        "warn",
+        "relay_daemon_sender_missing",
+        json!({
+            "operation": operation,
+            "peer_addr": peer_addr.to_string(),
+            "daemon_key": daemon_key_log_value(daemon_key),
+            "relay_request_id": relay_request_id,
+            "daemon_registered": guard.daemons.contains_key(daemon_key),
+            "peer_count": guard.peer_count(),
+            "daemon_count": guard.daemon_count(),
+            "pending_request_count": guard.pending_request_count(),
+            "subscription_count": guard.subscription_count(),
+        }),
+    );
 }
 
 async fn peer_realm_id(registry: &Arc<RwLock<RelayRegistry>>, peer_addr: SocketAddr) -> String {
@@ -1347,6 +1512,32 @@ fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
         message: message.to_string(),
         retryable,
     }
+}
+
+fn relay_log(level: &str, event: &str, fields: Value) {
+    eprintln!(
+        "{}",
+        json!({
+            "component": "arroba-relay",
+            "level": level,
+            "event": event,
+            "fields": fields,
+        })
+    );
+}
+
+fn target_log_value(target: &ClientTarget) -> Value {
+    json!({
+        "daemon_id": target.daemon_id,
+        "daemon_alias": target.daemon_alias,
+    })
+}
+
+fn daemon_key_log_value(daemon_key: &DaemonKey) -> Value {
+    json!({
+        "realm_id": daemon_key.realm_id,
+        "daemon_id": daemon_key.daemon_id,
+    })
 }
 
 #[cfg(test)]

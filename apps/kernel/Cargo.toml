@@ -12,7 +12,7 @@ serde_json = "1.0.140"
 toml = "0.8.19"
 thiserror = "2.0.12"
 tokio = { version = "1.44.2", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-tungstenite = "0.26.2"
+tokio-tungstenite = { version = "0.26.2", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3.31"
 wait-timeout = "0.2.0"
 libc = "0.2.172"
