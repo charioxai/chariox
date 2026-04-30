@@ -8,7 +8,7 @@ use super::{
     opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
     LaunchProviderRequest, ProviderNativeInteractionBridge, ProviderPromptSignalBatch,
     ProviderRegistry, ProviderRunActorMailbox, ProviderRunOperationLanes, ProviderRunState,
-    RuntimeProviderRun,
+    ProviderRunTokenUsage, RuntimeProviderRun,
 };
 
 pub struct ProviderProcessService {
@@ -1007,6 +1007,7 @@ impl ProviderProcessService {
         if batch.resolved_model.is_none()
             && batch.resolved_variant.is_none()
             && batch.resolved_usage_tokens_total.is_none()
+            && batch.resolved_usage.is_none()
             && !has_terminal_diagnostic
         {
             return Ok(());
@@ -1049,6 +1050,15 @@ impl ProviderProcessService {
         if let Some(total_tokens) = batch.resolved_usage_tokens_total {
             if run.usage_tokens_total() != Some(total_tokens) {
                 run.set_usage_tokens_total(Some(total_tokens));
+            }
+        }
+        if let Some(usage) = batch.resolved_usage.or_else(|| {
+            batch
+                .resolved_usage_tokens_total
+                .map(ProviderRunTokenUsage::from_total_tokens)
+        }) {
+            if run.usage() != usage {
+                run.set_usage(usage);
             }
         }
         Ok(())

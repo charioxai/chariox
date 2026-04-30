@@ -13,7 +13,8 @@ use crate::terminal::TerminalOutputKind;
 
 use super::{
     codex_client::codex_endpoint_is_healthy, CodexClient, CodexNotification, CodexRunSelection,
-    CodexSocket, ProviderNativeInteractionBridge, ProviderResumeState, RuntimeProviderRun,
+    CodexSocket, ProviderNativeInteractionBridge, ProviderResumeState, ProviderRunTokenUsage,
+    RuntimeProviderRun,
 };
 
 const CODEX_EVENT_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(1);
@@ -26,6 +27,7 @@ pub struct CodexPollResult {
     pub prompt_completed: bool,
     pub terminal_failure: Option<String>,
     pub notices: Vec<String>,
+    pub resolved_usage: Option<ProviderRunTokenUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,6 +332,7 @@ pub fn drain_codex_events(
     let mut notices = Vec::new();
     let mut prompt_completed = false;
     let mut terminal_failure = None;
+    let mut resolved_usage = None;
 
     for notification in std::mem::take(&mut state.buffered_notifications) {
         apply_notification(
@@ -342,6 +345,7 @@ pub fn drain_codex_events(
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
     }
 
@@ -361,6 +365,7 @@ pub fn drain_codex_events(
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
     }
 
@@ -370,6 +375,7 @@ pub fn drain_codex_events(
         prompt_completed,
         terminal_failure,
         notices,
+        resolved_usage,
     })
 }
 
@@ -383,6 +389,7 @@ fn apply_notification(
     notices: &mut Vec<String>,
     prompt_completed: &mut bool,
     terminal_failure: &mut Option<String>,
+    resolved_usage: &mut Option<ProviderRunTokenUsage>,
 ) {
     match notification {
         CodexNotification::AgentMessageDelta { item_id, delta } => {
@@ -451,6 +458,9 @@ fn apply_notification(
             if let Some(chunk) = append_tool_progress(tool_items, &item_id, &message) {
                 chunks.push(chunk);
             }
+        }
+        CodexNotification::TokenUsageUpdated { usage, .. } => {
+            *resolved_usage = Some(usage);
         }
         CodexNotification::TurnStarted { turn_id } => {
             crate::logging::debug_with_fields(
@@ -1080,6 +1090,7 @@ mod tests {
 
     use serde_json::{json, Value};
 
+    use crate::provider::ProviderRunTokenUsage;
     use crate::session::PromptAttachment;
     use crate::terminal::TerminalOutputKind;
 
@@ -1145,6 +1156,7 @@ mod tests {
         let mut notices = Vec::new();
         let mut prompt_completed = false;
         let mut terminal_failure = None;
+        let mut resolved_usage = None;
 
         apply_notification(
             CodexNotification::ReasoningTextDelta {
@@ -1159,6 +1171,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
         apply_notification(
             CodexNotification::AgentMessageDelta {
@@ -1173,6 +1186,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
 
         assert_eq!(
@@ -1200,6 +1214,54 @@ mod tests {
     }
 
     #[test]
+    fn token_usage_notification_is_projected() {
+        let mut active_turn_id = Some("turn-1".to_string());
+        let mut pending_turn_completion = None;
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut completions = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+        let mut terminal_failure = None;
+        let mut resolved_usage = None;
+
+        apply_notification(
+            CodexNotification::TokenUsageUpdated {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                usage: ProviderRunTokenUsage {
+                    total_tokens: Some(42_100),
+                    last_tokens: Some(8_900),
+                    context_window: Some(128_000),
+                },
+            },
+            &mut active_turn_id,
+            &mut pending_turn_completion,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+
+        assert_eq!(
+            resolved_usage,
+            Some(ProviderRunTokenUsage {
+                total_tokens: Some(42_100),
+                last_tokens: Some(8_900),
+                context_window: Some(128_000),
+            })
+        );
+        assert!(chunks.is_empty());
+        assert!(completions.is_empty());
+        assert!(notices.is_empty());
+        assert!(!prompt_completed);
+        assert!(terminal_failure.is_none());
+    }
+
+    #[test]
     fn command_execution_updates_are_rendered_cumulatively() {
         let mut active_turn_id = None;
         let mut pending_turn_completion = None;
@@ -1209,6 +1271,7 @@ mod tests {
         let mut notices = Vec::new();
         let mut prompt_completed = false;
         let mut terminal_failure = None;
+        let mut resolved_usage = None;
 
         apply_notification(
             CodexNotification::ItemStarted {
@@ -1233,6 +1296,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
         apply_notification(
             CodexNotification::CommandExecutionOutputDelta {
@@ -1247,6 +1311,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
         apply_notification(
             CodexNotification::CommandExecutionOutputDelta {
@@ -1261,6 +1326,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
         apply_notification(
             CodexNotification::ItemCompleted {
@@ -1285,6 +1351,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
 
         let tool_chunks = chunks
@@ -1342,6 +1409,7 @@ mod tests {
         let mut notices = Vec::new();
         let mut prompt_completed = false;
         let mut terminal_failure = None;
+        let mut resolved_usage = None;
 
         apply_notification(
             CodexNotification::ItemCompleted {
@@ -1360,6 +1428,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
         assert!(!prompt_completed);
         assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
@@ -1378,6 +1447,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
         assert!(prompt_completed);
         assert_eq!(active_turn_id, None);
@@ -1395,6 +1465,7 @@ mod tests {
         let mut notices = Vec::new();
         let mut prompt_completed = false;
         let mut terminal_failure = None;
+        let mut resolved_usage = None;
 
         apply_notification(
             CodexNotification::ItemStarted {
@@ -1413,6 +1484,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
         apply_notification(
             CodexNotification::TurnCompleted {
@@ -1428,6 +1500,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
 
         assert!(!prompt_completed);
@@ -1453,6 +1526,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
 
         assert!(prompt_completed);
@@ -1471,6 +1545,7 @@ mod tests {
         let mut notices = Vec::new();
         let mut prompt_completed = false;
         let mut terminal_failure = None;
+        let mut resolved_usage = None;
 
         apply_notification(
             CodexNotification::TurnCompleted {
@@ -1486,6 +1561,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
 
         assert!(!prompt_completed);
@@ -1503,6 +1579,7 @@ mod tests {
         let mut notices = Vec::new();
         let mut prompt_completed = false;
         let mut terminal_failure = None;
+        let mut resolved_usage = None;
 
         apply_notification(
             CodexNotification::TurnCompleted {
@@ -1518,6 +1595,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
 
         assert!(prompt_completed);
@@ -1537,6 +1615,7 @@ mod tests {
         let mut notices = Vec::new();
         let mut prompt_completed = false;
         let mut terminal_failure = None;
+        let mut resolved_usage = None;
 
         apply_notification(
             CodexNotification::TurnCompleted {
@@ -1552,6 +1631,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
 
         assert!(prompt_completed);
@@ -1569,6 +1649,7 @@ mod tests {
         let mut notices = Vec::new();
         let mut prompt_completed = false;
         let mut terminal_failure = None;
+        let mut resolved_usage = None;
 
         apply_notification(
             CodexNotification::Error {
@@ -1582,6 +1663,7 @@ mod tests {
             &mut notices,
             &mut prompt_completed,
             &mut terminal_failure,
+            &mut resolved_usage,
         );
 
         assert!(prompt_completed);

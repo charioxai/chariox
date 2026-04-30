@@ -461,6 +461,8 @@ pub struct RuntimeProviderRun {
     model: String,
     variant: Option<String>,
     usage_tokens_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "ProviderRunTokenUsage::is_empty")]
+    usage: ProviderRunTokenUsage,
     state: ProviderRunState,
     endpoint_mode: AgentEndpointMode,
     process_label: String,
@@ -516,6 +518,7 @@ impl RuntimeProviderRun {
             model: request.model.clone(),
             variant: request.variant.clone(),
             usage_tokens_total: None,
+            usage: ProviderRunTokenUsage::default(),
             state: ProviderRunState::Starting,
             endpoint_mode: launch_result.endpoint_mode,
             process_label: launch_result.process_label,
@@ -578,6 +581,7 @@ impl RuntimeProviderRun {
             model: String::new(),
             variant: None,
             usage_tokens_total: None,
+            usage: ProviderRunTokenUsage::default(),
             state: ProviderRunState::Starting,
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: "inferred-control-capabilities".to_string(),
@@ -662,8 +666,18 @@ impl RuntimeProviderRun {
         self.usage_tokens_total
     }
 
+    pub fn usage(&self) -> ProviderRunTokenUsage {
+        self.usage
+    }
+
     pub fn set_usage_tokens_total(&mut self, usage_tokens_total: Option<u64>) {
         self.usage_tokens_total = usage_tokens_total;
+        self.usage.total_tokens = usage_tokens_total;
+    }
+
+    pub fn set_usage(&mut self, usage: ProviderRunTokenUsage) {
+        self.usage = usage;
+        self.usage_tokens_total = usage.total_tokens;
     }
 
     pub fn state(&self) -> ProviderRunState {
@@ -830,6 +844,30 @@ fn default_control_capabilities(
     capabilities
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRunTokenUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+}
+
+impl ProviderRunTokenUsage {
+    pub fn from_total_tokens(total_tokens: u64) -> Self {
+        Self {
+            total_tokens: Some(total_tokens),
+            last_tokens: None,
+            context_window: None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total_tokens.is_none() && self.last_tokens.is_none() && self.context_window.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderPromptChunk {
     pub kind: TerminalOutputKind,
@@ -854,6 +892,7 @@ pub struct ProviderPromptSignalBatch {
     pub resolved_model_source: Option<&'static str>,
     pub resolved_variant: Option<String>,
     pub resolved_usage_tokens_total: Option<u64>,
+    pub resolved_usage: Option<ProviderRunTokenUsage>,
 }
 
 pub(crate) fn classify_provider_terminal_failure_text(

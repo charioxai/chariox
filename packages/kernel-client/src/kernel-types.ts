@@ -487,6 +487,11 @@ export type RuntimeProviderRun = {
   model: string
   variant: string | null
   usage_tokens_total: number | null
+  usage?: {
+    total_tokens?: number | null
+    last_tokens?: number | null
+    context_window?: number | null
+  }
   state: string
   started_at_ms?: number
   last_activity_at_ms?: number

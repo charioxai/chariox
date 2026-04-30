@@ -50,7 +50,7 @@ pub use types::{
     ProviderAssistantCompletion, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
     ProviderCommandCatalogSource, ProviderCommandDescriptor, ProviderLaunchResult,
     ProviderProcessInfo, ProviderProcessStatus, ProviderPromptChunk, ProviderPromptSignalBatch,
-    ProviderResumeState, ProviderRunState, ProviderWriteAccessMode, RuntimeMcpBinding,
-    RuntimeProviderRun,
+    ProviderResumeState, ProviderRunState, ProviderRunTokenUsage, ProviderWriteAccessMode,
+    RuntimeMcpBinding, RuntimeProviderRun,
 };
 pub(crate) use workspace_write_fence::{apply_workspace_write_fence, workspace_write_fence_active};

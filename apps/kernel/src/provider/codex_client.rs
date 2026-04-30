@@ -13,7 +13,7 @@ use crate::error::DaemonError;
 use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
 use crate::provider::{
     AgentExecutionMode, AgentPermissionLevel, OpenCodeProviderCatalog,
-    ProviderNativeInteractionBridge, ProviderWriteAccessMode,
+    ProviderNativeInteractionBridge, ProviderRunTokenUsage, ProviderWriteAccessMode,
 };
 
 use super::codex::CODEX_MCP_TOKEN_ENV;
@@ -101,6 +101,11 @@ pub enum CodexNotification {
     McpToolCallProgress {
         item_id: String,
         message: String,
+    },
+    TokenUsageUpdated {
+        thread_id: String,
+        turn_id: String,
+        usage: ProviderRunTokenUsage,
     },
     TurnStarted {
         turn_id: String,
@@ -1647,6 +1652,37 @@ fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotification> {
                 .unwrap_or_default()
                 .to_string(),
         }),
+        "thread/tokenUsage/updated" => {
+            let token_usage = params.get("tokenUsage")?;
+            Some(CodexNotification::TokenUsageUpdated {
+                thread_id: params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                turn_id: params
+                    .get("turnId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                usage: ProviderRunTokenUsage {
+                    total_tokens: token_usage
+                        .get("total")
+                        .and_then(|total| total.get("totalTokens"))
+                        .and_then(Value::as_i64)
+                        .and_then(|value| u64::try_from(value).ok()),
+                    last_tokens: token_usage
+                        .get("last")
+                        .and_then(|last| last.get("totalTokens"))
+                        .and_then(Value::as_i64)
+                        .and_then(|value| u64::try_from(value).ok()),
+                    context_window: token_usage
+                        .get("modelContextWindow")
+                        .and_then(Value::as_i64)
+                        .and_then(|value| u64::try_from(value).ok()),
+                },
+            })
+        }
         "turn/started" => Some(CodexNotification::TurnStarted {
             turn_id: params
                 .get("turn")
@@ -1769,7 +1805,9 @@ mod tests {
     use serde_json::json;
 
     use crate::mcp::ArrobaMcpServerConfig;
-    use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderWriteAccessMode};
+    use crate::provider::{
+        AgentExecutionMode, AgentPermissionLevel, ProviderRunTokenUsage, ProviderWriteAccessMode,
+    };
 
     use super::{
         codex_permission_policy, managed_io_codex_permission_grant, parse_notification,
@@ -2059,6 +2097,46 @@ mod tests {
             Some(CodexNotification::McpToolCallProgress {
                 item_id: "mcp-1".to_string(),
                 message: "running".to_string(),
+            })
+        );
+
+        let token_usage = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("thread/tokenUsage/updated".to_string()),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "tokenUsage": {
+                    "total": {
+                        "totalTokens": 42100,
+                        "inputTokens": 40000,
+                        "cachedInputTokens": 12000,
+                        "outputTokens": 2100,
+                        "reasoningOutputTokens": 800
+                    },
+                    "last": {
+                        "totalTokens": 8900,
+                        "inputTokens": 7600,
+                        "cachedInputTokens": 2000,
+                        "outputTokens": 1300,
+                        "reasoningOutputTokens": 500
+                    },
+                    "modelContextWindow": 128000
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            token_usage,
+            Some(CodexNotification::TokenUsageUpdated {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                usage: ProviderRunTokenUsage {
+                    total_tokens: Some(42100),
+                    last_tokens: Some(8900),
+                    context_window: Some(128000),
+                },
             })
         );
     }

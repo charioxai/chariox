@@ -1279,7 +1279,8 @@ fn execute_output_poll_command(
             resolved_model: None,
             resolved_model_source: None,
             resolved_variant: None,
-            resolved_usage_tokens_total: None,
+            resolved_usage_tokens_total: poll.resolved_usage.and_then(|usage| usage.total_tokens),
+            resolved_usage: poll.resolved_usage,
         }));
     }
     if run.adapter_key() != "opencode" {
@@ -1320,6 +1321,7 @@ fn execute_output_poll_command(
         resolved_model_source: drain.resolved_model_source,
         resolved_variant: drain.resolved_variant,
         resolved_usage_tokens_total: drain.resolved_usage_tokens_total,
+        resolved_usage: None,
     }))
 }
 
