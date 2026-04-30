@@ -638,7 +638,6 @@ impl CommandRouter {
                 expires_at > now_ms + CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS
             });
         if token_is_fresh {
-            self.publish_cloud_kernel_presence(true).await?;
             return Ok(());
         }
 
@@ -667,11 +666,12 @@ impl CommandRouter {
         };
         let mut updated_profile = profile.clone();
         updated_profile.token_expires_at_ms = Some(now_ms + CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS);
-        let mut app = self.app.lock().await;
-        app.configure_relay(Some(profile.relay_url), Some(issued.token))?;
-        app.persist_cloud_relay_profile(Some(updated_profile))?;
-        drop(app);
-        self.publish_cloud_kernel_presence(true).await?;
+        {
+            let mut app = self.app.lock().await;
+            app.configure_relay(Some(profile.relay_url), Some(issued.token))?;
+            app.persist_cloud_relay_profile(Some(updated_profile))?;
+            self.config_projection.update(app.config().clone());
+        }
         Ok(())
     }
 
@@ -2081,7 +2081,8 @@ impl CommandRouter {
     async fn projected_waiting_room_inventory_response(
         &self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.ensure_remote_relay_inventory_projection_fresh().await;
+        self.request_remote_relay_inventory_projection_refresh()
+            .await;
         let sessions = match self
             .execute_cold_list_sessions_request(ListSessionsRequest)
             .await?
@@ -2095,19 +2096,7 @@ impl CommandRouter {
             }
         };
         let relay_status = self.projected_relay_status().await;
-        let remote_machines = match self.projected_remote_machines_response().await? {
-            LocalDaemonResponse::RemoteMachinesListed { machines } => machines,
-            _response => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "build waiting room inventory",
-                    message: format!(
-                        "list remote machines produced unexpected response `{}`",
-                        "unknown"
-                    ),
-                });
-            }
-        };
-        let (_, remote_kernels) = self.remote_relay_inventory_projection.snapshot();
+        let (remote_machines, remote_kernels) = self.remote_relay_inventory_projection.snapshot();
         let launch_target = infer_waiting_room_launch_target();
         let terminals = paired_terminal_records();
         let inventory_version = waiting_room_inventory_version(
@@ -2132,7 +2121,8 @@ impl CommandRouter {
     }
 
     async fn projected_remote_machines_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
-        self.ensure_remote_relay_inventory_projection_fresh().await;
+        self.request_remote_relay_inventory_projection_refresh()
+            .await;
         let (machines, _) = self.remote_relay_inventory_projection.snapshot();
         Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
     }
@@ -2141,7 +2131,8 @@ impl CommandRouter {
         &self,
         machine_ref: String,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.ensure_remote_relay_inventory_projection_fresh().await;
+        self.request_remote_relay_inventory_projection_refresh()
+            .await;
         let machine_ref =
             crate::local::provider_requests::resolve_registered_or_raw_machine_ref(&machine_ref);
         let (_, kernels) = self.remote_relay_inventory_projection.snapshot();
@@ -2219,7 +2210,7 @@ impl CommandRouter {
         })
     }
 
-    async fn ensure_remote_relay_inventory_projection_fresh(&self) {
+    async fn request_remote_relay_inventory_projection_refresh(&self) {
         let connected = self.relay_state.read().await.connected();
         if !connected {
             return;
@@ -2234,19 +2225,22 @@ impl CommandRouter {
         {
             return;
         }
-        if let Err(error) =
-            refresh_remote_inventory_projection_for_app_with_relay_state(&self.app).await
-        {
-            crate::logging::warn_with_fields(
-                "daemon.router",
-                "remote relay inventory refresh on demand failed",
-                serde_json::json!({
-                    "error": error.to_string(),
-                    "stale_after_ms": stale_after_ms,
-                    "cooldown_ms": cooldown_ms,
-                }),
-            );
-        }
+        let app = Arc::clone(&self.app);
+        tokio::spawn(async move {
+            if let Err(error) =
+                refresh_remote_inventory_projection_for_app_with_relay_state(&app).await
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.router",
+                    "remote relay inventory refresh on demand failed",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                        "stale_after_ms": stale_after_ms,
+                        "cooldown_ms": cooldown_ms,
+                    }),
+                );
+            }
+        });
     }
 
     async fn projected_relay_status(&self) -> RelayStatus {
@@ -2372,6 +2366,7 @@ impl CommandRouter {
             let mut app = self.app.lock().await;
             app.configure_relay(request.relay_url, request.relay_token)?;
             app.invalidate_provider_catalog_cache();
+            self.config_projection.update(app.config().clone());
         }
         self.provider_catalog_projection.invalidate();
         Ok(LocalDaemonResponse::RelayConfigured {
@@ -2634,6 +2629,7 @@ impl CommandRouter {
             let mut app = self.app.lock().await;
             app.configure_relay(Some(profile.relay_url.clone()), Some(issued.token.clone()))?;
             app.invalidate_provider_catalog_cache();
+            self.config_projection.update(app.config().clone());
         }
         self.provider_catalog_projection.invalidate();
         let token = CloudRelayRuntimeToken {
@@ -3638,6 +3634,7 @@ impl CommandRouter {
                     let mut app = self.app.lock().await;
                     app.configure_relay(Some(token.relay_url.clone()), Some(token.relay_token))?;
                     app.invalidate_provider_catalog_cache();
+                    self.config_projection.update(app.config().clone());
                 }
                 self.provider_catalog_projection.invalidate();
             }

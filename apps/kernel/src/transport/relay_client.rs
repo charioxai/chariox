@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
@@ -58,6 +58,7 @@ impl Default for RelayClientState {
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+const CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REMOTE_INVENTORY_RELAY_TIMEOUT_MS: u64 = 10_000;
 const REMOTE_INVENTORY_KERNEL_PROBE_TIMEOUT_MS: u64 = 5_000;
 static TEMPORARY_PEER_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -68,7 +69,7 @@ type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, JoinHandle<()>>>>;
 enum RelayConfigContinuity {
     Continue,
     TokenRotated(String),
-    Reconnect,
+    Reconnect(&'static str),
 }
 
 fn relay_config_continuity(
@@ -77,12 +78,12 @@ fn relay_config_continuity(
     config: &crate::config::DaemonConfig,
 ) -> RelayConfigContinuity {
     if config.relay_url.as_deref() != Some(active_relay_url) || config.relay_token.is_none() {
-        return RelayConfigContinuity::Reconnect;
+        return RelayConfigContinuity::Reconnect("relay url or token missing changed");
     }
     match config.relay_token.as_deref() {
         Some(token) if token == active_relay_token => RelayConfigContinuity::Continue,
         Some(token) => RelayConfigContinuity::TokenRotated(token.to_string()),
-        None => RelayConfigContinuity::Reconnect,
+        None => RelayConfigContinuity::Reconnect("relay token missing"),
     }
 }
 
@@ -117,8 +118,8 @@ pub async fn run_daemon_relay_connector(
 
     loop {
         if *shutdown.borrow() {
-            let _ = router.publish_cloud_kernel_presence(false).await;
-            set_disconnected(&state).await;
+            publish_offline_and_set_disconnected(&router, &state, "shutdown before relay connect")
+                .await;
             return;
         }
 
@@ -141,13 +142,23 @@ pub async fn run_daemon_relay_connector(
                     Duration::from_millis(config.relay_heartbeat_ms),
                 ),
                 _ => {
-                    set_disconnected(&state).await;
+                    publish_offline_and_set_disconnected(
+                        &router,
+                        &state,
+                        "relay configuration unavailable",
+                    )
+                    .await;
                     let wait = sleep(Duration::from_secs(1));
                     tokio::pin!(wait);
                     tokio::select! {
                         changed = shutdown.changed() => {
                             if changed.is_ok() && *shutdown.borrow() {
-                                set_disconnected(&state).await;
+                                publish_offline_and_set_disconnected(
+                                    &router,
+                                    &state,
+                                    "shutdown while relay configuration unavailable",
+                                )
+                                .await;
                                 return;
                             }
                         }
@@ -175,7 +186,8 @@ pub async fn run_daemon_relay_connector(
                         "timeout_ms": RELAY_CONNECT_TIMEOUT.as_millis(),
                     }),
                 );
-                set_disconnected(&state).await;
+                publish_offline_and_set_disconnected(&router, &state, "relay connect timed out")
+                    .await;
                 sleep(Duration::from_secs(1)).await;
                 continue;
             }
@@ -213,7 +225,12 @@ pub async fn run_daemon_relay_connector(
                 if outgoing_tx.send(register).is_err() {
                     writer_task.abort();
                     clear_remote_inventory_projection(&app).await;
-                    set_disconnected(&state).await;
+                    publish_offline_and_set_disconnected(
+                        &router,
+                        &state,
+                        "failed to send relay registration",
+                    )
+                    .await;
                     sleep(Duration::from_secs(1)).await;
                     continue;
                 }
@@ -225,6 +242,8 @@ pub async fn run_daemon_relay_connector(
                     }),
                 );
                 set_connected(&state, outgoing_tx.clone()).await;
+                publish_cloud_presence(&router, true, "relay registration sent").await;
+                let mut last_cloud_presence_publish = Instant::now();
                 let mut inventory_refresh_task = Some(spawn_remote_inventory_projection_refresh(
                     Arc::clone(&app),
                     Arc::clone(&state),
@@ -239,7 +258,7 @@ pub async fn run_daemon_relay_connector(
                     tokio::select! {
                         changed = shutdown.changed() => {
                             if changed.is_ok() && *shutdown.borrow() {
-                                let _ = router.publish_cloud_kernel_presence(false).await;
+                                publish_cloud_presence(&router, false, "daemon shutting down").await;
                                 let _ = outgoing_tx.send(RelayEnvelope::Close {
                                     reason: "daemon shutting down".to_string(),
                                 });
@@ -248,7 +267,7 @@ pub async fn run_daemon_relay_connector(
                                 abort_subscription_tasks(&subscription_tasks).await;
                                 writer_task.abort();
                                 clear_remote_inventory_projection(&app).await;
-                                set_disconnected(&state).await;
+                                publish_offline_and_set_disconnected(&router, &state, "daemon shutting down").await;
                                 return;
                             }
                         }
@@ -272,7 +291,7 @@ pub async fn run_daemon_relay_connector(
                                         abort_subscription_tasks(&subscription_tasks).await;
                                         writer_task.abort();
                                         clear_remote_inventory_projection(&app).await;
-                                        set_disconnected(&state).await;
+                                        publish_offline_and_set_disconnected(&router, &state, "relay payload handling failed").await;
                                         break;
                                     }
                                 }
@@ -281,7 +300,7 @@ pub async fn run_daemon_relay_connector(
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
                                     clear_remote_inventory_projection(&app).await;
-                                    set_disconnected(&state).await;
+                                    publish_offline_and_set_disconnected(&router, &state, "relay close frame received").await;
                                     break;
                                 }
                                 Some(Ok(_)) => {}
@@ -290,7 +309,7 @@ pub async fn run_daemon_relay_connector(
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
                                     clear_remote_inventory_projection(&app).await;
-                                    set_disconnected(&state).await;
+                                    publish_offline_and_set_disconnected(&router, &state, "relay read failed or ended").await;
                                     break;
                                 }
                             }
@@ -301,7 +320,7 @@ pub async fn run_daemon_relay_connector(
                             abort_subscription_tasks(&subscription_tasks).await;
                             writer_task.abort();
                             clear_remote_inventory_projection(&app).await;
-                            set_disconnected(&state).await;
+                            publish_offline_and_set_disconnected(&router, &state, "relay writer ended").await;
                             break;
                         }
                         _ = token_refresh_interval.tick() => {
@@ -333,7 +352,16 @@ pub async fn run_daemon_relay_connector(
                                         }),
                                     );
                                 }
-                                RelayConfigContinuity::Reconnect => {
+                                RelayConfigContinuity::Reconnect(reason) => {
+                                    crate::logging::warn_with_fields(
+                                        "daemon.relay_client",
+                                        "relay socket reconnect requested",
+                                        serde_json::json!({
+                                            "relay_url": relay_url,
+                                            "reason": reason,
+                                            "phase": "token_refresh",
+                                        }),
+                                    );
                                     let _ = outgoing_tx.send(RelayEnvelope::Close {
                                         reason: "relay configuration changed".to_string(),
                                     });
@@ -341,7 +369,7 @@ pub async fn run_daemon_relay_connector(
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
                                     clear_remote_inventory_projection(&app).await;
-                                    set_disconnected(&state).await;
+                                    publish_offline_and_set_disconnected(&router, &state, "relay configuration changed").await;
                                     break;
                                 }
                             }
@@ -363,16 +391,25 @@ pub async fn run_daemon_relay_connector(
                                         }),
                                     );
                                 }
-                                RelayConfigContinuity::Reconnect => {
-                                let _ = outgoing_tx.send(RelayEnvelope::Close {
-                                    reason: "relay configuration changed".to_string(),
-                                });
-                                abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                abort_subscription_tasks(&subscription_tasks).await;
-                                writer_task.abort();
-                                clear_remote_inventory_projection(&app).await;
-                                set_disconnected(&state).await;
-                                break;
+                                RelayConfigContinuity::Reconnect(reason) => {
+                                    crate::logging::warn_with_fields(
+                                        "daemon.relay_client",
+                                        "relay socket reconnect requested",
+                                        serde_json::json!({
+                                            "relay_url": relay_url,
+                                            "reason": reason,
+                                            "phase": "heartbeat",
+                                        }),
+                                    );
+                                    let _ = outgoing_tx.send(RelayEnvelope::Close {
+                                        reason: "relay configuration changed".to_string(),
+                                    });
+                                    abort_inventory_refresh_task(&mut inventory_refresh_task);
+                                    abort_subscription_tasks(&subscription_tasks).await;
+                                    writer_task.abort();
+                                    clear_remote_inventory_projection(&app).await;
+                                    publish_offline_and_set_disconnected(&router, &state, "relay configuration changed").await;
+                                    break;
                                 }
                             }
                             if inventory_refresh_task
@@ -398,8 +435,14 @@ pub async fn run_daemon_relay_connector(
                                 abort_subscription_tasks(&subscription_tasks).await;
                                 writer_task.abort();
                                 clear_remote_inventory_projection(&app).await;
-                                set_disconnected(&state).await;
+                                publish_offline_and_set_disconnected(&router, &state, "relay heartbeat send failed").await;
                                 break;
+                            }
+                            if last_cloud_presence_publish.elapsed()
+                                >= CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL
+                            {
+                                publish_cloud_presence(&router, true, "relay heartbeat").await;
+                                last_cloud_presence_publish = Instant::now();
                             }
                         }
                     }
@@ -415,7 +458,12 @@ pub async fn run_daemon_relay_connector(
                     }),
                 );
                 clear_remote_inventory_projection(&app).await;
-                set_disconnected(&state).await;
+                publish_offline_and_set_disconnected(
+                    &router,
+                    &state,
+                    "relay socket connect failed",
+                )
+                .await;
                 let reconnect_delay = sleep(Duration::from_secs(1));
                 tokio::pin!(reconnect_delay);
                 tokio::select! {
@@ -504,7 +552,15 @@ async fn handle_incoming_envelope(
             caller_identity: _,
             encrypted_event,
         } => {
-            handle_daemon_peer_event(router, encrypted_event).await?;
+            if let Err(error) = handle_daemon_peer_event(router, encrypted_event).await {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "failed to handle relay peer event",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
         RelayEnvelope::DaemonSubscribe {
             relay_request_id,
@@ -515,10 +571,19 @@ async fn handle_incoming_envelope(
             client_public_key,
             resume_from_event_id,
         } => {
+            if let Err(error) = router
+                .ensure_relay_subscription_attachment(&session_id, &attachment_id)
+                .await
             {
-                router
-                    .ensure_relay_subscription_attachment(&session_id, &attachment_id)
-                    .await?;
+                send_outgoing_envelope(
+                    outgoing_tx,
+                    RelayEnvelope::DaemonResponse {
+                        relay_request_id,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    },
+                )?;
+                return Ok(());
             }
             if let Some(existing) = subscription_tasks
                 .lock()
@@ -527,7 +592,7 @@ async fn handle_incoming_envelope(
             {
                 existing.abort();
             }
-            let ack = encrypt_json_response(
+            let ack = match encrypt_json_response(
                 router,
                 &client_public_key,
                 serde_json::json!({
@@ -535,7 +600,21 @@ async fn handle_incoming_envelope(
                     "resumed_from_event_id": resume_from_event_id,
                 }),
             )
-            .await?;
+            .await
+            {
+                Ok(ack) => ack,
+                Err(error) => {
+                    send_outgoing_envelope(
+                        outgoing_tx,
+                        RelayEnvelope::DaemonResponse {
+                            relay_request_id,
+                            encrypted_response: None,
+                            error: Some(map_relay_error(&error)),
+                        },
+                    )?;
+                    return Ok(());
+                }
+            };
             send_outgoing_envelope(
                 outgoing_tx,
                 RelayEnvelope::DaemonResponse {
@@ -544,7 +623,7 @@ async fn handle_incoming_envelope(
                     error: None,
                 },
             )?;
-            replay_recent_relay_events(
+            if let Err(error) = replay_recent_relay_events(
                 event_runtime,
                 router,
                 app,
@@ -555,7 +634,19 @@ async fn handle_incoming_envelope(
                 &attachment_id,
                 resume_from_event_id,
             )
-            .await?;
+            .await
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "failed to replay relay subscription events",
+                    serde_json::json!({
+                        "relay_subscription_id": relay_subscription_id,
+                        "session_id": session_id,
+                        "attachment_id": attachment_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
             let task = tokio::spawn(run_relay_subscription_loop(
                 Arc::clone(router),
                 outgoing_tx.clone(),
@@ -583,12 +674,26 @@ async fn handle_incoming_envelope(
             if let Some(task) = existing {
                 task.abort();
             }
-            let ack = encrypt_json_response(
+            let ack = match encrypt_json_response(
                 router,
                 &client_public_key,
                 serde_json::json!({ "ok": true }),
             )
-            .await?;
+            .await
+            {
+                Ok(ack) => ack,
+                Err(error) => {
+                    send_outgoing_envelope(
+                        outgoing_tx,
+                        RelayEnvelope::DaemonResponse {
+                            relay_request_id,
+                            encrypted_response: None,
+                            error: Some(map_relay_error(&error)),
+                        },
+                    )?;
+                    return Ok(());
+                }
+            };
             send_outgoing_envelope(
                 outgoing_tx,
                 RelayEnvelope::DaemonResponse {
@@ -1549,10 +1654,25 @@ async fn handle_daemon_request(
         };
         (request, decrypted.sender_public_key, daemon_private_key)
     };
+    let request_kind = relay_request_kind(&request);
+    crate::logging::info_with_fields(
+        "daemon.relay_client",
+        "relay daemon request dispatching",
+        serde_json::json!({
+            "request_kind": request_kind,
+        }),
+    );
     let result =
         dispatch_relay_client_request(router, command_sequence, caller_identity, request).await;
     match result {
         Ok(response) => {
+            crate::logging::info_with_fields(
+                "daemon.relay_client",
+                "relay daemon request dispatched",
+                serde_json::json!({
+                    "request_kind": request_kind,
+                }),
+            );
             let plaintext = match serde_json::to_vec(&response) {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -1566,15 +1686,33 @@ async fn handle_daemon_request(
                     };
                 }
             };
+            crate::logging::info_with_fields(
+                "daemon.relay_client",
+                "relay daemon response serialized",
+                serde_json::json!({
+                    "request_kind": request_kind,
+                    "byte_len": plaintext.len(),
+                }),
+            );
             match relay_crypto::encrypt_payload_for_peer(
                 &daemon_private_key,
                 &client_public_key,
                 &plaintext,
             ) {
-                Ok(encrypted_response) => RelayRequestOutcome {
-                    encrypted_response: Some(encrypted_response),
-                    error: None,
-                },
+                Ok(encrypted_response) => {
+                    crate::logging::info_with_fields(
+                        "daemon.relay_client",
+                        "relay daemon response encrypted",
+                        serde_json::json!({
+                            "request_kind": request_kind,
+                            "byte_len": plaintext.len(),
+                        }),
+                    );
+                    RelayRequestOutcome {
+                        encrypted_response: Some(encrypted_response),
+                        error: None,
+                    }
+                }
                 Err(error) => RelayRequestOutcome {
                     encrypted_response: None,
                     error: Some(relay_error(
@@ -1651,6 +1789,17 @@ fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
         code: code.to_string(),
         message: message.to_string(),
         retryable,
+    }
+}
+
+fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
+    match request {
+        LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
+        LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
+        LocalDaemonRequest::ListSessions(_) => "session.list",
+        LocalDaemonRequest::AttachToSession(_) => "session.attach",
+        LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        _ => "other",
     }
 }
 
@@ -2055,6 +2204,36 @@ async fn set_connected(
     guard.outgoing_tx = Some(outgoing_tx);
 }
 
+async fn publish_cloud_presence(router: &Arc<CommandRouter>, online: bool, reason: &str) {
+    if let Err(error) = router.publish_cloud_kernel_presence(online).await {
+        crate::logging::warn_with_fields(
+            "daemon.relay_client",
+            "failed to publish cloud relay presence",
+            serde_json::json!({
+                "online": online,
+                "reason": reason,
+                "error": error.to_string(),
+            }),
+        );
+    }
+}
+
+async fn publish_offline_and_set_disconnected(
+    router: &Arc<CommandRouter>,
+    state: &Arc<RwLock<RelayClientState>>,
+    reason: &str,
+) {
+    crate::logging::warn_with_fields(
+        "daemon.relay_client",
+        "relay socket disconnected",
+        serde_json::json!({
+            "reason": reason,
+        }),
+    );
+    publish_cloud_presence(router, false, reason).await;
+    set_disconnected(state).await;
+}
+
 async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
     let pending_peer = {
         let mut guard = state.write().await;
@@ -2268,16 +2447,16 @@ mod tests {
         let mut config = DaemonConfig::for_tests();
         config.relay_url = Some("wss://relay.example/ws".to_string());
         config.relay_token = Some("token".to_string());
-        assert_eq!(
+        assert!(matches!(
             relay_config_continuity("wss://other.example/ws", "token", &config),
-            RelayConfigContinuity::Reconnect
-        );
+            RelayConfigContinuity::Reconnect(_)
+        ));
 
         config.relay_token = None;
-        assert_eq!(
+        assert!(matches!(
             relay_config_continuity("wss://relay.example/ws", "token", &config),
-            RelayConfigContinuity::Reconnect
-        );
+            RelayConfigContinuity::Reconnect(_)
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread")]
