@@ -58,6 +58,7 @@ impl Default for RelayClientState {
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 50;
 const WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE: &str = "waiting_room_inventory";
+const WAITING_ROOM_INVENTORY_SENTINEL_ID: &str = "__waiting_room_inventory__";
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -575,12 +576,54 @@ async fn handle_incoming_envelope(
             resume_from_event_id,
         } => {
             let is_inventory_subscription =
-                subscription_scope.as_deref() == Some("waiting_room_inventory");
+                subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE);
+            crate::logging::info_with_fields(
+                "daemon.relay_client",
+                "relay subscription request received",
+                serde_json::json!({
+                    "relay_request_id": relay_request_id,
+                    "relay_subscription_id": relay_subscription_id,
+                    "session_id": session_id,
+                    "attachment_id": attachment_id,
+                    "subscription_scope": subscription_scope,
+                    "resume_from_event_id": resume_from_event_id,
+                    "is_waiting_room_inventory_subscription": is_inventory_subscription,
+                }),
+            );
+            if !is_inventory_subscription
+                && (session_id == WAITING_ROOM_INVENTORY_SENTINEL_ID
+                    || attachment_id == WAITING_ROOM_INVENTORY_SENTINEL_ID)
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "waiting-room inventory sentinel arrived without subscription scope",
+                    serde_json::json!({
+                        "relay_request_id": relay_request_id,
+                        "relay_subscription_id": relay_subscription_id,
+                        "session_id": session_id,
+                        "attachment_id": attachment_id,
+                        "subscription_scope": subscription_scope,
+                        "diagnosis": "relay or client likely dropped subscription_scope=waiting_room_inventory",
+                    }),
+                );
+            }
             if !is_inventory_subscription {
                 if let Err(error) = router
                     .ensure_relay_subscription_attachment(&session_id, &attachment_id)
                     .await
                 {
+                    crate::logging::warn_with_fields(
+                        "daemon.relay_client",
+                        "relay subscription attachment validation failed",
+                        serde_json::json!({
+                            "relay_request_id": relay_request_id,
+                            "relay_subscription_id": relay_subscription_id,
+                            "session_id": session_id,
+                            "attachment_id": attachment_id,
+                            "subscription_scope": subscription_scope,
+                            "error": error.to_string(),
+                        }),
+                    );
                     send_outgoing_envelope(
                         outgoing_tx,
                         RelayEnvelope::DaemonResponse {

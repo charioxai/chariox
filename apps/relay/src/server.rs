@@ -863,6 +863,21 @@ async fn handle_connection(
                             resume_from_event_id,
                         } => {
                             let realm_id = peer_realm_id(&registry, peer_addr).await;
+                            relay_log(
+                                "info",
+                                "client_subscribe_received",
+                                json!({
+                                    "peer_addr": peer_addr.to_string(),
+                                    "realm_id": realm_id,
+                                    "request_id": request_id,
+                                    "subscription_id": subscription_id,
+                                    "target": target_log_value(&target),
+                                    "session_id": session_id,
+                                    "attachment_id": attachment_id,
+                                    "subscription_scope": subscription_scope,
+                                    "resume_from_event_id": resume_from_event_id,
+                                }),
+                            );
                             let Some(daemon_key) =
                                 resolve_target_daemon_key(&registry, &realm_id, &target).await
                             else {
@@ -888,6 +903,21 @@ async fn handle_connection(
                                 )?;
                                 continue;
                             };
+                            relay_log(
+                                "info",
+                                "client_subscribe_target_resolved",
+                                json!({
+                                    "peer_addr": peer_addr.to_string(),
+                                    "realm_id": realm_id,
+                                    "request_id": request_id,
+                                    "subscription_id": subscription_id,
+                                    "target": target_log_value(&target),
+                                    "daemon_key": daemon_key_log_value(&daemon_key),
+                                    "session_id": session_id,
+                                    "attachment_id": attachment_id,
+                                    "subscription_scope": subscription_scope,
+                                }),
+                            );
                             let relay_request_id = format!(
                                 "relay-request-{}",
                                 relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
@@ -935,6 +965,20 @@ async fn handle_connection(
                                 )?;
                                 continue;
                             };
+                            relay_log(
+                                "info",
+                                "daemon_subscribe_forwarded",
+                                json!({
+                                    "relay_request_id": relay_request_id,
+                                    "client_request_id": request_id,
+                                    "subscription_id": subscription_id,
+                                    "daemon_key": daemon_key_log_value(&daemon_key),
+                                    "session_id": session_id,
+                                    "attachment_id": attachment_id,
+                                    "subscription_scope": subscription_scope,
+                                    "resume_from_event_id": resume_from_event_id,
+                                }),
+                            );
                             send_envelope(
                                 &daemon_sender,
                                 &RelayEnvelope::DaemonSubscribe {

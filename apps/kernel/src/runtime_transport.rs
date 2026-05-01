@@ -38,6 +38,7 @@ const HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RELAY_DISCOVERY_INTERVAL_TICKS: u64 = 100;
 const WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 50;
 const WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE: &str = "waiting_room_inventory";
+const WAITING_ROOM_INVENTORY_SENTINEL_ID: &str = "__waiting_room_inventory__";
 const DURABLE_SNAPSHOT_POLL_INTERVAL_MS: u64 = 5_000;
 const WEBSOCKET_PING_INTERVAL_MS: u64 = 5_000;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
@@ -738,6 +739,21 @@ async fn handle_incoming_payload(
                     "resume_from_event_id": resume_from_event_id,
                 }),
             );
+            if scope != KernelSubscriptionScope::WaitingRoomInventory
+                && (session_id == WAITING_ROOM_INVENTORY_SENTINEL_ID
+                    || attachment_id == WAITING_ROOM_INVENTORY_SENTINEL_ID)
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime_transport",
+                    "waiting-room inventory sentinel arrived without subscription scope",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "attachment_id": attachment_id,
+                        "subscription_scope": subscription_scope,
+                        "diagnosis": "client likely dropped subscription_scope=waiting_room_inventory",
+                    }),
+                );
+            }
             let replay_gap = if scope == KernelSubscriptionScope::WaitingRoomInventory {
                 None
             } else {

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use arroba_relay::{RelayAuthVerifier, RelayConfig, RelayServer};
+use serde_json::json;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -10,7 +11,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         RelayServer::new(config.clone())
     };
-    println!("arroba relay listening on {}:{}", config.host, config.port);
+    eprintln!(
+        "{}",
+        json!({
+            "component": "arroba-relay",
+            "level": "info",
+            "event": "relay_process_starting",
+            "fields": {
+                "host": config.host,
+                "port": config.port,
+                "package_version": env!("CARGO_PKG_VERSION"),
+                "build_commit": std::env::var("ARROBA_BUILD_COMMIT").ok(),
+                "scoped_verifier": std::env::var("ARROBA_RELAY_SCOPED_ISSUER")
+                    .ok()
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false),
+            },
+        })
+    );
     server.run().await?;
     Ok(())
 }
