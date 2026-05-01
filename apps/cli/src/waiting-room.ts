@@ -97,6 +97,8 @@ export type WaitingRoomRemoteKernel = {
 }
 
 export type WaitingRoomRemoteState = {
+  inventoryStatus?: "loading" | "ready" | "error"
+  loadingFrame?: number
   cloudNotice?: string | null
   relay?: {
     configured: boolean
@@ -344,6 +346,8 @@ export function waitingRoomRows(
   themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
 ) {
   const choice = waitingRoomChoice(state, sessions, catalog)
+  const inventoryLoading = remote.inventoryStatus === "loading"
+  const loadingText = waitingRoomLoadingText(remote.loadingFrame)
   const modelOptions = catalogModelOptions(catalog, state.providerId)
   const visibleSessions = waitingRoomSessions(sessions)
   const previewSessions = waitingRoomPreviewSessions(sessions)
@@ -421,7 +425,7 @@ export function waitingRoomRows(
     {
       id: "workspace",
       title: "Workspace",
-      value: targets?.workspacePath ?? "Set workspace path",
+      value: targets?.workspacePath ?? (inventoryLoading ? loadingText : "Set workspace path"),
       titleWidth,
       indent: 1,
       focused: state.focus === "workspace",
@@ -431,7 +435,7 @@ export function waitingRoomRows(
     {
       id: "worktree",
       title: "Worktree",
-      value: selectedWorktreeLabel,
+      value: targets?.worktreePath ? selectedWorktreeLabel : inventoryLoading ? loadingText : selectedWorktreeLabel,
       titleWidth,
       indent: 1,
       focused: state.focus === "worktree",
@@ -441,7 +445,7 @@ export function waitingRoomRows(
     {
       id: "join-header",
       title: "Join Existing Session",
-      value: visibleSessions.length > 0 ? "Press Enter" : "",
+      value: inventoryLoading && visibleSessions.length === 0 ? loadingText : visibleSessions.length > 0 ? "Press Enter" : "",
       titleWidth,
       indent: 0,
       focused: state.focus === "join-sessions",
@@ -450,7 +454,18 @@ export function waitingRoomRows(
     },
   ]
 
-  if (visibleSessions.length === 0) {
+  if (visibleSessions.length === 0 && inventoryLoading) {
+    rows.push({
+      id: "sessions-loading",
+      title: "Sessions",
+      value: loadingText,
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    })
+  } else if (visibleSessions.length === 0) {
     rows.push({
       id: "no-sessions",
       title: "No sessions available",
@@ -584,12 +599,16 @@ function waitingRoomRemoteRows(
   remote: WaitingRoomRemoteState,
   titleWidth: number,
 ): WaitingRoomRow[] {
+  const inventoryLoading = remote.inventoryStatus === "loading"
+  const loadingText = waitingRoomLoadingText(remote.loadingFrame)
   const relay = remote.relay ?? null
   const machines = remote.machines ?? []
   const pendingCount = machines.filter((machine) => machine.pending).length
   const onlineMachines = machines.filter((machine) => machine.online !== false)
   const relayStatus = !relay || !relay.configured
-    ? "not configured"
+    ? inventoryLoading
+      ? loadingText
+      : "not configured"
     : relay.connected
       ? `connected ${relay.relay_url ?? ""}`.trim()
       : `connecting ${relay.relay_url ?? ""}`.trim()
@@ -617,7 +636,9 @@ function waitingRoomRemoteRows(
     {
       id: "machines-header",
       title: "Machines",
-      value: `${onlineMachines.length} online${pendingCount > 0 ? ` (${pendingCount} pending)` : ""}`,
+      value: inventoryLoading && machines.length === 0
+        ? loadingText
+        : `${onlineMachines.length} online${pendingCount > 0 ? ` (${pendingCount} pending)` : ""}`,
       titleWidth,
       indent: 0,
       focused: false,
@@ -640,6 +661,20 @@ function waitingRoomRemoteRows(
       selectable: false,
       scrollbar: "",
     })
+  }
+
+  if (inventoryLoading && machines.length === 0 && waitingRoomRemoteKernels(remote).length === 0) {
+    rows.push({
+      id: "machines-loading",
+      title: "Remote Machines",
+      value: loadingText,
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    })
+    return rows
   }
 
   if (!relay?.configured && machines.length === 0 && waitingRoomRemoteKernels(remote).length === 0) {
@@ -727,6 +762,10 @@ export function waitingRoomRemoteKernels(remote: WaitingRoomRemoteState) {
 
 export function waitingRoomTerminals(remote: WaitingRoomRemoteState) {
   return remote.terminals ?? []
+}
+
+function waitingRoomLoadingText(frame = 0) {
+  return `loading${".".repeat(Math.abs(frame) % 4)}`
 }
 
 export function waitingRoomRemoteMachineCanDelete(machine: WaitingRoomRemoteMachine) {

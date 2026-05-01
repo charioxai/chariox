@@ -85,6 +85,7 @@ type RelaySubscribeFrame = {
   session_id: string
   attachment_id: string
   client_public_key: string
+  subscription_scope?: string
   resume_from_event_id: number | null
 }
 
@@ -171,6 +172,10 @@ export type KernelEvent =
     }>
   }
   | {
+    event: "waiting_room_inventory_changed"
+    inventory_version: string
+  }
+  | {
     event: "heartbeat"
     session_id: string
   }
@@ -207,6 +212,7 @@ export class LocalIpcError extends Error {
 type KernelSubscriptionState = {
   sessionId: string
   attachmentId: string
+  scope: "session" | "waiting_room_inventory"
   relaySubscriptionId: string | null
   relayPrivateKey: Buffer | null
 }
@@ -294,6 +300,7 @@ export class LocalIpcClient {
     this.activeKernelSubscription = {
       sessionId,
       attachmentId,
+      scope: "session",
       relaySubscriptionId: this.isRelayMode() ? randomUUID() : null,
       relayPrivateKey: null,
     }
@@ -306,6 +313,47 @@ export class LocalIpcClient {
             type: "subscribe",
             session_id: sessionId,
             attachment_id: attachmentId,
+            resume_from_event_id: resumeFromEventId,
+          },
+        }, "event")
+      }
+      this.clearReconnectState()
+      this.markKernelEventReceived()
+    } catch (error) {
+      this.scheduleReconnect()
+      throw error
+    }
+  }
+
+  async subscribeToWaitingRoomInventory(): Promise<void> {
+    if (!this.supportsKernelEvents()) {
+      return
+    }
+    const sessionId = "__waiting_room_inventory__"
+    const attachmentId = "__waiting_room_inventory__"
+    const previousSubscription = this.activeKernelSubscription
+    const resumeFromEventId =
+      previousSubscription?.scope === "waiting_room_inventory" ? this.lastReceivedEventId : null
+    if (resumeFromEventId == null) {
+      this.lastReceivedEventId = null
+    }
+    this.activeKernelSubscription = {
+      sessionId,
+      attachmentId,
+      scope: "waiting_room_inventory",
+      relaySubscriptionId: this.isRelayMode() ? randomUUID() : null,
+      relayPrivateKey: null,
+    }
+    try {
+      if (this.isRelayMode()) {
+        await this.sendRelaySubscribe(sessionId, attachmentId, resumeFromEventId, "waiting_room_inventory")
+      } else {
+        await this.sendWebSocket<Record<string, unknown>>({
+          __kernel_transport: {
+            type: "subscribe",
+            session_id: sessionId,
+            attachment_id: attachmentId,
+            subscription_scope: "waiting_room_inventory",
             resume_from_event_id: resumeFromEventId,
           },
         }, "event")
@@ -514,6 +562,7 @@ export class LocalIpcClient {
     sessionId: string,
     attachmentId: string,
     resumeFromEventId: number | null,
+    subscriptionScope?: string,
   ): Promise<void> {
     const lane: KernelSocketLane = "event"
     const socket = await this.ensureWebSocket(lane)
@@ -550,6 +599,9 @@ export class LocalIpcClient {
           attachment_id: attachmentId,
           client_public_key: keypair.publicKeyBase64,
           resume_from_event_id: resumeFromEventId,
+        }
+        if (subscriptionScope) {
+          frame.subscription_scope = subscriptionScope
         }
         socket.send(JSON.stringify(frame))
       } catch (error) {
@@ -956,6 +1008,7 @@ export class LocalIpcClient {
           subscription.sessionId,
           subscription.attachmentId,
           this.lastReceivedEventId,
+          subscription.scope === "waiting_room_inventory" ? "waiting_room_inventory" : undefined,
         )
       } else {
         await this.sendWebSocket<Record<string, unknown>>({
@@ -963,6 +1016,7 @@ export class LocalIpcClient {
             type: "subscribe",
             session_id: subscription.sessionId,
             attachment_id: subscription.attachmentId,
+            subscription_scope: subscription.scope === "waiting_room_inventory" ? "waiting_room_inventory" : undefined,
             resume_from_event_id: this.lastReceivedEventId,
           },
         }, "event")
@@ -1160,6 +1214,7 @@ function normalizeWebSocketRequest(requestId: string, request: unknown) {
       request_id: requestId,
       session_id: transportRequest.session_id,
       attachment_id: transportRequest.attachment_id,
+      subscription_scope: transportRequest.subscription_scope ?? null,
       resume_from_event_id: transportRequest.resume_from_event_id ?? null,
     }
   }
@@ -1177,7 +1232,7 @@ function normalizeWebSocketRequest(requestId: string, request: unknown) {
 }
 
 function extractTransportRequest(request: unknown):
-  | { type: "subscribe"; session_id: string; attachment_id: string; resume_from_event_id?: number | null }
+  | { type: "subscribe"; session_id: string; attachment_id: string; subscription_scope?: string | null; resume_from_event_id?: number | null }
   | { type: "unsubscribe" }
   | null {
   if (!request || typeof request !== "object") {
@@ -1197,6 +1252,7 @@ function extractTransportRequest(request: unknown):
       type: "subscribe",
       session_id: transport.session_id,
       attachment_id: transport.attachment_id,
+      subscription_scope: typeof transport.subscription_scope === "string" ? transport.subscription_scope : null,
       resume_from_event_id:
         typeof transport.resume_from_event_id === "number" ? transport.resume_from_event_id : null,
     }

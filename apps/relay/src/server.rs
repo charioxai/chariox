@@ -859,6 +859,7 @@ async fn handle_connection(
                             session_id,
                             attachment_id,
                             client_public_key,
+                            subscription_scope,
                             resume_from_event_id,
                         } => {
                             let realm_id = peer_realm_id(&registry, peer_addr).await;
@@ -943,6 +944,7 @@ async fn handle_connection(
                                     session_id,
                                     attachment_id,
                                     client_public_key,
+                                    subscription_scope,
                                     resume_from_event_id,
                                 },
                             )?;

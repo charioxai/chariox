@@ -36,6 +36,8 @@ pub(crate) const WATCH_INTERVAL_MS: u64 = 50;
 const STATE_INTERVAL_TICKS: u64 = 4;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RELAY_DISCOVERY_INTERVAL_TICKS: u64 = 100;
+const WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 50;
+const WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE: &str = "waiting_room_inventory";
 const DURABLE_SNAPSHOT_POLL_INTERVAL_MS: u64 = 5_000;
 const WEBSOCKET_PING_INTERVAL_MS: u64 = 5_000;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
@@ -60,6 +62,8 @@ enum KernelIncomingFrame {
         request_id: String,
         session_id: String,
         attachment_id: String,
+        #[serde(default)]
+        subscription_scope: Option<String>,
         #[serde(default)]
         resume_from_event_id: Option<u64>,
     },
@@ -168,6 +172,9 @@ pub(crate) enum KernelEvent {
     RemoteMachinesChanged {
         machines: Vec<RemoteMachineRecord>,
     },
+    WaitingRoomInventoryChanged {
+        inventory_version: String,
+    },
     Heartbeat {
         session_id: String,
     },
@@ -188,6 +195,13 @@ pub(crate) enum KernelEvent {
 struct KernelSubscription {
     session_id: String,
     attachment_id: String,
+    subscription_scope: KernelSubscriptionScope,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KernelSubscriptionScope {
+    Session,
+    WaitingRoomInventory,
 }
 
 #[derive(Debug)]
@@ -710,43 +724,50 @@ async fn handle_incoming_payload(
             request_id,
             session_id,
             attachment_id,
+            subscription_scope,
             resume_from_event_id,
         } => {
+            let scope = kernel_subscription_scope(subscription_scope.as_deref());
             crate::logging::info_with_fields(
                 "daemon.runtime_transport",
                 "kernel websocket subscribed",
                 serde_json::json!({
                     "session_id": session_id,
                     "attachment_id": attachment_id,
+                    "subscription_scope": subscription_scope,
                     "resume_from_event_id": resume_from_event_id,
                 }),
             );
-            let replay_result = replay_recent_events(
-                runtime,
-                outgoing_tx,
-                close_tx,
-                close_requested,
-                &session_id,
-                &attachment_id,
-                resume_from_event_id,
-            )
-            .await;
-            let replay_gap = match replay_result {
-                ReplaySubscriptionResult::Gap(gap) => {
-                    emit_replay_gap_snapshot(
-                        app,
-                        runtime,
-                        outgoing_tx,
-                        close_tx,
-                        close_requested,
-                        &session_id,
-                        &attachment_id,
-                    )
-                    .await;
-                    Some(gap)
+            let replay_gap = if scope == KernelSubscriptionScope::WaitingRoomInventory {
+                None
+            } else {
+                let replay_result = replay_recent_events(
+                    runtime,
+                    outgoing_tx,
+                    close_tx,
+                    close_requested,
+                    &session_id,
+                    &attachment_id,
+                    resume_from_event_id,
+                )
+                .await;
+                match replay_result {
+                    ReplaySubscriptionResult::Gap(gap) => {
+                        emit_replay_gap_snapshot(
+                            app,
+                            runtime,
+                            outgoing_tx,
+                            close_tx,
+                            close_requested,
+                            &session_id,
+                            &attachment_id,
+                        )
+                        .await;
+                        Some(gap)
+                    }
+                    ReplaySubscriptionResult::Overflow => return,
+                    ReplaySubscriptionResult::Complete | ReplaySubscriptionResult::NoCursor => None,
                 }
-                ReplaySubscriptionResult::Overflow => return,
-                ReplaySubscriptionResult::Complete | ReplaySubscriptionResult::NoCursor => None,
             };
             {
                 let mut state = connection_state.lock().await;
@@ -759,9 +780,11 @@ async fn handle_incoming_payload(
                 state.subscription = Some(KernelSubscription {
                     session_id: session_id.clone(),
                     attachment_id: attachment_id.clone(),
+                    subscription_scope: scope.clone(),
                 });
                 state.watch_task = Some(tokio::spawn(run_subscription_loop(
                     Arc::clone(app),
+                    Arc::clone(router),
                     Arc::clone(runtime),
                     outgoing_tx.clone(),
                     close_tx.clone(),
@@ -769,6 +792,7 @@ async fn handle_incoming_payload(
                     KernelSubscription {
                         session_id: session_id.clone(),
                         attachment_id: attachment_id.clone(),
+                        subscription_scope: scope,
                     },
                 )));
             }
@@ -790,8 +814,8 @@ async fn handle_incoming_payload(
                     }))),
                     error: None,
                 },
-                Some(&session_id),
-                Some(&attachment_id),
+                if subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE) { None } else { Some(&session_id) },
+                if subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE) { None } else { Some(&attachment_id) },
             );
         }
         KernelIncomingFrame::Unsubscribe { request_id } => {
@@ -828,15 +852,28 @@ async fn handle_incoming_payload(
 
 async fn run_subscription_loop(
     app: Arc<Mutex<DaemonApp>>,
+    router: Arc<CommandRouter>,
     runtime: Arc<KernelTransportRuntime>,
     outgoing_tx: mpsc::Sender<KernelOutgoingFrame>,
     close_tx: mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: Arc<AtomicBool>,
     subscription: KernelSubscription,
 ) {
+    if subscription.subscription_scope == KernelSubscriptionScope::WaitingRoomInventory {
+        run_waiting_room_inventory_subscription_loop(
+            router,
+            runtime,
+            outgoing_tx,
+            close_tx,
+            close_requested,
+        )
+        .await;
+        return;
+    }
     let mut previous_snapshot: Option<(RuntimeSession, Option<RuntimeProviderRun>)> = None;
     let mut previous_relay_status: Option<RelayStatus> = None;
     let mut previous_remote_machines: Option<Vec<RemoteMachineRecord>> = None;
+    let mut previous_inventory_version: Option<String> = None;
     let mut tick: u64 = 0;
     let event_stream_id =
         subscription_event_stream_id(&subscription.session_id, &subscription.attachment_id);
@@ -1009,6 +1046,40 @@ async fn run_subscription_loop(
                             crate::logging::warn_with_fields(
                                 "daemon.runtime_transport",
                                 "kernel event loop failed to build remote machines snapshot",
+                                serde_json::json!({
+                                    "session_id": subscription.session_id,
+                                    "attachment_id": subscription.attachment_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
+                    }
+                }
+                if tick.is_multiple_of(WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
+                    match router.waiting_room_inventory_version().await {
+                        Ok(inventory_version) => {
+                            if previous_inventory_version.as_ref() != Some(&inventory_version) {
+                                previous_inventory_version = Some(inventory_version.clone());
+                                if !emit_kernel_event(
+                                    &runtime,
+                                    &outgoing_tx,
+                                    &close_tx,
+                                    &close_requested,
+                                    KernelEvent::WaitingRoomInventoryChanged { inventory_version },
+                                    Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                                    Some(&subscription.session_id),
+                                    Some(&subscription.attachment_id),
+                                )
+                                .await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            crate::logging::warn_with_fields(
+                                "daemon.runtime_transport",
+                                "kernel event loop failed to build waiting-room inventory version",
                                 serde_json::json!({
                                     "session_id": subscription.session_id,
                                     "attachment_id": subscription.attachment_id,
@@ -1488,6 +1559,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::SessionUnavailable { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::RelayStatusChanged { .. } => None,
         KernelEvent::RemoteMachinesChanged { .. } => None,
+        KernelEvent::WaitingRoomInventoryChanged { .. } => None,
         KernelEvent::Heartbeat { session_id } => Some(session_id.as_str()),
         KernelEvent::TransportResumed { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::ReplayGap { session_id, .. } => Some(session_id.as_str()),
@@ -1537,9 +1609,62 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::SessionUnavailable { .. }
         | KernelEvent::RelayStatusChanged { .. }
         | KernelEvent::RemoteMachinesChanged { .. }
+        | KernelEvent::WaitingRoomInventoryChanged { .. }
         | KernelEvent::Heartbeat { .. }
         | KernelEvent::TransportResumed { .. }
         | KernelEvent::ReplayGap { .. } => true,
+    }
+}
+
+async fn run_waiting_room_inventory_subscription_loop(
+    router: Arc<CommandRouter>,
+    runtime: Arc<KernelTransportRuntime>,
+    outgoing_tx: mpsc::Sender<KernelOutgoingFrame>,
+    close_tx: mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: Arc<AtomicBool>,
+) {
+    let mut previous_inventory_version: Option<String> = None;
+    loop {
+        match router.waiting_room_inventory_version().await {
+            Ok(inventory_version) => {
+                if previous_inventory_version.as_ref() != Some(&inventory_version) {
+                    previous_inventory_version = Some(inventory_version.clone());
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        KernelEvent::WaitingRoomInventoryChanged { inventory_version },
+                        Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                        None,
+                        None,
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                }
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime_transport",
+                    "kernel waiting-room inventory subscription failed to build version",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
+        }
+        sleep(Duration::from_millis(
+            WATCH_INTERVAL_MS * WAITING_ROOM_INVENTORY_INTERVAL_TICKS,
+        ))
+        .await;
+    }
+}
+
+fn kernel_subscription_scope(scope: Option<&str>) -> KernelSubscriptionScope {
+    if scope == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE) {
+        KernelSubscriptionScope::WaitingRoomInventory
+    } else {
+        KernelSubscriptionScope::Session
     }
 }
 

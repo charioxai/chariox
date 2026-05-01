@@ -222,6 +222,8 @@ pub enum RelayEnvelope {
         attachment_id: String,
         client_public_key: String,
         #[serde(default)]
+        subscription_scope: Option<String>,
+        #[serde(default)]
         resume_from_event_id: Option<u64>,
     },
     ClientUnsubscribe {
@@ -237,6 +239,8 @@ pub enum RelayEnvelope {
         session_id: String,
         attachment_id: String,
         client_public_key: String,
+        #[serde(default)]
+        subscription_scope: Option<String>,
         #[serde(default)]
         resume_from_event_id: Option<u64>,
     },

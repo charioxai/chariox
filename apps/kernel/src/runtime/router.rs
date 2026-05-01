@@ -2120,6 +2120,16 @@ impl CommandRouter {
         })
     }
 
+    pub(crate) async fn waiting_room_inventory_version(&self) -> Result<String, DaemonError> {
+        match self.projected_waiting_room_inventory_response().await? {
+            LocalDaemonResponse::WaitingRoomInventory { snapshot } => Ok(snapshot.inventory_version),
+            _response => Err(DaemonError::LocalTransport {
+                operation: "build waiting room inventory version",
+                message: "waiting room inventory request produced unexpected response".to_string(),
+            }),
+        }
+    }
+
     async fn projected_remote_machines_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
         self.request_remote_relay_inventory_projection_refresh()
             .await;

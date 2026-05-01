@@ -56,6 +56,8 @@ impl Default for RelayClientState {
 }
 
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 20;
+const RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 50;
+const WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE: &str = "waiting_room_inventory";
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -569,21 +571,26 @@ async fn handle_incoming_envelope(
             session_id,
             attachment_id,
             client_public_key,
+            subscription_scope,
             resume_from_event_id,
         } => {
-            if let Err(error) = router
-                .ensure_relay_subscription_attachment(&session_id, &attachment_id)
-                .await
-            {
-                send_outgoing_envelope(
-                    outgoing_tx,
-                    RelayEnvelope::DaemonResponse {
-                        relay_request_id,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    },
-                )?;
-                return Ok(());
+            let is_inventory_subscription =
+                subscription_scope.as_deref() == Some("waiting_room_inventory");
+            if !is_inventory_subscription {
+                if let Err(error) = router
+                    .ensure_relay_subscription_attachment(&session_id, &attachment_id)
+                    .await
+                {
+                    send_outgoing_envelope(
+                        outgoing_tx,
+                        RelayEnvelope::DaemonResponse {
+                            relay_request_id,
+                            encrypted_response: None,
+                            error: Some(map_relay_error(&error)),
+                        },
+                    )?;
+                    return Ok(());
+                }
             }
             if let Some(existing) = subscription_tasks
                 .lock()
@@ -623,29 +630,31 @@ async fn handle_incoming_envelope(
                     error: None,
                 },
             )?;
-            if let Err(error) = replay_recent_relay_events(
-                event_runtime,
-                router,
-                app,
-                outgoing_tx,
-                &relay_subscription_id,
-                &client_public_key,
-                &session_id,
-                &attachment_id,
-                resume_from_event_id,
-            )
-            .await
-            {
-                crate::logging::warn_with_fields(
-                    "daemon.relay_client",
-                    "failed to replay relay subscription events",
-                    serde_json::json!({
-                        "relay_subscription_id": relay_subscription_id,
-                        "session_id": session_id,
-                        "attachment_id": attachment_id,
-                        "error": error.to_string(),
-                    }),
-                );
+            if !is_inventory_subscription {
+                if let Err(error) = replay_recent_relay_events(
+                    event_runtime,
+                    router,
+                    app,
+                    outgoing_tx,
+                    &relay_subscription_id,
+                    &client_public_key,
+                    &session_id,
+                    &attachment_id,
+                    resume_from_event_id,
+                )
+                .await
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.relay_client",
+                        "failed to replay relay subscription events",
+                        serde_json::json!({
+                            "relay_subscription_id": relay_subscription_id,
+                            "session_id": session_id,
+                            "attachment_id": attachment_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
             }
             let task = tokio::spawn(run_relay_subscription_loop(
                 Arc::clone(router),
@@ -654,6 +663,7 @@ async fn handle_incoming_envelope(
                 client_public_key.clone(),
                 session_id.clone(),
                 attachment_id.clone(),
+                subscription_scope.clone(),
                 Arc::clone(event_runtime),
             ));
             subscription_tasks
@@ -1855,9 +1865,22 @@ async fn run_relay_subscription_loop(
     client_public_key: String,
     session_id: String,
     attachment_id: String,
+    subscription_scope: Option<String>,
     event_runtime: Arc<RelayEventRuntime>,
 ) {
+    if subscription_scope.as_deref() == Some("waiting_room_inventory") {
+        run_relay_waiting_room_inventory_subscription_loop(
+            router,
+            outgoing_tx,
+            subscription_id,
+            client_public_key,
+            event_runtime,
+        )
+        .await;
+        return;
+    }
     let mut previous_snapshot = None;
+    let mut previous_inventory_version = None;
     let mut tick: u64 = 0;
     let event_stream_id = relay_subscription_event_stream_id(&session_id, &attachment_id);
 
@@ -1968,6 +1991,40 @@ async fn run_relay_subscription_loop(
                 {
                     break;
                 }
+                if tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
+                    match router.waiting_room_inventory_version().await {
+                        Ok(inventory_version) => {
+                            if previous_inventory_version.as_ref() != Some(&inventory_version) {
+                                previous_inventory_version = Some(inventory_version.clone());
+                                if emit_relay_event(
+                                    &router,
+                                    &outgoing_tx,
+                                    &subscription_id,
+                                    &client_public_key,
+                                    &event_runtime,
+                                    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                                    KernelEvent::WaitingRoomInventoryChanged { inventory_version },
+                                )
+                                .await
+                                .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            crate::logging::warn_with_fields(
+                                "daemon.relay_client",
+                                "relay event loop failed to build waiting-room inventory version",
+                                serde_json::json!({
+                                    "session_id": session_id,
+                                    "attachment_id": attachment_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
+                    }
+                }
             }
             WatchResult::Unavailable(message) => {
                 let _ = emit_relay_event(
@@ -1989,6 +2046,50 @@ async fn run_relay_subscription_loop(
 
         tick = tick.wrapping_add(1);
         sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
+    }
+}
+
+async fn run_relay_waiting_room_inventory_subscription_loop(
+    router: Arc<CommandRouter>,
+    outgoing_tx: mpsc::UnboundedSender<RelayEnvelope>,
+    subscription_id: String,
+    client_public_key: String,
+    event_runtime: Arc<RelayEventRuntime>,
+) {
+    let mut previous_inventory_version = None;
+    loop {
+        match router.waiting_room_inventory_version().await {
+            Ok(inventory_version) => {
+                if previous_inventory_version.as_ref() != Some(&inventory_version) {
+                    previous_inventory_version = Some(inventory_version.clone());
+                    if emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                        KernelEvent::WaitingRoomInventoryChanged { inventory_version },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "relay waiting-room inventory subscription failed to build version",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
+        }
+        sleep(Duration::from_millis(
+            WATCH_INTERVAL_MS * RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS,
+        ))
+        .await;
     }
 }
 
@@ -4045,6 +4146,7 @@ mod tests {
                 session_id: created_session_id.clone(),
                 attachment_id: attachment_id.clone(),
                 client_public_key: subscription_public_key.clone(),
+                subscription_scope: None,
                 resume_from_event_id: None,
             },
         )
@@ -4163,6 +4265,7 @@ mod tests {
                 session_id: created_session_id.clone(),
                 attachment_id: attachment_id.clone(),
                 client_public_key: subscription_public_key.clone(),
+                subscription_scope: None,
                 resume_from_event_id: None,
             },
         )
@@ -4201,6 +4304,7 @@ mod tests {
                 session_id: created_session_id.clone(),
                 attachment_id: attachment_id.clone(),
                 client_public_key: subscription_public_key,
+                subscription_scope: None,
                 resume_from_event_id: Some(first_event.0),
             },
         )

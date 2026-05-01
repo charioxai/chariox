@@ -233,6 +233,20 @@ test("waiting room places join below start configuration and makes cloud relay l
   assert.equal(cloudNoticeRows.find((row) => row.id === "cloud-notice:1")?.value, "url=https://cloud.example/terminal?view=waiting")
 })
 
+test("waiting room shows loading rows before inventory arrives", () => {
+  const catalog = fallbackProviderCatalog()
+  const state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+  const rows = waitingRoomRows(state, [], catalog, {
+    inventoryStatus: "loading",
+    loadingFrame: 2,
+  })
+
+  assert.equal(rows.find((row) => row.id === "join-header")?.value, "loading..")
+  assert.equal(rows.some((row) => row.id === "no-sessions"), false)
+  assert.equal(rows.find((row) => row.id === "sessions-loading")?.value, "loading..")
+  assert.equal(rows.find((row) => row.id === "machines-loading")?.value, "loading..")
+})
+
 test("waiting room shows relay kernels as selectable targets", () => {
   const catalog = fallbackProviderCatalog()
   let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")

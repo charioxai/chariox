@@ -876,6 +876,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [remoteMachinesState, setRemoteMachinesState] = createSignal<RemoteMachineView[]>([])
   const [remoteKernelsState, setRemoteKernelsState] = createSignal<RemoteKernelView[]>([])
   const [terminalsState, setTerminalsState] = createSignal<TerminalView[]>([])
+  const [waitingRoomInventoryStatus, setWaitingRoomInventoryStatus] = createSignal<"loading" | "ready" | "error">("loading")
   const hiddenWaitingRoomKernelIds = new Set<string>(initialPreferences.ui?.hiddenRemoteKernelIds ?? [])
   const [waitingRoomCloudNotice, setWaitingRoomCloudNotice] = createSignal<string | null>(null)
   const [terminalPairingOpen, setTerminalPairingOpen] = createSignal(false)
@@ -1041,6 +1042,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let kernelRestartRecoveryInFlight: Promise<void> | null = null
   let subscribedSessionId: string | null = null
   let subscribedAttachmentId: string | null = null
+  let subscribedScope: "session" | "waiting-room" | null = null
   let lastLoggedFocusedBadgeState: string | null = null
   let pendingAgentFocusTransition: Promise<void> | null = null
   let currentTurnId = computeCurrentTurnId(initialEntries)
@@ -1624,6 +1626,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       catalog: providerCatalogState(),
       remote: {
         cloudNotice: waitingRoomCloudNotice(),
+        inventoryStatus: waitingRoomInventoryStatus(),
+        loadingFrame: waitingRoomState().introStep,
         relay: relayStatusState(),
         machines: remoteMachinesState(),
         kernels: remoteKernelsState(),
@@ -1784,6 +1788,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       const effectiveState = stateOverride ?? waitingRoomState()
       const remote = {
         cloudNotice: waitingRoomCloudNotice(),
+        inventoryStatus: waitingRoomInventoryStatus(),
+        loadingFrame: waitingRoomState().introStep,
         relay: relayStatusState(),
         machines: remoteMachinesState(),
         kernels: remoteKernelsState(),
@@ -2091,13 +2097,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!kernelConnected()) {
       return
     }
+    if (waitingRoomInventoryStatus() !== "ready") {
+      setWaitingRoomInventoryStatus("loading")
+    }
     const snapshot = await getWaitingRoomInventory(client).catch((error) => {
       appLogger?.warn("waiting room inventory refresh failed", { error: formatError(error) })
+      setWaitingRoomInventoryStatus("error")
       return null
     })
     if (!snapshot) {
       return
     }
+    setWaitingRoomInventoryStatus("ready")
     if (snapshot.inventoryVersion === waitingRoomInventoryVersion) {
       reconcileWaitingRoom(waitingRoomState())
       return
@@ -5943,6 +5954,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             : buildEmptyTranscriptRenderable(renderer))
         : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState(), {
           cloudNotice: waitingRoomCloudNotice(),
+          inventoryStatus: waitingRoomInventoryStatus(),
+          loadingFrame: waitingRoomState().introStep,
           relay: relayStatusState(),
           machines: remoteMachinesState(),
           kernels: remoteKernelsState(),
@@ -8001,6 +8014,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           state: waitingRoomState(),
           rows: waitingRoomRows(waitingRoomState(), availableSessions(), providerCatalogState(), {
             cloudNotice: waitingRoomCloudNotice(),
+            inventoryStatus: waitingRoomInventoryStatus(),
+            loadingFrame: waitingRoomState().introStep,
             relay: relayStatusState(),
             machines: remoteMachinesState(),
             kernels: remoteKernelsState(),
@@ -8530,6 +8545,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       case "remote_machines_changed":
         void refreshWaitingRoomData()
         return
+      case "waiting_room_inventory_changed":
+        void refreshWaitingRoomData()
+        return
       case "transport_resumed":
         kernelEventController.applyTransportResumed()
         scheduleSharedPromptInputHistoryRefresh()
@@ -8561,6 +8579,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         applySessionState(applyProviderRunProfileToSession(nextSession, providerRunState()))
         subscribedSessionId = null
         subscribedAttachmentId = null
+        subscribedScope = null
         await syncKernelEventSubscription()
         await refreshAgentPanes(sessionState())
         clearLocalBusyStateForAuthoritativeIdle(sessionState())
@@ -8604,6 +8623,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           applySessionState(applyProviderRunProfileToSession(nextSession, providerRunState()))
           subscribedSessionId = null
           subscribedAttachmentId = null
+          subscribedScope = null
           await syncKernelEventSubscription()
           await refreshAgentPanes(sessionState())
           clearLocalBusyStateForAuthoritativeIdle(sessionState())
@@ -8640,30 +8660,39 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       attachment_id: attachment?.id ?? null,
       subscribed_session_id: subscribedSessionId,
       subscribed_attachment_id: subscribedAttachmentId,
+      subscribed_scope: subscribedScope,
       attached: Boolean(attachment),
     })
 
     if (!attachment || !sessionId) {
-      if (subscribedAttachmentId) {
-        try {
-          await client.unsubscribeFromKernelEvents()
-        } catch (error) {
-          appLogger?.warn("failed to unsubscribe from kernel events", {
-            error: formatError(error),
-          })
-        }
+      if (subscribedScope === "waiting-room") {
+        return
+      }
+      try {
+        await client.subscribeToWaitingRoomInventory()
+        subscribedScope = "waiting-room"
         subscribedAttachmentId = null
         subscribedSessionId = null
+        appLogger?.info("subscribed to waiting room inventory events")
+      } catch (error) {
+        appLogger?.error("waiting room inventory subscription failed", {
+          error: formatError(error),
+        })
+        setDaemonDisconnected(true)
+        setStatusLine("Waiting to reconnect to the Arroba kernel.")
+        appendNotice(`Waiting room inventory subscription failed: ${formatError(error)}`, "warning")
+        updateSessionChrome()
       }
       return
     }
 
-    if (subscribedAttachmentId === attachment.id && subscribedSessionId === sessionId) {
+    if (subscribedScope === "session" && subscribedAttachmentId === attachment.id && subscribedSessionId === sessionId) {
       return
     }
 
     try {
       await client.subscribeToKernelEvents(sessionId, attachment.id)
+      subscribedScope = "session"
       subscribedAttachmentId = attachment.id
       subscribedSessionId = sessionId
       appLogger?.info("subscribed to kernel events", {
