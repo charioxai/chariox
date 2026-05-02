@@ -12,6 +12,7 @@ import type {
 import { sessionResponseLayout } from "./session-state.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { WaitingRoomState } from "./waiting-room.js"
+import type { SessionListEntry } from "./sessions.js"
 
 type ProviderCatalog = Record<string, unknown>
 type LaunchSelection = { provider: string; model: string; effort: string }
@@ -99,7 +100,7 @@ type SessionLifecycleDeps = {
     attachmentId: string,
     session: RuntimeSession,
   ) => Promise<RuntimeSession>
-  setAvailableSessions: (sessions: RuntimeSession[]) => void
+  setAvailableSessions: (sessions: SessionListEntry[]) => void
   listSessions: () => Promise<RuntimeSession[]>
   scheduleShortViewportHistoryCheck: () => void
   detachAttachment: (attachmentId: string) => Promise<void>

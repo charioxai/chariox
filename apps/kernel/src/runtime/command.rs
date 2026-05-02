@@ -459,6 +459,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListRemoteMachines(_) => "remote_machine.list",
         LocalDaemonRequest::ListRemoteMachineKernels(_) => "remote_machine.kernel.list",
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
+        LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
         LocalDaemonRequest::SearchWorkspaceDirectories(_) => "workspace.directory.search",
         LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",
         LocalDaemonRequest::ListWorkspaceWorktrees(_) => "workspace.worktree.list",

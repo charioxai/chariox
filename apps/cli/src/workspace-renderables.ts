@@ -14,7 +14,7 @@ import type {
   WorkflowRun,
 } from "./cli-types.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
-import { SESSION_NEW_HELP_TEXT } from "./sessions.js"
+import { SESSION_NEW_HELP_TEXT, type SessionListEntry } from "./sessions.js"
 import { SplitBorder, theme } from "./theme.js"
 import type { ThemeRegistry } from "./theme-registry.js"
 import type { WaitingRoomRemoteState, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room.js"
@@ -208,7 +208,7 @@ export function buildWorkflowOutlineRenderable(
 export function buildNoSessionRenderable(
   renderer: RenderContext,
   state: WaitingRoomState,
-  sessions: RuntimeSession[],
+  sessions: SessionListEntry[],
   catalog: ProviderCatalog,
   remote: WaitingRoomRemoteState = {},
   targets?: WaitingRoomTargetState,

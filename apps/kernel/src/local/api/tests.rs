@@ -26,17 +26,18 @@ use super::{
     CreateWorkspaceLinkRequest, CycleAgentFocusRequest, DeleteSessionRequest,
     DetachFromSessionRequest, DetachWorkspaceLinkRequest, EditFileCapabilityRequest,
     EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest, GetSessionStateRequest,
-    GetWaitingRoomInventoryRequest, GetWorkflowRunRequest, InspectGitCapabilityRequest,
-    InvokeWorkflowEndpointRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
-    LaunchProviderRunRequest, ListAgentsRequest, ListRemoteMachineKernelsRequest,
-    ListRemoteMachinesRequest, ListSessionMembersRequest, ListSessionsRequest,
-    ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceLinksRequest, LocalDaemonRequest,
-    LocalDaemonResponse, PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest,
-    ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
-    ResolveSessionRequest, ResolveWorkflowRequest, ResumeWorkflowRunRequest,
-    RevokeSessionInviteRequest, RunShellCapabilityRequest, ShowWorkspaceLinkRequest,
-    SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
-    UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
+    GetWaitingRoomInventoryRequest, GetWaitingRoomPublicSnapshotRequest, GetWorkflowRunRequest,
+    InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest, JoinSessionInviteRequest,
+    JoinTerminalPairingLinkRequest, LaunchProviderRunRequest, ListAgentsRequest,
+    ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, ListSessionMembersRequest,
+    ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceLinksRequest,
+    LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+    ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
+    RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
+    ResumeWorkflowRunRequest, RevokeSessionInviteRequest, RunShellCapabilityRequest,
+    ShowWorkspaceLinkRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
+    SubmitPromptRequest, TerminalType, UpdateSessionConfigRequest,
+    UpdateWorkflowNodeInstructionsRequest,
 };
 
 fn launch_slow_structured_run(app: &mut DaemonApp, session_id: &str, agent_id: &str) -> String {
@@ -372,7 +373,7 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
     let session = snapshot
         .sessions
         .iter()
-        .find(|candidate| candidate.session.id() == created.id())
+        .find(|candidate| candidate.id == created.id())
         .expect("created session should be in waiting-room inventory");
     assert_eq!(
         session.workspace_label.as_deref(),
@@ -380,6 +381,62 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
     );
     let workspace_path = workspace_root.display().to_string();
     assert_eq!(session.directory.as_deref(), Some(workspace_path.as_str()));
+}
+
+#[test]
+fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
+    let harness = LocalRouterTestHarness::new();
+    let created = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                "/tmp/arroba-public-snapshot-workspace",
+                "/tmp/arroba-public-snapshot-worktree",
+            ),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected response: {other:?}"),
+    };
+
+    let snapshot = match harness
+        .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+            GetWaitingRoomPublicSnapshotRequest,
+        ))
+        .expect("waiting room public snapshot should succeed")
+    {
+        LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
+        other => panic!("unexpected response: {other:?}"),
+    };
+
+    assert_eq!(snapshot.schema_version, 1);
+    assert!(snapshot.generated_at_ms > 0);
+    let session = snapshot
+        .sessions
+        .iter()
+        .find(|candidate| candidate.id == created.id())
+        .expect("created session should be in public snapshot");
+    assert_eq!(
+        session.workspace_id,
+        "/tmp/arroba-public-snapshot-workspace"
+    );
+    assert_eq!(session.worktree_id, "/tmp/arroba-public-snapshot-worktree");
+    assert_eq!(session.connected_cli_count, 0);
+
+    let serialized =
+        serde_json::to_value(session).expect("public session summary should serialize");
+    assert!(
+        serialized.get("attachment_ids").is_none(),
+        "public summary must not expose CLI attachment ids"
+    );
+    assert!(
+        serialized.get("agents").is_none(),
+        "public summary must not expose agent runtime state"
+    );
+    assert!(
+        serialized.get("active_prompt").is_none(),
+        "public summary must not expose active prompt internals"
+    );
 }
 
 #[test]

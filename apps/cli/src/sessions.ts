@@ -26,7 +26,8 @@ export type SessionListEntry = {
   status: string
   created_at_ms?: number
   last_used_at_ms?: number | null
-  attachment_ids: string[]
+  attachment_ids?: string[]
+  connected_cli_count?: number
 }
 
 export type SessionBootstrapDecision =
@@ -45,7 +46,8 @@ export function formatSessionList(sessions: SessionListEntry[], currentSessionId
     ...sessions.map((session) => {
       const name = session.alias ? `\`${session.alias}\` (\`${session.id}\`)` : `\`${session.id}\``
       const location = path.basename(session.worktree_id) || session.worktree_id
-      const attachments = `${session.attachment_ids.length} ${session.attachment_ids.length === 1 ? "CLI" : "CLIs"}`
+      const attachmentCount = session.attachment_ids?.length ?? session.connected_cli_count ?? 0
+      const attachments = `${attachmentCount} ${attachmentCount === 1 ? "CLI" : "CLIs"}`
       const current = session.id === currentSessionId ? " current" : ""
       return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${current}`
     }),

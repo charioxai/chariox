@@ -61,8 +61,8 @@ use crate::local::{
     TeardownProviderProcessesRequest, TerminalPairingLinkRecord, TerminalRecord, TerminalType,
     UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
     UpdateMcpServerRequest, UpdateSkillRequest, UserConfigMutationEffect,
-    UserConfigProviderReloadSummary, WaitingRoomInventorySnapshot, WaitingRoomLaunchTarget,
-    WaitingRoomSessionSummary, WorkspaceWorktreeRecord,
+    UserConfigProviderReloadSummary, WaitingRoomLaunchTarget, WaitingRoomPublicSessionSummary,
+    WaitingRoomPublicSnapshot, WorkspaceWorktreeRecord,
 };
 use crate::provider::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
@@ -89,7 +89,7 @@ use crate::runtime::state::{ProviderReloadOutcome, ProviderReloadTrigger};
 use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
-use crate::session::{PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
+use crate::session::{unix_epoch_ms, PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::{
     refresh_remote_inventory_projection_for_app_with_relay_state, RelayClientState,
@@ -2081,6 +2081,22 @@ impl CommandRouter {
     async fn projected_waiting_room_inventory_response(
         &self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::WaitingRoomInventory {
+            snapshot: self.projected_waiting_room_public_snapshot().await?.into(),
+        })
+    }
+
+    async fn projected_waiting_room_public_snapshot_response(
+        &self,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::WaitingRoomPublicSnapshot {
+            snapshot: self.projected_waiting_room_public_snapshot().await?,
+        })
+    }
+
+    async fn projected_waiting_room_public_snapshot(
+        &self,
+    ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
         self.request_remote_relay_inventory_projection_refresh()
             .await;
         let runtime_sessions = match self
@@ -2100,6 +2116,7 @@ impl CommandRouter {
         let (remote_machines, remote_kernels) = self.remote_relay_inventory_projection.snapshot();
         let launch_target = infer_waiting_room_launch_target();
         let terminals = paired_terminal_records();
+        let generated_at_ms = unix_epoch_ms();
         let inventory_version = waiting_room_inventory_version(
             &sessions,
             &relay_status,
@@ -2108,16 +2125,16 @@ impl CommandRouter {
             &terminals,
             launch_target.as_ref(),
         )?;
-        Ok(LocalDaemonResponse::WaitingRoomInventory {
-            snapshot: WaitingRoomInventorySnapshot {
-                inventory_version,
-                sessions,
-                relay_status,
-                remote_machines,
-                remote_kernels,
-                terminals,
-                launch_target,
-            },
+        Ok(WaitingRoomPublicSnapshot {
+            schema_version: 1,
+            inventory_version,
+            generated_at_ms,
+            sessions,
+            relay_status,
+            remote_machines,
+            remote_kernels,
+            terminals,
+            launch_target,
         })
     }
 
@@ -4423,6 +4440,9 @@ impl CommandRouter {
             LocalDaemonRequest::GetWaitingRoomInventory(_) => {
                 self.projected_waiting_room_inventory_response().await
             }
+            LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => {
+                self.projected_waiting_room_public_snapshot_response().await
+            }
             LocalDaemonRequest::SearchWorkspaceDirectories(request) => {
                 self.execute_search_workspace_directories_request(request)
                     .await
@@ -5145,7 +5165,7 @@ impl CommandRouter {
 }
 
 fn waiting_room_inventory_version(
-    sessions: &[WaitingRoomSessionSummary],
+    sessions: &[WaitingRoomPublicSessionSummary],
     relay_status: &RelayStatus,
     remote_machines: &[crate::local::RemoteMachineRecord],
     remote_kernels: &[RelayKernelPresence],
@@ -5169,7 +5189,7 @@ fn waiting_room_inventory_version(
 
 fn waiting_room_session_summaries(
     sessions: Vec<crate::session::RuntimeSession>,
-) -> Vec<WaitingRoomSessionSummary> {
+) -> Vec<WaitingRoomPublicSessionSummary> {
     let mut workspace_labels: HashMap<String, Option<String>> = HashMap::new();
     let mut worktree_labels: HashMap<(String, String), Option<String>> = HashMap::new();
     sessions
@@ -5188,11 +5208,18 @@ fn waiting_room_session_summaries(
                     worktree_display_label(&worktree_id, &workspace_id, branch.as_deref())
                 })
                 .clone();
-            WaitingRoomSessionSummary {
-                session,
+            WaitingRoomPublicSessionSummary {
+                id: session.id().to_string(),
+                alias: session.alias().map(ToOwned::to_owned),
+                workspace_id: workspace_id.clone(),
+                worktree_id: worktree_id.clone(),
                 workspace_label,
                 directory: Some(workspace_id),
                 worktree_label,
+                created_at_ms: session.created_at_ms(),
+                last_used_at_ms: session.last_used_at_ms(),
+                status: session.status(),
+                connected_cli_count: session.attachment_ids().len(),
             }
         })
         .collect()

@@ -69,10 +69,18 @@ export type RuntimeSession = {
   workspace_links?: WorkspaceLinkDefinition[]
 }
 
-export type WaitingRoomSessionSummary = RuntimeSession & {
+export type WaitingRoomPublicSessionSummary = {
+  id: string
+  alias?: string | null
+  workspace_id: string
+  worktree_id: string
   workspace_label?: string | null
   directory?: string | null
   worktree_label?: string | null
+  created_at_ms: number
+  last_used_at_ms?: number | null
+  status: string
+  connected_cli_count: number
 }
 
 export type WorkspaceLinkAttachment = {
@@ -466,7 +474,7 @@ export type RelayKernelPresence = {
 
 export type WaitingRoomInventorySnapshot = {
   inventory_version: string
-  sessions: WaitingRoomSessionSummary[]
+  sessions: WaitingRoomPublicSessionSummary[]
   relay_status: RelayStatus
   remote_machines: RemoteMachineRecord[]
   remote_kernels: RelayKernelPresence[]
@@ -478,6 +486,11 @@ export type WaitingRoomInventorySnapshot = {
     directory?: string | null
     worktree_label?: string | null
   } | null
+}
+
+export type WaitingRoomPublicSnapshot = WaitingRoomInventorySnapshot & {
+  schema_version: number
+  generated_at_ms: number
 }
 
 export type WorkspaceWorktreeRecord = {

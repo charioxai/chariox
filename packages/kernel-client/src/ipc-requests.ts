@@ -1077,6 +1077,10 @@ export function getWaitingRoomInventoryRequest() {
   return { GetWaitingRoomInventory: null }
 }
 
+export function getWaitingRoomPublicSnapshotRequest() {
+  return { GetWaitingRoomPublicSnapshot: null }
+}
+
 export function searchWorkspaceDirectoriesRequest(query: string, limit?: number) {
   return {
     SearchWorkspaceDirectories: {

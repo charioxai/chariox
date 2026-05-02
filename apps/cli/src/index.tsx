@@ -51,6 +51,8 @@ import type {
   StoredTransferArtifact,
   TerminalOutputRecord,
   TranscriptEntry,
+  WaitingRoomPublicSessionSummary,
+  WaitingRoomPublicSnapshot,
   WorkflowDefinition,
   WorkspaceLinkDefinition,
 } from "./cli-types.js"
@@ -116,7 +118,7 @@ import {
   getSkillRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
-  getWaitingRoomInventoryRequest,
+  getWaitingRoomPublicSnapshotRequest,
   getUserConfigRequest,
   getUserConfigSchemaRequest,
   installMcpServerRequest,
@@ -290,6 +292,7 @@ import {
   SESSION_NEW_PLACEHOLDER,
   formatSessionList,
   selectAttachableSession,
+  type SessionListEntry,
 } from "./sessions.js"
 import {
   agentPaneStatusBadge,
@@ -868,7 +871,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [attachmentState, setAttachmentState] = createSignal<RuntimeAttachment | null>(initialBinding?.attachment ?? null)
   const [providerRunState, setProviderRunState] = createSignal<RuntimeProviderRun | null>(initialBinding?.providerRun ?? null)
   const [createdSessionState, setCreatedSessionState] = createSignal(initialBinding?.createdSession ?? false)
-  const [availableSessions, setAvailableSessions] = createSignal<RuntimeSession[]>(initialSessions)
+  const [availableSessions, setAvailableSessions] = createSignal<SessionListEntry[]>(initialSessions)
   const [providerCatalogState, setProviderCatalogState] = createSignal<ProviderCatalog>(initialProviderCatalog)
   const [providerCommandCatalogState, setProviderCommandCatalogState] = createSignal<ProviderCommandCatalogs>(initialProviderCommandCatalogs)
   const [themeRegistryState] = createSignal(initialThemeRegistry)
@@ -9565,26 +9568,19 @@ async function getRelayStatus(client: LocalIpcClient): Promise<RelayStatusView> 
 
 async function getWaitingRoomInventory(client: LocalIpcClient): Promise<{
   inventoryVersion: string
-  sessions: RuntimeSession[]
+  sessions: WaitingRoomPublicSessionSummary[]
   relayStatus: RelayStatusView
   remoteMachines: RemoteMachineView[]
   remoteKernels: RemoteKernelView[]
   terminals: TerminalView[]
 }> {
-  const response = await client.send<Record<string, unknown>>(getWaitingRoomInventoryRequest())
+  const response = await client.send<Record<string, unknown>>(getWaitingRoomPublicSnapshotRequest())
   const payload = expectVariant<{
-    snapshot: {
-      inventory_version: string
-      sessions: RuntimeSession[]
-      relay_status: RelayStatusView
-      remote_machines: RemoteMachineView[]
-      remote_kernels: RemoteKernelView[]
-      terminals?: TerminalView[]
-    }
-  }>(response, "WaitingRoomInventory").snapshot
+    snapshot: WaitingRoomPublicSnapshot
+  }>(response, "WaitingRoomPublicSnapshot").snapshot
   return {
     inventoryVersion: payload.inventory_version,
-    sessions: normalizeRuntimeSessions(payload.sessions).sort((left, right) => right.created_at_ms - left.created_at_ms),
+    sessions: payload.sessions.slice().sort((left, right) => right.created_at_ms - left.created_at_ms),
     relayStatus: payload.relay_status,
     remoteMachines: payload.remote_machines,
     remoteKernels: payload.remote_kernels,

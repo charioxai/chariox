@@ -1848,6 +1848,7 @@ fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
 fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
+        LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
         LocalDaemonRequest::ListSessions(_) => "session.list",
         LocalDaemonRequest::AttachToSession(_) => "session.attach",

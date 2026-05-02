@@ -200,6 +200,9 @@ pub struct ListRemoteMachineKernelsRequest {
 pub struct GetWaitingRoomInventoryRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetWaitingRoomPublicSnapshotRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchWorkspaceDirectoriesRequest {
     pub query: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1474,6 +1477,7 @@ pub enum LocalDaemonRequest {
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetWaitingRoomInventory(GetWaitingRoomInventoryRequest),
+    GetWaitingRoomPublicSnapshot(GetWaitingRoomPublicSnapshotRequest),
     SearchWorkspaceDirectories(SearchWorkspaceDirectoriesRequest),
     CreateWorkspaceDirectory(CreateWorkspaceDirectoryRequest),
     ListWorkspaceWorktrees(ListWorkspaceWorktreesRequest),
@@ -1769,6 +1773,9 @@ pub enum LocalDaemonResponse {
     },
     WaitingRoomInventory {
         snapshot: WaitingRoomInventorySnapshot,
+    },
+    WaitingRoomPublicSnapshot {
+        snapshot: WaitingRoomPublicSnapshot,
     },
     WorkspaceDirectoriesSearched {
         directories: Vec<String>,
@@ -2136,18 +2143,6 @@ pub struct WaitingRoomLaunchTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitingRoomSessionSummary {
-    #[serde(flatten)]
-    pub session: RuntimeSession,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub directory: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_label: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceWorktreeRecord {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2160,11 +2155,59 @@ pub struct WorkspaceWorktreeRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingRoomInventorySnapshot {
     pub inventory_version: String,
-    pub sessions: Vec<WaitingRoomSessionSummary>,
+    pub sessions: Vec<WaitingRoomPublicSessionSummary>,
     pub relay_status: RelayStatus,
     pub remote_machines: Vec<RemoteMachineRecord>,
     pub remote_kernels: Vec<RelayKernelPresence>,
     #[serde(default)]
     pub terminals: Vec<TerminalRecord>,
     pub launch_target: Option<WaitingRoomLaunchTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingRoomPublicSnapshot {
+    pub schema_version: u32,
+    pub inventory_version: String,
+    pub generated_at_ms: u64,
+    pub sessions: Vec<WaitingRoomPublicSessionSummary>,
+    pub relay_status: RelayStatus,
+    pub remote_machines: Vec<RemoteMachineRecord>,
+    pub remote_kernels: Vec<RelayKernelPresence>,
+    #[serde(default)]
+    pub terminals: Vec<TerminalRecord>,
+    pub launch_target: Option<WaitingRoomLaunchTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingRoomPublicSessionSummary {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    pub workspace_id: String,
+    pub worktree_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_label: Option<String>,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at_ms: Option<u64>,
+    pub status: crate::session::SessionStatus,
+    pub connected_cli_count: usize,
+}
+
+impl From<WaitingRoomPublicSnapshot> for WaitingRoomInventorySnapshot {
+    fn from(snapshot: WaitingRoomPublicSnapshot) -> Self {
+        Self {
+            inventory_version: snapshot.inventory_version,
+            sessions: snapshot.sessions,
+            relay_status: snapshot.relay_status,
+            remote_machines: snapshot.remote_machines,
+            remote_kernels: snapshot.remote_kernels,
+            terminals: snapshot.terminals,
+            launch_target: snapshot.launch_target,
+        }
+    }
 }

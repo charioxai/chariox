@@ -66,7 +66,8 @@ pub use api::{
     UpdateMcpServerRequest, UpdateSessionConfigRequest, UpdateSkillRequest,
     UpdateWorkflowNodeInstructionsRequest, UserConfigMutationEffect,
     UserConfigProviderReloadSummary, ValidateWorkflowOutputRequest, WaitingRoomInventorySnapshot,
-    WaitingRoomLaunchTarget, WaitingRoomSessionSummary, WorkspaceWorktreeRecord,
+    WaitingRoomLaunchTarget, WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
+    WorkspaceWorktreeRecord,
 };
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};

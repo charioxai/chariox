@@ -76,6 +76,81 @@ export type RuntimeSession = {
   workspace_links?: WorkspaceLinkDefinition[]
 }
 
+export type WaitingRoomPublicSessionSummary = {
+  id: string
+  alias?: string | null
+  workspace_id: string
+  worktree_id: string
+  workspace_label?: string | null
+  directory?: string | null
+  worktree_label?: string | null
+  created_at_ms: number
+  last_used_at_ms?: number | null
+  status: string
+  connected_cli_count: number
+}
+
+export type WaitingRoomRelayStatusView = {
+  configured: boolean
+  connected: boolean
+  relay_url?: string | null
+  relay_token_configured: boolean
+  daemon_id: string
+  machine_id: string
+  machine_alias?: string | null
+}
+
+export type WaitingRoomRemoteMachineView = {
+  machine_id: string
+  machine_alias?: string | null
+  registry_alias?: string | null
+  display_name: string
+  trust_status: "approved" | "pending" | "forgotten"
+  online: boolean
+  pending: boolean
+  kernel_count: number
+  available_providers?: string[]
+}
+
+export type WaitingRoomRemoteKernelView = {
+  kernel_id: string
+  machine_id: string
+  machine_alias?: string | null
+  kernel_alias?: string | null
+  relay_alias?: string | null
+  available_providers?: string[]
+  capabilities?: string[]
+  accepting_remote_leases?: boolean
+  leased_agent_count?: number
+  local_session_count?: number
+}
+
+export type WaitingRoomTerminalView = {
+  terminal_id: string
+  terminal_type: "cli" | "web" | "ios" | "android"
+  alias?: string | null
+  paired_at_ms: number
+  revoked: boolean
+}
+
+export type WaitingRoomPublicSnapshot = {
+  schema_version: number
+  inventory_version: string
+  generated_at_ms: number
+  sessions: WaitingRoomPublicSessionSummary[]
+  relay_status: WaitingRoomRelayStatusView
+  remote_machines: WaitingRoomRemoteMachineView[]
+  remote_kernels: WaitingRoomRemoteKernelView[]
+  terminals?: WaitingRoomTerminalView[]
+  launch_target?: {
+    workspace_id: string
+    worktree_id: string
+    workspace_label?: string | null
+    directory?: string | null
+    worktree_label?: string | null
+  } | null
+}
+
 export type WorkspaceLinkAttachment = {
   link_id: string
   user_id: string
