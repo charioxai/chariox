@@ -2136,6 +2136,18 @@ pub struct WaitingRoomLaunchTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingRoomSessionSummary {
+    #[serde(flatten)]
+    pub session: RuntimeSession,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceWorktreeRecord {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2148,7 +2160,7 @@ pub struct WorkspaceWorktreeRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingRoomInventorySnapshot {
     pub inventory_version: String,
-    pub sessions: Vec<RuntimeSession>,
+    pub sessions: Vec<WaitingRoomSessionSummary>,
     pub relay_status: RelayStatus,
     pub remote_machines: Vec<RemoteMachineRecord>,
     pub remote_kernels: Vec<RelayKernelPresence>,

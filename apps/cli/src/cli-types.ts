@@ -51,6 +51,9 @@ export type RuntimeSession = {
   alias?: string | null
   workspace_id: string
   worktree_id: string
+  workspace_label?: string | null
+  directory?: string | null
+  worktree_label?: string | null
   created_at_ms: number
   last_used_at_ms?: number | null
   status: string

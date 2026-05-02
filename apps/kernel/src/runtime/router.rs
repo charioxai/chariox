@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -62,7 +62,7 @@ use crate::local::{
     UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
     UpdateMcpServerRequest, UpdateSkillRequest, UserConfigMutationEffect,
     UserConfigProviderReloadSummary, WaitingRoomInventorySnapshot, WaitingRoomLaunchTarget,
-    WorkspaceWorktreeRecord,
+    WaitingRoomSessionSummary, WorkspaceWorktreeRecord,
 };
 use crate::provider::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
@@ -2083,7 +2083,7 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.request_remote_relay_inventory_projection_refresh()
             .await;
-        let sessions = match self
+        let runtime_sessions = match self
             .execute_cold_list_sessions_request(ListSessionsRequest)
             .await?
         {
@@ -2095,6 +2095,7 @@ impl CommandRouter {
                 });
             }
         };
+        let sessions = waiting_room_session_summaries(runtime_sessions);
         let relay_status = self.projected_relay_status().await;
         let (remote_machines, remote_kernels) = self.remote_relay_inventory_projection.snapshot();
         let launch_target = infer_waiting_room_launch_target();
@@ -2122,7 +2123,9 @@ impl CommandRouter {
 
     pub(crate) async fn waiting_room_inventory_version(&self) -> Result<String, DaemonError> {
         match self.projected_waiting_room_inventory_response().await? {
-            LocalDaemonResponse::WaitingRoomInventory { snapshot } => Ok(snapshot.inventory_version),
+            LocalDaemonResponse::WaitingRoomInventory { snapshot } => {
+                Ok(snapshot.inventory_version)
+            }
             _response => Err(DaemonError::LocalTransport {
                 operation: "build waiting room inventory version",
                 message: "waiting room inventory request produced unexpected response".to_string(),
@@ -5142,7 +5145,7 @@ impl CommandRouter {
 }
 
 fn waiting_room_inventory_version(
-    sessions: &[crate::session::RuntimeSession],
+    sessions: &[WaitingRoomSessionSummary],
     relay_status: &RelayStatus,
     remote_machines: &[crate::local::RemoteMachineRecord],
     remote_kernels: &[RelayKernelPresence],
@@ -5162,6 +5165,37 @@ fn waiting_room_inventory_version(
         message: error.to_string(),
     })?;
     Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(payload)))
+}
+
+fn waiting_room_session_summaries(
+    sessions: Vec<crate::session::RuntimeSession>,
+) -> Vec<WaitingRoomSessionSummary> {
+    let mut workspace_labels: HashMap<String, Option<String>> = HashMap::new();
+    let mut worktree_labels: HashMap<(String, String), Option<String>> = HashMap::new();
+    sessions
+        .into_iter()
+        .map(|session| {
+            let workspace_id = session.workspace_id().to_string();
+            let worktree_id = session.worktree_id().to_string();
+            let workspace_label = workspace_labels
+                .entry(workspace_id.clone())
+                .or_insert_with(|| workspace_display_label(&workspace_id))
+                .clone();
+            let worktree_label = worktree_labels
+                .entry((workspace_id.clone(), worktree_id.clone()))
+                .or_insert_with(|| {
+                    let branch = detect_git_branch(&worktree_id).ok();
+                    worktree_display_label(&worktree_id, &workspace_id, branch.as_deref())
+                })
+                .clone();
+            WaitingRoomSessionSummary {
+                session,
+                workspace_label,
+                directory: Some(workspace_id),
+                worktree_label,
+            }
+        })
+        .collect()
 }
 
 fn infer_waiting_room_launch_target() -> Option<WaitingRoomLaunchTarget> {

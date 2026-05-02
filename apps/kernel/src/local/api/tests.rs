@@ -324,6 +324,65 @@ fn waiting_room_inventory_includes_kernels_for_pending_visible_remote_machines()
 }
 
 #[test]
+fn waiting_room_inventory_includes_session_workspace_display_labels() {
+    let workspace_root = std::env::temp_dir().join("arroba-waiting-room-session-label-test");
+    let _ = std::fs::remove_dir_all(&workspace_root);
+    std::fs::create_dir_all(&workspace_root).expect("workspace should exist");
+    std::process::Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(&workspace_root)
+        .output()
+        .expect("git init should work");
+    std::process::Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:mgutierrez09/arroba.git",
+        ])
+        .current_dir(&workspace_root)
+        .output()
+        .expect("git remote add should work");
+
+    let harness = LocalRouterTestHarness::new();
+    let created = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                workspace_root.display().to_string(),
+            )
+            .with_alias("main"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected response: {other:?}"),
+    };
+
+    let snapshot = match harness
+        .dispatch(LocalDaemonRequest::GetWaitingRoomInventory(
+            GetWaitingRoomInventoryRequest,
+        ))
+        .expect("waiting room inventory should succeed")
+    {
+        LocalDaemonResponse::WaitingRoomInventory { snapshot } => snapshot,
+        other => panic!("unexpected response: {other:?}"),
+    };
+
+    let session = snapshot
+        .sessions
+        .iter()
+        .find(|candidate| candidate.session.id() == created.id())
+        .expect("created session should be in waiting-room inventory");
+    assert_eq!(
+        session.workspace_label.as_deref(),
+        Some("mgutierrez09/arroba")
+    );
+    let workspace_path = workspace_root.display().to_string();
+    assert_eq!(session.directory.as_deref(), Some(workspace_path.as_str()));
+}
+
+#[test]
 fn terminal_pairing_link_adds_terminal_to_waiting_room_inventory() {
     let mut config = DaemonConfig::for_tests();
     config.relay_url = Some("ws://relay.local".to_string());
