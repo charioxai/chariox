@@ -5385,26 +5385,29 @@ fn append_directory_completion(
     limit: usize,
 ) -> Result<(), DaemonError> {
     let expanded = expand_workspace_query_path(query);
+    if query == "~" {
+        if expanded.is_dir() {
+            push_unique_path(results, seen, expanded.display().to_string());
+            append_matching_directory_children(results, seen, &expanded, "", limit)?;
+        }
+        return Ok(());
+    }
+    if query.ends_with('/') {
+        return append_matching_directory_children(results, seen, &expanded, "", limit);
+    }
+
     if expanded.is_dir() {
         push_unique_path(results, seen, expanded.display().to_string());
     }
-    let prefix = if query.ends_with('/') {
-        String::new()
-    } else {
-        expanded
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or("")
-            .to_lowercase()
-    };
-    let parent = if query.ends_with('/') || expanded.is_dir() {
-        expanded
-    } else {
-        expanded
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("/"))
-    };
+    let prefix = expanded
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_lowercase();
+    let parent = expanded
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("/"));
     append_matching_directory_children(results, seen, &parent, &prefix, limit)
 }
 
@@ -5438,21 +5441,9 @@ fn append_matching_directory_children(
         }
     }
     matches.sort_by(|left, right| {
-        let left_name = left
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or("")
-            .to_lowercase();
-        let right_name = right
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or("")
-            .to_lowercase();
-        let left_prefix = normalized_query.is_empty() || left_name.starts_with(normalized_query);
-        let right_prefix = normalized_query.is_empty() || right_name.starts_with(normalized_query);
-        right_prefix
-            .cmp(&left_prefix)
-            .then_with(|| left_name.cmp(&right_name))
+        directory_match_rank(left, normalized_query)
+            .cmp(&directory_match_rank(right, normalized_query))
+            .then_with(|| directory_sort_name(left).cmp(&directory_sort_name(right)))
     });
     for path in matches {
         push_unique_path(results, seen, path.display().to_string());
@@ -5461,6 +5452,31 @@ fn append_matching_directory_children(
         }
     }
     Ok(())
+}
+
+fn directory_match_rank(path: &Path, normalized_query: &str) -> (u8, u8) {
+    let name = directory_sort_name(path);
+    let query = normalized_query.trim();
+    let exact_rank = if !query.is_empty() && name == query {
+        0
+    } else if query.is_empty() || name.starts_with(query) {
+        1
+    } else {
+        2
+    };
+    let hidden_rank = if query.starts_with('.') || !name.starts_with('.') {
+        0
+    } else {
+        1
+    };
+    (exact_rank, hidden_rank)
+}
+
+fn directory_sort_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_lowercase()
 }
 
 fn expand_workspace_query_path(query: &str) -> PathBuf {
@@ -7282,6 +7298,8 @@ fn is_stale_cloud_link_error(error: &DaemonError) -> bool {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     use tokio::sync::Mutex;
@@ -7317,6 +7335,115 @@ mod tests {
         DEFAULT_LOCAL_USER_ID,
     };
     use crate::{DaemonApp, DaemonConfig, DaemonError};
+
+    #[test]
+    fn workspace_directory_completion_keeps_sibling_prefix_matches_for_existing_path() {
+        let root = unique_test_dir("workspace-directory-completion-siblings");
+        create_test_dir(root.join("arroba"));
+        create_test_dir(root.join("arroba-cloud"));
+        create_test_dir(root.join("arroba-feature"));
+        create_test_dir(root.join(".arroba"));
+        create_test_dir(root.join("bar-arroba"));
+
+        let results =
+            super::search_workspace_directories(&root.join("arroba").display().to_string(), 20)
+                .expect("workspace directory search should succeed");
+        remove_test_dir(&root);
+
+        let exact = root.join("arroba").display().to_string();
+        let cloud = root.join("arroba-cloud").display().to_string();
+        let feature = root.join("arroba-feature").display().to_string();
+        let hidden = root.join(".arroba").display().to_string();
+        let contains = root.join("bar-arroba").display().to_string();
+
+        assert!(results.contains(&exact), "missing exact match: {results:?}");
+        assert!(
+            results.contains(&cloud),
+            "missing prefix sibling: {results:?}"
+        );
+        assert!(
+            results.contains(&feature),
+            "missing prefix sibling: {results:?}"
+        );
+        assert!(
+            results.contains(&hidden),
+            "missing hidden contains match: {results:?}"
+        );
+        assert!(
+            results.contains(&contains),
+            "missing contains match: {results:?}"
+        );
+
+        let exact_index = result_index(&results, &exact);
+        assert!(exact_index < result_index(&results, &cloud));
+        assert!(exact_index < result_index(&results, &feature));
+        assert!(result_index(&results, &cloud) < result_index(&results, &hidden));
+        assert!(result_index(&results, &feature) < result_index(&results, &hidden));
+        assert!(result_index(&results, &contains) < result_index(&results, &hidden));
+    }
+
+    #[test]
+    fn workspace_directory_completion_lists_children_only_after_trailing_separator() {
+        let root = unique_test_dir("workspace-directory-completion-children");
+        create_test_dir(root.join("arroba").join("child"));
+        create_test_dir(root.join("arroba-cloud"));
+
+        let query = format!("{}/", root.join("arroba").display());
+        let results = super::search_workspace_directories(&query, 20)
+            .expect("workspace directory search should succeed");
+        remove_test_dir(&root);
+
+        assert!(
+            results.contains(&root.join("arroba").join("child").display().to_string()),
+            "missing child directory: {results:?}",
+        );
+        assert!(
+            !results.contains(&root.join("arroba-cloud").display().to_string()),
+            "trailing slash should not include siblings: {results:?}",
+        );
+    }
+
+    #[test]
+    fn workspace_directory_completion_prioritizes_hidden_dirs_when_query_starts_hidden() {
+        let root = unique_test_dir("workspace-directory-completion-hidden");
+        create_test_dir(root.join(".arroba"));
+        create_test_dir(root.join(".arroba-cache"));
+        create_test_dir(root.join("my-.arroba"));
+
+        let results =
+            super::search_workspace_directories(&root.join(".arroba").display().to_string(), 20)
+                .expect("workspace directory search should succeed");
+        remove_test_dir(&root);
+
+        let exact = root.join(".arroba").display().to_string();
+        let hidden_prefix = root.join(".arroba-cache").display().to_string();
+        let contains = root.join("my-.arroba").display().to_string();
+        assert!(result_index(&results, &exact) < result_index(&results, &hidden_prefix));
+        assert!(result_index(&results, &hidden_prefix) < result_index(&results, &contains));
+    }
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("arroba-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    fn create_test_dir(path: PathBuf) {
+        fs::create_dir_all(path).expect("test directory should be created");
+    }
+
+    fn remove_test_dir(path: &PathBuf) {
+        let _ = fs::remove_dir_all(path);
+    }
+
+    fn result_index(results: &[String], value: &str) -> usize {
+        results
+            .iter()
+            .position(|result| result == value)
+            .unwrap_or_else(|| panic!("missing {value} in {results:?}"))
+    }
 
     fn spawn_test_agent(
         app: &mut DaemonApp,
