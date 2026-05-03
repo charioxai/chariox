@@ -544,9 +544,9 @@ impl KernelRuntimeOwnedState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let mut session =
             SessionStateOwner::new(self.session_store.clone()).create_session(request)?;
-        let agent_request = crate::agent::CreateAgentRequest::new(session.id(), "default")
-            .with_owner_user_id(session.owner_user_id().to_string())
-            .with_worktree(session.worktree_id());
+        let agent_request =
+            agent_request_from_session_defaults(&session, Some(session.owner_user_id()))
+                .with_worktree(session.worktree_id());
         let mut sessions = self.session_store.write();
         let agent = self
             .agent_store
@@ -726,13 +726,9 @@ impl KernelRuntimeOwnedState {
         drop(sessions);
 
         if self.agent_store.get_session_agents(&session_id).is_empty() {
-            let worktree_id = self
-                .session_store
-                .get_session(&session_id)?
-                .worktree_id()
-                .to_string();
-            let agent_request = crate::agent::CreateAgentRequest::new(&session_id, "default")
-                .with_worktree(worktree_id);
+            let session = self.session_store.get_session(&session_id)?;
+            let agent_request = agent_request_from_session_defaults(&session, None)
+                .with_worktree(session.worktree_id());
             let mut sessions = self.session_store.write();
             let _ = self
                 .agent_store
@@ -1103,6 +1099,30 @@ impl KernelRuntimeOwnedState {
     }
 }
 
+pub(super) fn agent_request_from_session_defaults(
+    session: &crate::session::RuntimeSession,
+    owner_user_id: Option<&str>,
+) -> crate::agent::CreateAgentRequest {
+    let defaults = session.agent_defaults();
+    let mut request = crate::agent::CreateAgentRequest::new(session.id(), &defaults.provider);
+    if let Some(owner_user_id) = owner_user_id {
+        request = request.with_owner_user_id(owner_user_id.to_string());
+    }
+    if let Some(model) = defaults.model.as_deref() {
+        request = request.with_model(model.to_string());
+    }
+    if let Some(effort) = defaults.effort.as_deref() {
+        request = request.with_effort(effort.to_string());
+    }
+    if let Some(execution_mode) = defaults.execution_mode {
+        request = request.with_execution_mode_override(execution_mode);
+    }
+    if let Some(permission_level) = defaults.permission_level {
+        request = request.with_permission_level_override(permission_level);
+    }
+    request
+}
+
 fn resolve_effective_execution_mode(
     session: &crate::session::RuntimeSession,
     agent: Option<&crate::agent::AgentInstance>,
@@ -1116,6 +1136,7 @@ fn resolve_effective_execution_mode(
                 .get(SESSION_AGENT_MODE_CONFIG_KEY)
                 .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
         })
+        .or(session.agent_defaults().execution_mode)
         .unwrap_or_default()
 }
 
@@ -1132,5 +1153,6 @@ fn resolve_effective_permission_level(
                 .get(SESSION_AGENT_PERMISSION_CONFIG_KEY)
                 .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
         })
+        .or(session.agent_defaults().permission_level)
         .unwrap_or_default()
 }

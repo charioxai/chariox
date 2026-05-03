@@ -676,29 +676,43 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let create_request = CreateAgentRequest::new(&request.session_id, &request.provider)
-            .with_owner_user_id(caller_user_id);
+        let session = match self.state.session_snapshot(&request.session_id).await {
+            Ok(session) => session,
+            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+        };
+        let defaults = session.agent_defaults();
+        let model = request.model.or_else(|| defaults.model.clone());
+        let effort = request.effort.or_else(|| defaults.effort.clone());
+        let execution_mode = request.execution_mode.or(defaults.execution_mode);
+        let permission_level = request.permission_level.or(defaults.permission_level);
+        let create_request = CreateAgentRequest::new(
+            &request.session_id,
+            request
+                .provider
+                .unwrap_or_else(|| defaults.provider.clone()),
+        )
+        .with_owner_user_id(caller_user_id);
         let create_request = if let Some(alias) = request.alias {
             create_request.with_alias(alias)
         } else {
             create_request
         };
-        let create_request = if let Some(model) = request.model {
+        let create_request = if let Some(model) = model {
             create_request.with_model(model)
         } else {
             create_request
         };
-        let create_request = if let Some(effort) = request.effort {
+        let create_request = if let Some(effort) = effort {
             create_request.with_effort(effort)
         } else {
             create_request
         };
-        let create_request = if let Some(execution_mode) = request.execution_mode {
+        let create_request = if let Some(execution_mode) = execution_mode {
             create_request.with_execution_mode_override(execution_mode)
         } else {
             create_request
         };
-        let create_request = if let Some(permission_level) = request.permission_level {
+        let create_request = if let Some(permission_level) = permission_level {
             create_request.with_permission_level_override(permission_level)
         } else {
             create_request
@@ -1234,7 +1248,7 @@ mod tests {
         LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest,
         UpdateSessionConfigRequest,
     };
-    use crate::provider::LaunchProviderRequest;
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest};
     use crate::runtime::command::KernelCommand;
     use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::runtime::session_actor::{
@@ -1242,7 +1256,9 @@ mod tests {
         FocusedAgentProjection, SessionProjectionAction, SessionRuntime,
     };
     use crate::runtime::state::KernelRuntimeState;
-    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome, DEFAULT_LOCAL_USER_ID};
+    use crate::session::{
+        CreateSessionRequest, PromptSubmissionOutcome, SessionAgentDefaults, DEFAULT_LOCAL_USER_ID,
+    };
     use crate::terminal::TerminalOutputKind;
     use crate::{DaemonApp, DaemonConfig, DaemonError};
     use std::sync::Arc;
@@ -1582,7 +1598,7 @@ mod tests {
         let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
             session_id: session_id.clone(),
             alias: Some("owned-agent".to_string()),
-            provider: "dev-stub".to_string(),
+            provider: Some("dev-stub".to_string()),
             model: Some("default".to_string()),
             effort: None,
             execution_mode: None,
@@ -1617,6 +1633,72 @@ mod tests {
                 .filter(|projection| projection.session_id == session_id)
                 .is_some(),
             "spawn should refresh agent-runtime projection"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_spawn_agent_inherits_session_agent_defaults_when_omitted() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let (session_id, terminal_stream) = {
+            let mut app_locked = app.lock().await;
+            let defaults = SessionAgentDefaults::new("opencode")
+                .with_model("moonshotai/kimi-k2")
+                .with_effort("high")
+                .with_execution_mode(AgentExecutionMode::Plan)
+                .with_permission_level(AgentPermissionLevel::Required);
+            let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+                .create_session(
+                    CreateSessionRequest::new("workspace", "worktree")
+                        .with_agent_defaults(defaults),
+                )
+                .expect("session should be created");
+            (session.id().to_string(), app_locked.terminal_stream_store())
+        };
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            owned_runtime_state(&app).await,
+            1,
+            FocusedAgentProjection::default(),
+            SessionStateProjectionStore::default(),
+            AgentRuntimeProjectionStore::default(),
+            terminal_stream,
+        );
+
+        let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+            session_id: session_id.clone(),
+            alias: Some("inherited-agent".to_string()),
+            provider: None,
+            model: None,
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: Some("worktree".to_string()),
+            machine_ref: None,
+            worktree_placement: None,
+        });
+        let command =
+            KernelCommand::from_local_request("owned-default-agent-spawn", None, None, &request);
+        let response = runtime
+            .dispatch_session_command(command, request)
+            .await
+            .expect("agent spawn should succeed");
+
+        let LocalDaemonResponse::AgentSpawned { agent } = response else {
+            panic!("unexpected response");
+        };
+        assert_eq!(agent.session_id(), session_id);
+        assert_eq!(agent.alias(), Some("inherited-agent"));
+        assert_eq!(agent.provider(), "opencode");
+        assert_eq!(agent.model(), Some("moonshotai/kimi-k2"));
+        assert_eq!(agent.effort(), Some("high"));
+        assert_eq!(
+            agent.execution_mode_override(),
+            Some(AgentExecutionMode::Plan)
+        );
+        assert_eq!(
+            agent.permission_level_override(),
+            Some(AgentPermissionLevel::Required)
         );
     }
 

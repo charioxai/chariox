@@ -42,6 +42,9 @@ impl SessionService {
         );
         session.set_owner_user_id(request.owner_user_id);
         session.set_hidden(request.hidden);
+        if let Some(agent_defaults) = request.agent_defaults {
+            session.set_agent_defaults(agent_defaults);
+        }
 
         Ok(self.store.insert(session))
     }

@@ -1589,7 +1589,7 @@ test("agent spawn refreshes session state after launching the provider run", asy
   assert.equal(flashedMessage, "spawned agent agent-2 (review)")
 })
 
-test("agent spawn count clones the originally focused agent provider and model for each spawn", async () => {
+test("agent spawn count inherits session defaults for each spawn", async () => {
   const sourceAgent = makeAgent({
     id: "agent-source",
     agent_ref: "agent-source",
@@ -1598,9 +1598,17 @@ test("agent spawn count clones the originally focused agent provider and model f
   })
   let currentSession = makeSession({
     focused_agent_id: sourceAgent.id,
+    agent_defaults: {
+      provider: "codex",
+      model: "codex/gpt-5.4",
+      effort: "high",
+      account_profile: "default",
+      execution_mode: "build",
+      permission_level: "yolo",
+    },
     agents: [sourceAgent],
   })
-  const spawnCalls: Array<{ provider: string; alias: string | undefined; model: string | undefined; effort: string | undefined }> = []
+  const spawnCalls: Array<{ provider: string | null | undefined; alias: string | undefined; model: string | null | undefined; effort: string | null | undefined }> = []
   const launchCalls: Array<{ provider: string; model: string; effort: string; agentId: string }> = []
   let refreshCount = 0
   let flashedMessage = ""
@@ -1666,14 +1674,19 @@ test("agent spawn count clones the originally focused agent provider and model f
     refreshSessionState: async () => currentSession,
     spawnAgent: async (provider, alias, model, effort) => {
       spawnCalls.push({ provider, alias, model, effort })
+      const resolvedProvider = provider ?? currentSession.agent_defaults?.provider ?? "opencode"
+      const resolvedModel = model ?? currentSession.agent_defaults?.model ?? "test-model"
+      const resolvedEffort = effort ?? currentSession.agent_defaults?.effort ?? "low"
       const agent = makeAgent({
         id: `agent-${spawnCalls.length}`,
         agent_ref: `agent-${spawnCalls.length}`,
-        provider,
-        model: model ?? null,
+        provider: resolvedProvider,
+        model: resolvedModel,
+        effort: resolvedEffort,
         state: "Focused",
       })
       currentSession = makeSession({
+        agent_defaults: currentSession.agent_defaults!,
         focused_agent_id: agent.id,
         agents: [...currentSession.agents, agent],
       })
@@ -1710,15 +1723,15 @@ test("agent spawn count clones the originally focused agent provider and model f
   })
 
   assert.deepEqual(spawnCalls, [
-    { provider: "opencode", alias: undefined, model: "openai/gpt-5.4", effort: "high" },
-    { provider: "opencode", alias: undefined, model: "openai/gpt-5.4", effort: "high" },
+    { provider: undefined, alias: undefined, model: undefined, effort: undefined },
+    { provider: undefined, alias: undefined, model: undefined, effort: undefined },
   ])
   assert.deepEqual(launchCalls, [
-    { provider: "opencode", model: "openai/gpt-5.4", effort: "high", agentId: "agent-1" },
-    { provider: "opencode", model: "openai/gpt-5.4", effort: "high", agentId: "agent-2" },
+    { provider: "codex", model: "codex/gpt-5.4", effort: "high", agentId: "agent-1" },
+    { provider: "codex", model: "codex/gpt-5.4", effort: "high", agentId: "agent-2" },
   ])
   assert.equal(refreshCount, 4)
-  assert.equal(flashedMessage, "spawned 2 agents from agent-source")
+  assert.equal(flashedMessage, "spawned 2 agents from session defaults")
   assert.equal(currentSession.focused_agent_id, "agent-2")
 })
 

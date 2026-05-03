@@ -395,19 +395,32 @@ function resolveStoredAgentLaunch(
   createdSession: boolean,
 ): LaunchSelection {
   if (createdSession) {
-    return fallback
+    return resolveSessionAgentDefaults(session, fallback)
   }
 
+  const sessionDefaults = resolveSessionAgentDefaults(session, fallback)
   const focusedAgent = session.agents.find((agent) => agent.id === session.focused_agent_id) ?? session.agents[0]
   if (!focusedAgent) {
-    return fallback
+    return sessionDefaults
   }
 
   return {
     provider: focusedAgent.provider && focusedAgent.provider !== "default"
       ? focusedAgent.provider
-      : fallback.provider,
-    model: focusedAgent.model?.trim() || fallback.model,
-    effort: focusedAgent.effort?.trim() || fallback.effort,
+      : sessionDefaults.provider,
+    model: focusedAgent.model?.trim() || sessionDefaults.model,
+    effort: focusedAgent.effort?.trim() || sessionDefaults.effort,
+  }
+}
+
+function resolveSessionAgentDefaults(
+  session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
+  fallback: LaunchSelection,
+): LaunchSelection {
+  const defaults = session.agent_defaults
+  return {
+    provider: defaults?.provider?.trim() && defaults.provider !== "default" ? defaults.provider : fallback.provider,
+    model: defaults?.model?.trim() || fallback.model,
+    effort: defaults?.effort?.trim() || fallback.effort,
   }
 }

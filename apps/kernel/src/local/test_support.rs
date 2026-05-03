@@ -103,7 +103,7 @@ impl LocalRouterTestHarness {
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
                 session_id: session_id.to_string(),
                 alias: Some(alias.to_string()),
-                provider: "dev-stub".to_string(),
+                provider: Some("dev-stub".to_string()),
                 model: Some("default".to_string()),
                 effort: None,
                 execution_mode: None,

@@ -799,7 +799,7 @@ mod tests {
             .send(&LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
                 session_id: session.id().to_string(),
                 alias: Some("reviewer".to_string()),
-                provider: "dev-stub".to_string(),
+                provider: Some("dev-stub".to_string()),
                 model: Some("default".to_string()),
                 effort: None,
                 execution_mode: None,
@@ -1009,7 +1009,7 @@ mod tests {
             .send(&LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
                 session_id: session.id().to_string(),
                 alias: Some("planner".to_string()),
-                provider: "dev-stub".to_string(),
+                provider: Some("dev-stub".to_string()),
                 model: Some("default".to_string()),
                 effort: None,
                 execution_mode: None,
@@ -1028,7 +1028,7 @@ mod tests {
             .send(&LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
                 session_id: session.id().to_string(),
                 alias: Some("reviewer".to_string()),
-                provider: "dev-stub".to_string(),
+                provider: Some("dev-stub".to_string()),
                 model: Some("default".to_string()),
                 effort: None,
                 execution_mode: None,

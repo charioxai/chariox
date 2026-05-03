@@ -1236,7 +1236,7 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
         LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session_id.clone(),
             alias: Some("reviewer".to_string()),
-            provider: "dev-stub".to_string(),
+            provider: Some("dev-stub".to_string()),
             model: Some("sonnet".to_string()),
             effort: None,
             execution_mode: None,

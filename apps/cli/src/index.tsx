@@ -1757,7 +1757,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         currentModel: options.model,
       })
       if (decision.action === "create") {
-        const session = await createSession(client, pendingWorkspaceTarget(), pendingWorktreeTarget())
+        const session = await createSession(client, pendingWorkspaceTarget(), pendingWorktreeTarget(), undefined, {
+          provider: decision.launch.provider,
+          model: decision.launch.model,
+          effort: decision.launch.effort,
+          account_profile: options.accountProfile,
+          execution_mode: "build",
+          permission_level: "yolo",
+        })
         await attachBinding(session, true, decision.launch)
         flashFooter(`created session ${session.alias ?? session.id}`, "info")
         return
@@ -6570,7 +6577,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     appendNotice,
     appendCloudNotice,
     formatError,
-    createSession: (workspace, worktree, alias) => createSession(client, workspace, worktree, alias),
+    createSession: (workspace, worktree, alias, agentDefaults) => createSession(client, workspace, worktree, alias, agentDefaults),
     createSessionInvite: async (sessionId, expiresInMs, maxUses) => {
       const response = await client.send<Record<string, unknown>>(
         createSessionInviteRequest(sessionId, expiresInMs, maxUses),
@@ -9843,9 +9850,15 @@ async function createTerminalPairingLink(
   return expectVariant<{ pairing: TerminalPairingLinkView }>(response, "TerminalPairingLinkCreated").pairing
 }
 
-async function createSession(client: LocalIpcClient, workspace: string, worktree: string, alias?: string): Promise<RuntimeSession> {
+async function createSession(
+  client: LocalIpcClient,
+  workspace: string,
+  worktree: string,
+  alias?: string,
+  agentDefaults?: RuntimeSession["agent_defaults"],
+): Promise<RuntimeSession> {
   const resolvedWorktree = await resolvePendingWaitingRoomWorktreePath(workspace, worktree)
-  const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, resolvedWorktree, alias))
+  const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, resolvedWorktree, alias, agentDefaults))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
   return normalizeRuntimeSession(payload.session)
 }

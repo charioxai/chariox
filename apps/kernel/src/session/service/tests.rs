@@ -2,11 +2,12 @@ use super::SessionService;
 use crate::agent::{AgentInstance, GridPosition};
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
+use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 use crate::session::{
     unix_epoch_ms, CreateSessionRequest, PromptSubmissionOutcome, QueuedWorkflowLaunchSource,
-    SchedulerState, SessionStatus, WorkflowCompletionSnapshot, WorkflowHandoffPayload,
-    WorkflowLaunchAdmission, WorkflowLaunchPolicy, WorkflowNodeRunStatus, WorkflowRunStatus,
-    WorkflowWatchdogPolicy, WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID,
+    SchedulerState, SessionAgentDefaults, SessionStatus, WorkflowCompletionSnapshot,
+    WorkflowHandoffPayload, WorkflowLaunchAdmission, WorkflowLaunchPolicy, WorkflowNodeRunStatus,
+    WorkflowRunStatus, WorkflowWatchdogPolicy, WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID,
 };
 use std::collections::BTreeMap;
 
@@ -47,6 +48,33 @@ fn creates_gets_and_lists_sessions() {
         .expect("lookup should succeed");
     assert_eq!(fetched, created);
     assert_eq!(service.list_sessions(), vec![created]);
+}
+
+#[test]
+fn create_session_stores_agent_defaults() {
+    let mut service = SessionService::new(&test_config());
+    let defaults = SessionAgentDefaults::new("opencode")
+        .with_model("moonshotai/kimi-k2")
+        .with_effort("high")
+        .with_account_profile("default")
+        .with_execution_mode(AgentExecutionMode::Plan)
+        .with_permission_level(AgentPermissionLevel::Required);
+
+    let created = service
+        .create_session(
+            CreateSessionRequest::new("workspace-1", "worktree-1")
+                .with_agent_defaults(defaults.clone()),
+        )
+        .expect("session should be created");
+
+    assert_eq!(created.agent_defaults(), &defaults);
+    assert_eq!(
+        service
+            .get_session(created.id())
+            .expect("session should be persisted")
+            .agent_defaults(),
+        &defaults
+    );
 }
 
 #[test]

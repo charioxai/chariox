@@ -141,7 +141,7 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("worker".to_string()),
-            provider: "slow-structured".to_string(),
+            provider: Some("slow-structured".to_string()),
             model: Some("default".to_string()),
             effort: None,
             execution_mode: None,
@@ -802,7 +802,7 @@ fn local_request_api_spawns_and_focuses_agents() {
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("reviewer".to_string()),
-            provider: "opencode".to_string(),
+            provider: Some("opencode".to_string()),
             model: Some("openai/gpt-5.4".to_string()),
             effort: None,
             execution_mode: None,
@@ -929,7 +929,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("reviewer".to_string()),
-            provider: "dev-stub".to_string(),
+            provider: Some("dev-stub".to_string()),
             model: Some("default".to_string()),
             effort: None,
             execution_mode: None,
@@ -1032,7 +1032,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("reviewer-2".to_string()),
-            provider: "opencode".to_string(),
+            provider: Some("opencode".to_string()),
             model: None,
             effort: None,
             execution_mode: None,
@@ -1176,7 +1176,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("reviewer".to_string()),
-            provider: "dev-stub".to_string(),
+            provider: Some("dev-stub".to_string()),
             model: Some("default".to_string()),
             effort: None,
             execution_mode: None,
@@ -1369,7 +1369,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("planner".to_string()),
-            provider: "dev-stub".to_string(),
+            provider: Some("dev-stub".to_string()),
             model: Some("default".to_string()),
             effort: None,
             execution_mode: None,
@@ -1388,7 +1388,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("reviewer".to_string()),
-            provider: "dev-stub".to_string(),
+            provider: Some("dev-stub".to_string()),
             model: Some("default".to_string()),
             effort: None,
             execution_mode: None,
@@ -2352,7 +2352,7 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("unsupported-node".to_string()),
-            provider: "dev-invalid-pty".to_string(),
+            provider: Some("dev-invalid-pty".to_string()),
             model: Some("default".to_string()),
             effort: None,
             execution_mode: None,
@@ -2728,7 +2728,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("reviewer".to_string()),
-            provider: "claude-code".to_string(),
+            provider: Some("claude-code".to_string()),
             model: None,
             effort: None,
             execution_mode: None,
@@ -2903,7 +2903,7 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("observer".to_string()),
-            provider: "claude-code".to_string(),
+            provider: Some("claude-code".to_string()),
             model: None,
             effort: None,
             execution_mode: None,
@@ -3002,7 +3002,7 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("parallel".to_string()),
-            provider: "dev-stub".to_string(),
+            provider: Some("dev-stub".to_string()),
             model: Some("claude-code".to_string()),
             effort: Some("default".to_string()),
             execution_mode: None,
@@ -4056,7 +4056,7 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: workflow_session.id().to_string(),
             alias: Some("workflow-worker".to_string()),
-            provider: "dev-stub".to_string(),
+            provider: Some("dev-stub".to_string()),
             model: Some("default".to_string()),
             effort: None,
             execution_mode: None,

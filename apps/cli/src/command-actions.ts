@@ -212,7 +212,12 @@ type CommandActionDeps = {
   appendNotice: (message: string) => void
   appendCloudNotice?: (message: string) => void
   formatError: (error: unknown) => string
-  createSession: (workspace: string, worktree: string, alias?: string) => Promise<CreateSessionResult>
+  createSession: (
+    workspace: string,
+    worktree: string,
+    alias?: string,
+    agentDefaults?: RuntimeSession["agent_defaults"],
+  ) => Promise<CreateSessionResult>
   createSessionInvite?: (
     sessionId: string,
     expiresInMs: number | null,
@@ -418,10 +423,10 @@ type CommandActionDeps = {
   setProviderRunState: (run: RuntimeProviderRun | null) => void
   refreshSessionState: (sessionId: string) => Promise<RuntimeSession>
   spawnAgent: (
-    provider: string,
+    provider?: string | null,
     alias?: string,
-    model?: string,
-    effort?: string,
+    model?: string | null,
+    effort?: string | null,
     worktreeId?: string,
     machineRef?: string,
     worktreePlacement?: RemoteGitWorktreePlacement | undefined,
@@ -615,12 +620,14 @@ function parseSubstitutionTimeoutMs(value: string | null | undefined): number | 
 function effectiveAgentExecutionMode(session: RuntimeSession, agent: AgentInstance | null | undefined): "build" | "plan" {
   return agent?.execution_mode_override
     ?? parseExecutionMode(session.config_state?.values?.[SESSION_AGENT_MODE_CONFIG_KEY])
+    ?? parseExecutionMode(session.agent_defaults?.execution_mode)
     ?? "build"
 }
 
 function effectiveAgentPermissionLevel(session: RuntimeSession, agent: AgentInstance | null | undefined): "required" | "yolo" {
   return agent?.permission_level_override
     ?? parsePermissionLevel(session.config_state?.values?.[SESSION_AGENT_PERMISSION_CONFIG_KEY])
+    ?? parsePermissionLevel(session.agent_defaults?.permission_level)
     ?? "yolo"
 }
 
@@ -1293,10 +1300,10 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   }
 
   const spawnAndLaunchAgent = async (options: {
-    provider: string
+    provider?: string | null
     alias?: string | undefined
-    model: string
-    effort: string
+    model?: string | null
+    effort?: string | null
     worktreeId?: string | undefined
     machineRef?: string | undefined
     worktreePlacement?: RemoteGitWorktreePlacement | undefined
@@ -1324,10 +1331,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         session: refreshedSession,
       }
     }
+    const launchProvider = payload.agent.provider || options.provider || deps.currentProviderId()
+    const launchModel = payload.agent.model || options.model || deps.currentModelId()
+    const launchEffort = payload.agent.effort || options.effort || deps.currentVariantId()
     const run = await deps.launchAgentProviderRun(
-      options.provider,
-      options.model,
-      options.effort,
+      launchProvider,
+      launchModel,
+      launchEffort,
       payload.agent.id,
     )
     deps.setProviderRunState(run)
@@ -1374,7 +1384,14 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
             })
             sessionWorktree = resolvedPlacement ?? currentWorktreeTarget()
           }
-          const session = await deps.createSession(currentWorkspaceTarget(), sessionWorktree, undefined)
+          const session = await deps.createSession(currentWorkspaceTarget(), sessionWorktree, undefined, {
+            provider: deps.currentProviderId(),
+            model: deps.currentModelId(),
+            effort: deps.currentVariantId(),
+            account_profile: deps.accountProfile ?? null,
+            execution_mode: "build",
+            permission_level: "yolo",
+          })
           await deps.attachBinding(session, true)
           const placement = sessionWorktree !== currentWorktreeTarget() ? ` in ${sessionWorktree}` : ""
           deps.flashFooter(`attached to session ${session.alias ?? session.id}${placement}`, "info")
@@ -1762,27 +1779,11 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
             return
           }
           if (count !== null && parsed.positional.length === 1) {
-            const session = deps.sessionState()
-            const sourceAgent = session.agents.find((agent) => agent.id === session.focused_agent_id)
-              ?? session.agents[0]
-              ?? null
-            if (!sourceAgent) {
-              deps.flashFooter("no focused agent to clone", "error")
-              return
-            }
-
-            const provider = sourceAgent.provider ?? deps.currentProviderId()
-            const model = sourceAgent.model ?? deps.currentModelId()
-            const effort = deps.currentVariantId()
             for (let index = 0; index < count; index += 1) {
-              await spawnAndLaunchAgent({
-                provider,
-                model,
-                effort,
-              })
+              await spawnAndLaunchAgent({})
             }
             deps.flashFooter(
-              `spawned ${count} agent${count === 1 ? "" : "s"} from ${deps.formatAgentLabel(sourceAgent)}`,
+              `spawned ${count} agent${count === 1 ? "" : "s"} from session defaults`,
               "info",
             )
             return
@@ -1790,8 +1791,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
 
           const alias = parsed.positional[0]
           const model = parsed.positional[1]
-          const provider = deps.currentProviderId()
-          const effort = deps.currentVariantId()
+          const provider = model ? deps.currentProviderId() : null
+          const effort = model ? deps.currentVariantId() : null
           const remoteGitPlacement = parsed.machineRef && (parsed.gitWorktree || parsed.branch || parsed.fromRef)
             ? {
                 target_directory: parsed.gitWorktree ?? null,
@@ -1810,7 +1811,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           const payload = await spawnAndLaunchAgent({
             provider,
             alias,
-            model: model ?? deps.currentModelId(),
+            model: model ?? null,
             effort,
             worktreeId,
             machineRef: parsed.machineRef,

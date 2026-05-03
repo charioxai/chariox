@@ -2338,10 +2338,78 @@ impl WorkflowRun {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionAgentDefaults {
+    pub provider: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<crate::provider::AgentExecutionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_level: Option<crate::provider::AgentPermissionLevel>,
+}
+
+impl Default for SessionAgentDefaults {
+    fn default() -> Self {
+        Self {
+            provider: "default".to_string(),
+            model: None,
+            effort: None,
+            account_profile: None,
+            execution_mode: None,
+            permission_level: None,
+        }
+    }
+}
+
+impl SessionAgentDefaults {
+    pub fn new(provider: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            ..Self::default()
+        }
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    pub fn with_effort(mut self, effort: impl Into<String>) -> Self {
+        self.effort = Some(effort.into());
+        self
+    }
+
+    pub fn with_account_profile(mut self, account_profile: impl Into<String>) -> Self {
+        self.account_profile = Some(account_profile.into());
+        self
+    }
+
+    pub fn with_execution_mode(
+        mut self,
+        execution_mode: crate::provider::AgentExecutionMode,
+    ) -> Self {
+        self.execution_mode = Some(execution_mode);
+        self
+    }
+
+    pub fn with_permission_level(
+        mut self,
+        permission_level: crate::provider::AgentPermissionLevel,
+    ) -> Self {
+        self.permission_level = Some(permission_level);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSessionRequest {
     pub workspace_id: String,
     pub worktree_id: String,
     pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_defaults: Option<SessionAgentDefaults>,
     #[serde(default)]
     pub hidden: bool,
     #[serde(default = "default_session_owner_user_id")]
@@ -2481,6 +2549,7 @@ impl CreateSessionRequest {
             workspace_id: workspace_id.into(),
             worktree_id: worktree_id.into(),
             alias: None,
+            agent_defaults: None,
             hidden: false,
             owner_user_id: default_session_owner_user_id(),
         }
@@ -2493,6 +2562,11 @@ impl CreateSessionRequest {
 
     pub fn with_hidden(mut self, hidden: bool) -> Self {
         self.hidden = hidden;
+        self
+    }
+
+    pub fn with_agent_defaults(mut self, agent_defaults: SessionAgentDefaults) -> Self {
+        self.agent_defaults = Some(agent_defaults);
         self
     }
 
@@ -3004,6 +3078,8 @@ pub struct RuntimeSession {
     status: SessionStatus,
     #[serde(default, skip_serializing_if = "crate::session::is_false")]
     hidden: bool,
+    #[serde(default)]
+    agent_defaults: SessionAgentDefaults,
     active_provider_run_id: Option<String>,
     focused_agent_id: Option<String>,
     max_agents: i32,
@@ -3059,6 +3135,7 @@ impl RuntimeSession {
             execution_mode: SessionExecutionMode::SingleAgent,
             status: SessionStatus::Created,
             hidden: false,
+            agent_defaults: SessionAgentDefaults::default(),
             active_provider_run_id: None,
             focused_agent_id: None,
             max_agents: DEFAULT_SESSION_MAX_AGENTS,
@@ -3170,6 +3247,12 @@ impl RuntimeSession {
     }
     pub fn set_hidden(&mut self, hidden: bool) {
         self.hidden = hidden;
+    }
+    pub fn agent_defaults(&self) -> &SessionAgentDefaults {
+        &self.agent_defaults
+    }
+    pub fn set_agent_defaults(&mut self, agent_defaults: SessionAgentDefaults) {
+        self.agent_defaults = agent_defaults;
     }
     pub fn execution_mode(&self) -> SessionExecutionMode {
         self.execution_mode

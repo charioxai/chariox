@@ -7993,7 +7993,7 @@ mod tests {
         let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session_id.clone(),
             alias: Some("projected-agent".to_string()),
-            provider: "claude-code".to_string(),
+            provider: Some("claude-code".to_string()),
             model: None,
             effort: None,
             execution_mode: None,
@@ -9123,7 +9123,7 @@ mod tests {
         let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session_id.clone(),
             alias: Some("spawned".to_string()),
-            provider: "claude-code".to_string(),
+            provider: Some("claude-code".to_string()),
             model: None,
             effort: None,
             execution_mode: None,
@@ -11653,7 +11653,7 @@ mod tests {
         let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session_id.clone(),
             alias: Some("reviewer".to_string()),
-            provider: "claude-code".to_string(),
+            provider: Some("claude-code".to_string()),
             model: None,
             effort: None,
             execution_mode: None,
@@ -12125,7 +12125,7 @@ mod tests {
         let spawn_one = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session_id.clone(),
             alias: Some("owned-a".to_string()),
-            provider: "dev-stub".to_string(),
+            provider: Some("dev-stub".to_string()),
             model: None,
             effort: None,
             execution_mode: None,
@@ -12150,7 +12150,7 @@ mod tests {
         let spawn_two = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session_id.clone(),
             alias: Some("owned-b".to_string()),
-            provider: "dev-stub".to_string(),
+            provider: Some("dev-stub".to_string()),
             model: None,
             effort: None,
             execution_mode: None,
@@ -12429,7 +12429,7 @@ mod tests {
         let spawn_user_two = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session_id.clone(),
             alias: Some("user-two-owned".to_string()),
-            provider: "dev-stub".to_string(),
+            provider: Some("dev-stub".to_string()),
             model: None,
             effort: None,
             execution_mode: None,

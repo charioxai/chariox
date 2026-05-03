@@ -1,11 +1,17 @@
-import type { HistoryQueryPayload, PromptAttachmentPart, SessionHistoryCursor } from "./kernel-types.js"
+import type { HistoryQueryPayload, PromptAttachmentPart, SessionAgentDefaults, SessionHistoryCursor } from "./kernel-types.js"
 
-export function createSessionRequest(workspaceId: string, worktreeId: string, alias?: string) {
+export function createSessionRequest(
+  workspaceId: string,
+  worktreeId: string,
+  alias?: string,
+  agentDefaults?: SessionAgentDefaults,
+) {
   return {
     CreateSession: {
       workspace_id: workspaceId,
       worktree_id: worktreeId,
       alias: alias ?? null,
+      ...(agentDefaults ? { agent_defaults: agentDefaults } : {}),
     },
   }
 }
@@ -1500,11 +1506,11 @@ export function respondToInteractionRequest(sessionId: string, interactionId: st
 
 export function spawnAgentRequest(
   sessionId: string,
-  provider: string,
+  provider?: string | null,
   alias?: string,
-  model?: string,
+  model?: string | null,
   worktreeId?: string,
-  effort?: string,
+  effort?: string | null,
   executionMode?: "build" | "plan",
   permissionLevel?: "required" | "yolo",
   machineRef?: string,
@@ -1513,7 +1519,7 @@ export function spawnAgentRequest(
   return {
     SpawnAgent: {
       session_id: sessionId,
-      provider,
+      provider: provider ?? null,
       alias: alias ?? null,
       model: model ?? null,
       effort: effort ?? null,

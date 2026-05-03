@@ -717,7 +717,7 @@ mod tests {
             &LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
                 session_id: "session-1".to_string(),
                 alias: Some("reviewer".to_string()),
-                provider: "claude-code".to_string(),
+                provider: Some("claude-code".to_string()),
                 model: None,
                 effort: None,
                 execution_mode: None,

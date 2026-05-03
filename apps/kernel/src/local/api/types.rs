@@ -1010,7 +1010,8 @@ pub struct StoreTransferredFileCapabilityRequest {
 pub struct SpawnAgentRequest {
     pub session_id: String,
     pub alias: Option<String>,
-    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

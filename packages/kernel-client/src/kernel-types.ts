@@ -49,6 +49,7 @@ export type RuntimeSession = {
   created_at_ms: number
   last_used_at_ms?: number | null
   status: string
+  agent_defaults?: SessionAgentDefaults
   active_provider_run_id: string | null
   attachment_ids: string[]
   active_prompt: PromptQueueItem | null
@@ -67,6 +68,15 @@ export type RuntimeSession = {
   workflow_watchdogs?: WorkflowWatchdogDefinition[]
   workflow_consoles?: WorkflowConsole[]
   workspace_links?: WorkspaceLinkDefinition[]
+}
+
+export type SessionAgentDefaults = {
+  provider: string
+  model?: string | null
+  effort?: string | null
+  account_profile?: string | null
+  execution_mode?: "build" | "plan" | null
+  permission_level?: "required" | "yolo" | null
 }
 
 export type WaitingRoomPublicSessionSummary = {
