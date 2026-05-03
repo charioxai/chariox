@@ -1298,28 +1298,41 @@ fn codex_permission_policy(
     permission_level: AgentPermissionLevel,
 ) -> CodexPermissionPolicy {
     match write_access_mode {
-        ProviderWriteAccessMode::Unrestricted => CodexPermissionPolicy {
-            approval_policy: match permission_level {
-                AgentPermissionLevel::Required => json!("untrusted"),
-                AgentPermissionLevel::Yolo => json!("never"),
-            },
-            sandbox: match execution_mode {
-                AgentExecutionMode::Build => "workspace-write",
-                AgentExecutionMode::Plan => "read-only",
-            },
-            sandbox_policy: match execution_mode {
-                AgentExecutionMode::Build => json!({ "type": "workspaceWrite" }),
-                AgentExecutionMode::Plan => json!({
-                    "type": "readOnly",
-                    "access": {
-                        "type": "restricted",
-                        "includePlatformDefaults": true,
-                        "readableRoots": []
-                    }
-                }),
-            },
-            config_overrides: BTreeMap::new(),
-        },
+        ProviderWriteAccessMode::Unrestricted => {
+            let yolo_build = execution_mode == AgentExecutionMode::Build
+                && permission_level == AgentPermissionLevel::Yolo;
+            CodexPermissionPolicy {
+                approval_policy: match permission_level {
+                    AgentPermissionLevel::Required => json!({
+                        "granular": {
+                            "mcp_elicitations": true,
+                            "request_permissions": true,
+                            "rules": true,
+                            "sandbox_approval": true
+                        }
+                    }),
+                    AgentPermissionLevel::Yolo => json!("never"),
+                },
+                sandbox: match (execution_mode, yolo_build) {
+                    (AgentExecutionMode::Build, true) => "danger-full-access",
+                    (AgentExecutionMode::Build, false) => "workspace-write",
+                    (AgentExecutionMode::Plan, _) => "read-only",
+                },
+                sandbox_policy: match (execution_mode, yolo_build) {
+                    (AgentExecutionMode::Build, true) => json!({ "type": "dangerFullAccess" }),
+                    (AgentExecutionMode::Build, false) => json!({ "type": "workspaceWrite" }),
+                    (AgentExecutionMode::Plan, _) => json!({
+                        "type": "readOnly",
+                        "access": {
+                            "type": "restricted",
+                            "includePlatformDefaults": true,
+                            "readableRoots": []
+                        }
+                    }),
+                },
+                config_overrides: BTreeMap::new(),
+            }
+        }
         ProviderWriteAccessMode::ManagedIoRequired => {
             let mut config_overrides = BTreeMap::new();
             config_overrides.insert("include_apply_patch_tool".to_string(), json!(false));
@@ -1865,6 +1878,42 @@ mod tests {
             })
         );
         assert_eq!(policy.sandbox, "workspace-write");
+    }
+
+    #[test]
+    fn unrestricted_yolo_build_policy_uses_full_filesystem_access() {
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
+
+        assert_eq!(policy.approval_policy, json!("never"));
+        assert_eq!(policy.sandbox, "danger-full-access");
+        assert_eq!(policy.sandbox_policy, json!({ "type": "dangerFullAccess" }));
+    }
+
+    #[test]
+    fn unrestricted_yolo_plan_policy_remains_read_only() {
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Yolo,
+        );
+
+        assert_eq!(policy.approval_policy, json!("never"));
+        assert_eq!(policy.sandbox, "read-only");
+        assert_eq!(
+            policy.sandbox_policy,
+            json!({
+                "type": "readOnly",
+                "access": {
+                    "type": "restricted",
+                    "includePlatformDefaults": true,
+                    "readableRoots": []
+                }
+            })
+        );
     }
 
     #[test]
