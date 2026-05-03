@@ -1421,10 +1421,10 @@ impl DaemonApp {
         let mut first_error = None;
 
         for session_id in session_ids {
-            if let Err(error) = KernelSessionService::new(self).end_session(&session_id) {
+            if let Err(error) = self.shutdown_cleanup_session_runtime(&session_id) {
                 crate::logging::error_with_fields(
                     "daemon.shutdown",
-                    "failed to end session during daemon shutdown",
+                    "failed to clean session runtime during daemon shutdown",
                     serde_json::json!({
                         "session_id": session_id,
                         "error": error.to_string(),
@@ -1439,6 +1439,75 @@ impl DaemonApp {
         if let Some(error) = first_error {
             return Err(error);
         }
+
+        Ok(())
+    }
+
+    fn shutdown_cleanup_session_runtime(&mut self, session_id: &str) -> Result<(), DaemonError> {
+        let removed_attachments = self.attachments.remove_session_attachments(session_id);
+        for attachment in &removed_attachments {
+            match self
+                .sessions
+                .write()
+                .remove_attachment_from_session(session_id, attachment.id())
+            {
+                Ok(_) | Err(DaemonError::AttachmentNotInSession { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        let terminated_runs = self
+            .providers
+            .terminate_session_runs_provider_only(session_id)?;
+        let terminated_run_ids = terminated_runs
+            .runs()
+            .iter()
+            .map(|outcome| outcome.run().id().to_string())
+            .collect::<Vec<_>>();
+        for outcome in terminated_runs.into_runs() {
+            let run = outcome.into_run();
+            if self
+                .sessions
+                .get_session(session_id)?
+                .active_provider_run_id()
+                == Some(run.id())
+            {
+                self.sessions.set_active_provider_run(session_id, None)?;
+            }
+            self.update_provider_run_projection(run.clone());
+            provider_runtime::ProviderProcessTracker::new(self).remove_run(run.id())?;
+        }
+
+        for run in self.providers.list_runs() {
+            if run.session_id() == session_id {
+                crate::transport::flow_control::clear_prompt_activity(self, run.id());
+            }
+        }
+        self.prompt_owner_remove_session(session_id);
+
+        let mut session = self.sessions.get_session(session_id)?;
+        let reconciliation = session.reconcile_after_kernel_restart();
+        let agents = self.agents.get_session_agents(session_id);
+        session.set_agents(agents);
+        self.sessions.restore_session(session.clone());
+        self.update_session_projection(session.clone());
+
+        crate::logging::info_with_fields(
+            "daemon.shutdown",
+            "session runtime cleaned for daemon shutdown",
+            serde_json::json!({
+                "session_id": session_id,
+                "session_status": session.status(),
+                "removed_attachment_ids": removed_attachments
+                    .iter()
+                    .map(|attachment| attachment.id().to_string())
+                    .collect::<Vec<_>>(),
+                "terminated_provider_run_ids": terminated_run_ids,
+                "cleared_active_provider_run": reconciliation.cleared_active_provider_run,
+                "interrupted_prompt_count": reconciliation.interrupted_prompt_count,
+                "stopped_workflow_run_count": reconciliation.stopped_workflow_run_count,
+            }),
+        );
 
         Ok(())
     }
@@ -1508,6 +1577,39 @@ mod tests {
 
         let app_a = DaemonApp::bootstrap(config_a).expect("kernel a should reboot");
         assert!(app_a.sessions().get_session(&session_id).is_ok());
+
+        let _ = std::fs::remove_file(state_path);
+    }
+
+    #[test]
+    fn daemon_restart_restores_sessions_after_shutdown_cleanup() {
+        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+            "restart-preserves-sessions-{}.db",
+            crate::session::unix_epoch_ms()
+        ));
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.state.path = Some(state_path.display().to_string());
+
+        let session_id = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            let (session, _) = app
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            app.shutdown_cleanup()
+                .expect("shutdown should clean runtime without ending session");
+            session.id().to_string()
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+        let restored = app
+            .sessions()
+            .get_session(&session_id)
+            .expect("session should restore after daemon restart");
+        assert_ne!(restored.status(), crate::session::SessionStatus::Ended);
+        assert!(
+            app.agents().get_session_agents(&session_id).len() == 1,
+            "default agent should restore for preserved session"
+        );
 
         let _ = std::fs::remove_file(state_path);
     }

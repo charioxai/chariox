@@ -45,7 +45,9 @@ mod tests {
     use super::app::RemoteLeaseRuntime;
     use super::attachment::{AttachRequest, ClientCapabilityLevel};
     use super::provider::{LaunchProviderRequest, ProviderResumeState};
-    use super::session::{CreateSessionRequest, PromptSubmissionOutcome};
+    use super::session::{
+        CreateSessionRequest, PromptSubmissionOutcome, SessionStatus,
+    };
     use super::terminal::TerminalOutputKind;
     use super::transport::relay_peer::{
         RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk,
@@ -128,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_cleanup_ends_live_sessions_and_clears_managed_processes() {
+    fn shutdown_cleanup_preserves_sessions_and_clears_runtime_state() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let session = app
@@ -161,9 +163,19 @@ mod tests {
             .any(|process| process.owner_provider_run_ids == vec![run.id().to_string()]));
 
         app.shutdown_cleanup()
-            .expect("shutdown cleanup should end sessions");
+            .expect("shutdown cleanup should preserve sessions");
 
-        assert_eq!(app.sessions().active_session_count(), 0);
+        assert_eq!(app.sessions().active_session_count(), 1);
+        let cleaned_session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should remain joinable after shutdown cleanup");
+        assert_ne!(cleaned_session.status(), SessionStatus::Ended);
+        assert_eq!(cleaned_session.active_provider_run_id(), None);
+        assert!(
+            cleaned_session.attachment_ids().is_empty(),
+            "runtime attachments must not survive daemon shutdown"
+        );
         assert!(app
             .provider_process_tracking
             .snapshot()
@@ -175,6 +187,12 @@ mod tests {
             .run_processes
             .is_empty());
         assert!(app.attachments().get_attachment(attachment.id()).is_err());
+        assert!(app
+            .durable_state_store()
+            .load_events_after(0)
+            .expect("durable events should load")
+            .iter()
+            .all(|event| event.kind != "session.ended"));
     }
 
     #[test]
