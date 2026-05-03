@@ -139,6 +139,7 @@ pub(crate) struct ActivePromptState {
     pub(crate) last_output_at: Option<Instant>,
     pub(crate) saw_response_content: bool,
     pub(crate) completion_recorded: bool,
+    pub(crate) settlement_requested: bool,
 }
 
 #[derive(Debug, Clone, Default)]

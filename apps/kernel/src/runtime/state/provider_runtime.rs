@@ -642,7 +642,10 @@ impl KernelRuntimeState {
             });
         }
 
-        if !force && !prompt_completed && !owned.prompt_should_settle(provider_run_id) {
+        if prompt_completed {
+            owned.note_prompt_completion_candidate(provider_run_id);
+        }
+        if !force && !owned.prompt_should_settle(provider_run_id) {
             crate::logging::debug_with_fields(
                 "daemon.provider",
                 "settle provider prompt skipped",
@@ -1287,5 +1290,144 @@ impl KernelRuntimeState {
             .drain_output_records(session_id, attachment_id);
         let session = owned.session_snapshot(session_id).ok();
         Ok((records, session))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tokio::sync::Mutex;
+
+    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
+        let app_locked = app.lock().await;
+        KernelRuntimeState::new_with_owned_state(
+            Arc::clone(app),
+            app_locked.config_projection_store(),
+            app_locked.session_state_store(),
+            app_locked.agents().clone(),
+            app_locked.attachments().clone(),
+            app_locked.providers().clone(),
+            app_locked.provider_process_tracking_store(),
+            app_locked.session_state_projection_store(),
+            app_locked.provider_run_projection_store(),
+            app_locked.history_store(),
+            app_locked.operational_history_store(),
+            app_locked.durable_state_store(),
+            app_locked.session_history_projection_store(),
+            app_locked.prompt_state_owner(),
+            app_locked.prompt_activity_store(),
+            app_locked.prompt_idle_timeout(),
+            app_locked.prompt_workspace_claim_store(),
+            app_locked.structured_output_record_store(),
+            app_locked.terminal_stream_store(),
+            app_locked.workspace_coordinator(),
+        )
+    }
+
+    #[tokio::test]
+    async fn provider_completed_signal_waits_for_idle_before_settling_prompt() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-1",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider run should launch");
+        app.update_provider_run_projection(run.clone());
+        app.submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "status\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let first_settlement = runtime
+            .settle_owned_provider_prompt(session.id(), run.id(), true, false)
+            .await
+            .expect("provider completion signal should be accepted");
+        assert!(first_settlement.had_active_prompt);
+        assert!(!first_settlement.started_next_prompt);
+        assert!(runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_prompt_for_agent(agent.id())
+            .is_some());
+
+        let records_after_completion_signal = runtime
+            .apply_owned_structured_output_batch(
+                session.id(),
+                run.id(),
+                vec![attachment.id().to_string()],
+                crate::provider::ProviderPromptSignalBatch {
+                    chunks: vec![crate::provider::ProviderPromptChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                        merge_key: Some("late-output".to_string()),
+                        bytes: b"late output after provider completion\n".to_vec(),
+                    }],
+                    ..crate::provider::ProviderPromptSignalBatch::default()
+                },
+            )
+            .await
+            .expect("late structured output should still be applied");
+        assert_eq!(records_after_completion_signal.len(), 1);
+        assert!(runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_prompt_for_agent(agent.id())
+            .is_some());
+
+        {
+            let mut activity = runtime.owned.prompt_activity.write();
+            let state = activity
+                .get_mut(run.id())
+                .expect("completion candidate should keep prompt activity");
+            assert!(state.completion_recorded);
+            assert!(state.settlement_requested);
+            state.last_output_at =
+                Some(Instant::now() - runtime.owned.prompt_idle_timeout - Duration::from_millis(1));
+        }
+
+        let final_settlement = runtime
+            .settle_owned_provider_prompt(session.id(), run.id(), false, false)
+            .await
+            .expect("idle completion should settle the active prompt");
+        assert!(final_settlement.had_active_prompt);
+        assert!(runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_prompt_for_agent(agent.id())
+            .is_none());
     }
 }

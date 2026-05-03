@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -81,6 +81,7 @@ fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) {
         return;
     };
     let recipient_attachment_ids = app.attachments.list_session_attachment_ids(session.id());
+    let mut provider_run_ids = BTreeSet::new();
     let mut agent_ids = session
         .agents()
         .iter()
@@ -97,13 +98,33 @@ fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) {
         {
             continue;
         }
-        let Some(provider_run_id) = app
+        if let Some(provider_run_id) = app
             .providers
             .get_run_for_agent(session.id(), &agent_id)
             .map(|run| run.id().to_string())
-        else {
-            continue;
-        };
+        {
+            provider_run_ids.insert(provider_run_id);
+        }
+    }
+    provider_run_ids.extend(
+        app.providers
+            .list_runs()
+            .into_iter()
+            .filter(|run| run.session_id() == session.id())
+            .filter(|run| {
+                matches!(
+                    run.state(),
+                    ProviderRunState::Starting | ProviderRunState::Running
+                )
+            })
+            .map(|run| run.id().to_string()),
+    );
+    for provider_run_id in provider_run_ids {
+        let agent_id = app
+            .providers
+            .get_run(&provider_run_id)
+            .ok()
+            .and_then(|run| run.agent_instance_id().map(str::to_string));
         if let Err(error) =
             ProviderOutputPump::new(app).pump_provider_output(ProviderOutputPumpRequest {
                 session_id: session.id(),
@@ -780,6 +801,26 @@ impl<'a> ProviderOutputPumpContext<'a> {
         }
     }
 
+    fn note_prompt_completion_candidate(&self, provider_run_id: &str) {
+        let now = Instant::now();
+        self.prompt_activity
+            .write()
+            .entry(provider_run_id.to_string())
+            .and_modify(|state| {
+                if !state.settlement_requested {
+                    state.last_output_at = Some(now);
+                    state.settlement_requested = true;
+                }
+                state.completion_recorded = true;
+            })
+            .or_insert(crate::app::ActivePromptState {
+                last_output_at: Some(now),
+                saw_response_content: false,
+                completion_recorded: true,
+                settlement_requested: true,
+            });
+    }
+
     fn maybe_complete_active_prompt(
         &mut self,
         session_id: &str,
@@ -815,10 +856,8 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 self.maybe_complete_active_prompt(session_id, provider_run_id)?;
             }
         } else if prompt_completed {
-            let agent_id = self.provider_run_agent_id(provider_run_id)?;
-            let _ =
-                self.app
-                    .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
+            self.note_prompt_completion_candidate(provider_run_id);
+            self.maybe_complete_active_prompt(session_id, provider_run_id)?;
         }
         Ok(())
     }

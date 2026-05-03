@@ -21,6 +21,7 @@ pub(crate) fn note_prompt_started(app: &mut DaemonApp, provider_run_id: &str) {
             last_output_at: None,
             saw_response_content: false,
             completion_recorded: false,
+            settlement_requested: false,
         },
     );
 }
@@ -39,11 +40,13 @@ pub(crate) fn note_prompt_settlement_requested(app: &mut DaemonApp, provider_run
         .and_modify(|state| {
             state.last_output_at = Some(Instant::now());
             state.saw_response_content = true;
+            state.settlement_requested = true;
         })
         .or_insert(ActivePromptState {
             last_output_at: Some(Instant::now()),
             saw_response_content: true,
             completion_recorded: false,
+            settlement_requested: true,
         });
 }
 
