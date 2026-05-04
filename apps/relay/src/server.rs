@@ -3,7 +3,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -376,7 +376,6 @@ async fn handle_connection(
         }
     });
     let mut registered_daemon_key: Option<DaemonKey> = None;
-    let token_expiry_generation = Arc::new(AtomicU64::new(0));
     let mut first_message_received = false;
     let mut last_read_at = Instant::now();
     let mut last_ping_at = Instant::now() - RELAY_HEARTBEAT_INTERVAL;
@@ -447,11 +446,6 @@ async fn handle_connection(
                                 RelayAction::DaemonRegister,
                                 None,
                             )?;
-                            schedule_token_expiry_close(
-                                &outgoing_tx,
-                                &token_expiry_generation,
-                                identity.expires_at_ms,
-                            );
                             let daemon_key = DaemonKey::new(
                                 identity.realm_id.clone(),
                                 registration.daemon_id.clone(),
@@ -505,11 +499,6 @@ async fn handle_connection(
                                     RelayAction::DaemonHeartbeat,
                                     Some(daemon_id.as_str()),
                                 )?;
-                                schedule_token_expiry_close(
-                                    &outgoing_tx,
-                                    &token_expiry_generation,
-                                    identity.expires_at_ms,
-                                );
                                 if identity.realm_id != current_daemon_key.realm_id {
                                     break;
                                 }
@@ -535,11 +524,6 @@ async fn handle_connection(
                                     .as_deref()
                                     .or(target.daemon_alias.as_deref()),
                             )?;
-                            schedule_token_expiry_close(
-                                &outgoing_tx,
-                                &token_expiry_generation,
-                                identity.expires_at_ms,
-                            );
                             let Some(daemon_key) =
                                 resolve_target_daemon_key(&registry, &identity.realm_id, &target)
                                     .await
@@ -1524,34 +1508,6 @@ fn send_close(sender: &RelaySender, reason: String) {
     let _ = send_envelope(sender, &RelayEnvelope::Close { reason });
 }
 
-fn schedule_token_expiry_close(
-    sender: &RelaySender,
-    generation: &Arc<AtomicU64>,
-    expires_at_ms: u64,
-) {
-    if expires_at_ms == u64::MAX {
-        return;
-    }
-    let generation_id = generation.fetch_add(1, Ordering::SeqCst) + 1;
-    let sender = sender.clone();
-    let generation = Arc::clone(generation);
-    let now_ms = current_unix_ms();
-    let delay = Duration::from_millis(expires_at_ms.saturating_sub(now_ms));
-    tokio::spawn(async move {
-        tokio::time::sleep(delay).await;
-        if generation.load(Ordering::SeqCst) == generation_id {
-            send_close(&sender, "relay token expired".to_string());
-        }
-    });
-}
-
-fn current_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
     RelayError {
         code: code.to_string(),
@@ -1592,7 +1548,7 @@ mod tests {
 
     use crate::auth::{RelaySubjectKind, RelayTokenClaims, ScopedTokenVerifier};
     use crate::protocol::EncryptedRelayPayload;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{sleep, timeout, Duration};
     use tokio_tungstenite::connect_async;
 
     fn test_registration(
@@ -2246,8 +2202,12 @@ mod tests {
         });
 
         let url = format!("ws://{}:{}", addr.ip(), addr.port());
-        let (mut daemon_a, _) = connect_async(&url).await.expect("daemon A should connect");
-        let (mut daemon_b, _) = connect_async(&url).await.expect("daemon B should connect");
+        let (mut daemon_a, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon A should connect");
+        let (mut daemon_b, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon B should connect");
         let mut registration_a =
             test_registration_with_token("daemon-a", "machine-a", "Linux", 10, "daemon-a-token");
         registration_a.daemon_alias = Some("shared".to_string());
@@ -2269,8 +2229,11 @@ mod tests {
                 .await
                 .expect("register should send");
         }
+        sleep(Duration::from_millis(50)).await;
 
-        let (mut client_a, _) = connect_async(&url).await.expect("client A should connect");
+        let (mut client_a, _) = connect_async_with_retry(&url)
+            .await
+            .expect("client A should connect");
         client_a
             .send(Message::Text(
                 serde_json::to_string(&RelayEnvelope::ClientMetadataRequest {
@@ -2328,7 +2291,9 @@ mod tests {
             other => panic!("unexpected connect response envelope: {other:?}"),
         }
 
-        let (mut client_b, _) = connect_async(&url).await.expect("client B should connect");
+        let (mut client_b, _) = connect_async_with_retry(&url)
+            .await
+            .expect("client B should connect");
         client_b
             .send(Message::Text(
                 serde_json::to_string(&RelayEnvelope::ClientConnect {
@@ -2361,6 +2326,360 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn accepted_daemon_socket_is_not_closed_when_initial_token_expires() {
+        let mut claims = BTreeMap::new();
+        claims.insert(
+            "daemon-token".to_string(),
+            scoped_claim(
+                "daemon-token",
+                "daemon-1",
+                RelaySubjectKind::Kernel,
+                "realm-a",
+                vec![RelayAction::DaemonRegister],
+                None,
+            ),
+        );
+        let auth_verifier = RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(
+            claims,
+            BTreeMap::new(),
+            Some(10),
+        ));
+        let server = RelayServer::with_auth_verifier(
+            RelayConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+                shared_token: None,
+            },
+            auth_verifier,
+        );
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let auth_verifier = server.auth_verifier.clone();
+        let server = RelayServer::with_auth_verifier(
+            RelayConfig {
+                host: addr.ip().to_string(),
+                port: addr.port(),
+                shared_token: None,
+            },
+            auth_verifier,
+        );
+        let registry = server.registry();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_until(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon should connect");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                    registration: test_registration_with_token(
+                        "daemon-1",
+                        "machine-1",
+                        "Linux",
+                        10,
+                        "daemon-token",
+                    ),
+                })
+                .expect("register should serialize")
+                .into(),
+            ))
+            .await
+            .expect("register should send");
+
+        sleep(Duration::from_millis(75)).await;
+        {
+            let guard = registry.read().await;
+            assert_eq!(guard.daemon_count(), 1);
+            assert_eq!(guard.peer_count(), 1);
+        }
+        assert_no_relay_close(&mut daemon_socket).await;
+
+        let _ = daemon_socket.close(None).await;
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn accepted_client_socket_is_not_closed_when_initial_token_expires() {
+        let mut claims = BTreeMap::new();
+        claims.insert(
+            "daemon-token".to_string(),
+            scoped_claim(
+                "daemon-token",
+                "daemon-1",
+                RelaySubjectKind::Kernel,
+                "realm-a",
+                vec![RelayAction::DaemonRegister],
+                None,
+            ),
+        );
+        claims.insert(
+            "client-token".to_string(),
+            scoped_claim(
+                "client-token",
+                "client-1",
+                RelaySubjectKind::Client,
+                "realm-a",
+                vec![RelayAction::ClientConnect],
+                Some(vec!["daemon-1"]),
+            ),
+        );
+        let auth_verifier = RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(
+            claims,
+            BTreeMap::new(),
+            Some(10),
+        ));
+        let server = RelayServer::with_auth_verifier(
+            RelayConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+                shared_token: None,
+            },
+            auth_verifier,
+        );
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let auth_verifier = server.auth_verifier.clone();
+        let server = RelayServer::with_auth_verifier(
+            RelayConfig {
+                host: addr.ip().to_string(),
+                port: addr.port(),
+                shared_token: None,
+            },
+            auth_verifier,
+        );
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_until(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon should connect");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                    registration: test_registration_with_token(
+                        "daemon-1",
+                        "machine-1",
+                        "Linux",
+                        10,
+                        "daemon-token",
+                    ),
+                })
+                .expect("register should serialize")
+                .into(),
+            ))
+            .await
+            .expect("register should send");
+        sleep(Duration::from_millis(50)).await;
+
+        let (mut client_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("client should connect");
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientConnect {
+                    auth_token: "client-token".to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("daemon-1".to_string()),
+                        daemon_alias: None,
+                    },
+                })
+                .expect("client connect should serialize")
+                .into(),
+            ))
+            .await
+            .expect("client connect should send");
+        let connect_payload = match client_socket.next().await {
+            Some(Ok(Message::Text(text))) => text,
+            other => panic!("unexpected connect response: {other:?}"),
+        };
+        match serde_json::from_str::<RelayEnvelope>(&connect_payload)
+            .expect("connect response should decode")
+        {
+            RelayEnvelope::ClientConnected {
+                daemon_public_key, ..
+            } => assert_eq!(daemon_public_key, "public-key-daemon-1"),
+            other => panic!("unexpected connect response envelope: {other:?}"),
+        }
+
+        sleep(Duration::from_millis(75)).await;
+        assert_no_relay_close(&mut client_socket).await;
+
+        let _ = client_socket.close(None).await;
+        let _ = daemon_socket.close(None).await;
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn expired_token_is_rejected_for_new_client_connection() {
+        let mut claims = BTreeMap::new();
+        claims.insert(
+            "daemon-token".to_string(),
+            scoped_claim(
+                "daemon-token",
+                "daemon-1",
+                RelaySubjectKind::Kernel,
+                "realm-a",
+                vec![RelayAction::DaemonRegister],
+                None,
+            ),
+        );
+        let mut expired_client_claim = scoped_claim(
+            "expired-client-token",
+            "client-1",
+            RelaySubjectKind::Client,
+            "realm-a",
+            vec![RelayAction::ClientConnect],
+            Some(vec!["daemon-1"]),
+        );
+        expired_client_claim.expires_at_ms = 5;
+        claims.insert("expired-client-token".to_string(), expired_client_claim);
+        let auth_verifier = RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(
+            claims,
+            BTreeMap::new(),
+            Some(10),
+        ));
+        let server = RelayServer::with_auth_verifier(
+            RelayConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+                shared_token: None,
+            },
+            auth_verifier,
+        );
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let auth_verifier = server.auth_verifier.clone();
+        let server = RelayServer::with_auth_verifier(
+            RelayConfig {
+                host: addr.ip().to_string(),
+                port: addr.port(),
+                shared_token: None,
+            },
+            auth_verifier,
+        );
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_until(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon should connect");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                    registration: test_registration_with_token(
+                        "daemon-1",
+                        "machine-1",
+                        "Linux",
+                        10,
+                        "daemon-token",
+                    ),
+                })
+                .expect("register should serialize")
+                .into(),
+            ))
+            .await
+            .expect("register should send");
+        sleep(Duration::from_millis(50)).await;
+
+        let (mut client_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("client should connect");
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientConnect {
+                    auth_token: "expired-client-token".to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("daemon-1".to_string()),
+                        daemon_alias: None,
+                    },
+                })
+                .expect("client connect should serialize")
+                .into(),
+            ))
+            .await
+            .expect("client connect should send");
+
+        match timeout(Duration::from_millis(500), client_socket.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                let envelope = serde_json::from_str::<RelayEnvelope>(&text)
+                    .expect("relay response should decode");
+                assert!(
+                    !matches!(envelope, RelayEnvelope::ClientConnected { .. }),
+                    "expired token must not connect a client"
+                );
+            }
+            Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) => {}
+            Ok(other) => panic!("unexpected expired-token response: {other:?}"),
+            Err(_) => panic!("expired token did not close or reject promptly"),
+        }
+
+        let _ = daemon_socket.close(None).await;
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    async fn assert_no_relay_close(
+        socket: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) {
+        match timeout(Duration::from_millis(100), socket.next()).await {
+            Err(_) => {}
+            Ok(Some(Ok(Message::Text(text)))) => {
+                let envelope = serde_json::from_str::<RelayEnvelope>(&text)
+                    .expect("relay text frame should decode");
+                assert!(
+                    !matches!(envelope, RelayEnvelope::Close { .. }),
+                    "active socket received relay close after accepted token expiry"
+                );
+            }
+            Ok(other) => panic!("active socket closed unexpectedly: {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn daemon_peer_requests_are_routed_between_registered_kernels() {
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
@@ -2390,10 +2709,10 @@ mod tests {
         });
 
         let url = format!("ws://{}:{}", addr.ip(), addr.port());
-        let (mut daemon_a, _) = connect_async(&url)
+        let (mut daemon_a, _) = connect_async_with_retry(&url)
             .await
             .expect("daemon A should connect to relay");
-        let (mut daemon_b, _) = connect_async(&url)
+        let (mut daemon_b, _) = connect_async_with_retry(&url)
             .await
             .expect("daemon B should connect to relay");
 
