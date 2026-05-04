@@ -87,6 +87,7 @@ import { executeShellLine } from "@arroba/kernel-client/shell-script"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import {
+  aliasAgentRequest,
   attachToSessionRequest,
   attachWorkspaceLinkRequest,
   approveRemoteMachineRequest,
@@ -166,6 +167,7 @@ import {
   unsetUserConfigValueRequest,
   updateMcpServerRequest,
   updateAgentConfigRequest,
+  updateAgentProfileRequest,
   updateAgentSubstitutesRequest,
   updateSessionConfigRequest,
   updateSkillRequest,
@@ -2163,18 +2165,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       flashFooter(`selected model ${decision.selectedModelId}`, "info")
       return
     }
-    const run = await launchProviderRun(
+    const agentId = focusedAgentId()
+    if (!agentId) {
+      flashFooter("no focused agent to update", "error")
+      return
+    }
+    const payload = await updateAgentProfile(
       client,
       sessionState().id,
-      decision.launch.provider,
-      options.accountProfile,
-      decision.launch.model,
-      decision.launch.effort,
-      focusedAgentId(),
+      agentId,
+      {
+        provider: decision.launch.provider,
+        model: decision.launch.model,
+        effort: decision.launch.effort,
+      },
     )
-    setProviderRunState(run)
-    applySessionState(applyProviderRunProfileToSession(await getSessionState(client, sessionState().id), run))
-    await maybeResize(client, sessionState().id)
+    applySessionState(payload.session)
+    setProviderRunState(null)
     flashFooter(`model set to ${decision.selectedModelId}`, "info")
   }
   const applyVariantSelection = async (variant: string) => {
@@ -2197,18 +2204,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       flashFooter(`selected variant ${decision.selectedVariant}`, "info")
       return
     }
-    const run = await launchProviderRun(
+    const agentId = focusedAgentId()
+    if (!agentId) {
+      flashFooter("no focused agent to update", "error")
+      return
+    }
+    const payload = await updateAgentProfile(
       client,
       sessionState().id,
-      decision.launch.provider,
-      options.accountProfile,
-      decision.launch.model,
-      decision.launch.effort,
-      focusedAgentId(),
+      agentId,
+      {
+        provider: decision.launch.provider,
+        model: decision.launch.model,
+        effort: decision.launch.effort,
+      },
     )
-    setProviderRunState(run)
-    applySessionState(applyProviderRunProfileToSession(await getSessionState(client, sessionState().id), run))
-    await maybeResize(client, sessionState().id)
+    applySessionState(payload.session)
+    setProviderRunState(null)
     flashFooter(`variant set to ${decision.selectedVariant}`, "info")
   }
   const applyProviderSelection = async (providerId: string) => {
@@ -2237,27 +2249,27 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       modelId: options.model,
       effort: options.effort,
     })
-    const activeRun = providerRunState()
-    const shouldSwitchActiveRun =
-      isAttached()
-      && Boolean(attachmentState())
-      && (!activeRun || activeRun.provider !== providerId)
-    if (shouldSwitchActiveRun) {
+    if (isAttached() && attachmentState()) {
       try {
-        const run = await launchProviderRun(
+        const agentId = focusedAgentId()
+        if (!agentId) {
+          flashFooter("no focused agent to update", "error")
+          return
+        }
+        const payload = await updateAgentProfile(
           client,
           sessionState().id,
-          providerId,
-          options.accountProfile,
-          options.model,
-          options.effort,
-          focusedAgentId(),
+          agentId,
+          {
+            provider: providerId,
+            model: options.model,
+            effort: options.effort,
+          },
         )
-        setProviderRunState(run)
-        applySessionState(applyProviderRunProfileToSession(await getSessionState(client, sessionState().id), run))
-        await maybeResize(client, sessionState().id)
+        applySessionState(payload.session)
+        setProviderRunState(null)
       } catch (error) {
-        appLogger?.warn("provider switch launch failed", {
+        appLogger?.warn("provider profile update failed", {
           provider: providerId,
           error: formatError(error),
         })
@@ -6602,6 +6614,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),
     deleteKernel: () => deleteKernel(client),
     assignSessionAlias: (sessionId, alias) => aliasSession(client, sessionId, alias),
+    aliasAgent: (sessionId, agentId, alias) => aliasAgent(client, sessionId, agentId, alias),
+    updateAgentProfile: (sessionId, agentId, options) =>
+      updateAgentProfile(client, sessionId, agentId, options),
     transitionToNoSession,
     applyProviderSelection,
     applyModelSelection,
@@ -9884,6 +9899,20 @@ async function aliasSession(
   return normalizeRuntimeSession(payload.session)
 }
 
+async function aliasAgent(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+  alias: string,
+): Promise<{ session: RuntimeSession; agent: AgentInstance }> {
+  const response = await client.send<Record<string, unknown>>(aliasAgentRequest(sessionId, agentId, alias))
+  const payload = expectVariant<{ session: RuntimeSession; agent: AgentInstance }>(response, "AgentAliased")
+  return {
+    ...payload,
+    session: normalizeRuntimeSession(payload.session),
+  }
+}
+
 async function deleteSessionByRef(client: LocalIpcClient, sessionRef: string, workspace: string): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(deleteSessionRequest(sessionRef, workspace))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionDeleted")
@@ -10014,6 +10043,34 @@ async function updateAgentConfig(
     }),
   )
   const payload = expectVariant<{ session: RuntimeSession; agent: AgentInstance }>(response, "AgentConfigUpdated")
+  return {
+    ...payload,
+    session: normalizeRuntimeSession(payload.session),
+  }
+}
+
+async function updateAgentProfile(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+  options: {
+    provider?: string | null
+    model?: string | null
+    effort?: string | null
+    clearEffort?: boolean
+  },
+): Promise<{ session: RuntimeSession; agent: AgentInstance }> {
+  const response = await client.send<Record<string, unknown>>(
+    updateAgentProfileRequest({
+      sessionId,
+      agentId,
+      ...(options.provider !== undefined ? { provider: options.provider } : {}),
+      ...(options.model !== undefined ? { model: options.model } : {}),
+      ...(options.effort !== undefined ? { effort: options.effort } : {}),
+      ...(options.clearEffort !== undefined ? { clearEffort: options.clearEffort } : {}),
+    }),
+  )
+  const payload = expectVariant<{ session: RuntimeSession; agent: AgentInstance }>(response, "AgentProfileUpdated")
   return {
     ...payload,
     session: normalizeRuntimeSession(payload.session),

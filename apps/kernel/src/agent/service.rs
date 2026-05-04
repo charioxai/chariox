@@ -350,6 +350,51 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    pub fn update_agent_profile(
+        &mut self,
+        agent_id: &str,
+        provider: Option<String>,
+        model: Option<String>,
+        effort: Option<Option<String>>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        if let Some(provider) = provider {
+            agent.set_provider(provider);
+        }
+        if let Some(model) = model {
+            agent.set_model(Some(model));
+        }
+        if let Some(effort) = effort {
+            agent.set_effort(effort);
+        }
+        agent.set_primary_profile(
+            agent.provider().to_string(),
+            agent.model().map(str::to_string),
+            agent.effort().map(str::to_string),
+        );
+        Ok(agent.clone())
+    }
+
+    pub fn alias_agent(
+        &mut self,
+        agent_id: &str,
+        alias: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_alias(alias);
+        Ok(agent.clone())
+    }
+
     pub fn add_agent_substitute(
         &mut self,
         agent_id: &str,
@@ -718,6 +763,25 @@ impl AgentServiceStore {
             execution_mode_override,
             permission_level_override,
         )
+    }
+
+    pub fn update_agent_profile(
+        &self,
+        agent_id: &str,
+        provider: Option<String>,
+        model: Option<String>,
+        effort: Option<Option<String>>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .update_agent_profile(agent_id, provider, model, effort)
+    }
+
+    pub fn alias_agent(
+        &self,
+        agent_id: &str,
+        alias: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().alias_agent(agent_id, alias)
     }
 
     pub fn add_agent_substitute(

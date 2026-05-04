@@ -6,11 +6,12 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use crate::agent::CreateAgentRequest;
 use crate::error::DaemonError;
 use crate::local::{
-    AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest, DeleteSessionRequest,
-    DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest,
-    LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest,
-    RespondToInteractionRequest, SpawnAgentRequest, UpdateAgentConfigRequest,
-    UpdateAgentSubstitutesRequest, UpdateSessionConfigRequest,
+    AliasAgentRequest, AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest,
+    DeleteSessionRequest, DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest,
+    FocusAgentRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+    ResizeTerminalRequest, RespondToInteractionRequest, SpawnAgentRequest,
+    UpdateAgentConfigRequest, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
+    UpdateSessionConfigRequest,
 };
 use crate::runtime::command::{KernelCallerKind, KernelCommand};
 use crate::runtime::projection::{
@@ -172,6 +173,12 @@ impl SessionRuntime {
                     &request.attachment_id,
                 ),
             LocalDaemonRequest::UpdateAgentConfig(request) => {
+                self.resolve_direct_session_lane_key(&request.session_id)
+            }
+            LocalDaemonRequest::UpdateAgentProfile(request) => {
+                self.resolve_direct_session_lane_key(&request.session_id)
+            }
+            LocalDaemonRequest::AliasAgent(request) => {
                 self.resolve_direct_session_lane_key(&request.session_id)
             }
             LocalDaemonRequest::UpdateAgentSubstitutes(request) => {
@@ -593,6 +600,77 @@ impl SessionRuntimeStore {
         self.with_session_projection_action_result(result).await
     }
 
+    async fn update_agent_profile(
+        &self,
+        request: UpdateAgentProfileRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let session_id = request.session_id.clone();
+        let effort = if request.clear_effort {
+            Some(None)
+        } else {
+            request.effort.map(Some)
+        };
+        let result = match self
+            .state
+            .update_agent_profile(
+                &request.session_id,
+                &request.agent_id,
+                &caller_user_id,
+                request.provider,
+                request.model,
+                effort,
+            )
+            .await
+        {
+            Ok(agent) => self
+                .state
+                .session_snapshot(&session_id)
+                .await
+                .map(|session| LocalDaemonResponse::AgentProfileUpdated { agent, session }),
+            Err(error) => Err(error),
+        };
+        self.with_session_projection_action_result(result).await
+    }
+
+    async fn alias_agent(
+        &self,
+        request: AliasAgentRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let session_id = request.session_id.clone();
+        let alias = request.alias.trim();
+        let alias = if alias.is_empty() || matches!(alias, "clear" | "none" | "-") {
+            None
+        } else {
+            Some(alias.to_string())
+        };
+        let result = match self
+            .state
+            .alias_agent(
+                &request.session_id,
+                &request.agent_id,
+                &caller_user_id,
+                alias,
+            )
+            .await
+        {
+            Ok(agent) => self
+                .state
+                .session_snapshot(&session_id)
+                .await
+                .map(|session| LocalDaemonResponse::AgentAliased { agent, session }),
+            Err(error) => Err(error),
+        };
+        self.with_session_projection_action_result(result).await
+    }
+
     async fn update_agent_substitutes(
         &self,
         request: UpdateAgentSubstitutesRequest,
@@ -974,6 +1052,14 @@ impl SessionRuntimeCommandExecutor {
                     .update_agent_config(request, caller_user_id)
                     .await
             }
+            LocalDaemonRequest::UpdateAgentProfile(request) => {
+                self.store
+                    .update_agent_profile(request, caller_user_id)
+                    .await
+            }
+            LocalDaemonRequest::AliasAgent(request) => {
+                self.store.alias_agent(request, caller_user_id).await
+            }
             LocalDaemonRequest::UpdateAgentSubstitutes(request) => {
                 self.store
                     .update_agent_substitutes(request, caller_user_id)
@@ -1055,7 +1141,9 @@ fn session_response_projection_action(
 ) -> Option<SessionProjectionAction> {
     match response {
         LocalDaemonResponse::SessionCreated { session, .. }
+        | LocalDaemonResponse::AgentAliased { session, .. }
         | LocalDaemonResponse::AgentConfigUpdated { session, .. }
+        | LocalDaemonResponse::AgentProfileUpdated { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
         | LocalDaemonResponse::SessionEnded { session }
         | LocalDaemonResponse::SessionAliased { session } => {
@@ -1160,6 +1248,8 @@ fn projected_session_absence_response(
         LocalDaemonRequest::FocusAgent(request) => &request.session_id,
         LocalDaemonRequest::CycleAgentFocus(request) => &request.session_id,
         LocalDaemonRequest::AliasSession(request) => &request.session_id,
+        LocalDaemonRequest::AliasAgent(request) => &request.session_id,
+        LocalDaemonRequest::UpdateAgentProfile(request) => &request.session_id,
         LocalDaemonRequest::EndSession(request) => &request.session_id,
         _ => return None,
     };
@@ -1197,7 +1287,9 @@ fn session_id_for_projection_refresh(
         Ok(LocalDaemonResponse::SessionCreated { session, .. }) => Some(session.id().to_string()),
         Ok(LocalDaemonResponse::AgentFocused { agent }) => Some(agent.session_id().to_string()),
         Ok(LocalDaemonResponse::AgentSpawned { agent })
+        | Ok(LocalDaemonResponse::AgentAliased { agent, .. })
         | Ok(LocalDaemonResponse::AgentConfigUpdated { agent, .. })
+        | Ok(LocalDaemonResponse::AgentProfileUpdated { agent, .. })
         | Ok(LocalDaemonResponse::AgentDestroyed { agent }) => Some(agent.session_id().to_string()),
         Ok(LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) }) => {
             Some(agent.session_id().to_string())
@@ -1227,7 +1319,9 @@ impl SessionActor {
                 | LocalDaemonRequest::PollRuntimeNotices(_)
                 | LocalDaemonRequest::RespondToInteraction(_)
                 | LocalDaemonRequest::UpdateSessionConfig(_)
+                | LocalDaemonRequest::AliasAgent(_)
                 | LocalDaemonRequest::UpdateAgentConfig(_)
+                | LocalDaemonRequest::UpdateAgentProfile(_)
                 | LocalDaemonRequest::UpdateAgentSubstitutes(_)
                 | LocalDaemonRequest::AliasSession(_)
                 | LocalDaemonRequest::SpawnAgent(_)

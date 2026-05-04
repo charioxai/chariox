@@ -54,6 +54,7 @@ import type {
 import {
   addWorkflowEdgeRequest,
   addWorkflowNodeRequest,
+  aliasAgentRequest,
   aliasWorkflowEndpointRequest,
   aliasWorkflowRequest,
   attachToSessionRequest,
@@ -155,6 +156,7 @@ import {
   uninstallMcpServerRequest,
   uninstallSkillRequest,
   updateAgentConfigRequest,
+  updateAgentProfileRequest,
   updateAgentSubstitutesRequest,
   updateSessionConfigRequest,
   unsetUserConfigValueRequest,
@@ -801,6 +803,62 @@ async function executeAgentCommand(
         { agent },
       )
     }
+    case "alias":
+    case "name": {
+      const reference = args.length > 1 ? args[0] : context.agentId
+      const rawAlias = (args.length > 1 ? args.slice(1) : args).join(" ").trim()
+      const resolved = await resolveShellAgent(context, deps, reference)
+      if (!resolved.ok) {
+        return { ok: false, message: args[0] ? resolved.message : "usage: agent alias [agent-ref] <alias|clear>" }
+      }
+      if (!rawAlias) {
+        return { ok: true, message: `${formatAgentRef(resolved.agent)} alias = ${resolved.agent.alias ?? "<none>"}`, data: { agent: resolved.agent } }
+      }
+      const shouldClearAgentAlias = rawAlias === "clear" || rawAlias === "none" || rawAlias === "-"
+      const response = await deps.client.send(aliasAgentRequest(
+        sessionId,
+        resolved.agent.id,
+        shouldClearAgentAlias ? "" : rawAlias,
+      ))
+      const payload = expectVariant<{ agent: AgentInstance; session: RuntimeSession }>(response, "AgentAliased")
+      return { ok: true, message: `${formatAgentRef(payload.agent)} alias = ${payload.agent.alias ?? "<none>"}`, data: payload }
+    }
+    case "provider":
+    case "model":
+    case "variant": {
+      const resolved = await resolveShellAgent(context, deps, args.length > 1 ? args[0] : context.agentId)
+      const rawValue = args.length > 1 ? args.slice(1).join(" ").trim() : args.join(" ").trim()
+      if (!resolved.ok) {
+        return { ok: false, message: args[0] ? resolved.message : `usage: agent ${action} [agent-ref] <value>` }
+      }
+      if (!rawValue) {
+        const response = await deps.client.send(getSessionStateRequest(sessionId))
+        const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
+        const agent = session.agents.find((entry) => entry.id === resolved.agent.id) ?? resolved.agent
+        const value = action === "provider"
+          ? agent.provider
+          : action === "model"
+            ? agent.model ?? "<none>"
+            : agent.effort ?? "<none>"
+        return { ok: true, message: `${formatAgentRef(agent)} ${action} = ${value}`, data: { session, agent } }
+      }
+      const shouldClearEffort = action === "variant" && ["clear", "none", "-", "default"].includes(rawValue)
+      const response = await deps.client.send(updateAgentProfileRequest({
+        sessionId,
+        agentId: resolved.agent.id,
+        ...(action === "provider" ? { provider: rawValue } : {}),
+        ...(action === "model" ? { model: rawValue } : {}),
+        ...(action === "variant" && !shouldClearEffort ? { effort: rawValue } : {}),
+        ...(shouldClearEffort ? { clearEffort: true } : {}),
+      }))
+      const payload = expectVariant<{ agent: AgentInstance; session: RuntimeSession }>(response, "AgentProfileUpdated")
+      const value = action === "provider"
+        ? payload.agent.provider
+        : action === "model"
+          ? payload.agent.model ?? "<none>"
+          : payload.agent.effort ?? "<none>"
+      return { ok: true, message: `${formatAgentRef(payload.agent)} ${action} = ${value}`, data: payload }
+    }
     case "mode": {
       const resolved = await resolveShellAgent(context, deps, args[0])
       if (!resolved.ok) {
@@ -863,7 +921,7 @@ async function executeAgentCommand(
     case "subs":
       return executeAgentSubstituteCommand(args, context, deps, sessionId)
     default:
-      return { ok: false, message: "usage: agent list|spawn|focus|cycle|mode|permissions|substitute" }
+      return { ok: false, message: "usage: agent list|spawn|focus|cycle|alias|provider|model|variant|mode|permissions|substitute" }
   }
 }
 

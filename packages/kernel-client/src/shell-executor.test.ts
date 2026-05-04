@@ -658,6 +658,114 @@ test("executeShellCommand lists agents for current session", async () => {
   assert.deepEqual((result.data as { agents: AgentInstance[] }).agents, agents)
 })
 
+test("executeShellCommand updates agent alias through dedicated alias request", async () => {
+  const agent = makeAgent({ id: "agent-2", agent_ref: "agent-2", alias: "reviewer" })
+  const renamed = { ...agent, alias: "ui" }
+  const requests: unknown[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [agent] } }
+    }
+    if ("AliasAgent" in request) {
+      return { AgentAliased: { agent: renamed, session: makeSession({ agents: [renamed] }) } }
+    }
+    throw new Error("unexpected request")
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("agent alias reviewer ui"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent-2 \(ui\) alias = ui/)
+  assert.deepEqual(requests, [
+    { ListAgents: { session_id: "session-1" } },
+    {
+      AliasAgent: {
+        session_id: "session-1",
+        agent_id: "agent-2",
+        alias: "ui",
+      },
+    },
+  ])
+})
+
+test("executeShellCommand updates agent provider profile through dedicated profile request", async () => {
+  const agent = makeAgent({ id: "agent-2", agent_ref: "agent-2", alias: "reviewer" })
+  const updated = makeAgent({
+    id: "agent-2",
+    agent_ref: "agent-2",
+    alias: "reviewer",
+    provider: "codex",
+    model: "gpt-5.4",
+    effort: "low",
+  })
+  const requests: unknown[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [agent] } }
+    }
+    if ("UpdateAgentProfile" in request) {
+      return { AgentProfileUpdated: { agent: updated, session: makeSession({ agents: [updated] }) } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("agent provider reviewer codex"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent-2 \(reviewer\) provider = codex/)
+  assert.deepEqual(requests, [
+    { ListAgents: { session_id: "session-1" } },
+    {
+      UpdateAgentProfile: {
+        session_id: "session-1",
+        agent_id: "agent-2",
+        provider: "codex",
+        model: null,
+        effort: null,
+        clear_effort: false,
+      },
+    },
+  ])
+})
+
+test("executeShellCommand clears agent variant through dedicated profile request", async () => {
+  const agent = makeAgent({ effort: "low" })
+  const updated = makeAgent({ effort: null })
+  const requests: unknown[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [agent] } }
+    }
+    if ("UpdateAgentProfile" in request) {
+      return { AgentProfileUpdated: { agent: updated, session: makeSession({ agents: [updated] }) } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    agentId: "agent-1",
+  })
+  const result = await executeShellCommand(parseShellCommand("agent variant none"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent-1 variant = <none>/)
+  assert.deepEqual(requests, [
+    { ListAgents: { session_id: "session-1" } },
+    {
+      UpdateAgentProfile: {
+        session_id: "session-1",
+        agent_id: "agent-1",
+        provider: null,
+        model: null,
+        effort: null,
+        clear_effort: true,
+      },
+    },
+  ])
+})
+
 test("executeShellCommand manages agent substitutes", async () => {
   const baseAgent = makeAgent()
   const substituteAgent = makeAgent({

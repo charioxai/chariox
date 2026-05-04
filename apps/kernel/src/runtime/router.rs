@@ -1592,6 +1592,18 @@ impl CommandRouter {
                     session: session.redacted_for_user(caller_user_id),
                 }
             }
+            LocalDaemonResponse::AgentProfileUpdated { agent, session } => {
+                LocalDaemonResponse::AgentProfileUpdated {
+                    agent,
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::AgentAliased { agent, session } => {
+                LocalDaemonResponse::AgentAliased {
+                    agent,
+                    session: session.redacted_for_user(caller_user_id),
+                }
+            }
             LocalDaemonResponse::SessionEnded { session } => LocalDaemonResponse::SessionEnded {
                 session: session.redacted_for_user(caller_user_id),
             },
@@ -4627,7 +4639,9 @@ impl CommandRouter {
             | LocalDaemonRequest::AttachToSession(_)
             | LocalDaemonRequest::DetachFromSession(_)
             | LocalDaemonRequest::UpdateSessionConfig(_)
+            | LocalDaemonRequest::AliasAgent(_)
             | LocalDaemonRequest::UpdateAgentConfig(_)
+            | LocalDaemonRequest::UpdateAgentProfile(_)
             | LocalDaemonRequest::UpdateAgentSubstitutes(_)
             | LocalDaemonRequest::ResizeTerminal(_)
             | LocalDaemonRequest::EndSession(_)
@@ -6384,6 +6398,12 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
         LocalDaemonRequest::UpdateAgentConfig(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::UpdateAgentProfile(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::AliasAgent(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::UpdateAgentSubstitutes(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -6589,9 +6609,17 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
 fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusProjectionRefresh {
     match request {
         LocalDaemonRequest::SpawnAgent(_) => FocusProjectionRefresh::AgentSpawn,
+        LocalDaemonRequest::AliasAgent(request) => FocusProjectionRefresh::SnapshotSession {
+            session_id: request.session_id.clone(),
+        },
         LocalDaemonRequest::UpdateAgentConfig(request) => FocusProjectionRefresh::SnapshotSession {
             session_id: request.session_id.clone(),
         },
+        LocalDaemonRequest::UpdateAgentProfile(request) => {
+            FocusProjectionRefresh::SnapshotSession {
+                session_id: request.session_id.clone(),
+            }
+        }
         LocalDaemonRequest::UpdateAgentSubstitutes(request) => {
             FocusProjectionRefresh::SnapshotSession {
                 session_id: request.session_id.clone(),
@@ -6616,7 +6644,9 @@ impl SessionProjectionRefresh {
             SessionProjectionRefresh::None => Vec::new(),
             SessionProjectionRefresh::SnapshotAgentResponse => match response {
                 LocalDaemonResponse::AgentSpawned { agent }
+                | LocalDaemonResponse::AgentAliased { agent, .. }
                 | LocalDaemonResponse::AgentConfigUpdated { agent, .. }
+                | LocalDaemonResponse::AgentProfileUpdated { agent, .. }
                 | LocalDaemonResponse::AgentDestroyed { agent }
                 | LocalDaemonResponse::AgentFocused { agent } => {
                     vec![agent.session_id().to_string()]
@@ -6746,7 +6776,9 @@ fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjection
         | LocalDaemonRequest::FocusAgent(_)
         | LocalDaemonRequest::CycleAgentFocus(_) => SessionProjectionRefresh::None,
         LocalDaemonRequest::SpawnAgent(_)
+        | LocalDaemonRequest::AliasAgent(_)
         | LocalDaemonRequest::UpdateAgentConfig(_)
+        | LocalDaemonRequest::UpdateAgentProfile(_)
         | LocalDaemonRequest::UpdateAgentSubstitutes(_)
         | LocalDaemonRequest::DestroyAgent(_) => SessionProjectionRefresh::SnapshotAgentResponse,
         LocalDaemonRequest::CompletePrompt(_) | LocalDaemonRequest::CancelActivePrompt(_) => {
@@ -6767,7 +6799,9 @@ fn response_sessions(response: &LocalDaemonResponse) -> Vec<crate::session::Runt
         | LocalDaemonResponse::SessionState { session }
         | LocalDaemonResponse::InteractionResponded { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
+        | LocalDaemonResponse::AgentAliased { session, .. }
         | LocalDaemonResponse::AgentConfigUpdated { session, .. }
+        | LocalDaemonResponse::AgentProfileUpdated { session, .. }
         | LocalDaemonResponse::SessionEnded { session }
         | LocalDaemonResponse::SessionAliased { session }
         | LocalDaemonResponse::WorkspaceLinkCreated { session, .. }

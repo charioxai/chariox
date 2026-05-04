@@ -18,25 +18,25 @@ use crate::{DaemonApp, DaemonConfig, DaemonError};
 use arroba_relay::protocol::{RelayKernelPresence, RelayMachinePresence};
 
 use super::{
-    AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasSessionRequest,
-    AliasWorkflowEndpointRequest, AliasWorkflowRequest, AttachToSessionRequest,
-    AttachWorkspaceLinkRequest, CancelActivePromptRequest, CancelWorkflowRunRequest,
-    CaptureScreenshotCapabilityRequest, CompletePromptRequest, CreateSessionInviteRequest,
-    CreateTerminalPairingLinkRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
-    CreateWorkspaceLinkRequest, CycleAgentFocusRequest, DeleteSessionRequest,
-    DetachFromSessionRequest, DetachWorkspaceLinkRequest, EditFileCapabilityRequest,
-    EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest, GetSessionStateRequest,
-    GetWaitingRoomInventoryRequest, GetWaitingRoomPublicSnapshotRequest, GetWorkflowRunRequest,
-    InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest, JoinSessionInviteRequest,
-    JoinTerminalPairingLinkRequest, LaunchProviderRunRequest, ListAgentsRequest,
-    ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, ListSessionMembersRequest,
-    ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceLinksRequest,
-    LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+    AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasAgentRequest,
+    AliasSessionRequest, AliasWorkflowEndpointRequest, AliasWorkflowRequest,
+    AttachToSessionRequest, AttachWorkspaceLinkRequest, CancelActivePromptRequest,
+    CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest, CompletePromptRequest,
+    CreateSessionInviteRequest, CreateTerminalPairingLinkRequest, CreateWorkflowEndpointRequest,
+    CreateWorkflowRequest, CreateWorkspaceLinkRequest, CycleAgentFocusRequest,
+    DeleteSessionRequest, DetachFromSessionRequest, DetachWorkspaceLinkRequest,
+    EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
+    GetSessionStateRequest, GetWaitingRoomInventoryRequest, GetWaitingRoomPublicSnapshotRequest,
+    GetWorkflowRunRequest, InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest,
+    JoinSessionInviteRequest, JoinTerminalPairingLinkRequest, LaunchProviderRunRequest,
+    ListAgentsRequest, ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
+    ListSessionMembersRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
+    ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
     ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
     RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
     ResumeWorkflowRunRequest, RevokeSessionInviteRequest, RunShellCapabilityRequest,
     ShowWorkspaceLinkRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
-    SubmitPromptRequest, TerminalType, UpdateSessionConfigRequest,
+    SubmitPromptRequest, TerminalType, UpdateAgentProfileRequest, UpdateSessionConfigRequest,
     UpdateWorkflowNodeInstructionsRequest,
 };
 
@@ -857,6 +857,90 @@ fn local_request_api_spawns_and_focuses_agents() {
             .state(),
         crate::agent::AgentState::Focused
     );
+
+    let renamed = match harness
+        .dispatch(LocalDaemonRequest::AliasAgent(AliasAgentRequest {
+            session_id: session.id().to_string(),
+            agent_id: spawned.id().to_string(),
+            alias: "web-reviewer".to_string(),
+        }))
+        .expect("agent alias update should succeed")
+    {
+        LocalDaemonResponse::AgentAliased { agent, session } => {
+            assert_eq!(
+                session
+                    .agents()
+                    .iter()
+                    .find(|entry| entry.id() == spawned.id())
+                    .and_then(|entry| entry.alias()),
+                Some("web-reviewer")
+            );
+            agent
+        }
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(renamed.alias(), Some("web-reviewer"));
+
+    let profiled = match harness
+        .dispatch(LocalDaemonRequest::UpdateAgentProfile(
+            UpdateAgentProfileRequest {
+                session_id: session.id().to_string(),
+                agent_id: spawned.id().to_string(),
+                provider: Some("codex".to_string()),
+                model: Some("gpt-5.4".to_string()),
+                effort: Some("low".to_string()),
+                clear_effort: false,
+            },
+        ))
+        .expect("agent profile update should succeed")
+    {
+        LocalDaemonResponse::AgentProfileUpdated { agent, session } => {
+            let entry = session
+                .agents()
+                .iter()
+                .find(|entry| entry.id() == spawned.id())
+                .expect("updated agent should remain in session snapshot");
+            assert_eq!(entry.provider(), "codex");
+            assert_eq!(entry.model(), Some("gpt-5.4"));
+            assert_eq!(entry.effort(), Some("low"));
+            agent
+        }
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(profiled.provider(), "codex");
+    assert_eq!(profiled.model(), Some("gpt-5.4"));
+    assert_eq!(profiled.effort(), Some("low"));
+
+    let cleared = match harness
+        .dispatch(LocalDaemonRequest::UpdateAgentProfile(
+            UpdateAgentProfileRequest {
+                session_id: session.id().to_string(),
+                agent_id: spawned.id().to_string(),
+                provider: None,
+                model: None,
+                effort: None,
+                clear_effort: true,
+            },
+        ))
+        .expect("agent profile clear should succeed")
+    {
+        LocalDaemonResponse::AgentProfileUpdated { agent, session } => {
+            let entry = session
+                .agents()
+                .iter()
+                .find(|entry| entry.id() == spawned.id())
+                .expect("updated agent should remain in session snapshot");
+            assert_eq!(entry.effort(), None);
+            agent
+        }
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(cleared.provider(), "codex");
+    assert_eq!(cleared.model(), Some("gpt-5.4"));
+    assert_eq!(cleared.effort(), None);
 
     let focused_default = match harness
         .dispatch(LocalDaemonRequest::FocusAgent(FocusAgentRequest {

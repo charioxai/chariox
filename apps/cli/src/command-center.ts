@@ -59,6 +59,10 @@ const COMMAND_TREE: CommandNode[] = [
       { id: "agent-delete", label: "delete", description: "Delete the focused or named agent", value: "/agent delete " },
       { id: "agent-destroy", label: "destroy", description: "Alias for /agent delete", value: "/agent destroy " },
       { id: "agent-focus", label: "focus", description: "Focus on a specific agent", value: "/agent focus " },
+      { id: "agent-alias", label: "alias", description: "Set or clear an agent alias", value: "/agent alias " },
+      { id: "agent-provider", label: "provider", description: "Set the focused or named agent provider", value: "/agent provider " },
+      { id: "agent-model", label: "model", description: "Set the focused or named agent model", value: "/agent model " },
+      { id: "agent-variant", label: "variant", description: "Set or clear the focused or named agent variant", value: "/agent variant " },
       { id: "agent-list", label: "list", description: "List all agents in the session", value: "/agent list" },
       { id: "agent-cycle", label: "cycle", description: "Cycle to next agent", value: "/agent cycle" },
       {

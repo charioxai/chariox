@@ -554,6 +554,47 @@ impl KernelRuntimeState {
         )
     }
 
+    pub(crate) async fn update_agent_profile(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        provider: Option<String>,
+        model: Option<String>,
+        effort: Option<Option<String>>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let (agent, terminated_run_ids) = self.owned.update_agent_profile(
+            session_id,
+            agent_id,
+            caller_user_id,
+            provider,
+            model,
+            effort,
+        )?;
+        for provider_run_id in terminated_run_ids {
+            let (_, process_key) = self
+                .with_app_side_effect(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
+                })
+                .await
+                .unwrap_or((false, None));
+            self.owned
+                .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
+        }
+        Ok(agent)
+    }
+
+    pub(crate) async fn alias_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        alias: Option<String>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.owned
+            .alias_agent(session_id, agent_id, caller_user_id, alias)
+    }
+
     pub(crate) async fn update_agent_substitutes(
         &self,
         session_id: &str,

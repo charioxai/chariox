@@ -426,6 +426,15 @@ public enum LocalDaemonRequest: Encodable, Sendable {
     case getSessionHistory(sessionID: String, agentID: String?, roundCount: Int, maxChars: Int)
     case spawnAgent(sessionID: String, alias: String?, provider: String, model: String?, effort: String?, worktreeID: String?)
     case destroyAgent(sessionID: String, agentID: String)
+    case aliasAgent(sessionID: String, agentID: String, alias: String)
+    case updateAgentProfile(
+        sessionID: String,
+        agentID: String,
+        provider: String?,
+        model: String?,
+        effort: String?,
+        clearEffort: Bool
+    )
     case updateAgentConfig(
         sessionID: String,
         agentID: String,
@@ -559,6 +568,23 @@ public enum LocalDaemonRequest: Encodable, Sendable {
             try container.encode(
                 DestroyAgentPayload(sessionID: sessionID, agentID: agentID),
                 forKey: DynamicCodingKey("DestroyAgent")
+            )
+        case let .aliasAgent(sessionID, agentID, alias):
+            try container.encode(
+                AliasAgentPayload(sessionID: sessionID, agentID: agentID, alias: alias),
+                forKey: DynamicCodingKey("AliasAgent")
+            )
+        case let .updateAgentProfile(sessionID, agentID, provider, model, effort, clearEffort):
+            try container.encode(
+                UpdateAgentProfilePayload(
+                    sessionID: sessionID,
+                    agentID: agentID,
+                    provider: provider,
+                    model: model,
+                    effort: effort,
+                    clearEffort: clearEffort
+                ),
+                forKey: DynamicCodingKey("UpdateAgentProfile")
             )
         case let .updateAgentConfig(
             sessionID,
@@ -727,6 +753,8 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
     case sessionHistory([SessionHistoryPageEntry])
     case agentSpawned(AgentInstance)
     case agentDestroyed(AgentInstance)
+    case agentAliased(agent: AgentInstance, session: RuntimeSession)
+    case agentProfileUpdated(agent: AgentInstance, session: RuntimeSession)
     case agentConfigUpdated(agent: AgentInstance, session: RuntimeSession)
     case agentFocused(AgentInstance?)
     case unknown(String)
@@ -830,6 +858,16 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
         if let key = container.allKeys.first(where: { $0.stringValue == "AgentConfigUpdated" }) {
             let payload = try container.decode(AgentConfigUpdatedPayload.self, forKey: key)
             self = .agentConfigUpdated(agent: payload.agent, session: payload.session)
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "AgentProfileUpdated" }) {
+            let payload = try container.decode(AgentConfigUpdatedPayload.self, forKey: key)
+            self = .agentProfileUpdated(agent: payload.agent, session: payload.session)
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "AgentAliased" }) {
+            let payload = try container.decode(AgentConfigUpdatedPayload.self, forKey: key)
+            self = .agentAliased(agent: payload.agent, session: payload.session)
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "AgentFocused" }) {
@@ -1133,6 +1171,46 @@ private struct DestroyAgentPayload: Encodable {
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case agentID = "agent_id"
+    }
+}
+
+private struct AliasAgentPayload: Encodable {
+    let sessionID: String
+    let agentID: String
+    let alias: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case agentID = "agent_id"
+        case alias
+    }
+}
+
+private struct UpdateAgentProfilePayload: Encodable {
+    let sessionID: String
+    let agentID: String
+    let provider: String?
+    let model: String?
+    let effort: String?
+    let clearEffort: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case agentID = "agent_id"
+        case provider
+        case model
+        case effort
+        case clearEffort = "clear_effort"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encode(agentID, forKey: .agentID)
+        try container.encodeOptional(provider, forKey: .provider)
+        try container.encodeOptional(model, forKey: .model)
+        try container.encodeOptional(effort, forKey: .effort)
+        try container.encode(clearEffort, forKey: .clearEffort)
     }
 }
 

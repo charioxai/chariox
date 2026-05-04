@@ -455,6 +455,92 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    pub(super) fn update_agent_profile(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        provider: Option<String>,
+        model: Option<String>,
+        effort: Option<Option<String>>,
+    ) -> Result<(crate::agent::AgentInstance, Vec<String>), DaemonError> {
+        let provider = provider
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let model = model
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let effort = effort.map(|value| {
+            value
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        });
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        self.ensure_agent_owner(agent_id, caller_user_id, "update agent profile")?;
+        let session = self.session_store.get_session(session_id)?;
+        if self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some()
+            || agent.is_processing()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "update agent profile",
+                message: format!(
+                    "agent `{agent_id}` has an active turn; update the profile after it finishes"
+                ),
+            });
+        }
+        let mut terminated_run_ids = Vec::new();
+        if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
+            match run.state() {
+                crate::provider::ProviderRunState::Starting
+                | crate::provider::ProviderRunState::Running
+                | crate::provider::ProviderRunState::Parked => {
+                    let outcome = self
+                        .provider_store
+                        .terminate_run_provider_only(session_id, run.id())?;
+                    self.clear_active_provider_run_session_pointer(session_id, outcome.run().id())?;
+                    let ended = outcome.into_run();
+                    terminated_run_ids.push(ended.id().to_string());
+                    self.provider_run_projection.update(ended);
+                }
+                crate::provider::ProviderRunState::Ended => {
+                    self.provider_store.clear_runtime(run.id());
+                }
+            }
+        }
+        let agent = self
+            .agent_store
+            .update_agent_profile(agent_id, provider, model, effort)?;
+        let _ = self.session_snapshot(session_id)?;
+        Ok((agent, terminated_run_ids))
+    }
+
+    pub(super) fn alias_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        alias: Option<String>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        self.ensure_agent_owner(agent_id, caller_user_id, "alias agent")?;
+        self.agent_store.alias_agent(agent_id, alias)
+    }
+
     pub(super) fn update_agent_substitutes(
         &self,
         session_id: &str,

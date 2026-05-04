@@ -393,6 +393,21 @@ type CommandActionDeps = {
       clearPermissionLevel?: boolean
     },
   ) => Promise<AgentConfigUpdatePayload>
+  updateAgentProfile?: (
+    sessionId: string,
+    agentId: string,
+    options: {
+      provider?: string | null
+      model?: string | null
+      effort?: string | null
+      clearEffort?: boolean
+    },
+  ) => Promise<AgentConfigUpdatePayload>
+  aliasAgent?: (
+    sessionId: string,
+    agentId: string,
+    alias: string,
+  ) => Promise<AgentConfigUpdatePayload>
   updateAgentSubstitutes?: (
     sessionId: string,
     agentId: string,
@@ -1895,6 +1910,35 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         return
       }
+      case "alias":
+      case "name": {
+        if (!deps.aliasAgent) {
+          deps.flashFooter("agent aliases are unavailable in this build", "error")
+          return
+        }
+        const reference = args[1]
+        const explicitAliasArgs = args.length > 2 ? args.slice(2) : args.slice(1)
+        const resolved = deps.resolveSessionAgent(args.length > 2 ? reference : deps.focusedAgentId() ?? undefined)
+        if (!resolved.agent) {
+          deps.flashFooter(resolved.error ?? "usage: /agent alias [agent-ref] <alias|clear>", "error")
+          return
+        }
+        const rawAlias = explicitAliasArgs.join(" ").trim()
+        if (!rawAlias) {
+          deps.flashFooter(`${deps.formatAgentLabel(resolved.agent)} alias: ${resolved.agent.alias ?? "<none>"}`, "info")
+          return
+        }
+        const shouldClearAgentAlias = rawAlias === "clear" || rawAlias === "none" || rawAlias === "-"
+        try {
+          const payload = await deps.aliasAgent(deps.sessionState().id, resolved.agent.id, shouldClearAgentAlias ? "" : rawAlias)
+          deps.applySessionState(payload.session)
+          await deps.refreshAgentPanes(payload.session)
+          deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} alias: ${payload.agent.alias ?? "<none>"}`, "info")
+        } catch (error) {
+          deps.flashFooter(deps.formatError(error), "error")
+        }
+        return
+      }
       case "list":
       case "ls": {
         deps.flashFooter(formatAgentListSummary(deps.sessionState().agents), "info")
@@ -1937,6 +1981,46 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           `${deps.formatAgentLabel(payload.agent)} mode: ${effective}${rawValue === "inherit" ? " (session)" : " (agent)"}`,
           "info",
         )
+        return
+      }
+      case "provider":
+      case "model":
+      case "variant": {
+        if (!deps.updateAgentProfile) {
+          deps.flashFooter("agent profile updates are unavailable in this build", "error")
+          return
+        }
+        const reference = args[1]
+        const rawValue = args.length > 2 ? args.slice(2).join(" ").trim() : args.slice(1).join(" ").trim()
+        const resolved = deps.resolveSessionAgent(args.length > 2 ? reference : deps.focusedAgentId() ?? undefined)
+        if (!resolved.agent) {
+          deps.flashFooter(resolved.error ?? `usage: /agent ${subcommand} [agent-ref] <value>`, "error")
+          return
+        }
+        if (!rawValue) {
+          const value = subcommand === "provider"
+            ? resolved.agent.provider
+            : subcommand === "model"
+              ? resolved.agent.model ?? "<none>"
+              : resolved.agent.effort ?? "<none>"
+          deps.flashFooter(`${deps.formatAgentLabel(resolved.agent)} ${subcommand}: ${value}`, "info")
+          return
+        }
+        const shouldClearEffort = subcommand === "variant" && ["clear", "none", "-", "default"].includes(rawValue)
+        const payload = await deps.updateAgentProfile(deps.sessionState().id, resolved.agent.id, {
+          ...(subcommand === "provider" ? { provider: rawValue } : {}),
+          ...(subcommand === "model" ? { model: rawValue } : {}),
+          ...(subcommand === "variant" && !shouldClearEffort ? { effort: rawValue } : {}),
+          ...(shouldClearEffort ? { clearEffort: true } : {}),
+        })
+        deps.applySessionState(payload.session)
+        await deps.refreshAgentPanes(payload.session)
+        const value = subcommand === "provider"
+          ? payload.agent.provider
+          : subcommand === "model"
+            ? payload.agent.model ?? "<none>"
+            : payload.agent.effort ?? "<none>"
+        deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} ${subcommand}: ${value}`, "info")
         return
       }
       case "permissions": {
@@ -2090,7 +2174,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       }
       default:
         deps.flashFooter(
-          "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | list | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit> | substitute ...",
+          "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | alias [agent-ref] <alias|clear> | provider/model/variant [agent-ref] <value> | list | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit> | substitute ...",
           "error",
         )
     }

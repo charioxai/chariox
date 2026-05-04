@@ -171,6 +171,16 @@ export function aliasSessionRequest(sessionId: string, alias: string) {
   }
 }
 
+export function aliasAgentRequest(sessionId: string, agentId: string, alias: string) {
+  return {
+    AliasAgent: {
+      session_id: sessionId,
+      agent_id: agentId,
+      alias,
+    },
+  }
+}
+
 export function getSessionStateRequest(sessionId: string) {
   return {
     GetSessionState: {
@@ -1548,6 +1558,26 @@ export function updateAgentConfigRequest(options: {
       clear_execution_mode: options.clearExecutionMode ?? false,
       permission_level: options.permissionLevel ?? null,
       clear_permission_level: options.clearPermissionLevel ?? false,
+    },
+  }
+}
+
+export function updateAgentProfileRequest(options: {
+  sessionId: string
+  agentId: string
+  provider?: string | null
+  model?: string | null
+  effort?: string | null
+  clearEffort?: boolean
+}) {
+  return {
+    UpdateAgentProfile: {
+      session_id: options.sessionId,
+      agent_id: options.agentId,
+      provider: options.provider ?? null,
+      model: options.model ?? null,
+      effort: options.effort ?? null,
+      clear_effort: options.clearEffort ?? false,
     },
   }
 }

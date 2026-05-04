@@ -139,6 +139,20 @@ pub struct UpdateAgentConfigRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateAgentProfileRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub clear_effort: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentSubstituteAction {
     Add {
         provider: String,
@@ -839,6 +853,13 @@ pub struct AliasSessionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AliasAgentRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    pub alias: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetSessionHistoryRequest {
     pub session_id: String,
     pub agent_id: Option<String>,
@@ -1511,6 +1532,7 @@ pub enum LocalDaemonRequest {
     CancelActivePrompt(CancelActivePromptRequest),
     UpdateSessionConfig(UpdateSessionConfigRequest),
     UpdateAgentConfig(UpdateAgentConfigRequest),
+    UpdateAgentProfile(UpdateAgentProfileRequest),
     UpdateAgentSubstitutes(UpdateAgentSubstitutesRequest),
     ResizeTerminal(ResizeTerminalRequest),
     PumpTerminalOutput(PumpTerminalOutputRequest),
@@ -1525,6 +1547,7 @@ pub enum LocalDaemonRequest {
     DeleteSession(DeleteSessionRequest),
     DeleteKernel(DeleteKernelRequest),
     AliasSession(AliasSessionRequest),
+    AliasAgent(AliasAgentRequest),
     SpawnAgent(SpawnAgentRequest),
     MoveAgentToRemote(MoveAgentToRemoteRequest),
     DestroyAgent(DestroyAgentRequest),
@@ -1920,6 +1943,14 @@ pub enum LocalDaemonResponse {
         deleted_sessions: Vec<RuntimeSession>,
     },
     SessionAliased {
+        session: RuntimeSession,
+    },
+    AgentAliased {
+        agent: AgentInstance,
+        session: RuntimeSession,
+    },
+    AgentProfileUpdated {
+        agent: AgentInstance,
         session: RuntimeSession,
     },
     AgentSpawned {

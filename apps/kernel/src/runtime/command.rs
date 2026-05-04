@@ -324,6 +324,16 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
+        LocalDaemonRequest::UpdateAgentProfile(request) => {
+            LocalRequestMetadata::new("agent.profile.update", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::AliasAgent(request) => {
+            LocalRequestMetadata::new("agent.alias", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::UpdateAgentSubstitutes(request) => {
             LocalRequestMetadata::new("agent.substitutes.update", Interactive)
                 .session(&request.session_id)
@@ -499,6 +509,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CaptureScreenshot(_) => "capability.screenshot.capture",
         LocalDaemonRequest::StoreTransferredFile(_) => "capability.file.store_transferred",
         LocalDaemonRequest::AliasSession(_) => "session.alias",
+        LocalDaemonRequest::AliasAgent(_) => "agent.alias",
+        LocalDaemonRequest::UpdateAgentProfile(_) => "agent.profile.update",
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",
         LocalDaemonRequest::MoveAgentToRemote(_) => "agent.move_remote",
         LocalDaemonRequest::DestroyAgent(_) => "agent.destroy",

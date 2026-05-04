@@ -435,6 +435,34 @@ import Testing
     #expect(payload["clear_permission_level"] as? Bool == true)
 }
 
+@Test func updateAgentProfileRequestMatchesKernelShape() throws {
+    let data = try KernelProtocolCodec.encodeRequestFrame(
+        KernelRequestFrame(
+            requestID: "request-agent-profile",
+            request: .updateAgentProfile(
+                sessionID: "session-1",
+                agentID: "agent-2",
+                provider: "codex",
+                model: "gpt-5.4",
+                effort: nil,
+                clearEffort: true
+            )
+        )
+    )
+    let object = try #require(
+        JSONSerialization.jsonObject(with: data) as? [String: Any]
+    )
+    let request = try #require(object["request"] as? [String: Any])
+    let payload = try #require(request["UpdateAgentProfile"] as? [String: Any])
+
+    #expect(payload["session_id"] as? String == "session-1")
+    #expect(payload["agent_id"] as? String == "agent-2")
+    #expect(payload["provider"] as? String == "codex")
+    #expect(payload["model"] as? String == "gpt-5.4")
+    #expect(payload["effort"] is NSNull)
+    #expect(payload["clear_effort"] as? Bool == true)
+}
+
 @Test func sessionsListedResponseDecodesRuntimeSessions() throws {
     let json = """
     {
@@ -602,6 +630,57 @@ import Testing
     #expect(agent.id == "agent-2")
     #expect(agent.executionModeOverride == "plan")
     #expect(agent.permissionLevelOverride == "required")
+    #expect(session.focusedAgentID == "agent-2")
+}
+
+@Test func agentProfileUpdatedResponseDecodesAgentAndSession() throws {
+    let json = """
+    {
+      "type": "response",
+      "request_id": "request-agent-profile",
+      "response": {
+        "AgentProfileUpdated": {
+          "agent": {
+            "id": "agent-2",
+            "agent_ref": "2",
+            "session_id": "session-1",
+            "alias": "reviewer",
+            "provider": "codex",
+            "model": "gpt-5.4",
+            "effort": "low",
+            "execution_mode_override": null,
+            "permission_level_override": null,
+            "worktree_id": null,
+            "state": "Focused",
+            "is_processing": false
+          },
+          "session": {
+            "id": "session-1",
+            "alias": null,
+            "workspace_id": "/repo",
+            "worktree_id": "/repo",
+            "status": "Active",
+            "focused_agent_id": "agent-2",
+            "created_at_ms": 1777111200000,
+            "last_used_at_ms": 1777111201000,
+            "agents": []
+          }
+        }
+      },
+      "error": null
+    }
+    """
+
+    let frame = try KernelProtocolCodec.decodeResponseFrame(Data(json.utf8))
+    guard case let .agentProfileUpdated(agent, session) = frame.response else {
+        Issue.record("Expected AgentProfileUpdated response")
+        return
+    }
+
+    #expect(agent.id == "agent-2")
+    #expect(agent.provider == "codex")
+    #expect(agent.model == "gpt-5.4")
+    #expect(agent.effort == "low")
     #expect(session.focusedAgentID == "agent-2")
 }
 
