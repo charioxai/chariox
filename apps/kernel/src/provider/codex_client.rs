@@ -90,6 +90,24 @@ pub enum CodexNotification {
     ItemCompleted {
         item: Value,
     },
+    ExecCommandStarted {
+        call_id: String,
+        command: Value,
+        cwd: Option<String>,
+    },
+    ExecCommandCompleted {
+        call_id: String,
+        command: Value,
+        cwd: Option<String>,
+        output: Option<String>,
+        exit_code: Option<i64>,
+        success: Option<bool>,
+        stderr: Option<String>,
+    },
+    ExecCommandOutputDelta {
+        call_id: String,
+        chunk: String,
+    },
     CommandExecutionOutputDelta {
         item_id: String,
         delta: String,
@@ -111,7 +129,7 @@ pub enum CodexNotification {
         turn_id: String,
     },
     TurnCompleted {
-        turn_id: String,
+        turn_id: Option<String>,
         status: String,
         error_message: Option<String>,
     },
@@ -416,13 +434,17 @@ impl CodexClient {
         &self,
         socket: &mut CodexSocket,
         next_request_id: &mut u64,
+        thread_id: &str,
         turn_id: &str,
     ) -> Result<(), DaemonError> {
         let _: Value = self.send_request(
             socket,
             next_request_id,
             "turn/interrupt",
-            json!({ "turnId": turn_id }),
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+            }),
         )?;
         Ok(())
     }
@@ -1627,6 +1649,82 @@ fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotification> {
         "item/completed" => Some(CodexNotification::ItemCompleted {
             item: params.get("item").cloned().unwrap_or(Value::Null),
         }),
+        "codex/event/exec_command_begin" => {
+            let msg = params.get("msg").unwrap_or(&Value::Null);
+            Some(CodexNotification::ExecCommandStarted {
+                call_id: msg
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                command: msg.get("command").cloned().unwrap_or(Value::Null),
+                cwd: msg.get("cwd").and_then(Value::as_str).map(str::to_string),
+            })
+        }
+        "codex/event/exec_command_end" => {
+            let msg = params.get("msg").unwrap_or(&Value::Null);
+            Some(CodexNotification::ExecCommandCompleted {
+                call_id: msg
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                command: msg.get("command").cloned().unwrap_or(Value::Null),
+                cwd: msg.get("cwd").and_then(Value::as_str).map(str::to_string),
+                output: msg
+                    .get("aggregated_output")
+                    .or_else(|| msg.get("aggregatedOutput"))
+                    .or_else(|| msg.get("formatted_output"))
+                    .or_else(|| msg.get("stdout"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                exit_code: msg
+                    .get("exit_code")
+                    .or_else(|| msg.get("exitCode"))
+                    .and_then(Value::as_i64),
+                success: msg.get("success").and_then(Value::as_bool),
+                stderr: msg
+                    .get("stderr")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            })
+        }
+        "codex/event/exec_command_output_delta" => {
+            let msg = params.get("msg").unwrap_or(&Value::Null);
+            Some(CodexNotification::ExecCommandOutputDelta {
+                call_id: msg
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                chunk: msg
+                    .get("chunk")
+                    .or_else(|| msg.get("delta"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        }
+        "codex/event/patch_apply_begin" => {
+            let msg = params.get("msg").unwrap_or(&Value::Null);
+            Some(CodexNotification::ItemStarted {
+                item: legacy_codex_file_change_item(&params, msg, "inProgress"),
+            })
+        }
+        "codex/event/patch_apply_end" => {
+            let msg = params.get("msg").unwrap_or(&Value::Null);
+            Some(CodexNotification::ItemCompleted {
+                item: legacy_codex_file_change_item(
+                    &params,
+                    msg,
+                    if msg.get("success").and_then(Value::as_bool) == Some(false) {
+                        "failed"
+                    } else {
+                        "completed"
+                    },
+                ),
+            })
+        }
         "item/commandExecution/outputDelta" => {
             Some(CodexNotification::CommandExecutionOutputDelta {
                 item_id: params
@@ -1705,12 +1803,7 @@ fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotification> {
                 .to_string(),
         }),
         "turn/completed" => Some(CodexNotification::TurnCompleted {
-            turn_id: params
-                .get("turn")
-                .and_then(|turn| turn.get("id"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            turn_id: optional_codex_turn_id(params.get("turn")),
             status: params
                 .get("turn")
                 .and_then(|turn| turn.get("status"))
@@ -1724,6 +1817,16 @@ fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotification> {
                 .and_then(Value::as_str)
                 .map(str::to_string),
         }),
+        "codex/event/task_complete" => Some(CodexNotification::TurnCompleted {
+            turn_id: optional_legacy_event_turn_id(&params),
+            status: "completed".to_string(),
+            error_message: None,
+        }),
+        "codex/event/turn_aborted" => Some(CodexNotification::TurnCompleted {
+            turn_id: optional_legacy_event_turn_id(&params),
+            status: "interrupted".to_string(),
+            error_message: legacy_event_error_message(&params),
+        }),
         "error" => Some(CodexNotification::Error {
             message: params
                 .get("error")
@@ -1734,6 +1837,54 @@ fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotification> {
         }),
         _ => None,
     }
+}
+
+fn optional_codex_turn_id(turn: Option<&Value>) -> Option<String> {
+    turn.and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+        .filter(|turn_id| !turn_id.is_empty())
+        .map(str::to_string)
+}
+
+fn optional_legacy_event_turn_id(params: &Value) -> Option<String> {
+    params
+        .get("id")
+        .or_else(|| params.get("turn_id"))
+        .or_else(|| params.get("turnId"))
+        .or_else(|| params.get("msg").and_then(|msg| msg.get("turn_id")))
+        .or_else(|| params.get("msg").and_then(|msg| msg.get("turnId")))
+        .and_then(Value::as_str)
+        .filter(|turn_id| !turn_id.is_empty())
+        .map(str::to_string)
+}
+
+fn legacy_event_error_message(params: &Value) -> Option<String> {
+    params
+        .get("msg")
+        .and_then(|msg| {
+            msg.get("error")
+                .or_else(|| msg.get("reason"))
+                .or_else(|| msg.get("message"))
+        })
+        .and_then(Value::as_str)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
+}
+
+fn legacy_codex_file_change_item(params: &Value, msg: &Value, status: &str) -> Value {
+    let id = msg
+        .get("call_id")
+        .or_else(|| msg.get("callId"))
+        .or_else(|| msg.get("id"))
+        .or_else(|| params.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("patch");
+    json!({
+        "type": "fileChange",
+        "id": id,
+        "status": status,
+        "changes": msg.get("changes").cloned().unwrap_or_else(|| json!([])),
+    })
 }
 
 fn rpc_error_message(message: &JsonRpcMessage) -> Option<String> {
@@ -2149,6 +2300,80 @@ mod tests {
             })
         );
 
+        let exec_started = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("codex/event/exec_command_begin".to_string()),
+            params: Some(json!({
+                "msg": {
+                    "type": "exec_command_begin",
+                    "call_id": "cmd-event-1",
+                    "command": "/bin/zsh -lc 'pwd'",
+                    "cwd": "/tmp"
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            exec_started,
+            Some(CodexNotification::ExecCommandStarted {
+                call_id: "cmd-event-1".to_string(),
+                command: json!("/bin/zsh -lc 'pwd'"),
+                cwd: Some("/tmp".to_string()),
+            })
+        );
+
+        let exec_output_delta = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("codex/event/exec_command_output_delta".to_string()),
+            params: Some(json!({
+                "msg": {
+                    "type": "exec_command_output_delta",
+                    "call_id": "cmd-event-1",
+                    "chunk": "b2s=",
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            exec_output_delta,
+            Some(CodexNotification::ExecCommandOutputDelta {
+                call_id: "cmd-event-1".to_string(),
+                chunk: "b2s=".to_string(),
+            })
+        );
+
+        let exec_completed = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("codex/event/exec_command_end".to_string()),
+            params: Some(json!({
+                "msg": {
+                    "type": "exec_command_end",
+                    "call_id": "cmd-event-1",
+                    "command": "/bin/zsh -lc 'pwd'",
+                    "cwd": "/tmp",
+                    "aggregated_output": "ok\n",
+                    "exit_code": 0,
+                    "success": true
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            exec_completed,
+            Some(CodexNotification::ExecCommandCompleted {
+                call_id: "cmd-event-1".to_string(),
+                command: json!("/bin/zsh -lc 'pwd'"),
+                cwd: Some("/tmp".to_string()),
+                output: Some("ok\n".to_string()),
+                exit_code: Some(0),
+                success: Some(true),
+                stderr: None,
+            })
+        );
+
         let token_usage = parse_notification(JsonRpcMessage {
             id: None,
             method: Some("thread/tokenUsage/updated".to_string()),
@@ -2186,6 +2411,97 @@ mod tests {
                     last_tokens: Some(8900),
                     context_window: Some(128000),
                 },
+            })
+        );
+    }
+
+    #[test]
+    fn parse_notification_recognizes_codex_terminal_events() {
+        let v2_completed = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("turn/completed".to_string()),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "turn": {
+                    "id": "turn-1",
+                    "status": "completed",
+                    "items": []
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            v2_completed,
+            Some(CodexNotification::TurnCompleted {
+                turn_id: Some("turn-1".to_string()),
+                status: "completed".to_string(),
+                error_message: None,
+            })
+        );
+
+        let v2_completed_without_id = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("turn/completed".to_string()),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "turn": {
+                    "status": "completed",
+                    "items": []
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            v2_completed_without_id,
+            Some(CodexNotification::TurnCompleted {
+                turn_id: None,
+                status: "completed".to_string(),
+                error_message: None,
+            })
+        );
+
+        let raw_task_complete = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("codex/event/task_complete".to_string()),
+            params: Some(json!({
+                "id": "turn-raw-1",
+                "msg": {
+                    "type": "task_complete"
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            raw_task_complete,
+            Some(CodexNotification::TurnCompleted {
+                turn_id: Some("turn-raw-1".to_string()),
+                status: "completed".to_string(),
+                error_message: None,
+            })
+        );
+
+        let raw_turn_aborted = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("codex/event/turn_aborted".to_string()),
+            params: Some(json!({
+                "id": "turn-raw-2",
+                "msg": {
+                    "type": "turn_aborted",
+                    "reason": "interrupted"
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            raw_turn_aborted,
+            Some(CodexNotification::TurnCompleted {
+                turn_id: Some("turn-raw-2".to_string()),
+                status: "interrupted".to_string(),
+                error_message: Some("interrupted".to_string()),
             })
         );
     }

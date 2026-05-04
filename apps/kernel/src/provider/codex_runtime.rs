@@ -1,8 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::thread::sleep;
 use std::time::Duration;
 use std::time::Instant;
 
+use base64::Engine as _;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -19,6 +20,7 @@ use super::{
 
 const CODEX_EVENT_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(1);
 const CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS: usize = 64;
+const CODEX_TERMINAL_QUIET_TIMEOUT: Duration = Duration::from_millis(2_000);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexPollResult {
@@ -51,11 +53,30 @@ struct CodexToolTranscriptState {
     last_emitted: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct CodexTextTranscriptState {
+    emitted: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CodexTurnTracker {
+    active_tool_ids: BTreeSet<String>,
+    pending_terminal: Option<CodexPendingTerminal>,
+    tool_started: bool,
+    assistant_content_after_latest_tool: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexTerminalSignal {
+    turn_id: Option<String>,
+    status: String,
+    error_message: Option<String>,
+}
+
 #[derive(Debug, Clone)]
-struct CodexPendingTurnCompletion {
-    completion: Option<CodexAssistantCompletion>,
-    terminal_failure: Option<String>,
-    notice: Option<String>,
+struct CodexPendingTerminal {
+    signal: CodexTerminalSignal,
+    last_activity_at: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -88,7 +109,8 @@ pub struct CodexRuntimeState {
     next_request_id: u64,
     buffered_notifications: Vec<CodexNotification>,
     active_turn_id: Option<String>,
-    pending_turn_completion: Option<CodexPendingTurnCompletion>,
+    turn_tracker: CodexTurnTracker,
+    text_items: BTreeMap<String, CodexTextTranscriptState>,
     tool_items: BTreeMap<String, CodexToolTranscriptState>,
 }
 
@@ -100,6 +122,8 @@ impl std::fmt::Debug for CodexRuntimeState {
             .field("next_request_id", &self.next_request_id)
             .field("buffered_notifications", &self.buffered_notifications)
             .field("active_turn_id", &self.active_turn_id)
+            .field("turn_tracker", &self.turn_tracker)
+            .field("text_items", &self.text_items)
             .field("tool_items", &self.tool_items)
             .finish()
     }
@@ -252,7 +276,8 @@ pub fn initialize_codex_runtime(
             next_request_id,
             buffered_notifications: Vec::new(),
             active_turn_id: None,
-            pending_turn_completion: None,
+            turn_tracker: CodexTurnTracker::default(),
+            text_items: BTreeMap::new(),
             tool_items: BTreeMap::new(),
         },
         selection,
@@ -298,6 +323,7 @@ pub fn submit_codex_prompt(
     if let Some(turn_id) = codex_turn_id_from_start_response(&response) {
         state.active_turn_id = Some(turn_id);
     }
+    state.turn_tracker = CodexTurnTracker::default();
     crate::logging::debug_with_fields(
         "daemon.provider.codex",
         "codex turn start response trace",
@@ -317,8 +343,14 @@ pub fn abort_codex_turn(
     let Some(turn_id) = state.active_turn_id.clone() else {
         return Ok(());
     };
+    let thread_id = state.thread_id().to_string();
     let client = CodexClient::new(provider_run_id, state.endpoint())?;
-    client.turn_interrupt(&mut state.socket, &mut state.next_request_id, &turn_id)
+    client.turn_interrupt(
+        &mut state.socket,
+        &mut state.next_request_id,
+        &thread_id,
+        &turn_id,
+    )
 }
 
 pub fn drain_codex_events(
@@ -338,7 +370,8 @@ pub fn drain_codex_events(
         apply_notification(
             notification,
             &mut state.active_turn_id,
-            &mut state.pending_turn_completion,
+            &mut state.turn_tracker,
+            &mut state.text_items,
             &mut state.tool_items,
             &mut chunks,
             &mut completions,
@@ -358,7 +391,8 @@ pub fn drain_codex_events(
         apply_notification(
             notification,
             &mut state.active_turn_id,
-            &mut state.pending_turn_completion,
+            &mut state.turn_tracker,
+            &mut state.text_items,
             &mut state.tool_items,
             &mut chunks,
             &mut completions,
@@ -368,6 +402,14 @@ pub fn drain_codex_events(
             &mut resolved_usage,
         );
     }
+    maybe_finalize_terminal_signal(
+        &mut state.active_turn_id,
+        &mut state.turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
 
     Ok(CodexPollResult {
         chunks,
@@ -382,7 +424,8 @@ pub fn drain_codex_events(
 fn apply_notification(
     notification: CodexNotification,
     active_turn_id: &mut Option<String>,
-    pending_turn_completion: &mut Option<CodexPendingTurnCompletion>,
+    turn_tracker: &mut CodexTurnTracker,
+    text_items: &mut BTreeMap<String, CodexTextTranscriptState>,
     tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
     chunks: &mut Vec<CodexOutputChunk>,
     completions: &mut Vec<CodexAssistantCompletion>,
@@ -393,54 +436,118 @@ fn apply_notification(
 ) {
     match notification {
         CodexNotification::AgentMessageDelta { item_id, delta } => {
-            if delta.is_empty() {
-                return;
+            if !delta.is_empty() {
+                turn_tracker.note_assistant_content();
+            } else {
+                turn_tracker.note_activity();
             }
-            chunks.push(CodexOutputChunk {
-                kind: TerminalOutputKind::ProviderOutput,
-                merge_key: Some(normalize_merge_key(&item_id, "codex-agent-message")),
-                bytes: delta.into_bytes(),
-            });
+            append_text_delta(
+                text_items,
+                &item_id,
+                "codex-agent-message",
+                TerminalOutputKind::ProviderOutput,
+                &delta,
+                chunks,
+            );
         }
         CodexNotification::ReasoningTextDelta { item_id, delta }
         | CodexNotification::ReasoningSummaryTextDelta { item_id, delta } => {
-            if delta.is_empty() {
-                return;
-            }
-            chunks.push(CodexOutputChunk {
-                kind: TerminalOutputKind::ProviderReasoning,
-                merge_key: Some(normalize_merge_key(&item_id, "codex-reasoning")),
-                bytes: delta.into_bytes(),
-            });
+            turn_tracker.note_activity();
+            append_text_delta(
+                text_items,
+                &item_id,
+                "codex-reasoning",
+                TerminalOutputKind::ProviderReasoning,
+                &delta,
+                chunks,
+            );
         }
         CodexNotification::ReasoningSummaryPartAdded {
             item_id,
             summary_index,
         } => {
+            turn_tracker.note_activity();
             if summary_index == 0 {
                 return;
             }
-            chunks.push(CodexOutputChunk {
-                kind: TerminalOutputKind::ProviderReasoning,
-                merge_key: Some(normalize_merge_key(&item_id, "codex-reasoning")),
-                bytes: b"\n\n".to_vec(),
-            });
+            append_text_delta(
+                text_items,
+                &item_id,
+                "codex-reasoning",
+                TerminalOutputKind::ProviderReasoning,
+                "\n\n",
+                chunks,
+            );
         }
-        CodexNotification::ItemStarted { item } | CodexNotification::ItemCompleted { item } => {
+        CodexNotification::ItemStarted { item } => {
+            turn_tracker.note_activity();
             trace_codex_tool_item("item_lifecycle", &item);
+            note_tool_item_started(turn_tracker, &item);
             if let Some(chunk) = sync_tool_item(tool_items, &item) {
                 chunks.push(chunk);
             }
-            maybe_complete_pending_turn(
-                pending_turn_completion,
+        }
+        CodexNotification::ItemCompleted { item } => {
+            turn_tracker.note_activity();
+            trace_codex_tool_item("item_lifecycle", &item);
+            note_tool_item_completed(turn_tracker, &item);
+            note_assistant_item_completed(turn_tracker, &item);
+            if let Some(chunk) = sync_tool_item(tool_items, &item) {
+                chunks.push(chunk);
+            } else if let Some(chunk) = sync_completed_text_item(text_items, &item) {
+                chunks.push(chunk);
+            }
+        }
+        CodexNotification::ExecCommandStarted {
+            call_id,
+            command,
+            cwd,
+        } => {
+            turn_tracker.note_tool_started(&call_id);
+            if let Some(chunk) = sync_tool_item(
                 tool_items,
-                completions,
-                notices,
-                prompt_completed,
-                terminal_failure,
-            );
+                &codex_exec_command_item(&call_id, command, cwd, None),
+            ) {
+                chunks.push(chunk);
+            }
+        }
+        CodexNotification::ExecCommandCompleted {
+            call_id,
+            command,
+            cwd,
+            output,
+            exit_code,
+            success,
+            stderr,
+        } => {
+            turn_tracker.note_tool_completed(&call_id);
+            let mut item = codex_exec_command_item(&call_id, command, cwd, exit_code);
+            item["status"] = json!(if success == Some(false) {
+                "failed"
+            } else {
+                "completed"
+            });
+            if let Some(output) = output.or(stderr) {
+                item["aggregatedOutput"] = json!(output);
+            }
+            if let Some(exit_code) = exit_code {
+                item["exitCode"] = json!(exit_code);
+            }
+            if let Some(chunk) = sync_tool_item(tool_items, &item) {
+                chunks.push(chunk);
+            }
+        }
+        CodexNotification::ExecCommandOutputDelta { call_id, chunk } => {
+            turn_tracker.note_activity();
+            let delta = decode_codex_output_delta_chunk(&chunk);
+            if let Some(chunk) =
+                append_tool_output_delta(tool_items, &call_id, "commandExecution", &delta)
+            {
+                chunks.push(chunk);
+            }
         }
         CodexNotification::CommandExecutionOutputDelta { item_id, delta } => {
+            turn_tracker.note_activity();
             if let Some(chunk) =
                 append_tool_output_delta(tool_items, &item_id, "commandExecution", &delta)
             {
@@ -448,6 +555,7 @@ fn apply_notification(
             }
         }
         CodexNotification::FileChangeOutputDelta { item_id, delta } => {
+            turn_tracker.note_activity();
             if let Some(chunk) =
                 append_tool_output_delta(tool_items, &item_id, "fileChange", &delta)
             {
@@ -455,6 +563,8 @@ fn apply_notification(
             }
         }
         CodexNotification::McpToolCallProgress { item_id, message } => {
+            turn_tracker.note_tool_started(&item_id);
+            turn_tracker.note_activity();
             if let Some(chunk) = append_tool_progress(tool_items, &item_id, &message) {
                 chunks.push(chunk);
             }
@@ -474,13 +584,19 @@ fn apply_notification(
             if !turn_id.is_empty() {
                 *active_turn_id = Some(turn_id);
             }
+            turn_tracker.reset_for_started();
         }
         CodexNotification::TurnCompleted {
             turn_id,
             status,
             error_message,
         } => {
-            if active_turn_id.as_deref() != Some(turn_id.as_str()) {
+            let turn_mismatch = turn_id.as_deref().is_some_and(|turn_id| {
+                active_turn_id
+                    .as_deref()
+                    .is_some_and(|active_turn_id| active_turn_id != turn_id)
+            });
+            if turn_mismatch {
                 crate::logging::debug_with_fields(
                     "daemon.provider.codex",
                     "codex turn completion ignored by active turn mismatch",
@@ -495,57 +611,18 @@ fn apply_notification(
             }
             crate::logging::debug_with_fields(
                 "daemon.provider.codex",
-                "codex turn completion accepted",
+                "codex turn completion candidate accepted",
                 json!({
                     "turn_id": turn_id,
                     "status": status,
-                    "has_running_tool_items": has_running_tool_items(tool_items),
+                    "active_tool_count": turn_tracker.active_tool_ids.len(),
                 }),
             );
-            if !turn_id.is_empty() {
-                let completion = CodexAssistantCompletion {
-                    message_id: format!("codex-turn:{turn_id}"),
-                    completed_at_ms: unix_epoch_ms(),
-                };
-                let pending = CodexPendingTurnCompletion {
-                    completion: Some(completion),
-                    terminal_failure: if status == "failed" {
-                        Some(
-                            error_message
-                                .clone()
-                                .unwrap_or_else(|| "Codex turn failed".to_string()),
-                        )
-                    } else {
-                        None
-                    },
-                    notice: error_message
-                        .clone()
-                        .or_else(|| (status == "failed").then(|| "Codex turn failed".to_string())),
-                };
-                if has_running_tool_items(tool_items) {
-                    crate::logging::debug_with_fields(
-                        "daemon.provider.codex",
-                        "codex turn completion deferred by running tool items",
-                        json!({
-                            "turn_id": turn_id,
-                            "status": status,
-                            "running_tool_items": running_tool_item_summaries(tool_items),
-                        }),
-                    );
-                    *pending_turn_completion = Some(pending);
-                } else {
-                    complete_pending_turn(
-                        pending,
-                        completions,
-                        notices,
-                        prompt_completed,
-                        terminal_failure,
-                    );
-                }
-            }
-            if !turn_id.is_empty() {
-                *active_turn_id = None;
-            }
+            turn_tracker.note_terminal(CodexTerminalSignal {
+                turn_id,
+                status,
+                error_message,
+            });
         }
         CodexNotification::Error { message } => {
             *terminal_failure = Some(message.clone());
@@ -553,83 +630,174 @@ fn apply_notification(
             notices.push(message);
         }
     }
+    maybe_finalize_terminal_signal(
+        active_turn_id,
+        turn_tracker,
+        completions,
+        notices,
+        prompt_completed,
+        terminal_failure,
+    );
 }
 
-fn maybe_complete_pending_turn(
-    pending_turn_completion: &mut Option<CodexPendingTurnCompletion>,
-    tool_items: &BTreeMap<String, CodexToolTranscriptState>,
-    completions: &mut Vec<CodexAssistantCompletion>,
-    notices: &mut Vec<String>,
-    prompt_completed: &mut bool,
-    terminal_failure: &mut Option<String>,
-) {
-    if has_running_tool_items(tool_items) {
+impl CodexTurnTracker {
+    fn reset_for_started(&mut self) {
+        self.active_tool_ids.clear();
+        self.pending_terminal = None;
+        self.tool_started = false;
+        self.assistant_content_after_latest_tool = false;
+    }
+
+    fn note_tool_started(&mut self, tool_id: &str) {
+        if !tool_id.is_empty() {
+            self.active_tool_ids.insert(tool_id.to_string());
+        }
+        self.tool_started = true;
+        self.assistant_content_after_latest_tool = false;
+        self.pending_terminal = None;
+        self.note_activity();
+    }
+
+    fn note_tool_completed(&mut self, tool_id: &str) {
+        if !tool_id.is_empty() {
+            self.active_tool_ids.remove(tool_id);
+        }
+        self.note_activity();
+    }
+
+    fn note_terminal(&mut self, signal: CodexTerminalSignal) {
+        self.pending_terminal = Some(CodexPendingTerminal {
+            signal,
+            last_activity_at: Instant::now(),
+        });
+    }
+
+    fn note_activity(&mut self) {
+        self.pending_terminal = None;
+    }
+
+    fn note_assistant_content(&mut self) {
+        self.assistant_content_after_latest_tool = true;
+        self.note_activity();
+    }
+
+    #[cfg(test)]
+    fn force_pending_terminal_quiet_for_tests(&mut self) {
+        if let Some(pending) = self.pending_terminal.as_mut() {
+            pending.last_activity_at = Instant::now() - CODEX_TERMINAL_QUIET_TIMEOUT;
+        }
+    }
+}
+
+fn note_tool_item_started(turn_tracker: &mut CodexTurnTracker, item: &Value) {
+    if !is_codex_tool_item(item) {
         return;
     }
-    if let Some(pending) = pending_turn_completion.take() {
-        complete_pending_turn(
-            pending,
-            completions,
-            notices,
-            prompt_completed,
-            terminal_failure,
-        );
+    if codex_item_status_is_terminal(item) {
+        return;
+    }
+    if let Some(item_id) = codex_item_id(item) {
+        turn_tracker.note_tool_started(item_id);
     }
 }
 
-fn complete_pending_turn(
-    pending: CodexPendingTurnCompletion,
+fn note_tool_item_completed(turn_tracker: &mut CodexTurnTracker, item: &Value) {
+    if !is_codex_tool_item(item) {
+        return;
+    }
+    if let Some(item_id) = codex_item_id(item) {
+        turn_tracker.note_tool_completed(item_id);
+    }
+}
+
+fn note_assistant_item_completed(turn_tracker: &mut CodexTurnTracker, item: &Value) {
+    let item_type = item
+        .get("type")
+        .and_then(Value::as_str)
+        .and_then(normalize_codex_item_type)
+        .unwrap_or_default();
+    if item_type != "agentMessage" {
+        return;
+    }
+    let has_text = item
+        .get("text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty())
+        || text_from_content_value(item.get("content")).is_some_and(|text| !text.is_empty());
+    if has_text {
+        turn_tracker.note_assistant_content();
+    }
+}
+
+fn codex_item_id(item: &Value) -> Option<&str> {
+    item.get("id")
+        .or_else(|| item.get("callId"))
+        .or_else(|| item.get("call_id"))
+        .and_then(Value::as_str)
+        .filter(|item_id| !item_id.is_empty())
+}
+
+fn codex_item_status_is_terminal(item: &Value) -> bool {
+    matches!(
+        item.get("status").and_then(Value::as_str),
+        Some("completed" | "failed" | "canceled" | "cancelled")
+    )
+}
+
+fn maybe_finalize_terminal_signal(
+    active_turn_id: &mut Option<String>,
+    turn_tracker: &mut CodexTurnTracker,
     completions: &mut Vec<CodexAssistantCompletion>,
     notices: &mut Vec<String>,
     prompt_completed: &mut bool,
     terminal_failure: &mut Option<String>,
 ) {
-    if let Some(completion) = pending.completion {
-        completions.push(completion);
+    if !turn_tracker.active_tool_ids.is_empty() {
+        return;
     }
-    if let Some(message) = pending.terminal_failure {
-        *terminal_failure = Some(message);
+    let Some(pending) = turn_tracker.pending_terminal.as_ref() else {
+        return;
+    };
+    if pending.signal.status == "completed"
+        && turn_tracker.tool_started
+        && !turn_tracker.assistant_content_after_latest_tool
+    {
+        return;
     }
-    if let Some(message) = pending.notice {
+    if pending.last_activity_at.elapsed() < CODEX_TERMINAL_QUIET_TIMEOUT {
+        return;
+    }
+    let Some(pending) = turn_tracker.pending_terminal.take() else {
+        return;
+    };
+    let signal = pending.signal;
+    let completion_turn_id = signal
+        .turn_id
+        .clone()
+        .or_else(|| active_turn_id.clone())
+        .unwrap_or_else(|| format!("unidentified-{}", unix_epoch_ms()));
+    let completion = CodexAssistantCompletion {
+        message_id: format!("codex-turn:{completion_turn_id}"),
+        completed_at_ms: unix_epoch_ms(),
+    };
+    completions.push(completion);
+    if signal.status == "failed" {
+        *terminal_failure = Some(
+            signal
+                .error_message
+                .clone()
+                .unwrap_or_else(|| "Codex turn failed".to_string()),
+        );
+    }
+    if let Some(message) = signal
+        .error_message
+        .clone()
+        .or_else(|| (signal.status == "failed").then(|| "Codex turn failed".to_string()))
+    {
         notices.push(message);
     }
     *prompt_completed = true;
-}
-
-fn has_running_tool_items(tool_items: &BTreeMap<String, CodexToolTranscriptState>) -> bool {
-    tool_items.values().any(|state| {
-        normalize_codex_tool_status(
-            state
-                .item
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-        ) == "running"
-    })
-}
-
-fn running_tool_item_summaries(
-    tool_items: &BTreeMap<String, CodexToolTranscriptState>,
-) -> Vec<Value> {
-    tool_items
-        .iter()
-        .filter_map(|(item_id, state)| {
-            let raw_status = state
-                .item
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            (normalize_codex_tool_status(raw_status) == "running").then(|| {
-                json!({
-                    "id": item_id,
-                    "type": state.item.get("type").and_then(Value::as_str),
-                    "status": raw_status,
-                    "command": state.item.get("command").and_then(Value::as_str),
-                    "streamed_output_len": state.streamed_output.len(),
-                })
-            })
-        })
-        .collect()
+    *active_turn_id = None;
 }
 
 fn trace_codex_tool_item(label: &str, item: &Value) {
@@ -658,6 +826,180 @@ fn codex_turn_id_from_start_response(response: &Value) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn append_text_delta(
+    text_items: &mut BTreeMap<String, CodexTextTranscriptState>,
+    item_id: &str,
+    fallback: &str,
+    kind: TerminalOutputKind,
+    delta: &str,
+    chunks: &mut Vec<CodexOutputChunk>,
+) {
+    if delta.is_empty() {
+        return;
+    }
+    let merge_key = normalize_merge_key(item_id, fallback);
+    text_items
+        .entry(merge_key.clone())
+        .or_default()
+        .emitted
+        .push_str(delta);
+    chunks.push(CodexOutputChunk {
+        kind,
+        merge_key: Some(merge_key),
+        bytes: delta.as_bytes().to_vec(),
+    });
+}
+
+fn sync_completed_text_item(
+    text_items: &mut BTreeMap<String, CodexTextTranscriptState>,
+    item: &Value,
+) -> Option<CodexOutputChunk> {
+    let item_type = normalize_codex_item_type(item.get("type").and_then(Value::as_str)?)?;
+    let (kind, fallback) = match item_type {
+        "agentMessage" => (TerminalOutputKind::ProviderOutput, "codex-agent-message"),
+        "reasoning" => (TerminalOutputKind::ProviderReasoning, "codex-reasoning"),
+        _ => return None,
+    };
+    let text = completed_text_item_text(item_type, item)?;
+    if text.is_empty() {
+        return None;
+    }
+    let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+    let merge_key = normalize_merge_key(item_id, fallback);
+    let entry = text_items.entry(merge_key.clone()).or_default();
+    let delta = if entry.emitted.is_empty() {
+        text.as_str()
+    } else if let Some(suffix) = text.strip_prefix(&entry.emitted) {
+        suffix
+    } else {
+        crate::logging::debug_with_fields(
+            "daemon.provider.codex",
+            "codex completed text item did not match streamed prefix",
+            json!({
+                "id": item_id,
+                "type": item_type,
+                "streamed_len": entry.emitted.len(),
+                "completed_len": text.len(),
+            }),
+        );
+        return None;
+    };
+    if delta.is_empty() {
+        return None;
+    }
+    entry.emitted.push_str(delta);
+    Some(CodexOutputChunk {
+        kind,
+        merge_key: Some(merge_key),
+        bytes: delta.as_bytes().to_vec(),
+    })
+}
+
+fn completed_text_item_text(item_type: &str, item: &Value) -> Option<String> {
+    match item_type {
+        "agentMessage" => item
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| text_from_content_value(item.get("content"))),
+        "reasoning" => text_from_string_array(item.get("summary"))
+            .or_else(|| text_from_string_array(item.get("content")))
+            .or_else(|| item.get("text").and_then(Value::as_str).map(str::to_string)),
+        _ => None,
+    }
+}
+
+fn normalize_codex_item_type(raw_type: &str) -> Option<&str> {
+    match raw_type {
+        "" => None,
+        "UserMessage" => Some("userMessage"),
+        "AgentMessage" => Some("agentMessage"),
+        "Reasoning" => Some("reasoning"),
+        "Plan" => Some("plan"),
+        "CommandExecution" => Some("commandExecution"),
+        "FileChange" => Some("fileChange"),
+        "McpToolCall" => Some("mcpToolCall"),
+        "WebSearch" => Some("webSearch"),
+        other => Some(other),
+    }
+}
+
+fn text_from_string_array(value: Option<&Value>) -> Option<String> {
+    let items = value?.as_array()?;
+    let text = items
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
+}
+
+fn text_from_content_value(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::String(text) => (!text.is_empty()).then(|| text.clone()),
+        Value::Array(items) => {
+            let text = items
+                .iter()
+                .filter_map(|item| {
+                    item.as_str()
+                        .map(str::to_string)
+                        .or_else(|| item.get("text").and_then(Value::as_str).map(str::to_string))
+                })
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    }
+}
+
+fn codex_exec_command_item(
+    call_id: &str,
+    command: Value,
+    cwd: Option<String>,
+    exit_code: Option<i64>,
+) -> Value {
+    let mut item = json!({
+        "id": call_id,
+        "type": "commandExecution",
+        "status": "inProgress",
+        "command": normalize_codex_command_value(&command),
+    });
+    if let Some(cwd) = cwd {
+        item["cwd"] = json!(cwd);
+    }
+    if let Some(exit_code) = exit_code {
+        item["exitCode"] = json!(exit_code);
+    }
+    item
+}
+
+fn normalize_codex_command_value(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.trim().to_string(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim()
+            .to_string(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn decode_codex_output_delta_chunk(chunk: &str) -> String {
+    base64::engine::general_purpose::STANDARD
+        .decode(chunk)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .filter(|decoded| !decoded.is_empty())
+        .unwrap_or_else(|| chunk.to_string())
 }
 
 fn sync_tool_item(
@@ -1095,10 +1437,30 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        apply_notification, codex_input, render_codex_tool_transcript_update,
-        resolve_local_attachment_path, CodexNotification, CodexOutputChunk,
-        CodexToolTranscriptState,
+        apply_notification, codex_input, maybe_finalize_terminal_signal,
+        render_codex_tool_transcript_update, resolve_local_attachment_path,
+        CodexAssistantCompletion, CodexNotification, CodexOutputChunk, CodexToolTranscriptState,
+        CodexTurnTracker,
     };
+
+    fn flush_quiet_terminal_for_test(
+        active_turn_id: &mut Option<String>,
+        turn_tracker: &mut CodexTurnTracker,
+        completions: &mut Vec<CodexAssistantCompletion>,
+        notices: &mut Vec<String>,
+        prompt_completed: &mut bool,
+        terminal_failure: &mut Option<String>,
+    ) {
+        turn_tracker.force_pending_terminal_quiet_for_tests();
+        maybe_finalize_terminal_signal(
+            active_turn_id,
+            turn_tracker,
+            completions,
+            notices,
+            prompt_completed,
+            terminal_failure,
+        );
+    }
 
     #[test]
     fn codex_input_treats_file_url_images_as_local_images() {
@@ -1149,7 +1511,8 @@ mod tests {
     #[test]
     fn reasoning_and_agent_deltas_preserve_item_merge_keys() {
         let mut active_turn_id = None;
-        let mut pending_turn_completion = None;
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1164,7 +1527,8 @@ mod tests {
                 delta: "thinking".to_string(),
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1179,7 +1543,8 @@ mod tests {
                 delta: "answer".to_string(),
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1214,9 +1579,171 @@ mod tests {
     }
 
     #[test]
+    fn completed_agent_message_snapshot_is_rendered_without_delta() {
+        let mut active_turn_id = None;
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut completions = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+        let mut terminal_failure = None;
+        let mut resolved_usage = None;
+
+        apply_notification(
+            CodexNotification::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "msg-1",
+                    "text": "final answer",
+                }),
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+
+        assert_eq!(
+            chunks,
+            vec![CodexOutputChunk {
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some("msg-1".to_string()),
+                bytes: b"final answer".to_vec(),
+            }]
+        );
+        assert!(completions.is_empty());
+        assert!(!prompt_completed);
+    }
+
+    #[test]
+    fn completed_agent_message_snapshot_only_emits_missing_suffix_after_delta() {
+        let mut active_turn_id = None;
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut completions = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+        let mut terminal_failure = None;
+        let mut resolved_usage = None;
+
+        apply_notification(
+            CodexNotification::AgentMessageDelta {
+                item_id: "msg-1".to_string(),
+                delta: "hello".to_string(),
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+        apply_notification(
+            CodexNotification::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "msg-1",
+                    "text": "hello world",
+                }),
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| (
+                    chunk.kind.clone(),
+                    chunk.merge_key.clone().unwrap_or_default(),
+                    String::from_utf8_lossy(&chunk.bytes).into_owned()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    TerminalOutputKind::ProviderOutput,
+                    "msg-1".to_string(),
+                    "hello".to_string()
+                ),
+                (
+                    TerminalOutputKind::ProviderOutput,
+                    "msg-1".to_string(),
+                    " world".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn completed_reasoning_snapshot_is_rendered_without_delta() {
+        let mut active_turn_id = None;
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut completions = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+        let mut terminal_failure = None;
+        let mut resolved_usage = None;
+
+        apply_notification(
+            CodexNotification::ItemCompleted {
+                item: json!({
+                    "type": "reasoning",
+                    "id": "reason-1",
+                    "summary": ["first", "second"],
+                }),
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+
+        assert_eq!(
+            chunks,
+            vec![CodexOutputChunk {
+                kind: TerminalOutputKind::ProviderReasoning,
+                merge_key: Some("reason-1".to_string()),
+                bytes: b"first\nsecond".to_vec(),
+            }]
+        );
+    }
+
+    #[test]
     fn token_usage_notification_is_projected() {
         let mut active_turn_id = Some("turn-1".to_string());
-        let mut pending_turn_completion = None;
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1236,7 +1763,8 @@ mod tests {
                 },
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1264,7 +1792,8 @@ mod tests {
     #[test]
     fn command_execution_updates_are_rendered_cumulatively() {
         let mut active_turn_id = None;
-        let mut pending_turn_completion = None;
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1289,7 +1818,8 @@ mod tests {
                 }),
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1304,7 +1834,8 @@ mod tests {
                 delta: "alpha\n".to_string(),
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1319,7 +1850,8 @@ mod tests {
                 delta: "beta\n".to_string(),
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1344,7 +1876,8 @@ mod tests {
                 }),
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1371,6 +1904,95 @@ mod tests {
         let fourth = parse_tool_chunk(&tool_chunks[3]);
         assert_eq!(fourth["status"], "completed");
         assert_eq!(fourth["output"], "alpha\nbeta");
+    }
+
+    #[test]
+    fn codex_exec_command_events_render_as_command_execution_tool_updates() {
+        let mut active_turn_id = None;
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut completions = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+        let mut terminal_failure = None;
+        let mut resolved_usage = None;
+
+        apply_notification(
+            CodexNotification::ExecCommandStarted {
+                call_id: "cmd-event-1".to_string(),
+                command: json!("/bin/zsh -lc 'pwd'"),
+                cwd: Some("/tmp".to_string()),
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+        apply_notification(
+            CodexNotification::ExecCommandOutputDelta {
+                call_id: "cmd-event-1".to_string(),
+                chunk: "b2sK".to_string(),
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+        apply_notification(
+            CodexNotification::ExecCommandCompleted {
+                call_id: "cmd-event-1".to_string(),
+                command: json!("/bin/zsh -lc 'pwd'"),
+                cwd: Some("/tmp".to_string()),
+                output: Some("ok\n".to_string()),
+                exit_code: Some(0),
+                success: Some(true),
+                stderr: None,
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+
+        let tool_chunks = chunks
+            .into_iter()
+            .filter(|chunk| chunk.kind == TerminalOutputKind::ProviderTool)
+            .collect::<Vec<CodexOutputChunk>>();
+        assert_eq!(tool_chunks.len(), 3);
+
+        let first = parse_tool_chunk(&tool_chunks[0]);
+        assert_eq!(first["tool"], "bash");
+        assert_eq!(first["status"], "running");
+        assert_eq!(first["input"]["command"], "/bin/zsh -lc 'pwd'");
+
+        let second = parse_tool_chunk(&tool_chunks[1]);
+        assert_eq!(second["output"], "ok");
+
+        let third = parse_tool_chunk(&tool_chunks[2]);
+        assert_eq!(third["status"], "completed");
+        assert_eq!(third["output"], "ok");
+        assert!(!prompt_completed);
+        assert!(completions.is_empty());
     }
 
     #[test]
@@ -1402,7 +2024,8 @@ mod tests {
     #[test]
     fn only_turn_completed_marks_the_prompt_as_complete() {
         let mut active_turn_id = Some("turn-1".to_string());
-        let mut pending_turn_completion = None;
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1421,7 +2044,8 @@ mod tests {
                 }),
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1435,12 +2059,13 @@ mod tests {
 
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: "turn-1".to_string(),
+                turn_id: Some("turn-1".to_string()),
                 status: "completed".to_string(),
                 error_message: None,
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1449,6 +2074,14 @@ mod tests {
             &mut terminal_failure,
             &mut resolved_usage,
         );
+        flush_quiet_terminal_for_test(
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        );
         assert!(prompt_completed);
         assert_eq!(active_turn_id, None);
         assert_eq!(completions.len(), 1);
@@ -1456,9 +2089,144 @@ mod tests {
     }
 
     #[test]
+    fn turn_completion_requires_quiet_window_before_prompt_completion() {
+        let mut active_turn_id = Some("turn-1".to_string());
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut completions = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+        let mut terminal_failure = None;
+        let mut resolved_usage = None;
+
+        apply_notification(
+            CodexNotification::TurnCompleted {
+                turn_id: Some("turn-1".to_string()),
+                status: "completed".to_string(),
+                error_message: None,
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+
+        assert!(!prompt_completed);
+        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+        assert!(completions.is_empty());
+
+        flush_quiet_terminal_for_test(
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        );
+        assert!(prompt_completed);
+        assert_eq!(active_turn_id, None);
+    }
+
+    #[test]
+    fn tool_start_after_terminal_candidate_disarms_prompt_completion() {
+        let mut active_turn_id = Some("turn-1".to_string());
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut completions = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+        let mut terminal_failure = None;
+        let mut resolved_usage = None;
+
+        apply_notification(
+            CodexNotification::TurnCompleted {
+                turn_id: Some("turn-1".to_string()),
+                status: "completed".to_string(),
+                error_message: None,
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+        apply_notification(
+            CodexNotification::ItemStarted {
+                item: json!({
+                    "type": "commandExecution",
+                    "id": "cmd-1",
+                    "command": "echo still running",
+                    "status": "inProgress",
+                }),
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+        apply_notification(
+            CodexNotification::ItemCompleted {
+                item: json!({
+                    "type": "commandExecution",
+                    "id": "cmd-1",
+                    "command": "echo still running",
+                    "status": "completed",
+                    "aggregatedOutput": "ok",
+                    "exitCode": 0,
+                }),
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+
+        flush_quiet_terminal_for_test(
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        );
+
+        assert!(!prompt_completed);
+        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+        assert!(completions.is_empty());
+    }
+
+    #[test]
     fn turn_completion_waits_for_running_command_execution() {
         let mut active_turn_id = Some("turn-1".to_string());
-        let mut pending_turn_completion = None;
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1477,7 +2245,8 @@ mod tests {
                 }),
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1488,12 +2257,13 @@ mod tests {
         );
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: "turn-1".to_string(),
+                turn_id: Some("turn-1".to_string()),
                 status: "completed".to_string(),
                 error_message: None,
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1504,8 +2274,8 @@ mod tests {
         );
 
         assert!(!prompt_completed);
+        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
         assert!(completions.is_empty());
-        assert!(pending_turn_completion.is_some());
 
         apply_notification(
             CodexNotification::ItemCompleted {
@@ -1519,7 +2289,115 @@ mod tests {
                 }),
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+        flush_quiet_terminal_for_test(
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        );
+        assert!(!prompt_completed);
+        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+        assert!(completions.is_empty());
+
+        apply_notification(
+            CodexNotification::AgentMessageDelta {
+                item_id: "msg-1".to_string(),
+                delta: "done".to_string(),
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+        apply_notification(
+            CodexNotification::TurnCompleted {
+                turn_id: Some("turn-1".to_string()),
+                status: "completed".to_string(),
+                error_message: None,
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+        flush_quiet_terminal_for_test(
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        );
+
+        assert!(prompt_completed);
+        assert_eq!(active_turn_id, None);
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].message_id, "codex-turn:turn-1");
+    }
+
+    #[test]
+    fn turn_completion_without_native_turn_id_completes_current_turn_after_tools_finish() {
+        let mut active_turn_id = Some("turn-1".to_string());
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut completions = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+        let mut terminal_failure = None;
+        let mut resolved_usage = None;
+
+        apply_notification(
+            CodexNotification::ExecCommandStarted {
+                call_id: "cmd-event-1".to_string(),
+                command: json!("sleep 1"),
+                cwd: None,
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+        apply_notification(
+            CodexNotification::TurnCompleted {
+                turn_id: None,
+                status: "completed".to_string(),
+                error_message: None,
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1529,8 +2407,75 @@ mod tests {
             &mut resolved_usage,
         );
 
+        assert!(!prompt_completed);
+        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+        assert!(completions.is_empty());
+
+        apply_notification(
+            CodexNotification::ExecCommandCompleted {
+                call_id: "cmd-event-1".to_string(),
+                command: json!("sleep 1"),
+                cwd: None,
+                output: Some("done\n".to_string()),
+                exit_code: Some(0),
+                success: Some(true),
+                stderr: None,
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+        apply_notification(
+            CodexNotification::AgentMessageDelta {
+                item_id: "msg-1".to_string(),
+                delta: "done".to_string(),
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+        apply_notification(
+            CodexNotification::TurnCompleted {
+                turn_id: None,
+                status: "completed".to_string(),
+                error_message: None,
+            },
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        );
+        flush_quiet_terminal_for_test(
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        );
+
         assert!(prompt_completed);
-        assert!(pending_turn_completion.is_none());
+        assert_eq!(active_turn_id, None);
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].message_id, "codex-turn:turn-1");
     }
@@ -1538,7 +2483,8 @@ mod tests {
     #[test]
     fn stale_turn_completion_does_not_complete_prompt() {
         let mut active_turn_id = Some("current-turn".to_string());
-        let mut pending_turn_completion = None;
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1549,12 +2495,13 @@ mod tests {
 
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: "stale-turn".to_string(),
+                turn_id: Some("stale-turn".to_string()),
                 status: "completed".to_string(),
                 error_message: None,
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1572,7 +2519,8 @@ mod tests {
     #[test]
     fn interrupted_turn_is_treated_as_terminal_cancellation() {
         let mut active_turn_id = Some("turn-2".to_string());
-        let mut pending_turn_completion = None;
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1583,12 +2531,13 @@ mod tests {
 
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: "turn-2".to_string(),
+                turn_id: Some("turn-2".to_string()),
                 status: "interrupted".to_string(),
                 error_message: Some("Aborted".to_string()),
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1596,6 +2545,14 @@ mod tests {
             &mut prompt_completed,
             &mut terminal_failure,
             &mut resolved_usage,
+        );
+        flush_quiet_terminal_for_test(
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
         );
 
         assert!(prompt_completed);
@@ -1608,7 +2565,8 @@ mod tests {
     #[test]
     fn failed_turn_records_terminal_failure() {
         let mut active_turn_id = Some("turn-3".to_string());
-        let mut pending_turn_completion = None;
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1619,12 +2577,13 @@ mod tests {
 
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: "turn-3".to_string(),
+                turn_id: Some("turn-3".to_string()),
                 status: "failed".to_string(),
                 error_message: Some("model rejected".to_string()),
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
@@ -1632,6 +2591,14 @@ mod tests {
             &mut prompt_completed,
             &mut terminal_failure,
             &mut resolved_usage,
+        );
+        flush_quiet_terminal_for_test(
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
         );
 
         assert!(prompt_completed);
@@ -1642,7 +2609,8 @@ mod tests {
     #[test]
     fn error_notification_without_active_turn_records_terminal_failure() {
         let mut active_turn_id = None;
-        let mut pending_turn_completion = None;
+        let mut turn_tracker = CodexTurnTracker::default();
+        let mut text_items = BTreeMap::new();
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
         let mut completions = Vec::new();
@@ -1656,7 +2624,8 @@ mod tests {
                 message: "unsupported model gpt-5.2-codex".to_string(),
             },
             &mut active_turn_id,
-            &mut pending_turn_completion,
+            &mut turn_tracker,
+            &mut text_items,
             &mut tool_items,
             &mut chunks,
             &mut completions,
