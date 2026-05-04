@@ -28,6 +28,15 @@ export type SessionListEntry = {
   last_used_at_ms?: number | null
   attachment_ids?: string[]
   connected_cli_count?: number
+  activity?: SessionActivitySummary
+}
+
+export type SessionActivitySummary = {
+  agent_count: number
+  working_agent_count: number
+  active_prompt_count: number
+  queued_prompt_count: number
+  error_agent_count: number
 }
 
 export type SessionBootstrapDecision =

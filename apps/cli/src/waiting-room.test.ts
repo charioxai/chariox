@@ -186,6 +186,35 @@ test("waiting room renders session rows with alias text", () => {
   assert.equal(aliasedSessionRow?.title, "session-1 (frontend)")
 })
 
+test("waiting room marks sessions with public activity as working", () => {
+  const catalog = fallbackProviderCatalog()
+  const sessions = [{
+    id: "session-1",
+    alias: "frontend",
+    workspace_id: "/workspace",
+    worktree_id: "/workspace/tree",
+    status: "Active",
+    created_at_ms: Date.UTC(2026, 3, 6, 10, 0),
+    last_used_at_ms: Date.UTC(2026, 3, 6, 11, 0),
+    attachment_ids: [],
+    activity: {
+      agent_count: 2,
+      working_agent_count: 1,
+      active_prompt_count: 1,
+      queued_prompt_count: 0,
+      error_agent_count: 0,
+    },
+  }]
+
+  const state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
+  const rows = waitingRoomRows(state, sessions, catalog)
+  const activeSessionRow = rows.find((row) => row.id === "session:session-1")
+
+  assert.equal(activeSessionRow?.title, "* session-1 (frontend)")
+  assert.equal(activeSessionRow?.value, "Working")
+  assert.equal(activeSessionRow?.columns?.[0]?.trim(), "Working")
+})
+
 test("waiting room places join below start configuration and makes cloud relay login selectable", () => {
   const catalog = fallbackProviderCatalog()
   let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")

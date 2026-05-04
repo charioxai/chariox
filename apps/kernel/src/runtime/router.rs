@@ -4,17 +4,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 use arroba_relay::protocol::RelayKernelPresence;
 
+use crate::agent::AgentState;
 use crate::app::DaemonApp;
 use crate::config::PersistedCloudRelayProfile;
 use crate::error::DaemonError;
@@ -24,10 +25,10 @@ use crate::history::{
 };
 use crate::history_archive::HistoryArchiveClient;
 use crate::local::provider_requests::{
-    forgotten_machine_record, load_provider_catalog, logout_provider_response,
-    provider_auth_status_response, provider_command_catalogs_response, record_for_machine_id,
-    resolve_machine_for_registry, resolve_machine_id_for_registry, start_provider_login_response,
-    PROVIDER_CATALOG_CACHE_TTL,
+    PROVIDER_CATALOG_CACHE_TTL, forgotten_machine_record, load_provider_catalog,
+    logout_provider_response, provider_auth_status_response, provider_command_catalogs_response,
+    record_for_machine_id, resolve_machine_for_registry, resolve_machine_id_for_registry,
+    start_provider_login_response,
 };
 use crate::local::{
     AcceptCloudSessionInviteRequest, AgentGrantKind, ApproveRemoteMachineRequest,
@@ -62,7 +63,7 @@ use crate::local::{
     UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
     UpdateMcpServerRequest, UpdateSkillRequest, UserConfigMutationEffect,
     UserConfigProviderReloadSummary, WaitingRoomLaunchTarget, WaitingRoomPublicSessionSummary,
-    WaitingRoomPublicSnapshot, WorkspaceWorktreeRecord,
+    WaitingRoomPublicSnapshot, WaitingRoomSessionActivitySummary, WorkspaceWorktreeRecord,
 };
 use crate::provider::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
@@ -70,16 +71,16 @@ use crate::provider::{
 };
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::capability_executor::{
-    execute_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
+    CapabilityExecutorHealthStore, CapabilityRuntimeStore, execute_capability_request,
 };
 use crate::runtime::command::{
     KernelCallerKind, KernelCommand, KernelCommandPriority, KernelCommandSource,
 };
 use crate::runtime::projection::{
-    page_history_entries, AgentRuntimeProjectionStore, DaemonConfigProjectionStore,
-    DaemonHealthProjection, ProviderCatalogProjectionStore, ProviderProcessProjectionStore,
-    ProviderRunProjectionStore, RemoteRelayInventoryProjectionStore, SessionHistoryProjectionStore,
-    SessionStateProjectionStore, TransportHealthStore,
+    AgentRuntimeProjectionStore, DaemonConfigProjectionStore, DaemonHealthProjection,
+    ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
+    RemoteRelayInventoryProjectionStore, SessionHistoryProjectionStore,
+    SessionStateProjectionStore, TransportHealthStore, page_history_entries,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_launch_executor::ProviderLaunchCommandExecutor;
@@ -87,12 +88,12 @@ use crate::runtime::session_actor::{FocusedAgentProjection, SessionActor, Sessio
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::state::{ProviderReloadOutcome, ProviderReloadTrigger};
 use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
-use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
+use crate::runtime::workflow_actor::{WorkflowRuntime, is_workflow_command};
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
-use crate::session::{unix_epoch_ms, PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
+use crate::session::{DEFAULT_LOCAL_USER_ID, PromptIdAllocator, unix_epoch_ms};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::{
-    refresh_remote_inventory_projection_for_app_with_relay_state, RelayClientState,
+    RelayClientState, refresh_remote_inventory_projection_for_app_with_relay_state,
 };
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -5231,9 +5232,58 @@ fn waiting_room_session_summaries(
                 last_used_at_ms: session.last_used_at_ms(),
                 status: session.status(),
                 connected_cli_count: session.attachment_ids().len(),
+                activity: waiting_room_session_activity_summary(&session),
             }
         })
         .collect()
+}
+
+fn waiting_room_session_activity_summary(
+    session: &crate::session::RuntimeSession,
+) -> WaitingRoomSessionActivitySummary {
+    let active_prompt_agent_ids: HashSet<&str> = session
+        .prompt_states()
+        .iter()
+        .filter(|(_, state)| state.active_prompt().is_some())
+        .map(|(agent_id, _)| agent_id.as_str())
+        .collect();
+    let active_prompt_count = if active_prompt_agent_ids.is_empty() && session.has_active_prompt() {
+        1
+    } else {
+        active_prompt_agent_ids.len()
+    };
+    let queued_prompt_count = if session.prompt_states().is_empty() {
+        session.queued_prompts().len()
+    } else {
+        session
+            .prompt_states()
+            .values()
+            .map(|state| state.queued_prompts().len())
+            .sum()
+    };
+    let mut working_agent_count = session
+        .agents()
+        .iter()
+        .filter(|agent| {
+            agent.state() == AgentState::Working
+                || agent.is_processing()
+                || active_prompt_agent_ids.contains(agent.id())
+        })
+        .count();
+    if working_agent_count == 0 && active_prompt_count > 0 {
+        working_agent_count = 1;
+    }
+    WaitingRoomSessionActivitySummary {
+        agent_count: session.agents().len(),
+        working_agent_count,
+        active_prompt_count,
+        queued_prompt_count,
+        error_agent_count: session
+            .agents()
+            .iter()
+            .filter(|agent| agent.state() == AgentState::Error)
+            .count(),
+    }
 }
 
 fn infer_waiting_room_launch_target() -> Option<WaitingRoomLaunchTarget> {
@@ -7334,7 +7384,7 @@ mod tests {
     use std::sync::Arc;
 
     use tokio::sync::Mutex;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     use crate::agent::CreateAgentRequest;
     use crate::attachment::ClientCapabilityLevel;
@@ -7362,8 +7412,8 @@ mod tests {
     };
     use crate::runtime::router::CommandRouter;
     use crate::session::{
-        CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus,
-        DEFAULT_LOCAL_USER_ID,
+        CreateSessionRequest, DEFAULT_LOCAL_USER_ID, PromptStatus, PromptSubmissionOutcome,
+        SessionStatus,
     };
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
@@ -7619,9 +7669,11 @@ mod tests {
             .get_agent(&agent_id)
             .expect("agent should restore");
         assert_eq!(restored_agent.session_id(), session_id);
-        assert!(restored_agent
-            .skill_grants()
-            .contains(&"review".to_string()));
+        assert!(
+            restored_agent
+                .skill_grants()
+                .contains(&"review".to_string())
+        );
     }
 
     #[tokio::test]
@@ -7743,10 +7795,11 @@ mod tests {
         };
         let app = DaemonApp::bootstrap(delete_config).expect("daemon should reboot");
         assert!(app.sessions().get_session(&deleted_session_id).is_err());
-        assert!(app
-            .agents
-            .get_session_agents(&deleted_session_id)
-            .is_empty());
+        assert!(
+            app.agents
+                .get_session_agents(&deleted_session_id)
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -7817,9 +7870,11 @@ mod tests {
             .dispatch(third_command, third_request)
             .await
             .expect_err("overflow session command should be rejected while lane is full");
-        assert!(error
-            .to_string()
-            .contains("session command lane overloaded"));
+        assert!(
+            error
+                .to_string()
+                .contains("session command lane overloaded")
+        );
 
         drop(app_guard);
         let _ = first_result_rx.await.expect("first result should resolve");
@@ -8200,10 +8255,12 @@ mod tests {
         drop(app_guard);
         match state_response {
             LocalDaemonResponse::SessionState { session } => {
-                assert!(session
-                    .agents()
-                    .iter()
-                    .any(|agent| agent.id() == spawned_agent_id));
+                assert!(
+                    session
+                        .agents()
+                        .iter()
+                        .any(|agent| agent.id() == spawned_agent_id)
+                );
             }
             _ => panic!("unexpected state response"),
         }
@@ -8248,10 +8305,12 @@ mod tests {
         drop(app_guard);
         match state_response {
             LocalDaemonResponse::SessionState { session } => {
-                assert!(!session
-                    .agents()
-                    .iter()
-                    .any(|agent| agent.id() == spawned_agent_id));
+                assert!(
+                    !session
+                        .agents()
+                        .iter()
+                        .any(|agent| agent.id() == spawned_agent_id)
+                );
             }
             _ => panic!("unexpected state response"),
         }
@@ -8722,18 +8781,24 @@ mod tests {
             LocalDaemonResponse::DaemonHealth { projection } => projection,
             _ => panic!("unexpected health response"),
         };
-        assert!(projection
-            .session_command_lanes
-            .iter()
-            .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128));
-        assert!(projection
-            .agent_command_lanes
-            .iter()
-            .any(|lane| lane.lane_id == agent_id && lane.queue_limit == 128));
-        assert!(projection
-            .workflow_command_lanes
-            .iter()
-            .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128));
+        assert!(
+            projection
+                .session_command_lanes
+                .iter()
+                .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128)
+        );
+        assert!(
+            projection
+                .agent_command_lanes
+                .iter()
+                .any(|lane| lane.lane_id == agent_id && lane.queue_limit == 128)
+        );
+        assert!(
+            projection
+                .workflow_command_lanes
+                .iter()
+                .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128)
+        );
         assert_eq!(projection.session_projection.projected_sessions, 1);
         assert_eq!(projection.session_projection.active_prompts, 1);
         assert_eq!(projection.session_projection.queued_prompts, 0);
@@ -8936,12 +9001,14 @@ mod tests {
             .dispatch(prompt_command, prompt_request)
             .await
             .expect("prompt should create an agent lane");
-        assert!(router
-            .daemon_health_projection(0)
-            .await
-            .agent_command_lanes
-            .iter()
-            .any(|lane| lane.lane_id == agent_id));
+        assert!(
+            router
+                .daemon_health_projection(0)
+                .await
+                .agent_command_lanes
+                .iter()
+                .any(|lane| lane.lane_id == agent_id)
+        );
         let workflow_request = LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
             session_id: session_id.clone(),
             alias: Some("cleanup-workflow".to_string()),
@@ -8968,12 +9035,14 @@ mod tests {
             .await
             .expect("ending session should clean up agent lane");
 
-        assert!(!router
-            .daemon_health_projection(0)
-            .await
-            .agent_command_lanes
-            .iter()
-            .any(|lane| lane.lane_id == agent_id));
+        assert!(
+            !router
+                .daemon_health_projection(0)
+                .await
+                .agent_command_lanes
+                .iter()
+                .any(|lane| lane.lane_id == agent_id)
+        );
         assert!(!router.workflow_runtime.has_lane(&session_id).await);
     }
 
@@ -9019,12 +9088,14 @@ mod tests {
             .dispatch(prompt_command, prompt_request)
             .await
             .expect("prompt should create an agent lane");
-        assert!(router
-            .daemon_health_projection(0)
-            .await
-            .agent_command_lanes
-            .iter()
-            .any(|lane| lane.lane_id == agent_id));
+        assert!(
+            router
+                .daemon_health_projection(0)
+                .await
+                .agent_command_lanes
+                .iter()
+                .any(|lane| lane.lane_id == agent_id)
+        );
 
         let destroy_request = LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
             session_id,
@@ -9041,12 +9112,14 @@ mod tests {
             .await
             .expect("destroying agent should clean up agent lane");
 
-        assert!(!router
-            .daemon_health_projection(0)
-            .await
-            .agent_command_lanes
-            .iter()
-            .any(|lane| lane.lane_id == agent_id));
+        assert!(
+            !router
+                .daemon_health_projection(0)
+                .await
+                .agent_command_lanes
+                .iter()
+                .any(|lane| lane.lane_id == agent_id)
+        );
     }
 
     #[tokio::test]
@@ -9852,11 +9925,13 @@ mod tests {
             .dispatch(prompt_command, prompt_request)
             .await
             .expect("prompt submit should warm agent runtime projection");
-        assert!(router
-            .agent_runtime_projection
-            .get(&agent_id)
-            .and_then(|projection| projection.active_prompt)
-            .is_some());
+        assert!(
+            router
+                .agent_runtime_projection
+                .get(&agent_id)
+                .and_then(|projection| projection.active_prompt)
+                .is_some()
+        );
 
         {
             let app = app.lock().await;
@@ -10036,11 +10111,13 @@ mod tests {
             .dispatch(prompt_command, prompt_request)
             .await
             .expect("prompt submit should warm active prompt projection");
-        assert!(router
-            .agent_runtime_projection
-            .get(&agent_id)
-            .and_then(|projection| projection.active_prompt)
-            .is_some());
+        assert!(
+            router
+                .agent_runtime_projection
+                .get(&agent_id)
+                .and_then(|projection| projection.active_prompt)
+                .is_some()
+        );
 
         let cancel_request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
             session_id: session_id.clone(),

@@ -67,8 +67,8 @@ pub use api::{
     UpdateSkillRequest, UpdateWorkflowNodeInstructionsRequest, UserConfigMutationEffect,
     UserConfigProviderReloadSummary, ValidateWorkflowOutputRequest, WaitingRoomInventorySnapshot,
     WaitingRoomLaunchTarget, WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
-    WorkspaceWorktreeRecord,
+    WaitingRoomSessionActivitySummary, WorkspaceWorktreeRecord,
 };
 pub use client::LocalDaemonClient;
-pub use harness::{run_local_harness, LocalHarnessReport};
-pub use ipc::{run_local_ipc_server, send_local_ipc_request, LocalIpcClient};
+pub use harness::{LocalHarnessReport, run_local_harness};
+pub use ipc::{LocalIpcClient, run_local_ipc_server, send_local_ipc_request};

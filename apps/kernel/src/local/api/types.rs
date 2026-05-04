@@ -2228,6 +2228,17 @@ pub struct WaitingRoomPublicSessionSummary {
     pub last_used_at_ms: Option<u64>,
     pub status: crate::session::SessionStatus,
     pub connected_cli_count: usize,
+    #[serde(default)]
+    pub activity: WaitingRoomSessionActivitySummary,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingRoomSessionActivitySummary {
+    pub agent_count: usize,
+    pub working_agent_count: usize,
+    pub active_prompt_count: usize,
+    pub queued_prompt_count: usize,
+    pub error_agent_count: usize,
 }
 
 impl From<WaitingRoomPublicSnapshot> for WaitingRoomInventorySnapshot {

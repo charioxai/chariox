@@ -28,10 +28,8 @@ const WAITING_ROOM_TIMESTAMP_MIN_WIDTH = "0000-00-00 00:00 UTC".length
 const WAITING_ROOM_MENU_TRAILING_PADDING = 2
 
 function formatWaitingRoomSessionTitle(session: SessionListEntry) {
-  if (!session.alias) {
-    return session.id
-  }
-  return `${session.id} (${session.alias})`
+  const label = session.alias ? `${session.id} (${session.alias})` : session.id
+  return sessionHasActiveWork(session) ? `* ${label}` : label
 }
 
 export type WaitingRoomFocus =
@@ -363,7 +361,7 @@ export function waitingRoomRows(
   )
   const statusWidth = Math.max(
     WAITING_ROOM_STATUS_MIN_WIDTH,
-    ...visibleSessions.map((session) => formatSessionStatus(session.status).length),
+    ...visibleSessions.map((session) => formatWaitingRoomSessionStatus(session).length),
   )
   const lastUsedWidth = Math.max(
     "Last used".length,
@@ -498,10 +496,10 @@ export function waitingRoomRows(
       rows.push({
         id: `session:${session.id}`,
         title: formatWaitingRoomSessionTitle(session),
-        value: formatSessionStatus(session.status),
+        value: formatWaitingRoomSessionStatus(session),
         titleWidth,
         columns: [
-          formatWaitingRoomColumn(formatSessionStatus(session.status), statusWidth),
+          formatWaitingRoomColumn(formatWaitingRoomSessionStatus(session), statusWidth),
           formatWaitingRoomColumn(formatSessionTimestamp(session.last_used_at_ms ?? null), lastUsedWidth),
           formatWaitingRoomColumn(formatSessionTimestamp(session.created_at_ms ?? null), createdAtWidth),
         ],
@@ -791,7 +789,7 @@ export function waitingRoomMenuMinWidth(sessions: SessionListEntry[]) {
 
   const statusWidth = Math.max(
     WAITING_ROOM_STATUS_MIN_WIDTH,
-    ...visibleSessions.map((session) => formatSessionStatus(session.status).length),
+    ...visibleSessions.map((session) => formatWaitingRoomSessionStatus(session).length),
   )
   const lastUsedWidth = Math.max(
     "Last used".length,
@@ -938,6 +936,20 @@ function formatTitleCase(value: string) {
 
 function formatSessionStatus(value: string) {
   return formatTitleCase(value.toLowerCase())
+}
+
+function formatWaitingRoomSessionStatus(session: SessionListEntry) {
+  return sessionHasActiveWork(session) ? "Working" : formatSessionStatus(session.status)
+}
+
+function sessionHasActiveWork(session: SessionListEntry) {
+  const activity = session.activity
+  if (!activity) {
+    return false
+  }
+  return activity.working_agent_count > 0
+    || activity.active_prompt_count > 0
+    || activity.queued_prompt_count > 0
 }
 
 function formatWaitingRoomTerminalTitle(terminal: WaitingRoomTerminal) {

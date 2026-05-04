@@ -92,6 +92,15 @@ export type WaitingRoomPublicSessionSummary = {
   last_used_at_ms?: number | null
   status: string
   connected_cli_count: number
+  activity?: WaitingRoomSessionActivitySummary
+}
+
+export type WaitingRoomSessionActivitySummary = {
+  agent_count: number
+  working_agent_count: number
+  active_prompt_count: number
+  queued_prompt_count: number
+  error_agent_count: number
 }
 
 export type WorkspaceLinkAttachment = {

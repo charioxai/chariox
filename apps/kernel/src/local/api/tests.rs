@@ -4,7 +4,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app::provider_output::{
-    pump_active_prompt_outputs, ProviderOutputPump, ProviderOutputPumpRequest,
+    ProviderOutputPump, ProviderOutputPumpRequest, pump_active_prompt_outputs,
 };
 use crate::attachment::ClientCapabilityLevel;
 use crate::local::test_support::LocalRouterTestHarness;
@@ -422,6 +422,11 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
     );
     assert_eq!(session.worktree_id, "/tmp/arroba-public-snapshot-worktree");
     assert_eq!(session.connected_cli_count, 0);
+    assert_eq!(session.activity.agent_count, 1);
+    assert_eq!(session.activity.working_agent_count, 0);
+    assert_eq!(session.activity.active_prompt_count, 0);
+    assert_eq!(session.activity.queued_prompt_count, 0);
+    assert_eq!(session.activity.error_agent_count, 0);
 
     let serialized =
         serde_json::to_value(session).expect("public session summary should serialize");
@@ -432,6 +437,95 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
     assert!(
         serialized.get("agents").is_none(),
         "public summary must not expose agent runtime state"
+    );
+    assert!(
+        serialized.get("active_prompt").is_none(),
+        "public summary must not expose active prompt internals"
+    );
+}
+
+#[test]
+fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                "/tmp/arroba-public-activity-workspace",
+                "/tmp/arroba-public-activity-worktree",
+            ),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-activity".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    harness.with_app_mut(|app| {
+        app.launch_provider(
+            LaunchProviderRequest::new(session.id(), "dev-stub", "default", "default", "model")
+                .with_agent_id(agent.id()),
+        )
+        .expect("provider launch should succeed");
+    });
+    let submitted = harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent.id().to_string()),
+            prompt: "keep working\n".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("prompt should submit");
+    assert!(
+        matches!(
+            submitted,
+            LocalDaemonResponse::PromptSubmitted {
+                outcome: PromptSubmissionOutcome::Started { .. },
+                ..
+            }
+        ),
+        "prompt should start immediately"
+    );
+
+    let snapshot = match harness
+        .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+            GetWaitingRoomPublicSnapshotRequest,
+        ))
+        .expect("waiting room public snapshot should succeed")
+    {
+        LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let summary = snapshot
+        .sessions
+        .iter()
+        .find(|candidate| candidate.id == session.id())
+        .expect("created session should be in public snapshot");
+    assert_eq!(summary.activity.agent_count, 1);
+    assert_eq!(summary.activity.working_agent_count, 1);
+    assert_eq!(summary.activity.active_prompt_count, 1);
+    assert_eq!(summary.activity.queued_prompt_count, 0);
+    assert_eq!(summary.activity.error_agent_count, 0);
+
+    let serialized =
+        serde_json::to_value(summary).expect("public session summary should serialize");
+    assert!(
+        serialized
+            .pointer("/activity/working_agent_count")
+            .is_some(),
+        "public summary should expose aggregate activity"
     );
     assert!(
         serialized.get("active_prompt").is_none(),
@@ -1647,9 +1741,11 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
         .find(|node_run| node_run.node_id() == first_node.id())
         .expect("completed entry node should remain on the run");
     assert_eq!(format!("{:?}", completed_entry.status()), "Completed");
-    assert!(completed_entry
-        .summary()
-        .is_some_and(|summary| summary.contains("planner finished draft plan")));
+    assert!(
+        completed_entry
+            .summary()
+            .is_some_and(|summary| summary.contains("planner finished draft plan"))
+    );
     let completion = completed_entry
         .completion()
         .expect("completed entry node should retain a generic completion snapshot");
@@ -1850,16 +1946,22 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
     let active_prompt = invoke_session
         .active_prompt()
         .expect("workflow invoke should create an active prompt");
-    assert!(active_prompt
-        .prompt()
-        .contains("Endpoint prompt:\nkick off the ack flow"));
-    assert!(active_prompt
-        .prompt()
-        .contains("Node instruction reference (daemon-managed):"));
+    assert!(
+        active_prompt
+            .prompt()
+            .contains("Endpoint prompt:\nkick off the ack flow")
+    );
+    assert!(
+        active_prompt
+            .prompt()
+            .contains("Node instruction reference (daemon-managed):")
+    );
     assert!(active_prompt.prompt().contains("`ack_workflow_turn`"));
-    assert!(!active_prompt
-        .prompt()
-        .contains("Control mailbox (daemon-managed):"));
+    assert!(
+        !active_prompt
+            .prompt()
+            .contains("Control mailbox (daemon-managed):")
+    );
 
     let first_run_id = workflow_run.node_runs()[0].id().to_string();
     let first_token = "workflow-ack:".to_string() + &first_run_id;
@@ -1941,12 +2043,16 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
             .cloned()
             .expect("second node prompt should be active")
     });
-    assert!(second_active_prompt
-        .prompt()
-        .contains("Workflow handoff payloads (JSON array):"));
-    assert!(second_active_prompt
-        .prompt()
-        .contains("`ack_workflow_turn`"));
+    assert!(
+        second_active_prompt
+            .prompt()
+            .contains("Workflow handoff payloads (JSON array):")
+    );
+    assert!(
+        second_active_prompt
+            .prompt()
+            .contains("`ack_workflow_turn`")
+    );
 
     let second_run_id = routed
         .active_node_run_id()
@@ -2180,9 +2286,11 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
             .expect("second node should be active")
     });
     assert!(second_active_prompt.prompt().contains("Control mailbox:"));
-    assert!(second_active_prompt
-        .prompt()
-        .contains("output.message is not valid JSON"));
+    assert!(
+        second_active_prompt
+            .prompt()
+            .contains("output.message is not valid JSON")
+    );
     let first_completed = after_warning
         .node_runs()
         .iter()
@@ -2195,11 +2303,13 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
             .state(),
         WorkflowTurnRuntimeState::Acknowledged
     );
-    assert!(first_completed
-        .turn_envelope()
-        .expect("turn envelope should remain")
-        .rendered_prompt()
-        .is_some());
+    assert!(
+        first_completed
+            .turn_envelope()
+            .expect("turn envelope should remain")
+            .rendered_prompt()
+            .is_some()
+    );
 
     let second_run_id = after_warning
         .active_node_run_id()
@@ -2240,19 +2350,27 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
             .expect("first node should be active again")
     });
     assert!(active_prompt.prompt().contains("Control mailbox:"));
-    assert!(active_prompt
-        .prompt()
-        .contains("output.message is not valid JSON"));
-    assert!(active_prompt
-        .prompt()
-        .contains("Treat the control mailbox as authoritative runtime feedback"));
+    assert!(
+        active_prompt
+            .prompt()
+            .contains("output.message is not valid JSON")
+    );
+    assert!(
+        active_prompt
+            .prompt()
+            .contains("Treat the control mailbox as authoritative runtime feedback")
+    );
     assert!(active_prompt.prompt().contains("Outgoing edge contracts:"));
-    assert!(active_prompt
-        .prompt()
-        .contains(schema_path.to_string_lossy().as_ref()));
-    assert!(!active_prompt
-        .prompt()
-        .contains("Control mailbox (daemon-managed):"));
+    assert!(
+        active_prompt
+            .prompt()
+            .contains(schema_path.to_string_lossy().as_ref())
+    );
+    assert!(
+        !active_prompt
+            .prompt()
+            .contains("Control mailbox (daemon-managed):")
+    );
 }
 
 #[test]
@@ -2414,10 +2532,12 @@ fn local_request_api_resumes_stopped_active_workflow_node_runs() {
             | crate::session::WorkflowNodeRunStatus::Running
             | crate::session::WorkflowNodeRunStatus::Completed
     ));
-    assert!(resumed_run
-        .turn_envelope()
-        .and_then(|envelope| envelope.rendered_prompt())
-        .is_some());
+    assert!(
+        resumed_run
+            .turn_envelope()
+            .and_then(|envelope| envelope.rendered_prompt())
+            .is_some()
+    );
 }
 
 #[test]
@@ -2636,19 +2756,23 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
     });
     let after_first_branch = harness.get_workflow_test_run(session.id(), workflow_run.id());
     assert_eq!(after_first_branch.node_runs().len(), 3);
-    assert!(after_first_branch
-        .node_runs()
-        .iter()
-        .all(|node_run| node_run.node_id() != join_node.id()));
+    assert!(
+        after_first_branch
+            .node_runs()
+            .iter()
+            .all(|node_run| node_run.node_id() != join_node.id())
+    );
     let buffered_join_messages = after_first_branch
         .messages()
         .iter()
         .filter(|message| message.target_node_id() == join_node.id())
         .collect::<Vec<_>>();
     assert_eq!(buffered_join_messages.len(), 1);
-    assert!(buffered_join_messages[0]
-        .consumed_by_node_run_id()
-        .is_none());
+    assert!(
+        buffered_join_messages[0]
+            .consumed_by_node_run_id()
+            .is_none()
+    );
     let session_after_first_branch = harness.with_app(|app| {
         app.sessions()
             .get_session(session.id())
@@ -2686,9 +2810,11 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
         .filter(|message| message.target_node_id() == join_node.id())
         .collect::<Vec<_>>();
     assert_eq!(join_messages.len(), 2);
-    assert!(join_messages
-        .iter()
-        .all(|message| message.consumed_by_node_run_id() == Some(join_run.id())));
+    assert!(
+        join_messages
+            .iter()
+            .all(|message| message.consumed_by_node_run_id() == Some(join_run.id()))
+    );
 
     harness.complete_workflow_test_prompt(session.id(), "join workflow prompt");
     let completed = harness.get_workflow_test_run(session.id(), workflow_run.id());
@@ -3353,9 +3479,11 @@ fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
             .clone()
     });
     assert_eq!(session_state.focused_agent_id(), Some(default_agent.id()));
-    assert!(session_state
-        .active_prompt_for_agent(prompt_agent.id())
-        .is_none());
+    assert!(
+        session_state
+            .active_prompt_for_agent(prompt_agent.id())
+            .is_none()
+    );
 }
 
 #[test]
@@ -3491,9 +3619,11 @@ fn prompt_idle_fallback_completes_after_recorded_completion_without_response_tex
         .sessions()
         .get_session(session.id())
         .expect("session should still exist");
-    assert!(session_state
-        .active_prompt_for_agent(default_agent.id())
-        .is_none());
+    assert!(
+        session_state
+            .active_prompt_for_agent(default_agent.id())
+            .is_none()
+    );
 }
 
 #[test]
@@ -3965,10 +4095,12 @@ fn local_request_api_reads_directory_tree_file_and_git_status() {
 
     match tree {
         LocalDaemonResponse::DirectoryTreeRead { result } => {
-            assert!(result
-                .entries
-                .iter()
-                .any(|entry| entry.relative_path == "README.md"));
+            assert!(
+                result
+                    .entries
+                    .iter()
+                    .any(|entry| entry.relative_path == "README.md")
+            );
         }
         _ => panic!("unexpected tree response"),
     }
@@ -4353,10 +4485,12 @@ fn local_request_api_stores_transferred_file_under_session_artifacts() {
 
     match response {
         LocalDaemonResponse::FileTransferred { result } => {
-            assert!(result
-                .stored_path
-                .to_string_lossy()
-                .contains("arroba-session-artifacts"));
+            assert!(
+                result
+                    .stored_path
+                    .to_string_lossy()
+                    .contains("arroba-session-artifacts")
+            );
             assert_eq!(result.bytes, 8);
         }
         _ => panic!("unexpected transfer response"),
