@@ -150,6 +150,17 @@ public struct AgentPromptState: Equatable, Sendable, Decodable {
         case activePrompt = "active_prompt"
         case queuedPrompts = "queued_prompts"
     }
+
+    public init(activePrompt: PromptQueueItem?, queuedPrompts: [PromptQueueItem] = []) {
+        self.activePrompt = activePrompt
+        self.queuedPrompts = queuedPrompts
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        activePrompt = try container.decodeIfPresent(PromptQueueItem.self, forKey: .activePrompt)
+        queuedPrompts = try container.decodeIfPresent([PromptQueueItem].self, forKey: .queuedPrompts) ?? []
+    }
 }
 
 public struct RuntimeInteraction: Identifiable, Equatable, Sendable, Decodable {
@@ -232,6 +243,24 @@ public struct ProviderAuthStatus: Equatable, Sendable, Decodable {
         case accountProfile = "account_profile"
         case loginHint = "login_hint"
         case detectedVersion = "detected_version"
+    }
+}
+
+public struct ProviderLoginStart: Equatable, Sendable, Decodable {
+    public let provider: String
+    public let loginKind: String
+    public let loginID: String?
+    public let authURL: String?
+    public let verificationURL: String?
+    public let userCode: String?
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case loginKind = "login_kind"
+        case loginID = "login_id"
+        case authURL = "auth_url"
+        case verificationURL = "verification_url"
+        case userCode = "user_code"
     }
 }
 
@@ -380,12 +409,15 @@ public struct ReplayGap: Equatable, Sendable, Decodable {
 public enum LocalDaemonRequest: Encodable, Sendable {
     case listSessions
     case createSession(workspaceID: String, worktreeID: String, alias: String?)
+    case deleteSession(sessionRef: String, workspaceID: String?)
     case attachToSession(sessionID: String, clientID: String)
     case detachFromSession(attachmentID: String)
     case getSessionState(sessionID: String)
     case updateSessionConfig(sessionID: String, attachmentID: String, values: [String: String], requiresIdle: Bool)
     case getProviderCatalog
     case getProviderAuthStatus(provider: String)
+    case startProviderLogin(provider: String)
+    case logoutProvider(provider: String)
     case listMcpServers(workspaceID: String?)
     case listSkills(workspaceID: String?)
     case submitPrompt(sessionID: String, attachmentID: String, targetAgentID: String?, prompt: String)
@@ -419,6 +451,11 @@ public enum LocalDaemonRequest: Encodable, Sendable {
                 ),
                 forKey: DynamicCodingKey("CreateSession")
             )
+        case let .deleteSession(sessionRef, workspaceID):
+            try container.encode(
+                DeleteSessionPayload(sessionRef: sessionRef, workspaceID: workspaceID),
+                forKey: DynamicCodingKey("DeleteSession")
+            )
         case let .attachToSession(sessionID, clientID):
             try container.encode(
                 AttachToSessionPayload(sessionID: sessionID, clientID: clientID),
@@ -450,6 +487,16 @@ public enum LocalDaemonRequest: Encodable, Sendable {
             try container.encode(
                 GetProviderAuthStatusPayload(provider: provider),
                 forKey: DynamicCodingKey("GetProviderAuthStatus")
+            )
+        case let .startProviderLogin(provider):
+            try container.encode(
+                GetProviderAuthStatusPayload(provider: provider),
+                forKey: DynamicCodingKey("StartProviderLogin")
+            )
+        case let .logoutProvider(provider):
+            try container.encode(
+                GetProviderAuthStatusPayload(provider: provider),
+                forKey: DynamicCodingKey("LogoutProvider")
             )
         case let .listMcpServers(workspaceID):
             try container.encode(
@@ -663,12 +710,15 @@ public struct KernelTransportError: Error, Equatable, Sendable, Decodable {
 public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
     case sessionsListed([RuntimeSession])
     case sessionCreated(RuntimeSession)
+    case sessionDeleted(RuntimeSession)
     case sessionState(RuntimeSession)
     case sessionConfigUpdated(session: RuntimeSession, config: SessionConfigState)
     case sessionAttached(RuntimeAttachment)
     case sessionDetached(RuntimeAttachment)
     case providerCatalog(ProviderCatalog)
     case providerAuthStatus(ProviderAuthStatus)
+    case providerLoginStarted(ProviderLoginStart)
+    case providerLoggedOut(String)
     case mcpServersListed([ArrobaMcpServerConfig])
     case skillsListed([ArrobaSkillMetadata])
     case promptSubmitted(RuntimeSession)
@@ -691,6 +741,11 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
         if let key = container.allKeys.first(where: { $0.stringValue == "SessionCreated" }) {
             let payload = try container.decode(SessionPayload.self, forKey: key)
             self = .sessionCreated(payload.session)
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "SessionDeleted" }) {
+            let payload = try container.decode(SessionPayload.self, forKey: key)
+            self = .sessionDeleted(payload.session)
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "SessionState" }) {
@@ -721,6 +776,16 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
         if let key = container.allKeys.first(where: { $0.stringValue == "ProviderAuthStatus" }) {
             let payload = try container.decode(ProviderAuthStatusPayload.self, forKey: key)
             self = .providerAuthStatus(payload.status)
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "ProviderLoginStarted" }) {
+            let payload = try container.decode(ProviderLoginStartedPayload.self, forKey: key)
+            self = .providerLoginStarted(payload.login)
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "ProviderLoggedOut" }) {
+            let payload = try container.decode(ProviderLoggedOutPayload.self, forKey: key)
+            self = .providerLoggedOut(payload.provider)
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "McpServersListed" }) {
@@ -889,6 +954,16 @@ private struct CreateSessionPayload: Encodable {
         case workspaceID = "workspace_id"
         case worktreeID = "worktree_id"
         case alias
+    }
+}
+
+private struct DeleteSessionPayload: Encodable {
+    let sessionRef: String
+    let workspaceID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sessionRef = "session_ref"
+        case workspaceID = "workspace_id"
     }
 }
 
@@ -1143,6 +1218,14 @@ private struct ProviderCatalogPayload: Decodable, Equatable, Sendable {
 
 private struct ProviderAuthStatusPayload: Decodable, Equatable, Sendable {
     let status: ProviderAuthStatus
+}
+
+private struct ProviderLoginStartedPayload: Decodable, Equatable, Sendable {
+    let login: ProviderLoginStart
+}
+
+private struct ProviderLoggedOutPayload: Decodable, Equatable, Sendable {
+    let provider: String
 }
 
 private struct McpServersListedPayload: Decodable, Equatable, Sendable {

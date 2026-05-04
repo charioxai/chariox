@@ -145,7 +145,7 @@ Payload:
 - `message_id`
 - `completed_at_ms`
 
-The CLI uses this as a real completion signal instead of relying on provider `idle` heuristics for the status badge.
+Clients use this as transcript metadata for assistant-message grouping. Runtime status must continue to come from `session_snapshot.agent_activity` or the session prompt state fallback.
 
 ### `session_snapshot`
 
@@ -155,6 +155,7 @@ Payload:
 
 - `session`
 - `provider_run`
+- `agent_activity`
 
 The session snapshot is also how the CLI hydrates workflow definitions and other current workspace state on attach/rejoin.
 

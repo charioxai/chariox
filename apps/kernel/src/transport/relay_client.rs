@@ -16,7 +16,6 @@ use arroba_relay::protocol::{
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
-use crate::provider::RuntimeProviderRun;
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
 use crate::runtime::projection::SessionSnapshotProjection;
 use crate::runtime::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
@@ -24,7 +23,6 @@ use crate::runtime_transport::{
     event_is_relevant_to_attachment, event_session_id, KernelEvent, WatchResult,
     RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS,
 };
-use crate::session::RuntimeSession;
 use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{RelayPeerEvent, RelayPeerRequest, RelayPeerResponse};
@@ -1923,7 +1921,7 @@ async fn run_relay_subscription_loop(
         .await;
         return;
     }
-    let mut previous_snapshot = None;
+    let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
     let mut previous_inventory_version = None;
     let mut tick: u64 = 0;
     let event_stream_id = relay_subscription_event_stream_id(&session_id, &attachment_id);
@@ -2008,8 +2006,9 @@ async fn run_relay_subscription_loop(
                         &event_runtime,
                         &event_stream_id,
                         KernelEvent::SessionSnapshot {
-                            session: Box::new(snapshot.0),
-                            provider_run: Box::new(snapshot.1),
+                            session: Box::new(snapshot.session),
+                            provider_run: Box::new(snapshot.provider_run),
+                            agent_activity: Box::new(snapshot.agent_activity),
                         },
                     )
                     .await
@@ -2287,7 +2286,7 @@ async fn emit_relay_replay_gap_snapshot(
         build_relay_session_snapshot(&mut app, session_id)
     };
     match snapshot {
-        Ok((session, provider_run)) => {
+        Ok(projection) => {
             emit_relay_event(
                 router,
                 outgoing_tx,
@@ -2296,8 +2295,9 @@ async fn emit_relay_replay_gap_snapshot(
                 event_runtime,
                 &event_stream_id,
                 KernelEvent::SessionSnapshot {
-                    session: Box::new(session),
-                    provider_run: Box::new(provider_run),
+                    session: Box::new(projection.session),
+                    provider_run: Box::new(projection.provider_run),
+                    agent_activity: Box::new(projection.agent_activity),
                 },
             )
             .await?;
@@ -2319,9 +2319,8 @@ async fn emit_relay_replay_gap_snapshot(
 fn build_relay_session_snapshot(
     app: &mut DaemonApp,
     session_id: &str,
-) -> Result<(RuntimeSession, Option<RuntimeProviderRun>), DaemonError> {
-    let projection = SessionSnapshotProjection::from_daemon_app(app, session_id, 0)?;
-    Ok((projection.session, projection.provider_run))
+) -> Result<SessionSnapshotProjection, DaemonError> {
+    SessionSnapshotProjection::from_daemon_app(app, session_id, 0)
 }
 
 fn send_relay_event_frame(

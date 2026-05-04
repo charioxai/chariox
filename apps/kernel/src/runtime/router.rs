@@ -778,10 +778,7 @@ impl CommandRouter {
         session_id: &str,
         attachment_id: &str,
         tick: u64,
-        previous_snapshot: Option<(
-            crate::session::RuntimeSession,
-            Option<crate::provider::RuntimeProviderRun>,
-        )>,
+        previous_snapshot: Option<crate::runtime::projection::SessionSnapshotProjection>,
     ) -> crate::runtime_transport::WatchResult {
         let mut app = self.app.lock().await;
         crate::runtime_transport::watch_subscription_state(

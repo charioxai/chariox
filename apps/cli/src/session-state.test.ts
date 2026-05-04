@@ -129,6 +129,28 @@ test("sessionHasPromptWork and agentHasPromptWork honor prompt_states across age
   assert.equal(agentHasPromptWork(nextSession, "agent-b"), true)
 })
 
+test("sessionHasPromptWork and agentHasPromptWork prefer kernel agent activity", () => {
+  const nextSession = session({
+    agent_activity: {
+      "agent-a": {
+        status: "working",
+        prompt_status: "settling",
+        busy: true,
+      },
+      "agent-b": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+      },
+    },
+    agents: [agent("agent-a"), agent("agent-b")],
+  })
+
+  assert.equal(sessionHasPromptWork(nextSession), true)
+  assert.equal(agentHasPromptWork(nextSession, "agent-a"), true)
+  assert.equal(agentHasPromptWork(nextSession, "agent-b"), false)
+})
+
 test("shouldConfirmIdleTurnCompletion treats idle session snapshots as stale-turn completion", () => {
   const idleSession = session({
     agents: [agent("agent-a", { state: "Focused" }), agent("agent-b")],

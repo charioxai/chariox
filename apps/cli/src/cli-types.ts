@@ -63,6 +63,7 @@ export type RuntimeSession = {
   active_prompt: PromptQueueItem | null
   queued_prompts: PromptQueueItem[]
   prompt_states?: Record<string, AgentPromptState>
+  agent_activity?: Record<string, AgentRuntimeActivity>
   active_interactions?: RuntimeInteraction[]
   focused_agent_id: string | null
   max_agents: number
@@ -184,6 +185,12 @@ export type WorkspaceLinkDefinition = {
 export type AgentPromptState = {
   active_prompt: PromptQueueItem | null
   queued_prompts: PromptQueueItem[]
+}
+
+export type AgentRuntimeActivity = {
+  status: "idle" | "working" | "error"
+  prompt_status: "none" | "queued" | "running" | "cancelling" | "settling"
+  busy: boolean
 }
 
 export type RuntimeInteraction = {

@@ -8538,7 +8538,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         recordDaemonActivity("kernel_session_snapshot")
         scheduleSharedPromptInputHistoryRefresh()
         await applyKernelSessionSnapshot(
-          normalizeRuntimeSession(event.session as RuntimeSession),
+          normalizeRuntimeSession({
+            ...(event.session as RuntimeSession),
+            ...((event.agent_activity && typeof event.agent_activity === "object")
+              ? { agent_activity: event.agent_activity }
+              : {}),
+          } as RuntimeSession),
           (event.provider_run as RuntimeProviderRun | null) ?? null,
         )
         return

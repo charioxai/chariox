@@ -46,7 +46,7 @@ mod tests {
     use super::attachment::{AttachRequest, ClientCapabilityLevel};
     use super::provider::{LaunchProviderRequest, ProviderResumeState};
     use super::session::{
-        CreateSessionRequest, PromptSubmissionOutcome, SessionStatus,
+        CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus,
     };
     use super::terminal::TerminalOutputKind;
     use super::transport::relay_peer::{
@@ -127,6 +127,66 @@ mod tests {
 
         assert_eq!(ended.id(), session.id());
         assert!(app.attachments().get_attachment(attachment.id()).is_err());
+    }
+
+    #[test]
+    fn failed_kernel_prompt_abort_finalizes_cancelling_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider run should launch");
+
+        let _ = crate::transport::TransportService::schedule_direct_prompt(
+            &mut app,
+            session.id(),
+            attachment.id(),
+            "cancel me\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+        let cancellation = crate::transport::TransportService::cancel_active_prompt(
+            &mut app,
+            session.id(),
+            attachment.id(),
+        )
+        .expect("prompt should enter cancellation");
+        assert_eq!(cancellation.prompt.status(), PromptStatus::Cancelling);
+
+        let result = app.finish_kernel_prompt_abort(
+            session.id().to_string(),
+            run.id().to_string(),
+            Err(DaemonError::LocalTransport {
+                operation: "abort test",
+                message: "abort dispatch failed".to_string(),
+            }),
+        );
+
+        assert!(result.is_err());
+        let session_state = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should still exist");
+        assert!(session_state.active_prompt_for_agent(agent.id()).is_none());
     }
 
     #[test]

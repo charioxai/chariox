@@ -380,6 +380,15 @@ impl DaemonApp {
                 self.attachments.list_session_attachment_ids(&session_id),
                 format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
             );
+            if let Ok(provider_run) = self.providers.get_run(&provider_run_id) {
+                if let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) {
+                    let _ = self.finalize_active_prompt_cancellation(
+                        &session_id,
+                        &agent_id,
+                        Some(&provider_run_id),
+                    );
+                }
+            }
             return Err(error);
         }
         Ok(())

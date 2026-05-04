@@ -39,6 +39,23 @@ import Testing
     #expect(payload["alias"] as? String == "ios")
 }
 
+@Test func deleteSessionRequestMatchesKernelShape() throws {
+    let data = try KernelProtocolCodec.encodeRequestFrame(
+        KernelRequestFrame(
+            requestID: "request-delete",
+            request: .deleteSession(sessionRef: "session-1", workspaceID: "/repo")
+        )
+    )
+    let object = try #require(
+        JSONSerialization.jsonObject(with: data) as? [String: Any]
+    )
+    let request = try #require(object["request"] as? [String: Any])
+    let payload = try #require(request["DeleteSession"] as? [String: Any])
+
+    #expect(payload["session_ref"] as? String == "session-1")
+    #expect(payload["workspace_id"] as? String == "/repo")
+}
+
 @Test func subscribeFrameMatchesKernelTransportShape() throws {
     let data = try KernelProtocolCodec.encodeSubscribeFrame(
         KernelSubscribeFrame(
@@ -130,6 +147,83 @@ import Testing
     let payload = try #require(request["GetProviderAuthStatus"] as? [String: Any])
 
     #expect(payload["provider"] as? String == "codex")
+}
+
+@Test func providerLoginAndLogoutRequestsMatchKernelShape() throws {
+    let loginData = try KernelProtocolCodec.encodeRequestFrame(
+        KernelRequestFrame(
+            requestID: "request-provider-login",
+            request: .startProviderLogin(provider: "codex")
+        )
+    )
+    let loginObject = try #require(
+        JSONSerialization.jsonObject(with: loginData) as? [String: Any]
+    )
+    let loginRequest = try #require(loginObject["request"] as? [String: Any])
+    let loginPayload = try #require(loginRequest["StartProviderLogin"] as? [String: Any])
+    #expect(loginPayload["provider"] as? String == "codex")
+
+    let logoutData = try KernelProtocolCodec.encodeRequestFrame(
+        KernelRequestFrame(
+            requestID: "request-provider-logout",
+            request: .logoutProvider(provider: "codex")
+        )
+    )
+    let logoutObject = try #require(
+        JSONSerialization.jsonObject(with: logoutData) as? [String: Any]
+    )
+    let logoutRequest = try #require(logoutObject["request"] as? [String: Any])
+    let logoutPayload = try #require(logoutRequest["LogoutProvider"] as? [String: Any])
+    #expect(logoutPayload["provider"] as? String == "codex")
+}
+
+@Test func providerLoginAndLogoutResponsesDecode() throws {
+    let loginJSON = """
+    {
+      "type": "response",
+      "request_id": "request-provider-login",
+      "response": {
+        "ProviderLoginStarted": {
+          "login": {
+            "provider": "codex",
+            "login_kind": "device",
+            "login_id": "login-1",
+            "auth_url": null,
+            "verification_url": "https://example.com/activate",
+            "user_code": "ABCD-EFGH"
+          }
+        }
+      },
+      "error": null
+    }
+    """
+
+    let loginFrame = try KernelProtocolCodec.decodeResponseFrame(Data(loginJSON.utf8))
+    guard case let .providerLoginStarted(login) = loginFrame.response else {
+        Issue.record("Expected ProviderLoginStarted response")
+        return
+    }
+    #expect(login.provider == "codex")
+    #expect(login.userCode == "ABCD-EFGH")
+
+    let logoutJSON = """
+    {
+      "type": "response",
+      "request_id": "request-provider-logout",
+      "response": {
+        "ProviderLoggedOut": {
+          "provider": "codex"
+        }
+      },
+      "error": null
+    }
+    """
+    let logoutFrame = try KernelProtocolCodec.decodeResponseFrame(Data(logoutJSON.utf8))
+    guard case let .providerLoggedOut(provider) = logoutFrame.response else {
+        Issue.record("Expected ProviderLoggedOut response")
+        return
+    }
+    #expect(provider == "codex")
 }
 
 @Test func listMcpServersRequestMatchesKernelShape() throws {
@@ -557,6 +651,72 @@ import Testing
 
     #expect(config.values["agents.mode"] == "plan")
     #expect(session.configState?.values["agents.mode"] == "plan")
+}
+
+@Test func promptSubmittedResponseAllowsMissingQueuedPromptState() throws {
+    let json = """
+    {
+      "type": "response",
+      "request_id": "request-submit",
+      "response": {
+        "PromptSubmitted": {
+          "outcome": {
+            "Started": {
+              "prompt": {
+                "id": "prompt-1",
+                "source_attachment_id": "attachment-1",
+                "target_agent_id": "agent-1",
+                "prompt": "hello\\n",
+                "status": "Running",
+                "attachments": []
+              }
+            }
+          },
+          "session": {
+            "id": "session-1",
+            "alias": null,
+            "workspace_id": "/repo",
+            "worktree_id": "/repo",
+            "status": "Active",
+            "active_prompt": {
+              "id": "prompt-1",
+              "source_attachment_id": "attachment-1",
+              "target_agent_id": "agent-1",
+              "prompt": "hello\\n",
+              "status": "Running",
+              "attachments": []
+            },
+            "prompt_states": {
+              "agent-1": {
+                "active_prompt": {
+                  "id": "prompt-1",
+                  "source_attachment_id": "attachment-1",
+                  "target_agent_id": "agent-1",
+                  "prompt": "hello\\n",
+                  "status": "Running",
+                  "attachments": []
+                }
+              }
+            },
+            "focused_agent_id": "agent-1",
+            "created_at_ms": 1777111200000,
+            "last_used_at_ms": 1777111201000,
+            "agents": []
+          }
+        }
+      },
+      "error": null
+    }
+    """
+
+    let frame = try KernelProtocolCodec.decodeResponseFrame(Data(json.utf8))
+    guard case let .promptSubmitted(session) = frame.response else {
+        Issue.record("Expected PromptSubmitted response")
+        return
+    }
+
+    #expect(session.activePrompt?.id == "prompt-1")
+    #expect(session.promptStates["agent-1"]?.queuedPrompts == [])
 }
 
 @Test func providerCatalogResponseDecodesProvidersAndModels() throws {

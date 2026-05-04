@@ -8,6 +8,10 @@ public final class ArrobaAppModel {
     public var workspacePath: String
     public var worktreePath: String
     public var promptDraft: String
+    public var selectedProviderID: String
+    public var selectedModelID: String
+    public var selectedVariantID: String
+    public var responseLayout: MultiAgentResponseLayout
     public private(set) var sessions: [RuntimeSession]
     public private(set) var selectedSessionID: String?
     public private(set) var activeAttachment: RuntimeAttachment?
@@ -46,9 +50,16 @@ public final class ArrobaAppModel {
         self.defaults = defaults
         self.heartbeatStaleAfterSeconds = heartbeatStaleAfterSeconds
         clientID = Self.loadClientID(from: defaults)
+        let defaultWorkspacePath = Self.defaultWorkspacePath()
         kernelURLText = defaults.string(forKey: DefaultsKey.kernelURL) ?? "ws://127.0.0.1:43118/kernel"
-        workspacePath = defaults.string(forKey: DefaultsKey.workspacePath) ?? "/Users/miguel/arroba"
-        worktreePath = defaults.string(forKey: DefaultsKey.worktreePath) ?? "/Users/miguel/arroba"
+        workspacePath = defaults.string(forKey: DefaultsKey.workspacePath) ?? defaultWorkspacePath
+        worktreePath = defaults.string(forKey: DefaultsKey.worktreePath) ?? defaultWorkspacePath
+        selectedProviderID = defaults.string(forKey: DefaultsKey.providerID) ?? "opencode"
+        selectedModelID = defaults.string(forKey: DefaultsKey.modelID) ?? "default"
+        selectedVariantID = defaults.string(forKey: DefaultsKey.variantID) ?? "low"
+        responseLayout = MultiAgentResponseLayout(
+            rawValue: defaults.string(forKey: DefaultsKey.responseLayout) ?? ""
+        ) ?? .individual
         promptDraft = ""
         sessions = []
         selectedSessionID = nil
@@ -84,6 +95,10 @@ public final class ArrobaAppModel {
         defaults.set(kernelURLText, forKey: DefaultsKey.kernelURL)
         defaults.set(workspacePath, forKey: DefaultsKey.workspacePath)
         defaults.set(worktreePath, forKey: DefaultsKey.worktreePath)
+        defaults.set(selectedProviderID, forKey: DefaultsKey.providerID)
+        defaults.set(selectedModelID, forKey: DefaultsKey.modelID)
+        defaults.set(selectedVariantID, forKey: DefaultsKey.variantID)
+        defaults.set(responseLayout.rawValue, forKey: DefaultsKey.responseLayout)
     }
 
     public func refreshSessions() async {
@@ -122,6 +137,35 @@ public final class ArrobaAppModel {
             selectedSessionID = session.id
             await refreshSessions()
             return "Created session \(session.shortDisplayID)."
+        }
+    }
+
+    public func deleteSession(reference: String? = nil) async {
+        let targetRef = reference?.nilIfBlank ?? selectedSession?.id
+        guard let targetRef else {
+            connectionState = .failed
+            statusMessage = "Select a session before deleting."
+            return
+        }
+        await perform("Deleting session") {
+            let response = try await client.send(
+                .deleteSession(sessionRef: targetRef, workspaceID: workspacePath.nilIfBlank),
+                to: try endpointURL()
+            )
+            guard case let .sessionDeleted(session) = response else {
+                throw KernelClientError.unexpectedResponse(String(describing: response))
+            }
+            sessions.removeAll { $0.id == session.id }
+            if selectedSessionID == session.id {
+                selectedSessionID = sessions.first?.id
+            }
+            if activeAttachment?.sessionID == session.id {
+                activeAttachment = nil
+                subscribedSessionID = nil
+                stopEventStream(resetCursor: true)
+                eventStreamState = .idle
+            }
+            return "Deleted session \(session.shortDisplayID)."
         }
     }
 
@@ -173,6 +217,45 @@ public final class ArrobaAppModel {
             }
             providerAuthStatuses[status.provider] = status
             return providerAuthStatusText(status)
+        }
+    }
+
+    public func startProviderLogin(provider: String) async {
+        let provider = provider.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !provider.isEmpty else {
+            connectionState = .failed
+            statusMessage = "Provider id is required."
+            return
+        }
+        await perform("Starting provider login") {
+            let response = try await client.send(
+                .startProviderLogin(provider: provider),
+                to: try endpointURL()
+            )
+            guard case let .providerLoginStarted(login) = response else {
+                throw KernelClientError.unexpectedResponse(String(describing: response))
+            }
+            return providerLoginText(login)
+        }
+    }
+
+    public func logoutProvider(provider: String) async {
+        let provider = provider.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !provider.isEmpty else {
+            connectionState = .failed
+            statusMessage = "Provider id is required."
+            return
+        }
+        await perform("Logging out provider") {
+            let response = try await client.send(
+                .logoutProvider(provider: provider),
+                to: try endpointURL()
+            )
+            guard case let .providerLoggedOut(provider) = response else {
+                throw KernelClientError.unexpectedResponse(String(describing: response))
+            }
+            providerAuthStatuses[provider] = nil
+            return "\(provider): logged out"
         }
     }
 
@@ -228,6 +311,7 @@ public final class ArrobaAppModel {
                 endpoint: endpoint,
                 resumeFromEventID: resumeFromEventID
             )
+            await Task.yield()
             await loadRecentHistory(endpoint: endpoint, session: session)
             return "Attached to session \(session.shortDisplayID)."
         }
@@ -239,12 +323,6 @@ public final class ArrobaAppModel {
             statusMessage = "No active attachment to detach."
             return
         }
-        eventTask?.cancel()
-        eventTask = nil
-        heartbeatMonitorTask?.cancel()
-        heartbeatMonitorTask = nil
-        eventStreamStartedAt = nil
-        eventStreamState = .disconnected
         await perform("Detaching session") {
             let response = try await client.send(
                 .detachFromSession(attachmentID: attachment.id),
@@ -255,8 +333,7 @@ public final class ArrobaAppModel {
             }
             activeAttachment = nil
             subscribedSessionID = nil
-            lastEventID = nil
-            lastHeartbeatAt = nil
+            stopEventStream(resetCursor: true)
             eventStreamState = .idle
             return "Detached from session."
         }
@@ -397,9 +474,9 @@ public final class ArrobaAppModel {
             return
         }
         let sourceAgent = session.focusedAgent ?? session.agents.first
-        let provider = sourceAgent?.provider ?? "opencode"
-        let model = modelOverride ?? sourceAgent?.model
-        let effort = sourceAgent?.effort
+        let provider = sourceAgent?.provider ?? selectedProviderID
+        let model = modelOverride ?? sourceAgent?.model ?? selectedModelID
+        let effort = sourceAgent?.effort ?? selectedVariantID
         let normalizedAlias = alias?.nilIfBlank
 
         await perform("Spawning agent") {
@@ -493,6 +570,79 @@ public final class ArrobaAppModel {
         statusMessage = "Selected session \(session.shortDisplayID)."
     }
 
+    public func transcriptEntries(for agent: AgentInstance?) -> [TranscriptEntry] {
+        guard let agent else { return transcriptEntries }
+        let scoped = transcriptEntries.filter { entry in
+            entry.agentID == nil || entry.agentID == agent.id || entry.agentID == agent.agentRef
+        }
+        return scoped.isEmpty ? transcriptEntries.filter { $0.agentID == nil } : scoped
+    }
+
+    public func setResponseLayout(_ layout: MultiAgentResponseLayout) {
+        responseLayout = layout
+        saveDraftConfiguration()
+        appendCommandNotice("View = \(layout.rawValue)")
+        promptDraft = ""
+    }
+
+    public func selectProvider(_ providerID: String) {
+        let normalized = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            connectionState = .failed
+            statusMessage = "usage: /provider <name>"
+            return
+        }
+        selectedProviderID = normalized
+        if let defaultModel = providerCatalog?.default[normalized] {
+            selectedModelID = defaultModel
+        }
+        saveDraftConfiguration()
+        appendCommandNotice("Provider = \(selectedProviderID)")
+        promptDraft = ""
+    }
+
+    public func selectModel(_ modelID: String) {
+        let normalized = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            connectionState = .failed
+            statusMessage = "usage: /model <id>"
+            return
+        }
+        selectedModelID = normalized
+        saveDraftConfiguration()
+        appendCommandNotice("Model = \(selectedModelID)")
+        promptDraft = ""
+    }
+
+    public func selectVariant(_ variantID: String) {
+        let normalized = variantID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            connectionState = .failed
+            statusMessage = "usage: /variant <name>"
+            return
+        }
+        selectedVariantID = normalized
+        saveDraftConfiguration()
+        appendCommandNotice("Variant = \(selectedVariantID)")
+        promptDraft = ""
+    }
+
+    public func cycleAgentFocusBackward() async {
+        guard let session = selectedSession else {
+            connectionState = .failed
+            statusMessage = "Select a session before cycling focus."
+            return
+        }
+        guard !session.agents.isEmpty else {
+            connectionState = .failed
+            statusMessage = "No agents available to focus."
+            return
+        }
+        let currentIndex = session.agents.firstIndex { $0.id == session.focusedAgentID } ?? 0
+        let previousIndex = currentIndex == 0 ? session.agents.count - 1 : currentIndex - 1
+        await focusAgent(session.agents[previousIndex])
+    }
+
     private func executeSlashCommand(_ rawCommand: String) async {
         let tokens = rawCommand
             .split(whereSeparator: { $0.isWhitespace })
@@ -503,14 +653,25 @@ public final class ArrobaAppModel {
             await cancelActivePrompt()
             clearCommandDraftOnSuccess()
         case "/waiting":
-            appendCommandNotice("Waiting room is already visible on iOS.")
-            promptDraft = ""
+            if activeAttachment != nil {
+                await detachActiveSession()
+                clearCommandDraftOnSuccess()
+            } else {
+                appendCommandNotice("Waiting room is visible.")
+                promptDraft = ""
+            }
         case "/session":
             await executeSessionCommand(Array(tokens.dropFirst()))
         case "/agent":
             await executeAgentCommand(Array(tokens.dropFirst()))
         case "/provider":
             await executeProviderCommand(Array(tokens.dropFirst()))
+        case "/model":
+            selectModel(tokens.dropFirst().joined(separator: " "))
+        case "/variant":
+            selectVariant(tokens.dropFirst().joined(separator: " "))
+        case "/view":
+            executeViewCommand(Array(tokens.dropFirst()))
         case "/mcp":
             await executeMcpCommand(Array(tokens.dropFirst()))
         case "/skill":
@@ -602,11 +763,25 @@ public final class ArrobaAppModel {
     private func executeProviderCommand(_ args: [String]) async {
         let action = args.first ?? "list"
         switch action {
-        case "list", "ls", "status":
+        case "list", "ls":
             await refreshProviderCatalog()
             if connectionState == .connected {
                 appendCommandNotice(providerCatalogText())
                 promptDraft = ""
+            }
+        case "status":
+            if let provider = args.dropFirst().first {
+                await refreshProviderAuthStatus(provider: provider)
+                if connectionState == .connected {
+                    appendCommandNotice(statusMessage)
+                    promptDraft = ""
+                }
+            } else {
+                await refreshProviderCatalog()
+                if connectionState == .connected {
+                    appendCommandNotice(providerCatalogText())
+                    promptDraft = ""
+                }
             }
         case "auth":
             let provider = args.dropFirst().first ?? providerCatalog?.connected.first ?? "codex"
@@ -615,10 +790,43 @@ public final class ArrobaAppModel {
                 appendCommandNotice(statusMessage)
                 promptDraft = ""
             }
+        case "login":
+            let provider = args.dropFirst().first ?? selectedProviderID
+            await startProviderLogin(provider: provider)
+            if connectionState == .connected {
+                appendCommandNotice(statusMessage)
+                promptDraft = ""
+            }
+        case "logout":
+            let provider = args.dropFirst().first ?? selectedProviderID
+            await logoutProvider(provider: provider)
+            if connectionState == .connected {
+                appendCommandNotice(statusMessage)
+                promptDraft = ""
+            }
+        case "reauth":
+            let provider = args.dropFirst().first ?? selectedProviderID
+            await logoutProvider(provider: provider)
+            guard connectionState == .connected else { return }
+            await startProviderLogin(provider: provider)
+            if connectionState == .connected {
+                appendCommandNotice(statusMessage)
+                promptDraft = ""
+            }
         default:
-            connectionState = .failed
-            statusMessage = "usage: /provider list|auth [provider-id]"
+            selectProvider(args.joined(separator: " "))
         }
+    }
+
+    private func executeViewCommand(_ args: [String]) {
+        guard let rawValue = args.first?.lowercased(),
+              let layout = MultiAgentResponseLayout(rawValue: rawValue)
+        else {
+            connectionState = .failed
+            statusMessage = "usage: /view split|individual"
+            return
+        }
+        setResponseLayout(layout)
     }
 
     private func executeSessionCommand(_ args: [String]) async {
@@ -655,6 +863,10 @@ public final class ArrobaAppModel {
             clearCommandDraftOnSuccess()
         case "detach":
             await detachActiveSession()
+            clearCommandDraftOnSuccess()
+        case "delete", "destroy":
+            let reference = args.dropFirst().joined(separator: " ").nilIfBlank
+            await deleteSession(reference: reference)
             clearCommandDraftOnSuccess()
         case "mode":
             await executeSessionModeCommand(Array(args.dropFirst()))
@@ -856,8 +1068,7 @@ public final class ArrobaAppModel {
         endpoint: URL,
         resumeFromEventID: Int64?
     ) {
-        eventTask?.cancel()
-        heartbeatMonitorTask?.cancel()
+        stopEventStream(resetCursor: false)
         eventStreamStartedAt = Date()
         eventStreamState = .connecting
         startHeartbeatMonitor()
@@ -885,7 +1096,11 @@ public final class ArrobaAppModel {
                     return
                 } catch {
                     eventStreamState = .disconnected
-                    statusMessage = "Event stream interrupted. Reconnecting with replay cursor."
+                    if case .working = connectionState {
+                        // Keep the active command's outcome visible; the stream loop will keep retrying.
+                    } else {
+                        statusMessage = "Event stream interrupted. Reconnecting with replay cursor."
+                    }
                     try? await Task.sleep(for: .seconds(1))
                     nextResumeFromEventID = lastEventID
                 }
@@ -922,6 +1137,18 @@ public final class ArrobaAppModel {
                 guard !Task.isCancelled else { return }
                 self?.evaluateHeartbeatStaleness()
             }
+        }
+    }
+
+    private func stopEventStream(resetCursor: Bool) {
+        eventTask?.cancel()
+        eventTask = nil
+        heartbeatMonitorTask?.cancel()
+        heartbeatMonitorTask = nil
+        eventStreamStartedAt = nil
+        if resetCursor {
+            lastEventID = nil
+            lastHeartbeatAt = nil
         }
     }
 
@@ -976,6 +1203,15 @@ public final class ArrobaAppModel {
     }
 
     private func appendTranscript(kind: TranscriptEntry.Kind, agentID: String?, text: String) {
+        guard !text.isEmpty else { return }
+        if kind.mergesAdjacentOutput,
+           let lastIndex = transcriptEntries.indices.last,
+           transcriptEntries[lastIndex].kind == kind,
+           transcriptEntries[lastIndex].agentID == agentID
+        {
+            transcriptEntries[lastIndex].text += text
+            return
+        }
         transcriptEntries.append(
             TranscriptEntry(kind: kind, agentID: agentID, text: text)
         )
@@ -1039,6 +1275,16 @@ public final class ArrobaAppModel {
                 ?? "\(status.provider): \(status.authState)",
             status.detectedVersion.map { "version \($0)" },
             status.loginHint,
+        ]
+        .compactMap { $0?.nilIfBlank }
+        .joined(separator: " • ")
+    }
+
+    private func providerLoginText(_ login: ProviderLoginStart) -> String {
+        [
+            "\(login.provider): \(login.loginKind)",
+            login.userCode.map { "code \($0)" },
+            login.verificationURL ?? login.authURL,
         ]
         .compactMap { $0?.nilIfBlank }
         .joined(separator: " • ")
@@ -1152,8 +1398,9 @@ public final class ArrobaAppModel {
             guard case let .sessionHistory(entries) = response else {
                 return
             }
-            transcriptEntries = entries.map { entry in
-                TranscriptEntry(
+            transcriptEntries = []
+            for entry in entries {
+                appendTranscript(
                     kind: TranscriptEntry.Kind(historyKind: entry.entry.kind),
                     agentID: entry.entry.agentID,
                     text: entry.entry.text
@@ -1310,6 +1557,10 @@ public final class ArrobaAppModel {
         defaults.set(next, forKey: DefaultsKey.clientID)
         return next
     }
+
+    private static func defaultWorkspacePath() -> String {
+        ProcessInfo.processInfo.environment["ARROBA_IOS_DEFAULT_WORKSPACE"]?.nilIfBlank ?? ""
+    }
 }
 
 public enum AgentExecutionMode: String, CaseIterable, Equatable, Sendable {
@@ -1322,11 +1573,16 @@ public enum AgentPermissionLevel: String, CaseIterable, Equatable, Sendable {
     case yolo
 }
 
+public enum MultiAgentResponseLayout: String, CaseIterable, Equatable, Sendable {
+    case individual
+    case split
+}
+
 public struct TranscriptEntry: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let kind: Kind
     public let agentID: String?
-    public let text: String
+    public var text: String
     public let createdAt: Date
 
     public init(
@@ -1386,6 +1642,15 @@ public struct TranscriptEntry: Identifiable, Equatable, Sendable {
                 self = .notice
             default:
                 self = .output
+            }
+        }
+
+        var mergesAdjacentOutput: Bool {
+            switch self {
+            case .prompt, .output, .reasoning, .tool:
+                true
+            case .error, .status, .notice, .completion:
+                false
             }
         }
     }
@@ -1550,5 +1815,9 @@ private enum DefaultsKey {
     static let kernelURL = "dev.arroba.ios.kernelURL"
     static let workspacePath = "dev.arroba.ios.workspacePath"
     static let worktreePath = "dev.arroba.ios.worktreePath"
+    static let providerID = "dev.arroba.ios.providerID"
+    static let modelID = "dev.arroba.ios.modelID"
+    static let variantID = "dev.arroba.ios.variantID"
+    static let responseLayout = "dev.arroba.ios.responseLayout"
     static let clientID = "dev.arroba.ios.clientID"
 }

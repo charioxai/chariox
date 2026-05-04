@@ -1622,7 +1622,7 @@ impl StateBackend {
 impl Default for ManagedIoConfig {
     fn default() -> Self {
         Self {
-            mode: ManagedIoMode::Required,
+            mode: ManagedIoMode::Unrestricted,
         }
     }
 }
@@ -1663,7 +1663,7 @@ fn legacy_managed_io_mode(modes: BTreeMap<String, ManagedIoMode>) -> ManagedIoMo
         return mode;
     }
     let Some(first) = modes.values().copied().next() else {
-        return ManagedIoMode::Required;
+        return ManagedIoMode::Unrestricted;
     };
     if modes.values().all(|mode| *mode == first) {
         first
@@ -2562,12 +2562,12 @@ injection = { kind = "query", name = "token" }
     }
 
     #[test]
-    fn managed_io_policy_defaults_to_required() {
+    fn managed_io_policy_defaults_to_unrestricted() {
         let config = DaemonConfig::new("daemon", "machine", "tester");
 
-        assert!(config.provider_requires_managed_io("codex"));
-        assert!(config.provider_requires_managed_io("opencode"));
-        assert!(config.provider_requires_managed_io("default"));
+        assert!(!config.provider_requires_managed_io("codex"));
+        assert!(!config.provider_requires_managed_io("opencode"));
+        assert!(!config.provider_requires_managed_io("default"));
     }
 
     #[test]
@@ -2638,7 +2638,7 @@ injection = { kind = "query", name = "token" }
                 ..
             }
         ));
-        assert!(config.provider_requires_managed_io("codex"));
+        assert!(!config.provider_requires_managed_io("codex"));
     }
 
     #[test]

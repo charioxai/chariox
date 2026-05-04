@@ -41,6 +41,15 @@ public enum CommandCenterCatalog {
         if trimmed.hasPrefix("/provider") {
             return filter(providerItems, query: trimmed.removingCommandPrefix("/provider"))
         }
+        if trimmed.hasPrefix("/model") {
+            return filter(modelItems, query: trimmed.removingCommandPrefix("/model"))
+        }
+        if trimmed.hasPrefix("/variant") {
+            return filter(variantItems, query: trimmed.removingCommandPrefix("/variant"))
+        }
+        if trimmed.hasPrefix("/view") {
+            return filter(viewItems, query: trimmed.removingCommandPrefix("/view"))
+        }
         if trimmed.hasPrefix("/mcp") {
             return filter(mcpItems, query: trimmed.removingCommandPrefix("/mcp"))
         }
@@ -73,6 +82,27 @@ public enum CommandCenterCatalog {
             label: "/provider",
             detail: "Show connected providers and model inventory",
             value: "/provider ",
+            submitsImmediately: false
+        ),
+        CommandCenterItem(
+            id: "model",
+            label: "/model",
+            detail: "Select the active model used for new agents",
+            value: "/model ",
+            submitsImmediately: false
+        ),
+        CommandCenterItem(
+            id: "variant",
+            label: "/variant",
+            detail: "Select the active model variant used for new agents",
+            value: "/variant ",
+            submitsImmediately: false
+        ),
+        CommandCenterItem(
+            id: "view",
+            label: "/view",
+            detail: "Switch agent panes between individual and split",
+            value: "/view ",
             submitsImmediately: false
         ),
         CommandCenterItem(
@@ -149,6 +179,13 @@ public enum CommandCenterCatalog {
             submitsImmediately: true
         ),
         CommandCenterItem(
+            id: "session-delete",
+            label: "delete",
+            detail: "Delete the selected session or a typed id/alias",
+            value: "/session delete ",
+            submitsImmediately: false
+        ),
+        CommandCenterItem(
             id: "session-mode",
             label: "mode",
             detail: "Show or set session default agent mode",
@@ -218,6 +255,20 @@ public enum CommandCenterCatalog {
 
     private static let providerItems: [CommandCenterItem] = [
         CommandCenterItem(
+            id: "provider-opencode",
+            label: "opencode",
+            detail: "Select OpenCode for new agents",
+            value: "/provider opencode",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "provider-codex",
+            label: "codex",
+            detail: "Select Codex for new agents",
+            value: "/provider codex",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
             id: "provider-list",
             label: "list",
             detail: "Load connected providers and model counts",
@@ -237,6 +288,78 @@ public enum CommandCenterCatalog {
             detail: "Show auth state for a provider id",
             value: "/provider auth ",
             submitsImmediately: false
+        ),
+        CommandCenterItem(
+            id: "provider-login",
+            label: "login",
+            detail: "Start auth flow for a provider id",
+            value: "/provider login ",
+            submitsImmediately: false
+        ),
+        CommandCenterItem(
+            id: "provider-logout",
+            label: "logout",
+            detail: "Sign out a provider id",
+            value: "/provider logout ",
+            submitsImmediately: false
+        ),
+        CommandCenterItem(
+            id: "provider-reauth",
+            label: "reauth",
+            detail: "Restart auth flow for a provider id",
+            value: "/provider reauth ",
+            submitsImmediately: false
+        ),
+    ]
+
+    private static let modelItems: [CommandCenterItem] = [
+        CommandCenterItem(
+            id: "model-default",
+            label: "default",
+            detail: "Use the provider default model",
+            value: "/model default",
+            submitsImmediately: true
+        ),
+    ]
+
+    private static let variantItems: [CommandCenterItem] = [
+        CommandCenterItem(
+            id: "variant-low",
+            label: "low",
+            detail: "Lower reasoning or effort variant",
+            value: "/variant low",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "variant-medium",
+            label: "medium",
+            detail: "Balanced reasoning or effort variant",
+            value: "/variant medium",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "variant-high",
+            label: "high",
+            detail: "Higher reasoning or effort variant",
+            value: "/variant high",
+            submitsImmediately: true
+        ),
+    ]
+
+    private static let viewItems: [CommandCenterItem] = [
+        CommandCenterItem(
+            id: "view-individual",
+            label: "individual",
+            detail: "Show one focused agent pane",
+            value: "/view individual",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "view-split",
+            label: "split",
+            detail: "Show multiple agent panes together",
+            value: "/view split",
+            submitsImmediately: true
         ),
     ]
 

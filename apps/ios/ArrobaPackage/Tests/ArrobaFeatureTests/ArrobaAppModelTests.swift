@@ -3,6 +3,16 @@ import Testing
 @testable import ArrobaFeature
 
 @MainActor
+@Test func defaultWorkspacePathsAreNotUserSpecific() {
+    let defaults = UserDefaults(suiteName: "ArrobaAppModelTests.defaults")!
+    defaults.removePersistentDomain(forName: "ArrobaAppModelTests.defaults")
+    let model = ArrobaAppModel(client: SequencedMockKernelClient(responses: []), defaults: defaults)
+
+    #expect(model.workspacePath.isEmpty)
+    #expect(model.worktreePath.isEmpty)
+}
+
+@MainActor
 @Test func refreshSessionsSelectsMostRecentSession() async {
     let client = MockKernelClient(response: .sessionsListed([
         RuntimeSession.fixture(id: "older-session", lastUsedAtMs: 100),
@@ -58,6 +68,71 @@ import Testing
     #expect(model.lastEventID == 10)
     #expect(model.lastHeartbeatAt != nil)
     #expect(model.transcriptEntries.last?.text == "hello")
+}
+
+@MainActor
+@Test func terminalOutputChunksCoalesceByAgentAndKind() async {
+    let session = RuntimeSession.fixture(id: "session-1", lastUsedAtMs: 200)
+    let client = MockKernelClient(
+        response: .sessionAttached(RuntimeAttachment(id: "attachment-1", sessionID: session.id)),
+        eventFrames: [
+            KernelEventFrame(
+                type: "event",
+                eventID: 1,
+                event: .terminalOutput([
+                    TerminalOutputRecord(
+                        agentID: "agent-1",
+                        kind: "provider_output",
+                        mergeKey: nil,
+                        bytes: Array("IOS".utf8)
+                    ),
+                ])
+            ),
+            KernelEventFrame(
+                type: "event",
+                eventID: 2,
+                event: .terminalOutput([
+                    TerminalOutputRecord(
+                        agentID: "agent-1",
+                        kind: "provider_output",
+                        mergeKey: nil,
+                        bytes: Array("_KERNEL_CONNECTED".utf8)
+                    ),
+                ])
+            ),
+        ]
+    )
+    let defaults = UserDefaults(suiteName: "ArrobaAppModelTests.coalesce")!
+    defaults.removePersistentDomain(forName: "ArrobaAppModelTests.coalesce")
+    let model = ArrobaAppModel(client: client, defaults: defaults)
+    model.selectSession(session)
+
+    await model.attachSelectedSession()
+    try? await Task.sleep(for: .milliseconds(10))
+
+    #expect(model.transcriptEntries.count == 1)
+    #expect(model.transcriptEntries.last?.text == "IOS_KERNEL_CONNECTED")
+}
+
+@MainActor
+@Test func failedDetachKeepsLocalAttachmentState() async {
+    let session = RuntimeSession.fixture(id: "session-1", lastUsedAtMs: 200)
+    let client = SequencedMockKernelClient(responses: [
+        .sessionAttached(RuntimeAttachment(id: "attachment-1", sessionID: session.id)),
+        .sessionHistory([]),
+        .unknown("DetachFailed"),
+    ])
+    let defaults = UserDefaults(suiteName: "ArrobaAppModelTests.detachFailure")!
+    defaults.removePersistentDomain(forName: "ArrobaAppModelTests.detachFailure")
+    let model = ArrobaAppModel(client: client, defaults: defaults)
+    model.selectSession(session)
+
+    await model.attachSelectedSession()
+    await model.detachActiveSession()
+
+    #expect(model.connectionState == .failed)
+    #expect(model.activeAttachment?.id == "attachment-1")
+    #expect(model.subscribedSessionID == "session-1")
 }
 
 @MainActor
@@ -130,6 +205,26 @@ import Testing
     #expect(model.promptDraft.isEmpty)
     #expect(model.sessions.map(\.id) == ["session-1"])
     #expect(model.transcriptEntries.last?.text.contains("Sessions") == true)
+}
+
+@MainActor
+@Test func slashSessionDeleteRemovesSelectedSession() async {
+    let session = RuntimeSession.fixture(id: "session-1", lastUsedAtMs: 200)
+    let client = SequencedMockKernelClient(responses: [
+        .sessionDeleted(session),
+    ])
+    let defaults = UserDefaults(suiteName: "ArrobaAppModelTests.command.sessionDelete")!
+    defaults.removePersistentDomain(forName: "ArrobaAppModelTests.command.sessionDelete")
+    let model = ArrobaAppModel(client: client, defaults: defaults)
+    model.selectSession(session)
+    model.promptDraft = "/session delete"
+
+    await model.submitPrompt()
+
+    #expect(model.connectionState == .connected)
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.sessions.isEmpty)
+    #expect(model.statusMessage == "Deleted session \(session.shortDisplayID).")
 }
 
 @MainActor
@@ -353,6 +448,62 @@ import Testing
 }
 
 @MainActor
+@Test func slashProviderLoginAndLogoutUseKernelRequests() async {
+    let login = ProviderLoginStart(
+        provider: "codex",
+        loginKind: "device",
+        loginID: "login-1",
+        authURL: nil,
+        verificationURL: "https://example.com/activate",
+        userCode: "ABCD-EFGH"
+    )
+    let client = SequencedMockKernelClient(responses: [
+        .providerLoginStarted(login),
+        .providerLoggedOut("codex"),
+    ])
+    let defaults = UserDefaults(suiteName: "ArrobaAppModelTests.providerLoginLogout")!
+    defaults.removePersistentDomain(forName: "ArrobaAppModelTests.providerLoginLogout")
+    let model = ArrobaAppModel(client: client, defaults: defaults)
+    model.promptDraft = "/provider login codex"
+
+    await model.submitPrompt()
+    #expect(model.connectionState == .connected)
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text.contains("ABCD-EFGH") == true)
+
+    model.promptDraft = "/provider logout codex"
+    await model.submitPrompt()
+    #expect(model.connectionState == .connected)
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text == "codex: logged out")
+}
+
+@MainActor
+@Test func slashModelVariantAndViewPersistClientSelection() async {
+    let defaults = UserDefaults(suiteName: "ArrobaAppModelTests.clientSelection")!
+    defaults.removePersistentDomain(forName: "ArrobaAppModelTests.clientSelection")
+    let model = ArrobaAppModel(client: SequencedMockKernelClient(responses: []), defaults: defaults)
+
+    model.promptDraft = "/provider codex"
+    await model.submitPrompt()
+    model.promptDraft = "/model gpt-5.4"
+    await model.submitPrompt()
+    model.promptDraft = "/variant high"
+    await model.submitPrompt()
+    model.promptDraft = "/view split"
+    await model.submitPrompt()
+
+    #expect(model.selectedProviderID == "codex")
+    #expect(model.selectedModelID == "gpt-5.4")
+    #expect(model.selectedVariantID == "high")
+    #expect(model.responseLayout == .split)
+    #expect(defaults.string(forKey: "dev.arroba.ios.providerID") == "codex")
+    #expect(defaults.string(forKey: "dev.arroba.ios.modelID") == "gpt-5.4")
+    #expect(defaults.string(forKey: "dev.arroba.ios.variantID") == "high")
+    #expect(defaults.string(forKey: "dev.arroba.ios.responseLayout") == "split")
+}
+
+@MainActor
 @Test func slashMcpListLoadsServersAndWritesNotice() async {
     let client = SequencedMockKernelClient(responses: [
         .mcpServersListed([
@@ -489,6 +640,9 @@ private extension ProviderCatalog {
     #expect(CommandCenterCatalog.items(matching: "/agent", session: session).map(\.id).contains("agent-focus"))
     #expect(CommandCenterCatalog.items(matching: "/agent focus bui", session: session).first?.value == "/agent focus agent-1")
     #expect(CommandCenterCatalog.items(matching: "/workspace", session: session).map(\.id).contains("workspace-set"))
+    #expect(CommandCenterCatalog.items(matching: "/", session: session).map(\.id).contains("model"))
+    #expect(CommandCenterCatalog.items(matching: "/provider", session: session).map(\.id).contains("provider-login"))
+    #expect(CommandCenterCatalog.items(matching: "/view", session: session).map(\.id).contains("view-split"))
 }
 
 private struct MockKernelClient: KernelClientProtocol {

@@ -43,8 +43,15 @@ The app defaults to:
 ws://127.0.0.1:43118/kernel
 ```
 
-The default workspace/worktree path is `/Users/miguel/arroba`; it is editable
-from the waiting-room UI.
+The iOS Simulator can reach the Mac's local kernel through `127.0.0.1`. A
+physical device cannot use that loopback URL; point it at a kernel bound to a
+reachable host, or use the Cloud/relay path when that client flow is enabled.
+The kernel bind host and port come from `ARROBA_KERNEL_HOST` and
+`ARROBA_KERNEL_PORT`; defaults are `127.0.0.1` and `43118`.
+
+Workspace/worktree paths default to empty unless
+`ARROBA_IOS_DEFAULT_WORKSPACE` is set for the app process. Set them from the
+waiting-room UI or with `/workspace set <path>` before creating a session.
 
 Current local-kernel flow:
 

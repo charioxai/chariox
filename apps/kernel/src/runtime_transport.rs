@@ -25,7 +25,9 @@ use crate::local::{LocalDaemonRequest, RelayStatus, RemoteMachineRecord};
 use crate::provider::RuntimeProviderRun;
 use crate::runtime::command::{KernelCommand, KernelCommandSource};
 use crate::runtime::event_log::{EventLog, ReplayGap, ReplayOutcome};
-use crate::runtime::projection::{SessionSnapshotProjection, TransportHealthStore};
+use crate::runtime::projection::{
+    AgentRuntimeActivity, SessionSnapshotProjection, TransportHealthStore,
+};
 use crate::runtime::router::CommandRouter;
 use crate::session::RuntimeSession;
 use crate::terminal::{
@@ -162,6 +164,7 @@ pub(crate) enum KernelEvent {
     SessionSnapshot {
         session: Box<RuntimeSession>,
         provider_run: Box<Option<RuntimeProviderRun>>,
+        agent_activity: Box<std::collections::BTreeMap<String, AgentRuntimeActivity>>,
     },
     SessionUnavailable {
         session_id: String,
@@ -830,8 +833,18 @@ async fn handle_incoming_payload(
                     }))),
                     error: None,
                 },
-                if subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE) { None } else { Some(&session_id) },
-                if subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE) { None } else { Some(&attachment_id) },
+                if subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE)
+                {
+                    None
+                } else {
+                    Some(&session_id)
+                },
+                if subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE)
+                {
+                    None
+                } else {
+                    Some(&attachment_id)
+                },
             );
         }
         KernelIncomingFrame::Unsubscribe { request_id } => {
@@ -886,7 +899,7 @@ async fn run_subscription_loop(
         .await;
         return;
     }
-    let mut previous_snapshot: Option<(RuntimeSession, Option<RuntimeProviderRun>)> = None;
+    let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
     let mut previous_relay_status: Option<RelayStatus> = None;
     let mut previous_remote_machines: Option<Vec<RemoteMachineRecord>> = None;
     let mut previous_inventory_version: Option<String> = None;
@@ -974,8 +987,9 @@ async fn run_subscription_loop(
                         &close_tx,
                         &close_requested,
                         KernelEvent::SessionSnapshot {
-                            session: Box::new(snapshot.0),
-                            provider_run: Box::new(snapshot.1),
+                            session: Box::new(snapshot.session),
+                            provider_run: Box::new(snapshot.provider_run),
+                            agent_activity: Box::new(snapshot.agent_activity),
                         },
                         Some(&event_stream_id),
                         Some(&subscription.session_id),
@@ -1165,7 +1179,7 @@ pub(crate) enum WatchResult {
         records: Vec<TerminalOutputRecord>,
         notices: Vec<RuntimeNoticeRecord>,
         completions: Vec<AssistantMessageCompletionRecord>,
-        snapshot: Box<Option<(RuntimeSession, Option<RuntimeProviderRun>)>>,
+        snapshot: Box<Option<SessionSnapshotProjection>>,
     },
     Unavailable(String),
 }
@@ -1175,7 +1189,7 @@ pub(crate) fn watch_subscription_state(
     session_id: &str,
     attachment_id: &str,
     tick: u64,
-    previous_snapshot: Option<(RuntimeSession, Option<RuntimeProviderRun>)>,
+    previous_snapshot: Option<SessionSnapshotProjection>,
 ) -> WatchResult {
     if crate::app::KernelSessionReadService::new(app)
         .ensure_attachment_in_session(session_id, attachment_id)
@@ -1409,15 +1423,16 @@ async fn emit_replay_gap_snapshot(
         build_session_snapshot(&mut app, session_id)
     };
     match snapshot {
-        Ok((session, provider_run)) => {
+        Ok(projection) => {
             let _ = emit_kernel_event(
                 runtime,
                 outgoing_tx,
                 close_tx,
                 close_requested,
                 KernelEvent::SessionSnapshot {
-                    session: Box::new(session),
-                    provider_run: Box::new(provider_run),
+                    session: Box::new(projection.session),
+                    provider_run: Box::new(projection.provider_run),
+                    agent_activity: Box::new(projection.agent_activity),
                 },
                 Some(&event_stream_id),
                 Some(session_id),
@@ -1728,9 +1743,8 @@ fn kernel_error(code: &str, error: &DaemonError, retryable: bool) -> KernelTrans
 fn build_session_snapshot(
     app: &mut DaemonApp,
     session_id: &str,
-) -> Result<(RuntimeSession, Option<RuntimeProviderRun>), DaemonError> {
-    let projection = SessionSnapshotProjection::from_daemon_app(app, session_id, 0)?;
-    Ok((projection.session, projection.provider_run))
+) -> Result<SessionSnapshotProjection, DaemonError> {
+    SessionSnapshotProjection::from_daemon_app(app, session_id, 0)
 }
 
 fn serialize_frame(frame: &KernelOutgoingFrame) -> Result<String, DaemonError> {
