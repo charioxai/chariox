@@ -7,9 +7,9 @@ use crate::attachment::ClientCapabilityLevel;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonClient;
 use crate::local::{
-    AttachToSessionRequest, EndSessionRequest, GetSessionStateRequest, LaunchProviderRunRequest,
-    LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest, ResizeTerminalRequest,
-    SubmitPromptRequest,
+    AttachToSessionRequest, EndSessionRequest, GetSessionStateRequest,
+    GetWaitingRoomPublicSnapshotRequest, LaunchProviderRunRequest, LocalDaemonRequest,
+    LocalDaemonResponse, PumpTerminalOutputRequest, ResizeTerminalRequest, SubmitPromptRequest,
 };
 use crate::session::CreateSessionRequest;
 
@@ -19,6 +19,8 @@ pub struct LocalHarnessReport {
     pub prompt_attachment_id: String,
     pub second_attachment_id: String,
     pub provider_run_id: String,
+    pub waiting_room_snapshot_schema_version: u32,
+    pub waiting_room_public_agent_count: usize,
     pub output_preview: String,
 }
 
@@ -87,6 +89,22 @@ pub fn run_local_harness(app: DaemonApp) -> Result<LocalHarnessReport, DaemonErr
     }))?;
 
     let output_preview = wait_for_output(&client, session.id(), prompt_source.id())?;
+    let (waiting_room_snapshot_schema_version, waiting_room_public_agent_count) = match client
+        .send(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+            GetWaitingRoomPublicSnapshotRequest,
+        ))? {
+        LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => {
+            let public_session = snapshot
+                .sessions
+                .iter()
+                .find(|candidate| candidate.id == session.id())
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session.id().to_string(),
+                })?;
+            (snapshot.schema_version, public_session.agents.len())
+        }
+        _ => unreachable!("public snapshot must return WaitingRoomPublicSnapshot"),
+    };
 
     let _ = client.send(LocalDaemonRequest::EndSession(EndSessionRequest {
         session_id: session.id().to_string(),
@@ -97,6 +115,8 @@ pub fn run_local_harness(app: DaemonApp) -> Result<LocalHarnessReport, DaemonErr
         prompt_attachment_id: prompt_source.id().to_string(),
         second_attachment_id: second.id().to_string(),
         provider_run_id: provider_run.id().to_string(),
+        waiting_room_snapshot_schema_version,
+        waiting_room_public_agent_count,
         output_preview,
     })
 }

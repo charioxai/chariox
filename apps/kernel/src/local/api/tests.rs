@@ -386,7 +386,7 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
 #[test]
 fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
     let harness = LocalRouterTestHarness::new();
-    let created = match harness
+    let (created, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new(
                 "/tmp/arroba-public-snapshot-workspace",
@@ -395,7 +395,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         other => panic!("unexpected response: {other:?}"),
     };
 
@@ -409,7 +409,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         other => panic!("unexpected response: {other:?}"),
     };
 
-    assert_eq!(snapshot.schema_version, 1);
+    assert_eq!(snapshot.schema_version, 2);
     assert!(snapshot.generated_at_ms > 0);
     let session = snapshot
         .sessions
@@ -427,6 +427,11 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
     assert_eq!(session.activity.active_prompt_count, 0);
     assert_eq!(session.activity.queued_prompt_count, 0);
     assert_eq!(session.activity.error_agent_count, 0);
+    assert_eq!(session.agents.len(), 1);
+    assert_eq!(session.agents[0].id, agent.id());
+    assert_eq!(session.agents[0].provider, agent.primary_provider());
+    assert_eq!(session.agents[0].worktree_id, session.worktree_id);
+    assert!(session.workflows.is_empty());
 
     let serialized =
         serde_json::to_value(session).expect("public session summary should serialize");
@@ -434,13 +439,167 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         serialized.get("attachment_ids").is_none(),
         "public summary must not expose CLI attachment ids"
     );
+    assert!(serialized.pointer("/agents/0/id").is_some());
+    assert!(serialized.pointer("/agents/0/provider").is_some());
     assert!(
-        serialized.get("agents").is_none(),
-        "public summary must not expose agent runtime state"
+        serialized
+            .pointer("/agents/0/provider_resume_state")
+            .is_none()
     );
+    assert!(serialized.pointer("/agents/0/active_prompt").is_none());
     assert!(
         serialized.get("active_prompt").is_none(),
         "public summary must not expose active prompt internals"
+    );
+}
+
+#[test]
+fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, first_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                "/tmp/arroba-public-workflow-workspace",
+                "/tmp/arroba-public-workflow-worktree",
+            ),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let second_agent = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session.id().to_string(),
+            alias: Some("second".to_string()),
+            provider: Some("dev-stub".to_string()),
+            model: Some("model-b".to_string()),
+            effort: Some("low".to_string()),
+            execution_mode: None,
+            permission_level: Some(crate::provider::AgentPermissionLevel::Required),
+            worktree_id: None,
+            machine_ref: None,
+            worktree_placement: None,
+        }))
+        .expect("second agent should spawn")
+    {
+        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let workflow = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: session.id().to_string(),
+            alias: Some("review".to_string()),
+        }))
+        .expect("workflow should create")
+    {
+        LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let first_node = match harness
+        .dispatch(LocalDaemonRequest::AddWorkflowNode(
+            AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: first_agent.id().to_string(),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("first workflow node should add")
+    {
+        LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let second_node = match harness
+        .dispatch(LocalDaemonRequest::AddWorkflowNode(
+            AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: second_agent.id().to_string(),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("second workflow node should add")
+    {
+        LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    harness
+        .dispatch(LocalDaemonRequest::AddWorkflowEdge(
+            AddWorkflowEdgeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                from_node_id: first_node.id().to_string(),
+                to_node_id: second_node.id().to_string(),
+                output_schema_ref: None,
+                validation_policy: None,
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("workflow edge should add");
+    harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                entry_node_id: first_node.id().to_string(),
+                alias: Some("start".to_string()),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("workflow endpoint should create");
+
+    let snapshot = match harness
+        .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+            GetWaitingRoomPublicSnapshotRequest,
+        ))
+        .expect("waiting room public snapshot should succeed")
+    {
+        LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let summary = snapshot
+        .sessions
+        .iter()
+        .find(|candidate| candidate.id == session.id())
+        .expect("created session should be in public snapshot");
+    assert_eq!(summary.agents.len(), 2);
+    assert_eq!(summary.agents[0].id, first_agent.id());
+    assert_eq!(summary.agents[1].id, second_agent.id());
+    assert_eq!(summary.agents[1].alias.as_deref(), Some("second"));
+    assert_eq!(summary.agents[1].provider, "dev-stub");
+    assert_eq!(summary.agents[1].model.as_deref(), Some("model-b"));
+    assert_eq!(summary.agents[1].variant.as_deref(), Some("low"));
+    assert_eq!(summary.agents[1].permission.as_deref(), Some("required"));
+    assert_eq!(summary.workflows.len(), 1);
+    assert_eq!(summary.workflows[0].id, workflow.id());
+    assert_eq!(summary.workflows[0].alias.as_deref(), Some("review"));
+    assert_eq!(summary.workflows[0].nodes.len(), 2);
+    assert_eq!(summary.workflows[0].edges.len(), 1);
+    assert_eq!(summary.workflows[0].endpoints.len(), 1);
+
+    let serialized =
+        serde_json::to_value(summary).expect("public session summary should serialize");
+    assert!(
+        serialized
+            .pointer("/workflows/0/nodes/0/agent_id")
+            .is_some()
+    );
+    assert!(
+        serialized
+            .pointer("/workflows/0/edges/0/from_node_id")
+            .is_some()
+    );
+    assert!(
+        serialized
+            .pointer("/workflows/0/endpoints/0/entry_node_id")
+            .is_some()
+    );
+    assert!(
+        serialized
+            .pointer("/workflows/0/nodes/0/instructions")
+            .is_none(),
+        "public workflow summary must not expose private node instructions"
     );
 }
 

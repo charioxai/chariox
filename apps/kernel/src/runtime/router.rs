@@ -62,8 +62,11 @@ use crate::local::{
     TeardownProviderProcessesRequest, TerminalPairingLinkRecord, TerminalRecord, TerminalType,
     UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
     UpdateMcpServerRequest, UpdateSkillRequest, UserConfigMutationEffect,
-    UserConfigProviderReloadSummary, WaitingRoomLaunchTarget, WaitingRoomPublicSessionSummary,
-    WaitingRoomPublicSnapshot, WaitingRoomSessionActivitySummary, WorkspaceWorktreeRecord,
+    UserConfigProviderReloadSummary, WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary,
+    WaitingRoomPublicItemActivitySummary, WaitingRoomPublicSessionSummary,
+    WaitingRoomPublicSnapshot, WaitingRoomPublicWorkflowEdgeSummary,
+    WaitingRoomPublicWorkflowEndpointSummary, WaitingRoomPublicWorkflowNodeSummary,
+    WaitingRoomPublicWorkflowSummary, WaitingRoomSessionActivitySummary, WorkspaceWorktreeRecord,
 };
 use crate::provider::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
@@ -2136,7 +2139,7 @@ impl CommandRouter {
             launch_target.as_ref(),
         )?;
         Ok(WaitingRoomPublicSnapshot {
-            schema_version: 1,
+            schema_version: 2,
             inventory_version,
             generated_at_ms,
             sessions,
@@ -5225,7 +5228,7 @@ fn waiting_room_session_summaries(
                 alias: session.alias().map(ToOwned::to_owned),
                 workspace_id: workspace_id.clone(),
                 worktree_id: worktree_id.clone(),
-                workspace_label,
+                workspace_label: workspace_label.clone(),
                 directory: Some(workspace_id),
                 worktree_label,
                 created_at_ms: session.created_at_ms(),
@@ -5233,9 +5236,172 @@ fn waiting_room_session_summaries(
                 status: session.status(),
                 connected_cli_count: session.attachment_ids().len(),
                 activity: waiting_room_session_activity_summary(&session),
+                agents: waiting_room_public_agent_summaries(
+                    &session,
+                    workspace_label.clone(),
+                    &mut worktree_labels,
+                ),
+                workflows: waiting_room_public_workflow_summaries(&session),
             }
         })
         .collect()
+}
+
+fn waiting_room_public_agent_summaries(
+    session: &crate::session::RuntimeSession,
+    workspace_label: Option<String>,
+    worktree_labels: &mut HashMap<(String, String), Option<String>>,
+) -> Vec<WaitingRoomPublicAgentSummary> {
+    let workspace_id = session.workspace_id().to_string();
+    let mut agents = session
+        .agents()
+        .iter()
+        .map(|agent| {
+            let worktree_id = agent
+                .worktree_id()
+                .unwrap_or_else(|| session.worktree_id())
+                .to_string();
+            let worktree_label = worktree_labels
+                .entry((workspace_id.clone(), worktree_id.clone()))
+                .or_insert_with(|| {
+                    let branch = detect_git_branch(&worktree_id).ok();
+                    worktree_display_label(&worktree_id, &workspace_id, branch.as_deref())
+                })
+                .clone();
+            WaitingRoomPublicAgentSummary {
+                id: agent.id().to_string(),
+                alias: agent.alias().map(ToOwned::to_owned),
+                created_at_ms: agent.created_at_ms(),
+                provider: agent.primary_provider().to_string(),
+                model: agent.primary_model().map(ToOwned::to_owned),
+                variant: agent.primary_effort().map(ToOwned::to_owned),
+                permission: waiting_room_agent_permission(session, agent),
+                workspace_id: workspace_id.clone(),
+                worktree_id,
+                workspace_label: workspace_label.clone(),
+                directory: Some(workspace_id.clone()),
+                worktree_label,
+                activity: waiting_room_agent_activity_summary(session, agent),
+            }
+        })
+        .collect::<Vec<_>>();
+    agents.sort_by(|left, right| {
+        left.created_at_ms
+            .cmp(&right.created_at_ms)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    agents
+}
+
+fn waiting_room_agent_permission(
+    session: &crate::session::RuntimeSession,
+    agent: &crate::agent::AgentInstance,
+) -> Option<String> {
+    agent
+        .permission_level_override()
+        .or(session.agent_defaults().permission_level)
+        .or_else(|| {
+            session
+                .config_state()
+                .values()
+                .get("agents.permissions")
+                .and_then(|value| crate::provider::AgentPermissionLevel::parse(value.as_str()))
+        })
+        .map(|permission| permission.as_str().to_string())
+}
+
+fn waiting_room_agent_activity_summary(
+    session: &crate::session::RuntimeSession,
+    agent: &crate::agent::AgentInstance,
+) -> WaitingRoomPublicItemActivitySummary {
+    let active_prompt_count = usize::from(session.active_prompt_for_agent(agent.id()).is_some());
+    let queued_prompt_count = session
+        .queued_prompts_for_agent(agent.id())
+        .map(|queued| queued.len())
+        .unwrap_or(0);
+    let error = agent.state() == AgentState::Error;
+    WaitingRoomPublicItemActivitySummary {
+        working: agent.state() == AgentState::Working
+            || agent.is_processing()
+            || active_prompt_count > 0,
+        active_prompt_count,
+        queued_prompt_count,
+        error,
+    }
+}
+
+fn waiting_room_public_workflow_summaries(
+    session: &crate::session::RuntimeSession,
+) -> Vec<WaitingRoomPublicWorkflowSummary> {
+    let mut workflows = session
+        .workflows()
+        .iter()
+        .map(|workflow| WaitingRoomPublicWorkflowSummary {
+            id: workflow.id().to_string(),
+            alias: workflow.alias().map(ToOwned::to_owned),
+            created_at_ms: workflow.created_at_ms(),
+            activity: waiting_room_workflow_activity_summary(session, workflow.id()),
+            nodes: workflow
+                .nodes()
+                .iter()
+                .map(|node| WaitingRoomPublicWorkflowNodeSummary {
+                    id: node.id().to_string(),
+                    agent_id: node.agent_id().to_string(),
+                    label: node.public_label().to_string(),
+                })
+                .collect(),
+            edges: workflow
+                .edges()
+                .iter()
+                .map(|edge| WaitingRoomPublicWorkflowEdgeSummary {
+                    id: edge.id().to_string(),
+                    from_node_id: edge.from_node_id().to_string(),
+                    to_node_id: edge.to_node_id().to_string(),
+                })
+                .collect(),
+            endpoints: workflow
+                .endpoints()
+                .iter()
+                .map(|endpoint| WaitingRoomPublicWorkflowEndpointSummary {
+                    id: endpoint.id().to_string(),
+                    alias: endpoint.alias().map(ToOwned::to_owned),
+                    entry_node_id: endpoint.entry_node_id().to_string(),
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    workflows.sort_by(|left, right| {
+        left.created_at_ms
+            .cmp(&right.created_at_ms)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    workflows
+}
+
+fn waiting_room_workflow_activity_summary(
+    session: &crate::session::RuntimeSession,
+    workflow_id: &str,
+) -> WaitingRoomPublicItemActivitySummary {
+    let working = session.workflow_runs().iter().any(|run| {
+        run.workflow_id() == workflow_id
+            && matches!(
+                run.status(),
+                crate::session::WorkflowRunStatus::Created
+                    | crate::session::WorkflowRunStatus::Running
+                    | crate::session::WorkflowRunStatus::Waiting
+                    | crate::session::WorkflowRunStatus::Completing
+            )
+    });
+    let error = session.workflow_runs().iter().any(|run| {
+        run.workflow_id() == workflow_id
+            && matches!(run.status(), crate::session::WorkflowRunStatus::Failed)
+    });
+    WaitingRoomPublicItemActivitySummary {
+        working,
+        active_prompt_count: 0,
+        queued_prompt_count: 0,
+        error,
+    }
 }
 
 fn waiting_room_session_activity_summary(

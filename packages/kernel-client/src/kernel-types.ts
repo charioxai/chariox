@@ -93,6 +93,8 @@ export type WaitingRoomPublicSessionSummary = {
   status: string
   connected_cli_count: number
   activity?: WaitingRoomSessionActivitySummary
+  agents?: WaitingRoomPublicAgentSummary[]
+  workflows?: WaitingRoomPublicWorkflowSummary[]
 }
 
 export type WaitingRoomSessionActivitySummary = {
@@ -101,6 +103,57 @@ export type WaitingRoomSessionActivitySummary = {
   active_prompt_count: number
   queued_prompt_count: number
   error_agent_count: number
+}
+
+export type WaitingRoomPublicItemActivitySummary = {
+  working: boolean
+  active_prompt_count: number
+  queued_prompt_count: number
+  error: boolean
+}
+
+export type WaitingRoomPublicAgentSummary = {
+  id: string
+  alias?: string | null
+  created_at_ms: number
+  provider: string
+  model?: string | null
+  variant?: string | null
+  permission?: string | null
+  workspace_id: string
+  worktree_id: string
+  workspace_label?: string | null
+  directory?: string | null
+  worktree_label?: string | null
+  activity?: WaitingRoomPublicItemActivitySummary
+}
+
+export type WaitingRoomPublicWorkflowSummary = {
+  id: string
+  alias?: string | null
+  created_at_ms: number
+  activity?: WaitingRoomPublicItemActivitySummary
+  nodes?: WaitingRoomPublicWorkflowNodeSummary[]
+  edges?: WaitingRoomPublicWorkflowEdgeSummary[]
+  endpoints?: WaitingRoomPublicWorkflowEndpointSummary[]
+}
+
+export type WaitingRoomPublicWorkflowNodeSummary = {
+  id: string
+  agent_id: string
+  label: string
+}
+
+export type WaitingRoomPublicWorkflowEdgeSummary = {
+  id: string
+  from_node_id: string
+  to_node_id: string
+}
+
+export type WaitingRoomPublicWorkflowEndpointSummary = {
+  id: string
+  alias?: string | null
+  entry_node_id: string
 }
 
 export type WorkspaceLinkAttachment = {

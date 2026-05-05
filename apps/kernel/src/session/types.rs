@@ -1196,6 +1196,8 @@ impl WorkflowPublicationDefinition {
 pub struct WorkflowDefinition {
     id: String,
     alias: Option<String>,
+    #[serde(default = "unix_epoch_ms")]
+    created_at_ms: u64,
     #[serde(default)]
     revision: u64,
     #[serde(default = "default_workflow_flush_agent_context_before_run")]
@@ -1214,6 +1216,7 @@ impl WorkflowDefinition {
         Self {
             id: id.into(),
             alias,
+            created_at_ms: unix_epoch_ms(),
             revision: 0,
             flush_agent_context_before_run: default_workflow_flush_agent_context_before_run(),
             run_output_schema_ref: None,
@@ -1230,6 +1233,10 @@ impl WorkflowDefinition {
 
     pub fn alias(&self) -> Option<&str> {
         self.alias.as_deref()
+    }
+
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
     }
 
     pub fn revision(&self) -> u64 {
