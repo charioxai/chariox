@@ -121,6 +121,7 @@ export type WaitingRoomPublicItemActivitySummary = {
 
 export type WaitingRoomPublicAgentSummary = {
   id: string
+  agent_ref: string
   alias?: string | null
   created_at_ms: number
   provider: string

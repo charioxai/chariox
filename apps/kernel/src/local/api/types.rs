@@ -2256,6 +2256,7 @@ pub struct WaitingRoomPublicItemActivitySummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingRoomPublicAgentSummary {
     pub id: String,
+    pub agent_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     pub created_at_ms: u64,

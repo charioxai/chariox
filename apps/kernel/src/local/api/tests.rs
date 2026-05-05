@@ -409,7 +409,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         other => panic!("unexpected response: {other:?}"),
     };
 
-    assert_eq!(snapshot.schema_version, 2);
+    assert_eq!(snapshot.schema_version, 3);
     assert!(snapshot.generated_at_ms > 0);
     let session = snapshot
         .sessions
@@ -429,6 +429,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
     assert_eq!(session.activity.error_agent_count, 0);
     assert_eq!(session.agents.len(), 1);
     assert_eq!(session.agents[0].id, agent.id());
+    assert_eq!(session.agents[0].agent_ref, agent.agent_ref());
     assert_eq!(session.agents[0].provider, agent.primary_provider());
     assert_eq!(session.agents[0].worktree_id, session.worktree_id);
     assert!(session.workflows.is_empty());
@@ -440,6 +441,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         "public summary must not expose CLI attachment ids"
     );
     assert!(serialized.pointer("/agents/0/id").is_some());
+    assert!(serialized.pointer("/agents/0/agent_ref").is_some());
     assert!(serialized.pointer("/agents/0/provider").is_some());
     assert!(
         serialized
@@ -565,7 +567,9 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
         .expect("created session should be in public snapshot");
     assert_eq!(summary.agents.len(), 2);
     assert_eq!(summary.agents[0].id, first_agent.id());
+    assert_eq!(summary.agents[0].agent_ref, first_agent.agent_ref());
     assert_eq!(summary.agents[1].id, second_agent.id());
+    assert_eq!(summary.agents[1].agent_ref, second_agent.agent_ref());
     assert_eq!(summary.agents[1].alias.as_deref(), Some("second"));
     assert_eq!(summary.agents[1].provider, "dev-stub");
     assert_eq!(summary.agents[1].model.as_deref(), Some("model-b"));

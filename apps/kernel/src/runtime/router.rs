@@ -2139,7 +2139,7 @@ impl CommandRouter {
             launch_target.as_ref(),
         )?;
         Ok(WaitingRoomPublicSnapshot {
-            schema_version: 2,
+            schema_version: 3,
             inventory_version,
             generated_at_ms,
             sessions,
@@ -5270,6 +5270,7 @@ fn waiting_room_public_agent_summaries(
                 .clone();
             WaitingRoomPublicAgentSummary {
                 id: agent.id().to_string(),
+                agent_ref: agent.agent_ref().to_string(),
                 alias: agent.alias().map(ToOwned::to_owned),
                 created_at_ms: agent.created_at_ms(),
                 provider: agent.primary_provider().to_string(),
