@@ -105,12 +105,15 @@ test("derivePromptUsageState resolves usage metadata from the provider catalog",
     providerRun: providerRun({
       provider: "openai",
       model: "openai/gpt-5.4",
-      usage_tokens_total: 4096,
+      usage_tokens_total: 42_100,
+      usage: {
+        context_tokens: 4096,
+      },
     }),
     catalog: catalog(),
   })
 
-  assert.equal(usage?.tokensLabel, "4,096 tok")
+  assert.equal(usage?.tokensLabel, "42,100 tok")
   assert.equal(usage?.usagePercent, 4)
   assert.equal(usage?.usageLabel, "4%")
 })

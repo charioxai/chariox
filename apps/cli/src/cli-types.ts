@@ -427,6 +427,7 @@ export type RuntimeProviderRun = {
   usage?: {
     total_tokens?: number | null
     last_tokens?: number | null
+    context_tokens?: number | null
     context_window?: number | null
   }
   state: string

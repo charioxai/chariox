@@ -183,7 +183,7 @@ All structured messages should carry a minimum common envelope. Some fields are 
 
 Common fields:
 
-- `version` (protocol version, e.g. `v1`)
+- `version` (protocol version, currently `v2` for the shared local daemon protocol)
 - `lane` when applicable (`capability` | `control`)
 - `type` (event/action identifier)
 - `request_id` when request/response matching is needed

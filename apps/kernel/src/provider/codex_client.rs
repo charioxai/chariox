@@ -1776,21 +1776,32 @@ fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotification> {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                usage: ProviderRunTokenUsage {
-                    total_tokens: token_usage
+                usage: {
+                    let total_tokens = token_usage
                         .get("total")
                         .and_then(|total| total.get("totalTokens"))
                         .and_then(Value::as_i64)
-                        .and_then(|value| u64::try_from(value).ok()),
-                    last_tokens: token_usage
+                        .and_then(|value| u64::try_from(value).ok());
+                    let last_tokens = token_usage
                         .get("last")
                         .and_then(|last| last.get("totalTokens"))
                         .and_then(Value::as_i64)
-                        .and_then(|value| u64::try_from(value).ok()),
-                    context_window: token_usage
+                        .and_then(|value| u64::try_from(value).ok());
+                    let context_window = token_usage
                         .get("modelContextWindow")
                         .and_then(Value::as_i64)
-                        .and_then(|value| u64::try_from(value).ok()),
+                        .and_then(|value| u64::try_from(value).ok());
+                    let context_tokens = match (last_tokens, context_window) {
+                        (Some(tokens), Some(window)) if tokens <= window => Some(tokens),
+                        _ => None,
+                    };
+
+                    ProviderRunTokenUsage {
+                        total_tokens,
+                        last_tokens,
+                        context_tokens,
+                        context_window,
+                    }
                 },
             })
         }
@@ -2409,7 +2420,41 @@ mod tests {
                 usage: ProviderRunTokenUsage {
                     total_tokens: Some(42100),
                     last_tokens: Some(8900),
+                    context_tokens: Some(8900),
                     context_window: Some(128000),
+                },
+            })
+        );
+
+        let impossible_context_usage = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("thread/tokenUsage/updated".to_string()),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "turnId": "turn-2",
+                "tokenUsage": {
+                    "total": {
+                        "totalTokens": 36000000
+                    },
+                    "last": {
+                        "totalTokens": 36000000
+                    },
+                    "modelContextWindow": 128000
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            impossible_context_usage,
+            Some(CodexNotification::TokenUsageUpdated {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-2".to_string(),
+                usage: ProviderRunTokenUsage {
+                    total_tokens: Some(36_000_000),
+                    last_tokens: Some(36_000_000),
+                    context_tokens: None,
+                    context_window: Some(128_000),
                 },
             })
         );

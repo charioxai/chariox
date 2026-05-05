@@ -27,8 +27,8 @@ test("formatPromptMetaParts assigns bright tones per value", () => {
 })
 
 test("formatPromptUsageMeta renders token totals and usage bars", () => {
-  assert.deepEqual(formatPromptUsageMeta(12345, 20000, 10), {
-    tokensLabel: "12,345 tok",
+  assert.deepEqual(formatPromptUsageMeta(42100, 12345, 20000, 10), {
+    tokensLabel: "42,100 tok",
     usagePercent: 62,
     usageLabel: "62%",
     barFilled: "======",
@@ -37,8 +37,18 @@ test("formatPromptUsageMeta renders token totals and usage bars", () => {
 })
 
 test("formatPromptUsageMeta falls back to token-only metadata without a limit", () => {
-  assert.deepEqual(formatPromptUsageMeta(512, null, 8), {
+  assert.deepEqual(formatPromptUsageMeta(512, null, null, 8), {
     tokensLabel: "512 tok",
+    usagePercent: null,
+    usageLabel: "",
+    barFilled: "",
+    barEmpty: "--------",
+  })
+})
+
+test("formatPromptUsageMeta ignores impossible context usage", () => {
+  assert.deepEqual(formatPromptUsageMeta(36_000_000, 36_000_000, 128_000, 8), {
+    tokensLabel: "36,000,000 tok",
     usagePercent: null,
     usageLabel: "",
     barFilled: "",

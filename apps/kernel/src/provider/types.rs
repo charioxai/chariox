@@ -851,6 +851,8 @@ pub struct ProviderRunTokenUsage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
 }
 
@@ -859,12 +861,16 @@ impl ProviderRunTokenUsage {
         Self {
             total_tokens: Some(total_tokens),
             last_tokens: None,
+            context_tokens: None,
             context_window: None,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.total_tokens.is_none() && self.last_tokens.is_none() && self.context_window.is_none()
+        self.total_tokens.is_none()
+            && self.last_tokens.is_none()
+            && self.context_tokens.is_none()
+            && self.context_window.is_none()
     }
 }
 

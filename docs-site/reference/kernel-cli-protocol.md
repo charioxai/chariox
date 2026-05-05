@@ -4,6 +4,8 @@ This page describes the current local protocol between the Arroba Kernel and the
 
 It reflects the current implementation, not the long-term remote/federated design.
 
+Current shared local daemon protocol version: `2`.
+
 Primary implementation sources:
 
 - `apps/kernel/src/runtime_transport.rs`
@@ -158,6 +160,13 @@ Payload:
 - `agent_activity`
 
 The session snapshot is also how the CLI hydrates workflow definitions and other current workspace state on attach/rejoin.
+
+Provider run token usage uses distinct fields for cumulative and context-window counts:
+
+- `usage.total_tokens`: cumulative provider-run token usage
+- `usage.last_tokens`: latest provider-reported turn usage
+- `usage.context_tokens`: current model context occupancy when the provider reports a value that does not exceed the known context window
+- `usage.context_window`: model context limit
 
 ### `session_unavailable`
 

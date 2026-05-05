@@ -710,7 +710,8 @@ impl CodexTurnTracker {
     #[cfg(test)]
     fn force_pending_terminal_quiet_for_tests(&mut self) {
         if let Some(pending) = self.pending_terminal.as_mut() {
-            pending.last_activity_at = Instant::now() - CODEX_INFERRED_ASSISTANT_NO_TOOL_QUIET_TIMEOUT;
+            pending.last_activity_at =
+                Instant::now() - CODEX_INFERRED_ASSISTANT_NO_TOOL_QUIET_TIMEOUT;
         }
         if self.last_assistant_content_at.is_some() {
             self.last_assistant_content_at =
@@ -1839,6 +1840,7 @@ mod tests {
                 usage: ProviderRunTokenUsage {
                     total_tokens: Some(42_100),
                     last_tokens: Some(8_900),
+                    context_tokens: Some(8_900),
                     context_window: Some(128_000),
                 },
             },
@@ -1859,6 +1861,7 @@ mod tests {
             Some(ProviderRunTokenUsage {
                 total_tokens: Some(42_100),
                 last_tokens: Some(8_900),
+                context_tokens: Some(8_900),
                 context_window: Some(128_000),
             })
         );

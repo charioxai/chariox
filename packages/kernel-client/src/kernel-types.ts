@@ -593,6 +593,7 @@ export type RuntimeProviderRun = {
   usage?: {
     total_tokens?: number | null
     last_tokens?: number | null
+    context_tokens?: number | null
     context_window?: number | null
   }
   state: string
@@ -603,6 +604,8 @@ export type RuntimeProviderRun = {
     mode: string
   }[]
 }
+
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 2
 
 export type ProviderProcessInfo = {
   process_id: string

@@ -103,6 +103,7 @@ export function derivePromptUsageState(options: {
 
   return formatPromptUsageMeta(
     run.usage_tokens_total,
+    run.usage?.context_tokens,
     resolveProviderModelContextLimit(options.catalog, run.provider, run.model),
     12,
   )

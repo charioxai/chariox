@@ -3,6 +3,8 @@ use super::*;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
     pub session_id: String,

@@ -46,13 +46,18 @@ export function formatPromptMetaParts(provider: string, model: string, effort: s
   return parts
 }
 
-export function formatPromptUsageMeta(totalTokens: number | null | undefined, contextLimit: number | null | undefined, barWidth = 10): PromptUsageMeta | null {
+export function formatPromptUsageMeta(
+  totalTokens: number | null | undefined,
+  contextTokens: number | null | undefined,
+  contextLimit: number | null | undefined,
+  barWidth = 10,
+): PromptUsageMeta | null {
   if (totalTokens == null || totalTokens < 0) {
     return null
   }
 
-  const usagePercent = contextLimit && contextLimit > 0
-    ? Math.round((totalTokens / contextLimit) * 100)
+  const usagePercent = contextTokens != null && contextTokens >= 0 && contextLimit && contextLimit > 0 && contextTokens <= contextLimit
+    ? Math.round((contextTokens / contextLimit) * 100)
     : null
   const clampedPercent = usagePercent == null
     ? 0

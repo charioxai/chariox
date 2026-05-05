@@ -71,8 +71,8 @@ pub use api::{
     WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
     WaitingRoomPublicWorkflowEdgeSummary, WaitingRoomPublicWorkflowEndpointSummary,
     WaitingRoomPublicWorkflowNodeSummary, WaitingRoomPublicWorkflowSummary,
-    WaitingRoomSessionActivitySummary, WorkspaceWorktreeRecord,
+    WaitingRoomSessionActivitySummary, WorkspaceWorktreeRecord, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 pub use client::LocalDaemonClient;
-pub use harness::{LocalHarnessReport, run_local_harness};
-pub use ipc::{LocalIpcClient, run_local_ipc_server, send_local_ipc_request};
+pub use harness::{run_local_harness, LocalHarnessReport};
+pub use ipc::{run_local_ipc_server, send_local_ipc_request, LocalIpcClient};
