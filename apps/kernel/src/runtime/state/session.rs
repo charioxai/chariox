@@ -628,21 +628,58 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::session::CreateSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        crate::logging::info_with_fields(
+            "daemon.kernel_session",
+            "create session started",
+            serde_json::json!({
+                "workspace_id": request.workspace_id,
+                "worktree_id": request.worktree_id,
+                "has_alias": request.alias.as_ref().is_some_and(|alias| !alias.trim().is_empty()),
+                "has_agent_defaults": request.agent_defaults.is_some(),
+            }),
+        );
         let mut session =
             SessionStateOwner::new(self.session_store.clone()).create_session(request)?;
+        crate::logging::info_with_fields(
+            "daemon.kernel_session",
+            "create session record stored",
+            serde_json::json!({
+                "session_id": session.id(),
+                "workspace_id": session.workspace_id(),
+                "worktree_id": session.worktree_id(),
+            }),
+        );
         let agent_request =
             agent_request_from_session_defaults(&session, Some(session.owner_user_id()))
                 .with_worktree(session.worktree_id());
-        let mut sessions = self.session_store.write();
+        let session_snapshot = self.session_store.get_session(session.id())?;
         let agent = self
             .agent_store
-            .create_agent(agent_request, &mut sessions)?;
-        drop(sessions);
+            .create_agent_for_session(agent_request, &session_snapshot)?;
+        crate::logging::info_with_fields(
+            "daemon.kernel_session",
+            "create session default agent stored",
+            serde_json::json!({
+                "session_id": session.id(),
+                "agent_id": agent.id(),
+            }),
+        );
+        self.session_store
+            .write()
+            .set_focused_agent(session.id(), Some(agent.id().to_string()))?;
         session = self.session_store.get_session(session.id())?;
         let agents = self.agent_store.get_session_agents(session.id());
         session.set_agents(agents);
         self.project_session_runtime_view(&mut session);
         self.session_projection.update(session.clone());
+        crate::logging::info_with_fields(
+            "daemon.kernel_session",
+            "create session completed",
+            serde_json::json!({
+                "session_id": session.id(),
+                "agent_count": session.agents().len(),
+            }),
+        );
         Ok(LocalDaemonResponse::SessionCreated { session, agent })
     }
 

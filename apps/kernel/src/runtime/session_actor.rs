@@ -909,6 +909,28 @@ async fn run_session_command_lane(
         let result = executor
             .execute(envelope.request, envelope.caller_user_id)
             .await;
+        match &result {
+            Ok(response) => crate::logging::info_with_fields(
+                "daemon.kernel_session_actor",
+                "session kernel command completed",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "command_id": envelope.command_id,
+                    "command_type": envelope.command_type,
+                    "response_kind": local_response_kind(response),
+                }),
+            ),
+            Err(error) => crate::logging::warn_with_fields(
+                "daemon.kernel_session_actor",
+                "session kernel command failed",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "command_id": envelope.command_id,
+                    "command_type": envelope.command_type,
+                    "error": error.to_string(),
+                }),
+            ),
+        }
         let _ = envelope.result_tx.send(result);
     }
 }
@@ -1301,6 +1323,28 @@ fn session_id_for_projection_refresh(
         }
         Ok(LocalDaemonResponse::SessionAliased { session }) => Some(session.id().to_string()),
         _ => None,
+    }
+}
+
+fn local_response_kind(response: &LocalDaemonResponse) -> &'static str {
+    match response {
+        LocalDaemonResponse::SessionCreated { .. } => "SessionCreated",
+        LocalDaemonResponse::SessionAttached { .. } => "SessionAttached",
+        LocalDaemonResponse::SessionDetached { .. } => "SessionDetached",
+        LocalDaemonResponse::SessionConfigUpdated { .. } => "SessionConfigUpdated",
+        LocalDaemonResponse::SessionAliased { .. } => "SessionAliased",
+        LocalDaemonResponse::SessionEnded { .. } => "SessionEnded",
+        LocalDaemonResponse::SessionDeleted { .. } => "SessionDeleted",
+        LocalDaemonResponse::AgentSpawned { .. } => "AgentSpawned",
+        LocalDaemonResponse::AgentDestroyed { .. } => "AgentDestroyed",
+        LocalDaemonResponse::AgentFocused { .. } => "AgentFocused",
+        LocalDaemonResponse::AgentFocusCycled { .. } => "AgentFocusCycled",
+        LocalDaemonResponse::AgentAliased { .. } => "AgentAliased",
+        LocalDaemonResponse::AgentConfigUpdated { .. } => "AgentConfigUpdated",
+        LocalDaemonResponse::AgentProfileUpdated { .. } => "AgentProfileUpdated",
+        LocalDaemonResponse::TerminalResized { .. } => "TerminalResized",
+        LocalDaemonResponse::RuntimeNotices { .. } => "RuntimeNotices",
+        _ => "Other",
     }
 }
 

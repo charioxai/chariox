@@ -28,7 +28,10 @@ impl SessionService {
         &mut self,
         request: CreateSessionRequest,
     ) -> Result<RuntimeSession, DaemonError> {
-        let alias = normalize_session_alias(request.alias)?;
+        let alias = match request.alias {
+            Some(alias) if alias.trim().is_empty() => None,
+            alias => normalize_session_alias(alias)?,
+        };
         if let Some(alias) = alias.as_deref() {
             self.ensure_alias_available(&request.workspace_id, alias)?;
         }

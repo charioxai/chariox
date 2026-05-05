@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderResumeState};
-use crate::session::{SessionService, SessionStatus};
+use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
     calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
@@ -29,7 +29,16 @@ impl AgentService {
     ) -> Result<AgentInstance, DaemonError> {
         // Validate session exists and is not ended
         let session = sessions.get_session(&request.session_id)?;
+        let agent = self.create_agent_for_session(request, &session)?;
+        sessions.set_focused_agent(agent.session_id(), Some(agent.id().to_string()))?;
+        Ok(agent)
+    }
 
+    pub(crate) fn create_agent_for_session(
+        &mut self,
+        request: CreateAgentRequest,
+        session: &RuntimeSession,
+    ) -> Result<AgentInstance, DaemonError> {
         if session.status() == SessionStatus::Ended {
             return Err(DaemonError::SessionOperationNotAllowed {
                 session_id: request.session_id.clone(),
@@ -103,8 +112,6 @@ impl AgentService {
                 stored.set_state(next_state);
             }
         }
-        sessions.set_focused_agent(&session_id, Some(agent_id.clone()))?;
-
         Ok(self
             .store
             .get(&agent_id)
@@ -682,6 +689,14 @@ impl AgentServiceStore {
         sessions: &mut SessionService,
     ) -> Result<AgentInstance, DaemonError> {
         self.write().create_agent(request, sessions)
+    }
+
+    pub(crate) fn create_agent_for_session(
+        &self,
+        request: CreateAgentRequest,
+        session: &RuntimeSession,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().create_agent_for_session(request, session)
     }
 
     pub(crate) fn restore_agent(&self, agent: AgentInstance) -> AgentInstance {

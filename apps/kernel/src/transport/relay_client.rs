@@ -1849,8 +1849,12 @@ fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
         LocalDaemonRequest::ListSessions(_) => "session.list",
+        LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::AttachToSession(_) => "session.attach",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::LaunchProviderRun(_) => "provider.run.launch",
+        LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",
+        LocalDaemonRequest::CreateWorkspaceWorktree(_) => "workspace.worktree.create",
         _ => "other",
     }
 }
