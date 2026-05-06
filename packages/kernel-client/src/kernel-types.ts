@@ -612,7 +612,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 4
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 5
 
 export type ProviderProcessInfo = {
   process_id: string

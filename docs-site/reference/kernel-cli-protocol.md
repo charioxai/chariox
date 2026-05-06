@@ -4,7 +4,7 @@ This page describes the current local protocol between the Arroba Kernel and the
 
 It reflects the current implementation, not the long-term remote/federated design.
 
-Current shared local daemon protocol version: `4`.
+Current shared local daemon protocol version: `5`.
 
 Primary implementation sources:
 
@@ -74,6 +74,11 @@ When an error is present:
   }
 }
 ```
+
+## Kernel Event IDs
+
+Protocol version `5` makes kernel transport event IDs monotonic for each kernel identity across process restarts.
+Clients may keep using `event_id` as a replay cursor after reconnect without dropping fresh post-restart events as duplicates.
 
 ## Subscription Lifecycle
 

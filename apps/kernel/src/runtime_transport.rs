@@ -231,6 +231,25 @@ impl KernelTransportRuntime {
             transport_health,
         }
     }
+
+    fn new_with_persistent_event_ids(
+        transport_health: TransportHealthStore,
+        event_counter_path: impl Into<std::path::PathBuf>,
+    ) -> Result<Self, DaemonError> {
+        Ok(Self {
+            event_log: EventLog::new_with_persistent_event_ids(
+                RECENT_EVENT_LIMIT,
+                event_counter_path,
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "reserve kernel event ids",
+                message: error.to_string(),
+            })?,
+            command_results: Mutex::new(BTreeMap::new()),
+            command_result_order: Mutex::new(VecDeque::new()),
+            transport_health,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -316,14 +335,18 @@ where
     F: Future<Output = ()>,
 {
     let pump_app = Arc::clone(&app);
-    let (transport_health, durable_snapshot_scheduler) = {
+    let (transport_health, durable_snapshot_scheduler, event_counter_path) = {
         let app = app.lock().await;
         (
             app.transport_health_store(),
             app.durable_snapshot_scheduler(),
+            app.config().kernel_event_counter_path(),
         )
     };
-    let runtime = Arc::new(KernelTransportRuntime::new(transport_health.clone()));
+    let runtime = Arc::new(KernelTransportRuntime::new_with_persistent_event_ids(
+        transport_health.clone(),
+        event_counter_path,
+    )?);
     let router = Arc::new(
         CommandRouter::with_interactive_capacity_provider_lanes_and_transport_health(
             Arc::clone(&app),
@@ -1283,17 +1306,39 @@ async fn emit_kernel_event(
         .map(str::to_string)
         .or_else(|| event_stream_id_for_event(&event, session_id));
     let event_id = if let Some(stream_id) = stream_id.as_deref() {
-        runtime
+        match runtime
             .event_log
             .append(stream_id.to_string(), event.clone())
             .await
-            .event_id
+        {
+            Ok(logged) => logged.event_id,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime_transport",
+                    "failed to reserve kernel event id",
+                    serde_json::json!({
+                        "stream_id": stream_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return false;
+            }
+        }
     } else {
-        runtime
-            .event_log
-            .append("daemon", event.clone())
-            .await
-            .event_id
+        match runtime.event_log.append("daemon", event.clone()).await {
+            Ok(logged) => logged.event_id,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime_transport",
+                    "failed to reserve kernel event id",
+                    serde_json::json!({
+                        "stream_id": "daemon",
+                        "error": error.to_string(),
+                    }),
+                );
+                return false;
+            }
+        }
     };
     runtime.transport_health.record_emitted_event();
     try_send_outgoing_frame(
@@ -1384,7 +1429,7 @@ async fn replay_recent_events(
         close_requested,
         &runtime.transport_health,
         KernelOutgoingFrame::Event {
-            event_id: runtime
+            event_id: match runtime
                 .event_log
                 .append(
                     stream_id,
@@ -1394,7 +1439,21 @@ async fn replay_recent_events(
                     },
                 )
                 .await
-                .event_id,
+            {
+                Ok(logged) => logged.event_id,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.runtime_transport",
+                        "failed to reserve transport-resumed event id",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "attachment_id": attachment_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    return ReplaySubscriptionResult::Overflow;
+                }
+            },
             event: Box::new(KernelEvent::TransportResumed {
                 session_id: session_id.to_string(),
                 resumed_from_event_id: Some(cursor),

@@ -351,6 +351,20 @@ impl DaemonConfig {
             })
     }
 
+    pub fn kernel_event_counter_path(&self) -> PathBuf {
+        default_state_dir()
+            .join("kernel-events")
+            .join(&self.daemon_id)
+            .join("event-counter.json")
+    }
+
+    pub fn kernel_relay_event_counter_path(&self) -> PathBuf {
+        default_state_dir()
+            .join("kernel-events")
+            .join(&self.daemon_id)
+            .join("relay-event-counter.json")
+    }
+
     pub fn default_runtime_identity_path() -> PathBuf {
         default_state_dir().join("daemon").join("identity.json")
     }

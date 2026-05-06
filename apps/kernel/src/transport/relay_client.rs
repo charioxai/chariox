@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,11 +17,12 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+use crate::runtime::event_log::{EventLog, ReplayOutcome};
 use crate::runtime::projection::SessionSnapshotProjection;
 use crate::runtime::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
 use crate::runtime_transport::{
-    event_is_relevant_to_attachment, event_session_id, KernelEvent, WatchResult,
-    RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS,
+    event_is_relevant_to_attachment, KernelEvent, WatchResult, RECENT_EVENT_LIMIT,
+    WATCH_INTERVAL_MS,
 };
 use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
@@ -88,16 +89,31 @@ fn relay_config_continuity(
     }
 }
 
-#[derive(Debug, Clone)]
-struct PersistedRelayEvent {
-    event_id: u64,
-    event: KernelEvent,
+#[derive(Debug)]
+struct RelayEventRuntime {
+    event_log: EventLog<KernelEvent>,
 }
 
-#[derive(Debug, Default)]
-struct RelayEventRuntime {
-    event_counter: AtomicU64,
-    recent_events: Mutex<BTreeMap<String, VecDeque<PersistedRelayEvent>>>,
+impl RelayEventRuntime {
+    fn new(event_counter_path: impl Into<std::path::PathBuf>) -> Result<Self, DaemonError> {
+        Ok(Self {
+            event_log: EventLog::new_with_persistent_event_ids(
+                RECENT_EVENT_LIMIT,
+                event_counter_path,
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "reserve relay kernel event ids",
+                message: error.to_string(),
+            })?,
+        })
+    }
+
+    #[cfg(test)]
+    fn for_tests(retention_limit: usize) -> Self {
+        Self {
+            event_log: EventLog::new(retention_limit),
+        }
+    }
 }
 
 pub async fn run_daemon_relay_connector(
@@ -105,10 +121,25 @@ pub async fn run_daemon_relay_connector(
     state: Arc<RwLock<RelayClientState>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let event_runtime = Arc::new(RelayEventRuntime::default());
-    let provider_runtime_lanes = {
+    let (provider_runtime_lanes, relay_event_counter_path) = {
         let app = app.lock().await;
-        app.provider_run_operation_lanes()
+        (
+            app.provider_run_operation_lanes(),
+            app.config().kernel_relay_event_counter_path(),
+        )
+    };
+    let event_runtime = match RelayEventRuntime::new(relay_event_counter_path) {
+        Ok(runtime) => Arc::new(runtime),
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "failed to initialize relay event id allocator",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+            return;
+        }
     };
     let router = Arc::new(CommandRouter::with_interactive_capacity_and_provider_lanes(
         Arc::clone(&app),
@@ -2156,20 +2187,15 @@ async fn emit_relay_event(
     })?;
     let encrypted_event =
         relay_crypto::encrypt_payload_for_peer(&daemon_private_key, client_public_key, &plaintext)?;
-    let event_id = event_runtime.event_counter.fetch_add(1, Ordering::Relaxed) + 1;
-    if event_session_id(&event).is_some() {
-        let mut recent_events = event_runtime.recent_events.lock().await;
-        let entry = recent_events
-            .entry(event_stream_id.to_string())
-            .or_default();
-        entry.push_back(PersistedRelayEvent {
-            event_id,
-            event: event.clone(),
-        });
-        while entry.len() > RECENT_EVENT_LIMIT {
-            entry.pop_front();
-        }
-    }
+    let event_id = event_runtime
+        .event_log
+        .append(event_stream_id.to_string(), event.clone())
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "reserve relay event id",
+            message: error.to_string(),
+        })?
+        .event_id;
     send_relay_event_frame(outgoing_tx, subscription_id, event_id, encrypted_event)
 }
 
@@ -2192,48 +2218,43 @@ async fn replay_recent_relay_events(
         return Ok(());
     };
     let event_stream_id = relay_subscription_event_stream_id(session_id, attachment_id);
-    let recent_events = event_runtime.recent_events.lock().await;
-    let retained = recent_events.get(&event_stream_id);
-    let first_retained_event_id = retained
-        .and_then(|events| events.front())
-        .map(|event| event.event_id);
-    let latest_event_id = retained
-        .and_then(|events| events.back())
-        .map(|event| event.event_id);
-    let events = retained
-        .map(|events| events.iter().cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
-    drop(recent_events);
-    if events.is_empty() || first_retained_event_id.is_some_and(|first| cursor < first) {
-        emit_relay_event(
-            router,
-            outgoing_tx,
-            subscription_id,
-            client_public_key,
-            event_runtime,
-            &event_stream_id,
-            KernelEvent::ReplayGap {
-                session_id: session_id.to_string(),
-                requested_from_event_id: cursor,
-                first_retained_event_id,
-                latest_event_id,
-                message: "Replay cursor is outside the retained relay event window; refresh the session projection.".to_string(),
-            },
-        )
-        .await?;
-        emit_relay_replay_gap_snapshot(
-            app,
-            router,
-            outgoing_tx,
-            subscription_id,
-            client_public_key,
-            event_runtime,
-            session_id,
-            attachment_id,
-        )
-        .await?;
-        return Ok(());
-    }
+    let events = match event_runtime
+        .event_log
+        .replay_after(&event_stream_id, cursor)
+        .await
+    {
+        ReplayOutcome::Replayed(events) => events,
+        ReplayOutcome::Gap(gap) => {
+            emit_relay_event(
+                router,
+                outgoing_tx,
+                subscription_id,
+                client_public_key,
+                event_runtime,
+                &event_stream_id,
+                KernelEvent::ReplayGap {
+                    session_id: session_id.to_string(),
+                    requested_from_event_id: cursor,
+                    first_retained_event_id: gap.first_retained_event_id,
+                    latest_event_id: gap.latest_event_id,
+                    message: "Replay cursor is outside the retained relay event window; refresh the session projection.".to_string(),
+                },
+            )
+            .await?;
+            emit_relay_replay_gap_snapshot(
+                app,
+                router,
+                outgoing_tx,
+                subscription_id,
+                client_public_key,
+                event_runtime,
+                session_id,
+                attachment_id,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
     for persisted in events {
         if persisted.event_id <= cursor {
             continue;
@@ -4408,20 +4429,29 @@ mod tests {
             INTERACTIVE_COMMAND_QUEUE_LIMIT,
             provider_runtime_lanes,
         ));
-        let event_runtime = Arc::new(RelayEventRuntime::default());
-        event_runtime.event_counter.store(10, Ordering::Relaxed);
-        {
-            let mut recent = event_runtime.recent_events.lock().await;
-            recent.insert(
-                relay_subscription_event_stream_id(&created_session_id, &attachment_id),
-                VecDeque::from([PersistedRelayEvent {
-                    event_id: 10,
-                    event: KernelEvent::Heartbeat {
-                        session_id: created_session_id.clone(),
-                    },
-                }]),
-            );
-        }
+        let event_runtime = Arc::new(RelayEventRuntime::for_tests(1));
+        let event_stream_id =
+            relay_subscription_event_stream_id(&created_session_id, &attachment_id);
+        let first = event_runtime
+            .event_log
+            .append(
+                event_stream_id.clone(),
+                KernelEvent::Heartbeat {
+                    session_id: created_session_id.clone(),
+                },
+            )
+            .await
+            .expect("first event should append");
+        let second = event_runtime
+            .event_log
+            .append(
+                event_stream_id,
+                KernelEvent::Heartbeat {
+                    session_id: created_session_id.clone(),
+                },
+            )
+            .await
+            .expect("second event should append");
 
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel();
         let subscription_private_key = relay_crypto::generate_private_key_base64();
@@ -4438,22 +4468,28 @@ mod tests {
             &subscription_public_key,
             &created_session_id,
             &attachment_id,
-            Some(1),
+            Some(first.event_id),
         )
         .await
         .expect("stale replay should emit recovery events");
 
         let gap =
             decrypt_relay_event_from_channel(&mut outgoing_rx, &subscription_private_key).await;
-        assert_eq!(gap.0, 11);
+        assert_eq!(gap.0, second.event_id + 1);
         assert_eq!(gap.1["event"], serde_json::json!("replay_gap"));
-        assert_eq!(gap.1["requested_from_event_id"], serde_json::json!(1));
-        assert_eq!(gap.1["first_retained_event_id"], serde_json::json!(10));
-        assert_eq!(gap.1["latest_event_id"], serde_json::json!(10));
+        assert_eq!(
+            gap.1["requested_from_event_id"],
+            serde_json::json!(first.event_id)
+        );
+        assert_eq!(
+            gap.1["first_retained_event_id"],
+            serde_json::json!(second.event_id)
+        );
+        assert_eq!(gap.1["latest_event_id"], serde_json::json!(second.event_id));
 
         let snapshot =
             decrypt_relay_event_from_channel(&mut outgoing_rx, &subscription_private_key).await;
-        assert_eq!(snapshot.0, 12);
+        assert_eq!(snapshot.0, second.event_id + 2);
         assert_eq!(snapshot.1["event"], serde_json::json!("session_snapshot"));
         assert_eq!(
             snapshot.1["session"]["id"],
