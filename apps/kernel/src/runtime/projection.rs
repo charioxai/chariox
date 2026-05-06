@@ -1050,17 +1050,15 @@ fn agent_activity_for_session(
         let queued_prompt_count = prompt_state
             .map(|state| state.queued_prompts().len())
             .unwrap_or(0);
+        let provider_run = app.providers().get_run_for_agent(session.id(), agent.id());
+        let provider_prompt_activity = provider_run
+            .as_ref()
+            .and_then(|run| prompt_activity.get(run.id()));
         let prompt_status = match active_prompt.map(PromptQueueItem::status) {
             Some(PromptStatus::Cancelling) => AgentPromptRuntimeStatus::Cancelling,
             Some(PromptStatus::Running) => {
-                let settlement_requested = app
-                    .providers()
-                    .get_run_for_agent(session.id(), agent.id())
-                    .and_then(|run| {
-                        prompt_activity
-                            .get(run.id())
-                            .map(|state| state.settlement_requested)
-                    })
+                let settlement_requested = provider_prompt_activity
+                    .map(|state| state.settlement_requested)
                     .unwrap_or(false);
                 if settlement_requested {
                     AgentPromptRuntimeStatus::Settling
@@ -1070,19 +1068,22 @@ fn agent_activity_for_session(
             }
             Some(PromptStatus::Queued) => AgentPromptRuntimeStatus::Queued,
             Some(PromptStatus::Completed) | Some(PromptStatus::Cancelled) | None => {
-                if queued_prompt_count > 0 {
+                if provider_prompt_activity.is_some_and(|state| state.settlement_requested) {
+                    AgentPromptRuntimeStatus::Settling
+                } else if provider_prompt_activity.is_some() {
+                    AgentPromptRuntimeStatus::Running
+                } else if queued_prompt_count > 0 {
                     AgentPromptRuntimeStatus::Queued
                 } else {
                     AgentPromptRuntimeStatus::None
                 }
             }
         };
-        let provider_run = app.providers().get_run_for_agent(session.id(), agent.id());
         let provider_busy = provider_run.as_ref().is_some_and(|run| {
             matches!(
                 run.state(),
                 ProviderRunState::Starting | ProviderRunState::Running
-            ) && active_prompt.is_some()
+            ) && (active_prompt.is_some() || provider_prompt_activity.is_some())
         });
         let active_turn = active_prompt.map(|prompt| AgentActiveTurnProjection {
             prompt_id: prompt.id().to_string(),
@@ -1472,6 +1473,8 @@ impl DaemonHealthProjection {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use crate::agent::CreateAgentRequest;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
@@ -1589,6 +1592,35 @@ mod tests {
 
         assert_eq!(activity.status, AgentRuntimeStatus::Working);
         assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::Settling);
+        assert!(activity.busy);
+    }
+
+    #[test]
+    fn session_snapshot_projection_keeps_provider_activity_working_without_active_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        app.prompt_activity_store().write().insert(
+            provider_run.id().to_string(),
+            crate::app::ActivePromptState {
+                last_output_at: Some(Instant::now()),
+                saw_response_content: true,
+                completion_recorded: false,
+                settlement_requested: false,
+            },
+        );
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+
+        assert_eq!(activity.status, AgentRuntimeStatus::Working);
+        assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::Running);
         assert!(activity.busy);
     }
 
