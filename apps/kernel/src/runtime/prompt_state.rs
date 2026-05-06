@@ -127,6 +127,27 @@ impl PromptStateOwner {
         }
     }
 
+    pub(crate) fn has_any_active_prompt(&self, session: &RuntimeSession) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        if session.agents().iter().any(|agent| {
+            owner
+                .ensure_agent_state(session, agent.id())
+                .active_prompt
+                .is_some()
+        }) {
+            return true;
+        }
+        session.prompt_states().keys().any(|agent_id| {
+            owner
+                .ensure_agent_state(session, agent_id)
+                .active_prompt
+                .is_some()
+        })
+    }
+
     pub(crate) fn queued_prompt_count_for_agent(
         &self,
         session: &RuntimeSession,

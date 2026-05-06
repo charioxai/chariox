@@ -917,12 +917,25 @@ impl KernelRuntimeState {
         {
             return Ok(Vec::new());
         }
-        let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
-        if matches!(
-            provider_run.state(),
-            crate::provider::ProviderRunState::Ended | crate::provider::ProviderRunState::Parked
-        ) {
+        let mut provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        if provider_run.state() == crate::provider::ProviderRunState::Ended {
             return Ok(Vec::new());
+        }
+        if provider_run.state() == crate::provider::ProviderRunState::Parked {
+            if !owned.provider_run_has_active_prompt(session_id, &provider_run)? {
+                return Ok(Vec::new());
+            }
+            provider_run = owned.provider_store.resume_run_detached(provider_run_id)?;
+            owned.provider_run_projection.update(provider_run.clone());
+            crate::logging::warn_with_fields(
+                "daemon.provider",
+                "resumed parked provider run that still had an active prompt",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": provider_run.agent_instance_id(),
+                }),
+            );
         }
 
         if owned
@@ -1003,9 +1016,13 @@ impl KernelRuntimeState {
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
-        let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let mut provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() == crate::provider::ProviderRunState::Parked {
-            return Ok(Vec::new());
+            if !owned.provider_run_has_active_prompt(session_id, &provider_run)? {
+                return Ok(Vec::new());
+            }
+            provider_run = owned.provider_store.resume_run_detached(provider_run_id)?;
+            owned.provider_run_projection.update(provider_run.clone());
         }
         if provider_run.endpoint_mode() != crate::provider::AgentEndpointMode::External {
             if let Err(error) = self
@@ -1324,6 +1341,110 @@ mod tests {
             app_locked.terminal_stream_store(),
             app_locked.workspace_coordinator(),
         )
+    }
+
+    #[tokio::test]
+    async fn provider_switch_does_not_park_runs_with_active_prompts() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-1",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let second_agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "codex")
+                    .with_alias("second"),
+            )
+            .expect("second agent should spawn");
+        let idle_agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "codex").with_alias("idle"),
+            )
+            .expect("idle agent should spawn");
+
+        let first_run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(first_agent.id()),
+            )
+            .expect("first provider should launch");
+        app.update_provider_run_projection(first_run.clone());
+        app.submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(first_agent.id()),
+            "first prompt\n",
+            Vec::new(),
+        )
+        .expect("first prompt should start");
+
+        let second_run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(second_agent.id()),
+            )
+            .expect("second provider should launch");
+        app.update_provider_run_projection(second_run.clone());
+
+        assert_eq!(
+            app.providers
+                .get_run(first_run.id())
+                .expect("first run should exist")
+                .state(),
+            crate::provider::ProviderRunState::Running,
+            "launching another provider must not park a run that owns an active prompt",
+        );
+
+        app.submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(second_agent.id()),
+            "second prompt\n",
+            Vec::new(),
+        )
+        .expect("second prompt should start");
+        crate::app::KernelSessionService::new(&mut app)
+            .focus_agent(session.id(), idle_agent.id())
+            .expect("idle agent focus should succeed");
+
+        assert_eq!(
+            app.providers
+                .get_run(second_run.id())
+                .expect("second run should exist")
+                .state(),
+            crate::provider::ProviderRunState::Running,
+            "focusing an idle agent while multiple prompts are active must not park active work",
+        );
+        assert_eq!(
+            app.sessions
+                .get_session(session.id())
+                .expect("session should exist")
+                .active_provider_run_id(),
+            Some(second_run.id()),
+            "ambiguous multi-agent prompt work should keep the active provider pointer stable",
+        );
     }
 
     #[tokio::test]

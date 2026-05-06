@@ -468,15 +468,17 @@ impl ProviderRunActivationState {
                     app.update_provider_run_projection(outcome.into_run());
                 }
                 ProviderRunState::Running => {
-                    let outcome = app
-                        .providers
-                        .park_run_provider_only(&session_id, active_run_id)?;
-                    ProviderRunLivenessState::clear_active_provider_run_session_pointer(
-                        app,
-                        &session_id,
-                        outcome.run().id(),
-                    )?;
-                    app.update_provider_run_projection(outcome.into_run());
+                    if !app.provider_run_has_active_prompt(&session_id, &active_run)? {
+                        let outcome = app
+                            .providers
+                            .park_run_provider_only(&session_id, active_run_id)?;
+                        ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                            app,
+                            &session_id,
+                            outcome.run().id(),
+                        )?;
+                        app.update_provider_run_projection(outcome.into_run());
+                    }
                 }
                 ProviderRunState::Parked => {
                     app.sessions.set_active_provider_run(&session_id, None)?;
@@ -509,15 +511,17 @@ impl ProviderRunActivationState {
                 let active_run = app.providers.get_run(active_run_id)?;
                 match active_run.state() {
                     ProviderRunState::Running => {
-                        let outcome = app
-                            .providers
-                            .park_run_provider_only(session_id, active_run_id)?;
-                        ProviderRunLivenessState::clear_active_provider_run_session_pointer(
-                            app,
-                            session_id,
-                            outcome.run().id(),
-                        )?;
-                        app.update_provider_run_projection(outcome.into_run());
+                        if !app.provider_run_has_active_prompt(session_id, &active_run)? {
+                            let outcome = app
+                                .providers
+                                .park_run_provider_only(session_id, active_run_id)?;
+                            ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                                app,
+                                session_id,
+                                outcome.run().id(),
+                            )?;
+                            app.update_provider_run_projection(outcome.into_run());
+                        }
                     }
                     ProviderRunState::Starting => {
                         let outcome = app
@@ -1220,6 +1224,7 @@ impl DaemonApp {
             let active_run = self.providers.get_run(current_active_run_id)?;
             if active_run.agent_instance_id() != Some(agent_id)
                 && active_run.state() == ProviderRunState::Running
+                && !self.provider_run_has_active_prompt(session_id, &active_run)?
             {
                 let outcome = self
                     .providers
@@ -1278,10 +1283,7 @@ impl DaemonApp {
             return Ok(false);
         }
 
-        Ok(self
-            .prompt_state_owner
-            .active_prompt_agent_id(&session)
-            .is_some()
+        Ok(self.prompt_state_owner.has_any_active_prompt(&session)
             || session.agents().iter().any(|agent| agent.is_processing()))
     }
 
@@ -1295,7 +1297,7 @@ impl DaemonApp {
             if let Some(focused_agent_id) = focused_agent_id {
                 let active_prompt_agent_id =
                     self.prompt_state_owner.active_prompt_agent_id(&session);
-                let has_active_prompt = active_prompt_agent_id.is_some();
+                let has_active_prompt = self.prompt_state_owner.has_any_active_prompt(&session);
                 let has_processing_agent =
                     session.agents().iter().any(|agent| agent.is_processing());
                 if !has_active_prompt {
@@ -1305,6 +1307,7 @@ impl DaemonApp {
                         let active_run = self.providers.get_run(current_active_run_id)?;
                         if active_run.agent_instance_id() != Some(focused_agent_id.as_str())
                             && active_run.state() == ProviderRunState::Running
+                            && !self.provider_run_has_active_prompt(session_id, &active_run)?
                         {
                             let outcome = self
                                 .providers
@@ -1318,11 +1321,12 @@ impl DaemonApp {
                         }
                     }
                 }
-                if has_active_prompt || has_processing_agent {
-                    let projected_agent_id = active_prompt_agent_id
-                        .as_deref()
-                        .unwrap_or(focused_agent_id.as_str());
-                    self.project_active_provider_run_for_agent(session_id, projected_agent_id)?;
+                if has_active_prompt {
+                    if let Some(projected_agent_id) = active_prompt_agent_id.as_deref() {
+                        self.project_active_provider_run_for_agent(session_id, projected_agent_id)?;
+                    }
+                } else if has_processing_agent {
+                    self.project_active_provider_run_for_agent(session_id, &focused_agent_id)?;
                 } else {
                     self.sync_active_provider_run_for_agent(session_id, &focused_agent_id)?;
                 }
@@ -1331,10 +1335,7 @@ impl DaemonApp {
             }
             return Ok(());
         }
-        if self
-            .prompt_state_owner
-            .active_prompt_agent_id(&session)
-            .is_some()
+        if self.prompt_state_owner.has_any_active_prompt(&session)
             || session.agents().iter().any(|agent| agent.is_processing())
         {
             return Ok(());
@@ -1348,6 +1349,21 @@ impl DaemonApp {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn provider_run_has_active_prompt(
+        &self,
+        session_id: &str,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<bool, DaemonError> {
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(false);
+        };
+        let session = self.sessions.get_session(session_id)?;
+        Ok(self
+            .prompt_state_owner
+            .active_prompt_for_agent_snapshot(&session, agent_id)
+            .is_some())
     }
 
     pub(crate) fn ensure_prompt_provider_run_for_agent(

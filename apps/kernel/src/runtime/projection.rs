@@ -871,7 +871,17 @@ impl ProviderRunProjectionStore {
             .lock()
             .expect("provider run projection lock should not be poisoned")
             .values()
-            .find(|run| run.session_id() == session_id && run.agent_instance_id() == Some(agent_id))
+            .filter(|run| {
+                run.session_id() == session_id
+                    && run.agent_instance_id() == Some(agent_id)
+                    && run.state() != crate::provider::ProviderRunState::Ended
+            })
+            .max_by_key(|run| match run.state() {
+                crate::provider::ProviderRunState::Running => 3,
+                crate::provider::ProviderRunState::Parked => 2,
+                crate::provider::ProviderRunState::Starting => 1,
+                crate::provider::ProviderRunState::Ended => 0,
+            })
             .cloned()
     }
 

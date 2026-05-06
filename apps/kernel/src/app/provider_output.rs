@@ -170,15 +170,29 @@ impl<'a> ProviderOutputPump<'a> {
         {
             return Ok(Vec::new());
         }
-        let provider_run = self
+        let mut provider_run = self
             .context
             .ensure_provider_run_in_session(request.session_id, request.provider_run_id)?;
         if provider_run.state() == ProviderRunState::Ended {
             return Ok(Vec::new());
         }
-        // Parked runs should not be polled for output.
         if provider_run.state() == ProviderRunState::Parked {
-            return Ok(Vec::new());
+            if !self
+                .context
+                .provider_run_has_active_prompt(request.session_id, &provider_run)?
+            {
+                return Ok(Vec::new());
+            }
+            provider_run = self.context.resume_detached_provider_run(request.provider_run_id)?;
+            crate::logging::warn_with_fields(
+                "daemon.provider_output",
+                "resumed parked provider run that still had an active prompt",
+                serde_json::json!({
+                    "session_id": request.session_id,
+                    "provider_run_id": request.provider_run_id,
+                    "agent_id": provider_run.agent_instance_id(),
+                }),
+            );
         }
 
         if self.context.run_uses_structured_prompt_io(&provider_run) {
@@ -558,16 +572,35 @@ impl<'a> ProviderOutputPumpContext<'a> {
             .run_uses_structured_prompt_io(provider_run)
     }
 
+    fn provider_run_has_active_prompt(
+        &self,
+        session_id: &str,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<bool, DaemonError> {
+        self.app.provider_run_has_active_prompt(session_id, provider_run)
+    }
+
+    fn resume_detached_provider_run(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.provider_store.resume_run_detached(provider_run_id)?;
+        self.app.update_provider_run_projection(run.clone());
+        Ok(run)
+    }
+
     fn pump_structured_output(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
-        // Parked runs should not be polled for output.
+        let mut provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() == ProviderRunState::Parked {
-            return Ok(Vec::new());
+            if !self.provider_run_has_active_prompt(session_id, &provider_run)? {
+                return Ok(Vec::new());
+            }
+            provider_run = self.resume_detached_provider_run(provider_run_id)?;
         }
         if provider_run.endpoint_mode() != AgentEndpointMode::External {
             if let Err(error) = self.drain_pty_output(provider_run_id) {

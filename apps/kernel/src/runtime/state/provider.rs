@@ -24,10 +24,7 @@ impl KernelRuntimeOwnedState {
             return Ok(false);
         }
 
-        Ok(self
-            .prompt_state_owner
-            .active_prompt_agent_id(&session)
-            .is_some()
+        Ok(self.prompt_state_owner.has_any_active_prompt(&session)
             || session.agents().iter().any(|agent| agent.is_processing()))
     }
 
@@ -46,6 +43,7 @@ impl KernelRuntimeOwnedState {
             let active_run = self.provider_store.get_run(current_active_run_id)?;
             if active_run.agent_instance_id() != Some(agent_id)
                 && active_run.state() == crate::provider::ProviderRunState::Running
+                && !self.provider_run_has_active_prompt(session_id, &active_run)?
             {
                 let outcome = self
                     .provider_store
@@ -88,7 +86,7 @@ impl KernelRuntimeOwnedState {
             if let Some(focused_agent_id) = focused_agent_id {
                 let active_prompt_agent_id =
                     self.prompt_state_owner.active_prompt_agent_id(&session);
-                let has_active_prompt = active_prompt_agent_id.is_some();
+                let has_active_prompt = self.prompt_state_owner.has_any_active_prompt(&session);
                 let has_processing_agent =
                     session.agents().iter().any(|agent| agent.is_processing());
                 if !has_active_prompt {
@@ -98,6 +96,7 @@ impl KernelRuntimeOwnedState {
                         let active_run = self.provider_store.get_run(current_active_run_id)?;
                         if active_run.agent_instance_id() != Some(focused_agent_id.as_str())
                             && active_run.state() == crate::provider::ProviderRunState::Running
+                            && !self.provider_run_has_active_prompt(session_id, &active_run)?
                         {
                             let outcome = self
                                 .provider_store
@@ -110,11 +109,12 @@ impl KernelRuntimeOwnedState {
                         }
                     }
                 }
-                if has_active_prompt || has_processing_agent {
-                    let projected_agent_id = active_prompt_agent_id
-                        .as_deref()
-                        .unwrap_or(focused_agent_id.as_str());
-                    self.project_active_provider_run_for_agent(session_id, projected_agent_id)?;
+                if has_active_prompt {
+                    if let Some(projected_agent_id) = active_prompt_agent_id.as_deref() {
+                        self.project_active_provider_run_for_agent(session_id, projected_agent_id)?;
+                    }
+                } else if has_processing_agent {
+                    self.project_active_provider_run_for_agent(session_id, &focused_agent_id)?;
                 } else {
                     self.sync_active_provider_run_for_agent(session_id, &focused_agent_id)?;
                 }
@@ -125,10 +125,7 @@ impl KernelRuntimeOwnedState {
             return Ok(());
         }
 
-        if self
-            .prompt_state_owner
-            .active_prompt_agent_id(&session)
-            .is_some()
+        if self.prompt_state_owner.has_any_active_prompt(&session)
             || session.agents().iter().any(|agent| agent.is_processing())
         {
             return Ok(());
@@ -304,14 +301,16 @@ impl KernelRuntimeOwnedState {
                     self.provider_run_projection.update(outcome.into_run());
                 }
                 crate::provider::ProviderRunState::Running => {
-                    let outcome = self
-                        .provider_store
-                        .park_run_provider_only(&session_id, active_run_id)?;
-                    self.clear_active_provider_run_session_pointer(
-                        &session_id,
-                        outcome.run().id(),
-                    )?;
-                    self.provider_run_projection.update(outcome.into_run());
+                    if !self.provider_run_has_active_prompt(&session_id, &active_run)? {
+                        let outcome = self
+                            .provider_store
+                            .park_run_provider_only(&session_id, active_run_id)?;
+                        self.clear_active_provider_run_session_pointer(
+                            &session_id,
+                            outcome.run().id(),
+                        )?;
+                        self.provider_run_projection.update(outcome.into_run());
+                    }
                 }
                 crate::provider::ProviderRunState::Parked => {
                     self.session_store
@@ -345,14 +344,16 @@ impl KernelRuntimeOwnedState {
                 let active_run = self.provider_store.get_run(active_run_id)?;
                 match active_run.state() {
                     crate::provider::ProviderRunState::Running => {
-                        let outcome = self
-                            .provider_store
-                            .park_run_provider_only(session_id, active_run_id)?;
-                        self.clear_active_provider_run_session_pointer(
-                            session_id,
-                            outcome.run().id(),
-                        )?;
-                        self.provider_run_projection.update(outcome.into_run());
+                        if !self.provider_run_has_active_prompt(session_id, &active_run)? {
+                            let outcome = self
+                                .provider_store
+                                .park_run_provider_only(session_id, active_run_id)?;
+                            self.clear_active_provider_run_session_pointer(
+                                session_id,
+                                outcome.run().id(),
+                            )?;
+                            self.provider_run_projection.update(outcome.into_run());
+                        }
                     }
                     crate::provider::ProviderRunState::Starting => {
                         let outcome = self
@@ -398,6 +399,21 @@ impl KernelRuntimeOwnedState {
                 .set_active_provider_run(session_id, None)?;
         }
         Ok(())
+    }
+
+    pub(super) fn provider_run_has_active_prompt(
+        &self,
+        session_id: &str,
+        provider_run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<bool, DaemonError> {
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(false);
+        };
+        let session = self.session_store.get_session(session_id)?;
+        Ok(self
+            .prompt_state_owner
+            .active_prompt_for_agent_snapshot(&session, agent_id)
+            .is_some())
     }
 
     pub(super) fn finish_provider_launch_success(
