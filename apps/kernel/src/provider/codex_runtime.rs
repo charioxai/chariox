@@ -20,9 +20,6 @@ use super::{
 
 const CODEX_EVENT_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(1);
 const CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS: usize = 64;
-const CODEX_TERMINAL_QUIET_TIMEOUT: Duration = Duration::from_millis(2_000);
-const CODEX_INFERRED_ASSISTANT_QUIET_TIMEOUT: Duration = Duration::from_millis(5_000);
-const CODEX_INFERRED_ASSISTANT_NO_TOOL_QUIET_TIMEOUT: Duration = Duration::from_millis(8_000);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexPollResult {
@@ -65,8 +62,6 @@ struct CodexTurnTracker {
     active_tool_ids: BTreeSet<String>,
     pending_terminal: Option<CodexPendingTerminal>,
     tool_started: bool,
-    assistant_content_after_latest_tool: bool,
-    last_assistant_content_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,13 +69,11 @@ struct CodexTerminalSignal {
     turn_id: Option<String>,
     status: String,
     error_message: Option<String>,
-    inferred_from_assistant_completion: bool,
 }
 
 #[derive(Debug, Clone)]
 struct CodexPendingTerminal {
     signal: CodexTerminalSignal,
-    last_activity_at: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -495,14 +488,11 @@ fn apply_notification(
             turn_tracker.note_activity();
             trace_codex_tool_item("item_lifecycle", &item);
             note_tool_item_completed(turn_tracker, &item);
-            let assistant_completed = note_assistant_item_completed(turn_tracker, &item);
+            note_assistant_item_completed(turn_tracker, &item);
             if let Some(chunk) = sync_tool_item(tool_items, &item) {
                 chunks.push(chunk);
             } else if let Some(chunk) = sync_completed_text_item(text_items, &item) {
                 chunks.push(chunk);
-            }
-            if assistant_completed {
-                turn_tracker.note_assistant_completion_candidate();
             }
         }
         CodexNotification::ExecCommandStarted {
@@ -598,11 +588,11 @@ fn apply_notification(
             status,
             error_message,
         } => {
-            let turn_mismatch = turn_id.as_deref().is_some_and(|turn_id| {
-                active_turn_id
-                    .as_deref()
-                    .is_some_and(|active_turn_id| active_turn_id != turn_id)
-            });
+            let turn_mismatch = match (turn_id.as_deref(), active_turn_id.as_deref()) {
+                (Some(turn_id), Some(active_turn_id)) => turn_id != active_turn_id,
+                (Some(_), None) | (None, None) => true,
+                (None, Some(_)) => false,
+            };
             if turn_mismatch {
                 crate::logging::debug_with_fields(
                     "daemon.provider.codex",
@@ -629,7 +619,6 @@ fn apply_notification(
                 turn_id,
                 status,
                 error_message,
-                inferred_from_assistant_completion: false,
             });
         }
         CodexNotification::Error { message } => {
@@ -653,8 +642,6 @@ impl CodexTurnTracker {
         self.active_tool_ids.clear();
         self.pending_terminal = None;
         self.tool_started = false;
-        self.assistant_content_after_latest_tool = false;
-        self.last_assistant_content_at = None;
     }
 
     fn note_tool_started(&mut self, tool_id: &str) {
@@ -662,8 +649,6 @@ impl CodexTurnTracker {
             self.active_tool_ids.insert(tool_id.to_string());
         }
         self.tool_started = true;
-        self.assistant_content_after_latest_tool = false;
-        self.last_assistant_content_at = None;
         self.pending_terminal = None;
         self.note_activity();
     }
@@ -676,48 +661,17 @@ impl CodexTurnTracker {
     }
 
     fn note_terminal(&mut self, signal: CodexTerminalSignal) {
-        self.pending_terminal = Some(CodexPendingTerminal {
-            signal,
-            last_activity_at: Instant::now(),
-        });
+        self.pending_terminal = Some(CodexPendingTerminal { signal });
     }
 
-    fn note_assistant_completion_candidate(&mut self) {
-        if !self.active_tool_ids.is_empty() || !self.assistant_content_after_latest_tool {
-            return;
-        }
-        self.pending_terminal = Some(CodexPendingTerminal {
-            signal: CodexTerminalSignal {
-                turn_id: None,
-                status: "completed".to_string(),
-                error_message: None,
-                inferred_from_assistant_completion: true,
-            },
-            last_activity_at: Instant::now(),
-        });
-    }
-
-    fn note_activity(&mut self) {
-        self.pending_terminal = None;
-    }
+    fn note_activity(&mut self) {}
 
     fn note_assistant_content(&mut self) {
-        self.assistant_content_after_latest_tool = true;
-        self.last_assistant_content_at = Some(Instant::now());
         self.note_activity();
     }
 
     #[cfg(test)]
-    fn force_pending_terminal_quiet_for_tests(&mut self) {
-        if let Some(pending) = self.pending_terminal.as_mut() {
-            pending.last_activity_at =
-                Instant::now() - CODEX_INFERRED_ASSISTANT_NO_TOOL_QUIET_TIMEOUT;
-        }
-        if self.last_assistant_content_at.is_some() {
-            self.last_assistant_content_at =
-                Some(Instant::now() - CODEX_INFERRED_ASSISTANT_NO_TOOL_QUIET_TIMEOUT);
-        }
-    }
+    fn force_pending_terminal_quiet_for_tests(&mut self) {}
 }
 
 fn note_tool_item_started(turn_tracker: &mut CodexTurnTracker, item: &Value) {
@@ -787,31 +741,7 @@ fn maybe_finalize_terminal_signal(
     if !turn_tracker.active_tool_ids.is_empty() {
         return;
     }
-    let Some(pending) = turn_tracker.pending_terminal.as_ref() else {
-        maybe_finalize_inferred_assistant_completion(
-            active_turn_id,
-            turn_tracker,
-            completions,
-            prompt_completed,
-        );
-        return;
-    };
-    if pending.signal.status == "completed"
-        && turn_tracker.tool_started
-        && !turn_tracker.assistant_content_after_latest_tool
-    {
-        return;
-    }
-    let quiet_timeout = if pending.signal.inferred_from_assistant_completion {
-        if turn_tracker.tool_started {
-            CODEX_INFERRED_ASSISTANT_QUIET_TIMEOUT
-        } else {
-            CODEX_INFERRED_ASSISTANT_NO_TOOL_QUIET_TIMEOUT
-        }
-    } else {
-        CODEX_TERMINAL_QUIET_TIMEOUT
-    };
-    if pending.last_activity_at.elapsed() < quiet_timeout {
+    if turn_tracker.pending_terminal.is_none() {
         return;
     }
     let Some(pending) = turn_tracker.pending_terminal.take() else {
@@ -845,40 +775,6 @@ fn maybe_finalize_terminal_signal(
     }
     *prompt_completed = true;
     *active_turn_id = None;
-}
-
-fn maybe_finalize_inferred_assistant_completion(
-    active_turn_id: &mut Option<String>,
-    turn_tracker: &mut CodexTurnTracker,
-    completions: &mut Vec<CodexAssistantCompletion>,
-    prompt_completed: &mut bool,
-) {
-    if !turn_tracker.active_tool_ids.is_empty() || !turn_tracker.assistant_content_after_latest_tool
-    {
-        return;
-    }
-    let Some(last_assistant_content_at) = turn_tracker.last_assistant_content_at else {
-        return;
-    };
-    let quiet_timeout = if turn_tracker.tool_started {
-        CODEX_INFERRED_ASSISTANT_QUIET_TIMEOUT
-    } else {
-        CODEX_INFERRED_ASSISTANT_NO_TOOL_QUIET_TIMEOUT
-    };
-    if last_assistant_content_at.elapsed() < quiet_timeout {
-        return;
-    }
-    let completion_turn_id = active_turn_id
-        .clone()
-        .unwrap_or_else(|| format!("unidentified-{}", unix_epoch_ms()));
-    completions.push(CodexAssistantCompletion {
-        message_id: format!("codex-turn:{completion_turn_id}"),
-        completed_at_ms: unix_epoch_ms(),
-    });
-    *prompt_completed = true;
-    *active_turn_id = None;
-    turn_tracker.assistant_content_after_latest_tool = false;
-    turn_tracker.last_assistant_content_at = None;
 }
 
 fn trace_codex_tool_item(label: &str, item: &Value) {
@@ -2172,7 +2068,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_completion_requires_quiet_window_before_prompt_completion() {
+    fn turn_completion_marks_prompt_complete_immediately() {
         let mut active_turn_id = Some("turn-1".to_string());
         let mut turn_tracker = CodexTurnTracker::default();
         let mut text_items = BTreeMap::new();
@@ -2202,9 +2098,9 @@ mod tests {
             &mut resolved_usage,
         );
 
-        assert!(!prompt_completed);
-        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
-        assert!(completions.is_empty());
+        assert!(prompt_completed);
+        assert_eq!(active_turn_id, None);
+        assert_eq!(completions.len(), 1);
 
         flush_quiet_terminal_for_test(
             &mut active_turn_id,
@@ -2219,7 +2115,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_start_after_terminal_candidate_disarms_prompt_completion() {
+    fn terminal_completion_is_authoritative_even_if_late_tool_output_arrives() {
         let mut active_turn_id = Some("turn-1".to_string());
         let mut turn_tracker = CodexTurnTracker::default();
         let mut text_items = BTreeMap::new();
@@ -2300,9 +2196,9 @@ mod tests {
             &mut terminal_failure,
         );
 
-        assert!(!prompt_completed);
-        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
-        assert!(completions.is_empty());
+        assert!(prompt_completed);
+        assert_eq!(active_turn_id, None);
+        assert_eq!(completions.len(), 1);
     }
 
     #[test]
@@ -2390,9 +2286,9 @@ mod tests {
             &mut prompt_completed,
             &mut terminal_failure,
         );
-        assert!(!prompt_completed);
-        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
-        assert!(completions.is_empty());
+        assert!(prompt_completed);
+        assert_eq!(active_turn_id, None);
+        assert_eq!(completions.len(), 1);
 
         apply_notification(
             CodexNotification::AgentMessageDelta {
@@ -2564,7 +2460,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_assistant_item_after_tools_infers_prompt_completion_after_quiet() {
+    fn completed_assistant_item_after_tools_does_not_infer_prompt_completion() {
         let mut active_turn_id = Some("turn-1".to_string());
         let mut turn_tracker = CodexTurnTracker::default();
         let mut text_items = BTreeMap::new();
@@ -2646,14 +2542,13 @@ mod tests {
             &mut terminal_failure,
         );
 
-        assert!(prompt_completed);
-        assert_eq!(active_turn_id, None);
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].message_id, "codex-turn:turn-1");
+        assert!(!prompt_completed);
+        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+        assert!(completions.is_empty());
     }
 
     #[test]
-    fn streamed_assistant_content_after_tools_infers_prompt_completion_after_quiet() {
+    fn streamed_assistant_content_after_tools_does_not_infer_prompt_completion() {
         let mut active_turn_id = Some("turn-1".to_string());
         let mut turn_tracker = CodexTurnTracker::default();
         let mut text_items = BTreeMap::new();
@@ -2730,14 +2625,13 @@ mod tests {
             &mut terminal_failure,
         );
 
-        assert!(prompt_completed);
-        assert_eq!(active_turn_id, None);
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].message_id, "codex-turn:turn-1");
+        assert!(!prompt_completed);
+        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+        assert!(completions.is_empty());
     }
 
     #[test]
-    fn tool_start_after_inferred_assistant_completion_disarms_prompt_completion() {
+    fn tool_start_after_assistant_content_still_requires_terminal_completion() {
         let mut active_turn_id = Some("turn-1".to_string());
         let mut turn_tracker = CodexTurnTracker::default();
         let mut text_items = BTreeMap::new();

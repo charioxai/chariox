@@ -4,7 +4,7 @@ This page describes the current local protocol between the Arroba Kernel and the
 
 It reflects the current implementation, not the long-term remote/federated design.
 
-Current shared local daemon protocol version: `2`.
+Current shared local daemon protocol version: `4`.
 
 Primary implementation sources:
 
@@ -158,6 +158,10 @@ Payload:
 - `session`
 - `provider_run`
 - `agent_activity`
+
+`agent_activity` is the canonical runtime-status source. When a prompt is active it includes
+`active_turn` with the kernel prompt id, provider run id, and current prompt status. Clients must
+not infer IDLE/WORKING from assistant text events.
 
 The session snapshot is also how the CLI hydrates workflow definitions and other current workspace state on attach/rejoin.
 

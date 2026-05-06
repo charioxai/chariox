@@ -1097,26 +1097,6 @@ impl KernelRuntimeOwnedState {
             });
     }
 
-    pub(super) fn note_prompt_completion_candidate(&self, provider_run_id: &str) {
-        let now = Instant::now();
-        self.prompt_activity
-            .write()
-            .entry(provider_run_id.to_string())
-            .and_modify(|state| {
-                if !state.settlement_requested {
-                    state.last_output_at = Some(now);
-                    state.settlement_requested = true;
-                }
-                state.completion_recorded = true;
-            })
-            .or_insert(crate::app::ActivePromptState {
-                last_output_at: Some(now),
-                saw_response_content: false,
-                completion_recorded: true,
-                settlement_requested: true,
-            });
-    }
-
     pub(super) fn prompt_should_settle(&self, provider_run_id: &str) -> bool {
         self.prompt_activity
             .read()

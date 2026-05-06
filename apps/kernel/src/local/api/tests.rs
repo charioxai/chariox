@@ -46,7 +46,7 @@ use super::{
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 2);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 4);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",

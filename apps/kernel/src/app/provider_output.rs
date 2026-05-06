@@ -183,7 +183,9 @@ impl<'a> ProviderOutputPump<'a> {
             {
                 return Ok(Vec::new());
             }
-            provider_run = self.context.resume_detached_provider_run(request.provider_run_id)?;
+            provider_run = self
+                .context
+                .resume_detached_provider_run(request.provider_run_id)?;
             crate::logging::warn_with_fields(
                 "daemon.provider_output",
                 "resumed parked provider run that still had an active prompt",
@@ -577,7 +579,8 @@ impl<'a> ProviderOutputPumpContext<'a> {
         session_id: &str,
         provider_run: &RuntimeProviderRun,
     ) -> Result<bool, DaemonError> {
-        self.app.provider_run_has_active_prompt(session_id, provider_run)
+        self.app
+            .provider_run_has_active_prompt(session_id, provider_run)
     }
 
     fn resume_detached_provider_run(
@@ -834,26 +837,6 @@ impl<'a> ProviderOutputPumpContext<'a> {
         }
     }
 
-    fn note_prompt_completion_candidate(&self, provider_run_id: &str) {
-        let now = Instant::now();
-        self.prompt_activity
-            .write()
-            .entry(provider_run_id.to_string())
-            .and_modify(|state| {
-                if !state.settlement_requested {
-                    state.last_output_at = Some(now);
-                    state.settlement_requested = true;
-                }
-                state.completion_recorded = true;
-            })
-            .or_insert(crate::app::ActivePromptState {
-                last_output_at: Some(now),
-                saw_response_content: false,
-                completion_recorded: true,
-                settlement_requested: true,
-            });
-    }
-
     fn maybe_complete_active_prompt(
         &mut self,
         session_id: &str,
@@ -889,10 +872,53 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 self.maybe_complete_active_prompt(session_id, provider_run_id)?;
             }
         } else if prompt_completed {
-            self.note_prompt_completion_candidate(provider_run_id);
-            self.maybe_complete_active_prompt(session_id, provider_run_id)?;
+            if self.workflow_prompt_is_waiting_for_completion_output(session_id, provider_run_id)? {
+                self.note_prompt_settlement_requested(provider_run_id);
+                let _ = crate::app::KernelSessionReadService::new(self.app)
+                    .session_snapshot(session_id);
+                return Ok(());
+            }
+            self.settle_prompt_by_status(session_id, provider_run_id)?;
         }
         Ok(())
+    }
+
+    fn workflow_prompt_is_waiting_for_completion_output(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
+            return Ok(false);
+        };
+        if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
+            return Ok(false);
+        }
+        Ok(
+            !crate::app::workflow_runtime::workflow_prompt_has_completion_output_from_runtime(
+                self.app,
+                session_id,
+                &prompt,
+                Some(provider_run_id),
+            ),
+        )
+    }
+
+    fn note_prompt_settlement_requested(&self, provider_run_id: &str) {
+        self.prompt_activity
+            .write()
+            .entry(provider_run_id.to_string())
+            .and_modify(|state| {
+                state.last_output_at = Some(Instant::now());
+                state.saw_response_content = true;
+                state.settlement_requested = true;
+            })
+            .or_insert(crate::app::ActivePromptState {
+                last_output_at: Some(Instant::now()),
+                saw_response_content: true,
+                completion_recorded: false,
+                settlement_requested: true,
+            });
     }
 
     fn settle_prompt_by_status(

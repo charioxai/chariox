@@ -203,6 +203,13 @@ export type AgentRuntimeActivity = {
   status: "idle" | "working" | "error"
   prompt_status: "none" | "queued" | "running" | "cancelling" | "settling"
   busy: boolean
+  active_turn?: AgentActiveTurn | null
+}
+
+export type AgentActiveTurn = {
+  prompt_id: string
+  provider_run_id?: string | null
+  status: "none" | "queued" | "running" | "cancelling" | "settling"
 }
 
 export type RuntimeInteraction = {
@@ -605,7 +612,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 2
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 4
 
 export type ProviderProcessInfo = {
   process_id: string

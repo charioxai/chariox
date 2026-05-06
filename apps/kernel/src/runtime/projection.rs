@@ -69,6 +69,16 @@ pub struct AgentRuntimeActivity {
     pub status: AgentRuntimeStatus,
     pub prompt_status: AgentPromptRuntimeStatus,
     pub busy: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_turn: Option<AgentActiveTurnProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentActiveTurnProjection {
+    pub prompt_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_run_id: Option<String>,
+    pub status: AgentPromptRuntimeStatus,
 }
 
 #[derive(Clone)]
@@ -1067,15 +1077,18 @@ fn agent_activity_for_session(
                 }
             }
         };
-        let provider_busy = app
-            .providers()
-            .get_run_for_agent(session.id(), agent.id())
-            .is_some_and(|run| {
-                matches!(
-                    run.state(),
-                    ProviderRunState::Starting | ProviderRunState::Running
-                ) && active_prompt.is_some()
-            });
+        let provider_run = app.providers().get_run_for_agent(session.id(), agent.id());
+        let provider_busy = provider_run.as_ref().is_some_and(|run| {
+            matches!(
+                run.state(),
+                ProviderRunState::Starting | ProviderRunState::Running
+            ) && active_prompt.is_some()
+        });
+        let active_turn = active_prompt.map(|prompt| AgentActiveTurnProjection {
+            prompt_id: prompt.id().to_string(),
+            provider_run_id: provider_run.as_ref().map(|run| run.id().to_string()),
+            status: prompt_status.clone(),
+        });
         let prompt_busy = !matches!(prompt_status, AgentPromptRuntimeStatus::None);
         let agent_busy =
             agent.is_processing() || agent.state() == AgentState::Working || provider_busy;
@@ -1092,6 +1105,7 @@ fn agent_activity_for_session(
                 busy: status == AgentRuntimeStatus::Working,
                 status,
                 prompt_status,
+                active_turn,
             },
         );
     }

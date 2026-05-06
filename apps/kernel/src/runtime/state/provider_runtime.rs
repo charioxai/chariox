@@ -642,10 +642,40 @@ impl KernelRuntimeState {
             });
         }
 
-        if prompt_completed {
-            owned.note_prompt_completion_candidate(provider_run_id);
+        if prompt_completed
+            && !force
+            && active_prompt.workflow_run_id().is_some()
+            && active_prompt.workflow_node_run_id().is_some()
+            && !owned.workflow_prompt_has_completion_output(
+                session_id,
+                active_prompt
+                    .workflow_run_id()
+                    .expect("workflow run id checked"),
+                active_prompt
+                    .workflow_node_run_id()
+                    .expect("workflow node run id checked"),
+                provider_run_id,
+            )
+        {
+            owned.note_prompt_settlement_requested(provider_run_id);
+            let _ = owned.session_snapshot(session_id);
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "provider completed workflow prompt before workflow output",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "prompt_id": active_prompt.id(),
+                }),
+            );
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: true,
+                started_next_prompt: false,
+            });
         }
-        if !force && !owned.prompt_should_settle(provider_run_id) {
+
+        if !force && !prompt_completed && !owned.prompt_should_settle(provider_run_id) {
             crate::logging::debug_with_fields(
                 "daemon.provider",
                 "settle provider prompt skipped",
@@ -1314,7 +1344,6 @@ impl KernelRuntimeState {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
     use tokio::sync::Mutex;
 
     async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
@@ -1362,8 +1391,7 @@ mod tests {
             .expect("attachment should attach");
         let second_agent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
-                crate::agent::CreateAgentRequest::new(session.id(), "codex")
-                    .with_alias("second"),
+                crate::agent::CreateAgentRequest::new(session.id(), "codex").with_alias("second"),
             )
             .expect("second agent should spawn");
         let idle_agent = crate::app::KernelSessionService::new(&mut app)
@@ -1448,7 +1476,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_completed_signal_waits_for_idle_before_settling_prompt() {
+    async fn provider_completed_signal_settles_matching_active_prompt() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1494,55 +1522,6 @@ mod tests {
             .expect("provider completion signal should be accepted");
         assert!(first_settlement.had_active_prompt);
         assert!(!first_settlement.started_next_prompt);
-        assert!(runtime
-            .owned
-            .session_store
-            .get_session(session.id())
-            .expect("session should exist")
-            .active_prompt_for_agent(agent.id())
-            .is_some());
-
-        let records_after_completion_signal = runtime
-            .apply_owned_structured_output_batch(
-                session.id(),
-                run.id(),
-                vec![attachment.id().to_string()],
-                crate::provider::ProviderPromptSignalBatch {
-                    chunks: vec![crate::provider::ProviderPromptChunk {
-                        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
-                        merge_key: Some("late-output".to_string()),
-                        bytes: b"late output after provider completion\n".to_vec(),
-                    }],
-                    ..crate::provider::ProviderPromptSignalBatch::default()
-                },
-            )
-            .await
-            .expect("late structured output should still be applied");
-        assert_eq!(records_after_completion_signal.len(), 1);
-        assert!(runtime
-            .owned
-            .session_store
-            .get_session(session.id())
-            .expect("session should exist")
-            .active_prompt_for_agent(agent.id())
-            .is_some());
-
-        {
-            let mut activity = runtime.owned.prompt_activity.write();
-            let state = activity
-                .get_mut(run.id())
-                .expect("completion candidate should keep prompt activity");
-            assert!(state.completion_recorded);
-            assert!(state.settlement_requested);
-            state.last_output_at =
-                Some(Instant::now() - runtime.owned.prompt_idle_timeout - Duration::from_millis(1));
-        }
-
-        let final_settlement = runtime
-            .settle_owned_provider_prompt(session.id(), run.id(), false, false)
-            .await
-            .expect("idle completion should settle the active prompt");
-        assert!(final_settlement.had_active_prompt);
         assert!(runtime
             .owned
             .session_store
