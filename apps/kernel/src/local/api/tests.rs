@@ -43,12 +43,12 @@ use super::{
     RunShellCapabilityRequest, ShowWorkspaceLinkRequest, SpawnAgentRequest,
     StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
     UpdateAgentProfileRequest, UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
-    LOCAL_DAEMON_PROTOCOL_VERSION,
+    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 9);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 10);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -91,6 +91,50 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "bb7a57b01ed4658729be85e00a5e5ae23f877b8a19973ac9f007c01d45ca1335"
+    );
+
+    let listing = WorkspaceRepoFileListing {
+        workspace_id: "workspace-1".to_string(),
+        worktree_id: "worktree-1".to_string(),
+        path_prefix: "src".to_string(),
+        compare_ref: "origin/main".to_string(),
+        total_entries: 2,
+        truncated: true,
+        entries: vec![WorkspaceRepoFileEntry {
+            path: "src/app.rs".to_string(),
+            name: "app.rs".to_string(),
+            kind: "file".to_string(),
+            changed: true,
+            status: Some("modified".to_string()),
+            additions: 3,
+            deletions: 1,
+        }],
+        generated_at_ms: 1234,
+    };
+    let listing_snapshot =
+        serde_json::to_value(LocalDaemonResponse::WorkspaceFilesListed { listing })
+            .expect("workspace listing should serialize");
+    let listing_payload = listing_snapshot
+        .pointer("/WorkspaceFilesListed/listing")
+        .expect("workspace listing payload should serialize");
+    assert_eq!(
+        listing_payload.pointer("/compare_ref"),
+        Some(&serde_json::json!("origin/main"))
+    );
+    assert_eq!(
+        listing_payload.pointer("/total_entries"),
+        Some(&serde_json::json!(2))
+    );
+    assert_eq!(
+        listing_payload.pointer("/truncated"),
+        Some(&serde_json::json!(true))
+    );
+    let serialized =
+        serde_json::to_string(listing_payload).expect("workspace listing snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "d53bd6870d6a9236c231fcfaafe4c99d893029c6fed44efd31642cdc57adc918"
     );
 }
 
@@ -4400,6 +4444,9 @@ fn local_request_api_lists_workspace_repo_files() {
     match root_response {
         LocalDaemonResponse::WorkspaceFilesListed { listing } => {
             assert_eq!(listing.path_prefix, "");
+            assert_eq!(listing.compare_ref, "HEAD");
+            assert_eq!(listing.total_entries, 2);
+            assert!(!listing.truncated);
             assert!(listing
                 .entries
                 .iter()
@@ -4423,12 +4470,36 @@ fn local_request_api_lists_workspace_repo_files() {
     match nested_response {
         LocalDaemonResponse::WorkspaceFilesListed { listing } => {
             assert_eq!(listing.path_prefix, "src/app");
+            assert_eq!(listing.compare_ref, "HEAD");
+            assert_eq!(listing.total_entries, 1);
+            assert!(!listing.truncated);
             assert!(listing.entries.iter().any(|entry| {
                 entry.name == "main.rs"
                     && entry.kind == "file"
                     && entry.status.as_deref() == Some("modified")
                     && entry.additions == 1
             }));
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let limited_response = harness
+        .dispatch(LocalDaemonRequest::ListWorkspaceFiles(
+            ListWorkspaceFilesRequest {
+                workspace_id: worktree_root.display().to_string(),
+                worktree_id: worktree_root.display().to_string(),
+                path_prefix: None,
+                compare_ref: Some("HEAD".to_string()),
+                limit: Some(1),
+            },
+        ))
+        .expect("limited workspace files should list");
+
+    match limited_response {
+        LocalDaemonResponse::WorkspaceFilesListed { listing } => {
+            assert_eq!(listing.total_entries, 2);
+            assert!(listing.truncated);
+            assert_eq!(listing.entries.len(), 1);
         }
         _ => panic!("unexpected local response"),
     }

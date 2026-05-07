@@ -4,7 +4,7 @@ This page describes the current local protocol between the Arroba Kernel and the
 
 It reflects the current implementation, not the long-term remote/federated design.
 
-Current shared local daemon protocol version: `9`.
+Current shared local daemon protocol version: `10`.
 
 Primary implementation sources:
 
@@ -77,6 +77,8 @@ When an error is present:
 
 ## Kernel Event IDs
 
+Protocol version `10` adds resolved compare-ref and truncation metadata to `WorkspaceFilesListed` responses.
+
 Protocol version `9` adds `RunAgentUtility` for hidden kernel-owned agent utilities.
 
 Protocol version `8` adds Workspace Git action requests for commit-message generation, commit, push, and commit-and-push.
@@ -134,6 +136,7 @@ Response payload:
 ## Workspace Repo Files
 
 Protocol version `7` adds `ListWorkspaceFiles` for lazy repo tree inspection.
+Protocol version `10` adds `compare_ref`, `total_entries`, and `truncated` to the listing so clients can detect the exact diff base and bounded result sets.
 The request is shallow: pass a `path_prefix` to list only one folder level.
 The response includes changed flags and line counts relative to the same `compare_ref` used by `GetWorkspaceGitOverview`.
 
@@ -160,6 +163,9 @@ Response payload:
       "workspace_id": "/Users/miguel/arroba",
       "worktree_id": "/Users/miguel/arroba",
       "path_prefix": "apps/kernel",
+      "compare_ref": "origin/main",
+      "total_entries": 42,
+      "truncated": false,
       "entries": [
         {
           "path": "apps/kernel/src",

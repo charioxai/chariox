@@ -633,6 +633,9 @@ export type WorkspaceRepoFileListing = {
   workspace_id: string
   worktree_id: string
   path_prefix: string
+  compare_ref: string
+  total_entries: number
+  truncated: boolean
   entries: WorkspaceRepoFileEntry[]
   generated_at_ms: number
 }
@@ -672,7 +675,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 9
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 10
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

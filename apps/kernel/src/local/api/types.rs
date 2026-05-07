@@ -3,7 +3,7 @@ use super::*;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 9;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -396,6 +396,9 @@ pub struct WorkspaceRepoFileListing {
     pub workspace_id: String,
     pub worktree_id: String,
     pub path_prefix: String,
+    pub compare_ref: String,
+    pub total_entries: u32,
+    pub truncated: bool,
     pub entries: Vec<WorkspaceRepoFileEntry>,
     pub generated_at_ms: u64,
 }

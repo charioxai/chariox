@@ -6372,11 +6372,16 @@ fn list_workspace_repo_files(
             .then_with(|| left.name.cmp(&right.name))
     });
     let limit = limit.unwrap_or(400).clamp(1, 1000) as usize;
+    let total_entries = entries.len();
+    let truncated = total_entries > limit;
     entries.truncate(limit);
     Ok(WorkspaceRepoFileListing {
         workspace_id: workspace_id.to_string(),
         worktree_id: worktree_id.to_string(),
         path_prefix: prefix,
+        compare_ref,
+        total_entries: total_entries.min(u32::MAX as usize) as u32,
+        truncated,
         entries,
         generated_at_ms: current_unix_ms(),
     })
@@ -6623,7 +6628,7 @@ fn workspace_git_compare_refs(
 
 fn workspace_git_tracked_files(worktree_path: &str) -> Result<Vec<String>, DaemonError> {
     let output = std::process::Command::new("git")
-        .args(["ls-files", "-z"])
+        .args(["ls-files", "-z", "-c", "-o", "--exclude-standard"])
         .current_dir(worktree_path)
         .output()
         .map_err(|error| DaemonError::LocalTransport {
@@ -6745,7 +6750,7 @@ fn workspace_git_numstat(
     compare_ref: &str,
 ) -> Result<Vec<WorkspaceGitFileChange>, DaemonError> {
     let output = std::process::Command::new("git")
-        .args(["diff", "--numstat", compare_ref, "--"])
+        .args(["diff", "--numstat", "--find-renames", compare_ref, "--"])
         .current_dir(worktree_path)
         .output()
         .map_err(|error| DaemonError::LocalTransport {
