@@ -1168,6 +1168,26 @@ export function listWorkspaceFilesRequest(
   }
 }
 
+export function getWorkspaceFileContentRequest(
+  workspaceId: string,
+  worktreeId: string,
+  path: string,
+  compareRef?: string | null,
+  knownFingerprint?: string | null,
+  maxBytes?: number | null,
+) {
+  return {
+    GetWorkspaceFileContent: {
+      workspace_id: workspaceId,
+      worktree_id: worktreeId,
+      path: path.trim(),
+      compare_ref: compareRef?.trim() || null,
+      known_fingerprint: knownFingerprint?.trim() || null,
+      max_bytes: maxBytes ?? null,
+    },
+  }
+}
+
 export function generateWorkspaceCommitMessageRequest(
   workspaceId: string,
   worktreeId: string,

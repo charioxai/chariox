@@ -4,7 +4,7 @@ This page describes the current local protocol between the Arroba Kernel and the
 
 It reflects the current implementation, not the long-term remote/federated design.
 
-Current shared local daemon protocol version: `10`.
+Current shared local daemon protocol version: `11`.
 
 Primary implementation sources:
 
@@ -77,6 +77,8 @@ When an error is present:
 
 ## Kernel Event IDs
 
+Protocol version `11` adds `GetWorkspaceFileContent` for read-only file preview, including language metadata, bounded content, fingerprint refresh, and not-modified responses.
+
 Protocol version `10` adds resolved compare-ref and truncation metadata to `WorkspaceFilesListed` responses.
 
 Protocol version `9` adds `RunAgentUtility` for hidden kernel-owned agent utilities.
@@ -137,6 +139,7 @@ Response payload:
 
 Protocol version `7` adds `ListWorkspaceFiles` for lazy repo tree inspection.
 Protocol version `10` adds `compare_ref`, `total_entries`, and `truncated` to the listing so clients can detect the exact diff base and bounded result sets.
+Protocol version `11` adds `GetWorkspaceFileContent` for bounded read-only previews of files from the same repo/worktree context.
 The request is shallow: pass a `path_prefix` to list only one folder level.
 The response includes changed flags and line counts relative to the same `compare_ref` used by `GetWorkspaceGitOverview`.
 
@@ -179,6 +182,66 @@ Response payload:
       ],
       "generated_at_ms": 1778080000000
     }
+  }
+}
+```
+
+File content request payload:
+
+```json
+{
+  "GetWorkspaceFileContent": {
+    "workspace_id": "/Users/miguel/arroba",
+    "worktree_id": "/Users/miguel/arroba",
+    "path": "apps/kernel/src/runtime/router.rs",
+    "compare_ref": "origin/main",
+    "known_fingerprint": "optional-last-fingerprint",
+    "max_bytes": 750000
+  }
+}
+```
+
+The kernel rejects absolute paths, parent-directory escapes, directories, and unreadable files. Text files return UTF-8 content; binary or non-UTF-8 files return base64 content. Clients should pass the previous `fingerprint` on refresh so unchanged open previews avoid reloading content.
+
+Response payload:
+
+```json
+{
+  "WorkspaceFileContent": {
+    "content": {
+      "workspace_id": "/Users/miguel/arroba",
+      "worktree_id": "/Users/miguel/arroba",
+      "path": "apps/kernel/src/runtime/router.rs",
+      "name": "router.rs",
+      "language": "rust",
+      "mime": "text/x-rust",
+      "encoding": "utf-8",
+      "content_text": "fn main() {}\n",
+      "size_bytes": 13,
+      "mtime_ms": 1778080000000,
+      "fingerprint": "sha256-of-path-size-mtime",
+      "sha256": "sha256-of-returned-content",
+      "truncated": false,
+      "status": "modified",
+      "additions": 23,
+      "deletions": 9,
+      "compare_ref": "origin/main",
+      "generated_at_ms": 1778080000100
+    }
+  }
+}
+```
+
+Not-modified response payload:
+
+```json
+{
+  "WorkspaceFileContentNotModified": {
+    "workspace_id": "/Users/miguel/arroba",
+    "worktree_id": "/Users/miguel/arroba",
+    "path": "apps/kernel/src/runtime/router.rs",
+    "fingerprint": "sha256-of-path-size-mtime",
+    "generated_at_ms": 1778080000200
   }
 }
 ```

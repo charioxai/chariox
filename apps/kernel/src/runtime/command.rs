@@ -476,6 +476,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateWorkspaceWorktree(_) => "workspace.worktree.create",
         LocalDaemonRequest::GetWorkspaceGitOverview(_) => "workspace.git.overview",
         LocalDaemonRequest::ListWorkspaceFiles(_) => "workspace.files.list",
+        LocalDaemonRequest::GetWorkspaceFileContent(_) => "workspace.file.content",
         LocalDaemonRequest::RunAgentUtility(_) => "agent.utility.run",
         LocalDaemonRequest::GenerateWorkspaceCommitMessage(_) => {
             "workspace.commit_message.generate"

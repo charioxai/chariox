@@ -3,7 +3,7 @@ use super::*;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 10;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -267,6 +267,19 @@ pub struct ListWorkspaceFilesRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetWorkspaceFileContentRequest {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compare_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GenerateWorkspaceCommitMessageRequest {
     pub workspace_id: String,
     pub worktree_id: String,
@@ -400,6 +413,33 @@ pub struct WorkspaceRepoFileListing {
     pub total_entries: u32,
     pub truncated: bool,
     pub entries: Vec<WorkspaceRepoFileEntry>,
+    pub generated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceFileContent {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    pub path: String,
+    pub name: String,
+    pub language: String,
+    pub mime: String,
+    pub encoding: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_base64: Option<String>,
+    pub size_bytes: u64,
+    pub mtime_ms: u64,
+    pub fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    pub additions: u32,
+    pub deletions: u32,
+    pub compare_ref: String,
     pub generated_at_ms: u64,
 }
 
@@ -1678,6 +1718,7 @@ pub enum LocalDaemonRequest {
     CreateWorkspaceWorktree(CreateWorkspaceWorktreeRequest),
     GetWorkspaceGitOverview(GetWorkspaceGitOverviewRequest),
     ListWorkspaceFiles(ListWorkspaceFilesRequest),
+    GetWorkspaceFileContent(GetWorkspaceFileContentRequest),
     RunAgentUtility(RunAgentUtilityRequest),
     GenerateWorkspaceCommitMessage(GenerateWorkspaceCommitMessageRequest),
     CommitWorkspaceChanges(CommitWorkspaceChangesRequest),
@@ -2000,6 +2041,16 @@ pub enum LocalDaemonResponse {
     },
     WorkspaceFilesListed {
         listing: WorkspaceRepoFileListing,
+    },
+    WorkspaceFileContent {
+        content: WorkspaceFileContent,
+    },
+    WorkspaceFileContentNotModified {
+        workspace_id: String,
+        worktree_id: String,
+        path: String,
+        fingerprint: String,
+        generated_at_ms: u64,
     },
     AgentUtilityCompleted {
         result: AgentUtilityResult,

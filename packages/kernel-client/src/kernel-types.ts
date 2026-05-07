@@ -640,6 +640,28 @@ export type WorkspaceRepoFileListing = {
   generated_at_ms: number
 }
 
+export type WorkspaceFileContent = {
+  workspace_id: string
+  worktree_id: string
+  path: string
+  name: string
+  language: string
+  mime: string
+  encoding: "utf-8" | "base64" | string
+  content_text?: string | null
+  content_base64?: string | null
+  size_bytes: number
+  mtime_ms: number
+  fingerprint: string
+  sha256?: string | null
+  truncated: boolean
+  status?: string | null
+  additions: number
+  deletions: number
+  compare_ref: string
+  generated_at_ms: number
+}
+
 export type WorkspaceGitActionResult = {
   workspace_id: string
   worktree_id: string
@@ -675,7 +697,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 10
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 11
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

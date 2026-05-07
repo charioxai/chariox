@@ -31,24 +31,25 @@ use super::{
     CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
     DetachWorkspaceLinkRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
     GetDaemonHealthRequest, GetSessionStateRequest, GetWaitingRoomInventoryRequest,
-    GetWaitingRoomPublicSnapshotRequest, GetWorkflowRunRequest, GetWorkspaceGitOverviewRequest,
-    InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest, JoinSessionInviteRequest,
-    JoinTerminalPairingLinkRequest, LaunchProviderRunRequest, ListAgentsRequest,
-    ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, ListSessionMembersRequest,
-    ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceFilesRequest,
-    ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-    PushWorkspaceBranchRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
-    RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, ResolveSessionRequest,
-    ResolveWorkflowRequest, ResumeWorkflowRunRequest, RevokeSessionInviteRequest,
-    RunShellCapabilityRequest, ShowWorkspaceLinkRequest, SpawnAgentRequest,
-    StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
+    GetWaitingRoomPublicSnapshotRequest, GetWorkflowRunRequest, GetWorkspaceFileContentRequest,
+    GetWorkspaceGitOverviewRequest, InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest,
+    JoinSessionInviteRequest, JoinTerminalPairingLinkRequest, LaunchProviderRunRequest,
+    ListAgentsRequest, ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
+    ListSessionMembersRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
+    ListWorkspaceFilesRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
+    PollRuntimeNoticesRequest, PushWorkspaceBranchRequest, ReadDirectoryTreeCapabilityRequest,
+    ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
+    ResolveSessionRequest, ResolveWorkflowRequest, ResumeWorkflowRunRequest,
+    RevokeSessionInviteRequest, RunShellCapabilityRequest, ShowWorkspaceLinkRequest,
+    SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
     UpdateAgentProfileRequest, UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
-    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
+    WorkspaceFileContent, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
+    LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 10);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 11);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -135,6 +136,53 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "d53bd6870d6a9236c231fcfaafe4c99d893029c6fed44efd31642cdc57adc918"
+    );
+
+    let content = WorkspaceFileContent {
+        workspace_id: "workspace-1".to_string(),
+        worktree_id: "worktree-1".to_string(),
+        path: "src/app.rs".to_string(),
+        name: "app.rs".to_string(),
+        language: "rust".to_string(),
+        mime: "text/x-rust".to_string(),
+        encoding: "utf-8".to_string(),
+        content_text: Some("fn main() {}\n".to_string()),
+        content_base64: None,
+        size_bytes: 13,
+        mtime_ms: 1235,
+        fingerprint: "fingerprint-1".to_string(),
+        sha256: Some("sha256-1".to_string()),
+        truncated: false,
+        status: Some("modified".to_string()),
+        additions: 3,
+        deletions: 1,
+        compare_ref: "origin/main".to_string(),
+        generated_at_ms: 1236,
+    };
+    let content_snapshot =
+        serde_json::to_value(LocalDaemonResponse::WorkspaceFileContent { content })
+            .expect("workspace file content should serialize");
+    let content_payload = content_snapshot
+        .pointer("/WorkspaceFileContent/content")
+        .expect("workspace file content payload should serialize");
+    assert_eq!(
+        content_payload.pointer("/language"),
+        Some(&serde_json::json!("rust"))
+    );
+    assert_eq!(
+        content_payload.pointer("/encoding"),
+        Some(&serde_json::json!("utf-8"))
+    );
+    assert_eq!(
+        content_payload.pointer("/content_text"),
+        Some(&serde_json::json!("fn main() {}\n"))
+    );
+    let serialized = serde_json::to_string(content_payload)
+        .expect("workspace file content snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "a2bff9ada5aa65ea753652ae69c8b574759bfcd50962dd07015c5958908dfdd4"
     );
 }
 
@@ -4500,6 +4548,107 @@ fn local_request_api_lists_workspace_repo_files() {
             assert_eq!(listing.total_entries, 2);
             assert!(listing.truncated);
             assert_eq!(listing.entries.len(), 1);
+        }
+        _ => panic!("unexpected local response"),
+    }
+}
+
+#[test]
+fn local_request_api_reads_workspace_file_content() {
+    let worktree_root = std::env::temp_dir().join("arroba-workspace-file-content-test");
+    let _ = std::fs::remove_dir_all(&worktree_root);
+    std::fs::create_dir_all(worktree_root.join("src/app")).expect("worktree should exist");
+    std::fs::write(worktree_root.join("README.md"), "# hello\n").expect("file should exist");
+    std::fs::write(worktree_root.join("src/app/main.rs"), "fn main() {}\n")
+        .expect("file should exist");
+    run_test_git(&worktree_root, &["init", "-b", "main"]);
+    run_test_git(
+        &worktree_root,
+        &["config", "user.email", "agent@example.com"],
+    );
+    run_test_git(&worktree_root, &["config", "user.name", "Agent"]);
+    run_test_git(&worktree_root, &["add", "."]);
+    run_test_git(&worktree_root, &["commit", "-m", "seed"]);
+    std::fs::write(
+        worktree_root.join("src/app/main.rs"),
+        "fn main() {}\nfn changed() {}\n",
+    )
+    .expect("file should update");
+
+    let harness = LocalRouterTestHarness::new();
+    let response = harness
+        .dispatch(LocalDaemonRequest::GetWorkspaceFileContent(
+            GetWorkspaceFileContentRequest {
+                workspace_id: worktree_root.display().to_string(),
+                worktree_id: worktree_root.display().to_string(),
+                path: "src/app/main.rs".to_string(),
+                compare_ref: Some("HEAD".to_string()),
+                known_fingerprint: None,
+                max_bytes: None,
+            },
+        ))
+        .expect("workspace file content should load");
+
+    let fingerprint = match response {
+        LocalDaemonResponse::WorkspaceFileContent { content } => {
+            assert_eq!(content.path, "src/app/main.rs");
+            assert_eq!(content.name, "main.rs");
+            assert_eq!(content.language, "rust");
+            assert_eq!(content.encoding, "utf-8");
+            assert_eq!(
+                content.content_text.as_deref(),
+                Some("fn main() {}\nfn changed() {}\n")
+            );
+            assert_eq!(content.compare_ref, "HEAD");
+            assert_eq!(content.status.as_deref(), Some("modified"));
+            assert_eq!(content.additions, 1);
+            assert!(!content.truncated);
+            assert!(content.sha256.is_some());
+            content.fingerprint
+        }
+        _ => panic!("unexpected local response"),
+    };
+
+    let not_modified_response = harness
+        .dispatch(LocalDaemonRequest::GetWorkspaceFileContent(
+            GetWorkspaceFileContentRequest {
+                workspace_id: worktree_root.display().to_string(),
+                worktree_id: worktree_root.display().to_string(),
+                path: "src/app/main.rs".to_string(),
+                compare_ref: Some("HEAD".to_string()),
+                known_fingerprint: Some(fingerprint.clone()),
+                max_bytes: None,
+            },
+        ))
+        .expect("workspace file content fingerprint should be honored");
+    match not_modified_response {
+        LocalDaemonResponse::WorkspaceFileContentNotModified {
+            path,
+            fingerprint: response_fingerprint,
+            ..
+        } => {
+            assert_eq!(path, "src/app/main.rs");
+            assert_eq!(response_fingerprint, fingerprint);
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let truncated_response = harness
+        .dispatch(LocalDaemonRequest::GetWorkspaceFileContent(
+            GetWorkspaceFileContentRequest {
+                workspace_id: worktree_root.display().to_string(),
+                worktree_id: worktree_root.display().to_string(),
+                path: "src/app/main.rs".to_string(),
+                compare_ref: Some("HEAD".to_string()),
+                known_fingerprint: None,
+                max_bytes: Some(5),
+            },
+        ))
+        .expect("workspace file content should truncate");
+    match truncated_response {
+        LocalDaemonResponse::WorkspaceFileContent { content } => {
+            assert!(content.truncated);
+            assert_eq!(content.content_text.as_deref(), Some("fn ma"));
         }
         _ => panic!("unexpected local response"),
     }
