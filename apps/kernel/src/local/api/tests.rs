@@ -42,14 +42,15 @@ use super::{
     ResolveSessionRequest, ResolveWorkflowRequest, ResumeWorkflowRunRequest,
     RevokeSessionInviteRequest, RunShellCapabilityRequest, ShowWorkspaceLinkRequest,
     SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
-    UpdateAgentProfileRequest, UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
-    WorkspaceFileContent, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
+    UpdateAgentProfileRequest, UpdateSessionConfigRequest, UpdateWorkflowCanvasLayoutRequest,
+    UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent, WorkspaceRepoFileEntry,
+    WorkspaceRepoFileListing,
     LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 11);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 12);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -136,6 +137,49 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "d53bd6870d6a9236c231fcfaafe4c99d893029c6fed44efd31642cdc57adc918"
+    );
+
+    let layout_request =
+        serde_json::to_value(LocalDaemonRequest::UpdateWorkflowCanvasLayout(
+            super::UpdateWorkflowCanvasLayoutRequest {
+                session_id: "session-1".to_string(),
+                workflow_ref: "workflow-1".to_string(),
+                base_layout_revision: Some(7),
+                patches: vec![
+                    crate::session::WorkflowCanvasLayoutPatch::NodePosition {
+                        node_id: "node-1".to_string(),
+                        x: 120,
+                        y: 80,
+                    },
+                    crate::session::WorkflowCanvasLayoutPatch::EndpointPosition {
+                        endpoint_id: "endpoint-1".to_string(),
+                        x: 140,
+                        y: 42,
+                    },
+                    crate::session::WorkflowCanvasLayoutPatch::EdgeWaypoints {
+                        edge_id: "edge-1".to_string(),
+                        waypoints: vec![crate::session::WorkflowCanvasPoint {
+                            x: 220,
+                            y: 80,
+                        }],
+                    },
+                ],
+            },
+        ))
+        .expect("layout request should serialize");
+    let layout_payload = layout_request
+        .pointer("/UpdateWorkflowCanvasLayout")
+        .expect("layout request payload should serialize");
+    assert_eq!(
+        layout_payload.pointer("/patches/0/kind"),
+        Some(&serde_json::json!("node_position"))
+    );
+    let serialized =
+        serde_json::to_string(layout_payload).expect("layout request snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "97cd77e97437355506f7025c38c0741de615733f823224cc850cb9d0e2885bfe"
     );
 
     let content = WorkspaceFileContent {
@@ -1623,6 +1667,49 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         LocalDaemonResponse::WorkflowEdgeAdded { edge, .. } => edge,
         _ => panic!("unexpected local response"),
     };
+
+    match harness
+        .dispatch(LocalDaemonRequest::UpdateWorkflowCanvasLayout(
+            UpdateWorkflowCanvasLayoutRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                base_layout_revision: None,
+                patches: vec![
+                    crate::session::WorkflowCanvasLayoutPatch::NodePosition {
+                        node_id: node_a.id().to_string(),
+                        x: 120,
+                        y: 80,
+                    },
+                    crate::session::WorkflowCanvasLayoutPatch::NodePosition {
+                        node_id: node_b.id().to_string(),
+                        x: 420,
+                        y: 80,
+                    },
+                    crate::session::WorkflowCanvasLayoutPatch::EndpointPosition {
+                        endpoint_id: endpoint.id().to_string(),
+                        x: 180,
+                        y: 36,
+                    },
+                ],
+            },
+        ))
+        .expect("workflow canvas layout should update")
+    {
+        LocalDaemonResponse::WorkflowCanvasLayoutUpdated {
+            layout, workflow, ..
+        } => {
+            assert_eq!(layout.revision, 1);
+            assert_eq!(layout.nodes.get(node_a.id()).map(|point| point.x), Some(120));
+            assert_eq!(
+                workflow
+                    .canvas_layout()
+                    .and_then(|stored| stored.endpoints.get(endpoint.id()))
+                    .map(|point| point.y),
+                Some(36)
+            );
+        }
+        _ => panic!("unexpected local response"),
+    }
 
     match harness
         .dispatch(LocalDaemonRequest::RemoveWorkflowEdge(

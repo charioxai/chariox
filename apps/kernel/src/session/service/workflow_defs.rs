@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::{WorkflowCanvasLayout, WorkflowCanvasLayoutPatch};
 
 impl SessionService {
     pub fn add_workflow_node(
@@ -396,6 +397,32 @@ impl SessionService {
                 workflow_id: workflow_id.clone(),
                 edge_id: edge_id.to_string(),
             })
+    }
+
+    pub fn update_workflow_canvas_layout(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        patches: Vec<WorkflowCanvasLayoutPatch>,
+    ) -> Result<WorkflowCanvasLayout, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
+        Ok(workflow.update_canvas_layout(patches))
     }
 
     pub fn create_workflow_endpoint(

@@ -886,6 +886,11 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
+            LocalDaemonRequest::UpdateWorkflowCanvasLayout(request) => {
+                let result = owned.workflow_update_canvas_layout(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
             LocalDaemonRequest::SetWorkflowFlushContext(request) => {
                 let result = owned.workflow_set_flush_context(request);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
@@ -1176,6 +1181,7 @@ fn workflow_response_session(
         | LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated { session, .. }
         | LocalDaemonResponse::WorkflowEdgeAdded { session, .. }
         | LocalDaemonResponse::WorkflowEdgeRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowCanvasLayoutUpdated { session, .. }
         | LocalDaemonResponse::WorkflowRunInvoked { session, .. }
         | LocalDaemonResponse::WorkflowRunQueued { session, .. }
         | LocalDaemonResponse::WorkflowRunCancelled { session, .. }

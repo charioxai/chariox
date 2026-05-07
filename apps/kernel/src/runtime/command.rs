@@ -568,6 +568,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SetWorkflowNodeMaxTurns(_) => "workflow_node.max_turns.set",
         LocalDaemonRequest::AddWorkflowEdge(_) => "workflow_edge.add",
         LocalDaemonRequest::RemoveWorkflowEdge(_) => "workflow_edge.remove",
+        LocalDaemonRequest::UpdateWorkflowCanvasLayout(_) => "workflow_canvas.layout.update",
         LocalDaemonRequest::SetWorkflowRunOutputSchema(_) => "workflow.run_output_schema.set",
         LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(_) => {
             "workflow.intermediate_output_schema.set"

@@ -1200,6 +1200,8 @@ pub struct WorkflowDefinition {
     created_at_ms: u64,
     #[serde(default)]
     revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    canvas_layout: Option<WorkflowCanvasLayout>,
     #[serde(default = "default_workflow_flush_agent_context_before_run")]
     flush_agent_context_before_run: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1218,6 +1220,7 @@ impl WorkflowDefinition {
             alias,
             created_at_ms: unix_epoch_ms(),
             revision: 0,
+            canvas_layout: None,
             flush_agent_context_before_run: default_workflow_flush_agent_context_before_run(),
             run_output_schema_ref: None,
             intermediate_output_schema_ref: None,
@@ -1241,6 +1244,10 @@ impl WorkflowDefinition {
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub fn canvas_layout(&self) -> Option<&WorkflowCanvasLayout> {
+        self.canvas_layout.as_ref()
     }
 
     pub fn bump_revision(&mut self) {
@@ -1308,10 +1315,32 @@ impl WorkflowDefinition {
     pub fn remove_node(&mut self, node_id: &str) -> Option<WorkflowNodeDefinition> {
         let index = self.nodes.iter().position(|node| node.id() == node_id)?;
         let removed = self.nodes.remove(index);
+        let removed_edge_ids = self
+            .edges
+            .iter()
+            .filter(|edge| edge.from_node_id() == node_id || edge.to_node_id() == node_id)
+            .map(|edge| edge.id().to_string())
+            .collect::<Vec<_>>();
+        let removed_endpoint_ids = self
+            .endpoints
+            .iter()
+            .filter(|endpoint| endpoint.entry_node_id() == node_id)
+            .map(|endpoint| endpoint.id().to_string())
+            .collect::<Vec<_>>();
         self.edges
             .retain(|edge| edge.from_node_id() != node_id && edge.to_node_id() != node_id);
         self.endpoints
             .retain(|endpoint| endpoint.entry_node_id() != node_id);
+        if let Some(layout) = self.canvas_layout.as_mut() {
+            layout.nodes.remove(node_id);
+            for edge_id in removed_edge_ids {
+                layout.edges.remove(&edge_id);
+            }
+            for endpoint_id in removed_endpoint_ids {
+                layout.endpoints.remove(&endpoint_id);
+            }
+            layout.bump_revision();
+        }
         self.bump_revision();
         Some(removed)
     }
@@ -1335,6 +1364,10 @@ impl WorkflowDefinition {
     pub fn remove_edge(&mut self, edge_id: &str) -> Option<WorkflowEdgeDefinition> {
         let index = self.edges.iter().position(|edge| edge.id() == edge_id)?;
         let edge = self.edges.remove(index);
+        if let Some(layout) = self.canvas_layout.as_mut() {
+            layout.edges.remove(edge_id);
+            layout.bump_revision();
+        }
         self.bump_revision();
         Some(edge)
     }
@@ -1366,8 +1399,75 @@ impl WorkflowDefinition {
             .iter()
             .position(|endpoint| endpoint.id() == endpoint_id)?;
         let endpoint = self.endpoints.remove(index);
+        if let Some(layout) = self.canvas_layout.as_mut() {
+            layout.endpoints.remove(endpoint_id);
+            layout.bump_revision();
+        }
         self.bump_revision();
         Some(endpoint)
+    }
+
+    pub fn update_canvas_layout(
+        &mut self,
+        patches: Vec<WorkflowCanvasLayoutPatch>,
+    ) -> WorkflowCanvasLayout {
+        let node_ids = self
+            .nodes
+            .iter()
+            .map(|node| node.id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        let edge_ids = self
+            .edges
+            .iter()
+            .map(|edge| edge.id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        let endpoint_ids = self
+            .endpoints
+            .iter()
+            .map(|endpoint| endpoint.id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        let layout = self
+            .canvas_layout
+            .get_or_insert_with(WorkflowCanvasLayout::new);
+        let mut changed = false;
+        for patch in patches {
+            match patch {
+                WorkflowCanvasLayoutPatch::NodePosition { node_id, x, y } => {
+                    if node_ids.contains(&node_id) {
+                        changed |= layout
+                            .nodes
+                            .insert(node_id, WorkflowCanvasPoint { x, y })
+                            .as_ref()
+                            .is_none_or(|existing| existing.x != x || existing.y != y);
+                    }
+                }
+                WorkflowCanvasLayoutPatch::EndpointPosition { endpoint_id, x, y } => {
+                    if endpoint_ids.contains(&endpoint_id) {
+                        changed |= layout
+                            .endpoints
+                            .insert(endpoint_id, WorkflowCanvasPoint { x, y })
+                            .as_ref()
+                            .is_none_or(|existing| existing.x != x || existing.y != y);
+                    }
+                }
+                WorkflowCanvasLayoutPatch::EdgeWaypoints { edge_id, waypoints } => {
+                    if edge_ids.contains(&edge_id) {
+                        let next = WorkflowCanvasEdgeLayout { waypoints };
+                        let previous = layout.edges.insert(edge_id, next.clone());
+                        changed |= previous.as_ref() != Some(&next);
+                    }
+                }
+            }
+        }
+        layout.nodes.retain(|node_id, _| node_ids.contains(node_id));
+        layout.edges.retain(|edge_id, _| edge_ids.contains(edge_id));
+        layout
+            .endpoints
+            .retain(|endpoint_id, _| endpoint_ids.contains(endpoint_id));
+        if changed {
+            layout.bump_revision();
+        }
+        layout.clone()
     }
 
     pub fn redacted_for_user(mut self, user_id: &str) -> Self {
@@ -1378,6 +1478,66 @@ impl WorkflowDefinition {
             .collect();
         self
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCanvasPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCanvasEdgeLayout {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waypoints: Vec<WorkflowCanvasPoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCanvasLayout {
+    pub version: u32,
+    pub revision: u64,
+    pub coordinate_space: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub nodes: std::collections::BTreeMap<String, WorkflowCanvasPoint>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub endpoints: std::collections::BTreeMap<String, WorkflowCanvasPoint>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub edges: std::collections::BTreeMap<String, WorkflowCanvasEdgeLayout>,
+}
+
+impl WorkflowCanvasLayout {
+    pub fn new() -> Self {
+        Self {
+            version: 1,
+            revision: 0,
+            coordinate_space: "workflow-canvas-v1".to_string(),
+            nodes: std::collections::BTreeMap::new(),
+            endpoints: std::collections::BTreeMap::new(),
+            edges: std::collections::BTreeMap::new(),
+        }
+    }
+
+    pub fn bump_revision(&mut self) {
+        self.revision = self.revision.saturating_add(1);
+    }
+}
+
+impl Default for WorkflowCanvasLayout {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkflowCanvasLayoutPatch {
+    NodePosition { node_id: String, x: i32, y: i32 },
+    EndpointPosition { endpoint_id: String, x: i32, y: i32 },
+    EdgeWaypoints {
+        edge_id: String,
+        #[serde(default)]
+        waypoints: Vec<WorkflowCanvasPoint>,
+    },
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]

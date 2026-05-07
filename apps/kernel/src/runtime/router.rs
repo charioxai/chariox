@@ -1835,6 +1835,15 @@ impl CommandRouter {
                 workflow: workflow.redacted_for_user(caller_user_id),
                 session: session.redacted_for_user(caller_user_id),
             },
+            LocalDaemonResponse::WorkflowCanvasLayoutUpdated {
+                layout,
+                workflow,
+                session,
+            } => LocalDaemonResponse::WorkflowCanvasLayoutUpdated {
+                layout,
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: session.redacted_for_user(caller_user_id),
+            },
             LocalDaemonResponse::WorkflowRunInvoked {
                 workflow_run,
                 workflow,
@@ -4941,6 +4950,7 @@ impl CommandRouter {
             | LocalDaemonRequest::SetWorkflowNodeMaxTurns(_)
             | LocalDaemonRequest::AddWorkflowEdge(_)
             | LocalDaemonRequest::RemoveWorkflowEdge(_)
+            | LocalDaemonRequest::UpdateWorkflowCanvasLayout(_)
             | LocalDaemonRequest::InvokeWorkflowEndpoint(_)
             | LocalDaemonRequest::ListWorkflowRuns(_)
             | LocalDaemonRequest::GetWorkflowRun(_)
@@ -5665,6 +5675,8 @@ fn waiting_room_public_workflow_summaries(
             id: workflow.id().to_string(),
             alias: workflow.alias().map(ToOwned::to_owned),
             created_at_ms: workflow.created_at_ms(),
+            revision: workflow.revision(),
+            canvas_layout: workflow.canvas_layout().cloned(),
             activity: waiting_room_workflow_activity_summary(session, workflow.id()),
             nodes: workflow
                 .nodes()
@@ -8002,6 +8014,9 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
         LocalDaemonRequest::RemoveWorkflowEdge(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::UpdateWorkflowCanvasLayout(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::InvokeWorkflowEndpoint(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -8269,6 +8284,7 @@ fn response_sessions(response: &LocalDaemonResponse) -> Vec<crate::session::Runt
         | LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated { session, .. }
         | LocalDaemonResponse::WorkflowEdgeAdded { session, .. }
         | LocalDaemonResponse::WorkflowEdgeRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowCanvasLayoutUpdated { session, .. }
         | LocalDaemonResponse::WorkflowRunInvoked { session, .. }
         | LocalDaemonResponse::WorkflowRunQueued { session, .. }
         | LocalDaemonResponse::WorkflowRunCancelled { session, .. }

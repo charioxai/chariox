@@ -24,8 +24,8 @@ use crate::session::{
     WorkflowEndpointDefinition, WorkflowLaunchPolicy, WorkflowNodeDefinition,
     WorkflowPublicationDefinition, WorkflowPublicationPairingCodeRecord,
     WorkflowPublicationSenderCredential, WorkflowPublicationTrustedSender, WorkflowRun,
-    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
-    WorkspaceLinkDefinition,
+    WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowWatchdogDefinition,
+    WorkflowWatchdogPolicy, WorkspaceLinkAttachment, WorkspaceLinkDefinition,
 };
 use crate::session_history_page::{SessionHistoryCursor, SessionHistoryPageEntry};
 use crate::skill::{ArrobaSkillMetadata, SkillImportOutcome};

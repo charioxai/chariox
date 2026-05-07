@@ -19,6 +19,7 @@ pub use types::{
     RuntimeInteractionChoiceStyle, RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeSession,
     RuntimeWorktreeAssignment, SchedulerState, SessionAgentDefaults, SessionConfigState,
     SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, WorkflowArtifactRef,
+    WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
     WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
     WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind,
     WorkflowFailurePolicy, WorkflowFailurePolicyMode, WorkflowHandoffPayload, WorkflowLaunchPolicy,

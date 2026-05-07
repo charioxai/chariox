@@ -295,6 +295,7 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::SetWorkflowNodeMaxTurns(request) => request.session_id.clone(),
         LocalDaemonRequest::AddWorkflowEdge(request) => request.session_id.clone(),
         LocalDaemonRequest::RemoveWorkflowEdge(request) => request.session_id.clone(),
+        LocalDaemonRequest::UpdateWorkflowCanvasLayout(request) => request.session_id.clone(),
         LocalDaemonRequest::SetWorkflowRunOutputSchema(request) => request.session_id.clone(),
         LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(request) => {
             request.session_id.clone()

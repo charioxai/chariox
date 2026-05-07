@@ -3,7 +3,7 @@ use super::*;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 11;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -1539,6 +1539,16 @@ pub struct RemoveWorkflowEdgeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateWorkflowCanvasLayoutRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_layout_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patches: Vec<WorkflowCanvasLayoutPatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvokeWorkflowEndpointRequest {
     pub session_id: String,
     pub workflow_ref: String,
@@ -1801,6 +1811,7 @@ pub enum LocalDaemonRequest {
     SetWorkflowNodeMaxTurns(SetWorkflowNodeMaxTurnsRequest),
     AddWorkflowEdge(AddWorkflowEdgeRequest),
     RemoveWorkflowEdge(RemoveWorkflowEdgeRequest),
+    UpdateWorkflowCanvasLayout(UpdateWorkflowCanvasLayoutRequest),
     InvokeWorkflowEndpoint(InvokeWorkflowEndpointRequest),
     ListWorkflowRuns(ListWorkflowRunsRequest),
     GetWorkflowRun(GetWorkflowRunRequest),
@@ -2329,6 +2340,11 @@ pub enum LocalDaemonResponse {
         workflow: WorkflowDefinition,
         session: RuntimeSession,
     },
+    WorkflowCanvasLayoutUpdated {
+        layout: WorkflowCanvasLayout,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
     WorkflowRunInvoked {
         workflow_run: WorkflowRun,
         workflow: WorkflowDefinition,
@@ -2531,6 +2547,9 @@ pub struct WaitingRoomPublicWorkflowSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     pub created_at_ms: u64,
+    pub revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_layout: Option<WorkflowCanvasLayout>,
     #[serde(default)]
     pub activity: WaitingRoomPublicItemActivitySummary,
     #[serde(default)]

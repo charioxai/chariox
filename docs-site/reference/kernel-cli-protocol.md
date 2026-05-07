@@ -4,7 +4,7 @@ This page describes the current local protocol between the Arroba Kernel and the
 
 It reflects the current implementation, not the long-term remote/federated design.
 
-Current shared local daemon protocol version: `11`.
+Current shared local daemon protocol version: `12`.
 
 Primary implementation sources:
 

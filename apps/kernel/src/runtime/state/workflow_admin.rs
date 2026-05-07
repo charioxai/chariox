@@ -967,6 +967,27 @@ impl KernelRuntimeOwnedState {
         })
     }
 
+    pub(super) fn workflow_update_canvas_layout(
+        &self,
+        request: crate::local::UpdateWorkflowCanvasLayoutRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let layout = self.session_store.write().update_workflow_canvas_layout(
+            &request.session_id,
+            &request.workflow_ref,
+            request.patches,
+        )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowCanvasLayoutUpdated {
+            layout,
+            workflow,
+            session,
+        })
+    }
+
     pub(super) fn workflow_set_flush_context(
         &self,
         request: crate::local::SetWorkflowFlushContextRequest,
