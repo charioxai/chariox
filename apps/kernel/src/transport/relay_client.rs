@@ -1886,6 +1886,15 @@ fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::LaunchProviderRun(_) => "provider.run.launch",
         LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",
         LocalDaemonRequest::CreateWorkspaceWorktree(_) => "workspace.worktree.create",
+        LocalDaemonRequest::GetWorkspaceGitOverview(_) => "workspace.git.overview",
+        LocalDaemonRequest::ListWorkspaceFiles(_) => "workspace.files.list",
+        LocalDaemonRequest::RunAgentUtility(_) => "agent.utility.run",
+        LocalDaemonRequest::GenerateWorkspaceCommitMessage(_) => {
+            "workspace.commit_message.generate"
+        }
+        LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
+        LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
+        LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
         _ => "other",
     }
 }
@@ -4053,7 +4062,7 @@ mod tests {
             expect_client_response(&mut client_socket, "state-1", &state_request_private_key).await;
         assert!(matches!(
             state_response,
-            LocalDaemonResponse::SessionState { session } if session.id() == created_session_id
+            LocalDaemonResponse::SessionState { session, .. } if session.id() == created_session_id
         ));
 
         let attach_request_private_key = send_client_request(

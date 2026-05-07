@@ -25,28 +25,30 @@ use super::{
     AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasAgentRequest,
     AliasSessionRequest, AliasWorkflowEndpointRequest, AliasWorkflowRequest,
     AttachToSessionRequest, AttachWorkspaceLinkRequest, CancelActivePromptRequest,
-    CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest, CompletePromptRequest,
-    CreateSessionInviteRequest, CreateTerminalPairingLinkRequest, CreateWorkflowEndpointRequest,
-    CreateWorkflowRequest, CreateWorkspaceLinkRequest, CycleAgentFocusRequest,
-    DeleteSessionRequest, DetachFromSessionRequest, DetachWorkspaceLinkRequest,
-    EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
-    GetSessionStateRequest, GetWaitingRoomInventoryRequest, GetWaitingRoomPublicSnapshotRequest,
-    GetWorkflowRunRequest, InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest,
-    JoinSessionInviteRequest, JoinTerminalPairingLinkRequest, LaunchProviderRunRequest,
-    ListAgentsRequest, ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
-    ListSessionMembersRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
+    CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest, CommitWorkspaceChangesRequest,
+    CompletePromptRequest, CreateSessionInviteRequest, CreateTerminalPairingLinkRequest,
+    CreateWorkflowEndpointRequest, CreateWorkflowRequest, CreateWorkspaceLinkRequest,
+    CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
+    DetachWorkspaceLinkRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
+    GetDaemonHealthRequest, GetSessionStateRequest, GetWaitingRoomInventoryRequest,
+    GetWaitingRoomPublicSnapshotRequest, GetWorkflowRunRequest, GetWorkspaceGitOverviewRequest,
+    InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest, JoinSessionInviteRequest,
+    JoinTerminalPairingLinkRequest, LaunchProviderRunRequest, ListAgentsRequest,
+    ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, ListSessionMembersRequest,
+    ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceFilesRequest,
     ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-    ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
-    RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
-    ResumeWorkflowRunRequest, RevokeSessionInviteRequest, RunShellCapabilityRequest,
-    ShowWorkspaceLinkRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
-    SubmitPromptRequest, TerminalType, UpdateAgentProfileRequest, UpdateSessionConfigRequest,
-    UpdateWorkflowNodeInstructionsRequest, LOCAL_DAEMON_PROTOCOL_VERSION,
+    PushWorkspaceBranchRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
+    RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, ResolveSessionRequest,
+    ResolveWorkflowRequest, ResumeWorkflowRunRequest, RevokeSessionInviteRequest,
+    RunShellCapabilityRequest, ShowWorkspaceLinkRequest, SpawnAgentRequest,
+    StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
+    UpdateAgentProfileRequest, UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
+    LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 5);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 9);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -1118,7 +1120,7 @@ fn local_request_api_spawns_and_focuses_agents() {
         _ => panic!("unexpected local response"),
     };
 
-    let session_state = match harness
+    let (session_state, agent_activity) = match harness
         .dispatch(LocalDaemonRequest::GetSessionState(
             GetSessionStateRequest {
                 session_id: session.id().to_string(),
@@ -1126,11 +1128,28 @@ fn local_request_api_spawns_and_focuses_agents() {
         ))
         .expect("session state should load")
     {
-        LocalDaemonResponse::SessionState { session } => session,
+        LocalDaemonResponse::SessionState {
+            session,
+            agent_activity,
+        } => (session, agent_activity),
         _ => panic!("unexpected local response"),
     };
 
     assert_eq!(session_state.agents().len(), 2);
+    assert_eq!(
+        agent_activity
+            .get(default_agent.id())
+            .expect("default agent activity should be projected")
+            .status,
+        crate::runtime::projection::AgentRuntimeStatus::Idle
+    );
+    assert_eq!(
+        agent_activity
+            .get(spawned.id())
+            .expect("spawned agent activity should be projected")
+            .status,
+        crate::runtime::projection::AgentRuntimeStatus::Idle
+    );
     assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
     assert_eq!(
         session_state
@@ -3058,7 +3077,7 @@ fn detaching_one_attachment_keeps_the_session_open_for_others() {
         ))
         .expect("state request should succeed")
     {
-        LocalDaemonResponse::SessionState { session } => session,
+        LocalDaemonResponse::SessionState { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
 
@@ -3178,7 +3197,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         ))
         .expect("session state should load")
     {
-        LocalDaemonResponse::SessionState { session } => session,
+        LocalDaemonResponse::SessionState { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
 
@@ -3311,7 +3330,7 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
         ))
         .expect("session state should load")
     {
-        LocalDaemonResponse::SessionState { session } => session,
+        LocalDaemonResponse::SessionState { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
 
@@ -3523,7 +3542,7 @@ fn attaching_the_same_client_replaces_its_stale_attachment() {
         ))
         .expect("state request should succeed")
     {
-        LocalDaemonResponse::SessionState { session } => session,
+        LocalDaemonResponse::SessionState { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
 
@@ -3957,7 +3976,7 @@ fn local_request_api_exposes_queue_config_and_notices() {
         ))
         .expect("state request should succeed");
     match state {
-        LocalDaemonResponse::SessionState { session } => {
+        LocalDaemonResponse::SessionState { session, .. } => {
             assert_eq!(session.queued_prompts().len(), 1);
             assert_eq!(session.config_state().version(), 1);
         }
@@ -4290,6 +4309,228 @@ fn local_request_api_reads_directory_tree_file_and_git_status() {
         LocalDaemonResponse::GitInspected { result } => assert!(result.status.contains("main")),
         _ => panic!("unexpected git response"),
     }
+}
+
+#[test]
+fn local_request_api_inspects_workspace_git_overview() {
+    let worktree_root = std::env::temp_dir().join("arroba-workspace-git-overview-test");
+    let _ = std::fs::remove_dir_all(&worktree_root);
+    std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
+    std::fs::write(worktree_root.join("README.md"), "hello\n").expect("file should exist");
+    run_test_git(&worktree_root, &["init", "-b", "main"]);
+    run_test_git(
+        &worktree_root,
+        &["config", "user.email", "agent@example.com"],
+    );
+    run_test_git(&worktree_root, &["config", "user.name", "Agent"]);
+    run_test_git(&worktree_root, &["add", "README.md"]);
+    run_test_git(&worktree_root, &["commit", "-m", "seed"]);
+    std::fs::write(worktree_root.join("README.md"), "hello\nworld\n").expect("file should update");
+    std::fs::write(worktree_root.join("new.txt"), "new\n").expect("new file should exist");
+
+    let harness = LocalRouterTestHarness::new();
+    let response = harness
+        .dispatch(LocalDaemonRequest::GetWorkspaceGitOverview(
+            GetWorkspaceGitOverviewRequest {
+                workspace_id: worktree_root.display().to_string(),
+                worktree_id: worktree_root.display().to_string(),
+                compare_ref: Some("HEAD".to_string()),
+            },
+        ))
+        .expect("workspace git overview should succeed");
+
+    match response {
+        LocalDaemonResponse::WorkspaceGitOverview { overview } => {
+            assert_eq!(overview.branch.as_deref(), Some("main"));
+            assert_eq!(overview.compare_ref, "HEAD");
+            assert_eq!(overview.totals.files, 2);
+            assert_eq!(overview.totals.additions, 2);
+            assert!(overview
+                .compare_refs
+                .iter()
+                .any(|reference| reference.name == "HEAD" && reference.selected));
+            assert!(overview
+                .files
+                .iter()
+                .any(|file| file.path == "README.md" && file.additions == 1));
+            assert!(overview
+                .files
+                .iter()
+                .any(|file| file.path == "new.txt" && file.status == "untracked"));
+        }
+        _ => panic!("unexpected local response"),
+    }
+}
+
+#[test]
+fn local_request_api_lists_workspace_repo_files() {
+    let worktree_root = std::env::temp_dir().join("arroba-workspace-files-test");
+    let _ = std::fs::remove_dir_all(&worktree_root);
+    std::fs::create_dir_all(worktree_root.join("src/app")).expect("worktree should exist");
+    std::fs::write(worktree_root.join("README.md"), "hello\n").expect("file should exist");
+    std::fs::write(worktree_root.join("src/app/main.rs"), "fn main() {}\n")
+        .expect("file should exist");
+    run_test_git(&worktree_root, &["init", "-b", "main"]);
+    run_test_git(
+        &worktree_root,
+        &["config", "user.email", "agent@example.com"],
+    );
+    run_test_git(&worktree_root, &["config", "user.name", "Agent"]);
+    run_test_git(&worktree_root, &["add", "."]);
+    run_test_git(&worktree_root, &["commit", "-m", "seed"]);
+    std::fs::write(
+        worktree_root.join("src/app/main.rs"),
+        "fn main() {}\nfn changed() {}\n",
+    )
+    .expect("file should update");
+
+    let harness = LocalRouterTestHarness::new();
+    let root_response = harness
+        .dispatch(LocalDaemonRequest::ListWorkspaceFiles(
+            ListWorkspaceFilesRequest {
+                workspace_id: worktree_root.display().to_string(),
+                worktree_id: worktree_root.display().to_string(),
+                path_prefix: None,
+                compare_ref: Some("HEAD".to_string()),
+                limit: None,
+            },
+        ))
+        .expect("workspace files should list");
+
+    match root_response {
+        LocalDaemonResponse::WorkspaceFilesListed { listing } => {
+            assert_eq!(listing.path_prefix, "");
+            assert!(listing
+                .entries
+                .iter()
+                .any(|entry| entry.name == "src" && entry.kind == "directory" && entry.changed));
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let nested_response = harness
+        .dispatch(LocalDaemonRequest::ListWorkspaceFiles(
+            ListWorkspaceFilesRequest {
+                workspace_id: worktree_root.display().to_string(),
+                worktree_id: worktree_root.display().to_string(),
+                path_prefix: Some("src/app".to_string()),
+                compare_ref: Some("HEAD".to_string()),
+                limit: None,
+            },
+        ))
+        .expect("workspace nested files should list");
+
+    match nested_response {
+        LocalDaemonResponse::WorkspaceFilesListed { listing } => {
+            assert_eq!(listing.path_prefix, "src/app");
+            assert!(listing.entries.iter().any(|entry| {
+                entry.name == "main.rs"
+                    && entry.kind == "file"
+                    && entry.status.as_deref() == Some("modified")
+                    && entry.additions == 1
+            }));
+        }
+        _ => panic!("unexpected local response"),
+    }
+}
+
+#[test]
+fn local_request_api_commits_workspace_changes() {
+    let worktree_root = std::env::temp_dir().join("arroba-workspace-commit-test");
+    let _ = std::fs::remove_dir_all(&worktree_root);
+    std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
+    std::fs::write(worktree_root.join("README.md"), "hello\n").expect("file should exist");
+    run_test_git(&worktree_root, &["init", "-b", "main"]);
+    run_test_git(
+        &worktree_root,
+        &["config", "user.email", "agent@example.com"],
+    );
+    run_test_git(&worktree_root, &["config", "user.name", "Agent"]);
+    run_test_git(&worktree_root, &["add", "."]);
+    run_test_git(&worktree_root, &["commit", "-m", "seed"]);
+    std::fs::write(worktree_root.join("README.md"), "hello\nworld\n").expect("file should update");
+
+    let harness = LocalRouterTestHarness::new();
+    let response = harness
+        .dispatch(LocalDaemonRequest::CommitWorkspaceChanges(
+            CommitWorkspaceChangesRequest {
+                workspace_id: worktree_root.display().to_string(),
+                worktree_id: worktree_root.display().to_string(),
+                message: "Update README".to_string(),
+            },
+        ))
+        .expect("workspace commit should succeed");
+
+    match response {
+        LocalDaemonResponse::WorkspaceGitActionCompleted { result } => {
+            assert_eq!(result.action, "commit");
+            assert!(result.commit_sha.is_some());
+        }
+        _ => panic!("unexpected local response"),
+    }
+    let subject = git_test_output(&worktree_root, &["log", "-1", "--pretty=%s"]);
+    assert_eq!(subject.trim(), "Update README");
+    assert_eq!(
+        git_test_output(&worktree_root, &["status", "--porcelain"]).trim(),
+        ""
+    );
+}
+
+#[test]
+fn local_request_api_push_without_upstream_fails_loudly() {
+    let worktree_root = std::env::temp_dir().join("arroba-workspace-push-no-upstream-test");
+    let _ = std::fs::remove_dir_all(&worktree_root);
+    std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
+    std::fs::write(worktree_root.join("README.md"), "hello\n").expect("file should exist");
+    run_test_git(&worktree_root, &["init", "-b", "main"]);
+    run_test_git(
+        &worktree_root,
+        &["config", "user.email", "agent@example.com"],
+    );
+    run_test_git(&worktree_root, &["config", "user.name", "Agent"]);
+    run_test_git(&worktree_root, &["add", "."]);
+    run_test_git(&worktree_root, &["commit", "-m", "seed"]);
+
+    let harness = LocalRouterTestHarness::new();
+    let error = harness
+        .dispatch(LocalDaemonRequest::PushWorkspaceBranch(
+            PushWorkspaceBranchRequest {
+                workspace_id: worktree_root.display().to_string(),
+                worktree_id: worktree_root.display().to_string(),
+                force_with_lease: false,
+            },
+        ))
+        .expect_err("push without upstream should fail");
+    assert!(error.to_string().contains("no upstream"));
+}
+
+fn run_test_git(cwd: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn git_test_output(cwd: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).to_string()
 }
 
 #[test]

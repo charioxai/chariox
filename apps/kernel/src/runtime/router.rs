@@ -4,19 +4,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 
 use arroba_relay::protocol::RelayKernelPresence;
 
-use crate::agent::AgentState;
-use crate::app::DaemonApp;
+use crate::agent::{AgentInstance, AgentState};
+use crate::app::{DaemonApp, PromptActivityStore};
 use crate::config::PersistedCloudRelayProfile;
 use crate::error::DaemonError;
 use crate::history::SessionHistoryStore;
@@ -25,37 +25,40 @@ use crate::history::{
 };
 use crate::history_archive::HistoryArchiveClient;
 use crate::local::provider_requests::{
-    PROVIDER_CATALOG_CACHE_TTL, forgotten_machine_record, load_provider_catalog,
-    logout_provider_response, provider_auth_status_response, provider_command_catalogs_response,
-    record_for_machine_id, resolve_machine_for_registry, resolve_machine_id_for_registry,
-    start_provider_login_response,
+    forgotten_machine_record, load_provider_catalog, logout_provider_response,
+    provider_auth_status_response, provider_command_catalogs_response, record_for_machine_id,
+    resolve_machine_for_registry, resolve_machine_id_for_registry, start_provider_login_response,
+    PROVIDER_CATALOG_CACHE_TTL,
 };
 use crate::local::{
-    AcceptCloudSessionInviteRequest, AgentGrantKind, ApproveRemoteMachineRequest,
+    AcceptCloudSessionInviteRequest, AgentGrantKind, AgentUtilityInput, AgentUtilityKind,
+    AgentUtilityOutput, AgentUtilityResult, ApproveRemoteMachineRequest,
     AttachWorkspaceLinkRequest, CloudCollaborator, CloudRelayLoginPoll, CloudRelayLoginPollStatus,
     CloudRelayLoginStart, CloudRelayProfile, CloudRelayRuntimeToken, CloudSessionInvite,
     CloudSessionInviteAcceptance, CloudSessionInviteDetails, CloudSessionMember,
-    ConfigureRelayRequest, ConnectCloudRelayRequest, CreateCloudSessionInviteRequest,
-    CreatePairingInviteRequest, CreateSessionInviteRequest, CreateTerminalPairingLinkRequest,
-    CreateWorkspaceDirectoryRequest, CreateWorkspaceLinkRequest, CreateWorkspaceWorktreeRequest,
-    DeleteCredentialSecretRequest, DeleteKernelRequest, DetachWorkspaceLinkRequest,
-    ForgetRemoteMachineRequest, GetMcpServerRequest, GetPromptInputHistoryRequest,
+    CommitAndPushWorkspaceChangesRequest, CommitWorkspaceChangesRequest, ConfigureRelayRequest,
+    ConnectCloudRelayRequest, CreateCloudSessionInviteRequest, CreatePairingInviteRequest,
+    CreateSessionInviteRequest, CreateTerminalPairingLinkRequest, CreateWorkspaceDirectoryRequest,
+    CreateWorkspaceLinkRequest, CreateWorkspaceWorktreeRequest, DeleteCredentialSecretRequest,
+    DeleteKernelRequest, DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest,
+    GenerateWorkspaceCommitMessageRequest, GetMcpServerRequest, GetPromptInputHistoryRequest,
     GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
     GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
-    GrantAgentCapabilityRequest, ImportMcpServersRequest, ImportSkillsRequest,
-    InstallMcpServerRequest, InstallSkillRequest, IssueCloudRelayClientTokenRequest,
-    JoinPairingInviteRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
-    ListAgentsRequest, ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest,
-    ListMcpServersRequest, ListProviderProcessesRequest, ListSessionMembersRequest,
-    ListSessionsRequest, ListSkillsRequest, ListWorkspaceLinksRequest,
-    ListWorkspaceWorktreesRequest, LocalDaemonRequest, LocalDaemonResponse,
-    LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
+    GetWorkspaceGitOverviewRequest, GrantAgentCapabilityRequest, ImportMcpServersRequest,
+    ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
+    IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest, JoinSessionInviteRequest,
+    JoinTerminalPairingLinkRequest, ListAgentsRequest, ListCloudCollaboratorsRequest,
+    ListCloudSessionMembersRequest, ListMcpServersRequest, ListProviderProcessesRequest,
+    ListSessionMembersRequest, ListSessionsRequest, ListSkillsRequest, ListWorkspaceFilesRequest,
+    ListWorkspaceLinksRequest, ListWorkspaceWorktreesRequest, LocalDaemonRequest,
+    LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
     PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairedClientRecord,
     PairingInviteIntent, PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest,
     PromptInputHistoryEntry, PromptInputHistoryEntryKind, PumpTerminalOutputRequest,
-    QueryHistoryRequest, RecordPairedClientRequest, RecordPromptInputHistoryRequest, RelayStatus,
-    RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
-    RevokeCloudSessionInviteRequest, RevokePairedClientRequest, RevokeSessionInviteRequest,
+    PushWorkspaceBranchRequest, QueryHistoryRequest, RecordPairedClientRequest,
+    RecordPromptInputHistoryRequest, RelayStatus, RenameRemoteMachineRequest,
+    ResolveSessionRequest, RevokeAgentCapabilityRequest, RevokeCloudSessionInviteRequest,
+    RevokePairedClientRequest, RevokeSessionInviteRequest, RunAgentUtilityRequest,
     SearchHistoryRequest, SearchWorkspaceDirectoriesRequest, SessionInviteRecord,
     SetCredentialSecretRequest, SetUserConfigValueRequest, ShowCloudSessionInviteRequest,
     ShowWorkspaceLinkRequest, StartCloudRelayLoginRequest, StartProviderLoginRequest,
@@ -66,24 +69,28 @@ use crate::local::{
     WaitingRoomPublicItemActivitySummary, WaitingRoomPublicSessionSummary,
     WaitingRoomPublicSnapshot, WaitingRoomPublicWorkflowEdgeSummary,
     WaitingRoomPublicWorkflowEndpointSummary, WaitingRoomPublicWorkflowNodeSummary,
-    WaitingRoomPublicWorkflowSummary, WaitingRoomSessionActivitySummary, WorkspaceWorktreeRecord,
+    WaitingRoomPublicWorkflowSummary, WaitingRoomSessionActivitySummary,
+    WorkspaceCommitMessageUtilityInput, WorkspaceGitActionResult, WorkspaceGitChangeTotals,
+    WorkspaceGitCompareRef, WorkspaceGitFileChange, WorkspaceGitOverview, WorkspaceRepoFileEntry,
+    WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
 };
 use crate::provider::{
-    ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
-    ProviderRunOperationLanes, ProviderRunState,
+    run_codex_utility_prompt, ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
+    ProviderRunOperationLanes, ProviderRunState, RuntimeProviderRun,
 };
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::capability_executor::{
-    CapabilityExecutorHealthStore, CapabilityRuntimeStore, execute_capability_request,
+    execute_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
 };
 use crate::runtime::command::{
     KernelCallerKind, KernelCommand, KernelCommandPriority, KernelCommandSource,
 };
 use crate::runtime::projection::{
-    AgentRuntimeProjectionStore, DaemonConfigProjectionStore, DaemonHealthProjection,
-    ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
+    agent_activity_for_session_projection, page_history_entries, AgentRuntimeProjectionStore,
+    DaemonConfigProjectionStore, DaemonHealthProjection, ProviderCatalogProjectionStore,
+    ProviderProcessProjectionStore, ProviderRunProjectionStore,
     RemoteRelayInventoryProjectionStore, SessionHistoryProjectionStore,
-    SessionStateProjectionStore, TransportHealthStore, page_history_entries,
+    SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_launch_executor::ProviderLaunchCommandExecutor;
@@ -91,17 +98,18 @@ use crate::runtime::session_actor::{FocusedAgentProjection, SessionActor, Sessio
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::state::{ProviderReloadOutcome, ProviderReloadTrigger};
 use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
-use crate::runtime::workflow_actor::{WorkflowRuntime, is_workflow_command};
+use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
-use crate::session::{DEFAULT_LOCAL_USER_ID, PromptIdAllocator, unix_epoch_ms};
+use crate::session::{unix_epoch_ms, PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::{
-    RelayClientState, refresh_remote_inventory_projection_for_app_with_relay_state,
+    refresh_remote_inventory_projection_for_app_with_relay_state, RelayClientState,
 };
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 const CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS: u64 = 300_000;
 const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
+const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
 
 enum UserConfigMutation {
     Set { path: String, value: String },
@@ -252,6 +260,7 @@ pub(crate) struct CommandRouter {
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
+    prompt_activity: PromptActivityStore,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     relay_state: Arc<RwLock<RelayClientState>>,
@@ -394,6 +403,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            prompt_activity,
             remote_relay_inventory_projection,
             config_projection,
             relay_state,
@@ -536,6 +546,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            prompt_activity,
             remote_relay_inventory_projection,
             config_projection,
             relay_state,
@@ -1108,8 +1119,10 @@ impl CommandRouter {
                             user_id: caller_user_id.clone(),
                         });
                     }
+                    let session = session.redacted_for_user(&caller_user_id);
                     return Ok(LocalDaemonResponse::SessionState {
-                        session: session.redacted_for_user(&caller_user_id),
+                        agent_activity: self.projected_agent_activity(&session),
+                        session,
                     });
                 }
                 if self.session_projection.has_warmed_list() {
@@ -1213,6 +1226,41 @@ impl CommandRouter {
             LocalDaemonRequest::CreateWorkspaceWorktree(request) => {
                 return self
                     .execute_create_workspace_worktree_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::GetWorkspaceGitOverview(request) => {
+                return self
+                    .execute_get_workspace_git_overview_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::ListWorkspaceFiles(request) => {
+                return self
+                    .execute_list_workspace_files_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::RunAgentUtility(request) => {
+                return self
+                    .execute_run_agent_utility_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::GenerateWorkspaceCommitMessage(request) => {
+                return self
+                    .execute_generate_workspace_commit_message_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::CommitWorkspaceChanges(request) => {
+                return self
+                    .execute_commit_workspace_changes_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::PushWorkspaceBranch(request) => {
+                return self
+                    .execute_push_workspace_branch_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::CommitAndPushWorkspaceChanges(request) => {
+                return self
+                    .execute_commit_and_push_workspace_changes_request(request.clone())
                     .await;
             }
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
@@ -1525,9 +1573,16 @@ impl CommandRouter {
                     session: session.redacted_for_user(caller_user_id),
                 }
             }
-            LocalDaemonResponse::SessionState { session } => LocalDaemonResponse::SessionState {
-                session: session.redacted_for_user(caller_user_id),
-            },
+            LocalDaemonResponse::SessionState {
+                session,
+                agent_activity,
+            } => {
+                let session = session.redacted_for_user(caller_user_id);
+                LocalDaemonResponse::SessionState {
+                    agent_activity: redact_agent_activity_for_session(agent_activity, &session),
+                    session,
+                }
+            }
             LocalDaemonResponse::SessionsListed { sessions } => {
                 LocalDaemonResponse::SessionsListed {
                     sessions: sessions
@@ -2262,6 +2317,212 @@ impl CommandRouter {
         })
     }
 
+    async fn execute_get_workspace_git_overview_request(
+        &self,
+        request: GetWorkspaceGitOverviewRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let overview = inspect_workspace_git_overview(
+            &request.workspace_id,
+            &request.worktree_id,
+            request.compare_ref.as_deref(),
+        )?;
+        Ok(LocalDaemonResponse::WorkspaceGitOverview { overview })
+    }
+
+    async fn execute_list_workspace_files_request(
+        &self,
+        request: ListWorkspaceFilesRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let listing = list_workspace_repo_files(
+            &request.workspace_id,
+            &request.worktree_id,
+            request.path_prefix.as_deref(),
+            request.compare_ref.as_deref(),
+            request.limit,
+        )?;
+        Ok(LocalDaemonResponse::WorkspaceFilesListed { listing })
+    }
+
+    async fn execute_run_agent_utility_request(
+        &self,
+        request: RunAgentUtilityRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let result = self.run_agent_utility(request).await?;
+        Ok(LocalDaemonResponse::AgentUtilityCompleted { result })
+    }
+
+    async fn execute_generate_workspace_commit_message_request(
+        &self,
+        request: GenerateWorkspaceCommitMessageRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let result = self
+            .run_agent_utility(RunAgentUtilityRequest {
+                session_id: request.session_id,
+                agent_id: request.agent_id,
+                kind: AgentUtilityKind::WorkspaceCommitMessage,
+                input: AgentUtilityInput::WorkspaceCommitMessage(
+                    WorkspaceCommitMessageUtilityInput {
+                        workspace_id: request.workspace_id,
+                        worktree_id: request.worktree_id,
+                        compare_ref: request.compare_ref,
+                    },
+                ),
+            })
+            .await?;
+        let AgentUtilityOutput::WorkspaceCommitMessage { message } = result.output;
+        Ok(LocalDaemonResponse::WorkspaceCommitMessageGenerated { message })
+    }
+
+    async fn run_agent_utility(
+        &self,
+        request: RunAgentUtilityRequest,
+    ) -> Result<AgentUtilityResult, DaemonError> {
+        let (_agent, provider_run) = self
+            .assert_agent_utility_can_run(&request.session_id, &request.agent_id, &request.kind)
+            .await?;
+        let output = match (&request.kind, request.input) {
+            (
+                AgentUtilityKind::WorkspaceCommitMessage,
+                AgentUtilityInput::WorkspaceCommitMessage(input),
+            ) => AgentUtilityOutput::WorkspaceCommitMessage {
+                message: self
+                    .run_workspace_commit_message_utility(provider_run, input)
+                    .await?,
+            },
+        };
+        Ok(AgentUtilityResult {
+            utility_run_id: format!("utility-{}", random_hex_id()),
+            session_id: request.session_id,
+            agent_id: request.agent_id,
+            kind: request.kind,
+            output,
+            generated_at_ms: current_unix_ms(),
+        })
+    }
+
+    async fn execute_commit_workspace_changes_request(
+        &self,
+        request: CommitWorkspaceChangesRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let result = commit_workspace_changes(
+            &request.workspace_id,
+            &request.worktree_id,
+            &request.message,
+        )?;
+        Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })
+    }
+
+    async fn execute_push_workspace_branch_request(
+        &self,
+        request: PushWorkspaceBranchRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let result = push_workspace_branch(
+            &request.workspace_id,
+            &request.worktree_id,
+            request.force_with_lease,
+        )?;
+        Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })
+    }
+
+    async fn execute_commit_and_push_workspace_changes_request(
+        &self,
+        request: CommitAndPushWorkspaceChangesRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let commit_result = commit_workspace_changes(
+            &request.workspace_id,
+            &request.worktree_id,
+            &request.message,
+        )?;
+        let push_result =
+            push_workspace_branch(&request.workspace_id, &request.worktree_id, false)?;
+        Ok(LocalDaemonResponse::WorkspaceGitActionCompleted {
+            result: WorkspaceGitActionResult {
+                action: "commit_and_push".to_string(),
+                message: format!("{}; {}", commit_result.message, push_result.message),
+                commit_sha: commit_result.commit_sha,
+                branch: push_result.branch.or(commit_result.branch),
+                workspace_id: request.workspace_id,
+                worktree_id: request.worktree_id,
+                generated_at_ms: current_unix_ms(),
+            },
+        })
+    }
+
+    async fn assert_agent_utility_can_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        kind: &AgentUtilityKind,
+    ) -> Result<(AgentInstance, RuntimeProviderRun), DaemonError> {
+        let mut app = self.app.lock().await;
+        let session = app.sessions().get_session(session_id)?;
+        let agent = app
+            .agents()
+            .get_session_agents(session_id)
+            .iter()
+            .find(|agent| agent.id() == agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: agent_utility_operation(kind),
+                message: format!("agent `{agent_id}` does not belong to session `{session_id}`"),
+            })?;
+        if agent.remote_execution().is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: agent_utility_operation(kind),
+                message: format!("agent `{agent_id}` is remote-backed; hidden utilities must run on its worker kernel"),
+            });
+        }
+        if session.active_prompt_for_agent(agent_id).is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: agent_utility_operation(kind),
+                message: format!("agent `{agent_id}` is busy"),
+            });
+        }
+        let provider_run = if let Some(provider_run) =
+            app.providers().get_run_for_agent(session_id, agent_id)
+        {
+            provider_run
+        } else {
+            let provider_run_id = app.ensure_prompt_provider_run_for_agent(session_id, agent_id)?;
+            app.providers().get_run(&provider_run_id)?
+        };
+        if provider_run.state() != ProviderRunState::Running {
+            return Err(DaemonError::LocalTransport {
+                operation: agent_utility_operation(kind),
+                message: format!(
+                    "agent `{agent_id}` provider runtime is not running ({:?})",
+                    provider_run.state()
+                ),
+            });
+        }
+        Ok((agent, provider_run))
+    }
+
+    async fn run_workspace_commit_message_utility(
+        &self,
+        provider_run: RuntimeProviderRun,
+        input: WorkspaceCommitMessageUtilityInput,
+    ) -> Result<String, DaemonError> {
+        if provider_run.adapter_key() != "codex" {
+            return Err(DaemonError::LocalTransport {
+                operation: "run workspace commit message utility",
+                message: format!(
+                    "workspace commit message utility requires a codex provider runtime; `{}` is not supported yet",
+                    provider_run.adapter_key()
+                ),
+            });
+        }
+        let prompt = workspace_commit_message_utility_prompt(&input)?;
+        tokio::task::spawn_blocking(move || {
+            run_codex_utility_prompt(&provider_run, &prompt, AGENT_UTILITY_TIMEOUT)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "run workspace commit message utility",
+            message: format!("workspace commit message utility task failed: {error}"),
+        })?
+    }
+
     async fn request_remote_relay_inventory_projection_refresh(&self) {
         let connected = self.relay_state.read().await.connected();
         if !connected {
@@ -2338,6 +2599,21 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let app = self.app.lock().await;
         crate::app::KernelSessionReadService::new(&app).get_session_state_response(request)
+    }
+
+    fn projected_agent_activity(
+        &self,
+        session: &crate::session::RuntimeSession,
+    ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
+        let prompt_activity = self.prompt_activity.read();
+        agent_activity_for_session_projection(
+            session,
+            |agent_id| {
+                self.provider_run_projection
+                    .get_for_agent(session.id(), agent_id)
+            },
+            &prompt_activity,
+        )
     }
 
     async fn execute_cold_list_agents_request(
@@ -4471,6 +4747,30 @@ impl CommandRouter {
                 self.execute_create_workspace_worktree_request(request)
                     .await
             }
+            LocalDaemonRequest::GetWorkspaceGitOverview(request) => {
+                self.execute_get_workspace_git_overview_request(request)
+                    .await
+            }
+            LocalDaemonRequest::ListWorkspaceFiles(request) => {
+                self.execute_list_workspace_files_request(request).await
+            }
+            LocalDaemonRequest::RunAgentUtility(request) => {
+                self.execute_run_agent_utility_request(request).await
+            }
+            LocalDaemonRequest::GenerateWorkspaceCommitMessage(request) => {
+                self.execute_generate_workspace_commit_message_request(request)
+                    .await
+            }
+            LocalDaemonRequest::CommitWorkspaceChanges(request) => {
+                self.execute_commit_workspace_changes_request(request).await
+            }
+            LocalDaemonRequest::PushWorkspaceBranch(request) => {
+                self.execute_push_workspace_branch_request(request).await
+            }
+            LocalDaemonRequest::CommitAndPushWorkspaceChanges(request) => {
+                self.execute_commit_and_push_workspace_changes_request(request)
+                    .await
+            }
             LocalDaemonRequest::ApproveRemoteMachine(request) => {
                 self.execute_approve_remote_machine_request(request).await
             }
@@ -5920,6 +6220,673 @@ fn git_command_output(path: &str, args: &[&str]) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+fn inspect_workspace_git_overview(
+    workspace_id: &str,
+    worktree_id: &str,
+    requested_compare_ref: Option<&str>,
+) -> Result<WorkspaceGitOverview, DaemonError> {
+    let worktree_path = worktree_id.trim();
+    if worktree_path.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "inspect workspace git overview",
+            message: "worktree_id is required".to_string(),
+        });
+    }
+    let repo_root = resolve_repo_root(worktree_path)?;
+    let repo_root_string = repo_root.display().to_string();
+    let branch = detect_git_branch(worktree_path).ok();
+    let compare_refs = workspace_git_compare_refs(&repo_root_string, branch.as_deref());
+    let compare_ref = requested_compare_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            compare_refs
+                .iter()
+                .find(|candidate| candidate.selected)
+                .map(|candidate| candidate.name.clone())
+        })
+        .unwrap_or_else(|| "HEAD".to_string());
+    let files = workspace_git_file_changes(worktree_path, &compare_ref)?;
+    let compare_refs = compare_refs
+        .into_iter()
+        .map(|candidate| WorkspaceGitCompareRef {
+            selected: candidate.name == compare_ref,
+            ..candidate
+        })
+        .collect();
+    Ok(WorkspaceGitOverview {
+        workspace_id: workspace_id.to_string(),
+        worktree_id: worktree_id.to_string(),
+        repo_root: Some(repo_root_string.clone()),
+        repo_label: workspace_display_label(&repo_root_string),
+        branch,
+        compare_ref,
+        compare_refs,
+        totals: workspace_git_change_totals(&files),
+        files,
+        generated_at_ms: current_unix_ms(),
+    })
+}
+
+fn workspace_git_change_totals(files: &[WorkspaceGitFileChange]) -> WorkspaceGitChangeTotals {
+    WorkspaceGitChangeTotals {
+        files: files.len().min(u32::MAX as usize) as u32,
+        additions: files
+            .iter()
+            .map(|file| file.additions)
+            .fold(0u32, u32::saturating_add),
+        deletions: files
+            .iter()
+            .map(|file| file.deletions)
+            .fold(0u32, u32::saturating_add),
+    }
+}
+
+fn list_workspace_repo_files(
+    workspace_id: &str,
+    worktree_id: &str,
+    path_prefix: Option<&str>,
+    requested_compare_ref: Option<&str>,
+    limit: Option<u32>,
+) -> Result<WorkspaceRepoFileListing, DaemonError> {
+    let worktree_path = worktree_id.trim();
+    if worktree_path.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "list workspace files",
+            message: "worktree_id is required".to_string(),
+        });
+    }
+    let repo_root = resolve_repo_root(worktree_path)?;
+    let repo_root_string = repo_root.display().to_string();
+    let prefix = normalize_repo_file_prefix(path_prefix.unwrap_or_default());
+    let branch = detect_git_branch(worktree_path).ok();
+    let compare_ref = requested_compare_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| workspace_default_compare_ref(&repo_root_string, branch.as_deref()));
+    let change_map = workspace_git_file_changes(worktree_path, &compare_ref)?
+        .into_iter()
+        .map(|file| (file.path.clone(), file))
+        .collect::<HashMap<_, _>>();
+    let mut paths = workspace_git_tracked_files(worktree_path)?;
+    paths.extend(change_map.keys().cloned());
+    paths.sort();
+    paths.dedup();
+
+    let mut entries = BTreeMap::<String, WorkspaceRepoFileEntry>::new();
+    for path in paths {
+        let normalized_path = normalize_repo_file_prefix(&path);
+        if normalized_path.is_empty() {
+            continue;
+        }
+        let Some(remainder) = repo_file_remainder_for_prefix(&normalized_path, &prefix) else {
+            continue;
+        };
+        if remainder.is_empty() {
+            continue;
+        }
+        let mut parts = remainder.split('/');
+        let Some(name) = parts.next().filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let is_directory = parts.next().is_some();
+        let entry_path = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let change = change_map.get(&normalized_path);
+        let entry = entries
+            .entry(entry_path.clone())
+            .or_insert_with(|| WorkspaceRepoFileEntry {
+                path: entry_path.clone(),
+                name: name.to_string(),
+                kind: if is_directory { "directory" } else { "file" }.to_string(),
+                changed: false,
+                status: None,
+                additions: 0,
+                deletions: 0,
+            });
+        if is_directory {
+            entry.kind = "directory".to_string();
+        }
+        if let Some(change) = change {
+            entry.changed = true;
+            entry.additions = entry.additions.saturating_add(change.additions);
+            entry.deletions = entry.deletions.saturating_add(change.deletions);
+            if !is_directory {
+                entry.status = Some(change.status.clone());
+            } else if entry.status.is_none() {
+                entry.status = Some("changed".to_string());
+            }
+        }
+    }
+    let mut entries = entries.into_values().collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        let left_rank = if left.kind == "directory" { 0 } else { 1 };
+        let right_rank = if right.kind == "directory" { 0 } else { 1 };
+        left_rank
+            .cmp(&right_rank)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    let limit = limit.unwrap_or(400).clamp(1, 1000) as usize;
+    entries.truncate(limit);
+    Ok(WorkspaceRepoFileListing {
+        workspace_id: workspace_id.to_string(),
+        worktree_id: worktree_id.to_string(),
+        path_prefix: prefix,
+        entries,
+        generated_at_ms: current_unix_ms(),
+    })
+}
+
+fn agent_utility_operation(kind: &AgentUtilityKind) -> &'static str {
+    match kind {
+        AgentUtilityKind::WorkspaceCommitMessage => "run workspace commit message utility",
+    }
+}
+
+fn workspace_commit_message_utility_prompt(
+    input: &WorkspaceCommitMessageUtilityInput,
+) -> Result<String, DaemonError> {
+    let overview = inspect_workspace_git_overview(
+        &input.workspace_id,
+        &input.worktree_id,
+        input.compare_ref.as_deref(),
+    )?;
+    if overview.files.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "run workspace commit message utility",
+            message: "no workspace changes to summarize".to_string(),
+        });
+    }
+    let files = overview
+        .files
+        .iter()
+        .map(|file| {
+            format!(
+                "- {} {} +{} -{}",
+                file.status, file.path, file.additions, file.deletions
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let diff = workspace_git_diff_text(&input.worktree_id, &overview.compare_ref, 60_000)?;
+    Ok(format!(
+        "Generate a git commit subject for the workspace changes below.\n\
+Rules:\n\
+- Output exactly one concise imperative subject line.\n\
+- Do not include markdown, quotes, bullets, explanation, prefixes, or trailing punctuation.\n\
+- Keep it under 72 characters.\n\n\
+Workspace: {workspace}\n\
+Worktree: {worktree}\n\
+Compare ref: {compare_ref}\n\
+Totals: {files_count} files, +{additions} -{deletions}\n\n\
+Changed files:\n{files}\n\n\
+Diff context:\n{diff}",
+        workspace = overview.workspace_id,
+        worktree = overview.worktree_id,
+        compare_ref = overview.compare_ref,
+        files_count = overview.totals.files,
+        additions = overview.totals.additions,
+        deletions = overview.totals.deletions,
+        files = files,
+        diff = if diff.is_empty() {
+            "<no textual diff available>"
+        } else {
+            diff.as_str()
+        },
+    ))
+}
+
+fn commit_workspace_changes(
+    workspace_id: &str,
+    worktree_id: &str,
+    message: &str,
+) -> Result<WorkspaceGitActionResult, DaemonError> {
+    let message = message.trim();
+    if message.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "workspace git commit",
+            message: "commit message is required".to_string(),
+        });
+    }
+    let worktree_path = worktree_id.trim();
+    if worktree_path.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "workspace git commit",
+            message: "worktree_id is required".to_string(),
+        });
+    }
+    let _repo_root = resolve_repo_root(worktree_path)?;
+    let changes = workspace_git_status_by_path(worktree_path)?;
+    if changes.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "workspace git commit",
+            message: "no workspace changes to commit".to_string(),
+        });
+    }
+    run_workspace_git_command(worktree_path, &["add", "-A"], "workspace git add")?;
+    run_workspace_git_command(
+        worktree_path,
+        &["commit", "-m", message],
+        "workspace git commit",
+    )?;
+    let commit_sha = git_command_output(worktree_path, &["rev-parse", "--verify", "HEAD"]);
+    Ok(WorkspaceGitActionResult {
+        workspace_id: workspace_id.to_string(),
+        worktree_id: worktree_id.to_string(),
+        action: "commit".to_string(),
+        message: "committed workspace changes".to_string(),
+        commit_sha,
+        branch: detect_git_branch(worktree_path).ok(),
+        generated_at_ms: current_unix_ms(),
+    })
+}
+
+fn push_workspace_branch(
+    workspace_id: &str,
+    worktree_id: &str,
+    force_with_lease: bool,
+) -> Result<WorkspaceGitActionResult, DaemonError> {
+    let worktree_path = worktree_id.trim();
+    if worktree_path.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "workspace git push",
+            message: "worktree_id is required".to_string(),
+        });
+    }
+    let _repo_root = resolve_repo_root(worktree_path)?;
+    let branch = detect_git_branch(worktree_path).ok();
+    let upstream = git_command_output(
+        worktree_path,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    );
+    if upstream.is_none() {
+        return Err(DaemonError::LocalTransport {
+            operation: "workspace git push",
+            message: "current branch has no upstream; push target is ambiguous".to_string(),
+        });
+    }
+    let args = if force_with_lease {
+        vec!["push", "--force-with-lease"]
+    } else {
+        vec!["push"]
+    };
+    run_workspace_git_command(worktree_path, &args, "workspace git push")?;
+    Ok(WorkspaceGitActionResult {
+        workspace_id: workspace_id.to_string(),
+        worktree_id: worktree_id.to_string(),
+        action: if force_with_lease {
+            "force_push".to_string()
+        } else {
+            "push".to_string()
+        },
+        message: "pushed workspace branch".to_string(),
+        commit_sha: git_command_output(worktree_path, &["rev-parse", "--verify", "HEAD"]),
+        branch,
+        generated_at_ms: current_unix_ms(),
+    })
+}
+
+fn run_workspace_git_command(
+    worktree_path: &str,
+    args: &[&str],
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let message = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!(
+                "git {} failed with status {}",
+                args.join(" "),
+                output.status
+            )
+        };
+        return Err(DaemonError::LocalTransport { operation, message });
+    }
+    Ok(())
+}
+
+fn workspace_git_compare_refs(
+    repo_root: &str,
+    branch: Option<&str>,
+) -> Vec<WorkspaceGitCompareRef> {
+    let mut refs = Vec::new();
+    let mut seen = HashSet::new();
+    let default_ref = workspace_default_compare_ref(repo_root, branch);
+    for (name, detail) in [
+        ("main".to_string(), Some("default".to_string())),
+        ("master".to_string(), None),
+        ("origin/main".to_string(), Some("remote".to_string())),
+        ("HEAD".to_string(), Some("uncommitted".to_string())),
+    ] {
+        if name != "HEAD" && !git_reference_resolves(repo_root, &name) {
+            continue;
+        }
+        push_workspace_git_compare_ref(&mut refs, &mut seen, name, detail, &default_ref);
+    }
+    for name in git_command_output(
+        repo_root,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )
+    .unwrap_or_default()
+    .lines()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .take(80)
+    {
+        let detail = if name.starts_with("origin/") {
+            Some("remote".to_string())
+        } else {
+            None
+        };
+        push_workspace_git_compare_ref(
+            &mut refs,
+            &mut seen,
+            name.to_string(),
+            detail,
+            &default_ref,
+        );
+    }
+    if refs.is_empty() {
+        push_workspace_git_compare_ref(
+            &mut refs,
+            &mut seen,
+            "HEAD".to_string(),
+            Some("uncommitted".to_string()),
+            &default_ref,
+        );
+    }
+    refs
+}
+
+fn workspace_git_tracked_files(worktree_path: &str) -> Result<Vec<String>, DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "workspace repo files",
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|part| {
+            let value = String::from_utf8_lossy(part).trim().to_string();
+            (!value.is_empty()).then_some(value)
+        })
+        .collect())
+}
+
+fn normalize_repo_file_prefix(path: &str) -> String {
+    path.trim()
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn repo_file_remainder_for_prefix<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
+    if prefix.is_empty() {
+        return Some(path);
+    }
+    if path == prefix {
+        return Some("");
+    }
+    path.strip_prefix(prefix)
+        .and_then(|value| value.strip_prefix('/'))
+}
+
+fn push_workspace_git_compare_ref(
+    refs: &mut Vec<WorkspaceGitCompareRef>,
+    seen: &mut HashSet<String>,
+    name: String,
+    detail: Option<String>,
+    default_ref: &str,
+) {
+    if !seen.insert(name.clone()) {
+        return;
+    }
+    refs.push(WorkspaceGitCompareRef {
+        selected: name == default_ref,
+        name,
+        detail,
+    });
+}
+
+fn workspace_default_compare_ref(repo_root: &str, branch: Option<&str>) -> String {
+    if git_reference_resolves(repo_root, "origin/main") {
+        return "origin/main".to_string();
+    }
+    if git_reference_resolves(repo_root, "main") {
+        return "main".to_string();
+    }
+    if git_reference_resolves(repo_root, "master") {
+        return "master".to_string();
+    }
+    branch
+        .filter(|value| !value.is_empty() && *value != "HEAD")
+        .unwrap_or("HEAD")
+        .to_string()
+}
+
+fn git_reference_resolves(repo_root: &str, reference: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", reference])
+        .current_dir(repo_root)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn workspace_git_file_changes(
+    worktree_path: &str,
+    compare_ref: &str,
+) -> Result<Vec<WorkspaceGitFileChange>, DaemonError> {
+    let status_by_path = workspace_git_status_by_path(worktree_path)?;
+    let mut files = workspace_git_numstat(worktree_path, compare_ref).unwrap_or_default();
+    for file in &mut files {
+        if let Some(status) = status_by_path.get(&file.path) {
+            file.status = status.clone();
+        }
+    }
+    let mut known = files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<HashSet<_>>();
+    for (path, status) in status_by_path {
+        if !known.insert(path.clone()) {
+            continue;
+        }
+        let additions = if status == "untracked" {
+            count_file_lines(Path::new(worktree_path).join(&path))
+        } else {
+            0
+        };
+        files.push(WorkspaceGitFileChange {
+            path,
+            status,
+            additions,
+            deletions: 0,
+        });
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
+}
+
+fn workspace_git_numstat(
+    worktree_path: &str,
+    compare_ref: &str,
+) -> Result<Vec<WorkspaceGitFileChange>, DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--numstat", compare_ref, "--"])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "workspace git diff",
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(parse_git_numstat_line)
+        .collect())
+}
+
+fn workspace_git_diff_text(
+    worktree_path: &str,
+    compare_ref: &str,
+    max_bytes: usize,
+) -> Result<String, DaemonError> {
+    let output = std::process::Command::new("git")
+        .args([
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--find-renames",
+            compare_ref,
+            "--",
+        ])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "workspace git diff",
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation: "workspace git diff",
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    let mut diff = String::from_utf8_lossy(&output.stdout).to_string();
+    if diff.len() > max_bytes {
+        diff.truncate(max_bytes);
+        diff.push_str("\n\n[diff truncated]");
+    }
+    Ok(diff)
+}
+
+fn parse_git_numstat_line(line: &str) -> Option<WorkspaceGitFileChange> {
+    let mut parts = line.split('\t');
+    let additions = parse_git_numstat_count(parts.next()?)?;
+    let deletions = parse_git_numstat_count(parts.next()?)?;
+    let path = parts.next()?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    Some(WorkspaceGitFileChange {
+        path: normalize_git_change_path(path),
+        status: "modified".to_string(),
+        additions,
+        deletions,
+    })
+}
+
+fn parse_git_numstat_count(value: &str) -> Option<u32> {
+    if value == "-" {
+        return Some(0);
+    }
+    value.parse().ok()
+}
+
+fn normalize_git_change_path(path: &str) -> String {
+    if let Some((_, right)) = path.rsplit_once(" => ") {
+        return right.trim_matches(|ch| ch == '{' || ch == '}').to_string();
+    }
+    path.to_string()
+}
+
+fn workspace_git_status_by_path(
+    worktree_path: &str,
+) -> Result<HashMap<String, String>, DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain=v1", "--untracked-files=all"])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "workspace git status",
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Ok(HashMap::new());
+    }
+    let mut statuses = HashMap::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let code = &line[..2];
+        let path = line[3..].trim();
+        if path.is_empty() {
+            continue;
+        }
+        let normalized_path = normalize_git_status_path(path);
+        statuses.insert(normalized_path, git_status_label(code).to_string());
+    }
+    Ok(statuses)
+}
+
+fn normalize_git_status_path(path: &str) -> String {
+    if let Some((_, right)) = path.rsplit_once(" -> ") {
+        return right.to_string();
+    }
+    path.to_string()
+}
+
+fn git_status_label(code: &str) -> &'static str {
+    if code == "??" {
+        return "untracked";
+    }
+    if code.contains('D') {
+        return "deleted";
+    }
+    if code.contains('A') {
+        return "added";
+    }
+    if code.contains('R') {
+        return "renamed";
+    }
+    if code.contains('U') {
+        return "conflicted";
+    }
+    "modified"
+}
+
+fn count_file_lines(path: PathBuf) -> u32 {
+    std::fs::read_to_string(path)
+        .map(|contents| contents.lines().count().min(u32::MAX as usize) as u32)
+        .unwrap_or(0)
+}
+
 fn create_waiting_room_worktree(
     workspace_path: &str,
     requested_path: Option<&str>,
@@ -7013,7 +7980,7 @@ fn response_sessions(response: &LocalDaemonResponse) -> Vec<crate::session::Runt
     match response {
         LocalDaemonResponse::SessionCreated { session, .. }
         | LocalDaemonResponse::SessionResolved { session }
-        | LocalDaemonResponse::SessionState { session }
+        | LocalDaemonResponse::SessionState { session, .. }
         | LocalDaemonResponse::InteractionResponded { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
         | LocalDaemonResponse::AgentAliased { session, .. }
@@ -7054,6 +8021,19 @@ fn response_sessions(response: &LocalDaemonResponse) -> Vec<crate::session::Runt
         | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => vec![session.clone()],
         _ => Vec::new(),
     }
+}
+
+fn redact_agent_activity_for_session(
+    mut agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
+    session: &crate::session::RuntimeSession,
+) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
+    agent_activity.retain(|agent_id, _| {
+        session
+            .agents()
+            .iter()
+            .any(|agent| agent.id() == agent_id.as_str())
+    });
+    agent_activity
 }
 
 fn should_update_agent_runtime_projection_from_response(response: &LocalDaemonResponse) -> bool {
@@ -7551,7 +8531,7 @@ mod tests {
     use std::sync::Arc;
 
     use tokio::sync::Mutex;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     use crate::agent::CreateAgentRequest;
     use crate::attachment::ClientCapabilityLevel;
@@ -7579,8 +8559,8 @@ mod tests {
     };
     use crate::runtime::router::CommandRouter;
     use crate::session::{
-        CreateSessionRequest, DEFAULT_LOCAL_USER_ID, PromptStatus, PromptSubmissionOutcome,
-        SessionStatus,
+        CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus,
+        DEFAULT_LOCAL_USER_ID,
     };
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
@@ -7836,11 +8816,9 @@ mod tests {
             .get_agent(&agent_id)
             .expect("agent should restore");
         assert_eq!(restored_agent.session_id(), session_id);
-        assert!(
-            restored_agent
-                .skill_grants()
-                .contains(&"review".to_string())
-        );
+        assert!(restored_agent
+            .skill_grants()
+            .contains(&"review".to_string()));
     }
 
     #[tokio::test]
@@ -7962,11 +8940,10 @@ mod tests {
         };
         let app = DaemonApp::bootstrap(delete_config).expect("daemon should reboot");
         assert!(app.sessions().get_session(&deleted_session_id).is_err());
-        assert!(
-            app.agents
-                .get_session_agents(&deleted_session_id)
-                .is_empty()
-        );
+        assert!(app
+            .agents
+            .get_session_agents(&deleted_session_id)
+            .is_empty());
     }
 
     #[tokio::test]
@@ -8037,11 +9014,9 @@ mod tests {
             .dispatch(third_command, third_request)
             .await
             .expect_err("overflow session command should be rejected while lane is full");
-        assert!(
-            error
-                .to_string()
-                .contains("session command lane overloaded")
-        );
+        assert!(error
+            .to_string()
+            .contains("session command lane overloaded"));
 
         drop(app_guard);
         let _ = first_result_rx.await.expect("first result should resolve");
@@ -8352,9 +9327,13 @@ mod tests {
             .expect("state task should join")
             .expect("state should resolve");
         match state_response {
-            LocalDaemonResponse::SessionState { session } => {
+            LocalDaemonResponse::SessionState {
+                session,
+                agent_activity,
+            } => {
                 assert!(session.has_attachment(&attachment_id));
                 assert_eq!(session.focused_agent_id(), Some(second_agent.id()));
+                assert!(agent_activity.contains_key(second_agent.id()));
             }
             _ => panic!("unexpected session state response"),
         }
@@ -8421,13 +9400,11 @@ mod tests {
             .expect("state should resolve");
         drop(app_guard);
         match state_response {
-            LocalDaemonResponse::SessionState { session } => {
-                assert!(
-                    session
-                        .agents()
-                        .iter()
-                        .any(|agent| agent.id() == spawned_agent_id)
-                );
+            LocalDaemonResponse::SessionState { session, .. } => {
+                assert!(session
+                    .agents()
+                    .iter()
+                    .any(|agent| agent.id() == spawned_agent_id));
             }
             _ => panic!("unexpected state response"),
         }
@@ -8471,13 +9448,11 @@ mod tests {
             .expect("state should resolve");
         drop(app_guard);
         match state_response {
-            LocalDaemonResponse::SessionState { session } => {
-                assert!(
-                    !session
-                        .agents()
-                        .iter()
-                        .any(|agent| agent.id() == spawned_agent_id)
-                );
+            LocalDaemonResponse::SessionState { session, .. } => {
+                assert!(!session
+                    .agents()
+                    .iter()
+                    .any(|agent| agent.id() == spawned_agent_id));
             }
             _ => panic!("unexpected state response"),
         }
@@ -8948,24 +9923,18 @@ mod tests {
             LocalDaemonResponse::DaemonHealth { projection } => projection,
             _ => panic!("unexpected health response"),
         };
-        assert!(
-            projection
-                .session_command_lanes
-                .iter()
-                .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128)
-        );
-        assert!(
-            projection
-                .agent_command_lanes
-                .iter()
-                .any(|lane| lane.lane_id == agent_id && lane.queue_limit == 128)
-        );
-        assert!(
-            projection
-                .workflow_command_lanes
-                .iter()
-                .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128)
-        );
+        assert!(projection
+            .session_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128));
+        assert!(projection
+            .agent_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == agent_id && lane.queue_limit == 128));
+        assert!(projection
+            .workflow_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128));
         assert_eq!(projection.session_projection.projected_sessions, 1);
         assert_eq!(projection.session_projection.active_prompts, 1);
         assert_eq!(projection.session_projection.queued_prompts, 0);
@@ -9168,14 +10137,12 @@ mod tests {
             .dispatch(prompt_command, prompt_request)
             .await
             .expect("prompt should create an agent lane");
-        assert!(
-            router
-                .daemon_health_projection(0)
-                .await
-                .agent_command_lanes
-                .iter()
-                .any(|lane| lane.lane_id == agent_id)
-        );
+        assert!(router
+            .daemon_health_projection(0)
+            .await
+            .agent_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == agent_id));
         let workflow_request = LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
             session_id: session_id.clone(),
             alias: Some("cleanup-workflow".to_string()),
@@ -9202,14 +10169,12 @@ mod tests {
             .await
             .expect("ending session should clean up agent lane");
 
-        assert!(
-            !router
-                .daemon_health_projection(0)
-                .await
-                .agent_command_lanes
-                .iter()
-                .any(|lane| lane.lane_id == agent_id)
-        );
+        assert!(!router
+            .daemon_health_projection(0)
+            .await
+            .agent_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == agent_id));
         assert!(!router.workflow_runtime.has_lane(&session_id).await);
     }
 
@@ -9255,14 +10220,12 @@ mod tests {
             .dispatch(prompt_command, prompt_request)
             .await
             .expect("prompt should create an agent lane");
-        assert!(
-            router
-                .daemon_health_projection(0)
-                .await
-                .agent_command_lanes
-                .iter()
-                .any(|lane| lane.lane_id == agent_id)
-        );
+        assert!(router
+            .daemon_health_projection(0)
+            .await
+            .agent_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == agent_id));
 
         let destroy_request = LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
             session_id,
@@ -9279,14 +10242,12 @@ mod tests {
             .await
             .expect("destroying agent should clean up agent lane");
 
-        assert!(
-            !router
-                .daemon_health_projection(0)
-                .await
-                .agent_command_lanes
-                .iter()
-                .any(|lane| lane.lane_id == agent_id)
-        );
+        assert!(!router
+            .daemon_health_projection(0)
+            .await
+            .agent_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == agent_id));
     }
 
     #[tokio::test]
@@ -9669,7 +10630,7 @@ mod tests {
             .expect("state task should join")
             .expect("state should resolve");
         match state_response {
-            LocalDaemonResponse::SessionState { session } => {
+            LocalDaemonResponse::SessionState { session, .. } => {
                 assert!(session.active_prompt_for_agent(&agent_id).is_some());
                 assert_eq!(session.agents().len(), 1);
             }
@@ -9744,7 +10705,7 @@ mod tests {
             .expect("state task should join")
             .expect("state should resolve");
         match state_response {
-            LocalDaemonResponse::SessionState { session } => {
+            LocalDaemonResponse::SessionState { session, .. } => {
                 assert_eq!(session.config_state().version(), 1);
                 assert_eq!(
                     session.config_state().values().get("theme"),
@@ -10046,7 +11007,7 @@ mod tests {
             .expect("state task should join")
             .expect("state should resolve");
         match state_response {
-            LocalDaemonResponse::SessionState { session } => {
+            LocalDaemonResponse::SessionState { session, .. } => {
                 assert!(session.active_prompt_for_agent(&agent_id).is_none());
             }
             _ => panic!("unexpected state response"),
@@ -10092,13 +11053,11 @@ mod tests {
             .dispatch(prompt_command, prompt_request)
             .await
             .expect("prompt submit should warm agent runtime projection");
-        assert!(
-            router
-                .agent_runtime_projection
-                .get(&agent_id)
-                .and_then(|projection| projection.active_prompt)
-                .is_some()
-        );
+        assert!(router
+            .agent_runtime_projection
+            .get(&agent_id)
+            .and_then(|projection| projection.active_prompt)
+            .is_some());
 
         {
             let app = app.lock().await;
@@ -10278,13 +11237,11 @@ mod tests {
             .dispatch(prompt_command, prompt_request)
             .await
             .expect("prompt submit should warm active prompt projection");
-        assert!(
-            router
-                .agent_runtime_projection
-                .get(&agent_id)
-                .and_then(|projection| projection.active_prompt)
-                .is_some()
-        );
+        assert!(router
+            .agent_runtime_projection
+            .get(&agent_id)
+            .and_then(|projection| projection.active_prompt)
+            .is_some());
 
         let cancel_request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
             session_id: session_id.clone(),
@@ -10338,7 +11295,7 @@ mod tests {
             .expect("state task should join")
             .expect("state should resolve");
         match state_response {
-            LocalDaemonResponse::SessionState { session } => {
+            LocalDaemonResponse::SessionState { session, .. } => {
                 let active_prompt = session
                     .active_prompt_for_agent(&agent_id)
                     .expect("prompt should still be settling");
@@ -10908,7 +11865,7 @@ mod tests {
         drop(app_guard);
 
         match state_response {
-            LocalDaemonResponse::SessionState { session } => {
+            LocalDaemonResponse::SessionState { session, .. } => {
                 assert_eq!(
                     session.active_provider_run_id(),
                     Some(provider_run_id.as_str())
@@ -10966,7 +11923,7 @@ mod tests {
         drop(app_guard);
 
         match response {
-            LocalDaemonResponse::SessionState { session } => {
+            LocalDaemonResponse::SessionState { session, .. } => {
                 assert_eq!(session.id(), session_id);
                 assert_eq!(session.active_provider_run_id(), Some("projected-run"));
             }
@@ -11255,7 +12212,7 @@ mod tests {
         drop(app_guard);
 
         match state_response {
-            LocalDaemonResponse::SessionState { session } => {
+            LocalDaemonResponse::SessionState { session, .. } => {
                 assert_eq!(session.id(), session_id);
                 assert_eq!(session.active_provider_run_id(), None);
             }
@@ -11455,7 +12412,7 @@ mod tests {
             .expect("state task should join")
             .expect("state should resolve");
         match state_response {
-            LocalDaemonResponse::SessionState { session } => {
+            LocalDaemonResponse::SessionState { session, .. } => {
                 assert_eq!(session.id(), session_id);
             }
             _ => panic!("unexpected state response"),
@@ -13005,7 +13962,7 @@ mod tests {
             .await
             .expect("member should read redacted session state")
         {
-            LocalDaemonResponse::SessionState { session } => session,
+            LocalDaemonResponse::SessionState { session, .. } => session,
             other => panic!("unexpected session response: {other:?}"),
         };
         assert_eq!(redacted_session.agents().len(), 1);

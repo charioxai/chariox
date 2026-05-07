@@ -21,7 +21,7 @@ pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, ProviderAuthStatus,
     ProviderLoginStart,
 };
-pub use codex_runtime::CodexRuntimeState;
+pub use codex_runtime::{run_codex_utility_prompt, CodexRuntimeState};
 pub(crate) use managed_io_policy::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH;
 pub(crate) use mcp_proxy::dispatch_provider_mcp_proxy_request;
 pub use opencode::{

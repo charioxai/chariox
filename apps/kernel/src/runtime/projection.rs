@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use arroba_relay::protocol::RelayKernelPresence;
 
 use crate::agent::AgentState;
-use crate::app::DaemonApp;
+use crate::app::{ActivePromptState, DaemonApp};
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::history::SessionHistoryEntry;
@@ -1026,7 +1026,13 @@ impl SessionSnapshotProjection {
         let provider_run = session
             .active_provider_run_id()
             .and_then(|provider_run_id| app.providers().get_run(provider_run_id).ok());
-        let agent_activity = agent_activity_for_session(app, &session);
+        let prompt_activity = app.prompt_activity_store();
+        let prompt_activity = prompt_activity.read();
+        let agent_activity = agent_activity_for_session_projection(
+            &session,
+            |agent_id| app.providers().get_run_for_agent(session.id(), agent_id),
+            &prompt_activity,
+        );
         Ok(Self {
             metadata: ProjectionMetadata::new(2, last_event_id),
             session,
@@ -1036,12 +1042,11 @@ impl SessionSnapshotProjection {
     }
 }
 
-fn agent_activity_for_session(
-    app: &DaemonApp,
+pub(crate) fn agent_activity_for_session_projection(
     session: &RuntimeSession,
+    provider_run_for_agent: impl Fn(&str) -> Option<RuntimeProviderRun>,
+    prompt_activity: &BTreeMap<String, ActivePromptState>,
 ) -> BTreeMap<String, AgentRuntimeActivity> {
-    let prompt_activity = app.prompt_activity_store();
-    let prompt_activity = prompt_activity.read();
     let mut activity = BTreeMap::new();
 
     for agent in session.agents() {
@@ -1050,7 +1055,7 @@ fn agent_activity_for_session(
         let queued_prompt_count = prompt_state
             .map(|state| state.queued_prompts().len())
             .unwrap_or(0);
-        let provider_run = app.providers().get_run_for_agent(session.id(), agent.id());
+        let provider_run = provider_run_for_agent(agent.id());
         let provider_prompt_activity = provider_run
             .as_ref()
             .and_then(|run| prompt_activity.get(run.id()));

@@ -139,7 +139,7 @@ export type KernelEvent =
     event: "session_snapshot"
     session: Record<string, unknown>
     provider_run: Record<string, unknown> | null
-    agent_activity?: Record<string, unknown>
+    agent_activity: Record<string, unknown>
   }
   | {
     event: "session_unavailable"

@@ -7,6 +7,7 @@ use crate::local::{
     GetSessionStateRequest, ListAgentsRequest, LocalDaemonResponse, ResolveSessionRequest,
 };
 use crate::provider::{AgentEndpointMode, ProviderRunState};
+use crate::runtime::projection::agent_activity_for_session_projection;
 use crate::session::{
     CreateSessionRequest, RuntimeSession, SessionStateOwner, SessionStateReader, SessionStatus,
 };
@@ -318,7 +319,21 @@ impl<'a> KernelSessionReadService<'a> {
         request: GetSessionStateRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let session = self.session_snapshot(&request.session_id)?;
-        Ok(LocalDaemonResponse::SessionState { session })
+        let prompt_activity = self.app.prompt_activity_store();
+        let prompt_activity = prompt_activity.read();
+        let agent_activity = agent_activity_for_session_projection(
+            &session,
+            |agent_id| {
+                self.app
+                    .providers()
+                    .get_run_for_agent(session.id(), agent_id)
+            },
+            &prompt_activity,
+        );
+        Ok(LocalDaemonResponse::SessionState {
+            session,
+            agent_activity,
+        })
     }
 
     pub(crate) fn list_agents_response(

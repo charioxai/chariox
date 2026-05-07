@@ -2650,7 +2650,7 @@ fn wait_for_local_provider_run_ready(
             ))
             .expect("session state polling should succeed");
 
-        if let LocalDaemonResponse::SessionState { session } = response {
+        if let LocalDaemonResponse::SessionState { session, .. } = response {
             if session.active_provider_run_id() == Some(provider_run_id) {
                 return;
             }

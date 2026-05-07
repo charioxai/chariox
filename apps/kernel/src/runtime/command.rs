@@ -474,6 +474,15 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",
         LocalDaemonRequest::ListWorkspaceWorktrees(_) => "workspace.worktree.list",
         LocalDaemonRequest::CreateWorkspaceWorktree(_) => "workspace.worktree.create",
+        LocalDaemonRequest::GetWorkspaceGitOverview(_) => "workspace.git.overview",
+        LocalDaemonRequest::ListWorkspaceFiles(_) => "workspace.files.list",
+        LocalDaemonRequest::RunAgentUtility(_) => "agent.utility.run",
+        LocalDaemonRequest::GenerateWorkspaceCommitMessage(_) => {
+            "workspace.commit_message.generate"
+        }
+        LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
+        LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
+        LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
         LocalDaemonRequest::ApproveRemoteMachine(_) => "remote_machine.approve",
         LocalDaemonRequest::ForgetRemoteMachine(_) => "remote_machine.forget",
         LocalDaemonRequest::RenameRemoteMachine(_) => "remote_machine.rename",

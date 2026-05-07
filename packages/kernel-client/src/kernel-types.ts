@@ -587,6 +587,66 @@ export type WorkspaceWorktreeRecord = {
   current: boolean
 }
 
+export type WorkspaceGitCompareRef = {
+  name: string
+  detail?: string | null
+  selected: boolean
+}
+
+export type WorkspaceGitFileChange = {
+  path: string
+  status: string
+  additions: number
+  deletions: number
+}
+
+export type WorkspaceGitChangeTotals = {
+  files: number
+  additions: number
+  deletions: number
+}
+
+export type WorkspaceGitOverview = {
+  workspace_id: string
+  worktree_id: string
+  repo_root?: string | null
+  repo_label?: string | null
+  branch?: string | null
+  compare_ref: string
+  compare_refs: WorkspaceGitCompareRef[]
+  totals: WorkspaceGitChangeTotals
+  files: WorkspaceGitFileChange[]
+  generated_at_ms: number
+}
+
+export type WorkspaceRepoFileEntry = {
+  path: string
+  name: string
+  kind: "directory" | "file" | string
+  changed: boolean
+  status?: string | null
+  additions: number
+  deletions: number
+}
+
+export type WorkspaceRepoFileListing = {
+  workspace_id: string
+  worktree_id: string
+  path_prefix: string
+  entries: WorkspaceRepoFileEntry[]
+  generated_at_ms: number
+}
+
+export type WorkspaceGitActionResult = {
+  workspace_id: string
+  worktree_id: string
+  action: string
+  message: string
+  commit_sha?: string | null
+  branch?: string | null
+  generated_at_ms: number
+}
+
 export type RuntimeProviderRun = {
   id: string
   session_id: string
@@ -612,7 +672,41 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 5
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 9
+
+export type AgentUtilityKind = "WorkspaceCommitMessage"
+
+export type WorkspaceCommitMessageUtilityInput = {
+  workspace_id: string
+  worktree_id: string
+  compare_ref?: string | null
+}
+
+export type AgentUtilityInput = {
+  WorkspaceCommitMessage: WorkspaceCommitMessageUtilityInput
+}
+
+export type RunAgentUtilityRequest = {
+  session_id: string
+  agent_id: string
+  kind: AgentUtilityKind
+  input: AgentUtilityInput
+}
+
+export type AgentUtilityOutput = {
+  WorkspaceCommitMessage: {
+    message: string
+  }
+}
+
+export type AgentUtilityResult = {
+  utility_run_id: string
+  session_id: string
+  agent_id: string
+  kind: AgentUtilityKind
+  output: AgentUtilityOutput
+  generated_at_ms: number
+}
 
 export type ProviderProcessInfo = {
   process_id: string

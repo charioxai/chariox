@@ -3,7 +3,7 @@ use super::*;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 5;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -244,6 +244,173 @@ pub struct CreateWorkspaceWorktreeRequest {
     pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetWorkspaceGitOverviewRequest {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compare_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkspaceFilesRequest {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compare_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerateWorkspaceCommitMessageRequest {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compare_ref: Option<String>,
+    pub session_id: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentUtilityKind {
+    WorkspaceCommitMessage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceCommitMessageUtilityInput {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compare_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentUtilityInput {
+    WorkspaceCommitMessage(WorkspaceCommitMessageUtilityInput),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunAgentUtilityRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    pub kind: AgentUtilityKind,
+    pub input: AgentUtilityInput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentUtilityOutput {
+    WorkspaceCommitMessage { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentUtilityResult {
+    pub utility_run_id: String,
+    pub session_id: String,
+    pub agent_id: String,
+    pub kind: AgentUtilityKind,
+    pub output: AgentUtilityOutput,
+    pub generated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitWorkspaceChangesRequest {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushWorkspaceBranchRequest {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    #[serde(default)]
+    pub force_with_lease: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitAndPushWorkspaceChangesRequest {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceGitCompareRef {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceGitFileChange {
+    pub path: String,
+    pub status: String,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceGitChangeTotals {
+    pub files: u32,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceGitOverview {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    pub compare_ref: String,
+    pub compare_refs: Vec<WorkspaceGitCompareRef>,
+    pub totals: WorkspaceGitChangeTotals,
+    pub files: Vec<WorkspaceGitFileChange>,
+    pub generated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRepoFileEntry {
+    pub path: String,
+    pub name: String,
+    pub kind: String,
+    pub changed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRepoFileListing {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    pub path_prefix: String,
+    pub entries: Vec<WorkspaceRepoFileEntry>,
+    pub generated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceGitActionResult {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    pub action: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    pub generated_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1506,6 +1673,13 @@ pub enum LocalDaemonRequest {
     CreateWorkspaceDirectory(CreateWorkspaceDirectoryRequest),
     ListWorkspaceWorktrees(ListWorkspaceWorktreesRequest),
     CreateWorkspaceWorktree(CreateWorkspaceWorktreeRequest),
+    GetWorkspaceGitOverview(GetWorkspaceGitOverviewRequest),
+    ListWorkspaceFiles(ListWorkspaceFilesRequest),
+    RunAgentUtility(RunAgentUtilityRequest),
+    GenerateWorkspaceCommitMessage(GenerateWorkspaceCommitMessageRequest),
+    CommitWorkspaceChanges(CommitWorkspaceChangesRequest),
+    PushWorkspaceBranch(PushWorkspaceBranchRequest),
+    CommitAndPushWorkspaceChanges(CommitAndPushWorkspaceChangesRequest),
     ApproveRemoteMachine(ApproveRemoteMachineRequest),
     ForgetRemoteMachine(ForgetRemoteMachineRequest),
     RenameRemoteMachine(RenameRemoteMachineRequest),
@@ -1665,6 +1839,7 @@ pub enum LocalDaemonResponse {
     },
     SessionState {
         session: RuntimeSession,
+        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
     },
     DaemonHealth {
         projection: DaemonHealthProjection,
@@ -1816,6 +1991,21 @@ pub enum LocalDaemonResponse {
     WorkspaceWorktreeCreated {
         workspace_id: String,
         worktree: WorkspaceWorktreeRecord,
+    },
+    WorkspaceGitOverview {
+        overview: WorkspaceGitOverview,
+    },
+    WorkspaceFilesListed {
+        listing: WorkspaceRepoFileListing,
+    },
+    AgentUtilityCompleted {
+        result: AgentUtilityResult,
+    },
+    WorkspaceCommitMessageGenerated {
+        message: String,
+    },
+    WorkspaceGitActionCompleted {
+        result: WorkspaceGitActionResult,
     },
     RemoteMachineApproved {
         machine: RemoteMachineRecord,

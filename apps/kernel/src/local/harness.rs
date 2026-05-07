@@ -139,7 +139,7 @@ fn wait_for_provider_run_ready(
             },
         ))?;
 
-        if let LocalDaemonResponse::SessionState { session } = response {
+        if let LocalDaemonResponse::SessionState { session, .. } = response {
             if session.active_provider_run_id() == Some(provider_run_id) {
                 return Ok(());
             }

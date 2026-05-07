@@ -1136,6 +1136,121 @@ export function createWorkspaceWorktreeRequest(
   }
 }
 
+export function getWorkspaceGitOverviewRequest(
+  workspaceId: string,
+  worktreeId: string,
+  compareRef?: string | null,
+) {
+  return {
+    GetWorkspaceGitOverview: {
+      workspace_id: workspaceId,
+      worktree_id: worktreeId,
+      compare_ref: compareRef?.trim() || null,
+    },
+  }
+}
+
+export function listWorkspaceFilesRequest(
+  workspaceId: string,
+  worktreeId: string,
+  pathPrefix = "",
+  compareRef?: string | null,
+  limit?: number | null,
+) {
+  return {
+    ListWorkspaceFiles: {
+      workspace_id: workspaceId,
+      worktree_id: worktreeId,
+      path_prefix: pathPrefix.trim() || null,
+      compare_ref: compareRef?.trim() || null,
+      limit: limit ?? null,
+    },
+  }
+}
+
+export function generateWorkspaceCommitMessageRequest(
+  workspaceId: string,
+  worktreeId: string,
+  compareRef: string | null | undefined,
+  sessionId: string,
+  agentId: string,
+) {
+  return {
+    GenerateWorkspaceCommitMessage: {
+      workspace_id: workspaceId,
+      worktree_id: worktreeId,
+      compare_ref: compareRef?.trim() || null,
+      session_id: sessionId,
+      agent_id: agentId,
+    },
+  }
+}
+
+export function runWorkspaceCommitMessageUtilityRequest(
+  workspaceId: string,
+  worktreeId: string,
+  compareRef: string | null | undefined,
+  sessionId: string,
+  agentId: string,
+) {
+  return {
+    RunAgentUtility: {
+      session_id: sessionId,
+      agent_id: agentId,
+      kind: "WorkspaceCommitMessage",
+      input: {
+        WorkspaceCommitMessage: {
+          workspace_id: workspaceId,
+          worktree_id: worktreeId,
+          compare_ref: compareRef?.trim() || null,
+        },
+      },
+    },
+  }
+}
+
+export function commitWorkspaceChangesRequest(
+  workspaceId: string,
+  worktreeId: string,
+  message: string,
+) {
+  return {
+    CommitWorkspaceChanges: {
+      workspace_id: workspaceId,
+      worktree_id: worktreeId,
+      message,
+    },
+  }
+}
+
+export function pushWorkspaceBranchRequest(
+  workspaceId: string,
+  worktreeId: string,
+  forceWithLease = false,
+) {
+  return {
+    PushWorkspaceBranch: {
+      workspace_id: workspaceId,
+      worktree_id: worktreeId,
+      force_with_lease: forceWithLease,
+    },
+  }
+}
+
+export function commitAndPushWorkspaceChangesRequest(
+  workspaceId: string,
+  worktreeId: string,
+  message: string,
+) {
+  return {
+    CommitAndPushWorkspaceChanges: {
+      workspace_id: workspaceId,
+      worktree_id: worktreeId,
+      message,
+    },
+  }
+}
+
 export function approveRemoteMachineRequest(machineRef: string) {
   return {
     ApproveRemoteMachine: {
