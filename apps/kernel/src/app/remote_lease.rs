@@ -529,6 +529,88 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(agent)
     }
 
+    pub(crate) fn update_leased_agent_config(
+        &mut self,
+        leased_agent_id: &str,
+        execution_mode: crate::provider::AgentExecutionMode,
+        permission_level: crate::provider::AgentPermissionLevel,
+    ) -> Result<LeasedAgent, DaemonError> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        let backing_agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
+        if self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .is_some()
+            || backing_agent.is_processing()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "update leased agent config",
+                message: format!(
+                    "leased agent `{leased_agent_id}` has an active turn; update the config after it finishes"
+                ),
+            });
+        }
+
+        let config_changed = leased_agent.execution_mode != Some(execution_mode)
+            || leased_agent.permission_level != Some(permission_level);
+        if config_changed {
+            if let Some(run) = self.app.providers.get_run_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            ) {
+                match run.state() {
+                    ProviderRunState::Starting
+                    | ProviderRunState::Running
+                    | ProviderRunState::Parked => {
+                        let run_id = run.id().to_string();
+                        let _ = crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
+                            .remove_run(&run_id);
+                        if let Ok(outcome) = self
+                            .app
+                            .providers
+                            .terminate_run_provider_only(run.session_id(), run.id())
+                        {
+                            let _ = self
+                                .app
+                                .sessions
+                                .set_active_provider_run(outcome.run().session_id(), None);
+                            self.app.update_provider_run_projection(outcome.into_run());
+                        }
+                    }
+                    ProviderRunState::Ended => {
+                        self.app.providers.clear_runtime(run.id());
+                    }
+                }
+            }
+        }
+
+        let _ = self.app.agents.update_agent_config(
+            &leased_agent.backing_agent_id,
+            Some(Some(execution_mode)),
+            Some(Some(permission_level)),
+        )?;
+        let updated = self
+            .app
+            .leased_agents
+            .get_mut(leased_agent_id)
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        updated.execution_mode = Some(execution_mode);
+        updated.permission_level = Some(permission_level);
+        Ok(updated.clone())
+    }
+
     pub(crate) fn native_interaction_context_for_backing_agent(
         &mut self,
         backing_session_id: &str,

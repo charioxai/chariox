@@ -1026,6 +1026,28 @@ async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::UpdateLeasedAgentConfig {
+            leased_agent_id,
+            execution_mode,
+            permission_level,
+        } => {
+            let updated = router
+                .relay_update_leased_agent_config(
+                    &leased_agent_id,
+                    execution_mode,
+                    permission_level,
+                )
+                .await;
+            match updated {
+                Ok(leased_agent) => RelayPeerResponse::LeasedAgentConfigUpdated { leased_agent },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id,
             prompt,

@@ -862,6 +862,20 @@ impl CommandRouter {
         crate::app::RemoteLeaseRuntime::new(&mut app).destroy_leased_agent(leased_agent_id)
     }
 
+    pub(crate) async fn relay_update_leased_agent_config(
+        &self,
+        leased_agent_id: &str,
+        execution_mode: crate::provider::AgentExecutionMode,
+        permission_level: crate::provider::AgentPermissionLevel,
+    ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
+        let mut app = self.app.lock().await;
+        crate::app::RemoteLeaseRuntime::new(&mut app).update_leased_agent_config(
+            leased_agent_id,
+            execution_mode,
+            permission_level,
+        )
+    }
+
     pub(crate) async fn relay_submit_leased_prompt(
         &self,
         leased_agent_id: &str,

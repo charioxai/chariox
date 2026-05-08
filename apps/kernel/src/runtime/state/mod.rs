@@ -545,13 +545,66 @@ impl KernelRuntimeState {
         execution_mode_override: Option<Option<crate::provider::AgentExecutionMode>>,
         permission_level_override: Option<Option<crate::provider::AgentPermissionLevel>>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.owned.update_agent_config(
+        let update = self.owned.update_agent_config(
             session_id,
             agent_id,
             caller_user_id,
-            execution_mode_override,
-            permission_level_override,
-        )
+            execution_mode_override.clone(),
+            permission_level_override.clone(),
+        )?;
+        for provider_run_id in update.terminated_run_ids {
+            let (_, process_key) = self
+                .with_app_side_effect(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
+                })
+                .await
+                .unwrap_or((false, None));
+            self.owned
+                .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
+        }
+        let mut agent = update.agent;
+        if let Some(remote_update) = update.remote_update {
+            let config = self.config_snapshot().await;
+            match tokio::time::timeout(
+                Duration::from_secs(5),
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &config,
+                    ClientTarget {
+                        daemon_id: Some(remote_update.worker_kernel_id.clone()),
+                        daemon_alias: None,
+                    },
+                    RelayPeerRequest::UpdateLeasedAgentConfig {
+                        leased_agent_id: remote_update.leased_agent_id,
+                        execution_mode: remote_update.execution_mode,
+                        permission_level: remote_update.permission_level,
+                    },
+                ),
+            )
+            .await
+            {
+                Ok(Ok(RelayPeerResponse::LeasedAgentConfigUpdated { .. })) => {}
+                Ok(Ok(other)) => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "update remote leased agent config",
+                        message: format!("unexpected remote config response: {other:?}"),
+                    });
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(_) => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "update remote leased agent config",
+                        message: "timed out waiting for remote worker config update".to_string(),
+                    });
+                }
+            }
+            agent = self.owned.commit_remote_agent_config_update(
+                session_id,
+                agent_id,
+                execution_mode_override,
+                permission_level_override,
+            )?;
+        }
+        Ok(agent)
     }
 
     pub(crate) async fn update_agent_profile(

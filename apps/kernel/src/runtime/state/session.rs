@@ -439,7 +439,7 @@ impl KernelRuntimeOwnedState {
         caller_user_id: &str,
         execution_mode_override: Option<Option<crate::provider::AgentExecutionMode>>,
         permission_level_override: Option<Option<crate::provider::AgentPermissionLevel>>,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+    ) -> Result<owned::OwnedAgentConfigUpdate, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -448,11 +448,125 @@ impl KernelRuntimeOwnedState {
             });
         }
         self.ensure_agent_owner(agent_id, caller_user_id, "update agent config")?;
+        let session = self.session_store.get_session(session_id)?;
+        if self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some()
+            || agent.is_processing()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "update agent config",
+                message: format!(
+                    "agent `{agent_id}` has an active turn; update the config after it finishes"
+                ),
+            });
+        }
+        let previous_mode = resolve_effective_execution_mode(&session, Some(&agent));
+        let previous_permission = resolve_effective_permission_level(&session, Some(&agent));
+        let mut next_agent = agent.clone();
+        if let Some(execution_mode_override) = execution_mode_override {
+            next_agent.set_execution_mode_override(execution_mode_override);
+        }
+        if let Some(permission_level_override) = permission_level_override {
+            next_agent.set_permission_level_override(permission_level_override);
+        }
+        let next_mode = resolve_effective_execution_mode(&session, Some(&next_agent));
+        let next_permission = resolve_effective_permission_level(&session, Some(&next_agent));
+        let effective_config_changed =
+            previous_mode != next_mode || previous_permission != next_permission;
+        let remote_update = effective_config_changed
+            .then(|| {
+                agent
+                    .remote_execution()
+                    .map(|binding| owned::OwnedRemoteAgentConfigUpdate {
+                        worker_kernel_id: binding.worker_kernel_id.clone(),
+                        leased_agent_id: binding.leased_agent_id.clone(),
+                        execution_mode: next_mode,
+                        permission_level: next_permission,
+                    })
+            })
+            .flatten();
+
+        let mut terminated_run_ids = Vec::new();
+        if effective_config_changed && remote_update.is_none() {
+            if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
+                match run.state() {
+                    crate::provider::ProviderRunState::Starting
+                    | crate::provider::ProviderRunState::Running
+                    | crate::provider::ProviderRunState::Parked => {
+                        let outcome = self
+                            .provider_store
+                            .terminate_run_provider_only(session_id, run.id())?;
+                        self.clear_active_provider_run_session_pointer(
+                            session_id,
+                            outcome.run().id(),
+                        )?;
+                        let ended = outcome.into_run();
+                        terminated_run_ids.push(ended.id().to_string());
+                        self.provider_run_projection.update(ended);
+                    }
+                    crate::provider::ProviderRunState::Ended => {
+                        self.provider_store.clear_runtime(run.id());
+                    }
+                }
+            }
+        }
+        let agent = if remote_update.is_some() {
+            next_agent
+        } else {
+            self.agent_store.update_agent_config(
+                agent_id,
+                execution_mode_override,
+                permission_level_override,
+            )?;
+            let agent = self.agent_store.get_agent(agent_id)?;
+            let _ = self.session_snapshot(session_id)?;
+            agent
+        };
+        Ok(owned::OwnedAgentConfigUpdate {
+            agent,
+            terminated_run_ids,
+            remote_update,
+        })
+    }
+
+    pub(super) fn commit_remote_agent_config_update(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        execution_mode_override: Option<Option<crate::provider::AgentExecutionMode>>,
+        permission_level_override: Option<Option<crate::provider::AgentPermissionLevel>>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        let session = self.session_store.get_session(session_id)?;
+        if self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some()
+            || agent.is_processing()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "commit remote agent config",
+                message: format!(
+                    "agent `{agent_id}` has an active turn; update the config after it finishes"
+                ),
+            });
+        }
         self.agent_store.update_agent_config(
             agent_id,
             execution_mode_override,
             permission_level_override,
-        )
+        )?;
+        let agent = self.agent_store.get_agent(agent_id)?;
+        let _ = self.session_snapshot(session_id)?;
+        Ok(agent)
     }
 
     pub(super) fn update_agent_profile(

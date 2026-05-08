@@ -155,6 +155,11 @@ pub enum RelayPeerRequest {
     DestroyLeasedAgent {
         leased_agent_id: String,
     },
+    UpdateLeasedAgentConfig {
+        leased_agent_id: String,
+        execution_mode: crate::provider::AgentExecutionMode,
+        permission_level: crate::provider::AgentPermissionLevel,
+    },
     SubmitLeasedPrompt {
         leased_agent_id: String,
         prompt: String,
@@ -225,6 +230,9 @@ pub enum RelayPeerResponse {
     },
     LeasedAgentDestroyed {
         leased_agent_id: String,
+    },
+    LeasedAgentConfigUpdated {
+        leased_agent: LeasedAgent,
     },
     LeasedPromptSubmitted {
         provider_run_id: String,
