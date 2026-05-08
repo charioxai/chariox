@@ -261,6 +261,7 @@ pub(crate) struct CommandRouter {
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
+    active_turns: crate::app::ActiveTurnStore,
     prompt_activity: PromptActivityStore,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
@@ -313,6 +314,7 @@ impl CommandRouter {
             attachment_store,
             provider_store,
             provider_process_tracking,
+            active_turns,
             prompt_activity,
             prompt_idle_timeout,
             prompt_workspace_claims,
@@ -340,6 +342,7 @@ impl CommandRouter {
             durable_state_store.clone(),
             history_projection.clone(),
             prompt_state_owner.clone(),
+            active_turns.clone(),
             prompt_activity.clone(),
             prompt_idle_timeout,
             prompt_workspace_claims.clone(),
@@ -404,6 +407,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            active_turns,
             prompt_activity,
             remote_relay_inventory_projection,
             config_projection,
@@ -456,6 +460,7 @@ impl CommandRouter {
             attachment_store,
             provider_store,
             provider_process_tracking,
+            active_turns,
             prompt_activity,
             prompt_idle_timeout,
             prompt_workspace_claims,
@@ -483,6 +488,7 @@ impl CommandRouter {
             durable_state_store.clone(),
             history_projection.clone(),
             prompt_state_owner.clone(),
+            active_turns.clone(),
             prompt_activity.clone(),
             prompt_idle_timeout,
             prompt_workspace_claims.clone(),
@@ -547,6 +553,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            active_turns,
             prompt_activity,
             remote_relay_inventory_projection,
             config_projection,
@@ -1653,10 +1660,16 @@ impl CommandRouter {
                 detached,
                 session: session.redacted_for_user(caller_user_id),
             },
-            LocalDaemonResponse::PromptSubmitted { outcome, session } => {
+            LocalDaemonResponse::PromptSubmitted {
+                outcome,
+                session,
+                agent_activity,
+            } => {
+                let session = session.redacted_for_user(caller_user_id);
                 LocalDaemonResponse::PromptSubmitted {
                     outcome,
-                    session: session.redacted_for_user(caller_user_id),
+                    agent_activity: redact_agent_activity_for_session(agent_activity, &session),
+                    session,
                 }
             }
             LocalDaemonResponse::SessionConfigUpdated { config, session } => {
@@ -2649,6 +2662,7 @@ impl CommandRouter {
         session: &crate::session::RuntimeSession,
     ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
         let prompt_activity = self.prompt_activity.read();
+        let active_turns = self.active_turns.snapshot();
         agent_activity_for_session_projection(
             session,
             |agent_id| {
@@ -2656,6 +2670,7 @@ impl CommandRouter {
                     .get_for_agent(session.id(), agent_id)
             },
             &prompt_activity,
+            &active_turns,
         )
     }
 
@@ -7687,6 +7702,7 @@ fn router_projection_stores(
     crate::attachment::AttachmentServiceStore,
     crate::provider::ProviderProcessServiceStore,
     crate::app::ProviderProcessTrackingStore,
+    crate::app::ActiveTurnStore,
     crate::app::PromptActivityStore,
     std::time::Duration,
     crate::app::PromptWorkspaceClaimStore,
@@ -7725,6 +7741,7 @@ fn router_projection_stores(
         app.attachments().clone(),
         app.providers().clone(),
         app.provider_process_tracking_store(),
+        app.active_turn_store(),
         app.prompt_activity_store(),
         app.prompt_idle_timeout(),
         app.prompt_workspace_claim_store(),

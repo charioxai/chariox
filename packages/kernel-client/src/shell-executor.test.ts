@@ -180,6 +180,7 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
               },
             },
           }),
+          agent_activity: {},
         },
       }
     }
@@ -282,6 +283,7 @@ test("executeShellCommand waits for prompt and renders summary blob", async () =
             },
           },
           session: makeSession(),
+          agent_activity: {},
         },
       }
     }
@@ -372,6 +374,7 @@ test("executeShellCommand renders provider tools through shared tool display for
             },
           },
           session: makeSession(),
+          agent_activity: {},
         },
       }
     }

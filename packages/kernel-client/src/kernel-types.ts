@@ -697,7 +697,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 12
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 13
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 
@@ -805,6 +805,7 @@ export type TerminalOutputRecord = {
 export type PromptSubmittedPayload = {
   outcome: Record<string, unknown>
   session: RuntimeSession
+  agent_activity: Record<string, AgentRuntimeActivity>
 }
 
 export type SessionHistoryPage = {

@@ -50,7 +50,7 @@ use super::{
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 12);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 13);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -3772,6 +3772,7 @@ fn local_request_api_auto_launches_provider_run_for_prompt() {
         LocalDaemonResponse::PromptSubmitted {
             outcome: PromptSubmissionOutcome::Started { prompt },
             session,
+            ..
         } => {
             assert_eq!(prompt.status(), crate::session::PromptStatus::Running);
             assert!(session.active_provider_run_id().is_some());
@@ -4112,6 +4113,7 @@ fn local_request_api_exposes_queue_config_and_notices() {
         LocalDaemonResponse::PromptSubmitted {
             outcome: PromptSubmissionOutcome::Started { .. },
             session,
+            ..
         } => {
             assert!(session.active_prompt().is_some());
         }
@@ -4121,6 +4123,7 @@ fn local_request_api_exposes_queue_config_and_notices() {
         LocalDaemonResponse::PromptSubmitted {
             outcome: PromptSubmissionOutcome::Queued { .. },
             session,
+            ..
         } => {
             assert_eq!(session.queued_prompts().len(), 1);
         }

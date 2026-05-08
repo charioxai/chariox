@@ -14,7 +14,8 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::agent::AgentServiceStore;
 use crate::app::{
-    DaemonApp, PromptActivityStore, PromptWorkspaceClaimStore, ProviderProcessTrackingStore,
+    ActiveTurnState, ActiveTurnStore, DaemonApp, PromptActivityStore, PromptWorkspaceClaimStore,
+    ProviderProcessTrackingStore,
 };
 use crate::attachment::AttachmentServiceStore;
 use crate::durable_state::DurableKernelStateStore;
@@ -54,6 +55,7 @@ struct KernelRuntimeOwnedState {
     durable_state_store: DurableKernelStateStore,
     history_projection: crate::runtime::projection::SessionHistoryProjectionStore,
     prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
+    active_turns: ActiveTurnStore,
     prompt_activity: PromptActivityStore,
     prompt_idle_timeout: Duration,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
@@ -202,6 +204,7 @@ impl KernelRuntimeState {
         durable_state_store: DurableKernelStateStore,
         history_projection: crate::runtime::projection::SessionHistoryProjectionStore,
         prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
+        active_turns: ActiveTurnStore,
         prompt_activity: PromptActivityStore,
         prompt_idle_timeout: Duration,
         prompt_workspace_claims: PromptWorkspaceClaimStore,
@@ -225,6 +228,7 @@ impl KernelRuntimeState {
                 durable_state_store,
                 history_projection,
                 prompt_state_owner,
+                active_turns,
                 prompt_activity,
                 prompt_idle_timeout,
                 prompt_workspace_claims,
@@ -244,6 +248,44 @@ impl KernelRuntimeState {
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             },
         }
+    }
+
+    pub(crate) fn start_active_turn(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+    ) {
+        self.owned.active_turns.start(ActiveTurnState::new(
+            session_id.to_string(),
+            agent_id.to_string(),
+            prompt_id.to_string(),
+            provider_run_id.to_string(),
+        ));
+    }
+
+    pub(crate) fn agent_activity_for_session(
+        &self,
+        session: &crate::session::RuntimeSession,
+    ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
+        let prompt_activity = self.owned.prompt_activity.read();
+        let active_turns = self.owned.active_turns.snapshot();
+        crate::runtime::projection::agent_activity_for_session_projection(
+            session,
+            |agent_id| {
+                self.owned
+                    .provider_run_projection
+                    .get_for_agent(session.id(), agent_id)
+                    .or_else(|| {
+                        self.owned
+                            .provider_store
+                            .get_run_for_agent(session.id(), agent_id)
+                    })
+            },
+            &prompt_activity,
+            &active_turns,
+        )
     }
 
     pub(crate) async fn config_snapshot(&self) -> crate::config::DaemonConfig {

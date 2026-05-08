@@ -106,6 +106,7 @@ pub struct DaemonApp {
     pub(crate) providers: ProviderProcessServiceStore,
     pub(crate) provider_catalog_cache: ProviderCatalogCacheStore,
     pub(crate) provider_process_tracking: ProviderProcessTrackingStore,
+    pub(crate) active_turns: ActiveTurnStore,
     pub(crate) prompt_activity: PromptActivityStore,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
     pub(crate) prompt_idle_timeout: Duration,
@@ -140,6 +141,71 @@ pub(crate) struct ActivePromptState {
     pub(crate) saw_response_content: bool,
     pub(crate) completion_recorded: bool,
     pub(crate) settlement_requested: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActiveTurnState {
+    pub(crate) session_id: String,
+    pub(crate) agent_id: String,
+    pub(crate) prompt_id: String,
+    pub(crate) provider_run_id: String,
+    pub(crate) settlement_requested: bool,
+}
+
+impl ActiveTurnState {
+    pub(crate) fn new(
+        session_id: String,
+        agent_id: String,
+        prompt_id: String,
+        provider_run_id: String,
+    ) -> Self {
+        Self {
+            session_id,
+            agent_id,
+            prompt_id,
+            provider_run_id,
+            settlement_requested: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ActiveTurnStore {
+    inner: Arc<Mutex<BTreeMap<String, ActiveTurnState>>>,
+}
+
+impl ActiveTurnStore {
+    pub(crate) fn start(&self, turn: ActiveTurnState) {
+        self.inner
+            .lock()
+            .expect("active turn mutex poisoned")
+            .insert(turn.provider_run_id.clone(), turn);
+    }
+
+    pub(crate) fn mark_settling(&self, provider_run_id: &str) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .expect("active turn mutex poisoned")
+            .get_mut(provider_run_id)
+        {
+            turn.settlement_requested = true;
+        }
+    }
+
+    pub(crate) fn clear(&self, provider_run_id: &str) {
+        self.inner
+            .lock()
+            .expect("active turn mutex poisoned")
+            .remove(provider_run_id);
+    }
+
+    pub(crate) fn snapshot(&self) -> BTreeMap<String, ActiveTurnState> {
+        self.inner
+            .lock()
+            .expect("active turn mutex poisoned")
+            .clone()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -352,6 +418,7 @@ impl DaemonApp {
             providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
             provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
+            active_turns: ActiveTurnStore::default(),
             prompt_activity: PromptActivityStore::default(),
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_idle_timeout: prompt_idle_timeout(),
@@ -767,6 +834,10 @@ impl DaemonApp {
 
     pub(crate) fn prompt_activity_store(&self) -> PromptActivityStore {
         self.prompt_activity.clone()
+    }
+
+    pub(crate) fn active_turn_store(&self) -> ActiveTurnStore {
+        self.active_turns.clone()
     }
 
     pub(crate) fn prompt_idle_timeout(&self) -> Duration {

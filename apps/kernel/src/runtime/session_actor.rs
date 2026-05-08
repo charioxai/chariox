@@ -1436,6 +1436,7 @@ mod tests {
             app_locked.durable_state_store(),
             app_locked.session_history_projection_store(),
             app_locked.prompt_state_owner(),
+            app_locked.active_turn_store(),
             app_locked.prompt_activity_store(),
             app_locked.prompt_idle_timeout(),
             app_locked.prompt_workspace_claim_store(),
@@ -2645,6 +2646,7 @@ mod tests {
             session: crate::app::KernelSessionReadService::new(&app)
                 .session_snapshot(session.id())
                 .expect("session snapshot should load"),
+            agent_activity: std::collections::BTreeMap::new(),
         };
 
         match started {

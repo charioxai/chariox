@@ -20,7 +20,7 @@ use crate::runtime::session_actor::FocusedAgentProjection;
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::{
     PromptAttachment, PromptCompletion, PromptIdAllocator, PromptQueueItem, PromptStatus,
-    DEFAULT_LOCAL_USER_ID,
+    PromptSubmissionOutcome, DEFAULT_LOCAL_USER_ID,
 };
 
 const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -125,6 +125,20 @@ impl AgentRuntimeCommandExecutor {
         self.agent_runtime_projection
             .update_session(&prepared.session);
 
+        if let (PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
+            (&prepared.outcome, prepared.dispatch.as_ref())
+        {
+            self.prompt_commands.start_active_turn(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                prompt.id(),
+                &dispatch.provider_run_id,
+            );
+        }
+        let agent_activity = self
+            .prompt_commands
+            .agent_activity_for_session(&prepared.session);
+
         if let Some(dispatch) = prepared.dispatch {
             self.prompt_commands.spawn_prompt_dispatch(dispatch);
         }
@@ -135,6 +149,7 @@ impl AgentRuntimeCommandExecutor {
         Ok(LocalDaemonResponse::PromptSubmitted {
             outcome: prepared.outcome,
             session: prepared.session,
+            agent_activity,
         })
     }
 
@@ -800,7 +815,7 @@ mod tests {
                     .with_agent_id(agent_id),
             )
             .expect("provider launch should succeed");
-        app.update_provider_run_projection(provider_run);
+        app.update_provider_run_projection(provider_run.clone());
     }
 
     async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
@@ -820,6 +835,7 @@ mod tests {
             app_locked.durable_state_store(),
             app_locked.session_history_projection_store(),
             app_locked.prompt_state_owner(),
+            app_locked.active_turn_store(),
             app_locked.prompt_activity_store(),
             app_locked.prompt_idle_timeout(),
             app_locked.prompt_workspace_claim_store(),
@@ -1193,7 +1209,7 @@ mod tests {
                 .with_agent_id(agent.id()),
             )
             .expect("structured provider should launch");
-        app.update_provider_run_projection(provider_run);
+        app.update_provider_run_projection(provider_run.clone());
         let first = PromptQueueItem::new(
             app.sessions_mut().reserve_prompt_id(),
             attachment.id(),
@@ -1305,7 +1321,7 @@ mod tests {
                 .with_agent_id(agent.id()),
             )
             .expect("structured provider should launch");
-        app.update_provider_run_projection(provider_run);
+        app.update_provider_run_projection(provider_run.clone());
         let session_snapshot = crate::app::KernelSessionReadService::new(&app)
             .session_snapshot(session.id())
             .expect("session snapshot should be available");
@@ -1351,7 +1367,12 @@ mod tests {
         .expect("owned local prompt submit should not wait for the app lock")
         .expect("prompt submit should succeed");
 
-        let LocalDaemonResponse::PromptSubmitted { outcome, session } = response else {
+        let LocalDaemonResponse::PromptSubmitted {
+            outcome,
+            session,
+            agent_activity,
+        } = response
+        else {
             panic!("unexpected response");
         };
         let PromptSubmissionOutcome::Started { prompt } = outcome else {
@@ -1370,6 +1391,17 @@ mod tests {
                 .and_then(|projection| projection.active_prompt)
                 .map(|prompt| prompt.id().to_string()),
             Some(prompt.id().to_string())
+        );
+        let activity = agent_activity
+            .get(&agent_id)
+            .expect("submitted response should carry agent activity");
+        assert!(activity.busy);
+        assert_eq!(
+            activity
+                .active_turn
+                .as_ref()
+                .and_then(|turn| turn.provider_run_id.as_deref()),
+            Some(provider_run.id())
         );
     }
 
@@ -1442,7 +1474,12 @@ mod tests {
         .expect("owned multi-agent PTY prompt submit should not wait for the app lock")
         .expect("prompt submit should succeed");
 
-        let LocalDaemonResponse::PromptSubmitted { outcome, session } = response else {
+        let LocalDaemonResponse::PromptSubmitted {
+            outcome,
+            session,
+            agent_activity,
+        } = response
+        else {
             panic!("unexpected response");
         };
         let PromptSubmissionOutcome::Started { prompt } = outcome else {
@@ -1455,6 +1492,10 @@ mod tests {
                 .map(|prompt| prompt.id()),
             Some(prompt.id())
         );
+        assert!(agent_activity
+            .get(&agent_id)
+            .map(|activity| activity.busy)
+            .unwrap_or(false));
     }
 
     #[tokio::test]
@@ -1676,12 +1717,14 @@ mod tests {
             session: crate::app::KernelSessionReadService::new(&app)
                 .session_snapshot(session.id())
                 .expect("session snapshot should load"),
+            agent_activity: std::collections::BTreeMap::new(),
         };
 
         match response {
             LocalDaemonResponse::PromptSubmitted {
                 outcome,
                 session: projected_session,
+                ..
             } => {
                 match outcome {
                     PromptSubmissionOutcome::Started { prompt } => {

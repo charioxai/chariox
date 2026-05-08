@@ -321,6 +321,7 @@ impl<'a> KernelSessionReadService<'a> {
         let session = self.session_snapshot(&request.session_id)?;
         let prompt_activity = self.app.prompt_activity_store();
         let prompt_activity = prompt_activity.read();
+        let active_turns = self.app.active_turn_store().snapshot();
         let agent_activity = agent_activity_for_session_projection(
             &session,
             |agent_id| {
@@ -329,6 +330,7 @@ impl<'a> KernelSessionReadService<'a> {
                     .get_run_for_agent(session.id(), agent_id)
             },
             &prompt_activity,
+            &active_turns,
         );
         Ok(LocalDaemonResponse::SessionState {
             session,
@@ -605,6 +607,7 @@ impl<'a> KernelSessionService<'a> {
             for run in self.app.providers.list_runs() {
                 if run.session_id() == attachment.session_id() {
                     crate::transport::flow_control::clear_prompt_activity(self.app, run.id());
+                    crate::transport::flow_control::clear_active_turn(self.app, run.id());
                 }
             }
         }
@@ -677,6 +680,7 @@ impl<'a> KernelSessionService<'a> {
         for run in self.app.providers.list_runs() {
             if run.session_id() == session_id {
                 crate::transport::flow_control::clear_prompt_activity(self.app, run.id());
+                crate::transport::flow_control::clear_active_turn(self.app, run.id());
             }
         }
         self.app.prompt_owner_remove_session(session_id);

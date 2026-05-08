@@ -297,6 +297,7 @@ impl DaemonApp {
         let _ =
             self.prompt_owner_cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
         flow_control::clear_prompt_activity(self, &dispatch.provider_run_id);
+        flow_control::clear_active_turn(self, &dispatch.provider_run_id);
         let _ =
             crate::app::KernelSessionReadService::new(self).session_snapshot(&dispatch.session_id);
         self.record_notice(

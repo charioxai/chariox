@@ -269,6 +269,7 @@ struct ProviderOutputPumpContext<'a> {
     app: &'a mut DaemonApp,
     provider_store: ProviderProcessServiceStore,
     pending_structured_output_records: StructuredOutputRecordStore,
+    active_turns: crate::app::ActiveTurnStore,
     prompt_activity: PromptActivityStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
 }
@@ -536,6 +537,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         Self {
             provider_store: app.providers.clone(),
             pending_structured_output_records: app.pending_structured_output_records.clone(),
+            active_turns: app.active_turns.clone(),
             prompt_activity: app.prompt_activity.clone(),
             agent_runtime_projection: app.agent_runtime_projection_store(),
             app,
@@ -868,6 +870,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
                     &agent_id,
                     Some(provider_run_id),
                 )?;
+                self.clear_active_turn(provider_run_id);
             } else {
                 self.maybe_complete_active_prompt(session_id, provider_run_id)?;
             }
@@ -905,6 +908,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
     }
 
     fn note_prompt_settlement_requested(&self, provider_run_id: &str) {
+        self.active_turns.mark_settling(provider_run_id);
         self.prompt_activity
             .write()
             .entry(provider_run_id.to_string())
@@ -928,6 +932,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
     ) -> Result<(), DaemonError> {
         let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
             self.clear_prompt_activity(provider_run_id);
+            self.clear_active_turn(provider_run_id);
             return Ok(());
         };
         let agent_id = self.provider_run_agent_id(provider_run_id)?;
@@ -942,6 +947,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 self.app
                     .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
         }
+        self.clear_active_turn(provider_run_id);
         Ok(())
     }
 
@@ -953,6 +959,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
     ) -> Result<(), DaemonError> {
         let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
             self.clear_prompt_activity(provider_run_id);
+            self.clear_active_turn(provider_run_id);
             return Ok(());
         };
         let agent_id = self.provider_run_agent_id(provider_run_id)?;
@@ -991,6 +998,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         let _ = self
             .app
             .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
+        self.clear_active_turn(provider_run_id);
         Ok(())
     }
 
@@ -1043,6 +1051,10 @@ impl<'a> ProviderOutputPumpContext<'a> {
         if self.app.release_prompt_workspace_claim(provider_run_id) {
             crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(self.app);
         }
+    }
+
+    fn clear_active_turn(&self, provider_run_id: &str) {
+        self.active_turns.clear(provider_run_id);
     }
 
     fn fan_out_provider_output(

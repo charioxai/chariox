@@ -89,6 +89,24 @@ impl AgentPromptCommandService {
         self.state.session_snapshot(session_id).await
     }
 
+    pub(crate) fn start_active_turn(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+    ) {
+        self.state
+            .start_active_turn(session_id, agent_id, prompt_id, provider_run_id);
+    }
+
+    pub(crate) fn agent_activity_for_session(
+        &self,
+        session: &crate::session::RuntimeSession,
+    ) -> std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
+        self.state.agent_activity_for_session(session)
+    }
+
     pub(crate) fn spawn_prompt_dispatch(&self, dispatch: KernelPromptDispatch) {
         self.dispatch_context().spawn_prompt_dispatch(dispatch);
     }

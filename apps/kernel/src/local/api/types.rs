@@ -3,7 +3,7 @@ use super::*;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 12;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 13;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -2145,6 +2145,7 @@ pub enum LocalDaemonResponse {
     PromptSubmitted {
         outcome: PromptSubmissionOutcome,
         session: RuntimeSession,
+        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
     },
     PromptCompleted {
         completion: PromptCompletion,

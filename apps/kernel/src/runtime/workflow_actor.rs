@@ -350,6 +350,7 @@ mod tests {
             app_locked.durable_state_store(),
             app_locked.session_history_projection_store(),
             app_locked.prompt_state_owner(),
+            app_locked.active_turn_store(),
             app_locked.prompt_activity_store(),
             app_locked.prompt_idle_timeout(),
             app_locked.prompt_workspace_claim_store(),

@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::app::{ActivePromptState, DaemonApp};
+use crate::app::{ActivePromptState, ActiveTurnState, DaemonApp};
 #[cfg(test)]
 use crate::error::DaemonError;
 #[cfg(test)]
@@ -24,6 +24,29 @@ pub(crate) fn note_prompt_started(app: &mut DaemonApp, provider_run_id: &str) {
             settlement_requested: false,
         },
     );
+    let active_turn = app
+        .providers()
+        .get_run(provider_run_id)
+        .ok()
+        .and_then(|run| {
+            let session_id = run.session_id().to_string();
+            let agent_id = run.agent_instance_id()?.to_string();
+            let prompt_id = app
+                .prompt_owner_active_prompt_for_agent(&session_id, &agent_id)
+                .ok()
+                .flatten()?
+                .id()
+                .to_string();
+            Some(ActiveTurnState::new(
+                session_id,
+                agent_id,
+                prompt_id,
+                provider_run_id.to_string(),
+            ))
+        });
+    if let Some(turn) = active_turn {
+        app.active_turns.start(turn);
+    }
 }
 
 pub(crate) fn clear_prompt_activity(app: &mut DaemonApp, provider_run_id: &str) {
@@ -33,7 +56,12 @@ pub(crate) fn clear_prompt_activity(app: &mut DaemonApp, provider_run_id: &str) 
     }
 }
 
+pub(crate) fn clear_active_turn(app: &mut DaemonApp, provider_run_id: &str) {
+    app.active_turns.clear(provider_run_id);
+}
+
 pub(crate) fn note_prompt_settlement_requested(app: &mut DaemonApp, provider_run_id: &str) {
+    app.active_turns.mark_settling(provider_run_id);
     app.prompt_activity
         .write()
         .entry(provider_run_id.to_string())
@@ -88,7 +116,10 @@ pub(crate) fn maybe_complete_active_prompt(
     }
 
     match prompt_settlement_action(app, session_id, provider_run_id)? {
-        PromptSettlementAction::ClearActivityOnly => clear_prompt_activity(app, provider_run_id),
+        PromptSettlementAction::ClearActivityOnly => {
+            clear_prompt_activity(app, provider_run_id);
+            clear_active_turn(app, provider_run_id);
+        }
         PromptSettlementAction::FinalizeCancellation => {
             let agent_id = provider_run_agent_id(app, provider_run_id)?;
             let _ = app.finalize_active_prompt_cancellation(
@@ -96,10 +127,12 @@ pub(crate) fn maybe_complete_active_prompt(
                 &agent_id,
                 Some(provider_run_id),
             )?;
+            clear_active_turn(app, provider_run_id);
         }
         PromptSettlementAction::Complete => {
             let agent_id = provider_run_agent_id(app, provider_run_id)?;
             let _ = app.complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
+            clear_active_turn(app, provider_run_id);
         }
     }
     Ok(())

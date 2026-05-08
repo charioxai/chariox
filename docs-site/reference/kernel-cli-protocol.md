@@ -4,7 +4,7 @@ This page describes the current local protocol between the Arroba Kernel and the
 
 It reflects the current implementation, not the long-term remote/federated design.
 
-Current shared local daemon protocol version: `12`.
+Current shared local daemon protocol version: `13`.
 
 Primary implementation sources:
 
@@ -76,6 +76,8 @@ When an error is present:
 ```
 
 ## Kernel Event IDs
+
+Protocol version `13` adds the `agent_activity` projection to `PromptSubmitted` responses so clients update badges from kernel-owned turn state at prompt admission, without output-based inference.
 
 Protocol version `11` adds `GetWorkspaceFileContent` for read-only file preview, including language metadata, bounded content, fingerprint refresh, and not-modified responses.
 

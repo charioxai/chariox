@@ -1038,6 +1038,7 @@ impl KernelRuntimeOwnedState {
 
     pub(super) fn clear_prompt_activity(&self, provider_run_id: &str) -> bool {
         self.prompt_activity.write().remove(provider_run_id);
+        self.active_turns.clear(provider_run_id);
         self.prompt_workspace_claims.remove(provider_run_id)
     }
 
@@ -1065,6 +1066,29 @@ impl KernelRuntimeOwnedState {
                 settlement_requested: false,
             },
         );
+        let active_turn = self
+            .provider_store
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| {
+                let session_id = run.session_id().to_string();
+                let agent_id = run.agent_instance_id()?.to_string();
+                let session = self.session_store.get_session(&session_id).ok()?;
+                let prompt_id = self
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &agent_id)?
+                    .id()
+                    .to_string();
+                Some(crate::app::ActiveTurnState::new(
+                    session_id,
+                    agent_id,
+                    prompt_id,
+                    provider_run_id.to_string(),
+                ))
+            });
+        if let Some(turn) = active_turn {
+            self.active_turns.start(turn);
+        }
     }
 
     pub(super) fn note_prompt_output(&self, provider_run_id: &str) {
@@ -1081,6 +1105,7 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn note_prompt_settlement_requested(&self, provider_run_id: &str) {
+        self.active_turns.mark_settling(provider_run_id);
         self.prompt_activity
             .write()
             .entry(provider_run_id.to_string())
