@@ -1328,14 +1328,7 @@ fn codex_permission_policy(
                 && permission_level == AgentPermissionLevel::Yolo;
             CodexPermissionPolicy {
                 approval_policy: match permission_level {
-                    AgentPermissionLevel::Required => json!({
-                        "granular": {
-                            "mcp_elicitations": true,
-                            "request_permissions": true,
-                            "rules": true,
-                            "sandbox_approval": true
-                        }
-                    }),
+                    AgentPermissionLevel::Required => json!("untrusted"),
                     AgentPermissionLevel::Yolo => json!("never"),
                 },
                 sandbox: match (execution_mode, yolo_build) {
@@ -2028,25 +2021,16 @@ mod tests {
     }
 
     #[test]
-    fn unrestricted_required_policy_enables_permission_escalation_reviews() {
+    fn unrestricted_required_policy_uses_strict_native_approval() {
         let policy = codex_permission_policy(
             ProviderWriteAccessMode::Unrestricted,
             AgentExecutionMode::Build,
             AgentPermissionLevel::Required,
         );
 
-        assert_eq!(
-            policy.approval_policy,
-            json!({
-                "granular": {
-                    "mcp_elicitations": true,
-                    "request_permissions": true,
-                    "rules": true,
-                    "sandbox_approval": true
-                }
-            })
-        );
+        assert_eq!(policy.approval_policy, json!("untrusted"));
         assert_eq!(policy.sandbox, "workspace-write");
+        assert_eq!(policy.sandbox_policy, json!({ "type": "workspaceWrite" }));
     }
 
     #[test]

@@ -43,7 +43,7 @@ Chronological notes to preserve execution context between contributors/agents.
   - OpenCode native permission events
 - Routed CLI interaction-strip answers back to provider-native approval channels and resumed the same turn after approval.
 - Fixed transient interaction lifecycle bugs by moving pending interaction / pending MCP continuation stores onto shared process-wide state.
-- Fixed Codex native approval handling by restoring the correct unrestricted `required -> on-request` mapping and the correct app-server decision vocabulary.
+- Fixed Codex native approval handling by restoring the correct unrestricted `required -> untrusted` mapping and the correct app-server decision vocabulary.
 - Added live drill coverage:
   - `apps/cli/scripts/live-native-permission-drill.mjs`
   - `apps/cli/scripts/live-popup-drill.mjs`

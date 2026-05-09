@@ -224,16 +224,18 @@ async function waitForSessionInteraction(client, sessionId, agentId, containsTex
   const { getSessionStateRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
   const deadline = Date.now() + timeoutMs
   let session = null
+  const needles = Array.isArray(containsText) ? containsText : [containsText]
   while (Date.now() < deadline) {
     const response = await client.send(getSessionStateRequest(sessionId))
     const payload = response?.SessionStateLoaded ?? response?.SessionState ?? response
     session = payload.session ?? payload
-    const interaction = (session.active_interactions ?? []).find((entry) => entry.agent_id === agentId && String(entry.message ?? '').includes(containsText))
-      ?? (session.active_interactions ?? []).find((entry) => String(entry.message ?? '').includes(containsText))
+    const matchesNeedle = (entry) => needles.some((needle) => String(entry.message ?? '').includes(needle))
+    const interaction = (session.active_interactions ?? []).find((entry) => entry.agent_id === agentId && matchesNeedle(entry))
+      ?? (session.active_interactions ?? []).find(matchesNeedle)
     if (interaction) return { session, interaction }
     await sleep(pollMs)
   }
-  throw new Error(`timed out waiting for session interaction containing ${containsText}${session ? `\n${JSON.stringify(session, null, 2)}` : ''}`)
+  throw new Error(`timed out waiting for session interaction containing ${needles.join(' or ')}${session ? `\n${JSON.stringify(session, null, 2)}` : ''}`)
 }
 
 function collectTerminalText(events) {
@@ -437,7 +439,7 @@ async function main() {
     await client.send(focusAgentRequest(sessionId, activeAgentId))
 
     const bashNeedle = provider === 'codex' ? 'Approve command execution?' : 'Approve OpenCode bash request?'
-    const editNeedle = provider === 'codex' ? 'Approve file changes?' : 'Approve OpenCode edit request?'
+    const editNeedle = provider === 'codex' ? ['Approve file changes?', 'Approve command execution?'] : 'Approve OpenCode edit request?'
     const codexSandboxEscapePath = `/tmp/arroba-codex-native-bash-${process.pid}.txt`
     const bashPrompt = provider === 'codex'
       ? `Use the shell to run \`printf 'native-bash\\n' > ${codexSandboxEscapePath}\`. After the command succeeds, reply with exactly NATIVE_BASH_PERMISSION_DONE.`

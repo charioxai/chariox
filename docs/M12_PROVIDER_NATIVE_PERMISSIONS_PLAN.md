@@ -35,12 +35,15 @@ Precedence:
 
 ### Codex
 
-- `build + required` -> approval `on-request`, sandbox `workspace-write`
+- `build + required` -> approval `untrusted`, sandbox `workspace-write`
 - `build + yolo` -> approval `never`, sandbox `danger-full-access`
-- `plan + required` -> approval `on-request`, sandbox `read-only`
+- `plan + required` -> approval `untrusted`, sandbox `read-only`
 - `plan + yolo` -> approval `never`, sandbox `read-only`
 
 Managed-I/O launch policy remains authoritative when enabled and can still force stricter behavior.
+
+Codex CLI documentation also refers to the strict approval policy as `unless-trusted`; the current
+app-server schema used by Arroba's supported Codex runtime names the same mode `untrusted`.
 
 ### OpenCode
 
