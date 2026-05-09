@@ -18,6 +18,15 @@ impl KernelRuntimeOwnedState {
         Ok(session)
     }
 
+    fn restore_session_and_publish_projection(
+        &self,
+        session: crate::session::RuntimeSession,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session_id = session.id().to_string();
+        self.session_store.restore_session(session);
+        self.session_snapshot(&session_id)
+    }
+
     pub(super) fn project_session_runtime_view(
         &self,
         session: &mut crate::session::RuntimeSession,
@@ -93,9 +102,7 @@ impl KernelRuntimeOwnedState {
             });
         }
         session.add_active_interaction(interaction.clone());
-        self.project_session_runtime_view(&mut session);
-        self.session_store.restore_session(session.clone());
-        self.session_projection.update(session);
+        self.restore_session_and_publish_projection(session)?;
         self.pending_interactions.write().insert(
             interaction.id().to_string(),
             super::PendingInteraction {
@@ -171,9 +178,7 @@ impl KernelRuntimeOwnedState {
                 operation: "resolve runtime interaction",
                 message: format!("interaction {interaction_id} was not pending"),
             })?;
-        self.project_session_runtime_view(&mut session);
-        self.session_store.restore_session(session.clone());
-        self.session_projection.update(session);
+        self.restore_session_and_publish_projection(session)?;
         if let Some(sender) = pending
             .responder
             .lock()
@@ -224,9 +229,7 @@ impl KernelRuntimeOwnedState {
         let Some(interaction) = session.remove_active_interaction(interaction_id) else {
             return Ok(());
         };
-        self.project_session_runtime_view(&mut session);
-        self.session_store.restore_session(session.clone());
-        self.session_projection.update(session);
+        self.restore_session_and_publish_projection(session)?;
         let resolution = if let Some(default_choice_id) = interaction.default_on_timeout() {
             if let Some(choice) = interaction.choice(default_choice_id) {
                 super::PendingInteractionResolution {

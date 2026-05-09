@@ -8849,8 +8849,9 @@ mod tests {
     };
     use crate::runtime::router::CommandRouter;
     use crate::session::{
-        CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus,
-        DEFAULT_LOCAL_USER_ID,
+        CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, RuntimeInteraction,
+        RuntimeInteractionChoice, RuntimeInteractionChoiceStyle, RuntimeInteractionKind,
+        RuntimeInteractionLevel, SessionStatus, DEFAULT_LOCAL_USER_ID,
     };
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
@@ -10923,6 +10924,98 @@ mod tests {
             LocalDaemonResponse::SessionState { session, .. } => {
                 assert!(session.active_prompt_for_agent(&agent_id).is_some());
                 assert_eq!(session.agents().len(), 1);
+            }
+            _ => panic!("unexpected state response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_session_state_keeps_activity_after_runtime_interaction_projection_refresh() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let provider_run = launch_test_provider(
+            &mut app,
+            &session_id,
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        router.active_turns.start(crate::app::ActiveTurnState::new(
+            session_id.clone(),
+            agent_id.clone(),
+            "prompt-1".to_string(),
+            provider_run.id().to_string(),
+        ));
+        let interaction = RuntimeInteraction::new(
+            "interaction-1",
+            &agent_id,
+            RuntimeInteractionKind::Permission,
+            RuntimeInteractionLevel::Info,
+            Some("Approve file changes?".to_string()),
+            "Approve file changes?",
+            vec![RuntimeInteractionChoice::new(
+                "allow_once",
+                "Allow once",
+                "allow",
+                Some(RuntimeInteractionChoiceStyle::Primary),
+            )],
+            None,
+            None,
+        );
+        let _resolution = router
+            .runtime_state
+            .create_runtime_interaction(&session_id, interaction)
+            .await
+            .expect("interaction should register");
+
+        let app_guard = app.lock().await;
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let state_command =
+            KernelCommand::from_local_request("cmd-state-interaction", None, None, &state_request);
+        let state_router = router.clone();
+        let state_task =
+            tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
+
+        tokio::task::yield_now().await;
+        assert!(
+            state_task.is_finished(),
+            "warm GetSessionState should be served from the session projection without app lock access"
+        );
+
+        drop(app_guard);
+        let state_response = state_task
+            .await
+            .expect("state task should join")
+            .expect("state should resolve");
+        match state_response {
+            LocalDaemonResponse::SessionState {
+                session,
+                agent_activity,
+            } => {
+                assert_eq!(session.focused_agent_id(), Some(agent_id.as_str()));
+                assert_eq!(session.agents().len(), 1);
+                assert_eq!(session.active_interactions().len(), 1);
+                let activity = agent_activity
+                    .get(&agent_id)
+                    .expect("agent activity should include focused agent");
+                assert!(
+                    activity.busy,
+                    "active turn must keep focused agent working during permission popup"
+                );
+                assert!(
+                    activity.active_turn.is_some(),
+                    "active turn projection must survive interaction projection refresh"
+                );
             }
             _ => panic!("unexpected state response"),
         }
