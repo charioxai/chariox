@@ -2225,6 +2225,14 @@ impl WorkflowNodeRun {
         self.turn_envelope.as_ref()
     }
 
+    pub fn has_valid_pending_final_output(&self) -> bool {
+        self.turn_envelope()
+            .and_then(|envelope| {
+                envelope.pending_output_submission(WorkflowTurnSubmissionKind::Final)
+            })
+            .is_some_and(|submission| submission.valid() && submission.warning().is_none())
+    }
+
     pub fn turn_envelope_mut(&mut self) -> Option<&mut WorkflowTurnEnvelope> {
         self.turn_envelope.as_mut()
     }

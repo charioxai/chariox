@@ -389,6 +389,18 @@ pub(crate) fn workflow_prompt_has_completion_output_from_runtime(
     let Ok(session) = app.sessions().get_session(session_id) else {
         return false;
     };
+    if session
+        .workflow_run(workflow_run_id)
+        .and_then(|workflow_run| {
+            workflow_run
+                .node_runs()
+                .iter()
+                .find(|node_run| node_run.id() == workflow_node_run_id)
+        })
+        .is_some_and(|node_run| node_run.has_valid_pending_final_output())
+    {
+        return true;
+    }
     let Ok(history) = crate::app::KernelSessionReadService::new(app).session_history(session_id)
     else {
         return false;

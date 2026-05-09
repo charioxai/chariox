@@ -331,7 +331,12 @@ impl KernelRuntimeOwnedState {
             workflow_node_run_id,
             provider_run_id,
         );
-        if completion_snapshot.is_none() {
+        let has_valid_pending_final_output = self.workflow_node_run_has_valid_pending_final_output(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        );
+        if completion_snapshot.is_none() && !has_valid_pending_final_output {
             let message = "provider completed workflow turn without a validated workflow output";
             let provider_diagnostic =
                 provider_run_id.and_then(|run_id| self.provider_run_terminal_diagnostic(run_id));
@@ -592,6 +597,13 @@ impl KernelRuntimeOwnedState {
         workflow_node_run_id: &str,
         provider_run_id: &str,
     ) -> bool {
+        if self.workflow_node_run_has_valid_pending_final_output(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        ) {
+            return true;
+        }
         self.workflow_completion_snapshot(
             session_id,
             workflow_run_id,
@@ -600,6 +612,29 @@ impl KernelRuntimeOwnedState {
         )
         .and_then(|snapshot| snapshot.output().cloned())
         .is_some()
+    }
+
+    fn workflow_node_run_has_valid_pending_final_output(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> bool {
+        self.session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| {
+                session
+                    .workflow_run(workflow_run_id)
+                    .and_then(|workflow_run| {
+                        workflow_run
+                            .node_runs()
+                            .iter()
+                            .find(|node_run| node_run.id() == workflow_node_run_id)
+                    })
+                    .map(|node_run| node_run.has_valid_pending_final_output())
+            })
+            .unwrap_or(false)
     }
 
     #[allow(dead_code)]

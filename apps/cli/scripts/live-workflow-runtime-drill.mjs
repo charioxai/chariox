@@ -1,7 +1,7 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import os from 'node:os'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -1210,4 +1210,13 @@ async function main() {
   }
 }
 
-await main()
+export {
+  createScenario,
+  ensureSchemaFile,
+  modelForProvider,
+  workflowOutput,
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  await main()
+}

@@ -306,7 +306,7 @@ pub fn retry_blocked_workflow_claims(app: &mut DaemonApp) -> BTreeSet<String> {
 
     let mut affected_sessions = BTreeSet::new();
     for (session_id, workflow_run_id, workflow_node_run_id, agent_id, node_id, prompt) in blocked {
-        if let Err(error) = retry_prepared_workflow_node_prompt_without_provider_dispatch(
+        if let Err(error) = retry_prepared_workflow_node_prompt(
             app,
             &session_id,
             &workflow_run_id,
@@ -329,7 +329,7 @@ pub fn retry_blocked_workflow_claims(app: &mut DaemonApp) -> BTreeSet<String> {
     affected_sessions
 }
 
-fn retry_prepared_workflow_node_prompt_without_provider_dispatch(
+fn retry_prepared_workflow_node_prompt(
     app: &mut DaemonApp,
     session_id: &str,
     workflow_run_id: &str,
@@ -366,28 +366,15 @@ fn retry_prepared_workflow_node_prompt_without_provider_dispatch(
         target_agent_id,
         prompt,
     )?;
-    match outcome {
-        PromptSubmissionOutcome::Started { prompt } => {
-            app.sessions_mut().mark_workflow_turn_dispatched(
-                session_id,
-                workflow_run_id,
-                workflow_node_run_id,
-            )?;
-            on_workflow_prompt_started(app, session_id, &prompt)?;
-            crate::transport::flow_control::note_prompt_started(app, &provider_run_id);
-        }
-        PromptSubmissionOutcome::Queued { .. } => {
-            app.record_notice(
-                session_id,
-                None,
-                app.attachments().list_session_attachment_ids(session_id),
-                format!(
-                    "Workflow run `{workflow_run_id}` queued node `{node_id}` behind the current active prompt."
-                ),
-            );
-        }
-    }
-    Ok(())
+    handle_workflow_prompt_submission_outcome(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        target_agent_id,
+        node_id,
+        outcome,
+    )
 }
 
 pub fn resume_workflow_run(
@@ -635,6 +622,29 @@ pub fn workflow_max_turns(app: &DaemonApp, session_id: &str) -> Option<usize> {
         ))
 }
 
+fn workflow_node_run_has_valid_pending_final_output(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+) -> bool {
+    app.sessions()
+        .get_session(session_id)
+        .ok()
+        .and_then(|session| {
+            session
+                .workflow_run(workflow_run_id)
+                .and_then(|workflow_run| {
+                    workflow_run
+                        .node_runs()
+                        .iter()
+                        .find(|node_run| node_run.id() == workflow_node_run_id)
+                })
+                .map(|node_run| node_run.has_valid_pending_final_output())
+        })
+        .unwrap_or(false)
+}
+
 pub fn is_workflow_prompt_attachment(attachment_id: &str) -> bool {
     attachment_id.starts_with(WORKFLOW_PROMPT_SOURCE_PREFIX)
 }
@@ -785,7 +795,13 @@ pub fn on_workflow_prompt_completed(
         workflow_node_run_id,
         provider_run_id,
     );
-    if completion_snapshot.is_none() {
+    let has_valid_pending_final_output = workflow_node_run_has_valid_pending_final_output(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    );
+    if completion_snapshot.is_none() && !has_valid_pending_final_output {
         let message = "provider completed workflow turn without a validated workflow output";
         let provider_diagnostic =
             provider_run_id.and_then(|run_id| provider_run_terminal_diagnostic(app, run_id));

@@ -690,6 +690,28 @@ impl KernelRuntimeState {
                     workflow_node_run_id,
                     provider_run_id,
                 ) {
+                    if !prompt_completed
+                        && !owned.prompt_workflow_missing_output_grace_elapsed(provider_run_id)
+                    {
+                        owned.note_prompt_settlement_requested(provider_run_id);
+                        let _ = owned.session_snapshot(session_id);
+                        crate::logging::debug_with_fields(
+                            "daemon.provider",
+                            "workflow prompt missing output grace started",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "provider_run_id": provider_run_id,
+                                "agent_id": agent_id,
+                                "prompt_id": active_prompt.id(),
+                                "workflow_run_id": workflow_run_id,
+                                "workflow_node_run_id": workflow_node_run_id,
+                            }),
+                        );
+                        return Ok(crate::app::ProviderRunExitSessionSummary {
+                            had_active_prompt: true,
+                            started_next_prompt: false,
+                        });
+                    }
                     let message = if prompt_completed {
                         "provider completed workflow turn without a validated workflow output"
                     } else {
@@ -754,11 +776,14 @@ impl KernelRuntimeState {
             }),
         );
         if completion.completion.completed.workflow_run_id().is_some() {
-            let dispatches = owned.workflow_complete_prompt(
+            let mut dispatches = owned.workflow_complete_prompt(
                 session_id,
                 &completion.completion.completed,
                 Some(provider_run_id),
             )?;
+            if completion.released_claim {
+                dispatches.extend(owned.workflow_retry_blocked_claims());
+            }
             self.spawn_workflow_prompt_dispatches(dispatches);
         }
         if let Some(started_next) = completion.completion.started_next.as_ref() {
