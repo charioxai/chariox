@@ -267,54 +267,31 @@ pub(crate) fn launch_provider_request_from_local(
         .and_then(|session| session.focused_agent_id().map(str::to_string));
     if let Some(agent_id) = request.agent_id.clone().or(focused_agent_id) {
         launch_request = if let Ok(agent) = app.agents().get_agent(&agent_id) {
-            launch_request
+            let effective_config = session.as_ref().map(|session| {
+                crate::session::effective_agent_execution_config(session, Some(&agent))
+            });
+            let launch_request = launch_request
                 .with_agent_id(agent_id)
-                .with_owner_user_id(agent.owner_user_id().to_string())
-                .with_execution_mode(resolve_effective_execution_mode(
-                    session.as_ref(),
-                    Some(&agent),
-                ))
-                .with_permission_level(resolve_effective_permission_level(
-                    session.as_ref(),
-                    Some(&agent),
-                ))
+                .with_owner_user_id(agent.owner_user_id().to_string());
+            if let Some(effective_config) = effective_config {
+                launch_request
+                    .with_execution_mode(effective_config.mode)
+                    .with_permission_level(effective_config.permission_level)
+            } else {
+                launch_request
+            }
         } else {
             launch_request.with_agent_id(agent_id)
         };
     } else {
-        launch_request = launch_request
-            .with_execution_mode(resolve_effective_execution_mode(session.as_ref(), None))
-            .with_permission_level(resolve_effective_permission_level(session.as_ref(), None));
+        if let Some(session) = session.as_ref() {
+            let effective_config = crate::session::effective_agent_execution_config(session, None);
+            launch_request = launch_request
+                .with_execution_mode(effective_config.mode)
+                .with_permission_level(effective_config.permission_level);
+        }
     }
     launch_request
-}
-
-fn resolve_effective_execution_mode(
-    session: Option<&crate::session::RuntimeSession>,
-    agent: Option<&crate::agent::AgentInstance>,
-) -> crate::provider::AgentExecutionMode {
-    agent
-        .and_then(|agent| agent.execution_mode_override())
-        .or_else(|| {
-            session
-                .and_then(|session| session.config_state().values().get("agents.mode"))
-                .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
-        })
-        .unwrap_or_default()
-}
-
-fn resolve_effective_permission_level(
-    session: Option<&crate::session::RuntimeSession>,
-    agent: Option<&crate::agent::AgentInstance>,
-) -> crate::provider::AgentPermissionLevel {
-    agent
-        .and_then(|agent| agent.permission_level_override())
-        .or_else(|| {
-            session
-                .and_then(|session| session.config_state().values().get("agents.permissions"))
-                .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
-        })
-        .unwrap_or_default()
 }
 
 pub(crate) fn provider_command_catalogs_response() -> Result<LocalDaemonResponse, DaemonError> {
@@ -789,7 +766,10 @@ pub(crate) fn forgotten_machine_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::KernelSessionService;
     use crate::provider::OpenCodeProviderInfo;
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+    use crate::session::{CreateSessionRequest, SessionAgentDefaults};
 
     #[test]
     fn annotates_remote_machine_provider_aliases_without_including_local_machine() {
@@ -895,5 +875,40 @@ mod tests {
         assert_eq!(codex.remote_machine_aliases, vec!["builder".to_string()]);
         assert_eq!(opencode.name, "OpenCode");
         assert_eq!(opencode.remote_machine_aliases, vec!["builder".to_string()]);
+    }
+
+    #[test]
+    fn launch_provider_request_inherits_session_agent_defaults() {
+        let mut app =
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon app should boot");
+        let defaults = SessionAgentDefaults::new("dev-stub")
+            .with_model("model-a")
+            .with_effort("low")
+            .with_execution_mode(AgentExecutionMode::Plan)
+            .with_permission_level(AgentPermissionLevel::Required);
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(
+                CreateSessionRequest::new("workspace", "worktree").with_agent_defaults(defaults),
+            )
+            .expect("session should be created");
+
+        let request = launch_provider_request_from_local(
+            &app,
+            LaunchProviderRunRequest {
+                session_id: session.id().to_string(),
+                agent_id: Some(agent.id().to_string()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "dev-stub".to_string(),
+                account_profile: "default".to_string(),
+                model: "model-a".to_string(),
+                variant: Some("low".to_string()),
+            },
+        );
+
+        assert_eq!(request.execution_mode, Some(AgentExecutionMode::Plan));
+        assert_eq!(
+            request.permission_level,
+            Some(AgentPermissionLevel::Required)
+        );
     }
 }

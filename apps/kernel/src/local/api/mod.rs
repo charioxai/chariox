@@ -20,12 +20,12 @@ use crate::runtime::projection::DaemonHealthProjection;
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
     PromptSubmissionOutcome, QueuedWorkflowLaunch, RuntimeSession, SessionConfigState,
-    SessionInvite, SessionMember, WorkflowDefinition, WorkflowEdgeDefinition,
-    WorkflowEndpointDefinition, WorkflowLaunchPolicy, WorkflowNodeDefinition,
-    WorkflowPublicationDefinition, WorkflowPublicationPairingCodeRecord,
+    SessionInvite, SessionMember, WorkflowCanvasLayout, WorkflowCanvasLayoutPatch,
+    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowLaunchPolicy,
+    WorkflowNodeDefinition, WorkflowPublicationDefinition, WorkflowPublicationPairingCodeRecord,
     WorkflowPublicationSenderCredential, WorkflowPublicationTrustedSender, WorkflowRun,
-    WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowWatchdogDefinition,
-    WorkflowWatchdogPolicy, WorkspaceLinkAttachment, WorkspaceLinkDefinition,
+    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
+    WorkspaceLinkDefinition,
 };
 use crate::session_history_page::{SessionHistoryCursor, SessionHistoryPageEntry};
 use crate::skill::{ArrobaSkillMetadata, SkillImportOutcome};

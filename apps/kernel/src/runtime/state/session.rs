@@ -5,9 +5,6 @@
 
 use super::*;
 
-const SESSION_AGENT_MODE_CONFIG_KEY: &str = "agents.mode";
-const SESSION_AGENT_PERMISSION_CONFIG_KEY: &str = "agents.permissions";
-
 impl KernelRuntimeOwnedState {
     pub(super) fn session_snapshot(
         &self,
@@ -376,15 +373,13 @@ impl KernelRuntimeOwnedState {
                 });
             }
         }
+        let effective_config =
+            crate::session::effective_agent_execution_config(&session, agent.as_ref());
         if request.execution_mode.is_none() {
-            request = request
-                .with_execution_mode(resolve_effective_execution_mode(&session, agent.as_ref()));
+            request = request.with_execution_mode(effective_config.mode);
         }
         if request.permission_level.is_none() {
-            request = request.with_permission_level(resolve_effective_permission_level(
-                &session,
-                agent.as_ref(),
-            ));
+            request = request.with_permission_level(effective_config.permission_level);
         }
         if request.resume_state.is_none() {
             if let Some(agent) = agent.as_ref() {
@@ -462,8 +457,8 @@ impl KernelRuntimeOwnedState {
                 ),
             });
         }
-        let previous_mode = resolve_effective_execution_mode(&session, Some(&agent));
-        let previous_permission = resolve_effective_permission_level(&session, Some(&agent));
+        let previous_config =
+            crate::session::effective_agent_execution_config(&session, Some(&agent));
         let mut next_agent = agent.clone();
         if let Some(execution_mode_override) = execution_mode_override {
             next_agent.set_execution_mode_override(execution_mode_override);
@@ -471,10 +466,10 @@ impl KernelRuntimeOwnedState {
         if let Some(permission_level_override) = permission_level_override {
             next_agent.set_permission_level_override(permission_level_override);
         }
-        let next_mode = resolve_effective_execution_mode(&session, Some(&next_agent));
-        let next_permission = resolve_effective_permission_level(&session, Some(&next_agent));
-        let effective_config_changed =
-            previous_mode != next_mode || previous_permission != next_permission;
+        let next_config =
+            crate::session::effective_agent_execution_config(&session, Some(&next_agent));
+        let effective_config_changed = previous_config.mode != next_config.mode
+            || previous_config.permission_level != next_config.permission_level;
         let remote_update = effective_config_changed
             .then(|| {
                 agent
@@ -482,8 +477,8 @@ impl KernelRuntimeOwnedState {
                     .map(|binding| owned::OwnedRemoteAgentConfigUpdate {
                         worker_kernel_id: binding.worker_kernel_id.clone(),
                         leased_agent_id: binding.leased_agent_id.clone(),
-                        execution_mode: next_mode,
-                        permission_level: next_permission,
+                        execution_mode: next_config.mode,
+                        permission_level: next_config.permission_level,
                     })
             })
             .flatten();
@@ -1358,38 +1353,4 @@ pub(super) fn agent_request_from_session_defaults(
         request = request.with_permission_level_override(permission_level);
     }
     request
-}
-
-fn resolve_effective_execution_mode(
-    session: &crate::session::RuntimeSession,
-    agent: Option<&crate::agent::AgentInstance>,
-) -> crate::provider::AgentExecutionMode {
-    agent
-        .and_then(|agent| agent.execution_mode_override())
-        .or_else(|| {
-            session
-                .config_state()
-                .values()
-                .get(SESSION_AGENT_MODE_CONFIG_KEY)
-                .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
-        })
-        .or(session.agent_defaults().execution_mode)
-        .unwrap_or_default()
-}
-
-fn resolve_effective_permission_level(
-    session: &crate::session::RuntimeSession,
-    agent: Option<&crate::agent::AgentInstance>,
-) -> crate::provider::AgentPermissionLevel {
-    agent
-        .and_then(|agent| agent.permission_level_override())
-        .or_else(|| {
-            session
-                .config_state()
-                .values()
-                .get(SESSION_AGENT_PERMISSION_CONFIG_KEY)
-                .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
-        })
-        .or(session.agent_defaults().permission_level)
-        .unwrap_or_default()
 }

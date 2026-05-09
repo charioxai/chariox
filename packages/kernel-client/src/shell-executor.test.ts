@@ -769,6 +769,90 @@ test("executeShellCommand clears agent variant through dedicated profile request
   ])
 })
 
+test("executeShellCommand updates agent mode through dedicated config request", async () => {
+  const agent = makeAgent({ id: "agent-2", agent_ref: "agent-2", alias: "reviewer" })
+  const updated = makeAgent({
+    id: "agent-2",
+    agent_ref: "agent-2",
+    alias: "reviewer",
+    execution_mode_override: "plan",
+  })
+  const requests: unknown[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [agent] } }
+    }
+    if ("UpdateAgentConfig" in request) {
+      return { AgentConfigUpdated: { agent: updated, session: makeSession({ agents: [updated] }) } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("agent mode reviewer plan"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent-2 \(reviewer\) mode = plan \(agent\)/)
+  assert.deepEqual(requests, [
+    { ListAgents: { session_id: "session-1" } },
+    {
+      UpdateAgentConfig: {
+        session_id: "session-1",
+        agent_id: "agent-2",
+        execution_mode: "plan",
+        clear_execution_mode: false,
+        permission_level: null,
+        clear_permission_level: false,
+      },
+    },
+  ])
+})
+
+test("executeShellCommand clears agent mode override through dedicated config request", async () => {
+  const agent = makeAgent({ execution_mode_override: "plan" })
+  const updated = makeAgent({ execution_mode_override: null })
+  const requests: unknown[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [agent] } }
+    }
+    if ("UpdateAgentConfig" in request) {
+      return {
+        AgentConfigUpdated: {
+          agent: updated,
+          session: makeSession({
+            agents: [updated],
+            config_state: { version: 1, values: { "agents.mode": "build" } },
+          }),
+        },
+      }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    agentId: "agent-1",
+  })
+  const result = await executeShellCommand(parseShellCommand("agent mode inherit"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent-1 mode = build \(session\)/)
+  assert.deepEqual(requests, [
+    { ListAgents: { session_id: "session-1" } },
+    {
+      UpdateAgentConfig: {
+        session_id: "session-1",
+        agent_id: "agent-1",
+        execution_mode: null,
+        clear_execution_mode: true,
+        permission_level: null,
+        clear_permission_level: false,
+      },
+    },
+  ])
+})
+
 test("executeShellCommand manages agent substitutes", async () => {
   const baseAgent = makeAgent()
   const substituteAgent = makeAgent({

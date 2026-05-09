@@ -401,6 +401,7 @@ pub(super) fn submit_opencode_prompt(
         attachments,
         Some(run.model()),
         run.variant(),
+        run.execution_mode(),
         run.requires_managed_io(),
         workspace_write_fence_active(run),
     )?;

@@ -421,6 +421,9 @@ impl CodexClient {
         if let Some(effort) = effort {
             params["effort"] = json!(effort);
         }
+        if let Some(collaboration_mode) = codex_collaboration_mode(execution_mode, model, effort) {
+            params["collaborationMode"] = collaboration_mode;
+        }
         self.send_request_buffering_notifications(
             socket,
             next_request_id,
@@ -1343,14 +1346,7 @@ fn codex_permission_policy(
                 sandbox_policy: match (execution_mode, yolo_build) {
                     (AgentExecutionMode::Build, true) => json!({ "type": "dangerFullAccess" }),
                     (AgentExecutionMode::Build, false) => json!({ "type": "workspaceWrite" }),
-                    (AgentExecutionMode::Plan, _) => json!({
-                        "type": "readOnly",
-                        "access": {
-                            "type": "restricted",
-                            "includePlatformDefaults": true,
-                            "readableRoots": []
-                        }
-                    }),
+                    (AgentExecutionMode::Plan, _) => json!({ "type": "readOnly" }),
                 },
                 config_overrides: BTreeMap::new(),
             }
@@ -1362,18 +1358,39 @@ fn codex_permission_policy(
             CodexPermissionPolicy {
                 approval_policy: json!("never"),
                 sandbox: "read-only",
-                sandbox_policy: json!({
-                    "type": "readOnly",
-                    "access": {
-                        "type": "restricted",
-                        "includePlatformDefaults": true,
-                        "readableRoots": []
-                    }
-                }),
+                sandbox_policy: json!({ "type": "readOnly" }),
                 config_overrides,
             }
         }
     }
+}
+
+fn codex_collaboration_mode(
+    execution_mode: AgentExecutionMode,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Option<Value> {
+    let model = model?.trim();
+    if model.is_empty() {
+        return None;
+    }
+    let effort = effort
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+    let mode = match execution_mode {
+        AgentExecutionMode::Build => "default",
+        AgentExecutionMode::Plan => "plan",
+    };
+    Some(json!({
+        "mode": mode,
+        "settings": {
+            "model": model,
+            "reasoning_effort": effort,
+            "developer_instructions": Value::Null,
+        }
+    }))
 }
 
 fn managed_io_codex_permission_grant(requested_permissions: &Value) -> Value {
@@ -1985,8 +2002,8 @@ mod tests {
     };
 
     use super::{
-        codex_permission_policy, managed_io_codex_permission_grant, parse_notification,
-        CodexClient, CodexNotification, JsonRpcMessage,
+        codex_collaboration_mode, codex_permission_policy, managed_io_codex_permission_grant,
+        parse_notification, CodexClient, CodexNotification, JsonRpcMessage,
     };
 
     #[test]
@@ -1999,17 +2016,7 @@ mod tests {
 
         assert_eq!(policy.approval_policy, json!("never"));
         assert_eq!(policy.sandbox, "read-only");
-        assert_eq!(
-            policy.sandbox_policy,
-            json!({
-                "type": "readOnly",
-                "access": {
-                    "type": "restricted",
-                    "includePlatformDefaults": true,
-                    "readableRoots": []
-                }
-            })
-        );
+        assert_eq!(policy.sandbox_policy, json!({ "type": "readOnly" }));
         assert_eq!(
             policy.config_overrides.get("include_apply_patch_tool"),
             Some(&json!(false))
@@ -2065,16 +2072,36 @@ mod tests {
 
         assert_eq!(policy.approval_policy, json!("never"));
         assert_eq!(policy.sandbox, "read-only");
+        assert_eq!(policy.sandbox_policy, json!({ "type": "readOnly" }));
+    }
+
+    #[test]
+    fn codex_plan_mode_uses_native_collaboration_mode() {
         assert_eq!(
-            policy.sandbox_policy,
-            json!({
-                "type": "readOnly",
-                "access": {
-                    "type": "restricted",
-                    "includePlatformDefaults": true,
-                    "readableRoots": []
+            codex_collaboration_mode(AgentExecutionMode::Plan, Some("gpt-5.4"), Some("low")),
+            Some(json!({
+                "mode": "plan",
+                "settings": {
+                    "model": "gpt-5.4",
+                    "reasoning_effort": "low",
+                    "developer_instructions": null,
                 }
-            })
+            }))
+        );
+    }
+
+    #[test]
+    fn codex_build_mode_resets_native_collaboration_mode() {
+        assert_eq!(
+            codex_collaboration_mode(AgentExecutionMode::Build, Some("gpt-5.4"), None),
+            Some(json!({
+                "mode": "default",
+                "settings": {
+                    "model": "gpt-5.4",
+                    "reasoning_effort": null,
+                    "developer_instructions": null,
+                }
+            }))
         );
     }
 

@@ -44,13 +44,12 @@ use super::{
     SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
     UpdateAgentProfileRequest, UpdateSessionConfigRequest, UpdateWorkflowCanvasLayoutRequest,
     UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent, WorkspaceRepoFileEntry,
-    WorkspaceRepoFileListing,
-    LOCAL_DAEMON_PROTOCOL_VERSION,
+    WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 13);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 14);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -139,34 +138,30 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
         "d53bd6870d6a9236c231fcfaafe4c99d893029c6fed44efd31642cdc57adc918"
     );
 
-    let layout_request =
-        serde_json::to_value(LocalDaemonRequest::UpdateWorkflowCanvasLayout(
-            super::UpdateWorkflowCanvasLayoutRequest {
-                session_id: "session-1".to_string(),
-                workflow_ref: "workflow-1".to_string(),
-                base_layout_revision: Some(7),
-                patches: vec![
-                    crate::session::WorkflowCanvasLayoutPatch::NodePosition {
-                        node_id: "node-1".to_string(),
-                        x: 120,
-                        y: 80,
-                    },
-                    crate::session::WorkflowCanvasLayoutPatch::EndpointPosition {
-                        endpoint_id: "endpoint-1".to_string(),
-                        x: 140,
-                        y: 42,
-                    },
-                    crate::session::WorkflowCanvasLayoutPatch::EdgeWaypoints {
-                        edge_id: "edge-1".to_string(),
-                        waypoints: vec![crate::session::WorkflowCanvasPoint {
-                            x: 220,
-                            y: 80,
-                        }],
-                    },
-                ],
-            },
-        ))
-        .expect("layout request should serialize");
+    let layout_request = serde_json::to_value(LocalDaemonRequest::UpdateWorkflowCanvasLayout(
+        super::UpdateWorkflowCanvasLayoutRequest {
+            session_id: "session-1".to_string(),
+            workflow_ref: "workflow-1".to_string(),
+            base_layout_revision: Some(7),
+            patches: vec![
+                crate::session::WorkflowCanvasLayoutPatch::NodePosition {
+                    node_id: "node-1".to_string(),
+                    x: 120,
+                    y: 80,
+                },
+                crate::session::WorkflowCanvasLayoutPatch::EndpointPosition {
+                    endpoint_id: "endpoint-1".to_string(),
+                    x: 140,
+                    y: 42,
+                },
+                crate::session::WorkflowCanvasLayoutPatch::EdgeWaypoints {
+                    edge_id: "edge-1".to_string(),
+                    waypoints: vec![crate::session::WorkflowCanvasPoint { x: 220, y: 80 }],
+                },
+            ],
+        },
+    ))
+    .expect("layout request should serialize");
     let layout_payload = layout_request
         .pointer("/UpdateWorkflowCanvasLayout")
         .expect("layout request payload should serialize");
@@ -599,7 +594,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         other => panic!("unexpected response: {other:?}"),
     };
 
-    assert_eq!(snapshot.schema_version, 3);
+    assert_eq!(snapshot.schema_version, 4);
     assert!(snapshot.generated_at_ms > 0);
     let session = snapshot
         .sessions
@@ -633,6 +628,10 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
     assert!(serialized.pointer("/agents/0/id").is_some());
     assert!(serialized.pointer("/agents/0/agent_ref").is_some());
     assert!(serialized.pointer("/agents/0/provider").is_some());
+    assert_eq!(
+        serialized.pointer("/agents/0/mode"),
+        Some(&serde_json::Value::String("build".to_string()))
+    );
     assert!(serialized
         .pointer("/agents/0/provider_resume_state")
         .is_none());
@@ -665,7 +664,7 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
             provider: Some("dev-stub".to_string()),
             model: Some("model-b".to_string()),
             effort: Some("low".to_string()),
-            execution_mode: None,
+            execution_mode: Some(crate::provider::AgentExecutionMode::Plan),
             permission_level: Some(crate::provider::AgentPermissionLevel::Required),
             worktree_id: None,
             machine_ref: None,
@@ -762,6 +761,7 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
     assert_eq!(summary.agents[1].provider, "dev-stub");
     assert_eq!(summary.agents[1].model.as_deref(), Some("model-b"));
     assert_eq!(summary.agents[1].variant.as_deref(), Some("low"));
+    assert_eq!(summary.agents[1].mode, "plan");
     assert_eq!(summary.agents[1].permission.as_deref(), Some("required"));
     assert_eq!(summary.workflows.len(), 1);
     assert_eq!(summary.workflows[0].id, workflow.id());
@@ -1699,7 +1699,10 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             layout, workflow, ..
         } => {
             assert_eq!(layout.revision, 1);
-            assert_eq!(layout.nodes.get(node_a.id()).map(|point| point.x), Some(120));
+            assert_eq!(
+                layout.nodes.get(node_a.id()).map(|point| point.x),
+                Some(120)
+            );
             assert_eq!(
                 workflow
                     .canvas_layout()

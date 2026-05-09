@@ -233,21 +233,6 @@ impl KernelRuntimeState {
                 substitute_index,
                 reason.to_string(),
             )?;
-            let session = owned.session_store.get_session(session_id)?;
-            let execution_mode = agent.execution_mode_override().or_else(|| {
-                session
-                    .config_state()
-                    .values()
-                    .get("agents.mode")
-                    .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
-            });
-            let permission_level = agent.permission_level_override().or_else(|| {
-                session
-                    .config_state()
-                    .values()
-                    .get("agents.permissions")
-                    .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
-            });
             let adapter_key = match profile.provider.as_str() {
                 "default" => "opencode",
                 value => value,
@@ -263,9 +248,7 @@ impl KernelRuntimeState {
             )
             .with_agent_id(agent_id)
             .with_owner_user_id(agent.owner_user_id().to_string())
-            .with_variant(profile.variant.clone())
-            .with_execution_mode(execution_mode.unwrap_or_default())
-            .with_permission_level(permission_level.unwrap_or_default());
+            .with_variant(profile.variant.clone());
             if crate::provider::provider_requires_managed_io_by_default(provider, &config) {
                 launch_request = launch_request.with_managed_io_required();
             }

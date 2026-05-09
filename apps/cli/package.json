@@ -34,7 +34,8 @@
     "test": "pnpm run lint && pnpm run build && node --test dist/*.test.js",
     "start": "bun dist/index.js",
     "dev": "pnpm run build && bun dist/index.js",
-    "embedded-shell:drill": "pnpm run build && node scripts/live-embedded-shell-automation-drill.mjs"
+    "embedded-shell:drill": "pnpm run build && node scripts/live-embedded-shell-automation-drill.mjs",
+    "tui-plan-mode:drill": "pnpm run build && node scripts/live-tui-plan-mode-drill.mjs"
   },
   "dependencies": {
     "@opentui/core": "0.1.87",

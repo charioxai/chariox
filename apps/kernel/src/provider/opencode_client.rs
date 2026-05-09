@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::DaemonError;
+use crate::provider::AgentExecutionMode;
 use crate::session::PromptAttachment;
 
 #[derive(Debug, Clone)]
@@ -495,6 +496,7 @@ impl OpenCodeClient {
         attachments: &[PromptAttachment],
         model: Option<&str>,
         variant: Option<&str>,
+        execution_mode: AgentExecutionMode,
         disable_native_writes: bool,
         allow_native_bash: bool,
     ) -> Result<(), DaemonError> {
@@ -516,6 +518,7 @@ impl OpenCodeClient {
         let mut body = json!({
             "messageID": message_id,
             "parts": parts,
+            "agent": opencode_agent_for_execution_mode(execution_mode),
         });
         if let Some((provider_id, model_id)) = parse_model(model) {
             body["model"] = json!({
@@ -825,6 +828,13 @@ impl OpenCodeClient {
 
         read_http_response(&mut stream)
             .map_err(|error| self.protocol_error(method_to_operation(method, path), error))
+    }
+}
+
+fn opencode_agent_for_execution_mode(execution_mode: AgentExecutionMode) -> &'static str {
+    match execution_mode {
+        AgentExecutionMode::Build => "build",
+        AgentExecutionMode::Plan => "plan",
     }
 }
 
@@ -1250,6 +1260,8 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use crate::provider::AgentExecutionMode;
+
     use super::{
         parse_agent_infos, parse_model, resolve_configured_defaults, OpenCodeAgentInfo,
         OpenCodeClient, OpenCodeConfig, OpenCodeConfigAgent, OpenCodeEvent, OpenCodeMessageInfo,
@@ -1515,6 +1527,76 @@ mod tests {
             ])))
             .expect("session should be created");
         assert_eq!(session_id, "session-1");
+        server.join().expect("server thread should join");
+    }
+
+    #[test]
+    fn submit_prompt_sends_native_plan_agent() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
+        let port = listener
+            .local_addr()
+            .expect("test listener should expose a local address")
+            .port();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client should connect");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("read timeout should be set");
+            let mut request = Vec::new();
+            let mut buf = [0_u8; 2048];
+            loop {
+                let size = stream.read(&mut buf).expect("request should read");
+                request.extend_from_slice(&buf[..size]);
+                let request_text = String::from_utf8_lossy(&request);
+                let Some((headers, body)) = request_text.split_once("\r\n\r\n") else {
+                    continue;
+                };
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Content-Length: "))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .expect("request should include content length");
+                if body.len() >= content_length {
+                    break;
+                }
+            }
+            let request_text = String::from_utf8_lossy(&request).into_owned();
+            let (_, body) = request_text
+                .split_once("\r\n\r\n")
+                .expect("request should include body");
+            let body: serde_json::Value =
+                serde_json::from_str(body).expect("request body should be JSON");
+            assert_eq!(body.get("agent"), Some(&serde_json::json!("plan")));
+            assert_eq!(
+                body.get("model"),
+                Some(&serde_json::json!({
+                    "providerID": "openai",
+                    "modelID": "gpt-5.4",
+                }))
+            );
+            let response =
+                "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            stream
+                .write_all(response.as_bytes())
+                .expect("server should write response");
+        });
+
+        let client =
+            OpenCodeClient::new("provider-run-1", format!("http://127.0.0.1:{port}")).unwrap();
+        client
+            .submit_prompt(
+                "session-1",
+                "message-1",
+                "make a plan",
+                &[],
+                Some("openai/gpt-5.4"),
+                Some("low"),
+                AgentExecutionMode::Plan,
+                false,
+                false,
+            )
+            .expect("prompt should be accepted");
         server.join().expect("server thread should join");
     }
 

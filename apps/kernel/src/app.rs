@@ -1127,20 +1127,8 @@ impl DaemonApp {
         worktree_placement: Option<crate::agent::GitWorktreePlacement>,
     ) -> Result<AgentInstance, DaemonError> {
         let session = self.sessions().get_session(agent.session_id())?;
-        let execution_mode = agent.execution_mode_override().or_else(|| {
-            session
-                .config_state()
-                .values()
-                .get("agents.mode")
-                .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
-        });
-        let permission_level = agent.permission_level_override().or_else(|| {
-            session
-                .config_state()
-                .values()
-                .get("agents.permissions")
-                .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
-        });
+        let effective_config =
+            crate::session::effective_agent_execution_config(&session, Some(agent));
         let target = ClientTarget {
             daemon_id: Some(worker_kernel.kernel_id.clone()),
             daemon_alias: None,
@@ -1177,8 +1165,8 @@ impl DaemonApp {
                     provider: agent.provider().to_string(),
                     model: agent.model().map(ToOwned::to_owned),
                     effort: agent.effort().map(ToOwned::to_owned),
-                    execution_mode,
-                    permission_level,
+                    execution_mode: Some(effective_config.mode),
+                    permission_level: Some(effective_config.permission_level),
                     worktree_id: agent.worktree_id().map(ToOwned::to_owned),
                     worktree_placement,
                 },

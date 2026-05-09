@@ -1405,20 +1405,8 @@ impl DaemonApp {
             value => value,
         };
         let session = self.sessions.get_session(session_id)?;
-        let execution_mode = agent.execution_mode_override().or_else(|| {
-            session
-                .config_state()
-                .values()
-                .get("agents.mode")
-                .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
-        });
-        let permission_level = agent.permission_level_override().or_else(|| {
-            session
-                .config_state()
-                .values()
-                .get("agents.permissions")
-                .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
-        });
+        let effective_config =
+            crate::session::effective_agent_execution_config(&session, Some(&agent));
         let mut request = LaunchProviderRequest::new(
             session_id,
             adapter_key,
@@ -1428,8 +1416,8 @@ impl DaemonApp {
         )
         .with_agent_id(agent.id().to_string())
         .with_variant(agent.effort().map(str::to_string))
-        .with_execution_mode(execution_mode.unwrap_or_default())
-        .with_permission_level(permission_level.unwrap_or_default());
+        .with_execution_mode(effective_config.mode)
+        .with_permission_level(effective_config.permission_level);
         if crate::provider::provider_requires_managed_io_by_default(provider, &self.config) {
             request = request.with_managed_io_required();
         }

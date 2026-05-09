@@ -1939,6 +1939,82 @@ test("agent spawn with machine forwards remote git worktree placement", async ()
   assert.equal(flashedMessage, "spawned agent agent-2 (review) on worker in /srv/project-feature")
 })
 
+test("agent mode updates the focused agent through shared agent config", async () => {
+  const baseAgent = makeAgent()
+  const updatedAgent = makeAgent({ execution_mode_override: "plan" })
+  const updatedSession = makeSession({ agents: [updatedAgent] })
+  const updateCalls: Array<{ sessionId: string; agentId: string; executionMode: string | null | undefined; clearExecutionMode: boolean | undefined }> = []
+  const appliedSessions: RuntimeSession[] = []
+  let refreshCount = 0
+  let flashedMessage = ""
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    resolveSessionAgent: () => ({ agent: baseAgent }),
+    updateAgentConfig: async (sessionId: string, agentId: string, options: { executionMode?: "build" | "plan" | null; clearExecutionMode?: boolean }) => {
+      updateCalls.push({
+        sessionId,
+        agentId,
+        executionMode: options.executionMode,
+        clearExecutionMode: options.clearExecutionMode,
+      })
+      return { agent: updatedAgent, session: updatedSession }
+    },
+    applySessionState: (session: RuntimeSession) => { appliedSessions.push(session) },
+    refreshAgentPanes: async () => { refreshCount += 1 },
+    flashFooter: (message: string) => { flashedMessage = message },
+  }))
+
+  await handlers.handleAgentCommand({
+    kind: "agent",
+    raw: "/agent mode plan",
+    args: ["mode", "plan"],
+  })
+
+  assert.deepEqual(updateCalls, [{
+    sessionId: "session-1",
+    agentId: "agent-1",
+    executionMode: "plan",
+    clearExecutionMode: false,
+  }])
+  assert.deepEqual(appliedSessions, [updatedSession])
+  assert.equal(refreshCount, 1)
+  assert.equal(flashedMessage, "agent-1 mode: plan (agent)")
+})
+
+test("agent mode inherit clears the focused agent override", async () => {
+  const overriddenAgent = makeAgent({ execution_mode_override: "plan" })
+  const inheritedAgent = makeAgent({ execution_mode_override: null })
+  const inheritedSession = makeSession({
+    agents: [inheritedAgent],
+    config_state: {
+      version: 1,
+      values: { "agents.mode": "build" },
+      updated_by_attachment_id: "attachment-1",
+    },
+  })
+  const updateCalls: Array<{ executionMode: string | null | undefined; clearExecutionMode: boolean | undefined }> = []
+  let flashedMessage = ""
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    resolveSessionAgent: () => ({ agent: overriddenAgent }),
+    updateAgentConfig: async (_sessionId: string, _agentId: string, options: { executionMode?: "build" | "plan" | null; clearExecutionMode?: boolean }) => {
+      updateCalls.push({
+        executionMode: options.executionMode,
+        clearExecutionMode: options.clearExecutionMode,
+      })
+      return { agent: inheritedAgent, session: inheritedSession }
+    },
+    flashFooter: (message: string) => { flashedMessage = message },
+  }))
+
+  await handlers.handleAgentCommand({
+    kind: "agent",
+    raw: "/agent mode inherit",
+    args: ["mode", "inherit"],
+  })
+
+  assert.deepEqual(updateCalls, [{ executionMode: null, clearExecutionMode: true }])
+  assert.equal(flashedMessage, "agent-1 mode: build (session)")
+})
+
 test("session new can attach a new session in an existing directory", async () => {
   const sessionDir = await mkdtemp(join(tmpdir(), "arroba-session-dir-"))
   const createCalls: Array<{ workspace: string; worktree: string; alias: string | undefined }> = []

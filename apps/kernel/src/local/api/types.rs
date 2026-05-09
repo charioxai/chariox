@@ -3,7 +3,7 @@ use super::*;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 13;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 14;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -2528,6 +2528,7 @@ pub struct WaitingRoomPublicAgentSummary {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
+    pub mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<String>,
     pub workspace_id: String,

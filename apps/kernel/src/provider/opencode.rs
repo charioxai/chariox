@@ -202,13 +202,6 @@ fn runtime_mcp_env(
         return Ok(env);
     };
     let mut config = serde_json::Map::new();
-    config.insert(
-        "default_agent".to_string(),
-        serde_json::json!(match request.execution_mode.unwrap_or_default() {
-            crate::provider::AgentExecutionMode::Build => "build",
-            crate::provider::AgentExecutionMode::Plan => "plan",
-        }),
-    );
     let mut mcp = serde_json::Map::new();
     let provider_mcp_servers = super::mcp_proxy::provider_facing_mcp_proxy_configs(
         &request.mcp_servers,
@@ -240,10 +233,12 @@ fn runtime_mcp_env(
     if !mcp.is_empty() {
         config.insert("mcp".to_string(), serde_json::Value::Object(mcp));
     }
-    env.insert(
-        OPENCODE_CONFIG_CONTENT_ENV.to_string(),
-        serde_json::Value::Object(config).to_string(),
-    );
+    if !config.is_empty() {
+        env.insert(
+            OPENCODE_CONFIG_CONTENT_ENV.to_string(),
+            serde_json::Value::Object(config).to_string(),
+        );
+    }
     Ok(env)
 }
 

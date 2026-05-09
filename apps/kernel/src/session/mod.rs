@@ -1,9 +1,14 @@
+mod agent_config;
 mod owner;
 mod prompt_runtime;
 mod service;
 mod store;
 mod types;
 
+pub use agent_config::{
+    effective_agent_execution_config, effective_agent_execution_mode,
+    effective_agent_permission_level, EffectiveAgentExecutionConfig,
+};
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
 pub use service::{
     classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,

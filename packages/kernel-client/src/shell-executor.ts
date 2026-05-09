@@ -860,11 +860,12 @@ async function executeAgentCommand(
       return { ok: true, message: `${formatAgentRef(payload.agent)} ${action} = ${value}`, data: payload }
     }
     case "mode": {
-      const resolved = await resolveShellAgent(context, deps, args[0])
+      const firstArgIsMode = args[0] === "inherit" || parseExecutionMode(args[0]) != null
+      const resolved = await resolveShellAgent(context, deps, firstArgIsMode ? context.agentId : args[0])
       if (!resolved.ok) {
         return { ok: false, message: args[0] ? resolved.message : "usage: agent mode [agent-ref] <build|plan|inherit>" }
       }
-      const rawValue = args.length > 1 ? args[1] : args[0] && parseExecutionMode(args[0]) == null && args[0] !== "inherit" ? undefined : args[0]
+      const rawValue = args.length > 1 ? args[1] : firstArgIsMode ? args[0] : undefined
       if (!rawValue) {
         const response = await deps.client.send(getSessionStateRequest(sessionId))
         const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
@@ -889,11 +890,12 @@ async function executeAgentCommand(
       return { ok: true, message: `${formatAgentRef(payload.agent)} mode = ${effectiveMode}${rawValue === "inherit" ? " (session)" : " (agent)"}`, data: payload }
     }
     case "permissions": {
-      const resolved = await resolveShellAgent(context, deps, args[0])
+      const firstArgIsPermission = args[0] === "inherit" || parsePermissionLevel(args[0]) != null
+      const resolved = await resolveShellAgent(context, deps, firstArgIsPermission ? context.agentId : args[0])
       if (!resolved.ok) {
         return { ok: false, message: args[0] ? resolved.message : "usage: agent permissions [agent-ref] <required|yolo|inherit>" }
       }
-      const rawValue = args.length > 1 ? args[1] : args[0] && parsePermissionLevel(args[0]) == null && args[0] !== "inherit" ? undefined : args[0]
+      const rawValue = args.length > 1 ? args[1] : firstArgIsPermission ? args[0] : undefined
       if (!rawValue) {
         const response = await deps.client.send(getSessionStateRequest(sessionId))
         const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session

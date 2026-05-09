@@ -1531,8 +1531,16 @@ impl Default for WorkflowCanvasLayout {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkflowCanvasLayoutPatch {
-    NodePosition { node_id: String, x: i32, y: i32 },
-    EndpointPosition { endpoint_id: String, x: i32, y: i32 },
+    NodePosition {
+        node_id: String,
+        x: i32,
+        y: i32,
+    },
+    EndpointPosition {
+        endpoint_id: String,
+        x: i32,
+        y: i32,
+    },
     EdgeWaypoints {
         edge_id: String,
         #[serde(default)]

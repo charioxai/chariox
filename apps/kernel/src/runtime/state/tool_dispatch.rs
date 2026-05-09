@@ -2097,26 +2097,11 @@ impl KernelRuntimeState {
         agent_id: &str,
     ) -> Result<crate::provider::AgentPermissionLevel, DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
-        if let Some(level) = agent.permission_level_override() {
-            return Ok(level);
-        }
         let session = self.owned.session_store.get_session(session_id)?;
-        Ok(session
-            .config_state()
-            .values()
-            .get("agents.permissions")
-            .and_then(|value| parse_permission_level_config_value(value.as_str()))
-            .unwrap_or_default())
-    }
-}
-
-fn parse_permission_level_config_value(
-    value: &str,
-) -> Option<crate::provider::AgentPermissionLevel> {
-    match value {
-        "required" => Some(crate::provider::AgentPermissionLevel::Required),
-        "yolo" => Some(crate::provider::AgentPermissionLevel::Yolo),
-        _ => None,
+        Ok(crate::session::effective_agent_permission_level(
+            &session,
+            Some(&agent),
+        ))
     }
 }
 

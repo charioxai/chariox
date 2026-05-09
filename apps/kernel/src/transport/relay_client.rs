@@ -65,7 +65,12 @@ const REMOTE_INVENTORY_RELAY_TIMEOUT_MS: u64 = 10_000;
 const REMOTE_INVENTORY_KERNEL_PROBE_TIMEOUT_MS: u64 = 5_000;
 static TEMPORARY_PEER_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, JoinHandle<()>>>>;
+type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscriptionTask>>>;
+
+struct RelaySubscriptionTask {
+    relay_subscription_id: String,
+    handle: JoinHandle<()>,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum RelayConfigContinuity {
@@ -664,12 +669,13 @@ async fn handle_incoming_envelope(
                     return Ok(());
                 }
             }
-            if let Some(existing) = subscription_tasks
-                .lock()
-                .await
-                .remove(&relay_subscription_id)
-            {
-                existing.abort();
+            let task_key = relay_subscription_task_key(
+                &session_id,
+                &attachment_id,
+                subscription_scope.as_deref(),
+            );
+            if let Some(existing) = subscription_tasks.lock().await.remove(&task_key) {
+                existing.handle.abort();
             }
             let ack = match encrypt_json_response(
                 router,
@@ -738,10 +744,13 @@ async fn handle_incoming_envelope(
                 subscription_scope.clone(),
                 Arc::clone(event_runtime),
             ));
-            subscription_tasks
-                .lock()
-                .await
-                .insert(relay_subscription_id.clone(), task);
+            subscription_tasks.lock().await.insert(
+                task_key,
+                RelaySubscriptionTask {
+                    relay_subscription_id: relay_subscription_id.clone(),
+                    handle: task,
+                },
+            );
         }
         RelayEnvelope::DaemonUnsubscribe {
             relay_request_id,
@@ -749,12 +758,13 @@ async fn handle_incoming_envelope(
             caller_identity: _,
             client_public_key,
         } => {
-            let existing = subscription_tasks
-                .lock()
-                .await
-                .remove(&relay_subscription_id);
+            let existing = remove_relay_subscription_task_by_relay_id(
+                subscription_tasks,
+                &relay_subscription_id,
+            )
+            .await;
             if let Some(task) = existing {
-                task.abort();
+                task.handle.abort();
             }
             let ack = match encrypt_json_response(
                 router,
@@ -1962,9 +1972,29 @@ fn send_outgoing_envelope(
 async fn abort_subscription_tasks(subscription_tasks: &RelaySubscriptionTasks) {
     let mut guard = subscription_tasks.lock().await;
     for (_, task) in guard.iter() {
-        task.abort();
+        task.handle.abort();
     }
     guard.clear();
+}
+
+async fn remove_relay_subscription_task_by_relay_id(
+    subscription_tasks: &RelaySubscriptionTasks,
+    relay_subscription_id: &str,
+) -> Option<RelaySubscriptionTask> {
+    let mut guard = subscription_tasks.lock().await;
+    let task_key = guard.iter().find_map(|(key, task)| {
+        (task.relay_subscription_id == relay_subscription_id).then(|| key.clone())
+    })?;
+    guard.remove(&task_key)
+}
+
+fn relay_subscription_task_key(
+    session_id: &str,
+    attachment_id: &str,
+    subscription_scope: Option<&str>,
+) -> String {
+    let scope = subscription_scope.unwrap_or("session");
+    format!("{scope}\u{1f}{session_id}\u{1f}{attachment_id}")
 }
 
 async fn run_relay_subscription_loop(
@@ -2596,6 +2626,45 @@ mod tests {
     use crate::transport::relay_discovery;
     use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
     use std::collections::BTreeMap;
+
+    #[tokio::test]
+    async fn relay_subscription_tasks_are_owned_by_logical_attachment_subscription() {
+        let tasks: RelaySubscriptionTasks = Arc::new(Mutex::new(BTreeMap::new()));
+        let first_key = relay_subscription_task_key("session-1", "attachment-1", None);
+        let second_key = relay_subscription_task_key("session-1", "attachment-1", None);
+        assert_eq!(first_key, second_key);
+
+        let first_handle = tokio::spawn(async {
+            sleep(Duration::from_secs(60)).await;
+        });
+        tasks.lock().await.insert(
+            first_key.clone(),
+            RelaySubscriptionTask {
+                relay_subscription_id: "relay-subscription-1".to_string(),
+                handle: first_handle,
+            },
+        );
+
+        let second_handle = tokio::spawn(async {
+            sleep(Duration::from_secs(60)).await;
+        });
+        if let Some(existing) = tasks.lock().await.remove(&second_key) {
+            existing.handle.abort();
+        }
+        tasks.lock().await.insert(
+            second_key,
+            RelaySubscriptionTask {
+                relay_subscription_id: "relay-subscription-2".to_string(),
+                handle: second_handle,
+            },
+        );
+        assert_eq!(tasks.lock().await.len(), 1);
+
+        let removed =
+            remove_relay_subscription_task_by_relay_id(&tasks, "relay-subscription-2").await;
+        assert!(removed.is_some());
+        assert!(tasks.lock().await.is_empty());
+    }
 
     fn create_test_session(app: &mut DaemonApp, workspace: &str, worktree: &str) -> String {
         crate::app::KernelSessionService::new(app)

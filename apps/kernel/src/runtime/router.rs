@@ -2236,7 +2236,7 @@ impl CommandRouter {
             launch_target.as_ref(),
         )?;
         Ok(WaitingRoomPublicSnapshot {
-            schema_version: 3,
+            schema_version: 4,
             inventory_version,
             generated_at_ms,
             sessions,
@@ -4505,20 +4505,13 @@ impl CommandRouter {
         let operational_history = self.operational_history_store.clone();
         let history_projection = self.history_projection.clone();
         tokio::task::spawn_blocking(move || {
-            let operational_entries = operational_history
-                .load_session_history_entries(session.id(), request.agent_id.as_deref())?;
+            let operational_entries =
+                operational_history.load_session_history_entries(session.id(), None)?;
             let entries = if operational_entries.is_empty()
                 && !operational_history.has_session_events(session.id())?
                 && !operational_history.legacy_fallback_disabled(session.id())?
             {
-                let legacy_entries = history.load(&session)?;
-                match request.agent_id.as_deref() {
-                    Some(agent_id) => legacy_entries
-                        .into_iter()
-                        .filter(|entry| entry.agent_id.as_deref() == Some(agent_id))
-                        .collect(),
-                    None => legacy_entries,
-                }
+                history.load(&session)?
             } else {
                 operational_entries
             };
@@ -5620,6 +5613,8 @@ fn waiting_room_public_agent_summaries(
         .agents()
         .iter()
         .map(|agent| {
+            let effective_config =
+                crate::session::effective_agent_execution_config(session, Some(agent));
             let worktree_id = agent
                 .worktree_id()
                 .unwrap_or_else(|| session.worktree_id())
@@ -5639,7 +5634,8 @@ fn waiting_room_public_agent_summaries(
                 provider: agent.primary_provider().to_string(),
                 model: agent.primary_model().map(ToOwned::to_owned),
                 variant: agent.primary_effort().map(ToOwned::to_owned),
-                permission: waiting_room_agent_permission(session, agent),
+                mode: effective_config.mode.as_str().to_string(),
+                permission: Some(effective_config.permission_level.as_str().to_string()),
                 workspace_id: workspace_id.clone(),
                 worktree_id,
                 workspace_label: workspace_label.clone(),
@@ -5655,23 +5651,6 @@ fn waiting_room_public_agent_summaries(
             .then_with(|| left.id.cmp(&right.id))
     });
     agents
-}
-
-fn waiting_room_agent_permission(
-    session: &crate::session::RuntimeSession,
-    agent: &crate::agent::AgentInstance,
-) -> Option<String> {
-    agent
-        .permission_level_override()
-        .or(session.agent_defaults().permission_level)
-        .or_else(|| {
-            session
-                .config_state()
-                .values()
-                .get("agents.permissions")
-                .and_then(|value| crate::provider::AgentPermissionLevel::parse(value.as_str()))
-        })
-        .map(|permission| permission.as_str().to_string())
 }
 
 fn waiting_room_agent_activity_summary(
@@ -11932,6 +11911,116 @@ mod tests {
                     .map(|entry| entry.entry.text.trim_end().to_string())
                     .collect::<Vec<_>>();
                 assert_eq!(texts, vec!["first".to_string(), "second".to_string()]);
+            }
+            _ => panic!("unexpected history response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_scoped_session_history_warms_full_session_projection() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let first_agent_id = first_agent.id().to_string();
+        let second_agent = spawn_test_agent(&mut app, &session_id, "second", "dev-stub");
+        let second_agent_id = second_agent.id().to_string();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-history-projection-agents",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.append_user_prompt_history(
+            &session_id,
+            attachment.id(),
+            &first_agent_id,
+            "first agent transcript",
+            &[],
+        );
+        app.append_user_prompt_history(
+            &session_id,
+            attachment.id(),
+            &second_agent_id,
+            "second agent transcript",
+            &[],
+        );
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let first_history_request =
+            LocalDaemonRequest::GetSessionHistory(GetSessionHistoryRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(first_agent_id.clone()),
+                round_count: Some(10),
+                max_chars: None,
+                before_entry_index: None,
+                before_entry_char_offset: None,
+            });
+        let first_history_command = KernelCommand::from_local_request(
+            "cmd-history-first-agent-warm",
+            None,
+            None,
+            &first_history_request,
+        );
+        let first_response = router
+            .dispatch(first_history_command, first_history_request)
+            .await
+            .expect("first agent history should resolve");
+        match first_response {
+            LocalDaemonResponse::SessionHistory { entries, .. } => {
+                let texts = entries
+                    .into_iter()
+                    .map(|entry| entry.entry.text.trim_end().to_string())
+                    .collect::<Vec<_>>();
+                assert_eq!(texts, vec!["first agent transcript".to_string()]);
+            }
+            _ => panic!("unexpected history response"),
+        }
+
+        let app_guard = app.lock().await;
+        let second_history_request =
+            LocalDaemonRequest::GetSessionHistory(GetSessionHistoryRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(second_agent_id.clone()),
+                round_count: Some(10),
+                max_chars: None,
+                before_entry_index: None,
+                before_entry_char_offset: None,
+            });
+        let second_history_command = KernelCommand::from_local_request(
+            "cmd-history-second-agent-projection",
+            None,
+            None,
+            &second_history_request,
+        );
+        let history_router = router.clone();
+        let second_history_task = tokio::spawn(async move {
+            history_router
+                .dispatch(second_history_command, second_history_request)
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            second_history_task.is_finished(),
+            "agent-scoped warmed GetSessionHistory should use the session projection without app lock access"
+        );
+        drop(app_guard);
+
+        let second_response = second_history_task
+            .await
+            .expect("history task should join")
+            .expect("second agent history should resolve");
+        match second_response {
+            LocalDaemonResponse::SessionHistory { entries, .. } => {
+                let texts = entries
+                    .into_iter()
+                    .map(|entry| entry.entry.text.trim_end().to_string())
+                    .collect::<Vec<_>>();
+                assert_eq!(texts, vec!["second agent transcript".to_string()]);
             }
             _ => panic!("unexpected history response"),
         }

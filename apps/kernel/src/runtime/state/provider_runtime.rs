@@ -332,25 +332,17 @@ impl KernelRuntimeState {
                     .session_store
                     .get_session(&request.session_id)
                     .ok();
-                let execution_mode = agent.execution_mode_override().or_else(|| {
-                    session
-                        .as_ref()
-                        .and_then(|session| session.config_state().values().get("agents.mode"))
-                        .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
-                });
-                let permission_level = agent.permission_level_override().or_else(|| {
-                    session
-                        .as_ref()
-                        .and_then(|session| {
-                            session.config_state().values().get("agents.permissions")
-                        })
-                        .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
-                });
+                let effective_config = session
+                    .as_ref()
+                    .map(|session| {
+                        crate::session::effective_agent_execution_config(session, Some(&agent))
+                    })
+                    .unwrap_or_default();
                 launch_request
                     .with_agent_id(agent_id)
                     .with_owner_user_id(agent.owner_user_id().to_string())
-                    .with_execution_mode(execution_mode.unwrap_or_default())
-                    .with_permission_level(permission_level.unwrap_or_default())
+                    .with_execution_mode(effective_config.mode)
+                    .with_permission_level(effective_config.permission_level)
             } else {
                 launch_request.with_agent_id(agent_id)
             };
@@ -360,19 +352,13 @@ impl KernelRuntimeState {
                 .session_store
                 .get_session(&request.session_id)
                 .ok();
-            let execution_mode = session
+            let effective_config = session
                 .as_ref()
-                .and_then(|session| session.config_state().values().get("agents.mode"))
-                .and_then(|value| crate::provider::AgentExecutionMode::parse(value))
-                .unwrap_or_default();
-            let permission_level = session
-                .as_ref()
-                .and_then(|session| session.config_state().values().get("agents.permissions"))
-                .and_then(|value| crate::provider::AgentPermissionLevel::parse(value))
+                .map(|session| crate::session::effective_agent_execution_config(session, None))
                 .unwrap_or_default();
             launch_request = launch_request
-                .with_execution_mode(execution_mode)
-                .with_permission_level(permission_level);
+                .with_execution_mode(effective_config.mode)
+                .with_permission_level(effective_config.permission_level);
         }
         launch_request
     }
