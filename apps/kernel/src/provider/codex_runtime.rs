@@ -485,12 +485,14 @@ pub fn drain_codex_events(
         );
     }
 
+    let mut drained_to_quiet = true;
     for _ in 0..CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS {
         let Some(notification) =
             client.read_notification(&mut state.socket, CODEX_EVENT_DRAIN_READ_TIMEOUT)?
         else {
             break;
         };
+        drained_to_quiet = false;
         apply_notification(
             notification,
             &mut state.active_turn_id,
@@ -505,14 +507,24 @@ pub fn drain_codex_events(
             &mut resolved_usage,
         );
     }
-    maybe_finalize_terminal_signal(
-        &mut state.active_turn_id,
-        &mut state.turn_tracker,
-        &mut completions,
-        &mut notices,
-        &mut prompt_completed,
-        &mut terminal_failure,
-    );
+    if !drained_to_quiet {
+        drained_to_quiet = client
+            .read_notification(&mut state.socket, CODEX_EVENT_DRAIN_READ_TIMEOUT)?
+            .map(|notification| {
+                state.buffered_notifications.push(notification);
+            })
+            .is_none();
+    }
+    if drained_to_quiet {
+        maybe_finalize_terminal_signal(
+            &mut state.active_turn_id,
+            &mut state.turn_tracker,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        );
+    }
 
     Ok(CodexPollResult {
         chunks,
@@ -531,7 +543,7 @@ fn apply_notification(
     text_items: &mut BTreeMap<String, CodexTextTranscriptState>,
     tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
     chunks: &mut Vec<CodexOutputChunk>,
-    completions: &mut Vec<CodexAssistantCompletion>,
+    _completions: &mut Vec<CodexAssistantCompletion>,
     notices: &mut Vec<String>,
     prompt_completed: &mut bool,
     terminal_failure: &mut Option<String>,
@@ -728,14 +740,6 @@ fn apply_notification(
             notices.push(message);
         }
     }
-    maybe_finalize_terminal_signal(
-        active_turn_id,
-        turn_tracker,
-        completions,
-        notices,
-        prompt_completed,
-        terminal_failure,
-    );
 }
 
 impl CodexTurnTracker {
@@ -750,7 +754,6 @@ impl CodexTurnTracker {
             self.active_tool_ids.insert(tool_id.to_string());
         }
         self.tool_started = true;
-        self.pending_terminal = None;
         self.note_activity();
     }
 
@@ -2176,7 +2179,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_completion_marks_prompt_complete_immediately() {
+    fn turn_completion_waits_for_socket_quiet_before_prompt_completion() {
         let mut active_turn_id = Some("turn-1".to_string());
         let mut turn_tracker = CodexTurnTracker::default();
         let mut text_items = BTreeMap::new();
@@ -2206,9 +2209,9 @@ mod tests {
             &mut resolved_usage,
         );
 
-        assert!(prompt_completed);
-        assert_eq!(active_turn_id, None);
-        assert_eq!(completions.len(), 1);
+        assert!(!prompt_completed);
+        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+        assert!(completions.is_empty());
 
         flush_quiet_terminal_for_test(
             &mut active_turn_id,
@@ -2223,7 +2226,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_completion_is_authoritative_even_if_late_tool_output_arrives() {
+    fn terminal_completion_waits_for_late_tool_output_before_prompt_completion() {
         let mut active_turn_id = Some("turn-1".to_string());
         let mut turn_tracker = CodexTurnTracker::default();
         let mut text_items = BTreeMap::new();
@@ -2252,6 +2255,10 @@ mod tests {
             &mut terminal_failure,
             &mut resolved_usage,
         );
+        assert!(!prompt_completed);
+        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+        assert!(completions.is_empty());
+
         apply_notification(
             CodexNotification::ItemStarted {
                 item: json!({
@@ -2272,6 +2279,18 @@ mod tests {
             &mut terminal_failure,
             &mut resolved_usage,
         );
+        flush_quiet_terminal_for_test(
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        );
+        assert!(!prompt_completed);
+        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+        assert!(completions.is_empty());
+
         apply_notification(
             CodexNotification::ItemCompleted {
                 item: json!({
@@ -2294,6 +2313,9 @@ mod tests {
             &mut terminal_failure,
             &mut resolved_usage,
         );
+        assert!(!prompt_completed);
+        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+        assert!(completions.is_empty());
 
         flush_quiet_terminal_for_test(
             &mut active_turn_id,
