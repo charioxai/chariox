@@ -67,7 +67,7 @@ struct CodexTurnTracker {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CodexTerminalSignal {
-    turn_id: Option<String>,
+    turn_id: String,
     status: String,
     error_message: Option<String>,
 }
@@ -694,12 +694,7 @@ fn apply_notification(
             status,
             error_message,
         } => {
-            let turn_mismatch = match (turn_id.as_deref(), active_turn_id.as_deref()) {
-                (Some(turn_id), Some(active_turn_id)) => turn_id != active_turn_id,
-                (Some(_), None) | (None, None) => true,
-                (None, Some(_)) => false,
-            };
-            if turn_mismatch {
+            if active_turn_id.as_deref() != Some(turn_id.as_str()) {
                 crate::logging::debug_with_fields(
                     "daemon.provider.codex",
                     "codex turn completion ignored by active turn mismatch",
@@ -854,13 +849,8 @@ fn maybe_finalize_terminal_signal(
         return;
     };
     let signal = pending.signal;
-    let completion_turn_id = signal
-        .turn_id
-        .clone()
-        .or_else(|| active_turn_id.clone())
-        .unwrap_or_else(|| format!("unidentified-{}", unix_epoch_ms()));
     let completion = CodexAssistantCompletion {
-        message_id: format!("codex-turn:{completion_turn_id}"),
+        message_id: format!("codex-turn:{}", signal.turn_id),
         completed_at_ms: unix_epoch_ms(),
     };
     completions.push(completion);
@@ -2156,7 +2146,7 @@ mod tests {
 
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: Some("turn-1".to_string()),
+                turn_id: "turn-1".to_string(),
                 status: "completed".to_string(),
                 error_message: None,
             },
@@ -2200,7 +2190,7 @@ mod tests {
 
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: Some("turn-1".to_string()),
+                turn_id: "turn-1".to_string(),
                 status: "completed".to_string(),
                 error_message: None,
             },
@@ -2247,7 +2237,7 @@ mod tests {
 
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: Some("turn-1".to_string()),
+                turn_id: "turn-1".to_string(),
                 status: "completed".to_string(),
                 error_message: None,
             },
@@ -2354,7 +2344,7 @@ mod tests {
         );
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: Some("turn-1".to_string()),
+                turn_id: "turn-1".to_string(),
                 status: "completed".to_string(),
                 error_message: None,
             },
@@ -2426,7 +2416,7 @@ mod tests {
         );
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: Some("turn-1".to_string()),
+                turn_id: "turn-1".to_string(),
                 status: "completed".to_string(),
                 error_message: None,
             },
@@ -2457,7 +2447,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_completion_without_native_turn_id_completes_current_turn_after_tools_finish() {
+    fn stale_turn_completion_before_tool_finish_does_not_settle_after_tool_finishes() {
         let mut active_turn_id = Some("turn-1".to_string());
         let mut turn_tracker = CodexTurnTracker::default();
         let mut text_items = BTreeMap::new();
@@ -2471,8 +2461,8 @@ mod tests {
 
         apply_notification(
             CodexNotification::ExecCommandStarted {
-                call_id: "cmd-event-1".to_string(),
-                command: json!("sleep 1"),
+                call_id: "cmd-1".to_string(),
+                command: json!("pnpm test"),
                 cwd: None,
             },
             &mut active_turn_id,
@@ -2488,7 +2478,7 @@ mod tests {
         );
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: None,
+                turn_id: "stale-turn".to_string(),
                 status: "completed".to_string(),
                 error_message: None,
             },
@@ -2503,53 +2493,15 @@ mod tests {
             &mut terminal_failure,
             &mut resolved_usage,
         );
-
-        assert!(!prompt_completed);
-        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
-        assert!(completions.is_empty());
-
         apply_notification(
             CodexNotification::ExecCommandCompleted {
-                call_id: "cmd-event-1".to_string(),
-                command: json!("sleep 1"),
+                call_id: "cmd-1".to_string(),
+                command: json!("pnpm test"),
                 cwd: None,
-                output: Some("done\n".to_string()),
+                output: Some("ok\n".to_string()),
                 exit_code: Some(0),
                 success: Some(true),
                 stderr: None,
-            },
-            &mut active_turn_id,
-            &mut turn_tracker,
-            &mut text_items,
-            &mut tool_items,
-            &mut chunks,
-            &mut completions,
-            &mut notices,
-            &mut prompt_completed,
-            &mut terminal_failure,
-            &mut resolved_usage,
-        );
-        apply_notification(
-            CodexNotification::AgentMessageDelta {
-                item_id: "msg-1".to_string(),
-                delta: "done".to_string(),
-            },
-            &mut active_turn_id,
-            &mut turn_tracker,
-            &mut text_items,
-            &mut tool_items,
-            &mut chunks,
-            &mut completions,
-            &mut notices,
-            &mut prompt_completed,
-            &mut terminal_failure,
-            &mut resolved_usage,
-        );
-        apply_notification(
-            CodexNotification::TurnCompleted {
-                turn_id: None,
-                status: "completed".to_string(),
-                error_message: None,
             },
             &mut active_turn_id,
             &mut turn_tracker,
@@ -2571,10 +2523,9 @@ mod tests {
             &mut terminal_failure,
         );
 
-        assert!(prompt_completed);
-        assert_eq!(active_turn_id, None);
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].message_id, "codex-turn:turn-1");
+        assert!(!prompt_completed);
+        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+        assert!(completions.is_empty());
     }
 
     #[test]
@@ -2829,7 +2780,7 @@ mod tests {
 
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: Some("stale-turn".to_string()),
+                turn_id: "stale-turn".to_string(),
                 status: "completed".to_string(),
                 error_message: None,
             },
@@ -2865,7 +2816,7 @@ mod tests {
 
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: Some("turn-2".to_string()),
+                turn_id: "turn-2".to_string(),
                 status: "interrupted".to_string(),
                 error_message: Some("Aborted".to_string()),
             },
@@ -2911,7 +2862,7 @@ mod tests {
 
         apply_notification(
             CodexNotification::TurnCompleted {
-                turn_id: Some("turn-3".to_string()),
+                turn_id: "turn-3".to_string(),
                 status: "failed".to_string(),
                 error_message: Some("model rejected".to_string()),
             },

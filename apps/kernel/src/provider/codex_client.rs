@@ -129,7 +129,7 @@ pub enum CodexNotification {
         turn_id: String,
     },
     TurnCompleted {
-        turn_id: Option<String>,
+        turn_id: String,
         status: String,
         error_message: Option<String>,
     },
@@ -1823,31 +1823,7 @@ fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotification> {
                 .unwrap_or_default()
                 .to_string(),
         }),
-        "turn/completed" => Some(CodexNotification::TurnCompleted {
-            turn_id: optional_codex_turn_id(params.get("turn")),
-            status: params
-                .get("turn")
-                .and_then(|turn| turn.get("status"))
-                .and_then(Value::as_str)
-                .unwrap_or("completed")
-                .to_string(),
-            error_message: params
-                .get("turn")
-                .and_then(|turn| turn.get("error"))
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        }),
-        "codex/event/task_complete" => Some(CodexNotification::TurnCompleted {
-            turn_id: optional_legacy_event_turn_id(&params),
-            status: "completed".to_string(),
-            error_message: None,
-        }),
-        "codex/event/turn_aborted" => Some(CodexNotification::TurnCompleted {
-            turn_id: optional_legacy_event_turn_id(&params),
-            status: "interrupted".to_string(),
-            error_message: legacy_event_error_message(&params),
-        }),
+        "turn/completed" => parse_turn_completed_notification(&params),
         "error" => Some(CodexNotification::Error {
             message: params
                 .get("error")
@@ -1867,29 +1843,21 @@ fn optional_codex_turn_id(turn: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn optional_legacy_event_turn_id(params: &Value) -> Option<String> {
-    params
-        .get("id")
-        .or_else(|| params.get("turn_id"))
-        .or_else(|| params.get("turnId"))
-        .or_else(|| params.get("msg").and_then(|msg| msg.get("turn_id")))
-        .or_else(|| params.get("msg").and_then(|msg| msg.get("turnId")))
-        .and_then(Value::as_str)
-        .filter(|turn_id| !turn_id.is_empty())
-        .map(str::to_string)
-}
-
-fn legacy_event_error_message(params: &Value) -> Option<String> {
-    params
-        .get("msg")
-        .and_then(|msg| {
-            msg.get("error")
-                .or_else(|| msg.get("reason"))
-                .or_else(|| msg.get("message"))
-        })
-        .and_then(Value::as_str)
-        .filter(|message| !message.is_empty())
-        .map(str::to_string)
+fn parse_turn_completed_notification(params: &Value) -> Option<CodexNotification> {
+    let turn = params.get("turn")?;
+    Some(CodexNotification::TurnCompleted {
+        turn_id: optional_codex_turn_id(Some(turn))?,
+        status: turn
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("completed")
+            .to_string(),
+        error_message: turn
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
 }
 
 fn legacy_codex_file_change_item(params: &Value, msg: &Value, status: &str) -> Value {
@@ -2490,7 +2458,7 @@ mod tests {
         assert_eq!(
             v2_completed,
             Some(CodexNotification::TurnCompleted {
-                turn_id: Some("turn-1".to_string()),
+                turn_id: "turn-1".to_string(),
                 status: "completed".to_string(),
                 error_message: None,
             })
@@ -2509,14 +2477,7 @@ mod tests {
             result: None,
             error: None,
         });
-        assert_eq!(
-            v2_completed_without_id,
-            Some(CodexNotification::TurnCompleted {
-                turn_id: None,
-                status: "completed".to_string(),
-                error_message: None,
-            })
-        );
+        assert_eq!(v2_completed_without_id, None);
 
         let raw_task_complete = parse_notification(JsonRpcMessage {
             id: None,
@@ -2530,14 +2491,7 @@ mod tests {
             result: None,
             error: None,
         });
-        assert_eq!(
-            raw_task_complete,
-            Some(CodexNotification::TurnCompleted {
-                turn_id: Some("turn-raw-1".to_string()),
-                status: "completed".to_string(),
-                error_message: None,
-            })
-        );
+        assert_eq!(raw_task_complete, None);
 
         let raw_turn_aborted = parse_notification(JsonRpcMessage {
             id: None,
@@ -2552,13 +2506,6 @@ mod tests {
             result: None,
             error: None,
         });
-        assert_eq!(
-            raw_turn_aborted,
-            Some(CodexNotification::TurnCompleted {
-                turn_id: Some("turn-raw-2".to_string()),
-                status: "interrupted".to_string(),
-                error_message: Some("interrupted".to_string()),
-            })
-        );
+        assert_eq!(raw_turn_aborted, None);
     }
 }
