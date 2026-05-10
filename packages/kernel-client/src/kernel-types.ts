@@ -672,6 +672,17 @@ export type WorkspaceGitActionResult = {
   generated_at_ms: number
 }
 
+export type WorkspacePullRequestRecord = {
+  workspace_id: string
+  worktree_id: string
+  branch: string
+  base_ref: string
+  url: string
+  title?: string | null
+  draft: boolean
+  generated_at_ms: number
+}
+
 export type RuntimeProviderRun = {
   id: string
   session_id: string
@@ -697,7 +708,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 13
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 16
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 
@@ -957,9 +968,102 @@ export type WorkflowDefinition = {
   flush_agent_context_before_run?: boolean
   run_output_schema_ref?: string | null
   intermediate_output_schema_ref?: string | null
+  canvas_layout?: WorkflowCanvasLayout | null
   nodes?: WorkflowNodeDefinition[]
   edges?: WorkflowEdgeDefinition[]
   endpoints?: WorkflowEndpointDefinition[]
+}
+
+export type WorkflowCanvasPoint = {
+  x: number
+  y: number
+}
+
+export type WorkflowCanvasLayout = {
+  version?: number | null
+  revision: number
+  coordinate_space: string
+  nodes?: Record<string, WorkflowCanvasPoint>
+  endpoints?: Record<string, WorkflowCanvasPoint>
+  edges?: Record<string, { waypoints?: WorkflowCanvasPoint[] }>
+}
+
+export type WorkflowDesignWorkflow = {
+  id: string
+  alias?: string | null
+}
+
+export type WorkflowDesignWorkflowPatch = {
+  alias?: string | null
+  flush_agent_context_before_run?: boolean | null
+  run_output_schema_ref?: string | null
+  intermediate_output_schema_ref?: string | null
+}
+
+export type WorkflowDesignNode = {
+  id: string
+  agent_id: string
+  instructions?: string | null
+  can_complete_workflow_run?: boolean | null
+  can_emit_intermediate_run_output?: boolean | null
+  intermediate_output_schema_ref?: string | null
+  max_turns?: number | null
+}
+
+export type WorkflowDesignNodePatch = {
+  instructions?: string | null
+  can_complete_workflow_run?: boolean | null
+  can_emit_intermediate_run_output?: boolean | null
+  intermediate_output_schema_ref?: string | null
+  max_turns?: number | null
+}
+
+export type WorkflowDesignEdge = {
+  id: string
+  from_node_id: string
+  to_node_id: string
+  output_schema_ref?: string | null
+  validation_policy?: "warn" | "halt" | null
+}
+
+export type WorkflowDesignEdgePatch = {
+  output_schema_ref?: string | null
+  validation_policy?: "warn" | "halt" | null
+}
+
+export type WorkflowDesignEndpoint = {
+  id: string
+  alias?: string | null
+  entry_node_id: string
+}
+
+export type WorkflowDesignEndpointPatch = {
+  alias?: string | null
+  entry_node_id?: string | null
+}
+
+export type WorkflowDesignOp =
+  | { kind: "workflow_create"; workflow: WorkflowDesignWorkflow }
+  | { kind: "workflow_update"; workflow_id: string; patch: WorkflowDesignWorkflowPatch }
+  | { kind: "workflow_remove"; workflow_id: string }
+  | { kind: "node_add"; workflow_id: string; node: WorkflowDesignNode; position?: WorkflowCanvasPoint | null }
+  | { kind: "node_update"; workflow_id: string; node_id: string; patch: WorkflowDesignNodePatch }
+  | { kind: "node_move"; workflow_id: string; node_id: string; position: WorkflowCanvasPoint }
+  | { kind: "node_remove"; workflow_id: string; node_id: string }
+  | { kind: "edge_add"; workflow_id: string; edge: WorkflowDesignEdge }
+  | { kind: "edge_update"; workflow_id: string; edge_id: string; patch: WorkflowDesignEdgePatch }
+  | { kind: "edge_remove"; workflow_id: string; edge_id: string }
+  | { kind: "endpoint_add"; workflow_id: string; endpoint: WorkflowDesignEndpoint; position?: WorkflowCanvasPoint | null }
+  | { kind: "endpoint_update"; workflow_id: string; endpoint_id: string; patch: WorkflowDesignEndpointPatch }
+  | { kind: "endpoint_move"; workflow_id: string; endpoint_id: string; position: WorkflowCanvasPoint }
+  | { kind: "endpoint_remove"; workflow_id: string; endpoint_id: string }
+
+export type WorkflowDesignOpForwarded = {
+  session_id: string
+  origin_client_id: string
+  op_id: string
+  kernel_sequence: number
+  op: WorkflowDesignOp
 }
 
 export type WorkflowEndpointDefinition = {

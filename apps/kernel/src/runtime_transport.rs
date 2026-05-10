@@ -179,6 +179,9 @@ pub(crate) enum KernelEvent {
     WaitingRoomInventoryChanged {
         inventory_version: String,
     },
+    WorkflowDesignOp {
+        design_op: crate::local::WorkflowDesignOpForwarded,
+    },
     Heartbeat {
         session_id: String,
     },
@@ -926,6 +929,7 @@ async fn run_subscription_loop(
     let mut previous_relay_status: Option<RelayStatus> = None;
     let mut previous_remote_machines: Option<Vec<RemoteMachineRecord>> = None;
     let mut previous_inventory_version: Option<String> = None;
+    let mut last_workflow_design_sequence = 0_u64;
     let mut tick: u64 = 0;
     let event_stream_id =
         subscription_event_stream_id(&subscription.session_id, &subscription.attachment_id);
@@ -939,6 +943,7 @@ async fn run_subscription_loop(
                 &subscription.attachment_id,
                 tick,
                 previous_snapshot.clone(),
+                last_workflow_design_sequence,
             )
         };
 
@@ -947,6 +952,7 @@ async fn run_subscription_loop(
                 records,
                 notices,
                 completions,
+                workflow_design_events,
                 snapshot,
             } => {
                 if !records.is_empty()
@@ -992,6 +998,26 @@ async fn run_subscription_loop(
                             recipient_attachment_ids: completion.recipient_attachment_ids,
                             message_id: completion.message_id,
                             completed_at_ms: completion.completed_at_ms,
+                        },
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                }
+                for workflow_event in workflow_design_events {
+                    last_workflow_design_sequence =
+                        last_workflow_design_sequence.max(workflow_event.kernel_sequence);
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        KernelEvent::WorkflowDesignOp {
+                            design_op: workflow_event,
                         },
                         Some(&event_stream_id),
                         Some(&subscription.session_id),
@@ -1202,6 +1228,7 @@ pub(crate) enum WatchResult {
         records: Vec<TerminalOutputRecord>,
         notices: Vec<RuntimeNoticeRecord>,
         completions: Vec<AssistantMessageCompletionRecord>,
+        workflow_design_events: Vec<crate::local::WorkflowDesignOpForwarded>,
         snapshot: Box<Option<SessionSnapshotProjection>>,
     },
     Unavailable(String),
@@ -1213,6 +1240,7 @@ pub(crate) fn watch_subscription_state(
     attachment_id: &str,
     tick: u64,
     previous_snapshot: Option<SessionSnapshotProjection>,
+    last_workflow_design_sequence: u64,
 ) -> WatchResult {
     if crate::app::KernelSessionReadService::new(app)
         .ensure_attachment_in_session(session_id, attachment_id)
@@ -1253,6 +1281,11 @@ pub(crate) fn watch_subscription_state(
     let completions = app
         .terminal_mut()
         .drain_completion_records(session_id, attachment_id);
+    let workflow_design_events = app.workflow_design_event_store().events_since(
+        session_id,
+        last_workflow_design_sequence,
+        attachment_id,
+    );
     let snapshot = if tick.is_multiple_of(STATE_INTERVAL_TICKS) {
         match build_session_snapshot(app, session_id) {
             Ok(snapshot) => {
@@ -1288,6 +1321,7 @@ pub(crate) fn watch_subscription_state(
         records,
         notices,
         completions,
+        workflow_design_events,
         snapshot,
     }
 }
@@ -1650,6 +1684,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::RelayStatusChanged { .. } => None,
         KernelEvent::RemoteMachinesChanged { .. } => None,
         KernelEvent::WaitingRoomInventoryChanged { .. } => None,
+        KernelEvent::WorkflowDesignOp { design_op } => Some(design_op.session_id.as_str()),
         KernelEvent::Heartbeat { session_id } => Some(session_id.as_str()),
         KernelEvent::TransportResumed { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::ReplayGap { session_id, .. } => Some(session_id.as_str()),
@@ -1700,6 +1735,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::RelayStatusChanged { .. }
         | KernelEvent::RemoteMachinesChanged { .. }
         | KernelEvent::WaitingRoomInventoryChanged { .. }
+        | KernelEvent::WorkflowDesignOp { .. }
         | KernelEvent::Heartbeat { .. }
         | KernelEvent::TransportResumed { .. }
         | KernelEvent::ReplayGap { .. } => true,

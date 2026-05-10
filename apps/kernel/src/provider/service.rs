@@ -668,6 +668,12 @@ impl ProviderProcessService {
             ));
         }
 
+        if run_snapshot.state() == ProviderRunState::Starting {
+            return Ok(ProviderRunLivenessReconciliation::StillRunning(
+                run_snapshot,
+            ));
+        }
+
         if run_snapshot.endpoint_mode() == crate::provider::AgentEndpointMode::External {
             return Ok(ProviderRunLivenessReconciliation::ExternalEndpoint(
                 run_snapshot,
@@ -1364,6 +1370,34 @@ mod tests {
                 .expect("run should still exist")
                 .state(),
             ProviderRunState::Running
+        );
+    }
+
+    #[test]
+    fn provider_only_liveness_does_not_end_starting_run_before_launch_settles() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+        let outcome = providers
+            .start_run_provider_only(launch_request(session.id(), "sonnet"))
+            .expect("provider-only start should succeed");
+
+        let reconciliation = providers
+            .reconcile_run_liveness_provider_only(session.id(), outcome.run().id(), Some(false))
+            .expect("liveness reconciliation should succeed");
+
+        assert!(matches!(
+            reconciliation,
+            ProviderRunLivenessReconciliation::StillRunning(_)
+        ));
+        assert_eq!(
+            providers
+                .get_run(outcome.run().id())
+                .expect("run should still exist")
+                .state(),
+            ProviderRunState::Starting
         );
     }
 

@@ -61,6 +61,7 @@ const WAITING_ROOM_INVENTORY_SENTINEL_ID: &str = "__waiting_room_inventory__";
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const RELAY_HEARTBEAT_APP_WORK_TIMEOUT: Duration = Duration::from_millis(25);
 const REMOTE_INVENTORY_RELAY_TIMEOUT_MS: u64 = 10_000;
 const REMOTE_INVENTORY_KERNEL_PROBE_TIMEOUT_MS: u64 = 5_000;
 static TEMPORARY_PEER_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -290,6 +291,7 @@ pub async fn run_daemon_relay_connector(
                 let mut token_refresh_interval =
                     tokio::time::interval(CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL);
                 token_refresh_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                let mut heartbeat_tick: u64 = 0;
 
                 loop {
                     tokio::select! {
@@ -412,6 +414,7 @@ pub async fn run_daemon_relay_connector(
                             }
                         }
                         _ = heartbeat_interval.tick() => {
+                            heartbeat_tick = heartbeat_tick.wrapping_add(1);
                             match relay_config_continuity(
                                 &relay_url,
                                 &active_relay_token,
@@ -449,9 +452,10 @@ pub async fn run_daemon_relay_connector(
                                     break;
                                 }
                             }
-                            if inventory_refresh_task
-                                .as_ref()
-                                .is_none_or(|task| task.is_finished())
+                            if heartbeat_tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS)
+                                && inventory_refresh_task
+                                    .as_ref()
+                                    .is_none_or(|task| task.is_finished())
                             {
                                 inventory_refresh_task = Some(
                                     spawn_remote_inventory_projection_refresh(
@@ -460,12 +464,9 @@ pub async fn run_daemon_relay_connector(
                                     )
                                 );
                             }
-                            pump_leased_projection_events(&router, &outgoing_tx).await;
-                            let heartbeat_frame = {
-                                RelayEnvelope::DaemonHeartbeat {
-                                    daemon_id: daemon_id.clone(),
-                                    registration: Some(router.relay_registration().await),
-                                }
+                            let heartbeat_frame = RelayEnvelope::DaemonHeartbeat {
+                                daemon_id: daemon_id.clone(),
+                                registration: None,
                             };
                             if outgoing_tx.send(heartbeat_frame).is_err() {
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
@@ -475,6 +476,11 @@ pub async fn run_daemon_relay_connector(
                                 publish_offline_and_set_disconnected(&router, &state, "relay heartbeat send failed").await;
                                 break;
                             }
+                            let _ = timeout(
+                                RELAY_HEARTBEAT_APP_WORK_TIMEOUT,
+                                pump_leased_projection_events(&router, &outgoing_tx),
+                            )
+                            .await;
                             if last_cloud_presence_publish.elapsed()
                                 >= CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL
                             {
@@ -2020,6 +2026,7 @@ async fn run_relay_subscription_loop(
     }
     let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
     let mut previous_inventory_version = None;
+    let mut last_workflow_design_sequence = 0_u64;
     let mut tick: u64 = 0;
     let event_stream_id = relay_subscription_event_stream_id(&session_id, &attachment_id);
 
@@ -2030,6 +2037,7 @@ async fn run_relay_subscription_loop(
                 &attachment_id,
                 tick,
                 previous_snapshot.clone(),
+                last_workflow_design_sequence,
             )
             .await;
 
@@ -2038,6 +2046,7 @@ async fn run_relay_subscription_loop(
                 records,
                 notices,
                 completions,
+                workflow_design_events,
                 snapshot,
             } => {
                 if !records.is_empty()
@@ -2085,6 +2094,26 @@ async fn run_relay_subscription_loop(
                             recipient_attachment_ids: completion.recipient_attachment_ids,
                             message_id: completion.message_id,
                             completed_at_ms: completion.completed_at_ms,
+                        },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                for workflow_event in workflow_design_events {
+                    last_workflow_design_sequence =
+                        last_workflow_design_sequence.max(workflow_event.kernel_sequence);
+                    if emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        &event_stream_id,
+                        KernelEvent::WorkflowDesignOp {
+                            design_op: workflow_event,
                         },
                     )
                     .await
@@ -2626,9 +2655,16 @@ mod tests {
     use crate::transport::relay_discovery;
     use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
     use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+
+    async fn relay_client_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().await
+    }
 
     #[tokio::test]
     async fn relay_subscription_tasks_are_owned_by_logical_attachment_subscription() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let tasks: RelaySubscriptionTasks = Arc::new(Mutex::new(BTreeMap::new()));
         let first_key = relay_subscription_task_key("session-1", "attachment-1", None);
         let second_key = relay_subscription_task_key("session-1", "attachment-1", None);
@@ -2731,6 +2767,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn daemon_connector_registers_with_relay() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -2800,6 +2837,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn proxied_peer_requests_are_handled_through_relay() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -2909,6 +2947,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn execution_leases_are_managed_through_peer_transport() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -3043,6 +3082,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -3207,6 +3247,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -3248,7 +3289,10 @@ mod tests {
         let app_home = Arc::new(Mutex::new(
             DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap"),
         ));
-        let state_home = Arc::new(RwLock::new(RelayClientState::default()));
+        let state_home = {
+            let app = app_home.lock().await;
+            app.relay_client_state()
+        };
         let (shutdown_home_tx, shutdown_home_rx) = watch::channel(false);
         let connector_home = tokio::spawn(run_daemon_relay_connector(
             Arc::clone(&app_home),
@@ -3267,7 +3311,10 @@ mod tests {
         let app_worker = Arc::new(Mutex::new(
             DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),
         ));
-        let state_worker = Arc::new(RwLock::new(RelayClientState::default()));
+        let state_worker = {
+            let app = app_worker.lock().await;
+            app.relay_client_state()
+        };
         let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
         let connector_worker = tokio::spawn(run_daemon_relay_connector(
             Arc::clone(&app_worker),
@@ -3275,6 +3322,7 @@ mod tests {
             shutdown_worker_rx,
         ));
 
+        wait_for_daemon_registration(registry.clone(), &config_home.daemon_id).await;
         wait_for_daemon_registration(registry.clone(), &config_worker.daemon_id).await;
 
         let worker_kernels =
@@ -3291,6 +3339,9 @@ mod tests {
             })
             .cloned()
             .expect("worker should advertise managed-dev-stub");
+        refresh_remote_inventory_projection_for_app_with_relay_state(&app_home)
+            .await
+            .expect("home remote inventory should refresh");
 
         let session_id = {
             let mut app = app_home.lock().await;
@@ -3308,7 +3359,7 @@ mod tests {
                         .with_alias("remote-reviewer")
                         .with_model("default")
                         .with_effort("medium")
-                        .with_machine("builder-west"),
+                        .with_machine(&config_worker.host_machine_id),
                 )
                 .expect("remote agent should spawn")
         };
@@ -3355,6 +3406,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn remote_machine_agents_execute_prompts_through_the_home_session() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -3405,7 +3457,10 @@ mod tests {
         let app_worker = Arc::new(Mutex::new(
             DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),
         ));
-        let state_worker = Arc::new(RwLock::new(RelayClientState::default()));
+        let state_worker = {
+            let app = app_worker.lock().await;
+            app.relay_client_state()
+        };
         let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
         let connector_worker = tokio::spawn(run_daemon_relay_connector(
             Arc::clone(&app_worker),
@@ -3428,10 +3483,26 @@ mod tests {
             .cloned()
             .expect("worker should advertise managed-dev-stub");
 
-        let mut app_home =
-            DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap");
+        let app_home = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap"),
+        ));
+        let state_home = {
+            let app = app_home.lock().await;
+            app.relay_client_state()
+        };
+        let (shutdown_home_tx, shutdown_home_rx) = watch::channel(false);
+        let connector_home = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app_home),
+            Arc::clone(&state_home),
+            shutdown_home_rx,
+        ));
+        wait_for_daemon_registration(registry.clone(), &config_home.daemon_id).await;
+        refresh_remote_inventory_projection_for_app_with_relay_state(&app_home)
+            .await
+            .expect("home remote inventory should refresh");
 
         let (session_id, attachment_id) = {
+            let mut app_home = app_home.lock().await;
             let (session, _) = crate::app::KernelSessionService::new(&mut app_home)
                 .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
                 .expect("home session should be created");
@@ -3446,13 +3517,14 @@ mod tests {
         };
 
         let remote_agent_id = {
+            let mut app_home = app_home.lock().await;
             crate::app::KernelSessionService::new(&mut app_home)
                 .spawn_agent(
                     CreateAgentRequest::new(&session_id, &provider)
                         .with_alias("remote-reviewer")
                         .with_model("default")
                         .with_effort("medium")
-                        .with_machine("builder-west"),
+                        .with_machine(&config_worker.host_machine_id),
                 )
                 .expect("remote agent should spawn")
                 .id()
@@ -3460,6 +3532,8 @@ mod tests {
         };
 
         let outcome = app_home
+            .lock()
+            .await
             .submit_prompt(
                 &session_id,
                 &attachment_id,
@@ -3474,6 +3548,8 @@ mod tests {
         ));
 
         let completion = app_home
+            .lock()
+            .await
             .complete_active_prompt(&session_id, &remote_agent_id, None)
             .expect("remote prompt should complete");
         assert_eq!(completion.completed.target_agent_id(), remote_agent_id);
@@ -3482,7 +3558,9 @@ mod tests {
             "remote prompt over home session\n"
         );
 
+        let _ = shutdown_home_tx.send(true);
         let _ = shutdown_worker_tx.send(true);
+        connector_home.await.expect("home connector should join");
         connector_worker
             .await
             .expect("worker connector should join");
@@ -3492,6 +3570,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -3542,7 +3621,10 @@ mod tests {
         let app_worker = Arc::new(Mutex::new(
             DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),
         ));
-        let state_worker = Arc::new(RwLock::new(RelayClientState::default()));
+        let state_worker = {
+            let app = app_worker.lock().await;
+            app.relay_client_state()
+        };
         let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
         let connector_worker = tokio::spawn(run_daemon_relay_connector(
             Arc::clone(&app_worker),
@@ -3565,9 +3647,25 @@ mod tests {
             .cloned()
             .expect("worker should advertise managed-dev-stub");
 
-        let mut app_home =
-            DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap");
+        let app_home = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap"),
+        ));
+        let state_home = {
+            let app = app_home.lock().await;
+            app.relay_client_state()
+        };
+        let (shutdown_home_tx, shutdown_home_rx) = watch::channel(false);
+        let connector_home = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app_home),
+            Arc::clone(&state_home),
+            shutdown_home_rx,
+        ));
+        wait_for_daemon_registration(registry.clone(), &config_home.daemon_id).await;
+        refresh_remote_inventory_projection_for_app_with_relay_state(&app_home)
+            .await
+            .expect("home remote inventory should refresh");
         let (session_id, attachment_id, remote_agent_id, remote_leased_agent_id) = {
+            let mut app_home = app_home.lock().await;
             let (session, _) = crate::app::KernelSessionService::new(&mut app_home)
                 .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
                 .expect("home session should be created");
@@ -3582,7 +3680,7 @@ mod tests {
                 .spawn_agent(
                     CreateAgentRequest::new(session.id(), &provider)
                         .with_alias("remote-reviewer")
-                        .with_machine("builder-west"),
+                        .with_machine(&config_worker.host_machine_id),
                 )
                 .expect("remote agent should spawn");
             let leased_agent_id = remote_agent
@@ -3606,6 +3704,8 @@ mod tests {
             .expect("source attachment should be written");
 
         let outcome = app_home
+            .lock()
+            .await
             .submit_prompt(
                 &session_id,
                 &attachment_id,
@@ -3643,7 +3743,9 @@ mod tests {
         assert_eq!(worker_bytes, b"remote attachment body");
 
         let _ = std::fs::remove_file(&source_path);
+        let _ = shutdown_home_tx.send(true);
         let _ = shutdown_worker_tx.send(true);
+        connector_home.await.expect("home connector should join");
         connector_worker
             .await
             .expect("worker connector should join");
@@ -3653,6 +3755,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -3703,7 +3806,10 @@ mod tests {
         let app_worker = Arc::new(Mutex::new(
             DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),
         ));
-        let state_worker = Arc::new(RwLock::new(RelayClientState::default()));
+        let state_worker = {
+            let app = app_worker.lock().await;
+            app.relay_client_state()
+        };
         let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
         let connector_worker = tokio::spawn(run_daemon_relay_connector(
             Arc::clone(&app_worker),
@@ -3726,9 +3832,25 @@ mod tests {
             .cloned()
             .expect("worker should advertise managed-dev-stub");
 
-        let mut app_home =
-            DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap");
+        let app_home = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap"),
+        ));
+        let state_home = {
+            let app = app_home.lock().await;
+            app.relay_client_state()
+        };
+        let (shutdown_home_tx, shutdown_home_rx) = watch::channel(false);
+        let connector_home = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app_home),
+            Arc::clone(&state_home),
+            shutdown_home_rx,
+        ));
+        wait_for_daemon_registration(registry.clone(), &config_home.daemon_id).await;
+        refresh_remote_inventory_projection_for_app_with_relay_state(&app_home)
+            .await
+            .expect("home remote inventory should refresh");
         let (session_id, attachment_id) = {
+            let mut app_home = app_home.lock().await;
             let (session, _) = crate::app::KernelSessionService::new(&mut app_home)
                 .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
                 .expect("home session should be created");
@@ -3741,18 +3863,23 @@ mod tests {
                 .expect("home attachment should attach");
             (session.id().to_string(), attachment.id().to_string())
         };
-        let remote_agent_id = crate::app::KernelSessionService::new(&mut app_home)
-            .spawn_agent(
-                CreateAgentRequest::new(&session_id, &provider)
-                    .with_alias("remote-reviewer")
-                    .with_model("default")
-                    .with_machine("builder-west"),
-            )
-            .expect("remote agent should spawn")
-            .id()
-            .to_string();
+        let remote_agent_id = {
+            let mut app_home = app_home.lock().await;
+            crate::app::KernelSessionService::new(&mut app_home)
+                .spawn_agent(
+                    CreateAgentRequest::new(&session_id, &provider)
+                        .with_alias("remote-reviewer")
+                        .with_model("default")
+                        .with_machine(&config_worker.host_machine_id),
+                )
+                .expect("remote agent should spawn")
+                .id()
+                .to_string()
+        };
 
         let outcome = app_home
+            .lock()
+            .await
             .submit_prompt(
                 &session_id,
                 &attachment_id,
@@ -3767,6 +3894,8 @@ mod tests {
         ));
 
         let cancellation = app_home
+            .lock()
+            .await
             .cancel_active_prompt(&session_id, &attachment_id)
             .expect("remote prompt should cancel");
         assert_eq!(cancellation.prompt.target_agent_id(), remote_agent_id);
@@ -3775,7 +3904,9 @@ mod tests {
             crate::session::PromptStatus::Cancelling
         );
 
+        let _ = shutdown_home_tx.send(true);
         let _ = shutdown_worker_tx.send(true);
+        connector_home.await.expect("home connector should join");
         connector_worker
             .await
             .expect("worker connector should join");
@@ -3785,6 +3916,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn incoming_peer_events_project_runtime_to_the_home_session() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should bootstrap"),
         ));
@@ -3867,6 +3999,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_connection() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -3908,7 +4041,10 @@ mod tests {
         let app_home = Arc::new(Mutex::new(
             DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap"),
         ));
-        let state_home = Arc::new(RwLock::new(RelayClientState::default()));
+        let state_home = {
+            let app = app_home.lock().await;
+            app.relay_client_state()
+        };
         let (shutdown_home_tx, shutdown_home_rx) = watch::channel(false);
         let connector_home = tokio::spawn(run_daemon_relay_connector(
             Arc::clone(&app_home),
@@ -3926,7 +4062,10 @@ mod tests {
         let app_worker = Arc::new(Mutex::new(
             DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),
         ));
-        let state_worker = Arc::new(RwLock::new(RelayClientState::default()));
+        let state_worker = {
+            let app = app_worker.lock().await;
+            app.relay_client_state()
+        };
         let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
         let connector_worker = tokio::spawn(run_daemon_relay_connector(
             Arc::clone(&app_worker),
@@ -4049,6 +4188,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn proxied_session_requests_are_handled_through_relay() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -4221,6 +4361,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn proxied_session_subscriptions_are_forwarded_through_relay() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -4340,6 +4481,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn relay_subscription_replays_recent_events_after_resume_cursor() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -4504,6 +4646,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn relay_subscription_emits_replay_gap_and_snapshot_for_stale_cursor() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let config = DaemonConfig::for_tests();
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
@@ -4600,6 +4743,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn interactive_session_requests_are_handled_through_relay() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -4765,6 +4909,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn terminal_resize_errors_are_returned_through_relay() {
+        let _relay_test_guard = relay_client_test_guard().await;
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -4860,7 +5005,7 @@ mod tests {
         registry: Arc<RwLock<arroba_relay::server::RelayRegistry>>,
         daemon_id: &str,
     ) {
-        for _ in 0..40 {
+        for _ in 0..200 {
             if registry.read().await.daemon(daemon_id).is_some() {
                 return;
             }

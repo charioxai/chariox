@@ -9,11 +9,12 @@ use crate::agent::AgentInstance;
 use crate::runtime::command::{KernelCaller, KernelCommand};
 use crate::runtime::router::CommandRouter;
 use crate::session::{WorkflowNodeDefinition, WorkflowRun};
+use crate::terminal::TerminalOutputKind;
 use crate::{DaemonApp, DaemonConfig, DaemonError};
 
 use super::{
-    AddWorkflowEdgeRequest, AddWorkflowNodeRequest, CompletePromptRequest, GetWorkflowRunRequest,
-    LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest,
+    AddWorkflowEdgeRequest, AddWorkflowNodeRequest, CompletePromptRequest, FocusAgentRequest,
+    GetWorkflowRunRequest, LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest,
 };
 
 static LOCAL_ROUTER_TEST_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
@@ -99,6 +100,15 @@ impl LocalRouterTestHarness {
     }
 
     pub(crate) fn spawn_workflow_test_agent(&self, session_id: &str, alias: &str) -> AgentInstance {
+        self.spawn_workflow_test_agent_with_worktree(session_id, alias, None)
+    }
+
+    pub(crate) fn spawn_workflow_test_agent_with_worktree(
+        &self,
+        session_id: &str,
+        alias: &str,
+        worktree_id: Option<&str>,
+    ) -> AgentInstance {
         match self
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
                 session_id: session_id.to_string(),
@@ -108,7 +118,7 @@ impl LocalRouterTestHarness {
                 effort: None,
                 execution_mode: None,
                 permission_level: None,
-                worktree_id: None,
+                worktree_id: worktree_id.map(str::to_string),
                 machine_ref: None,
                 worktree_placement: None,
             }))
@@ -167,7 +177,87 @@ impl LocalRouterTestHarness {
         }
     }
 
+    pub(crate) fn fan_out_workflow_test_output(&self, session_id: &str, label: &str) {
+        let provider_run_id = self.wait_for_active_provider_run(session_id);
+        self.fan_out_workflow_test_output_to_provider(session_id, &provider_run_id, label);
+    }
+
+    pub(crate) fn fan_out_workflow_test_output_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        label: &str,
+    ) {
+        let provider_run_id = self.with_app(|app| {
+            app.providers()
+                .get_run_for_agent(session_id, agent_id)
+                .unwrap_or_else(|| {
+                    panic!("provider run should exist for workflow test agent `{agent_id}`")
+                })
+                .id()
+                .to_string()
+        });
+        self.fan_out_workflow_test_output_to_provider(session_id, &provider_run_id, label);
+    }
+
+    fn fan_out_workflow_test_output_to_provider(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        label: &str,
+    ) {
+        let payload = serde_json::json!({
+            "summary": format!("{label} completed"),
+            "output": {
+                "message": format!("{label} output"),
+            },
+        });
+        let output = format!(
+            "```json\n{}\n```\n",
+            serde_json::to_string(&payload).expect("workflow test output should serialize")
+        );
+        self.with_app_mut(|app| {
+            app.fan_out_output(
+                session_id,
+                provider_run_id,
+                TerminalOutputKind::ProviderOutput,
+                None,
+                Vec::new(),
+                output.as_bytes(),
+            );
+        });
+    }
+
     pub(crate) fn complete_workflow_test_prompt(&self, session_id: &str, label: &str) {
+        self.fan_out_workflow_test_output(session_id, label);
+        match self
+            .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+                session_id: session_id.to_string(),
+            }))
+            .unwrap_or_else(|error| panic!("{label} should complete: {error}"))
+        {
+            LocalDaemonResponse::PromptCompleted { .. } => {}
+            _ => panic!("unexpected local response"),
+        }
+    }
+
+    pub(crate) fn complete_workflow_test_prompt_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        label: &str,
+    ) {
+        match self
+            .dispatch(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            }))
+            .unwrap_or_else(|error| panic!("{label} agent focus should succeed: {error}"))
+        {
+            LocalDaemonResponse::AgentFocused { .. } => {}
+            _ => panic!("unexpected local response"),
+        }
+        self.fan_out_workflow_test_output_for_agent(session_id, agent_id, label);
         match self
             .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
                 session_id: session_id.to_string(),

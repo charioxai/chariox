@@ -163,6 +163,19 @@ impl KernelRuntimeOwnedState {
         Ok(LocalDaemonResponse::WorkflowCreated { workflow, session })
     }
 
+    pub(super) fn workflow_apply_design_op(
+        &self,
+        request: crate::local::ApplyWorkflowDesignOpRequest,
+        caller_user_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.session_store.write().apply_workflow_design_op(
+            &request.session_id,
+            request.op,
+            caller_user_id.to_string(),
+        )?;
+        self.workflow_session(&request.session_id)
+    }
+
     pub(super) fn workflow_alias_workflow(
         &self,
         request: crate::local::AliasWorkflowRequest,

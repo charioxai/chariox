@@ -1345,6 +1345,15 @@ impl WorkflowDefinition {
         Some(removed)
     }
 
+    pub fn set_node_position(&mut self, node_id: impl Into<String>, point: WorkflowCanvasPoint) {
+        let layout = self
+            .canvas_layout
+            .get_or_insert_with(WorkflowCanvasLayout::new);
+        layout.nodes.insert(node_id.into(), point);
+        layout.bump_revision();
+        self.bump_revision();
+    }
+
     pub fn add_edge(&mut self, edge: WorkflowEdgeDefinition) -> WorkflowEdgeDefinition {
         self.edges.push(edge.clone());
         self.bump_revision();
@@ -1405,6 +1414,19 @@ impl WorkflowDefinition {
         }
         self.bump_revision();
         Some(endpoint)
+    }
+
+    pub fn set_endpoint_position(
+        &mut self,
+        endpoint_id: impl Into<String>,
+        point: WorkflowCanvasPoint,
+    ) {
+        let layout = self
+            .canvas_layout
+            .get_or_insert_with(WorkflowCanvasLayout::new);
+        layout.endpoints.insert(endpoint_id.into(), point);
+        layout.bump_revision();
+        self.bump_revision();
     }
 
     pub fn update_canvas_layout(
@@ -3675,6 +3697,14 @@ impl RuntimeSession {
     pub fn create_workflow(&mut self, workflow: WorkflowDefinition) -> WorkflowDefinition {
         self.workflows.push(workflow.clone());
         workflow
+    }
+
+    pub fn remove_workflow(&mut self, workflow_id: &str) -> Option<WorkflowDefinition> {
+        let index = self
+            .workflows
+            .iter()
+            .position(|workflow| workflow.id() == workflow_id)?;
+        Some(self.workflows.remove(index))
     }
 
     pub fn workflow(&self, workflow_id: &str) -> Option<&WorkflowDefinition> {

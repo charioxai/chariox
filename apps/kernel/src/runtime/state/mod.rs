@@ -866,6 +866,24 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
+            LocalDaemonRequest::ApplyWorkflowDesignOp(request) => {
+                let origin_client_id = request.origin_client_id.clone();
+                let op_id = request.op_id.clone();
+                let session_id = request.session_id.clone();
+                let op = request.op.clone();
+                let event_store = {
+                    let app = self.app.lock().await;
+                    app.workflow_design_event_store()
+                };
+                let result = owned
+                    .workflow_apply_design_op(request, &caller_user_id)
+                    .map(|session| {
+                        let event = event_store.append(session_id, origin_client_id, op_id, op);
+                        LocalDaemonResponse::WorkflowDesignOpAccepted { session, event }
+                    });
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
             LocalDaemonRequest::AliasWorkflow(request) => {
                 let result = owned.workflow_alias_workflow(request);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
@@ -1255,6 +1273,7 @@ fn workflow_response_session(
 ) -> Option<crate::session::RuntimeSession> {
     match response {
         LocalDaemonResponse::WorkflowCreated { session, .. }
+        | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
         | LocalDaemonResponse::WorkflowAliased { session, .. }
         | LocalDaemonResponse::WorkflowPublicationCreated { session, .. }
         | LocalDaemonResponse::WorkflowPublicationDisabled { session, .. }

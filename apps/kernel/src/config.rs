@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -352,17 +352,26 @@ impl DaemonConfig {
     }
 
     pub fn kernel_event_counter_path(&self) -> PathBuf {
-        default_state_dir()
-            .join("kernel-events")
+        self.event_counter_root()
             .join(&self.daemon_id)
             .join("event-counter.json")
     }
 
     pub fn kernel_relay_event_counter_path(&self) -> PathBuf {
-        default_state_dir()
-            .join("kernel-events")
+        self.event_counter_root()
             .join(&self.daemon_id)
             .join("relay-event-counter.json")
+    }
+
+    fn event_counter_root(&self) -> PathBuf {
+        self.user_config
+            .state
+            .path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .and_then(|path| PathBuf::from(path).parent().map(Path::to_path_buf))
+            .map(|root| root.join("kernel-events"))
+            .unwrap_or_else(|| default_state_dir().join("kernel-events"))
     }
 
     pub fn default_runtime_identity_path() -> PathBuf {

@@ -4,7 +4,7 @@ This page describes the current local protocol between the Arroba Kernel and the
 
 It reflects the current implementation, not the long-term remote/federated design.
 
-Current shared local daemon protocol version: `13`.
+Current shared local daemon protocol version: `15`.
 
 Primary implementation sources:
 
@@ -356,6 +356,33 @@ Commit-and-push request:
 }
 ```
 
+Delete worktree request:
+
+```json
+{
+  "DeleteWorkspaceWorktree": {
+    "workspace_id": "/Users/miguel/arroba",
+    "worktree_id": "/Users/miguel/arroba-feature",
+    "force": false
+  }
+}
+```
+
+Create pull request request:
+
+```json
+{
+  "CreateWorkspacePullRequest": {
+    "workspace_id": "/Users/miguel/arroba",
+    "worktree_id": "/Users/miguel/arroba-feature",
+    "title": "Update workspace git panel",
+    "body": "Optional pull request body",
+    "base_ref": "main",
+    "draft": true
+  }
+}
+```
+
 Git action response:
 
 ```json
@@ -368,6 +395,25 @@ Git action response:
       "message": "committed workspace changes",
       "commit_sha": "abcdef...",
       "branch": "main",
+      "generated_at_ms": 1778080000000
+    }
+  }
+}
+```
+
+Pull request response:
+
+```json
+{
+  "WorkspacePullRequestCreated": {
+    "pull_request": {
+      "workspace_id": "/Users/miguel/arroba",
+      "worktree_id": "/Users/miguel/arroba-feature",
+      "branch": "arroba/feature",
+      "base_ref": "main",
+      "url": "https://github.com/example/repo/pull/1",
+      "title": "Update workspace git panel",
+      "draft": true,
       "generated_at_ms": 1778080000000
     }
   }

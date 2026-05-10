@@ -1,4 +1,10 @@
-import type { HistoryQueryPayload, PromptAttachmentPart, SessionAgentDefaults, SessionHistoryCursor } from "./kernel-types.js"
+import type {
+  HistoryQueryPayload,
+  PromptAttachmentPart,
+  SessionAgentDefaults,
+  SessionHistoryCursor,
+  WorkflowDesignOp,
+} from "./kernel-types.js"
 
 export function createSessionRequest(
   workspaceId: string,
@@ -350,6 +356,22 @@ export function createWorkflowRequest(sessionId: string, alias?: string | null) 
     CreateWorkflow: {
       session_id: sessionId,
       alias: alias ?? null,
+    },
+  }
+}
+
+export function applyWorkflowDesignOpRequest(
+  sessionId: string,
+  originClientId: string,
+  opId: string,
+  op: WorkflowDesignOp,
+) {
+  return {
+    ApplyWorkflowDesignOp: {
+      session_id: sessionId,
+      origin_client_id: originClientId,
+      op_id: opId,
+      op,
     },
   }
 }
@@ -1153,6 +1175,42 @@ export function createWorkspaceWorktreeRequest(
       path: options.path ?? null,
       branch: options.branch ?? null,
       base_ref: options.baseRef ?? null,
+    },
+  }
+}
+
+export function deleteWorkspaceWorktreeRequest(
+  workspaceId: string,
+  worktreeId: string,
+  options: { force?: boolean } = {},
+) {
+  return {
+    DeleteWorkspaceWorktree: {
+      workspace_id: workspaceId,
+      worktree_id: worktreeId,
+      force: options.force ?? false,
+    },
+  }
+}
+
+export function createWorkspacePullRequestRequest(
+  workspaceId: string,
+  worktreeId: string,
+  options: {
+    title?: string | null
+    body?: string | null
+    baseRef?: string | null
+    draft?: boolean
+  } = {},
+) {
+  return {
+    CreateWorkspacePullRequest: {
+      workspace_id: workspaceId,
+      worktree_id: worktreeId,
+      title: options.title?.trim() || null,
+      body: options.body?.trim() || null,
+      base_ref: options.baseRef?.trim() || null,
+      draft: options.draft ?? false,
     },
   }
 }

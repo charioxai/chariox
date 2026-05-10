@@ -57,7 +57,17 @@ pub async fn run_local_ipc_server<F>(app: DaemonApp, shutdown: F) -> Result<(), 
 where
     F: Future<Output = ()>,
 {
-    let socket_path = app.config().local_socket_path.clone();
+    run_local_ipc_server_with_shared_app(Arc::new(Mutex::new(app)), shutdown).await
+}
+
+async fn run_local_ipc_server_with_shared_app<F>(
+    app: Arc<Mutex<DaemonApp>>,
+    shutdown: F,
+) -> Result<(), DaemonError>
+where
+    F: Future<Output = ()>,
+{
+    let socket_path = app.lock().await.config().local_socket_path.clone();
     prepare_socket_path(&socket_path)?;
 
     let listener =
@@ -66,8 +76,7 @@ where
             message: error.to_string(),
         })?;
     harden_socket_permissions(&socket_path)?;
-    let provider_runtime_lanes = app.provider_run_operation_lanes();
-    let app = Arc::new(Mutex::new(app));
+    let provider_runtime_lanes = app.lock().await.provider_run_operation_lanes();
     let durable_snapshot_scheduler = {
         let app = app.lock().await;
         app.durable_snapshot_scheduler()
@@ -441,10 +450,10 @@ mod tests {
     use std::io::Write;
     use std::net::Shutdown;
     use std::path::Path;
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::{Arc, Mutex, MutexGuard};
     use std::time::Duration;
 
-    use tokio::sync::oneshot;
+    use tokio::sync::{oneshot, Mutex as TokioMutex};
 
     use crate::attachment::ClientCapabilityLevel;
     use crate::config::PersistedCloudRelayProfile;
@@ -480,9 +489,12 @@ mod tests {
         let config = DaemonConfig::for_tests();
         let socket_path = config.local_socket_path.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let app = Arc::new(TokioMutex::new(
+            DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed"),
+        ));
+        let server_app = Arc::clone(&app);
         let server = tokio::spawn(async move {
-            let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
-            run_local_ipc_server(app, async {
+            super::run_local_ipc_server_with_shared_app(server_app, async {
                 let _ = shutdown_rx.await;
             })
             .await
@@ -727,9 +739,12 @@ mod tests {
         let config = DaemonConfig::for_tests();
         let socket_path = config.local_socket_path.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let app = Arc::new(TokioMutex::new(
+            DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed"),
+        ));
+        let server_app = Arc::clone(&app);
         let server = tokio::spawn(async move {
-            let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
-            run_local_ipc_server(app, async {
+            super::run_local_ipc_server_with_shared_app(server_app, async {
                 let _ = shutdown_rx.await;
             })
             .await
@@ -774,9 +789,12 @@ mod tests {
         let config = DaemonConfig::for_tests();
         let socket_path = config.local_socket_path.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let app = Arc::new(TokioMutex::new(
+            DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed"),
+        ));
+        let server_app = Arc::clone(&app);
         let server = tokio::spawn(async move {
-            let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
-            run_local_ipc_server(app, async {
+            super::run_local_ipc_server_with_shared_app(server_app, async {
                 let _ = shutdown_rx.await;
             })
             .await
@@ -920,6 +938,7 @@ mod tests {
         assert_eq!(resolved.id(), workflow_run.id());
         assert_eq!(format!("{:?}", resolved.status()), "Running");
 
+        fan_out_ipc_workflow_output(&app, session.id(), "workflow-backed prompt").await;
         match client
             .send(&LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
                 session_id: session.id().to_string(),
@@ -984,9 +1003,12 @@ mod tests {
         let config = DaemonConfig::for_tests();
         let socket_path = config.local_socket_path.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let app = Arc::new(TokioMutex::new(
+            DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed"),
+        ));
+        let server_app = Arc::clone(&app);
         let server = tokio::spawn(async move {
-            let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
-            run_local_ipc_server(app, async {
+            super::run_local_ipc_server_with_shared_app(server_app, async {
                 let _ = shutdown_rx.await;
             })
             .await
@@ -1150,6 +1172,7 @@ mod tests {
         };
         assert_eq!(format!("{:?}", workflow_run.status()), "Running");
 
+        fan_out_ipc_workflow_output(&app, session.id(), "entry workflow prompt").await;
         match client
             .send(&LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
                 session_id: session.id().to_string(),
@@ -1178,6 +1201,7 @@ mod tests {
         );
         assert_eq!(routed.node_runs()[1].node_id(), second_node.id());
 
+        fan_out_ipc_workflow_output(&app, session.id(), "downstream workflow prompt").await;
         match client
             .send(&LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
                 session_id: session.id().to_string(),
@@ -1222,6 +1246,39 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    async fn fan_out_ipc_workflow_output(
+        app: &Arc<TokioMutex<DaemonApp>>,
+        session_id: &str,
+        label: &str,
+    ) {
+        let payload = serde_json::json!({
+            "summary": format!("{label} completed"),
+            "output": {
+                "message": format!("{label} output"),
+            },
+        });
+        let output = format!(
+            "```json\n{}\n```\n",
+            serde_json::to_string(&payload).expect("workflow test output should serialize")
+        );
+        let mut app = app.lock().await;
+        let provider_run_id = app
+            .sessions()
+            .get_session(session_id)
+            .expect("session should resolve")
+            .active_provider_run_id()
+            .expect("provider run should be active")
+            .to_string();
+        app.fan_out_output(
+            session_id,
+            &provider_run_id,
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            None,
+            Vec::new(),
+            output.as_bytes(),
+        );
     }
 
     async fn wait_for_output(

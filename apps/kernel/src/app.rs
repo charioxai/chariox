@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -125,6 +125,7 @@ pub struct DaemonApp {
     transport_health: TransportHealthStore,
     workspace_coordinator: WorkspaceCoordinator,
     terminal: TerminalStreamStore,
+    workflow_design_events: WorkflowDesignEventStore,
     pending_structured_output_records: provider_output::StructuredOutputRecordStore,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
@@ -132,6 +133,69 @@ pub struct DaemonApp {
     remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     next_execution_lease_number: u64,
     next_leased_agent_number: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WorkflowDesignEventStore {
+    inner: Arc<Mutex<WorkflowDesignEventStoreState>>,
+}
+
+#[derive(Debug, Default)]
+struct WorkflowDesignEventStoreState {
+    next_sequence: u64,
+    events: VecDeque<crate::local::WorkflowDesignOpForwarded>,
+}
+
+impl WorkflowDesignEventStore {
+    const RETAINED_EVENTS: usize = 1024;
+
+    pub(crate) fn append(
+        &self,
+        session_id: String,
+        origin_client_id: String,
+        op_id: String,
+        op: crate::local::WorkflowDesignOp,
+    ) -> crate::local::WorkflowDesignOpForwarded {
+        let mut state = self
+            .inner
+            .lock()
+            .expect("workflow design event store poisoned");
+        state.next_sequence = state.next_sequence.saturating_add(1);
+        let event = crate::local::WorkflowDesignOpForwarded {
+            session_id,
+            kernel_sequence: state.next_sequence,
+            origin_client_id,
+            op_id,
+            op,
+        };
+        state.events.push_back(event.clone());
+        while state.events.len() > Self::RETAINED_EVENTS {
+            state.events.pop_front();
+        }
+        event
+    }
+
+    pub(crate) fn events_since(
+        &self,
+        session_id: &str,
+        after_sequence: u64,
+        origin_client_id_to_skip: &str,
+    ) -> Vec<crate::local::WorkflowDesignOpForwarded> {
+        let state = self
+            .inner
+            .lock()
+            .expect("workflow design event store poisoned");
+        state
+            .events
+            .iter()
+            .filter(|event| {
+                event.session_id == session_id
+                    && event.kernel_sequence > after_sequence
+                    && event.origin_client_id != origin_client_id_to_skip
+            })
+            .cloned()
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -439,6 +503,7 @@ impl DaemonApp {
             transport_health: TransportHealthStore::default(),
             workspace_coordinator: WorkspaceCoordinator::default(),
             terminal: TerminalStreamStore::new(),
+            workflow_design_events: WorkflowDesignEventStore::default(),
             pending_structured_output_records:
                 provider_output::StructuredOutputRecordStore::default(),
             execution_leases: BTreeMap::new(),
@@ -960,6 +1025,10 @@ impl DaemonApp {
 
     pub(crate) fn terminal_stream_store(&self) -> TerminalStreamStore {
         self.terminal.clone()
+    }
+
+    pub(crate) fn workflow_design_event_store(&self) -> WorkflowDesignEventStore {
+        self.workflow_design_events.clone()
     }
 
     pub(crate) fn terminal_mut(&mut self) -> &TerminalStreamStore {

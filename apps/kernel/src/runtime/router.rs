@@ -40,13 +40,14 @@ use crate::local::{
     CommitAndPushWorkspaceChangesRequest, CommitWorkspaceChangesRequest, ConfigureRelayRequest,
     ConnectCloudRelayRequest, CreateCloudSessionInviteRequest, CreatePairingInviteRequest,
     CreateSessionInviteRequest, CreateTerminalPairingLinkRequest, CreateWorkspaceDirectoryRequest,
-    CreateWorkspaceLinkRequest, CreateWorkspaceWorktreeRequest, DeleteCredentialSecretRequest,
-    DeleteKernelRequest, DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest,
-    GenerateWorkspaceCommitMessageRequest, GetMcpServerRequest, GetPromptInputHistoryRequest,
-    GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-    GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
-    GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest, GrantAgentCapabilityRequest,
-    ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
+    CreateWorkspaceLinkRequest, CreateWorkspacePullRequestRequest, CreateWorkspaceWorktreeRequest,
+    DeleteCredentialSecretRequest, DeleteKernelRequest, DeleteWorkspaceWorktreeRequest,
+    DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GenerateWorkspaceCommitMessageRequest,
+    GetMcpServerRequest, GetPromptInputHistoryRequest, GetProviderAuthStatusRequest,
+    GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest,
+    GetUserConfigRequest, GetUserConfigSchemaRequest, GetWorkspaceFileContentRequest,
+    GetWorkspaceGitOverviewRequest, GrantAgentCapabilityRequest, ImportMcpServersRequest,
+    ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
     IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest, JoinSessionInviteRequest,
     JoinTerminalPairingLinkRequest, ListAgentsRequest, ListCloudCollaboratorsRequest,
     ListCloudSessionMembersRequest, ListMcpServersRequest, ListProviderProcessesRequest,
@@ -73,7 +74,8 @@ use crate::local::{
     WaitingRoomPublicWorkflowSummary, WaitingRoomSessionActivitySummary,
     WorkspaceCommitMessageUtilityInput, WorkspaceFileContent, WorkspaceGitActionResult,
     WorkspaceGitChangeTotals, WorkspaceGitCompareRef, WorkspaceGitFileChange, WorkspaceGitOverview,
-    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
+    WorkspacePullRequestRecord, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
+    WorkspaceWorktreeRecord,
 };
 use crate::provider::{
     run_codex_utility_prompt, ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
@@ -798,6 +800,7 @@ impl CommandRouter {
         attachment_id: &str,
         tick: u64,
         previous_snapshot: Option<crate::runtime::projection::SessionSnapshotProjection>,
+        last_workflow_design_sequence: u64,
     ) -> crate::runtime_transport::WatchResult {
         let mut app = self.app.lock().await;
         crate::runtime_transport::watch_subscription_state(
@@ -806,6 +809,7 @@ impl CommandRouter {
             attachment_id,
             tick,
             previous_snapshot,
+            last_workflow_design_sequence,
         )
     }
 
@@ -1244,6 +1248,16 @@ impl CommandRouter {
             LocalDaemonRequest::CreateWorkspaceWorktree(request) => {
                 return self
                     .execute_create_workspace_worktree_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::DeleteWorkspaceWorktree(request) => {
+                return self
+                    .execute_delete_workspace_worktree_request(request.clone())
+                    .await;
+            }
+            LocalDaemonRequest::CreateWorkspacePullRequest(request) => {
+                return self
+                    .execute_create_workspace_pull_request_request(request.clone())
                     .await;
             }
             LocalDaemonRequest::GetWorkspaceGitOverview(request) => {
@@ -1729,6 +1743,12 @@ impl CommandRouter {
                 LocalDaemonResponse::WorkflowCreated {
                     workflow: workflow.redacted_for_user(caller_user_id),
                     session: session.redacted_for_user(caller_user_id),
+                }
+            }
+            LocalDaemonResponse::WorkflowDesignOpAccepted { session, event } => {
+                LocalDaemonResponse::WorkflowDesignOpAccepted {
+                    session: session.redacted_for_user(caller_user_id),
+                    event,
                 }
             }
             LocalDaemonResponse::WorkflowAliased { workflow, session } => {
@@ -2353,6 +2373,42 @@ impl CommandRouter {
             workspace_id: request.workspace_id,
             worktree,
         })
+    }
+
+    async fn execute_delete_workspace_worktree_request(
+        &self,
+        request: DeleteWorkspaceWorktreeRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let sessions = {
+            let app = self.app.lock().await;
+            app.sessions().list_sessions()
+        };
+        let path = delete_workspace_worktree(
+            &request.workspace_id,
+            &request.worktree_id,
+            request.force,
+            &sessions,
+        )?;
+        Ok(LocalDaemonResponse::WorkspaceWorktreeDeleted {
+            workspace_id: request.workspace_id,
+            worktree_id: request.worktree_id,
+            path,
+        })
+    }
+
+    async fn execute_create_workspace_pull_request_request(
+        &self,
+        request: CreateWorkspacePullRequestRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let pull_request = create_workspace_pull_request(
+            &request.workspace_id,
+            &request.worktree_id,
+            request.title.as_deref(),
+            request.body.as_deref(),
+            request.base_ref.as_deref(),
+            request.draft,
+        )?;
+        Ok(LocalDaemonResponse::WorkspacePullRequestCreated { pull_request })
     }
 
     async fn execute_get_workspace_git_overview_request(
@@ -4794,6 +4850,14 @@ impl CommandRouter {
                 self.execute_create_workspace_worktree_request(request)
                     .await
             }
+            LocalDaemonRequest::DeleteWorkspaceWorktree(request) => {
+                self.execute_delete_workspace_worktree_request(request)
+                    .await
+            }
+            LocalDaemonRequest::CreateWorkspacePullRequest(request) => {
+                self.execute_create_workspace_pull_request_request(request)
+                    .await
+            }
             LocalDaemonRequest::GetWorkspaceGitOverview(request) => {
                 self.execute_get_workspace_git_overview_request(request)
                     .await
@@ -4944,6 +5008,7 @@ impl CommandRouter {
                 self.execute_cold_list_agents_request(request).await
             }
             request @ (LocalDaemonRequest::CreateWorkflow(_)
+            | LocalDaemonRequest::ApplyWorkflowDesignOp(_)
             | LocalDaemonRequest::AliasWorkflow(_)
             | LocalDaemonRequest::ListWorkflows(_)
             | LocalDaemonRequest::ResolveWorkflow(_)
@@ -6811,6 +6876,260 @@ fn push_workspace_branch(
     })
 }
 
+fn delete_workspace_worktree(
+    workspace_id: &str,
+    worktree_id: &str,
+    force: bool,
+    sessions: &[crate::session::RuntimeSession],
+) -> Result<String, DaemonError> {
+    let (repo_root, worktree_path) = resolve_deletable_git_worktree(workspace_id, worktree_id)?;
+    let blockers = active_worktree_session_blockers(workspace_id, &worktree_path, sessions);
+    if !blockers.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "workspace worktree delete",
+            message: format!(
+                "worktree is still used by active runtime sessions: {}",
+                blockers.join(", ")
+            ),
+        });
+    }
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(worktree_path.as_str());
+    run_git(&repo_root, &args)?;
+    Ok(worktree_path)
+}
+
+fn resolve_deletable_git_worktree(
+    workspace_id: &str,
+    worktree_id: &str,
+) -> Result<(PathBuf, String), DaemonError> {
+    let target = worktree_id.trim();
+    if target.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "workspace worktree delete",
+            message: "worktree_id is required".to_string(),
+        });
+    }
+    let repo_root = resolve_repo_root(workspace_id)?;
+    let output = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(&repo_root)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "workspace worktree delete",
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation: "workspace worktree delete",
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    let worktree_path = parse_git_worktree_list(String::from_utf8_lossy(&output.stdout).as_ref())
+        .into_iter()
+        .map(|(path, _branch)| path)
+        .find(|path| same_fs_path(path, target))
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "workspace worktree delete",
+            message: format!("worktree is not registered: {target}"),
+        })?;
+    if same_fs_path(&worktree_path, repo_root.to_string_lossy().as_ref()) {
+        return Err(DaemonError::LocalTransport {
+            operation: "workspace worktree delete",
+            message: "refusing to delete the main workspace worktree".to_string(),
+        });
+    }
+    Ok((repo_root, worktree_path))
+}
+
+fn active_worktree_session_blockers(
+    workspace_id: &str,
+    worktree_id: &str,
+    sessions: &[crate::session::RuntimeSession],
+) -> Vec<String> {
+    let mut blockers = Vec::new();
+    for session in sessions {
+        if session.status() == crate::session::SessionStatus::Ended {
+            continue;
+        }
+        let session_owns_worktree = worktree_ids_match(session.worktree_id(), worktree_id)
+            || session.agents().iter().any(|agent| {
+                let agent_worktree = agent.worktree_id().unwrap_or(session.worktree_id());
+                worktree_ids_match(agent_worktree, worktree_id)
+            });
+        if session_owns_worktree
+            || (workspace_id == session.workspace_id()
+                && worktree_ids_match(session.worktree_id(), worktree_id))
+        {
+            blockers.push(session.id().to_string());
+        }
+    }
+    blockers.sort();
+    blockers.dedup();
+    blockers
+}
+
+fn worktree_ids_match(left: &str, right: &str) -> bool {
+    left == right || same_fs_path(left, right)
+}
+
+fn create_workspace_pull_request(
+    workspace_id: &str,
+    worktree_id: &str,
+    title: Option<&str>,
+    body: Option<&str>,
+    base_ref: Option<&str>,
+    draft: bool,
+) -> Result<WorkspacePullRequestRecord, DaemonError> {
+    let worktree_path = worktree_id.trim();
+    if worktree_path.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "workspace pull request create",
+            message: "worktree_id is required".to_string(),
+        });
+    }
+    let repo_root = resolve_repo_root(worktree_path)?;
+    let branch = detect_git_branch(worktree_path)?;
+    if branch == "HEAD" || branch.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "workspace pull request create",
+            message: "cannot create a pull request from a detached HEAD".to_string(),
+        });
+    }
+    ensure_workspace_branch_pushed(worktree_path, &branch)?;
+    let base_ref = base_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_pull_request_base_ref)
+        .unwrap_or_else(|| {
+            normalize_pull_request_base_ref(&workspace_default_compare_ref(
+                repo_root.to_string_lossy().as_ref(),
+                Some(&branch),
+            ))
+        });
+    let title = title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| pull_request_title_from_branch(&branch));
+    let mut args = vec![
+        "pr".to_string(),
+        "create".to_string(),
+        "--head".to_string(),
+        branch.clone(),
+        "--base".to_string(),
+        base_ref.clone(),
+        "--title".to_string(),
+        title.clone(),
+    ];
+    if let Some(body) = body.map(str::trim).filter(|value| !value.is_empty()) {
+        args.push("--body".to_string());
+        args.push(body.to_string());
+    } else {
+        args.push("--fill".to_string());
+    }
+    if draft {
+        args.push("--draft".to_string());
+    }
+    let url = run_gh_output(worktree_path, &args, "workspace pull request create")?;
+    Ok(WorkspacePullRequestRecord {
+        workspace_id: workspace_id.to_string(),
+        worktree_id: worktree_id.to_string(),
+        branch,
+        base_ref,
+        url,
+        title: Some(title),
+        draft,
+        generated_at_ms: current_unix_ms(),
+    })
+}
+
+fn ensure_workspace_branch_pushed(worktree_path: &str, branch: &str) -> Result<(), DaemonError> {
+    let upstream = git_command_output(
+        worktree_path,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    );
+    if upstream.is_some() {
+        return Ok(());
+    }
+    run_workspace_git_command(
+        worktree_path,
+        &["push", "-u", "origin", branch],
+        "workspace pull request push",
+    )
+}
+
+fn normalize_pull_request_base_ref(reference: &str) -> String {
+    let mut normalized = reference.trim();
+    if let Some(stripped) = normalized.strip_prefix("refs/remotes/origin/") {
+        normalized = stripped;
+    }
+    if let Some(stripped) = normalized.strip_prefix("refs/heads/") {
+        normalized = stripped;
+    }
+    if let Some(stripped) = normalized.strip_prefix("origin/") {
+        normalized = stripped;
+    }
+    normalized.to_string()
+}
+
+fn pull_request_title_from_branch(branch: &str) -> String {
+    let title = branch
+        .rsplit('/')
+        .next()
+        .unwrap_or(branch)
+        .replace(['-', '_'], " ");
+    let title = title.trim();
+    if title.is_empty() {
+        branch.to_string()
+    } else {
+        title.to_string()
+    }
+}
+
+fn run_gh_output(
+    worktree_path: &str,
+    args: &[String],
+    operation: &'static str,
+) -> Result<String, DaemonError> {
+    let output = std::process::Command::new("gh")
+        .args(args)
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let message = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("gh {} failed with status {}", args.join(" "), output.status)
+        };
+        return Err(DaemonError::LocalTransport { operation, message });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: "gh did not return a pull request URL".to_string(),
+        });
+    }
+    Ok(stdout
+        .lines()
+        .last()
+        .unwrap_or(stdout.as_str())
+        .trim()
+        .to_string())
+}
+
 fn run_workspace_git_command(
     worktree_path: &str,
     args: &[&str],
@@ -7940,6 +8259,9 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
         LocalDaemonRequest::CreateWorkflow(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::ApplyWorkflowDesignOp(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::AliasWorkflow(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -8275,6 +8597,7 @@ fn response_sessions(response: &LocalDaemonResponse) -> Vec<crate::session::Runt
         | LocalDaemonResponse::WorkspaceLinkAttached { session, .. }
         | LocalDaemonResponse::WorkspaceLinkDetached { session, .. }
         | LocalDaemonResponse::WorkflowCreated { session, .. }
+        | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
         | LocalDaemonResponse::WorkflowAliased { session, .. }
         | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
         | LocalDaemonResponse::WorkflowEndpointAliased { session, .. }

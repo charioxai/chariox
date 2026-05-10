@@ -93,15 +93,16 @@ pub struct VerifiedRelayIdentity {
 
 impl VerifiedRelayIdentity {
     pub fn bootstrap(action: RelayAction) -> Self {
+        let subject_kind = subject_kind_for_action(action);
         Self {
             realm_id: DEFAULT_RELAY_REALM_ID.to_string(),
             subject: "shared-token-bootstrap".to_string(),
-            subject_kind: subject_kind_for_action(action),
+            subject_kind,
             allowed_actions: vec![action],
             allowed_targets: None,
             expires_at_ms: u64::MAX,
             token_id: None,
-            user_id: None,
+            user_id: (subject_kind == RelaySubjectKind::Client).then(|| "local".to_string()),
             public_key_thumbprint: None,
         }
     }
@@ -500,6 +501,7 @@ mod tests {
 
         assert_eq!(identity.realm_id, DEFAULT_RELAY_REALM_ID);
         assert_eq!(identity.subject_kind, RelaySubjectKind::Client);
+        assert_eq!(identity.user_id.as_deref(), Some("local"));
     }
 
     #[test]

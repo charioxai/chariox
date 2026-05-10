@@ -3,7 +3,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex as StdMutex;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -188,7 +188,7 @@ impl EventIdAllocator {
 struct PersistentEventIdReservation {
     path: PathBuf,
     block_size: u64,
-    reservation_lock: StdMutex<()>,
+    reservation_lock: Arc<StdMutex<()>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -199,9 +199,9 @@ struct PersistentEventIdCounter {
 impl PersistentEventIdReservation {
     fn new(path: PathBuf, block_size: u64) -> Self {
         Self {
+            reservation_lock: persistent_event_id_lock_for_path(&path),
             path,
             block_size: block_size.max(1),
-            reservation_lock: StdMutex::new(()),
         }
     }
 
@@ -214,6 +214,20 @@ impl PersistentEventIdReservation {
         write_counter(&self.path, next)?;
         Ok(next)
     }
+}
+
+fn persistent_event_id_lock_for_path(path: &Path) -> Arc<StdMutex<()>> {
+    static LOCKS: OnceLock<StdMutex<BTreeMap<PathBuf, Arc<StdMutex<()>>>>> = OnceLock::new();
+
+    let locks = LOCKS.get_or_init(|| StdMutex::new(BTreeMap::new()));
+    let mut guard = locks
+        .lock()
+        .expect("persistent event id lock map should not be poisoned");
+    Arc::clone(
+        guard
+            .entry(path.to_path_buf())
+            .or_insert_with(|| Arc::new(StdMutex::new(()))),
+    )
 }
 
 fn read_counter(path: &Path) -> io::Result<Option<u64>> {

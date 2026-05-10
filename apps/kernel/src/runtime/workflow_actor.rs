@@ -261,6 +261,7 @@ pub(crate) fn is_workflow_command(request: &LocalDaemonRequest) -> bool {
 fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
     Some(match request {
         LocalDaemonRequest::CreateWorkflow(request) => request.session_id.clone(),
+        LocalDaemonRequest::ApplyWorkflowDesignOp(request) => request.session_id.clone(),
         LocalDaemonRequest::AliasWorkflow(request) => request.session_id.clone(),
         LocalDaemonRequest::ListWorkflows(request) => request.session_id.clone(),
         LocalDaemonRequest::ResolveWorkflow(request) => request.session_id.clone(),

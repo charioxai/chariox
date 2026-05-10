@@ -28,7 +28,8 @@ use super::{
     CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest, CommitWorkspaceChangesRequest,
     CompletePromptRequest, CreateSessionInviteRequest, CreateTerminalPairingLinkRequest,
     CreateWorkflowEndpointRequest, CreateWorkflowRequest, CreateWorkspaceLinkRequest,
-    CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
+    CreateWorkspacePullRequestRequest, CreateWorkspaceWorktreeRequest, CycleAgentFocusRequest,
+    DeleteSessionRequest, DeleteWorkspaceWorktreeRequest, DetachFromSessionRequest,
     DetachWorkspaceLinkRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
     GetDaemonHealthRequest, GetSessionStateRequest, GetWaitingRoomInventoryRequest,
     GetWaitingRoomPublicSnapshotRequest, GetWorkflowRunRequest, GetWorkspaceFileContentRequest,
@@ -43,13 +44,13 @@ use super::{
     RevokeSessionInviteRequest, RunShellCapabilityRequest, ShowWorkspaceLinkRequest,
     SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
     UpdateAgentProfileRequest, UpdateSessionConfigRequest, UpdateWorkflowCanvasLayoutRequest,
-    UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent, WorkspaceRepoFileEntry,
-    WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
+    UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent, WorkspacePullRequestRecord,
+    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 14);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 16);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -177,6 +178,47 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
         "97cd77e97437355506f7025c38c0741de615733f823224cc850cb9d0e2885bfe"
     );
 
+    let design_op_request = serde_json::to_value(LocalDaemonRequest::ApplyWorkflowDesignOp(
+        super::ApplyWorkflowDesignOpRequest {
+            session_id: "session-1".to_string(),
+            origin_client_id: "web-client-1".to_string(),
+            op_id: "op-1".to_string(),
+            op: super::WorkflowDesignOp::NodeAdd {
+                workflow_id: "workflow-1".to_string(),
+                node: super::WorkflowDesignNode {
+                    id: "node-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    label: None,
+                    instructions: Some("Review the change".to_string()),
+                    can_complete_workflow_run: None,
+                    can_emit_intermediate_run_output: None,
+                    intermediate_output_schema_ref: None,
+                    max_turns: Some(3),
+                },
+                position: Some(super::WorkflowDesignPoint { x: 120, y: 80 }),
+            },
+        },
+    ))
+    .expect("design op request should serialize");
+    let design_op_payload = design_op_request
+        .pointer("/ApplyWorkflowDesignOp")
+        .expect("design op payload should serialize");
+    assert_eq!(
+        design_op_payload.pointer("/op/workflow_id"),
+        Some(&serde_json::json!("workflow-1"))
+    );
+    assert_eq!(
+        design_op_payload.pointer("/op/position/x"),
+        Some(&serde_json::json!(120))
+    );
+    let serialized =
+        serde_json::to_string(design_op_payload).expect("design op snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "6beed0034e0a7717008a1e7269e1d01f096ce14af5a65c94efe7d111cdc52e94"
+    );
+
     let content = WorkspaceFileContent {
         workspace_id: "workspace-1".to_string(),
         worktree_id: "worktree-1".to_string(),
@@ -222,6 +264,83 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "a2bff9ada5aa65ea753652ae69c8b574759bfcd50962dd07015c5958908dfdd4"
+    );
+
+    let delete_worktree_request = serde_json::to_value(
+        LocalDaemonRequest::DeleteWorkspaceWorktree(DeleteWorkspaceWorktreeRequest {
+            workspace_id: "workspace-1".to_string(),
+            worktree_id: "worktree-1".to_string(),
+            force: true,
+        }),
+    )
+    .expect("delete worktree request should serialize");
+    let delete_worktree_payload = delete_worktree_request
+        .pointer("/DeleteWorkspaceWorktree")
+        .expect("delete worktree payload should serialize");
+    assert_eq!(
+        delete_worktree_payload.pointer("/worktree_id"),
+        Some(&serde_json::json!("worktree-1"))
+    );
+    let serialized = serde_json::to_string(delete_worktree_payload)
+        .expect("delete worktree request snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "d3df9ce72d0e27572f5ce66e5e29ba809d6e00d73c5508deda2aa810969f40e8"
+    );
+
+    let create_pr_request = serde_json::to_value(LocalDaemonRequest::CreateWorkspacePullRequest(
+        CreateWorkspacePullRequestRequest {
+            workspace_id: "workspace-1".to_string(),
+            worktree_id: "worktree-1".to_string(),
+            title: Some("Ship feature".to_string()),
+            body: Some("Body".to_string()),
+            base_ref: Some("main".to_string()),
+            draft: true,
+        },
+    ))
+    .expect("create pull request request should serialize");
+    let create_pr_payload = create_pr_request
+        .pointer("/CreateWorkspacePullRequest")
+        .expect("create pull request payload should serialize");
+    assert_eq!(
+        create_pr_payload.pointer("/base_ref"),
+        Some(&serde_json::json!("main"))
+    );
+    let serialized = serde_json::to_string(create_pr_payload)
+        .expect("create pull request request snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "318e776a7f78bd7b0a8543028eea8d1acd44865c3f49a7bd22a7596c77b22471"
+    );
+
+    let pull_request = WorkspacePullRequestRecord {
+        workspace_id: "workspace-1".to_string(),
+        worktree_id: "worktree-1".to_string(),
+        branch: "feature".to_string(),
+        base_ref: "main".to_string(),
+        url: "https://github.com/example/repo/pull/1".to_string(),
+        title: Some("Ship feature".to_string()),
+        draft: true,
+        generated_at_ms: 1237,
+    };
+    let pr_response =
+        serde_json::to_value(LocalDaemonResponse::WorkspacePullRequestCreated { pull_request })
+            .expect("pull request response should serialize");
+    let pr_response_payload = pr_response
+        .pointer("/WorkspacePullRequestCreated/pull_request")
+        .expect("pull request response payload should serialize");
+    assert_eq!(
+        pr_response_payload.pointer("/url"),
+        Some(&serde_json::json!("https://github.com/example/repo/pull/1"))
+    );
+    let serialized = serde_json::to_string(pr_response_payload)
+        .expect("pull request response snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "4354e2b9a67c08033d5306739f223f09af4ca44c747a01c30499526766bca00f"
     );
 }
 
@@ -1885,15 +2004,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
     assert_eq!(resolved.id(), workflow_run.id());
     assert_eq!(format!("{:?}", resolved.status()), "Running");
 
-    match harness
-        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
-            session_id: session.id().to_string(),
-        }))
-        .expect("workflow-backed prompt should complete")
-    {
-        LocalDaemonResponse::PromptCompleted { .. } => {}
-        _ => panic!("unexpected local response"),
-    }
+    harness.complete_workflow_test_prompt(session.id(), "workflow-backed prompt");
 
     let completed = match harness
         .dispatch(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
@@ -2195,15 +2306,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
         "generated-plan.md"
     );
 
-    match harness
-        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
-            session_id: session.id().to_string(),
-        }))
-        .expect("downstream workflow prompt should complete")
-    {
-        LocalDaemonResponse::PromptCompleted { .. } => {}
-        _ => panic!("unexpected local response"),
-    }
+    harness.complete_workflow_test_prompt(session.id(), "downstream workflow prompt");
 
     let completed = match harness
         .dispatch(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
@@ -2465,10 +2568,18 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
             },
         ))
         .expect("second workflow turn ack should succeed");
+    let second_provider_run_id = harness.with_app(|app| {
+        app.sessions()
+            .get_session(session.id())
+            .expect("session state should resolve")
+            .active_provider_run_id()
+            .expect("provider run should be active")
+            .to_string()
+    });
     harness.with_app_mut(|app| {
         app.fan_out_output(
             session.id(),
-            &provider_run_id,
+            &second_provider_run_id,
             TerminalOutputKind::ProviderOutput,
             None,
             Vec::new(),
@@ -2717,10 +2828,18 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
             },
         ))
         .expect("second node ack should succeed");
+    let second_provider_run_id = harness.with_app(|app| {
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should resolve")
+            .active_provider_run_id()
+            .expect("provider run should be active")
+            .to_string()
+    });
     harness.with_app_mut(|app| {
         app.fan_out_output(
             session.id(),
-            &provider_run_id,
+            &second_provider_run_id,
             TerminalOutputKind::ProviderOutput,
             None,
             Vec::new(),
@@ -3009,8 +3128,16 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
     };
 
     let entry_agent = harness.spawn_workflow_test_agent(session.id(), "entry");
-    let branch_one_agent = harness.spawn_workflow_test_agent(session.id(), "branch-one");
-    let branch_two_agent = harness.spawn_workflow_test_agent(session.id(), "branch-two");
+    let branch_one_agent = harness.spawn_workflow_test_agent_with_worktree(
+        session.id(),
+        "branch-one",
+        Some("worktree-branch-one"),
+    );
+    let branch_two_agent = harness.spawn_workflow_test_agent_with_worktree(
+        session.id(),
+        "branch-two",
+        Some("worktree-branch-two"),
+    );
     let join_agent = harness.spawn_workflow_test_agent(session.id(), "join");
 
     let workflow = match harness
@@ -3117,8 +3244,8 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
         active_prompt_count >= 1,
         "expected at least one branch prompt to be active after entry completed"
     );
-    assert_eq!(active_prompt_count + queued_prompt_count, 1);
-    assert_eq!(active_branch_agents.len(), 1);
+    assert_eq!(active_prompt_count + queued_prompt_count, 2);
+    assert_eq!(active_branch_agents.len(), 2);
     assert_eq!(
         after_entry
             .node_runs()
@@ -3127,15 +3254,14 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
                 node_run.status() == WorkflowNodeRunStatus::BlockedOnWorkspaceClaim
             })
             .count(),
-        1
+        0
     );
 
-    harness.with_app_mut(|app| {
-        app.complete_active_prompt(session.id(), active_branch_agents[0], None)
-            .unwrap_or_else(|error| {
-                panic!("first branch workflow prompt should complete: {error}")
-            });
-    });
+    harness.complete_workflow_test_prompt_for_agent(
+        session.id(),
+        active_branch_agents[0],
+        "first branch workflow prompt",
+    );
     let after_first_branch = harness.get_workflow_test_run(session.id(), workflow_run.id());
     assert_eq!(after_first_branch.node_runs().len(), 3);
     assert!(after_first_branch
@@ -3157,8 +3283,9 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
             .expect("session should resolve after first branch")
             .clone()
     });
-    let remaining_active_branch_agents = [branch_one_agent.id(), branch_two_agent.id()]
-        .into_iter()
+    let remaining_active_branch_agents = active_branch_agents
+        .iter()
+        .copied()
         .filter(|agent_id| {
             session_after_first_branch
                 .active_prompt_for_agent(agent_id)
@@ -3168,12 +3295,11 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
     assert_eq!(remaining_active_branch_agents.len(), 1);
     assert_eq!(session_after_first_branch.queued_prompts().len(), 0);
 
-    harness.with_app_mut(|app| {
-        app.complete_active_prompt(session.id(), remaining_active_branch_agents[0], None)
-            .unwrap_or_else(|error| {
-                panic!("second branch workflow prompt should complete: {error}")
-            });
-    });
+    harness.complete_workflow_test_prompt_for_agent(
+        session.id(),
+        remaining_active_branch_agents[0],
+        "second branch workflow prompt",
+    );
     let after_second_branch = harness.get_workflow_test_run(session.id(), workflow_run.id());
     let join_runs = after_second_branch
         .node_runs()
@@ -4761,6 +4887,112 @@ fn local_request_api_push_without_upstream_fails_loudly() {
     assert!(error.to_string().contains("no upstream"));
 }
 
+#[test]
+fn local_request_api_deletes_unused_workspace_worktree() {
+    let workspace_root = std::env::temp_dir().join("arroba-workspace-delete-worktree-test");
+    let feature_root = std::env::temp_dir().join("arroba-workspace-delete-worktree-test-feature");
+    let _ = std::fs::remove_dir_all(&workspace_root);
+    let _ = std::fs::remove_dir_all(&feature_root);
+    std::fs::create_dir_all(&workspace_root).expect("workspace should exist");
+    std::fs::write(workspace_root.join("README.md"), "hello\n").expect("file should exist");
+    run_test_git(&workspace_root, &["init", "-b", "main"]);
+    run_test_git(
+        &workspace_root,
+        &["config", "user.email", "agent@example.com"],
+    );
+    run_test_git(&workspace_root, &["config", "user.name", "Agent"]);
+    run_test_git(&workspace_root, &["add", "."]);
+    run_test_git(&workspace_root, &["commit", "-m", "seed"]);
+
+    let harness = LocalRouterTestHarness::new();
+    let create = harness
+        .dispatch(LocalDaemonRequest::CreateWorkspaceWorktree(
+            CreateWorkspaceWorktreeRequest {
+                workspace_id: workspace_root.display().to_string(),
+                path: Some(feature_root.display().to_string()),
+                branch: Some("arroba/delete-test".to_string()),
+                base_ref: Some("main".to_string()),
+            },
+        ))
+        .expect("worktree create should succeed");
+    let worktree_path = match create {
+        LocalDaemonResponse::WorkspaceWorktreeCreated { worktree, .. } => worktree.path,
+        _ => panic!("unexpected local response"),
+    };
+
+    let delete = harness
+        .dispatch(LocalDaemonRequest::DeleteWorkspaceWorktree(
+            DeleteWorkspaceWorktreeRequest {
+                workspace_id: workspace_root.display().to_string(),
+                worktree_id: worktree_path.clone(),
+                force: false,
+            },
+        ))
+        .expect("unused worktree delete should succeed");
+    match delete {
+        LocalDaemonResponse::WorkspaceWorktreeDeleted { path, .. } => {
+            assert!(path.ends_with("arroba-workspace-delete-worktree-test-feature"));
+            assert!(worktree_path.ends_with("arroba-workspace-delete-worktree-test-feature"));
+        }
+        _ => panic!("unexpected local response"),
+    }
+    assert!(!feature_root.exists());
+}
+
+#[test]
+fn local_request_api_refuses_to_delete_runtime_owned_worktree() {
+    let workspace_root = std::env::temp_dir().join("arroba-workspace-delete-owned-test");
+    let feature_root = std::env::temp_dir().join("arroba-workspace-delete-owned-test-feature");
+    let _ = std::fs::remove_dir_all(&workspace_root);
+    let _ = std::fs::remove_dir_all(&feature_root);
+    std::fs::create_dir_all(&workspace_root).expect("workspace should exist");
+    std::fs::write(workspace_root.join("README.md"), "hello\n").expect("file should exist");
+    run_test_git(&workspace_root, &["init", "-b", "main"]);
+    run_test_git(
+        &workspace_root,
+        &["config", "user.email", "agent@example.com"],
+    );
+    run_test_git(&workspace_root, &["config", "user.name", "Agent"]);
+    run_test_git(&workspace_root, &["add", "."]);
+    run_test_git(&workspace_root, &["commit", "-m", "seed"]);
+    run_test_git(
+        &workspace_root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "arroba/owned-delete-test",
+            feature_root.to_str().expect("feature path should encode"),
+            "main",
+        ],
+    );
+
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                feature_root.display().to_string(),
+            ),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let error = harness
+        .dispatch(LocalDaemonRequest::DeleteWorkspaceWorktree(
+            DeleteWorkspaceWorktreeRequest {
+                workspace_id: workspace_root.display().to_string(),
+                worktree_id: feature_root.display().to_string(),
+                force: true,
+            },
+        ))
+        .expect_err("runtime-owned worktree delete should fail");
+    assert!(error.to_string().contains(session.id()));
+    assert!(feature_root.exists());
+}
+
 fn run_test_git(cwd: &std::path::Path, args: &[&str]) {
     let output = std::process::Command::new("git")
         .args(args)
@@ -4896,7 +5128,7 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,
         _ => panic!("unexpected local response"),
     };
-    harness.with_app_mut(|app| {
+    let interactive_provider_run_id = harness.with_app_mut(|app| {
         app.launch_provider(
             LaunchProviderRequest::new(
                 interactive_session.id(),
@@ -4907,7 +5139,9 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
             )
             .with_agent_id(interactive_agent.id()),
         )
-        .expect("interactive provider run should launch");
+        .expect("interactive provider run should launch")
+        .id()
+        .to_string()
     });
     match harness
         .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
@@ -4925,6 +5159,20 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         },
         _ => panic!("unexpected local response"),
     }
+    harness.with_app_mut(|app| {
+        let claim = app
+            .workspace_coordinator()
+            .acquire_worktree_write_claim(
+                "workspace-1".to_string(),
+                "worktree-shared".to_string(),
+                interactive_session.id().to_string(),
+                Some("interactive-test-claim".to_string()),
+                "interactive_prompt_test",
+            )
+            .expect("interactive test claim should acquire");
+        app.prompt_workspace_claim_store()
+            .insert(interactive_provider_run_id.clone(), claim);
+    });
 
     let workflow_session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(

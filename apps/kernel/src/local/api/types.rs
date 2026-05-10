@@ -3,7 +3,7 @@ use super::*;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 14;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -244,6 +244,28 @@ pub struct CreateWorkspaceWorktreeRequest {
     pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteWorkspaceWorktreeRequest {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    #[serde(default, skip_serializing_if = "crate::session::is_false")]
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkspacePullRequestRequest {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "crate::session::is_false")]
+    pub draft: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1663,6 +1685,191 @@ pub struct ClearQueuedWorkflowLaunchesRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplyWorkflowDesignOpRequest {
+    pub session_id: String,
+    pub origin_client_id: String,
+    pub op_id: String,
+    pub op: WorkflowDesignOp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignWorkflow {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flush_agent_context_before_run: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intermediate_output_schema_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignWorkflowPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flush_agent_context_before_run: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_output_schema_ref: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intermediate_output_schema_ref: Option<Option<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignNode {
+    pub id: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_complete_workflow_run: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_emit_intermediate_run_output: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intermediate_output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignNodePatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_complete_workflow_run: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_emit_intermediate_run_output: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intermediate_output_schema_ref: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<Option<u32>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignEdge {
+    pub id: String,
+    pub from_node_id: String,
+    pub to_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_policy: Option<crate::session::WorkflowOutputValidationPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignEdgePatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema_ref: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_policy: Option<Option<crate::session::WorkflowOutputValidationPolicy>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignEndpoint {
+    pub id: String,
+    pub entry_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignEndpointPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_node_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkflowDesignOp {
+    WorkflowCreate {
+        workflow: WorkflowDesignWorkflow,
+    },
+    WorkflowUpdate {
+        workflow_id: String,
+        patch: WorkflowDesignWorkflowPatch,
+    },
+    WorkflowRemove {
+        workflow_id: String,
+    },
+    NodeAdd {
+        workflow_id: String,
+        node: WorkflowDesignNode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        position: Option<WorkflowDesignPoint>,
+    },
+    NodeUpdate {
+        workflow_id: String,
+        node_id: String,
+        patch: WorkflowDesignNodePatch,
+    },
+    NodeMove {
+        workflow_id: String,
+        node_id: String,
+        position: WorkflowDesignPoint,
+    },
+    NodeRemove {
+        workflow_id: String,
+        node_id: String,
+    },
+    EdgeAdd {
+        workflow_id: String,
+        edge: WorkflowDesignEdge,
+    },
+    EdgeUpdate {
+        workflow_id: String,
+        edge_id: String,
+        patch: WorkflowDesignEdgePatch,
+    },
+    EdgeRemove {
+        workflow_id: String,
+        edge_id: String,
+    },
+    EndpointAdd {
+        workflow_id: String,
+        endpoint: WorkflowDesignEndpoint,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        position: Option<WorkflowDesignPoint>,
+    },
+    EndpointUpdate {
+        workflow_id: String,
+        endpoint_id: String,
+        patch: WorkflowDesignEndpointPatch,
+    },
+    EndpointMove {
+        workflow_id: String,
+        endpoint_id: String,
+        position: WorkflowDesignPoint,
+    },
+    EndpointRemove {
+        workflow_id: String,
+        endpoint_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignOpForwarded {
+    pub session_id: String,
+    pub kernel_sequence: u64,
+    pub origin_client_id: String,
+    pub op_id: String,
+    pub op: WorkflowDesignOp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
@@ -1726,6 +1933,8 @@ pub enum LocalDaemonRequest {
     CreateWorkspaceDirectory(CreateWorkspaceDirectoryRequest),
     ListWorkspaceWorktrees(ListWorkspaceWorktreesRequest),
     CreateWorkspaceWorktree(CreateWorkspaceWorktreeRequest),
+    DeleteWorkspaceWorktree(DeleteWorkspaceWorktreeRequest),
+    CreateWorkspacePullRequest(CreateWorkspacePullRequestRequest),
     GetWorkspaceGitOverview(GetWorkspaceGitOverviewRequest),
     ListWorkspaceFiles(ListWorkspaceFilesRequest),
     GetWorkspaceFileContent(GetWorkspaceFileContentRequest),
@@ -1787,6 +1996,7 @@ pub enum LocalDaemonRequest {
     RevokeAgentCapability(RevokeAgentCapabilityRequest),
     ListAgents(ListAgentsRequest),
     CreateWorkflow(CreateWorkflowRequest),
+    ApplyWorkflowDesignOp(ApplyWorkflowDesignOpRequest),
     AliasWorkflow(AliasWorkflowRequest),
     ListWorkflows(ListWorkflowsRequest),
     ResolveWorkflow(ResolveWorkflowRequest),
@@ -2047,6 +2257,14 @@ pub enum LocalDaemonResponse {
         workspace_id: String,
         worktree: WorkspaceWorktreeRecord,
     },
+    WorkspaceWorktreeDeleted {
+        workspace_id: String,
+        worktree_id: String,
+        path: String,
+    },
+    WorkspacePullRequestCreated {
+        pull_request: WorkspacePullRequestRecord,
+    },
     WorkspaceGitOverview {
         overview: WorkspaceGitOverview,
     },
@@ -2281,6 +2499,16 @@ pub enum LocalDaemonResponse {
     WorkflowPublicationSenderAuthenticated {
         sender: WorkflowPublicationTrustedSender,
     },
+    WorkflowDesignOpAccepted {
+        session: RuntimeSession,
+        event: WorkflowDesignOpForwarded,
+    },
+    WorkflowDesignOpRejected {
+        session_id: String,
+        origin_client_id: String,
+        op_id: String,
+        message: String,
+    },
     WorkflowEndpointCreated {
         endpoint: WorkflowEndpointDefinition,
         workflow: WorkflowDefinition,
@@ -2445,6 +2673,19 @@ pub struct WorkspaceWorktreeRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub current: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspacePullRequestRecord {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    pub branch: String,
+    pub base_ref: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub draft: bool,
+    pub generated_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

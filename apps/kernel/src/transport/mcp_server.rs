@@ -470,9 +470,7 @@ mod tests {
         assert!(tools
             .iter()
             .any(|tool| tool["name"] == "arroba.edit_artifact"));
-        assert!(tools
-            .iter()
-            .any(|tool| tool["name"] == "arroba.apply_patch"));
+        assert!(tools.iter().any(|tool| tool["name"] == "patch_artifact"));
         assert!(tools
             .iter()
             .any(|tool| tool["name"] == "arroba.delete_artifact"));

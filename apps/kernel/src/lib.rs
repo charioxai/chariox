@@ -416,6 +416,8 @@ mod tests {
     fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
         let mut config = DaemonConfig::for_tests();
         config.accept_remote_leases = true;
+        config.user_config.providers.managed_io =
+            crate::config::ManagedIoConfig::from_mode(crate::config::ManagedIoMode::Required);
         let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
         let lease = RemoteLeaseRuntime::new(&mut app)
             .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
