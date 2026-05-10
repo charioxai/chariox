@@ -415,6 +415,7 @@ impl KernelRuntimeState {
         started: &crate::app::StartedProviderLaunch,
         error: &DaemonError,
     ) {
+        let mut durable_agent_update = None;
         {
             let owned = &self.owned;
             crate::logging::error_with_fields(
@@ -449,6 +450,10 @@ impl KernelRuntimeState {
                 .record_terminal_diagnostic(started.run.id(), diagnostic.clone())
             {
                 owned.provider_run_projection.update(run);
+            }
+            if let Some(agent) = clear_failed_codex_resume_state_for_runtime(owned, started, error)
+            {
+                durable_agent_update = Some(agent);
             }
             let leased_context = self
                 .with_app_side_effect(|app| {
@@ -527,6 +532,23 @@ impl KernelRuntimeState {
                 );
             }
             let _ = owned.session_snapshot(started.run.session_id());
+        }
+        if let Some(agent) = durable_agent_update.as_ref() {
+            if let Err(error) = self
+                .append_agent_durable_event("agent.runtime_profile_updated", agent, None)
+                .await
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.provider",
+                    "failed to persist cleared Codex resume state",
+                    serde_json::json!({
+                        "session_id": started.run.session_id(),
+                        "agent_id": agent.id(),
+                        "provider_run_id": started.run.id(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
         if let (Some(agent_id), Some(reason)) = (
             started.run.agent_instance_id(),
@@ -1349,6 +1371,42 @@ impl KernelRuntimeState {
         let session = owned.session_snapshot(session_id).ok();
         Ok((records, session))
     }
+}
+
+fn clear_failed_codex_resume_state_for_runtime(
+    owned: &KernelRuntimeOwnedState,
+    started: &crate::app::StartedProviderLaunch,
+    error: &DaemonError,
+) -> Option<crate::agent::AgentInstance> {
+    let replacement_resume_state =
+        crate::app::failed_codex_resume_state_replacement(&started.run, error)?;
+    let agent_id = started.run.agent_instance_id()?;
+    let stale_thread_id = started.run.resume_state().codex_thread_id()?.to_string();
+    let current = owned.agent_store.get_agent(agent_id).ok()?;
+    if current.provider_resume_state().codex_thread_id() != Some(stale_thread_id.as_str()) {
+        return None;
+    }
+    let agent = owned
+        .agent_store
+        .set_agent_runtime_profile(
+            agent_id,
+            started.run.provider(),
+            Some(started.run.model().to_string()),
+            started.run.variant().map(str::to_string),
+            replacement_resume_state,
+        )
+        .ok()?;
+    owned.record_notice(
+        started.run.session_id(),
+        Some(started.run.id()),
+        owned
+            .attachment_store
+            .list_session_attachment_ids(started.run.session_id()),
+        format!(
+            "Codex resume thread `{stale_thread_id}` is no longer available. Arroba cleared it from the agent profile so the next prompt can start a new durable Codex thread."
+        ),
+    );
+    Some(agent)
 }
 
 #[cfg(test)]

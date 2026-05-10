@@ -301,6 +301,24 @@ impl CodexClient {
         execution_mode: AgentExecutionMode,
         permission_level: AgentPermissionLevel,
     ) -> Result<CodexThreadStartResponse, DaemonError> {
+        let params = self.thread_start_params(
+            cwd,
+            model,
+            write_access_mode,
+            execution_mode,
+            permission_level,
+        )?;
+        self.send_request(socket, next_request_id, "thread/start", params)
+    }
+
+    fn thread_start_params(
+        &self,
+        cwd: Option<&str>,
+        model: Option<&str>,
+        write_access_mode: ProviderWriteAccessMode,
+        execution_mode: AgentExecutionMode,
+        permission_level: AgentPermissionLevel,
+    ) -> Result<Value, DaemonError> {
         let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
         crate::logging::info_with_fields(
             "daemon.provider.codex",
@@ -322,7 +340,7 @@ impl CodexClient {
             "sandbox": policy.sandbox,
             "sandboxPolicy": policy.sandbox_policy,
             "personality": "pragmatic",
-            "ephemeral": true,
+            "persistExtendedHistory": true,
             "serviceName": "arroba",
         });
         let config_overrides = self.thread_config_overrides(&policy)?;
@@ -336,7 +354,7 @@ impl CodexClient {
         if let Some(model) = model {
             params["model"] = json!(model);
         }
-        self.send_request(socket, next_request_id, "thread/start", params)
+        Ok(params)
     }
 
     pub fn thread_resume(
@@ -372,6 +390,7 @@ impl CodexClient {
             "sandbox": policy.sandbox,
             "sandboxPolicy": policy.sandbox_policy,
             "personality": "pragmatic",
+            "persistExtendedHistory": true,
         });
         let config_overrides = self.thread_config_overrides(&policy)?;
         if !config_overrides.is_empty() {
@@ -2055,6 +2074,28 @@ mod tests {
                 }
             }))
         );
+    }
+
+    #[test]
+    fn codex_thread_start_creates_durable_threads() {
+        let client =
+            CodexClient::new("run-1", "ws://127.0.0.1:43123").expect("client should construct");
+
+        let params = client
+            .thread_start_params(
+                Some("/tmp/worktree"),
+                Some("gpt-5.5"),
+                ProviderWriteAccessMode::Unrestricted,
+                AgentExecutionMode::Build,
+                AgentPermissionLevel::Yolo,
+            )
+            .expect("params should build");
+
+        assert_eq!(params.get("ephemeral"), None);
+        assert_eq!(params.get("persistExtendedHistory"), Some(&json!(true)));
+        assert_eq!(params.get("serviceName"), Some(&json!("arroba")));
+        assert_eq!(params.get("cwd"), Some(&json!("/tmp/worktree")));
+        assert_eq!(params.get("model"), Some(&json!("gpt-5.5")));
     }
 
     #[test]

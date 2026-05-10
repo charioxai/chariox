@@ -62,9 +62,9 @@ pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_runtime::{
-    generate_runtime_mcp_auth_token, sanitize_resume_state_for_launch,
-    ProviderLaunchProcessRuntime, ProviderRunExitSessionSummary, ProviderRunReadService,
-    StartedProviderLaunch,
+    failed_codex_resume_state_replacement, generate_runtime_mcp_auth_token,
+    sanitize_resume_state_for_launch, ProviderLaunchProcessRuntime, ProviderRunExitSessionSummary,
+    ProviderRunReadService, StartedProviderLaunch,
 };
 pub(crate) use remote_lease::RemoteLeaseRuntime;
 

@@ -920,6 +920,17 @@ impl DaemonApp {
         {
             self.update_provider_run_projection(run);
         }
+        if let Some(agent) = self.clear_failed_codex_resume_state(started, error) {
+            let _ = self.durable_state_store().append_event(
+                "agent.runtime_profile_updated",
+                Some(agent.id().to_string()),
+                serde_json::json!({
+                    "agent": &agent,
+                    "provider_run_id": started.run.id(),
+                    "reason": "failed_codex_resume_state_cleared",
+                }),
+            );
+        }
         if let Some(agent_id) = started.run.agent_instance_id() {
             if let Ok(Some(active_prompt)) =
                 self.prompt_owner_active_prompt_for_agent(started.run.session_id(), agent_id)
@@ -963,6 +974,40 @@ impl DaemonApp {
         }
         let _ = crate::app::KernelSessionReadService::new(self)
             .session_snapshot(started.run.session_id());
+    }
+
+    fn clear_failed_codex_resume_state(
+        &mut self,
+        started: &StartedProviderLaunch,
+        error: &DaemonError,
+    ) -> Option<AgentInstance> {
+        let replacement_resume_state = failed_codex_resume_state_replacement(&started.run, error)?;
+        let agent_id = started.run.agent_instance_id()?;
+        let stale_thread_id = started.run.resume_state().codex_thread_id()?.to_string();
+        let current = self.agents.get_agent(agent_id).ok()?;
+        if current.provider_resume_state().codex_thread_id() != Some(stale_thread_id.as_str()) {
+            return None;
+        }
+        let agent = self
+            .agents
+            .set_agent_runtime_profile(
+                agent_id,
+                started.run.provider(),
+                Some(started.run.model().to_string()),
+                started.run.variant().map(str::to_string),
+                replacement_resume_state,
+            )
+            .ok()?;
+        self.record_notice(
+            started.run.session_id(),
+            Some(started.run.id()),
+            self.attachments
+                .list_session_attachment_ids(started.run.session_id()),
+            format!(
+                "Codex resume thread `{stale_thread_id}` is no longer available. Arroba cleared it from the agent profile so the next prompt can start a new durable Codex thread."
+            ),
+        );
+        Some(agent)
     }
 
     fn finish_provider_launch_success(
@@ -1412,6 +1457,22 @@ pub(crate) fn sanitize_resume_state_for_launch(
     }
 }
 
+pub(crate) fn failed_codex_resume_state_replacement(
+    run: &RuntimeProviderRun,
+    error: &DaemonError,
+) -> Option<ProviderResumeState> {
+    if run.adapter_key() != "codex" || run.resume_state().codex_thread_id().is_none() {
+        return None;
+    }
+    let DaemonError::ProviderProtocol { operation, .. } = error else {
+        return None;
+    };
+    if *operation != "codex_thread_resume" {
+        return None;
+    }
+    Some(run.resume_state().without_codex_thread_id())
+}
+
 fn normalize_resume_model_for_adapter(adapter_key: &str, model: &str) -> String {
     let trimmed = model.trim();
     if adapter_key == "codex" {
@@ -1563,6 +1624,42 @@ mod tests {
         let sanitized = sanitize_resume_state_for_launch(&request, &agent);
         assert_eq!(sanitized.opencode_session_id(), Some("open-session-1"));
         assert_eq!(sanitized.codex_thread_id(), None);
+    }
+
+    #[test]
+    fn codex_resume_failure_replacement_clears_only_codex_thread() {
+        let mut resume_state = ProviderResumeState::from_codex_thread_id("thread-1");
+        resume_state.set_opencode_session_id("open-session-1");
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "gpt-5.5")
+                .with_agent_id("agent-1")
+                .with_resume_state(resume_state);
+        let run = RuntimeProviderRun::new(
+            "provider-run-1",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "codex".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("ws://127.0.0.1:43123".to_string()),
+            },
+        );
+        let error = DaemonError::ProviderProtocol {
+            provider_run_id: run.id().to_string(),
+            operation: "codex_thread_resume",
+            message: "Codex could not resume thread `thread-1`: no rollout found".to_string(),
+        };
+
+        let replacement = failed_codex_resume_state_replacement(&run, &error)
+            .expect("failed Codex resume should clear the stale thread id");
+
+        assert_eq!(replacement.codex_thread_id(), None);
+        assert_eq!(replacement.opencode_session_id(), Some("open-session-1"));
     }
 
     #[test]

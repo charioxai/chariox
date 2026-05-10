@@ -26,6 +26,13 @@ const CODEX_AUTH_ENV_VARS: &[&str] = &[
     "OPENAI_ORGANIZATION",
     "OPENAI_PROJECT",
 ];
+const CODEX_SESSION_ENV_VARS: &[&str] = &[
+    "CODEX_THREAD_ID",
+    "CODEX_TURN_METADATA_HEADER",
+    "CODEX_TURN_STATE_HEADER",
+    "CODEX_STARTING_DIFF",
+    "CODEX_ESCALATE_SOCKET",
+];
 
 pub fn resolve_codex_executable() -> Result<PathBuf, DaemonError> {
     let _guard = crate::env_lock::lock();
@@ -82,12 +89,22 @@ fn plan_codex_launch_unlocked(
             args
         },
         pty_env: env,
-        pty_env_remove: request
-            .map(|request| request.provider_env_remove.clone())
-            .unwrap_or_default(),
+        pty_env_remove: codex_provider_env_remove(request),
         working_directory,
         structured_endpoint: Some(endpoint),
     })
+}
+
+fn codex_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<String> {
+    let mut names = request
+        .map(|request| request.provider_env_remove.clone())
+        .unwrap_or_default();
+    for name in CODEX_SESSION_ENV_VARS {
+        if !names.iter().any(|existing| existing == name) {
+            names.push((*name).to_string());
+        }
+    }
+    names
 }
 
 pub fn codex_catalog_endpoint() -> Result<String, DaemonError> {
@@ -544,6 +561,44 @@ mod tests {
             launch.structured_endpoint.as_deref(),
             Some("ws://127.0.0.1:43142")
         );
+    }
+
+    #[test]
+    fn plans_codex_launch_scrubs_inherited_session_env() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-codex-resolve-test-{}-env-remove",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_CODEX_BIN", &path);
+        std::env::set_var("ARROBA_CODEX_PORT", "43142");
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
+                .with_provider_env_remove(vec!["OPENAI_API_KEY".to_string()]);
+
+        let launch = plan_codex_launch(Some(&request)).expect("launch plan should resolve");
+
+        std::env::remove_var("ARROBA_CODEX_BIN");
+        std::env::remove_var("ARROBA_CODEX_PORT");
+        let _ = fs::remove_file(&path);
+
+        assert!(launch
+            .pty_env_remove
+            .iter()
+            .any(|name| name == "OPENAI_API_KEY"));
+        assert!(launch
+            .pty_env_remove
+            .iter()
+            .any(|name| name == "CODEX_THREAD_ID"));
+        assert!(launch
+            .pty_env_remove
+            .iter()
+            .any(|name| name == "CODEX_TURN_METADATA_HEADER"));
+        assert!(launch
+            .pty_env_remove
+            .iter()
+            .any(|name| name == "CODEX_TURN_STATE_HEADER"));
     }
 
     #[test]
