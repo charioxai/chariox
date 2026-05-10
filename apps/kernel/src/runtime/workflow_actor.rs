@@ -352,7 +352,6 @@ mod tests {
             app_locked.prompt_state_owner(),
             app_locked.active_turn_store(),
             app_locked.prompt_activity_store(),
-            app_locked.prompt_idle_timeout(),
             app_locked.prompt_workspace_claim_store(),
             app_locked.structured_output_record_store(),
             app_locked.terminal_stream_store(),

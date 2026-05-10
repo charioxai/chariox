@@ -253,13 +253,8 @@ impl<'a> ProviderOutputPump<'a> {
             )?;
             return Ok(records);
         }
-        let exited = self
-            .context
+        self.context
             .reconcile_provider_run_exit(request.session_id, request.provider_run_id)?;
-        if !exited {
-            self.context
-                .maybe_complete_active_prompt(request.session_id, request.provider_run_id)?;
-        }
 
         Ok(records)
     }
@@ -839,17 +834,6 @@ impl<'a> ProviderOutputPumpContext<'a> {
         }
     }
 
-    fn maybe_complete_active_prompt(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-    ) -> Result<(), DaemonError> {
-        if !self.prompt_should_settle(provider_run_id) {
-            return Ok(());
-        }
-        self.settle_prompt_by_status(session_id, provider_run_id)
-    }
-
     fn settle_structured_prompt_completion(
         &mut self,
         session_id: &str,
@@ -871,8 +855,6 @@ impl<'a> ProviderOutputPumpContext<'a> {
                     Some(provider_run_id),
                 )?;
                 self.clear_active_turn(provider_run_id);
-            } else {
-                self.maybe_complete_active_prompt(session_id, provider_run_id)?;
             }
         } else if prompt_completed {
             if self.workflow_prompt_is_waiting_for_completion_output(session_id, provider_run_id)? {
@@ -1000,22 +982,6 @@ impl<'a> ProviderOutputPumpContext<'a> {
             .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
         self.clear_active_turn(provider_run_id);
         Ok(())
-    }
-
-    fn prompt_should_settle(&self, provider_run_id: &str) -> bool {
-        self.prompt_activity
-            .read()
-            .get(provider_run_id)
-            .map(|state| {
-                (state.saw_response_content || state.completion_recorded)
-                    && state
-                        .last_output_at
-                        .map(|last_output_at| {
-                            last_output_at.elapsed() >= self.app.prompt_idle_timeout
-                        })
-                        .unwrap_or(false)
-            })
-            .unwrap_or(false)
     }
 
     fn active_prompt_for_settlement(

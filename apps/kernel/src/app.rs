@@ -109,7 +109,6 @@ pub struct DaemonApp {
     pub(crate) active_turns: ActiveTurnStore,
     pub(crate) prompt_activity: PromptActivityStore,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
-    pub(crate) prompt_idle_timeout: Duration,
     prompt_state_owner: PromptStateOwner,
     pub(crate) sessions: SessionStateStore,
     history: SessionHistoryStore,
@@ -421,7 +420,6 @@ impl DaemonApp {
             active_turns: ActiveTurnStore::default(),
             prompt_activity: PromptActivityStore::default(),
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
-            prompt_idle_timeout: prompt_idle_timeout(),
             prompt_state_owner: PromptStateOwner::default(),
             sessions: SessionStateStore::new(SessionService::new(&config)),
             history: SessionHistoryStore::new_with_read_delay(
@@ -853,10 +851,6 @@ impl DaemonApp {
 
     pub(crate) fn active_turn_store(&self) -> ActiveTurnStore {
         self.active_turns.clone()
-    }
-
-    pub(crate) fn prompt_idle_timeout(&self) -> Duration {
-        self.prompt_idle_timeout
     }
 
     pub(crate) fn prompt_workspace_claim_store(&self) -> PromptWorkspaceClaimStore {
@@ -1611,15 +1605,6 @@ impl DaemonApp {
         let _ = relay_task.await;
         result
     }
-}
-
-fn prompt_idle_timeout() -> Duration {
-    Duration::from_millis(
-        std::env::var("ARROBA_PROMPT_IDLE_MS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(750),
-    )
 }
 
 #[cfg(test)]

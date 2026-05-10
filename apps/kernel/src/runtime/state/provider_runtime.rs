@@ -598,6 +598,23 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
         let Some(active_prompt) = active_prompt else {
+            if !force && !prompt_completed {
+                crate::logging::debug_with_fields(
+                    "daemon.provider",
+                    "settle provider prompt skipped without completion signal",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "provider_run_id": provider_run_id,
+                        "agent_id": agent_id,
+                        "prompt_completed": prompt_completed,
+                        "force": force,
+                    }),
+                );
+                return Ok(crate::app::ProviderRunExitSessionSummary {
+                    had_active_prompt: false,
+                    started_next_prompt: false,
+                });
+            }
             crate::logging::debug_with_fields(
                 "daemon.provider",
                 "settle provider prompt found no active prompt",
@@ -620,13 +637,24 @@ impl KernelRuntimeState {
             });
         };
 
+        if !force && !prompt_completed {
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "settle provider prompt skipped until provider completion",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "active_prompt_status": active_prompt.status(),
+                }),
+            );
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: true,
+                started_next_prompt: false,
+            });
+        }
+
         if active_prompt.status() == crate::session::PromptStatus::Cancelling {
-            if !force && !prompt_completed && !owned.prompt_should_settle(provider_run_id) {
-                return Ok(crate::app::ProviderRunExitSessionSummary {
-                    had_active_prompt: true,
-                    started_next_prompt: false,
-                });
-            }
             let cancellation = owned.finalize_local_prompt_cancellation_with_queued_advance(
                 session_id,
                 &agent_id,
@@ -683,24 +711,6 @@ impl KernelRuntimeState {
             });
         }
 
-        if !force && !prompt_completed && !owned.prompt_should_settle(provider_run_id) {
-            crate::logging::debug_with_fields(
-                "daemon.provider",
-                "settle provider prompt skipped",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "provider_run_id": provider_run_id,
-                    "agent_id": agent_id,
-                    "prompt_completed": prompt_completed,
-                    "force": force,
-                    "active_prompt_status": active_prompt.status(),
-                }),
-            );
-            return Ok(crate::app::ProviderRunExitSessionSummary {
-                had_active_prompt: true,
-                started_next_prompt: false,
-            });
-        }
         if !force {
             if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                 active_prompt.workflow_run_id(),
@@ -712,33 +722,8 @@ impl KernelRuntimeState {
                     workflow_node_run_id,
                     provider_run_id,
                 ) {
-                    if !prompt_completed
-                        && !owned.prompt_workflow_missing_output_grace_elapsed(provider_run_id)
-                    {
-                        owned.note_prompt_settlement_requested(provider_run_id);
-                        let _ = owned.session_snapshot(session_id);
-                        crate::logging::debug_with_fields(
-                            "daemon.provider",
-                            "workflow prompt missing output grace started",
-                            serde_json::json!({
-                                "session_id": session_id,
-                                "provider_run_id": provider_run_id,
-                                "agent_id": agent_id,
-                                "prompt_id": active_prompt.id(),
-                                "workflow_run_id": workflow_run_id,
-                                "workflow_node_run_id": workflow_node_run_id,
-                            }),
-                        );
-                        return Ok(crate::app::ProviderRunExitSessionSummary {
-                            had_active_prompt: true,
-                            started_next_prompt: false,
-                        });
-                    }
-                    let message = if prompt_completed {
-                        "provider completed workflow turn without a validated workflow output"
-                    } else {
-                        "provider workflow turn settled without a validated workflow output"
-                    };
+                    let message =
+                        "provider completed workflow turn without a validated workflow output";
                     owned.workflow_fail_provider_prompt(
                         session_id,
                         &active_prompt,
@@ -1434,7 +1419,6 @@ mod tests {
             app_locked.prompt_state_owner(),
             app_locked.active_turn_store(),
             app_locked.prompt_activity_store(),
-            app_locked.prompt_idle_timeout(),
             app_locked.prompt_workspace_claim_store(),
             app_locked.structured_output_record_store(),
             app_locked.terminal_stream_store(),
@@ -1599,5 +1583,82 @@ mod tests {
             .expect("session should exist")
             .active_prompt_for_agent(agent.id())
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn provider_quiet_gap_does_not_settle_without_completion_signal() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-quiet-gap",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider run should launch");
+        app.update_provider_run_projection(run.clone());
+        app.submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "long quiet turn\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+
+        if let Some(state) = app.prompt_activity.write().get_mut(run.id()) {
+            state.saw_response_content = true;
+            state.last_output_at =
+                Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
+        } else {
+            panic!("prompt activity should exist for the active run");
+        }
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let settlement = runtime
+            .settle_owned_provider_prompt(session.id(), run.id(), false, false)
+            .await
+            .expect("quiet provider poll should be accepted");
+        assert!(settlement.had_active_prompt);
+        assert!(!settlement.started_next_prompt);
+
+        let session_state = runtime
+            .owned
+            .session_snapshot(session.id())
+            .expect("session snapshot should exist");
+        assert!(session_state.active_prompt_for_agent(agent.id()).is_some());
+        let activity = runtime.agent_activity_for_session(&session_state);
+        let agent_activity = activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+        assert_eq!(
+            agent_activity.status,
+            crate::runtime::projection::AgentRuntimeStatus::Working
+        );
+        assert_eq!(
+            agent_activity.prompt_status,
+            crate::runtime::projection::AgentPromptRuntimeStatus::Running
+        );
+        assert!(agent_activity.busy);
+        assert!(agent_activity.active_turn.is_some());
     }
 }

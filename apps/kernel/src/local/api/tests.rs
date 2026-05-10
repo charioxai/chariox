@@ -3944,62 +3944,6 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
 }
 
 #[test]
-fn prompt_idle_fallback_completes_after_recorded_completion_without_response_text() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
-        .expect("session should be created");
-    let attachment = crate::app::KernelSessionService::new(&mut app)
-        .attach(crate::attachment::AttachRequest::new(
-            session.id(),
-            "client-completion-fallback",
-            ClientCapabilityLevel::FullTerminal,
-        ))
-        .expect("attachment should attach");
-    let run = app
-        .launch_provider(
-            crate::provider::LaunchProviderRequest::new(
-                session.id(),
-                "dev-stub",
-                "claude-code",
-                "default",
-                "sonnet",
-            )
-            .with_agent_id(default_agent.id()),
-        )
-        .expect("provider run should launch");
-    let _started = app
-        .submit_prompt(
-            session.id(),
-            attachment.id(),
-            Some(default_agent.id()),
-            "tool only\n",
-            Vec::new(),
-        )
-        .expect("prompt should start");
-
-    crate::transport::flow_control::mark_prompt_completion_recorded(&mut app, run.id());
-    if let Some(state) = app.prompt_activity.write().get_mut(run.id()) {
-        state.last_output_at =
-            Some(Instant::now() - app.prompt_idle_timeout - Duration::from_millis(1));
-    } else {
-        panic!("prompt activity should exist for the active run");
-    }
-
-    crate::transport::flow_control::maybe_complete_active_prompt(&mut app, session.id(), run.id())
-        .expect("idle fallback should settle the active prompt");
-
-    let session_state = app
-        .sessions()
-        .get_session(session.id())
-        .expect("session should still exist");
-    assert!(session_state
-        .active_prompt_for_agent(default_agent.id())
-        .is_none());
-}
-
-#[test]
 fn local_request_api_rejects_invalid_provider_adapter() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness

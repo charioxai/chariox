@@ -1122,41 +1122,6 @@ impl KernelRuntimeOwnedState {
             });
     }
 
-    pub(super) fn prompt_should_settle(&self, provider_run_id: &str) -> bool {
-        self.prompt_activity
-            .read()
-            .get(provider_run_id)
-            .map(|state| {
-                (state.saw_response_content || state.completion_recorded)
-                    && state
-                        .last_output_at
-                        .map(|last_output_at| last_output_at.elapsed() >= self.prompt_idle_timeout)
-                        .unwrap_or(false)
-            })
-            .unwrap_or(false)
-    }
-
-    pub(super) fn prompt_workflow_missing_output_grace_elapsed(
-        &self,
-        provider_run_id: &str,
-    ) -> bool {
-        let grace = self
-            .prompt_idle_timeout
-            .saturating_mul(4)
-            .max(Duration::from_secs(3));
-        self.prompt_activity
-            .read()
-            .get(provider_run_id)
-            .map(|state| {
-                state.settlement_requested
-                    && state
-                        .last_output_at
-                        .map(|last_output_at| last_output_at.elapsed() >= grace)
-                        .unwrap_or(false)
-            })
-            .unwrap_or(false)
-    }
-
     pub(super) fn acquire_workflow_node_workspace_claim(
         &self,
         session_id: &str,
