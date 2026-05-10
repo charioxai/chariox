@@ -776,38 +776,7 @@ impl DaemonApp {
         &mut self,
         mut request: LaunchProviderRequest,
     ) -> Result<StartedProviderLaunch, DaemonError> {
-        if request.agent_id.is_none() {
-            request.agent_id = self
-                .sessions
-                .get_session(&request.session_id)?
-                .focused_agent_id()
-                .map(str::to_string);
-        }
-        if request.resume_state.is_none() {
-            if let Some(agent_id) = request.agent_id.as_deref() {
-                if let Ok(agent) = self.agents.get_agent(agent_id) {
-                    let resume_state = sanitize_resume_state_for_launch(&request, &agent);
-                    if !resume_state.is_empty() {
-                        request = request.with_resume_state(resume_state);
-                    }
-                }
-            }
-        }
-        if let Some(agent_id) = request.agent_id.as_deref() {
-            if self
-                .agents
-                .get_agent(agent_id)
-                .ok()
-                .is_some_and(|agent| agent.remote_execution().is_some())
-            {
-                return Err(DaemonError::LocalTransport {
-                    operation: "launch provider run",
-                    message: format!(
-                        "agent `{agent_id}` is remote-backed and must launch its provider on the worker kernel"
-                    ),
-                });
-            }
-        }
+        request = self.prepare_app_provider_launch_request(request, "launch provider run")?;
         crate::logging::info_with_fields(
             "daemon.app",
             "launching provider run",
@@ -818,40 +787,6 @@ impl DaemonApp {
                 "session_id": request.session_id.clone(),
             }),
         );
-        if request.working_directory.is_none() {
-            let agent_worktree = request.agent_id.as_deref().and_then(|agent_id| {
-                self.agents
-                    .get_agent(agent_id)
-                    .ok()
-                    .and_then(|agent| agent.worktree_id().map(PathBuf::from))
-            });
-            request.working_directory = Some(agent_worktree.unwrap_or_else(|| {
-                PathBuf::from(
-                    self.sessions
-                        .get_session(&request.session_id)
-                        .map(|session| session.worktree_id().to_string())
-                        .unwrap_or_default(),
-                )
-            }));
-        }
-        if request.runtime_mcp_binding.is_none() {
-            let shared_auth_token = request
-                .agent_id
-                .is_none()
-                .then(|| {
-                    self.providers
-                        .get_session_run_for_provider(&request.session_id, &request.provider)
-                        .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string))
-                })
-                .flatten();
-            request = request.with_runtime_mcp_binding(RuntimeMcpBinding::new(
-                self.config.runtime_mcp_url(),
-                shared_auth_token.unwrap_or_else(generate_runtime_mcp_auth_token),
-            ));
-        }
-        if request.provider_env_remove.is_empty() {
-            request = request.with_provider_env_remove(default_provider_env_remove(&self.config));
-        }
         let request_session_id = request.session_id.clone();
         let recipients = self
             .attachments
@@ -1101,76 +1036,27 @@ impl DaemonApp {
         &mut self,
         mut request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        if request.agent_id.is_none() {
-            request.agent_id = self
-                .sessions
-                .get_session(&request.session_id)?
-                .focused_agent_id()
-                .map(str::to_string);
-        }
-        if request.resume_state.is_none() {
-            if let Some(agent_id) = request.agent_id.as_deref() {
-                if let Ok(agent) = self.agents.get_agent(agent_id) {
-                    let resume_state = sanitize_resume_state_for_launch(&request, &agent);
-                    if !resume_state.is_empty() {
-                        request = request.with_resume_state(resume_state);
-                    }
-                }
-            }
-        }
-        if request.working_directory.is_none() {
-            let agent_worktree = request.agent_id.as_deref().and_then(|agent_id| {
-                self.agents
-                    .get_agent(agent_id)
-                    .ok()
-                    .and_then(|agent| agent.worktree_id().map(PathBuf::from))
-            });
-            request.working_directory = Some(agent_worktree.unwrap_or_else(|| {
-                PathBuf::from(
-                    self.sessions
-                        .get_session(&request.session_id)
-                        .map(|session| session.worktree_id().to_string())
-                        .unwrap_or_default(),
-                )
-            }));
-        }
-        if request.runtime_mcp_binding.is_none() {
-            let shared_auth_token = request
-                .agent_id
-                .is_none()
-                .then(|| {
-                    self.providers
-                        .get_session_run_for_provider(&request.session_id, &request.provider)
-                        .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string))
-                })
-                .flatten();
-            request = request.with_runtime_mcp_binding(RuntimeMcpBinding::new(
-                self.config.runtime_mcp_url(),
-                shared_auth_token.unwrap_or_else(generate_runtime_mcp_auth_token),
-            ));
-        }
-        if request.provider_env_remove.is_empty() {
-            request = request.with_provider_env_remove(default_provider_env_remove(&self.config));
-        }
+        request = self.prepare_app_provider_launch_request(request, "launch provider run")?;
         let run = self.providers.launch_run_detached(request)?;
         if run.endpoint_mode() == AgentEndpointMode::Managed {
             if let Err(error) = self.pty.spawn_for_run(&run) {
-                if let Ok(outcome) = self
-                    .providers
-                    .terminate_run_provider_only(run.session_id(), run.id())
-                {
-                    ProviderRunLivenessState::clear_active_provider_run_session_pointer(
-                        self,
-                        run.session_id(),
-                        outcome.run().id(),
-                    )?;
-                    self.update_provider_run_projection(outcome.into_run());
-                }
+                let started = StartedProviderLaunch {
+                    run: run.clone(),
+                    previous_active_run_id: None,
+                };
+                self.fail_provider_launch(&started, &error);
                 return Err(error);
             }
             ProviderProcessTracker::new(self).register_managed_run(&run)?;
         }
-        self.providers.initialize_runtime(&run)?;
+        if let Err(error) = self.providers.initialize_runtime(&run) {
+            let started = StartedProviderLaunch {
+                run: run.clone(),
+                previous_active_run_id: None,
+            };
+            self.fail_provider_launch(&started, &error);
+            return Err(error);
+        }
         let run = self.providers.get_run(run.id())?;
         let _ = self.providers.record_run_activity(run.id());
         if let Some(agent_id) = run.agent_instance_id() {
@@ -1192,6 +1078,69 @@ impl DaemonApp {
         }
         self.update_provider_run_projection(run.clone());
         Ok(run)
+    }
+
+    fn prepare_app_provider_launch_request(
+        &self,
+        mut request: LaunchProviderRequest,
+        operation: &'static str,
+    ) -> Result<LaunchProviderRequest, DaemonError> {
+        let session = self.sessions.get_session(&request.session_id)?;
+        if request.agent_id.is_none() {
+            request.agent_id = session.focused_agent_id().map(str::to_string);
+        }
+        let agent = request
+            .agent_id
+            .as_deref()
+            .and_then(|agent_id| self.agents.get_agent(agent_id).ok());
+        if let Some(agent) = agent.as_ref() {
+            if agent.remote_execution().is_some() {
+                return Err(DaemonError::LocalTransport {
+                    operation,
+                    message: format!(
+                        "agent `{}` is remote-backed and must launch its provider on the worker kernel",
+                        agent.id()
+                    ),
+                });
+            }
+            request = request.with_owner_user_id(agent.owner_user_id().to_string());
+        } else {
+            request = request.with_owner_user_id(session.owner_user_id().to_string());
+        }
+        if request.resume_state.is_none() {
+            if let Some(agent) = agent.as_ref() {
+                let resume_state = sanitize_resume_state_for_launch(&request, agent);
+                if !resume_state.is_empty() {
+                    request = request.with_resume_state(resume_state);
+                }
+            }
+        }
+        if request.working_directory.is_none() {
+            let working_directory = agent
+                .as_ref()
+                .and_then(|agent| agent.worktree_id().map(PathBuf::from))
+                .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
+            request = request.with_working_directory(working_directory);
+        }
+        if request.runtime_mcp_binding.is_none() {
+            let shared_auth_token = request
+                .agent_id
+                .is_none()
+                .then(|| {
+                    self.providers
+                        .get_session_run_for_provider(&request.session_id, &request.provider)
+                        .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string))
+                })
+                .flatten();
+            request = request.with_runtime_mcp_binding(RuntimeMcpBinding::new(
+                self.config.runtime_mcp_url(),
+                shared_auth_token.unwrap_or_else(generate_runtime_mcp_auth_token),
+            ));
+        }
+        if request.provider_env_remove.is_empty() {
+            request = request.with_provider_env_remove(default_provider_env_remove(&self.config));
+        }
+        Ok(request)
     }
 
     pub fn list_provider_processes(
@@ -1445,8 +1394,13 @@ pub(crate) fn sanitize_resume_state_for_launch(
         .as_deref()
         .filter(|value| !value.trim().is_empty());
     let agent_variant = agent.effort().filter(|value| !value.trim().is_empty());
-    let model_or_variant_changed =
-        agent.model() != Some(request.model.as_str()) || agent_variant != requested_variant;
+    let requested_model =
+        normalize_resume_model_for_adapter(&request.adapter_key, request.model.as_str());
+    let agent_model = agent
+        .model()
+        .map(|model| normalize_resume_model_for_adapter(&request.adapter_key, model));
+    let model_or_variant_changed = agent_model.as_deref() != Some(requested_model.as_str())
+        || agent_variant != requested_variant;
     if !model_or_variant_changed {
         return resume_state;
     }
@@ -1455,6 +1409,18 @@ pub(crate) fn sanitize_resume_state_for_launch(
         "opencode" => resume_state.without_opencode_session_id(),
         "codex" => resume_state.without_codex_thread_id(),
         _ => resume_state,
+    }
+}
+
+fn normalize_resume_model_for_adapter(adapter_key: &str, model: &str) -> String {
+    let trimmed = model.trim();
+    if adapter_key == "codex" {
+        trimmed
+            .strip_prefix("codex/")
+            .unwrap_or(trimmed)
+            .to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -1483,8 +1449,8 @@ mod tests {
         DaemonConfig, UserCredentialConfig, UserCredentialInjectionConfig,
         UserCredentialSourceConfig, UserCredentialUse,
     };
-    use crate::provider::{LaunchProviderRequest, ProviderResumeState};
-    use crate::session::CreateSessionRequest;
+    use crate::provider::{LaunchProviderRequest, ProviderResumeState, ProviderRunState};
+    use crate::session::{CreateSessionRequest, SessionAgentDefaults};
 
     use super::*;
 
@@ -1512,6 +1478,31 @@ mod tests {
             "openai/gpt-5.4",
         )
         .with_variant(Some("high".to_string()));
+
+        assert_eq!(
+            sanitize_resume_state_for_launch(&request, &agent),
+            resume_state
+        );
+    }
+
+    #[test]
+    fn sanitize_resume_state_keeps_codex_resume_when_request_model_is_unprefixed() {
+        let mut agent = AgentInstance::new(
+            "agent-1",
+            "agent-1",
+            "session-1",
+            None,
+            "codex",
+            Some("codex/gpt-5.5".to_string()),
+            Some("high".to_string()),
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        let resume_state = ProviderResumeState::from_codex_thread_id("thread-1");
+        agent.set_provider_resume_state(resume_state.clone());
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "gpt-5.5")
+                .with_variant(Some("high".to_string()));
 
         assert_eq!(
             sanitize_resume_state_for_launch(&request, &agent),
@@ -1572,6 +1563,83 @@ mod tests {
         let sanitized = sanitize_resume_state_for_launch(&request, &agent);
         assert_eq!(sanitized.opencode_session_id(), Some("open-session-1"));
         assert_eq!(sanitized.codex_thread_id(), None);
+    }
+
+    #[test]
+    fn prompt_auto_launch_uses_agent_owner_and_resume_state() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(
+                CreateSessionRequest::new("workspace-1", "worktree-1")
+                    .with_owner_user_id("cloud-user")
+                    .with_agent_defaults(
+                        SessionAgentDefaults::new("dev-stub").with_model("sonnet"),
+                    ),
+            )
+            .expect("session create should succeed");
+        let resume_state = ProviderResumeState::from_codex_thread_id("codex-thread-1");
+        app.agents
+            .set_agent_runtime_profile(
+                agent.id(),
+                "dev-stub",
+                Some("sonnet".to_string()),
+                None,
+                resume_state.clone(),
+            )
+            .expect("agent resume state should update");
+
+        let run_id = app
+            .ensure_prompt_provider_run_for_agent(session.id(), agent.id())
+            .expect("prompt auto-launch should create a provider run");
+        let run = app
+            .providers()
+            .get_run(&run_id)
+            .expect("provider run should exist");
+
+        assert_eq!(run.owner_user_id(), "cloud-user");
+        assert_eq!(run.resume_state(), &resume_state);
+    }
+
+    #[test]
+    fn prompt_auto_launch_failure_does_not_leave_running_provider_run() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(
+                CreateSessionRequest::new("workspace-1", "worktree-1").with_agent_defaults(
+                    SessionAgentDefaults::new("dev-stub").with_model("sonnet"),
+                ),
+            )
+            .expect("session create should succeed");
+
+        let result = app.launch_provider_detached(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "runtime-init-fail",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id().to_string()),
+        );
+
+        assert!(result.is_err());
+        let run = app
+            .providers()
+            .get_latest_run_for_agent(session.id(), agent.id())
+            .expect("failed launch should still leave an ended run record");
+        assert_eq!(run.state(), ProviderRunState::Ended);
+        assert!(app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should resolve")
+            .active_provider_run_id()
+            .is_none());
+        assert!(app
+            .list_provider_processes(None)
+            .expect("provider processes should list")
+            .is_empty());
     }
 
     #[test]

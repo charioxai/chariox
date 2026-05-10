@@ -520,6 +520,17 @@ impl DaemonApp {
         Ok(())
     }
 
+    fn refresh_restored_agent_session_projection(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let mut session = self.sessions.get_session(session_id)?;
+        let agents = self.agents.get_session_agents(session_id);
+        session.set_agents(agents);
+        self.update_session_projection(session);
+        Ok(())
+    }
+
     fn reconcile_restored_runtime_state_after_restart(&self) -> Result<(), DaemonError> {
         let sessions = self.sessions.read().store().list();
         for mut session in sessions {
@@ -604,10 +615,12 @@ impl DaemonApp {
             "agent.created" => {
                 let agent: AgentInstance =
                     decode_durable_payload_field(&event, "agent", "durable_state.restore_agent")?;
-                if self.sessions.get_session(agent.session_id()).is_err() {
+                let session_id = agent.session_id().to_string();
+                if self.sessions.get_session(&session_id).is_err() {
                     return Ok(());
                 }
                 self.agents.restore_agent(agent);
+                self.refresh_restored_agent_session_projection(&session_id)?;
             }
             "agent.mcp_granted"
             | "agent.mcp_revoked"
@@ -620,10 +633,12 @@ impl DaemonApp {
                     "agent",
                     "durable_state.restore_agent_update",
                 )?;
-                if self.sessions.get_session(agent.session_id()).is_err() {
+                let session_id = agent.session_id().to_string();
+                if self.sessions.get_session(&session_id).is_err() {
                     return Ok(());
                 }
                 self.agents.restore_agent(agent);
+                self.refresh_restored_agent_session_projection(&session_id)?;
             }
             "session.ended" => {
                 let mut session: RuntimeSession = decode_durable_payload_field(
@@ -1610,6 +1625,7 @@ fn prompt_idle_timeout() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::LaunchProviderRequest;
     use crate::session::CreateSessionRequest;
 
     #[test]
@@ -1670,6 +1686,50 @@ mod tests {
             app.agents().get_session_agents(&session_id).len() == 1,
             "default agent should restore for preserved session"
         );
+
+        let _ = std::fs::remove_file(state_path);
+    }
+
+    #[test]
+    fn durable_restore_republishes_agent_runtime_profile_to_session_projection() {
+        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+            "restart-agent-projection-{}.db",
+            crate::session::unix_epoch_ms()
+        ));
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.state.path = Some(state_path.display().to_string());
+
+        let session_id = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            let (session, agent) = app
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            app.launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider should launch and persist runtime profile");
+            session.id().to_string()
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+        let projected = app
+            .session_projection
+            .get(&session_id)
+            .expect("session projection should restore");
+        let projected_agent = projected
+            .agents()
+            .first()
+            .expect("projected session should include restored agent");
+
+        assert_eq!(projected_agent.provider(), "claude-code");
+        assert_eq!(projected_agent.model(), Some("sonnet"));
 
         let _ = std::fs::remove_file(state_path);
     }

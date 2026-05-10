@@ -735,6 +735,16 @@ impl RuntimeProviderRun {
         self.permission_level
     }
 
+    pub fn set_execution_config(
+        &mut self,
+        execution_mode: AgentExecutionMode,
+        permission_level: AgentPermissionLevel,
+    ) {
+        self.execution_mode = execution_mode;
+        self.permission_level = permission_level;
+        self.touch_activity();
+    }
+
     pub fn requires_managed_io(&self) -> bool {
         self.write_access_mode.requires_managed_io()
     }

@@ -11,6 +11,9 @@ pub trait AgentEndpointAdapter: Send + Sync {
     fn supports_managed_io_write_enforcement(&self) -> bool {
         false
     }
+    fn supports_turn_scoped_execution_config(&self) -> bool {
+        false
+    }
     fn park(&self, run: &RuntimeProviderRun);
     fn resume(&self, run: &RuntimeProviderRun);
     fn terminate(&self, run: &RuntimeProviderRun);
@@ -140,6 +143,10 @@ impl AgentEndpointAdapter for ManagedDevStubAdapter {
     }
 
     fn supports_managed_io_write_enforcement(&self) -> bool {
+        true
+    }
+
+    fn supports_turn_scoped_execution_config(&self) -> bool {
         true
     }
 
@@ -295,6 +302,10 @@ impl AgentEndpointAdapter for CodexAdapter {
     }
 
     fn supports_managed_io_write_enforcement(&self) -> bool {
+        true
+    }
+
+    fn supports_turn_scoped_execution_config(&self) -> bool {
         true
     }
 

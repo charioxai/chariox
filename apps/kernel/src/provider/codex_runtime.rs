@@ -217,33 +217,22 @@ pub fn initialize_codex_runtime(
                     },
                 ),
                 Err(error) => {
-                    crate::logging::warn_with_fields(
+                    crate::logging::error_with_fields(
                         "daemon.provider.codex",
-                        "codex thread resume failed; creating a new thread",
+                        "codex thread resume failed",
                         serde_json::json!({
                             "provider_run_id": run.id(),
                             "thread_id": thread_id,
                             "error": error.to_string(),
                         }),
                     );
-                    socket = client.connect_initialized()?;
-                    next_request_id = 1;
-                    let thread = client.thread_start(
-                        &mut socket,
-                        &mut next_request_id,
-                        cwd.as_deref(),
-                        model.as_deref(),
-                        run.write_access_mode(),
-                        run.execution_mode(),
-                        run.permission_level(),
-                    )?;
-                    (
-                        thread.thread.id,
-                        CodexRunSelection {
-                            model: Some(format!("codex/{}", thread.model)),
-                            variant: thread.reasoning_effort,
-                        },
-                    )
+                    return Err(DaemonError::ProviderProtocol {
+                        provider_run_id: run.id().to_string(),
+                        operation: "codex_thread_resume",
+                        message: format!(
+                            "Codex could not resume thread `{thread_id}`: {error}. Refusing to start a blank replacement thread."
+                        ),
+                    });
                 }
             }
         }

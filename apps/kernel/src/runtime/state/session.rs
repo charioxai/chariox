@@ -493,16 +493,28 @@ impl KernelRuntimeOwnedState {
                     crate::provider::ProviderRunState::Starting
                     | crate::provider::ProviderRunState::Running
                     | crate::provider::ProviderRunState::Parked => {
-                        let outcome = self
+                        if self
                             .provider_store
-                            .terminate_run_provider_only(session_id, run.id())?;
-                        self.clear_active_provider_run_session_pointer(
-                            session_id,
-                            outcome.run().id(),
-                        )?;
-                        let ended = outcome.into_run();
-                        terminated_run_ids.push(ended.id().to_string());
-                        self.provider_run_projection.update(ended);
+                            .adapter_supports_turn_scoped_execution_config(run.adapter_key())
+                        {
+                            let updated = self.provider_store.update_run_execution_config(
+                                run.id(),
+                                next_config.mode,
+                                next_config.permission_level,
+                            )?;
+                            self.provider_run_projection.update(updated);
+                        } else {
+                            let outcome = self
+                                .provider_store
+                                .terminate_run_provider_only(session_id, run.id())?;
+                            self.clear_active_provider_run_session_pointer(
+                                session_id,
+                                outcome.run().id(),
+                            )?;
+                            let ended = outcome.into_run();
+                            terminated_run_ids.push(ended.id().to_string());
+                            self.provider_run_projection.update(ended);
+                        }
                     }
                     crate::provider::ProviderRunState::Ended => {
                         self.provider_store.clear_runtime(run.id());

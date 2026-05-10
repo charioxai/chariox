@@ -44,3 +44,7 @@ Do not merge protocol shape changes without the version bump and test update.
 - Hosted Cloud relay runtime should use the Caddy-fronted `wss://` relay URL for browser, kernel, remote TUI, and kernel-to-kernel remote-agent connections. Local and self-hosted relay setups may keep using `ws://`.
 - Use heartbeat freshness for relay target selection; stale targets must not be treated as online.
 - Preserve local/dev/self-host compatibility where practical, but fail loudly when hosted Cloud configuration violates the runtime architecture.
+
+## Provider-Native Permission Visibility
+
+Native provider permission prompts are surfaced to the user out-of-band through Arroba runtime interactions. Do not infer that no approval prompt appeared just because a shell/tool result lacks `approval requested` or `approved` metadata. The result visible to the agent normally contains only the provider tool execution outcome, such as stdout/stderr, exit code, and status after the user has already answered the prompt.

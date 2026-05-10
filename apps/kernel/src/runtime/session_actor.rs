@@ -1409,10 +1409,26 @@ mod tests {
         agent_id: &str,
         model: &str,
     ) -> crate::provider::RuntimeProviderRun {
+        launch_provider_for_adapter(app, session_id, agent_id, "dev-stub", model)
+    }
+
+    fn launch_provider_for_adapter(
+        app: &mut DaemonApp,
+        session_id: &str,
+        agent_id: &str,
+        adapter_key: &str,
+        model: &str,
+    ) -> crate::provider::RuntimeProviderRun {
         let provider_run = app
             .launch_provider(
-                LaunchProviderRequest::new(session_id, "dev-stub", "claude-code", "default", model)
-                    .with_agent_id(agent_id),
+                LaunchProviderRequest::new(
+                    session_id,
+                    adapter_key,
+                    "claude-code",
+                    "default",
+                    model,
+                )
+                .with_agent_id(agent_id),
             )
             .expect("provider launch should succeed");
         app.update_provider_run_projection(provider_run.clone());
@@ -1933,6 +1949,86 @@ mod tests {
                 .expect("second run should still be recorded")
                 .state(),
             crate::provider::ProviderRunState::Running
+        );
+    }
+
+    #[tokio::test]
+    async fn update_agent_config_keeps_turn_scoped_provider_run_alive() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let (session_id, agent_id, provider_run_id, terminal_stream) = {
+            let mut app_locked = app.lock().await;
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app_locked)
+                .create_session(
+                    CreateSessionRequest::new("workspace", "worktree")
+                        .with_agent_defaults(SessionAgentDefaults::new("managed-dev-stub")),
+                )
+                .expect("session should be created");
+            let run = launch_provider_for_adapter(
+                &mut app_locked,
+                session.id(),
+                agent.id(),
+                "managed-dev-stub",
+                "sonnet",
+            );
+            (
+                session.id().to_string(),
+                agent.id().to_string(),
+                run.id().to_string(),
+                app_locked.terminal_stream_store(),
+            )
+        };
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            owned_runtime_state(&app).await,
+            1,
+            FocusedAgentProjection::default(),
+            SessionStateProjectionStore::default(),
+            AgentRuntimeProjectionStore::default(),
+            terminal_stream,
+        );
+
+        let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
+            session_id: session_id.clone(),
+            agent_id: agent_id.clone(),
+            execution_mode: Some(AgentExecutionMode::Plan),
+            clear_execution_mode: false,
+            permission_level: Some(AgentPermissionLevel::Required),
+            clear_permission_level: false,
+        });
+        let command = KernelCommand::from_local_request(
+            "owned-turn-scoped-config-update",
+            None,
+            None,
+            &request,
+        );
+        let response = runtime
+            .dispatch_session_command(command, request)
+            .await
+            .expect("agent config update should succeed");
+
+        let LocalDaemonResponse::AgentConfigUpdated { agent, .. } = response else {
+            panic!("unexpected response");
+        };
+        assert_eq!(agent.id(), agent_id);
+        assert_eq!(
+            agent.execution_mode_override(),
+            Some(AgentExecutionMode::Plan)
+        );
+
+        let app_locked = app.lock().await;
+        let provider_run = app_locked
+            .providers()
+            .get_run(&provider_run_id)
+            .expect("provider run should still be recorded");
+        assert_eq!(
+            provider_run.state(),
+            crate::provider::ProviderRunState::Running
+        );
+        assert_eq!(provider_run.execution_mode(), AgentExecutionMode::Plan);
+        assert_eq!(
+            provider_run.permission_level(),
+            AgentPermissionLevel::Required
         );
     }
 

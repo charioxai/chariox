@@ -77,7 +77,7 @@ impl ProviderProcessServiceStore {
         self.write().start_run_provider_only(request)
     }
 
-    pub fn launch_run_detached(
+    pub(crate) fn launch_run_detached(
         &self,
         request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
@@ -162,6 +162,21 @@ impl ProviderProcessServiceStore {
 
     pub(crate) fn mark_run_running(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
         self.write().mark_run_running(run_id)
+    }
+
+    pub(crate) fn adapter_supports_turn_scoped_execution_config(&self, adapter_key: &str) -> bool {
+        self.read()
+            .adapter_supports_turn_scoped_execution_config(adapter_key)
+    }
+
+    pub(crate) fn update_run_execution_config(
+        &self,
+        run_id: &str,
+        execution_mode: crate::provider::AgentExecutionMode,
+        permission_level: crate::provider::AgentPermissionLevel,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .update_run_execution_config(run_id, execution_mode, permission_level)
     }
 
     pub(crate) fn reconcile_run_liveness_provider_only(
@@ -451,7 +466,7 @@ impl ProviderProcessService {
         Ok(ProviderRunStartedOutcome { run })
     }
 
-    pub fn launch_run_detached(
+    pub(crate) fn launch_run_detached(
         &mut self,
         request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
@@ -611,6 +626,24 @@ impl ProviderProcessService {
             });
         }
         run.mark_running();
+        Ok(run.clone())
+    }
+
+    pub(crate) fn adapter_supports_turn_scoped_execution_config(&self, adapter_key: &str) -> bool {
+        self.registry
+            .resolve(adapter_key)
+            .map(|adapter| adapter.supports_turn_scoped_execution_config())
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn update_run_execution_config(
+        &mut self,
+        run_id: &str,
+        execution_mode: crate::provider::AgentExecutionMode,
+        permission_level: crate::provider::AgentPermissionLevel,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.get_run_mut(run_id)?;
+        run.set_execution_config(execution_mode, permission_level);
         Ok(run.clone())
     }
 
