@@ -1374,6 +1374,13 @@ async fn emit_kernel_event(
             }
         }
     };
+    if let Some(trace_session_id) = event_session_id(&event).or(session_id) {
+        crate::debug_trace::record_terminal_turn(
+            trace_session_id,
+            "kernel_event_emit",
+            kernel_event_trace_payload(event_id, &event),
+        );
+    }
     runtime.transport_health.record_emitted_event();
     try_send_outgoing_frame(
         outgoing_tx,
@@ -1387,6 +1394,92 @@ async fn emit_kernel_event(
         session_id,
         attachment_id,
     )
+}
+
+fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> serde_json::Value {
+    match event {
+        KernelEvent::TerminalOutput { records } => serde_json::json!({
+            "event_id": event_id,
+            "event": "terminal_output",
+            "record_count": records.len(),
+            "records": records.iter().map(|record| {
+                serde_json::json!({
+                    "kind": &record.kind,
+                    "provider_run_id": &record.provider_run_id,
+                    "agent_id": &record.agent_id,
+                    "merge_key": &record.merge_key,
+                    "byte_len": record.bytes.len(),
+                })
+            }).collect::<Vec<_>>(),
+        }),
+        KernelEvent::SessionSnapshot {
+            session,
+            provider_run,
+            agent_activity,
+        } => serde_json::json!({
+            "event_id": event_id,
+            "event": "session_snapshot",
+            "active_prompt": session.active_prompt().map(|prompt| serde_json::json!({
+                "id": prompt.id(),
+                "status": prompt.status(),
+                "target_agent_id": prompt.target_agent_id(),
+                "workflow_run_id": prompt.workflow_run_id(),
+                "workflow_node_run_id": prompt.workflow_node_run_id(),
+            })),
+            "active_provider_run_id": session.active_provider_run_id(),
+            "provider_run_id": provider_run.as_ref().as_ref().map(|run| run.id()),
+            "agent_activity": agent_activity,
+        }),
+        KernelEvent::AssistantMessageCompleted {
+            session_id,
+            provider_run_id,
+            agent_id,
+            message_id,
+            completed_at_ms,
+            ..
+        } => serde_json::json!({
+            "event_id": event_id,
+            "event": "assistant_message_completed",
+            "session_id": session_id,
+            "provider_run_id": provider_run_id,
+            "agent_id": agent_id,
+            "message_id": message_id,
+            "completed_at_ms": completed_at_ms,
+        }),
+        KernelEvent::RuntimeNotices { notices } => serde_json::json!({
+            "event_id": event_id,
+            "event": "runtime_notices",
+            "notice_count": notices.len(),
+            "notices": notices.iter().map(|notice| {
+                serde_json::json!({
+                    "provider_run_id": &notice.provider_run_id,
+                    "agent_id": &notice.agent_id,
+                    "message_len": notice.message.len(),
+                })
+            }).collect::<Vec<_>>(),
+        }),
+        other => serde_json::json!({
+            "event_id": event_id,
+            "event": kernel_event_name(other),
+        }),
+    }
+}
+
+fn kernel_event_name(event: &KernelEvent) -> &'static str {
+    match event {
+        KernelEvent::TerminalOutput { .. } => "terminal_output",
+        KernelEvent::RuntimeNotices { .. } => "runtime_notices",
+        KernelEvent::AssistantMessageCompleted { .. } => "assistant_message_completed",
+        KernelEvent::SessionSnapshot { .. } => "session_snapshot",
+        KernelEvent::SessionUnavailable { .. } => "session_unavailable",
+        KernelEvent::RelayStatusChanged { .. } => "relay_status_changed",
+        KernelEvent::RemoteMachinesChanged { .. } => "remote_machines_changed",
+        KernelEvent::WaitingRoomInventoryChanged { .. } => "waiting_room_inventory_changed",
+        KernelEvent::WorkflowDesignOp { .. } => "workflow_design_op",
+        KernelEvent::Heartbeat { .. } => "heartbeat",
+        KernelEvent::TransportResumed { .. } => "transport_resumed",
+        KernelEvent::ReplayGap { .. } => "replay_gap",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

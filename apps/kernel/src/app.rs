@@ -239,6 +239,16 @@ pub(crate) struct ActiveTurnStore {
 
 impl ActiveTurnStore {
     pub(crate) fn start(&self, turn: ActiveTurnState) {
+        crate::debug_trace::record_terminal_turn(
+            &turn.session_id,
+            "active_turn_start",
+            serde_json::json!({
+                "agent_id": &turn.agent_id,
+                "prompt_id": &turn.prompt_id,
+                "provider_run_id": &turn.provider_run_id,
+                "settlement_requested": turn.settlement_requested,
+            }),
+        );
         self.inner
             .lock()
             .expect("active turn mutex poisoned")
@@ -253,14 +263,37 @@ impl ActiveTurnStore {
             .get_mut(provider_run_id)
         {
             turn.settlement_requested = true;
+            crate::debug_trace::record_terminal_turn(
+                &turn.session_id,
+                "active_turn_mark_settling",
+                serde_json::json!({
+                    "agent_id": &turn.agent_id,
+                    "prompt_id": &turn.prompt_id,
+                    "provider_run_id": &turn.provider_run_id,
+                    "settlement_requested": true,
+                }),
+            );
         }
     }
 
     pub(crate) fn clear(&self, provider_run_id: &str) {
-        self.inner
+        let removed = self
+            .inner
             .lock()
             .expect("active turn mutex poisoned")
             .remove(provider_run_id);
+        if let Some(turn) = removed {
+            crate::debug_trace::record_terminal_turn(
+                &turn.session_id,
+                "active_turn_clear",
+                serde_json::json!({
+                    "agent_id": turn.agent_id,
+                    "prompt_id": turn.prompt_id,
+                    "provider_run_id": turn.provider_run_id,
+                    "settlement_requested": turn.settlement_requested,
+                }),
+            );
+        }
     }
 
     pub(crate) fn snapshot(&self) -> BTreeMap<String, ActiveTurnState> {
