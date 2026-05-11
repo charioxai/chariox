@@ -44,6 +44,7 @@ Do not merge protocol shape changes without the version bump and test update.
 - Hosted Cloud relay runtime should use the Caddy-fronted `wss://` relay URL for browser, kernel, remote TUI, and kernel-to-kernel remote-agent connections. Local and self-hosted relay setups may keep using `ws://`.
 - Use heartbeat freshness for relay target selection; stale targets must not be treated as online.
 - Preserve local/dev/self-host compatibility where practical, but fail loudly when hosted Cloud configuration violates the runtime architecture.
+- Be lean, don't over engineer and delete all old/unnecessary code along the way.
 
 ## Provider-Native Permission Visibility
 
