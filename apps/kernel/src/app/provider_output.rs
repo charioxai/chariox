@@ -768,18 +768,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
             self.mark_prompt_completion_recorded(provider_run_id);
         }
         let prompt_completed = poll_result.prompt_completed;
-        let terminal_failure = poll_result.terminal_failure.clone().or_else(|| {
-            let mut text = poll_result.notices.join("\n");
-            text.push('\n');
-            text.push_str(
-                &poll_result
-                    .chunks
-                    .iter()
-                    .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
-                    .collect::<String>(),
-            );
-            classify_provider_terminal_failure_text(provider_run.adapter_key(), &text)
-        });
+        let terminal_failure = poll_result.terminal_failure.clone();
         if let Some(message) = terminal_failure.as_deref() {
             let run = self
                 .provider_store
@@ -808,12 +797,20 @@ impl<'a> ProviderOutputPumpContext<'a> {
         );
         let exited = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
         if exited {
-            self.trace_prompt_state(session_id, provider_run_id, "structured_poll_provider_exited");
+            self.trace_prompt_state(
+                session_id,
+                provider_run_id,
+                "structured_poll_provider_exited",
+            );
             return Ok(records);
         }
         if let Some(message) = terminal_failure {
             self.fail_prompt_for_terminal_failure(session_id, provider_run_id, &message)?;
-            self.trace_prompt_state(session_id, provider_run_id, "structured_poll_terminal_failure_settled");
+            self.trace_prompt_state(
+                session_id,
+                provider_run_id,
+                "structured_poll_terminal_failure_settled",
+            );
             return Ok(records);
         }
         self.trace_prompt_state(
@@ -821,11 +818,8 @@ impl<'a> ProviderOutputPumpContext<'a> {
             provider_run_id,
             "structured_poll_before_settlement",
         );
-        let settlement = self.settle_structured_prompt_completion(
-            session_id,
-            provider_run_id,
-            prompt_completed,
-        );
+        let settlement =
+            self.settle_structured_prompt_completion(session_id, provider_run_id, prompt_completed);
         self.trace_prompt_state(
             session_id,
             provider_run_id,

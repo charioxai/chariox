@@ -1209,7 +1209,6 @@ impl KernelRuntimeState {
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
-        let adapter_key = provider_run.adapter_key().to_string();
         owned.provider_run_projection.update(provider_run);
         for notice in &poll_result.notices {
             owned.record_notice(
@@ -1251,18 +1250,7 @@ impl KernelRuntimeState {
             owned.mark_prompt_completion_recorded(provider_run_id);
         }
         let prompt_completed = poll_result.prompt_completed;
-        let terminal_failure = poll_result.terminal_failure.clone().or_else(|| {
-            let mut text = poll_result.notices.join("\n");
-            text.push('\n');
-            text.push_str(
-                &poll_result
-                    .chunks
-                    .iter()
-                    .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
-                    .collect::<String>(),
-            );
-            crate::provider::classify_provider_terminal_failure_text(adapter_key.as_str(), &text)
-        });
+        let terminal_failure = poll_result.terminal_failure.clone();
         if let Some(message) = terminal_failure.as_deref() {
             let run = owned
                 .provider_store
@@ -1660,5 +1648,109 @@ mod tests {
         );
         assert!(agent_activity.busy);
         assert!(agent_activity.active_turn.is_some());
+    }
+
+    #[tokio::test]
+    async fn codex_tool_output_text_does_not_classify_as_terminal_failure() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-tool-output",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.5",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-codex",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "test-codex".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-codex-runtime".to_string()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+        app.update_provider_run_projection(run.clone());
+
+        let prompt = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "read tool output\n",
+            crate::session::PromptStatus::Queued,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("prompt should start");
+        crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let records = runtime
+            .apply_owned_structured_output_batch(
+                session.id(),
+                run.id(),
+                vec![attachment.id().to_string()],
+                crate::provider::ProviderPromptSignalBatch {
+                    chunks: vec![crate::provider::ProviderPromptChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                        merge_key: Some("tool-call-1".to_string()),
+                        bytes: br#"{"tool":"bash","status":"completed","output":"Check if a CLAUDE.md file exists in the project root. If it does not exist, create it. This text mentions model context but is normal tool output."}"#.to_vec(),
+                    }],
+                    ..crate::provider::ProviderPromptSignalBatch::default()
+                },
+            )
+            .await
+            .expect("structured tool output should be accepted");
+
+        assert_eq!(records.len(), 1);
+        let session_state = runtime
+            .owned
+            .session_snapshot(session.id())
+            .expect("session snapshot should exist");
+        assert!(
+            session_state.active_prompt_for_agent(agent.id()).is_some(),
+            "normal Codex tool output must not settle the active prompt"
+        );
+        let agent_activity = runtime
+            .agent_activity_for_session(&session_state)
+            .get(agent.id())
+            .cloned()
+            .expect("agent activity should be projected");
+        assert!(agent_activity.busy);
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(run.id())
+                .expect("provider run should exist")
+                .terminal_diagnostic(),
+            None
+        );
     }
 }

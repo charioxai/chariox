@@ -6,11 +6,7 @@ use serde::Serialize;
 
 const DEFAULT_TERMINAL_TURN_TRACE_MAX_MB: u64 = 100;
 
-pub(crate) fn record_terminal_turn(
-    session_id: &str,
-    source: &str,
-    payload: impl Serialize,
-) {
+pub(crate) fn record_terminal_turn(session_id: &str, source: &str, payload: impl Serialize) {
     if std::env::var_os("ARROBA_DISABLE_TERMINAL_TURN_TRACE").is_some() {
         return;
     }
@@ -46,13 +42,22 @@ fn terminal_turn_trace_path(session_id: &str) -> Option<PathBuf> {
                 .map(PathBuf::from)
                 .map(|home| home.join(".arroba").join("debug").join("terminal-turns"))
         })?;
-    Some(base.join(format!("{}.jsonl", sanitize_trace_file_component(session_id))))
+    Some(base.join(format!(
+        "{}.jsonl",
+        sanitize_trace_file_component(session_id)
+    )))
 }
 
 fn sanitize_trace_file_component(value: &str) -> String {
     value
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

@@ -1479,23 +1479,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         completions: Vec<RelayProjectedCompletion>,
     ) -> Result<(), DaemonError> {
         let _ = self.app.sessions.get_session(session_id)?;
-        let adapter_key = self
-            .app
-            .agents
-            .get_agent(agent_id)
-            .map(|agent| agent.provider().to_string())
-            .unwrap_or_else(|_| "unknown".to_string());
-        let projected_provider_diagnostic = {
-            let mut text = notices.join("\n");
-            text.push('\n');
-            text.push_str(
-                &output_chunks
-                    .iter()
-                    .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
-                    .collect::<String>(),
-            );
-            crate::provider::classify_provider_terminal_failure_text(&adapter_key, &text)
-        };
         let recipient_attachment_ids = self.app.attachments.list_session_attachment_ids(session_id);
         let saw_completion = !completions.is_empty();
         for chunk in output_chunks {
@@ -1571,14 +1554,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 ) {
                     let message =
                         "provider completed workflow turn without a validated workflow output";
-                    let provider_diagnostic = projected_provider_diagnostic.clone().or_else(|| {
-                        self.app
-                            .providers()
-                            .get_run(provider_run_id)
-                            .ok()
-                            .and_then(|run| run.terminal_diagnostic().map(str::to_string))
-                            .filter(|message| !message.trim().is_empty())
-                    });
+                    let provider_diagnostic = self
+                        .app
+                        .providers()
+                        .get_run(provider_run_id)
+                        .ok()
+                        .and_then(|run| run.terminal_diagnostic().map(str::to_string))
+                        .filter(|message| !message.trim().is_empty());
                     let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
                         provider_diagnostic
                     {

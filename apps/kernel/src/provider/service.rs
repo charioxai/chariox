@@ -1034,6 +1034,11 @@ impl ProviderProcessService {
         );
     }
 
+    #[cfg(test)]
+    pub(crate) fn insert_run_for_test(&mut self, run: RuntimeProviderRun) {
+        self.runs.insert(run.id().to_string(), run);
+    }
+
     pub(crate) fn apply_structured_output_metadata(
         &mut self,
         provider_run_id: &str,
