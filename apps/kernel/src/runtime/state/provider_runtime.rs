@@ -5,6 +5,8 @@
 
 use super::*;
 
+const PTY_PROMPT_SETTLE_QUIET_FOR: std::time::Duration = std::time::Duration::from_millis(50);
+
 impl KernelRuntimeState {
     pub(super) fn activate_agent_mcp_grants_if_idle(
         &self,
@@ -584,6 +586,7 @@ impl KernelRuntimeState {
         session_id: &str,
         provider_run_id: &str,
         prompt_completed: bool,
+        saw_settlement_blocking_activity: bool,
         force: bool,
     ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
         let owned = &self.owned;
@@ -637,7 +640,9 @@ impl KernelRuntimeState {
             });
         };
 
-        if !force && !prompt_completed {
+        let completion_recorded = owned.prompt_completion_recorded(provider_run_id);
+        let settlement_pending = owned.prompt_completion_settlement_pending(provider_run_id);
+        if !force && !prompt_completed && !settlement_pending {
             crate::logging::debug_with_fields(
                 "daemon.provider",
                 "settle provider prompt skipped until provider completion",
@@ -654,7 +659,34 @@ impl KernelRuntimeState {
             });
         }
 
+        if !force && completion_recorded && saw_settlement_blocking_activity {
+            owned.note_prompt_settlement_requested(provider_run_id);
+            let _ = owned.session_snapshot(session_id);
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "provider completion is draining final output",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "prompt_id": active_prompt.id(),
+                }),
+            );
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: true,
+                started_next_prompt: false,
+            });
+        }
+
         if active_prompt.status() == crate::session::PromptStatus::Cancelling {
+            if !force && completion_recorded && saw_settlement_blocking_activity {
+                owned.note_prompt_settlement_requested(provider_run_id);
+                let _ = owned.session_snapshot(session_id);
+                return Ok(crate::app::ProviderRunExitSessionSummary {
+                    had_active_prompt: true,
+                    started_next_prompt: false,
+                });
+            }
             let cancellation = owned.finalize_local_prompt_cancellation_with_queued_advance(
                 session_id,
                 &agent_id,
@@ -678,7 +710,7 @@ impl KernelRuntimeState {
             });
         }
 
-        if prompt_completed
+        if (prompt_completed || settlement_pending)
             && !force
             && active_prompt.workflow_run_id().is_some()
             && active_prompt.workflow_node_run_id().is_some()
@@ -711,7 +743,7 @@ impl KernelRuntimeState {
             });
         }
 
-        if !force {
+        if !force && (prompt_completed || settlement_pending) {
             if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                 active_prompt.workflow_run_id(),
                 active_prompt.workflow_node_run_id(),
@@ -1050,11 +1082,64 @@ impl KernelRuntimeState {
             .reconcile_provider_run_exit(session_id, provider_run_id)
             .await?
         {
-            let _ = self
-                .settle_owned_provider_prompt(session_id, provider_run_id, false, false)
-                .await?;
+            if records.is_empty() {
+                let _ = self
+                    .settle_owned_pty_prompt_if_quiet(session_id, provider_run_id)
+                    .await?;
+            }
         }
         Ok(records)
+    }
+
+    async fn settle_owned_pty_prompt_if_quiet(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
+        let owned = &self.owned;
+        if !owned.prompt_output_quiet_after_response(provider_run_id, PTY_PROMPT_SETTLE_QUIET_FOR) {
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: false,
+                started_next_prompt: false,
+            });
+        }
+        let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: false,
+                started_next_prompt: false,
+            });
+        };
+        let session = owned.session_store.get_session(session_id)?;
+        let Some(active_prompt) = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+        else {
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: false,
+                started_next_prompt: false,
+            });
+        };
+        if active_prompt.status() != crate::session::PromptStatus::Cancelling {
+            if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
+                active_prompt.workflow_run_id(),
+                active_prompt.workflow_node_run_id(),
+            ) {
+                if !owned.workflow_prompt_has_completion_output(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                    provider_run_id,
+                ) {
+                    return Ok(crate::app::ProviderRunExitSessionSummary {
+                        had_active_prompt: true,
+                        started_next_prompt: false,
+                    });
+                }
+            }
+        }
+        self.settle_owned_provider_prompt(session_id, provider_run_id, true, false, false)
+            .await
     }
 
     pub(super) async fn pump_owned_structured_provider_output(
@@ -1193,18 +1278,29 @@ impl KernelRuntimeState {
         poll_result: crate::provider::ProviderPromptSignalBatch,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
-        crate::logging::debug_with_fields(
-            "daemon.provider",
-            "applying structured output batch",
-            serde_json::json!({
-                "session_id": session_id,
-                "provider_run_id": provider_run_id,
-                "chunks": poll_result.chunks.len(),
-                "completions": poll_result.completions.len(),
-                "prompt_completed": poll_result.prompt_completed,
-                "terminal_failure": poll_result.terminal_failure,
-            }),
-        );
+        if !poll_result.chunks.is_empty()
+            || !poll_result.completions.is_empty()
+            || !poll_result.notices.is_empty()
+            || poll_result.prompt_completed
+            || poll_result.terminal_failure.is_some()
+            || poll_result.resolved_model.is_some()
+            || poll_result.resolved_variant.is_some()
+            || poll_result.resolved_usage_tokens_total.is_some()
+            || poll_result.resolved_usage.is_some()
+        {
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "applying structured output batch",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "chunks": poll_result.chunks.len(),
+                    "completions": poll_result.completions.len(),
+                    "prompt_completed": poll_result.prompt_completed,
+                    "terminal_failure": poll_result.terminal_failure,
+                }),
+            );
+        }
         owned
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
@@ -1232,6 +1328,14 @@ impl KernelRuntimeState {
                     | crate::terminal::TerminalOutputKind::ProviderReasoning
                     | crate::terminal::TerminalOutputKind::ProviderTool
                     | crate::terminal::TerminalOutputKind::ProviderStatus
+            )
+        });
+        let saw_settlement_blocking_activity = poll_result.chunks.iter().any(|chunk| {
+            matches!(
+                chunk.kind,
+                crate::terminal::TerminalOutputKind::ProviderOutput
+                    | crate::terminal::TerminalOutputKind::ProviderReasoning
+                    | crate::terminal::TerminalOutputKind::ProviderTool
             )
         });
         if saw_response_content {
@@ -1281,7 +1385,13 @@ impl KernelRuntimeState {
             .await?
         {
             let _ = self
-                .settle_owned_provider_prompt(session_id, provider_run_id, prompt_completed, false)
+                .settle_owned_provider_prompt(
+                    session_id,
+                    provider_run_id,
+                    prompt_completed,
+                    saw_settlement_blocking_activity,
+                    false,
+                )
                 .await?;
         }
         Ok(records)
@@ -1559,7 +1669,7 @@ mod tests {
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
         let first_settlement = runtime
-            .settle_owned_provider_prompt(session.id(), run.id(), true, false)
+            .settle_owned_provider_prompt(session.id(), run.id(), true, false, false)
             .await
             .expect("provider completion signal should be accepted");
         assert!(first_settlement.had_active_prompt);
@@ -1569,6 +1679,109 @@ mod tests {
             .session_store
             .get_session(session.id())
             .expect("session should exist")
+            .active_prompt_for_agent(agent.id())
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn provider_completion_with_output_waits_for_quiet_poll_before_settling() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-completion-drain",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider run should launch");
+        app.update_provider_run_projection(run.clone());
+        app.submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "status\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let records = runtime
+            .apply_owned_structured_output_batch(
+                session.id(),
+                run.id(),
+                vec![attachment.id().to_string()],
+                crate::provider::ProviderPromptSignalBatch {
+                    chunks: vec![crate::provider::ProviderPromptChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                        merge_key: Some("assistant-final".to_string()),
+                        bytes: b"final output".to_vec(),
+                    }],
+                    completions: vec![crate::provider::ProviderAssistantCompletion {
+                        message_id: "assistant-final".to_string(),
+                        completed_at_ms: crate::session::unix_epoch_ms(),
+                    }],
+                    prompt_completed: true,
+                    ..crate::provider::ProviderPromptSignalBatch::default()
+                },
+            )
+            .await
+            .expect("completion batch with output should be accepted");
+        assert_eq!(records.len(), 1);
+
+        let draining_session = runtime
+            .owned
+            .session_snapshot(session.id())
+            .expect("session snapshot should exist");
+        assert!(
+            draining_session
+                .active_prompt_for_agent(agent.id())
+                .is_some(),
+            "final output and completion in the same batch should keep the turn settling"
+        );
+        let draining_activity = runtime
+            .agent_activity_for_session(&draining_session)
+            .get(agent.id())
+            .cloned()
+            .expect("agent activity should be projected");
+        assert!(draining_activity.busy);
+        assert_eq!(
+            draining_activity.prompt_status,
+            crate::runtime::projection::AgentPromptRuntimeStatus::Settling
+        );
+
+        runtime
+            .apply_owned_structured_output_batch(
+                session.id(),
+                run.id(),
+                vec![attachment.id().to_string()],
+                crate::provider::ProviderPromptSignalBatch::default(),
+            )
+            .await
+            .expect("quiet poll should settle the completed prompt");
+        let settled_session = runtime
+            .owned
+            .session_snapshot(session.id())
+            .expect("session snapshot should exist");
+        assert!(settled_session
             .active_prompt_for_agent(agent.id())
             .is_none());
     }
@@ -1623,7 +1836,7 @@ mod tests {
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
         let settlement = runtime
-            .settle_owned_provider_prompt(session.id(), run.id(), false, false)
+            .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
             .await
             .expect("quiet provider poll should be accepted");
         assert!(settlement.had_active_prompt);

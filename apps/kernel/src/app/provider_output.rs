@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -19,6 +19,8 @@ use crate::session::{PromptQueueItem, PromptStatus, SessionStateStore};
 use crate::terminal::{
     RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord, TerminalStreamStore,
 };
+
+const PTY_PROMPT_SETTLE_QUIET_FOR: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Default)]
 pub(crate) struct StructuredOutputRecordStore {
@@ -257,6 +259,10 @@ impl<'a> ProviderOutputPump<'a> {
         }
         self.context
             .reconcile_provider_run_exit(request.session_id, request.provider_run_id)?;
+        if records.is_empty() {
+            self.context
+                .settle_pty_prompt_if_quiet(request.session_id, request.provider_run_id)?;
+        }
 
         Ok(records)
     }
@@ -752,6 +758,14 @@ impl<'a> ProviderOutputPumpContext<'a> {
                     | TerminalOutputKind::ProviderStatus
             )
         });
+        let saw_settlement_blocking_activity = poll_result.chunks.iter().any(|chunk| {
+            matches!(
+                chunk.kind,
+                TerminalOutputKind::ProviderOutput
+                    | TerminalOutputKind::ProviderReasoning
+                    | TerminalOutputKind::ProviderTool
+            )
+        });
         if saw_response_content {
             self.note_prompt_response_content(provider_run_id);
         } else if saw_runtime_activity {
@@ -818,8 +832,12 @@ impl<'a> ProviderOutputPumpContext<'a> {
             provider_run_id,
             "structured_poll_before_settlement",
         );
-        let settlement =
-            self.settle_structured_prompt_completion(session_id, provider_run_id, prompt_completed);
+        let settlement = self.settle_structured_prompt_completion(
+            session_id,
+            provider_run_id,
+            prompt_completed,
+            saw_settlement_blocking_activity,
+        );
         self.trace_prompt_state(
             session_id,
             provider_run_id,
@@ -840,6 +858,18 @@ impl<'a> ProviderOutputPumpContext<'a> {
         source: &str,
         poll_result: &ProviderPromptSignalBatch,
     ) {
+        if poll_result.chunks.is_empty()
+            && poll_result.completions.is_empty()
+            && poll_result.notices.is_empty()
+            && !poll_result.prompt_completed
+            && poll_result.terminal_failure.is_none()
+            && poll_result.resolved_model.is_none()
+            && poll_result.resolved_variant.is_none()
+            && poll_result.resolved_usage_tokens_total.is_none()
+            && poll_result.resolved_usage.is_none()
+        {
+            return;
+        }
         crate::debug_trace::record_terminal_turn(
             session_id,
             source,
@@ -980,6 +1010,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         session_id: &str,
         provider_run_id: &str,
         prompt_completed: bool,
+        saw_settlement_blocking_activity: bool,
     ) -> Result<(), DaemonError> {
         let Some(active_prompt_status) = self
             .active_prompt_for_settlement(session_id, provider_run_id)?
@@ -987,8 +1018,20 @@ impl<'a> ProviderOutputPumpContext<'a> {
         else {
             return Ok(());
         };
+        let completion_recorded =
+            crate::transport::flow_control::prompt_completion_recorded(self.app, provider_run_id);
+        let settlement_pending = crate::transport::flow_control::prompt_completion_settlement_pending(
+            self.app,
+            provider_run_id,
+        );
+        if completion_recorded && saw_settlement_blocking_activity {
+            self.note_prompt_settlement_requested(provider_run_id);
+            let _ =
+                crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
+            return Ok(());
+        }
         if active_prompt_status == PromptStatus::Cancelling {
-            if prompt_completed {
+            if (prompt_completed || settlement_pending) && !saw_settlement_blocking_activity {
                 let agent_id = self.provider_run_agent_id(provider_run_id)?;
                 let _ = self.app.finalize_active_prompt_cancellation(
                     session_id,
@@ -997,7 +1040,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 )?;
                 self.clear_active_turn(provider_run_id);
             }
-        } else if prompt_completed {
+        } else if prompt_completed || settlement_pending {
             if self.workflow_prompt_is_waiting_for_completion_output(session_id, provider_run_id)? {
                 self.note_prompt_settlement_requested(provider_run_id);
                 let _ = crate::app::KernelSessionReadService::new(self.app)
@@ -1007,6 +1050,29 @@ impl<'a> ProviderOutputPumpContext<'a> {
             self.settle_prompt_by_status(session_id, provider_run_id)?;
         }
         Ok(())
+    }
+
+    fn settle_pty_prompt_if_quiet(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        if !crate::transport::flow_control::prompt_output_quiet_after_response(
+            self.app,
+            provider_run_id,
+            PTY_PROMPT_SETTLE_QUIET_FOR,
+        ) {
+            return Ok(());
+        }
+        let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
+            return Ok(());
+        };
+        if prompt.status() != PromptStatus::Cancelling
+            && self.workflow_prompt_is_waiting_for_completion_output(session_id, provider_run_id)?
+        {
+            return Ok(());
+        }
+        self.settle_prompt_by_status(session_id, provider_run_id)
     }
 
     fn workflow_prompt_is_waiting_for_completion_output(

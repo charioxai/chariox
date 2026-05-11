@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::app::{ActivePromptState, ActiveTurnState, DaemonApp};
 
@@ -78,4 +78,31 @@ pub(crate) fn prompt_completion_recorded(app: &DaemonApp, provider_run_id: &str)
         .get(provider_run_id)
         .map(|state| state.completion_recorded)
         .unwrap_or(false)
+}
+
+pub(crate) fn prompt_completion_settlement_pending(
+    app: &DaemonApp,
+    provider_run_id: &str,
+) -> bool {
+    app.prompt_activity
+        .read()
+        .get(provider_run_id)
+        .map(|state| state.completion_recorded && state.settlement_requested)
+        .unwrap_or(false)
+}
+
+pub(crate) fn prompt_output_quiet_after_response(
+    app: &DaemonApp,
+    provider_run_id: &str,
+    quiet_for: Duration,
+) -> bool {
+    app.prompt_activity
+        .read()
+        .get(provider_run_id)
+        .is_some_and(|state| {
+            state.saw_response_content
+                && state
+                    .last_output_at
+                    .is_some_and(|last_output_at| last_output_at.elapsed() >= quiet_for)
+        })
 }

@@ -485,7 +485,7 @@ impl KernelRuntimeState {
         }
 
         let session_outcome = self
-            .settle_owned_provider_prompt(session_id, provider_run_id, false, true)
+            .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
             .await?;
         let recipients = owned
             .attachment_store

@@ -835,6 +835,30 @@ impl KernelRuntimeOwnedState {
             .unwrap_or(false)
     }
 
+    pub(super) fn prompt_completion_settlement_pending(&self, provider_run_id: &str) -> bool {
+        self.prompt_activity
+            .read()
+            .get(provider_run_id)
+            .map(|state| state.completion_recorded && state.settlement_requested)
+            .unwrap_or(false)
+    }
+
+    pub(super) fn prompt_output_quiet_after_response(
+        &self,
+        provider_run_id: &str,
+        quiet_for: std::time::Duration,
+    ) -> bool {
+        self.prompt_activity
+            .read()
+            .get(provider_run_id)
+            .is_some_and(|state| {
+                state.saw_response_content
+                    && state
+                        .last_output_at
+                        .is_some_and(|last_output_at| last_output_at.elapsed() >= quiet_for)
+            })
+    }
+
     pub(super) fn mark_prompt_completion_recorded(&self, provider_run_id: &str) {
         if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
             state.completion_recorded = true;
