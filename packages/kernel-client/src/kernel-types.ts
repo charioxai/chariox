@@ -370,6 +370,8 @@ export type AgentSubstituteProfile = {
   provider: string
   model: string
   variant?: string | null
+  kernel_id?: string | null
+  worktree_id?: string | null
 }
 
 export type AgentSubstitutionRecord = {
@@ -717,7 +719,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 17
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 18
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

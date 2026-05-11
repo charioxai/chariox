@@ -40,6 +40,10 @@ pub struct AgentSubstituteProfile {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<String>,
 }
 
 impl AgentSubstituteProfile {
@@ -52,7 +56,19 @@ impl AgentSubstituteProfile {
             provider: provider.into(),
             model: model.into(),
             variant,
+            kernel_id: None,
+            worktree_id: None,
         }
+    }
+
+    pub fn with_kernel_id(mut self, kernel_id: Option<String>) -> Self {
+        self.kernel_id = kernel_id;
+        self
+    }
+
+    pub fn with_worktree_id(mut self, worktree_id: Option<String>) -> Self {
+        self.worktree_id = worktree_id;
+        self
     }
 }
 

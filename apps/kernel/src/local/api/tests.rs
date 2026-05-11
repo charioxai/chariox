@@ -22,8 +22,8 @@ use arroba_relay::protocol::{RelayKernelPresence, RelayMachinePresence};
 use sha2::{Digest, Sha256};
 
 use super::{
-    AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasAgentRequest,
-    AliasSessionRequest, AliasWorkflowEndpointRequest, AliasWorkflowRequest,
+    AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AgentSubstituteAction,
+    AliasAgentRequest, AliasSessionRequest, AliasWorkflowEndpointRequest, AliasWorkflowRequest,
     AttachToSessionRequest, AttachWorkspaceLinkRequest, CancelActivePromptRequest,
     CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest, CommitWorkspaceChangesRequest,
     CompletePromptRequest, CreateSessionInviteRequest, CreateTerminalPairingLinkRequest,
@@ -43,14 +43,15 @@ use super::{
     ResolveSessionRequest, ResolveWorkflowRequest, ResumeWorkflowRunRequest,
     RevokeSessionInviteRequest, RunShellCapabilityRequest, ShowWorkspaceLinkRequest,
     SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
-    UpdateAgentProfileRequest, UpdateSessionConfigRequest, UpdateWorkflowCanvasLayoutRequest,
-    UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent, WorkspacePullRequestRecord,
-    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
+    UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest, UpdateSessionConfigRequest,
+    UpdateWorkflowCanvasLayoutRequest, UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent,
+    WorkspacePullRequestRecord, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
+    LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 17);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 18);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -137,6 +138,39 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "d53bd6870d6a9236c231fcfaafe4c99d893029c6fed44efd31642cdc57adc918"
+    );
+
+    let substitute_request =
+        LocalDaemonRequest::UpdateAgentSubstitutes(UpdateAgentSubstitutesRequest {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            action: AgentSubstituteAction::Add {
+                provider: "codex".to_string(),
+                model: "gpt-5.4".to_string(),
+                variant: Some("medium".to_string()),
+                kernel_id: Some("kernel-1".to_string()),
+                worktree_id: Some("/repo/sub".to_string()),
+            },
+        });
+    let substitute_snapshot =
+        serde_json::to_value(substitute_request).expect("substitute request should serialize");
+    assert_eq!(
+        substitute_snapshot.pointer("/UpdateAgentSubstitutes/action/Add/kernel_id"),
+        Some(&serde_json::json!("kernel-1"))
+    );
+    assert_eq!(
+        substitute_snapshot.pointer("/UpdateAgentSubstitutes/action/Add/worktree_id"),
+        Some(&serde_json::json!("/repo/sub"))
+    );
+    let substitute_add_snapshot = substitute_snapshot
+        .pointer("/UpdateAgentSubstitutes/action/Add")
+        .expect("substitute add payload should serialize");
+    let serialized =
+        serde_json::to_string(substitute_add_snapshot).expect("substitute payload should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "9b0859c53bee6ebd06bec8f4fc4d5181876cbf407433f0f54f6aa7f29e2f3fec"
     );
 
     let layout_request = serde_json::to_value(LocalDaemonRequest::UpdateWorkflowCanvasLayout(

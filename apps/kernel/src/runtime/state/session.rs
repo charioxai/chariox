@@ -736,10 +736,35 @@ impl KernelRuntimeOwnedState {
                 provider,
                 model,
                 variant,
-            } => self.agent_store.add_agent_substitute(
-                agent_id,
-                crate::agent::AgentSubstituteProfile::new(provider, model, variant),
-            ),
+                kernel_id,
+                worktree_id,
+            } => {
+                let kernel_id = kernel_id.and_then(|value| {
+                    let trimmed = value.trim();
+                    (!trimmed.is_empty()).then(|| trimmed.to_string())
+                });
+                let worktree_id = worktree_id.and_then(|value| {
+                    let trimmed = value.trim();
+                    (!trimmed.is_empty()).then(|| trimmed.to_string())
+                });
+                if let Some(kernel_id) = kernel_id.as_deref() {
+                    let local_kernel_id = self.config_projection.snapshot().daemon_id;
+                    if kernel_id != local_kernel_id {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "add agent substitute",
+                            message: format!(
+                                "remote substitute kernel `{kernel_id}` is not supported yet"
+                            ),
+                        });
+                    }
+                }
+                self.agent_store.add_agent_substitute(
+                    agent_id,
+                    crate::agent::AgentSubstituteProfile::new(provider, model, variant)
+                        .with_kernel_id(kernel_id)
+                        .with_worktree_id(worktree_id),
+                )
+            }
             crate::local::AgentSubstituteAction::Remove { index } => {
                 self.agent_store.remove_agent_substitute(agent_id, index)
             }

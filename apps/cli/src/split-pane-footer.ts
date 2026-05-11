@@ -12,7 +12,7 @@ export type SplitPaneFooterAgent = {
   provider: string
   model: string | null
   effort?: string | null
-  substitutes?: Array<{ provider: string; model: string; variant?: string | null }>
+  substitutes?: Array<{ provider: string; model: string; variant?: string | null; kernel_id?: string | null; worktree_id?: string | null }>
   active_substitute_index?: number | null
   last_substitution?: { reason: string } | null
   execution_mode?: "build" | "plan" | null

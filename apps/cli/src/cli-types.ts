@@ -402,6 +402,8 @@ export type AgentSubstituteProfile = {
   provider: string
   model: string
   variant?: string | null
+  kernel_id?: string | null
+  worktree_id?: string | null
 }
 
 export type AgentSubstitutionRecord = {

@@ -233,6 +233,17 @@ impl KernelRuntimeState {
                 substitute_index,
                 reason.to_string(),
             )?;
+            if let Some(kernel_id) = profile.kernel_id.as_deref() {
+                let local_kernel_id = owned.config_projection.snapshot().daemon_id;
+                if kernel_id != local_kernel_id {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "activate agent substitute",
+                        message: format!(
+                            "remote substitute kernel `{kernel_id}` is not supported yet"
+                        ),
+                    });
+                }
+            }
             let adapter_key = match profile.provider.as_str() {
                 "default" => "opencode",
                 value => value,
@@ -249,6 +260,10 @@ impl KernelRuntimeState {
             .with_agent_id(agent_id)
             .with_owner_user_id(agent.owner_user_id().to_string())
             .with_variant(profile.variant.clone());
+            if let Some(worktree_id) = profile.worktree_id.as_deref() {
+                launch_request =
+                    launch_request.with_working_directory(std::path::PathBuf::from(worktree_id));
+            }
             if crate::provider::provider_requires_managed_io_by_default(provider, &config) {
                 launch_request = launch_request.with_managed_io_required();
             }

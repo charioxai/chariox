@@ -909,7 +909,7 @@ test("executeShellCommand manages agent substitutes", async () => {
     agentId: "agent-1",
   })
   const addResult = await executeShellCommand(
-    parseShellCommand("agent substitute add codex gpt-5.4 --variant medium"),
+    parseShellCommand("agent substitute add codex gpt-5.4 --variant medium --kernel kernel-local --worktree /repo/sub"),
     context,
     { client: fake.client },
   )
@@ -929,6 +929,18 @@ test("executeShellCommand manages agent substitutes", async () => {
     "UpdateAgentSubstitutes",
     "LaunchProviderRun",
   ])
+  const addRequest = fake.requests[1]
+  assert.ok(addRequest && "UpdateAgentSubstitutes" in addRequest)
+  const addPayload = addRequest.UpdateAgentSubstitutes as { action: unknown }
+  assert.deepEqual(addPayload.action, {
+    Add: {
+      provider: "codex",
+      model: "gpt-5.4",
+      variant: "medium",
+      kernel_id: "kernel-local",
+      worktree_id: "/repo/sub",
+    },
+  })
 })
 
 test("executeShellCommand spawns remote agent with worktree placement", async () => {

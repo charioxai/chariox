@@ -3,7 +3,7 @@ use super::*;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 17;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 18;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -161,6 +161,10 @@ pub enum AgentSubstituteAction {
         model: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         variant: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernel_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worktree_id: Option<String>,
     },
     Remove {
         index: usize,

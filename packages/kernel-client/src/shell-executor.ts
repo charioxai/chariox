@@ -960,10 +960,22 @@ async function executeAgentSubstituteCommand(
     const model = filteredArgs[1]
     const variantIndex = filteredArgs.indexOf("--variant")
     const variant = variantIndex >= 0 ? filteredArgs[variantIndex + 1] : undefined
+    const kernelIndex = filteredArgs.indexOf("--kernel")
+    const kernelId = kernelIndex >= 0 ? filteredArgs[kernelIndex + 1] : undefined
+    const worktreeIndex = filteredArgs.indexOf("--worktree")
+    const worktreeId = worktreeIndex >= 0 ? filteredArgs[worktreeIndex + 1] : undefined
     if (!provider || !model) {
-      return { ok: false, message: "usage: agent substitute add <provider> <model> [--variant v] [--agent a]" }
+      return { ok: false, message: "usage: agent substitute add <provider> <model> [--variant v] [--kernel k] [--worktree dir] [--agent a]" }
     }
-    const payload = await update({ Add: { provider, model, variant: variant ?? null } })
+    const payload = await update({
+      Add: {
+        provider,
+        model,
+        variant: variant ?? null,
+        kernel_id: kernelId ?? null,
+        worktree_id: worktreeId ?? null,
+      },
+    })
     return { ok: true, message: `${formatAgentRef(payload.agent)} substitute added: ${provider}/${model}${variant ? `/${variant}` : ""}`, data: payload }
   }
   if (subcommand === "remove" || subcommand === "rm") {
