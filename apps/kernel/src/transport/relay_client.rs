@@ -562,16 +562,28 @@ async fn handle_incoming_envelope(
             caller_identity: _,
             encrypted_request,
         } => {
-            let relay_response =
-                handle_daemon_peer_request(router, outgoing_tx, encrypted_request).await;
-            send_outgoing_envelope(
-                outgoing_tx,
-                RelayEnvelope::DaemonIncomingPeerResponse {
-                    relay_request_id,
-                    encrypted_response: relay_response.encrypted_response,
-                    error: relay_response.error,
-                },
-            )?;
+            let router = Arc::clone(router);
+            let outgoing_tx = outgoing_tx.clone();
+            tokio::spawn(async move {
+                let relay_response =
+                    handle_daemon_peer_request(&router, &outgoing_tx, encrypted_request).await;
+                if let Err(error) = send_outgoing_envelope(
+                    &outgoing_tx,
+                    RelayEnvelope::DaemonIncomingPeerResponse {
+                        relay_request_id,
+                        encrypted_response: relay_response.encrypted_response,
+                        error: relay_response.error,
+                    },
+                ) {
+                    crate::logging::warn_with_fields(
+                        "daemon.relay_client",
+                        "failed to send async daemon peer response",
+                        serde_json::json!({
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            });
         }
         RelayEnvelope::DaemonPeerResponse {
             request_id,
