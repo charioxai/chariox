@@ -1718,12 +1718,18 @@ export function pollRuntimeNoticesRequest(sessionId: string, attachmentId: strin
   }
 }
 
-export function respondToInteractionRequest(sessionId: string, interactionId: string, choiceId: string) {
+export function respondToInteractionRequest(
+  sessionId: string,
+  interactionId: string,
+  choiceId: string,
+  customReply?: string | null,
+) {
   return {
     RespondToInteraction: {
       session_id: sessionId,
       interaction_id: interactionId,
       choice_id: choiceId,
+      custom_reply: customReply ?? null,
     },
   }
 }

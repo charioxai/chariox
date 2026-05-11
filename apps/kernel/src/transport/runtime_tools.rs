@@ -207,9 +207,23 @@ pub struct RequestPopupChoiceArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestPopupCustomChoiceArgs {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestPopupArgs {
     pub message: String,
     pub choices: Vec<RequestPopupChoiceArgs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_choice: Option<RequestPopupCustomChoiceArgs>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -353,6 +367,18 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "timeout_sec": {"type": "integer", "minimum": 1},
                     "default_on_timeout": {"type": "string"},
+                    "custom_choice": {
+                        "type": "object",
+                        "required": ["id", "label"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "label": {"type": "string"},
+                            "placeholder": {"type": "string"},
+                            "min_length": {"type": "integer", "minimum": 1},
+                            "max_length": {"type": "integer", "minimum": 1}
+                        },
+                        "additionalProperties": false
+                    },
                     "choices": {
                         "type": "array",
                         "minItems": 2,

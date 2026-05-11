@@ -220,6 +220,7 @@ export type RuntimeInteraction = {
   title?: string | null
   message: string
   choices: RuntimeInteractionChoice[]
+  custom_choice?: RuntimeInteractionCustomChoice | null
   timeout_sec?: number | null
   default_on_timeout?: string | null
   requested_at_ms: number
@@ -230,6 +231,14 @@ export type RuntimeInteractionChoice = {
   label: string
   reply: string
   style?: "primary" | "secondary" | "danger" | null
+}
+
+export type RuntimeInteractionCustomChoice = {
+  id: string
+  label: string
+  placeholder?: string | null
+  min_length?: number | null
+  max_length?: number | null
 }
 
 export type SessionConfigState = {
@@ -708,7 +717,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 16
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 17
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

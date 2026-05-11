@@ -714,9 +714,10 @@ impl KernelRuntimeState {
         session_id: &str,
         interaction_id: &str,
         choice_id: &str,
+        custom_reply: Option<&str>,
     ) -> Result<(), DaemonError> {
         self.owned
-            .resolve_runtime_interaction(session_id, interaction_id, choice_id)
+            .resolve_runtime_interaction(session_id, interaction_id, choice_id, custom_reply)
     }
 
     pub(crate) async fn timeout_runtime_interaction(

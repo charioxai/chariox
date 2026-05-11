@@ -320,6 +320,37 @@ impl KernelRuntimeState {
                         )
                     })
                     .collect::<Vec<_>>();
+                let custom_choice = args.custom_choice.map(|choice| {
+                    crate::session::RuntimeInteractionCustomChoice::new(
+                        choice.id,
+                        choice.label,
+                        choice.placeholder,
+                        choice.min_length,
+                        choice.max_length,
+                    )
+                });
+                if let Some(custom_choice) = custom_choice.as_ref() {
+                    if choices
+                        .iter()
+                        .any(|choice| choice.id() == custom_choice.id())
+                    {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "runtime_tool_request_popup",
+                            message: format!(
+                                "custom_choice id `{}` duplicates a fixed choice",
+                                custom_choice.id()
+                            ),
+                        });
+                    }
+                    if let Some(max_length) = custom_choice.max_length() {
+                        if max_length < custom_choice.min_length() {
+                            return Err(DaemonError::LocalTransport {
+                                operation: "runtime_tool_request_popup",
+                                message: "custom_choice max_length must be greater than or equal to min_length".to_string(),
+                            });
+                        }
+                    }
+                }
                 let default_choice_id = args.default_on_timeout.clone();
                 if let Some(default_choice_id) = default_choice_id.as_deref() {
                     if !choices
@@ -352,6 +383,7 @@ impl KernelRuntimeState {
                     args.title,
                     args.message,
                     choices,
+                    custom_choice,
                     args.timeout_sec,
                     default_choice_id.clone(),
                 );
@@ -2146,6 +2178,7 @@ fn managed_io_permission_interaction(
                 Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
             ),
         ],
+        None,
         None,
         None,
     ))

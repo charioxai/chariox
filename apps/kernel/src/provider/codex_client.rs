@@ -1065,6 +1065,7 @@ impl CodexClient {
             ],
             None,
             None,
+            None,
         );
         let resolution = bridge.request_blocking(session_id, interaction)?;
         crate::logging::info_with_fields(
@@ -1130,6 +1131,7 @@ impl CodexClient {
                     Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
                 ),
             ],
+            None,
             None,
             None,
         );

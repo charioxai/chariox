@@ -636,6 +636,7 @@ fn resolve_permission_interaction(
         ],
         None,
         None,
+        None,
     );
     crate::logging::debug_with_fields(
         "provider.opencode.permission",

@@ -50,7 +50,7 @@ use super::{
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 16);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 17);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -217,6 +217,66 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "6beed0034e0a7717008a1e7269e1d01f096ce14af5a65c94efe7d111cdc52e94"
+    );
+
+    let custom_interaction = crate::session::RuntimeInteraction::new(
+        "interaction-1",
+        "agent-1",
+        crate::session::RuntimeInteractionKind::Choice,
+        crate::session::RuntimeInteractionLevel::Info,
+        Some("Pick a color".to_string()),
+        "Choose a color or type another one.",
+        vec![
+            crate::session::RuntimeInteractionChoice::new("green", "Green", "Green", None),
+            crate::session::RuntimeInteractionChoice::new("red", "Red", "Red", None),
+        ],
+        Some(crate::session::RuntimeInteractionCustomChoice::new(
+            "custom",
+            "Other",
+            Some("Type a color".to_string()),
+            Some(1),
+            Some(120),
+        )),
+        None,
+        None,
+    );
+    let custom_interaction_snapshot =
+        serde_json::to_value(custom_interaction).expect("custom interaction should serialize");
+    assert_eq!(
+        custom_interaction_snapshot.pointer("/custom_choice/id"),
+        Some(&serde_json::json!("custom"))
+    );
+    assert_eq!(
+        custom_interaction_snapshot.pointer("/custom_choice/placeholder"),
+        Some(&serde_json::json!("Type a color"))
+    );
+    let custom_response_request = serde_json::to_value(LocalDaemonRequest::RespondToInteraction(
+        super::RespondToInteractionRequest {
+            session_id: "session-1".to_string(),
+            interaction_id: "interaction-1".to_string(),
+            choice_id: "custom".to_string(),
+            custom_reply: Some("Blue".to_string()),
+        },
+    ))
+    .expect("custom interaction response should serialize");
+    let custom_response_payload = custom_response_request
+        .pointer("/RespondToInteraction")
+        .expect("custom interaction response payload should serialize");
+    assert_eq!(
+        custom_response_payload.pointer("/custom_reply"),
+        Some(&serde_json::json!("Blue"))
+    );
+    let serialized = serde_json::to_string(&serde_json::json!({
+        "custom_choice": custom_interaction_snapshot
+            .pointer("/custom_choice")
+            .expect("custom choice should serialize"),
+        "response": custom_response_payload,
+    }))
+    .expect("custom interaction snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "f1ded2949999d324de8a29805cbe0f0841625106e63ab556c3c6076fcf3f640d"
     );
 
     let content = WorkspaceFileContent {

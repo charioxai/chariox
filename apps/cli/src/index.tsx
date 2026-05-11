@@ -985,6 +985,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const responseAuxiliaryFooterBadgeTexts: Array<TextRenderable[]> = []
   const responseAuxiliaryAgentIds: Array<string | null> = []
   const interactionChoiceSelection = new Map<string, number>()
+  const interactionCustomReplies = new Map<string, string>()
+  const interactionCustomEditing = new Set<string>()
   const agentTranscriptScrollboxes = new Map<string, ScrollBoxRenderable>()
   const agentTranscriptRenderables = new Map<string, Map<number, TranscriptEntryRenderable>>()
   const agentEmptyTranscriptRenderables = new Map<string, BoxRenderable>()
@@ -4656,9 +4658,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     interaction: RuntimeInteraction,
     focused: boolean,
   ) => {
+    const choiceCount = interaction.choices.length + (interaction.custom_choice ? 1 : 0)
     const selectedIndex = Math.min(
       interactionChoiceSelection.get(interaction.id) ?? 0,
-      Math.max(0, interaction.choices.length - 1),
+      Math.max(0, choiceCount - 1),
     )
     interactionChoiceSelection.set(interaction.id, selectedIndex)
     const choicesBox = new BoxRenderable(renderer, {
@@ -4680,6 +4683,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       text.attributes = selected ? TextAttributes.BOLD : TextAttributes.NONE
       choicesBox.add(text)
     })
+    if (interaction.custom_choice) {
+      const index = interaction.choices.length
+      const text = new TextRenderable(renderer, { wrapMode: "none" })
+      const selected = focused && index === selectedIndex
+      const editing = interactionCustomEditing.has(interaction.id)
+      const value = interactionCustomReplies.get(interaction.id) ?? ""
+      const placeholder = interaction.custom_choice.placeholder ?? "type another option"
+      const renderedValue = value ? value : `<${placeholder}>`
+      text.content = `${selected ? ">" : " "} ${index + 1}.${interaction.custom_choice.label}: ${renderedValue}${editing ? "_" : ""}`
+      text.fg = selected ? theme.background : theme.primary
+      text.bg = selected ? theme.primary : undefined
+      text.attributes = selected ? TextAttributes.BOLD : TextAttributes.NONE
+      choicesBox.add(text)
+    }
     container.add(choicesBox)
   }
 
@@ -7696,20 +7713,40 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     const resolvedChoiceIndex = Math.min(
       choiceIndex ?? interactionChoiceSelection.get(interaction.id) ?? 0,
-      Math.max(0, interaction.choices.length - 1),
+      Math.max(0, interaction.choices.length + (interaction.custom_choice ? 1 : 0) - 1),
     )
-    const choice = interaction.choices[resolvedChoiceIndex]
+    const customChoice = interaction.custom_choice && resolvedChoiceIndex === interaction.choices.length
+      ? interaction.custom_choice
+      : null
+    const choice = customChoice ? null : interaction.choices[resolvedChoiceIndex]
     if (!choice) {
-      return false
+      if (!customChoice) {
+        return false
+      }
+      const reply = interactionCustomReplies.get(interaction.id) ?? ""
+      const minLength = customChoice.min_length ?? 1
+      if (reply.length < minLength) {
+        interactionCustomEditing.add(interaction.id)
+        renderAgentInteractions()
+        applyResponseLayout()
+        return true
+      }
     }
     interactionChoiceSelection.set(interaction.id, resolvedChoiceIndex)
     try {
       const response = await client.send<Record<string, unknown>>(
-        respondToInteractionRequest(sessionState().id, interaction.id, choice.id),
+        respondToInteractionRequest(
+          sessionState().id,
+          interaction.id,
+          customChoice?.id ?? choice!.id,
+          customChoice ? interactionCustomReplies.get(interaction.id) ?? "" : null,
+        ),
       )
       const payload = expectVariant<{ session: RuntimeSession }>(response, "InteractionResponded")
       payload.session = normalizeRuntimeSession(payload.session)
       applySessionState(payload.session)
+      interactionCustomReplies.delete(interaction.id)
+      interactionCustomEditing.delete(interaction.id)
       flashFooter("interaction answered", "info")
       return true
     } catch (error) {
@@ -7724,8 +7761,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return false
     }
     const currentIndex = interactionChoiceSelection.get(interaction.id) ?? 0
-    const nextIndex = (currentIndex + delta + interaction.choices.length) % interaction.choices.length
+    const choiceCount = interaction.choices.length + (interaction.custom_choice ? 1 : 0)
+    const nextIndex = (currentIndex + delta + choiceCount) % choiceCount
     interactionChoiceSelection.set(interaction.id, nextIndex)
+    if (interaction.custom_choice && nextIndex !== interaction.choices.length) {
+      interactionCustomEditing.delete(interaction.id)
+    }
     renderAgentInteractions()
     applyResponseLayout()
     return true
@@ -7734,12 +7775,55 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const handleFocusedInteractionKey = (event: {
     name: string
     eventType?: string
+    ctrl?: boolean
+    meta?: boolean
+    alt?: boolean
     preventDefault?: () => void
     stopPropagation?: () => void
   }) => {
     const interaction = focusedAgentInteraction()
     if (!interaction || event.eventType === "release") {
       return false
+    }
+    const customIndex = interaction.custom_choice ? interaction.choices.length : -1
+    const selectedIndex = interactionChoiceSelection.get(interaction.id) ?? 0
+    if (interaction.custom_choice && interactionCustomEditing.has(interaction.id)) {
+      if (event.name === "escape") {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        interactionCustomEditing.delete(interaction.id)
+        renderAgentInteractions()
+        applyResponseLayout()
+        return true
+      }
+      if (event.name === "backspace") {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        const current = interactionCustomReplies.get(interaction.id) ?? ""
+        interactionCustomReplies.set(interaction.id, current.slice(0, -1))
+        renderAgentInteractions()
+        applyResponseLayout()
+        return true
+      }
+      if (event.name === "return" || event.name === "enter") {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        void submitFocusedInteractionChoice(customIndex)
+        return true
+      }
+      if (!event.ctrl && !event.meta && !event.alt && event.name.length === 1) {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        const current = interactionCustomReplies.get(interaction.id) ?? ""
+        const maxLength = interaction.custom_choice.max_length ?? 2000
+        if (current.length < maxLength) {
+          interactionCustomReplies.set(interaction.id, `${current}${event.name}`)
+        }
+        renderAgentInteractions()
+        applyResponseLayout()
+        return true
+      }
+      return true
     }
     if (event.name === "left" || event.name === "up") {
       event.preventDefault?.()
@@ -7752,16 +7836,30 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return cycleFocusedInteractionChoice(1)
     }
     const numericIndex = Number.parseInt(event.name, 10)
-    if (Number.isInteger(numericIndex) && numericIndex >= 1 && numericIndex <= interaction.choices.length) {
+    const choiceCount = interaction.choices.length + (interaction.custom_choice ? 1 : 0)
+    if (Number.isInteger(numericIndex) && numericIndex >= 1 && numericIndex <= choiceCount) {
       event.preventDefault?.()
       event.stopPropagation?.()
-      void submitFocusedInteractionChoice(numericIndex - 1)
+      if (interaction.custom_choice && numericIndex - 1 === customIndex) {
+        interactionChoiceSelection.set(interaction.id, customIndex)
+        interactionCustomEditing.add(interaction.id)
+        renderAgentInteractions()
+        applyResponseLayout()
+      } else {
+        void submitFocusedInteractionChoice(numericIndex - 1)
+      }
       return true
     }
     if (event.name === "return" || event.name === "enter") {
       event.preventDefault?.()
       event.stopPropagation?.()
-      void submitFocusedInteractionChoice()
+      if (interaction.custom_choice && selectedIndex === customIndex && !(interactionCustomReplies.get(interaction.id) ?? "")) {
+        interactionCustomEditing.add(interaction.id)
+        renderAgentInteractions()
+        applyResponseLayout()
+      } else {
+        void submitFocusedInteractionChoice()
+      }
       return true
     }
     return false
@@ -8028,6 +8126,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         defaultOnTimeout: interaction.default_on_timeout,
         focused: focusedAgentId() === interaction.agent_id,
         selectedChoiceIndex: interactionChoiceSelection.get(interaction.id) ?? 0,
+        customChoice: interaction.custom_choice ?? null,
+        customReply: interactionCustomReplies.get(interaction.id) ?? "",
+        customEditing: interactionCustomEditing.has(interaction.id),
         choices: interaction.choices.map((choice) => ({
           id: choice.id,
           label: choice.label,

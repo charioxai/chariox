@@ -3081,6 +3081,56 @@ impl RuntimeInteractionChoice {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteractionCustomChoice {
+    id: String,
+    label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    placeholder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    min_length: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_length: Option<usize>,
+}
+
+impl RuntimeInteractionCustomChoice {
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        placeholder: Option<String>,
+        min_length: Option<usize>,
+        max_length: Option<usize>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            placeholder,
+            min_length,
+            max_length,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn placeholder(&self) -> Option<&str> {
+        self.placeholder.as_deref()
+    }
+
+    pub fn min_length(&self) -> usize {
+        self.min_length.unwrap_or(1)
+    }
+
+    pub fn max_length(&self) -> Option<usize> {
+        self.max_length
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInteraction {
     id: String,
     agent_id: String,
@@ -3090,6 +3140,8 @@ pub struct RuntimeInteraction {
     title: Option<String>,
     message: String,
     choices: Vec<RuntimeInteractionChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    custom_choice: Option<RuntimeInteractionCustomChoice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout_sec: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3107,6 +3159,7 @@ impl RuntimeInteraction {
         title: Option<String>,
         message: impl Into<String>,
         choices: Vec<RuntimeInteractionChoice>,
+        custom_choice: Option<RuntimeInteractionCustomChoice>,
         timeout_sec: Option<u64>,
         default_on_timeout: Option<String>,
     ) -> Self {
@@ -3118,6 +3171,7 @@ impl RuntimeInteraction {
             title,
             message: message.into(),
             choices,
+            custom_choice,
             timeout_sec,
             default_on_timeout,
             requested_at_ms: unix_epoch_ms(),
@@ -3150,6 +3204,10 @@ impl RuntimeInteraction {
 
     pub fn choices(&self) -> &[RuntimeInteractionChoice] {
         &self.choices
+    }
+
+    pub fn custom_choice(&self) -> Option<&RuntimeInteractionCustomChoice> {
+        self.custom_choice.as_ref()
     }
 
     pub fn timeout_sec(&self) -> Option<u64> {

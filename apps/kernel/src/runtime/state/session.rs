@@ -129,6 +129,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         interaction_id: &str,
         choice_id: &str,
+        custom_reply: Option<&str>,
     ) -> Result<(), DaemonError> {
         crate::logging::debug_with_fields(
             "runtime.interaction",
@@ -159,17 +160,66 @@ impl KernelRuntimeOwnedState {
         }
         let mut session = self.session_store.get_session(session_id)?;
         let interaction = session
-            .remove_active_interaction(interaction_id)
+            .active_interactions()
+            .iter()
+            .find(|interaction| interaction.id() == interaction_id)
+            .cloned()
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation: "resolve runtime interaction",
                 message: format!("interaction {interaction_id} is not active in session"),
             })?;
-        let choice = interaction
-            .choice(choice_id)
-            .ok_or_else(|| DaemonError::LocalTransport {
+        let resolved_reply = if let Some(choice) = interaction.choice(choice_id) {
+            if custom_reply.is_some() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "resolve runtime interaction",
+                    message: "custom_reply is only valid for the custom choice".to_string(),
+                });
+            }
+            choice.reply().to_string()
+        } else if let Some(custom_choice) = interaction.custom_choice() {
+            if custom_choice.id() != choice_id {
+                return Err(DaemonError::LocalTransport {
+                    operation: "resolve runtime interaction",
+                    message: format!(
+                        "interaction {interaction_id} does not define choice {choice_id}"
+                    ),
+                });
+            }
+            if interaction.kind() != crate::session::RuntimeInteractionKind::Choice {
+                return Err(DaemonError::LocalTransport {
+                    operation: "resolve runtime interaction",
+                    message: "custom choices are only valid for choice interactions".to_string(),
+                });
+            }
+            let reply = custom_reply.ok_or_else(|| DaemonError::LocalTransport {
+                operation: "resolve runtime interaction",
+                message: "custom_reply is required for the custom choice".to_string(),
+            })?;
+            let reply_len = reply.chars().count();
+            if reply_len < custom_choice.min_length() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "resolve runtime interaction",
+                    message: format!(
+                        "custom_reply must be at least {} characters",
+                        custom_choice.min_length()
+                    ),
+                });
+            }
+            if let Some(max_length) = custom_choice.max_length() {
+                if reply_len > max_length {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "resolve runtime interaction",
+                        message: format!("custom_reply must be at most {max_length} characters"),
+                    });
+                }
+            }
+            reply.to_string()
+        } else {
+            return Err(DaemonError::LocalTransport {
                 operation: "resolve runtime interaction",
                 message: format!("interaction {interaction_id} does not define choice {choice_id}"),
-            })?;
+            });
+        };
         let pending = self
             .pending_interactions
             .write()
@@ -178,6 +228,7 @@ impl KernelRuntimeOwnedState {
                 operation: "resolve runtime interaction",
                 message: format!("interaction {interaction_id} was not pending"),
             })?;
+        let _ = session.remove_active_interaction(interaction_id);
         self.restore_session_and_publish_projection(session)?;
         if let Some(sender) = pending
             .responder
@@ -187,8 +238,8 @@ impl KernelRuntimeOwnedState {
         {
             let _ = sender.send(super::PendingInteractionResolution {
                 status: "answered",
-                choice_id: Some(choice.id().to_string()),
-                reply: Some(choice.reply().to_string()),
+                choice_id: Some(choice_id.to_string()),
+                reply: Some(resolved_reply),
             });
         }
         crate::logging::debug_with_fields(

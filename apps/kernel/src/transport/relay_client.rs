@@ -4106,6 +4106,7 @@ mod tests {
             ],
             None,
             None,
+            None,
         );
         let context = crate::transport::relay_peer::RemoteNativeInteractionContext {
             home_session_id: home_session_id.clone(),
@@ -4140,6 +4141,7 @@ mod tests {
                 session_id: home_session_id.clone(),
                 interaction_id,
                 choice_id: "allow_once".to_string(),
+                custom_reply: None,
             });
         let provider_runtime_lanes = {
             let app = app_home.lock().await;

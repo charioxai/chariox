@@ -715,6 +715,7 @@ impl SessionRuntimeStore {
                 &request.session_id,
                 &request.interaction_id,
                 &request.choice_id,
+                request.custom_reply.as_deref(),
             )
             .await
         {

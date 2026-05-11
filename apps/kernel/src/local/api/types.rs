@@ -3,7 +3,7 @@ use super::*;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 16;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 17;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -1178,6 +1178,8 @@ pub struct RespondToInteractionRequest {
     pub session_id: String,
     pub interaction_id: String,
     pub choice_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_reply: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
