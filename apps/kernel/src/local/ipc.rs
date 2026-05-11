@@ -823,7 +823,7 @@ mod tests {
                 execution_mode: None,
                 permission_level: None,
                 worktree_id: None,
-                machine_ref: None,
+                kernel_ref: None,
                 worktree_placement: None,
             }))
             .expect("workflow agent should spawn")
@@ -1037,7 +1037,7 @@ mod tests {
                 execution_mode: None,
                 permission_level: None,
                 worktree_id: None,
-                machine_ref: None,
+                kernel_ref: None,
                 worktree_placement: None,
             }))
             .expect("first workflow agent should spawn")
@@ -1056,7 +1056,7 @@ mod tests {
                 execution_mode: None,
                 permission_level: None,
                 worktree_id: None,
-                machine_ref: None,
+                kernel_ref: None,
                 worktree_placement: None,
             }))
             .expect("second workflow agent should spawn")

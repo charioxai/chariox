@@ -6,6 +6,7 @@ use crate::artifacts::{ArtifactArchiveOutboxItem, ArtifactRecord, OperationalArt
 use crate::config::{HistoryArchiveMode, UserArchiveArtifactsConfig, UserArchiveHistoryConfig};
 use crate::error::DaemonError;
 use crate::history::{HistoryEvent, HistoryEventQuery, OperationalHistoryStore};
+use crate::local::SemanticHistoryMatch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryArchiveClient {
@@ -29,7 +30,11 @@ pub struct HistoryArchiveCapabilities {
     #[serde(default)]
     pub search: bool,
     #[serde(default)]
+    pub semantic_search: bool,
+    #[serde(default)]
     pub full_text_search: bool,
+    #[serde(default)]
+    pub vector_search: bool,
     #[serde(default)]
     pub blob_refs: bool,
 }
@@ -58,6 +63,19 @@ pub struct HistoryArchiveSearchResponse {
     pub events: Vec<HistoryEvent>,
     #[serde(default)]
     pub next_sequence: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryArchiveSemanticSearchRequest {
+    pub query: HistoryEventQuery,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryArchiveSemanticSearchResponse {
+    #[serde(default)]
+    pub results: Vec<SemanticHistoryMatch>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,7 +135,9 @@ impl Default for HistoryArchiveCapabilities {
             append: false,
             query: false,
             search: false,
+            semantic_search: false,
             full_text_search: false,
+            vector_search: false,
             blob_refs: false,
         }
     }
@@ -327,6 +347,19 @@ impl HistoryArchiveClient {
         }
     }
 
+    pub fn semantic_search_events(
+        &self,
+        query: HistoryEventQuery,
+    ) -> Result<HistoryArchiveSemanticSearchResponse, DaemonError> {
+        match self {
+            Self::Disabled => Ok(HistoryArchiveSemanticSearchResponse {
+                results: Vec::new(),
+                next_cursor: None,
+            }),
+            Self::External(client) => client.semantic_search_events(query),
+        }
+    }
+
     pub fn append_artifacts(
         &self,
         artifacts: &[ArtifactArchiveOutboxItem],
@@ -406,6 +439,32 @@ impl ExternalHistoryArchiveClient {
             .send_string(&payload)
             .map_err(|error| archive_http_error("search", error))?;
         decode_response_json::<HistoryArchiveSearchResponse>(response, "history.archive.search")
+    }
+
+    fn semantic_search_events(
+        &self,
+        query: HistoryEventQuery,
+    ) -> Result<HistoryArchiveSemanticSearchResponse, DaemonError> {
+        let request_body = HistoryArchiveSemanticSearchRequest { query };
+        let payload = serde_json::to_string(&request_body).map_err(|error| {
+            DaemonError::SessionHistoryFailed {
+                session_id: None,
+                operation: "encode history archive semantic search request",
+                message: error.to_string(),
+            }
+        })?;
+        let request = self
+            .authorized_request(ureq::post(
+                &self.endpoint("/arroba/history/semantic-search"),
+            ))?
+            .set("content-type", "application/json");
+        let response = request
+            .send_string(&payload)
+            .map_err(|error| archive_http_error("semantic search", error))?;
+        decode_response_json::<HistoryArchiveSemanticSearchResponse>(
+            response,
+            "history.archive.semantic_search",
+        )
     }
 
     fn append_artifacts(

@@ -36,6 +36,8 @@ import type {
   SessionInvite,
   SessionHistoryPage,
   SessionHistoryPageEntry,
+  HistoryEvent,
+  SemanticHistoryMatch,
   SessionConfigState,
   SessionMember,
   SkillImportOutcome,
@@ -147,6 +149,8 @@ import {
   setWorkflowWatchdogEnabledRequest,
   setCredentialSecretRequest,
   setUserConfigValueRequest,
+  searchHistoryRequest,
+  semanticSearchHistoryRequest,
   showWorkspaceLinkRequest,
   spawnAgentRequest,
   startProviderLoginRequest,
@@ -184,7 +188,7 @@ type PlacementOptions = {
   gitWorktree?: string | undefined
   branch?: string | undefined
   fromRef?: string | undefined
-  machineRef?: string | undefined
+  kernelRef?: string | undefined
 }
 
 export type ShellExecutorDeps = {
@@ -239,6 +243,8 @@ export async function executeShellCommand(
       return executeWorkflowCommand(parsed, context, deps)
     case "workspace":
       return executeWorkspaceCommand(parsed, context, deps)
+    case "history":
+      return executeHistoryCommand(parsed, context, deps)
     case "prompt":
       return executePromptCommand(parsed, context, deps)
     case "stop":
@@ -276,6 +282,7 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
           "skill list|show|install|update|uninstall|import|grant|revoke|grants",
           "workspace link create|list|show|attach|detach",
           "workflow list|new|show|run|runs|cancel|resume|node|edge|endpoint",
+          "history search|semantic-search",
           "prompt [agent-ref] <prompt> [--wait] [--show-reply|--show-summary]",
           "provider status|login|logout|reauth|processes",
           "stop",
@@ -740,16 +747,12 @@ async function executeAgentCommand(
       }
       const [alias, model] = parsedSpawn.options.positional
       if (parsedSpawn.options.positional.length > 2) {
-        return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>]" }
+        return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--kernel <kernel-ref>]" }
+      }
+      if (parsedSpawn.options.kernelRef && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
+        return { ok: false, message: "usage: agent spawn [alias] [model] --kernel <kernel-ref> uses the worker kernel default directory" }
       }
       const worktree = await resolveShellPlacement(parsedSpawn.options, context.worktree, "agent working directory", deps)
-      const remotePlacement = parsedSpawn.options.machineRef && (parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)
-        ? {
-            target_directory: parsedSpawn.options.gitWorktree ?? null,
-            branch: parsedSpawn.options.branch ?? null,
-            from_ref: parsedSpawn.options.fromRef ?? null,
-          }
-        : undefined
       const response = await deps.client.send(spawnAgentRequest(
         sessionId,
         context.provider,
@@ -759,12 +762,11 @@ async function executeAgentCommand(
         context.effort,
         undefined,
         undefined,
-        parsedSpawn.options.machineRef,
-        remotePlacement,
+        parsedSpawn.options.kernelRef,
       ))
       const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
       const placement = agent.remote_execution
-        ? ` on ${parsedSpawn.options.machineRef ?? agent.remote_execution.worker_machine_id}`
+        ? ` on ${parsedSpawn.options.kernelRef ?? agent.remote_execution.worker_machine_id}`
         : agent.worktree_id ? ` in ${agent.worktree_id}` : ""
       return resourceResult(
         `spawned agent ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${placement}`,
@@ -1157,6 +1159,51 @@ function normalizeShellFlag(value: string): string {
   return value.startsWith("—") ? `--${value.slice(1)}` : value
 }
 
+async function executeHistoryCommand(
+  parsed: ParsedShellCommand,
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const [action, ...rest] = parsed.args
+  if (action !== "search" && action !== "semantic-search") {
+    return { ok: false, message: "usage: history search <query> | history semantic-search [--agent] <query>" }
+  }
+  const semanticMode = action === "semantic-search" && rest[0] === "--agent" ? "agent" : "knn"
+  const queryArgs = semanticMode === "agent" ? rest.slice(1) : rest
+  const query = queryArgs.join(" ").trim()
+  if (!query) {
+    return { ok: false, message: `usage: history ${action} <query>` }
+  }
+  const filters = {
+    session_id: context.sessionId ?? null,
+    limit: action === "semantic-search" ? 20 : 50,
+  }
+  if (action === "semantic-search") {
+    const response = await deps.client.send(semanticSearchHistoryRequest(query, { ...filters, mode: semanticMode }))
+    const payload = expectVariant<{
+      results?: SemanticHistoryMatch[]
+      unavailable_reason?: string | null
+      answer?: string | null
+    }>(response, "SemanticHistoryEvents")
+    const unavailable = payload.unavailable_reason?.trim()
+    if (unavailable) {
+      return { ok: false, message: unavailable }
+    }
+    return {
+      ok: true,
+      message: [payload.answer?.trim(), formatSemanticHistoryMatches(payload.results ?? [])].filter(Boolean).join("\n\n"),
+      format: "text",
+    }
+  }
+  const response = await deps.client.send(searchHistoryRequest(query, filters))
+  const payload = expectVariant<{ events?: HistoryEvent[] }>(response, "HistoryEvents")
+  return {
+    ok: true,
+    message: formatHistoryEvents(payload.events ?? []),
+    format: "text",
+  }
+}
+
 async function executeClientCommand(
   parsed: ParsedShellCommand,
   deps: ShellExecutorDeps,
@@ -1213,10 +1260,10 @@ async function executeMachineCommand(
   parsed: ParsedShellCommand,
   deps: ShellExecutorDeps,
 ): Promise<ShellCommandResult> {
-  const [action, machineRef, ...rest] = parsed.args
+  const [action, kernelRef, ...rest] = parsed.args
   switch (action) {
     case "invite": {
-      if (machineRef !== "create") {
+      if (kernelRef !== "create") {
         return { ok: false, message: "usage: machine invite create [alias]" }
       }
       const alias = rest.length > 0 ? rest.join(" ") : null
@@ -1225,12 +1272,12 @@ async function executeMachineCommand(
       return { ok: true, message: formatPairingInvite(payload.invite), data: payload }
     }
     case "join": {
-      if (!machineRef) {
+      if (!kernelRef) {
         return { ok: false, message: "usage: machine join <invite-token> [machine-id] [alias]" }
       }
       const subjectId = rest[0] ?? null
       const alias = rest.length > 1 ? rest.slice(1).join(" ") : null
-      const response = await deps.client.send(joinPairingInviteRequest(machineRef, subjectId, null, alias))
+      const response = await deps.client.send(joinPairingInviteRequest(kernelRef, subjectId, null, alias))
       const payload = expectVariant<{ pairing: PairingJoinRecord }>(response, "PairingInviteJoined")
       return { ok: true, message: formatPairingJoin(payload.pairing), data: payload }
     }
@@ -1241,36 +1288,36 @@ async function executeMachineCommand(
       return { ok: true, message: formatRemoteMachines(machines), data: { machines } }
     }
     case "kernels": {
-      if (!machineRef) {
+      if (!kernelRef) {
         return { ok: false, message: "usage: machine kernels <machine-ref>" }
       }
-      const response = await deps.client.send(listRemoteMachineKernelsRequest(machineRef))
+      const response = await deps.client.send(listRemoteMachineKernelsRequest(kernelRef))
       const payload = expectVariant<{ kernels: RelayKernelPresence[] }>(response, "RemoteMachineKernelsListed")
-      return { ok: true, message: formatRemoteKernels(payload.kernels, machineRef), data: payload }
+      return { ok: true, message: formatRemoteKernels(payload.kernels, kernelRef), data: payload }
     }
     case "approve": {
-      if (!machineRef) {
+      if (!kernelRef) {
         return { ok: false, message: "usage: machine approve <machine-ref>" }
       }
-      const response = await deps.client.send(approveRemoteMachineRequest(machineRef))
+      const response = await deps.client.send(approveRemoteMachineRequest(kernelRef))
       const payload = expectVariant<{ machine: RemoteMachineRecord }>(response, "RemoteMachineApproved")
       return { ok: true, message: `approved machine ${formatRemoteMachineLabel(payload.machine)}`, data: payload }
     }
     case "rename": {
-      if (!machineRef || rest.length === 0) {
+      if (!kernelRef || rest.length === 0) {
         return { ok: false, message: "usage: machine rename <machine-ref> <alias>" }
       }
       const alias = rest.join(" ")
-      const response = await deps.client.send(renameRemoteMachineRequest(machineRef, alias))
+      const response = await deps.client.send(renameRemoteMachineRequest(kernelRef, alias))
       const payload = expectVariant<{ machine: RemoteMachineRecord }>(response, "RemoteMachineRenamed")
       return { ok: true, message: `renamed machine ${formatRemoteMachineLabel(payload.machine)}`, data: payload }
     }
     case "forget":
     case "revoke": {
-      if (!machineRef) {
+      if (!kernelRef) {
         return { ok: false, message: "usage: machine revoke <machine-ref>" }
       }
-      const response = await deps.client.send(forgetRemoteMachineRequest(machineRef))
+      const response = await deps.client.send(forgetRemoteMachineRequest(kernelRef))
       const payload = expectVariant<{ machine: RemoteMachineRecord }>(response, "RemoteMachineForgotten")
       return { ok: true, message: `revoked machine ${formatRemoteMachineLabel(payload.machine)}`, data: payload }
     }
@@ -2867,6 +2914,47 @@ function formatPromptReply(history: SessionHistoryPageEntry[]): string {
   return reply || "(no reply output)"
 }
 
+function formatHistoryEvents(events: HistoryEvent[]): string {
+  if (events.length === 0) {
+    return "no matching history"
+  }
+  return events.map((event) => formatHistoryEventLine(event)).join("\n\n")
+}
+
+function formatSemanticHistoryMatches(matches: SemanticHistoryMatch[]): string {
+  if (matches.length === 0) {
+    return "no semantic matches"
+  }
+  return matches.map((match) => {
+    const score = typeof match.score_millis === "number"
+      ? ` score=${(match.score_millis / 1000).toFixed(3)}`
+      : ""
+    const chunk = typeof match.chunk_index === "number" ? ` chunk=${match.chunk_index}` : ""
+    const reason = match.reason ? `\nreason: ${truncateHistoryText(match.reason)}` : ""
+    return `${formatHistoryEventLine(match.event)}${score}${chunk}${match.chunk_text ? `\n${truncateHistoryText(match.chunk_text)}` : ""}${reason}`
+  }).join("\n\n")
+}
+
+function formatHistoryEventLine(event: HistoryEvent): string {
+  const timestamp = Number.isFinite(event.timestamp_ms)
+    ? new Date(event.timestamp_ms).toISOString()
+    : "unknown-time"
+  const label = [
+    event.kind,
+    event.provider,
+    event.model,
+    event.session_id ? `session=${event.session_id}` : null,
+    event.agent_id ? `agent=${event.agent_id}` : null,
+  ].filter(Boolean).join(" ")
+  const content = truncateHistoryText(event.content ?? "")
+  return content ? `${timestamp} ${label}\n${content}` : `${timestamp} ${label}`
+}
+
+function truncateHistoryText(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim()
+  return normalized.length > 320 ? `${normalized.slice(0, 317)}...` : normalized
+}
+
 function formatPromptHistoryEntry(
   entry: SessionHistoryPageEntry,
   tools: Map<string, ToolTranscriptUpdate>,
@@ -2915,8 +3003,8 @@ function parsePlacementOptions(args: string[], allowMachine: boolean): { options
     } else if (arg === "--from" && next) {
       options.fromRef = next
       index += 1
-    } else if (arg === "--machine" && next && allowMachine) {
-      options.machineRef = next
+    } else if (arg === "--kernel" && next && allowMachine) {
+      options.kernelRef = next
       index += 1
     } else if (arg?.startsWith("--")) {
       return { options, error: `unknown or incomplete option: ${arg}` }
@@ -2939,8 +3027,8 @@ async function resolveShellPlacement(
   label: string,
   deps: ShellExecutorDeps,
 ): Promise<string | undefined> {
-  if (options.machineRef) {
-    return options.directory ?? options.gitWorktree ?? undefined
+  if (options.kernelRef) {
+    return undefined
   }
   const positionalDirectory = options.positional.length === 1 && !options.directory && !options.gitWorktree
     ? options.positional[0]
@@ -3060,9 +3148,9 @@ function formatPairingJoin(pairing: PairingJoinRecord): string {
   return `joined ${pairing.intent} ${pairing.subject_id}${alias} target=${pairing.target_daemon_id} thumbprint=${pairing.public_key_thumbprint}`
 }
 
-function formatRemoteKernels(kernels: RelayKernelPresence[], machineRef: string): string {
+function formatRemoteKernels(kernels: RelayKernelPresence[], kernelRef: string): string {
   if (kernels.length === 0) {
-    return `no live kernels found for machine ${machineRef}`
+    return `no live kernels found for machine ${kernelRef}`
   }
   return kernels.map((kernel) => {
     const name = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id

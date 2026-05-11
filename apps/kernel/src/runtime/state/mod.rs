@@ -751,7 +751,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        if request.machine_ref.is_none() {
+        if request.kernel_ref.is_none() {
             return self.owned.spawn_agent(request);
         }
         self.with_app_side_effect(|app| {

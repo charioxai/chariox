@@ -1410,6 +1410,7 @@ async fn emit_leased_projection_event(
     )
 }
 
+#[cfg(test)]
 pub async fn send_peer_request_to_known_kernel_via_relay(
     config: &crate::config::DaemonConfig,
     state: &Arc<RwLock<RelayClientState>>,
@@ -1917,6 +1918,8 @@ fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
         LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
+        LocalDaemonRequest::SearchHistory(_) => "history.search",
+        LocalDaemonRequest::SemanticSearchHistory(_) => "history.semantic_search",
         LocalDaemonRequest::ListSessions(_) => "session.list",
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::AttachToSession(_) => "session.attach",
@@ -3359,7 +3362,7 @@ mod tests {
                         .with_alias("remote-reviewer")
                         .with_model("default")
                         .with_effort("medium")
-                        .with_machine(&config_worker.host_machine_id),
+                        .with_kernel(&config_worker.daemon_id),
                 )
                 .expect("remote agent should spawn")
         };
@@ -3524,7 +3527,7 @@ mod tests {
                         .with_alias("remote-reviewer")
                         .with_model("default")
                         .with_effort("medium")
-                        .with_machine(&config_worker.host_machine_id),
+                        .with_kernel(&config_worker.daemon_id),
                 )
                 .expect("remote agent should spawn")
                 .id()
@@ -3680,7 +3683,7 @@ mod tests {
                 .spawn_agent(
                     CreateAgentRequest::new(session.id(), &provider)
                         .with_alias("remote-reviewer")
-                        .with_machine(&config_worker.host_machine_id),
+                        .with_kernel(&config_worker.daemon_id),
                 )
                 .expect("remote agent should spawn");
             let leased_agent_id = remote_agent
@@ -3870,7 +3873,7 @@ mod tests {
                     CreateAgentRequest::new(&session_id, &provider)
                         .with_alias("remote-reviewer")
                         .with_model("default")
-                        .with_machine(&config_worker.host_machine_id),
+                        .with_kernel(&config_worker.daemon_id),
                 )
                 .expect("remote agent should spawn")
                 .id()

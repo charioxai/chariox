@@ -458,7 +458,7 @@ pub struct CreateAgentRequest {
     pub execution_mode_override: Option<AgentExecutionMode>,
     pub permission_level_override: Option<AgentPermissionLevel>,
     pub worktree_id: Option<String>,
-    pub machine_ref: Option<String>,
+    pub kernel_ref: Option<String>,
     pub worktree_placement: Option<GitWorktreePlacement>,
 }
 
@@ -474,7 +474,7 @@ impl CreateAgentRequest {
             execution_mode_override: None,
             permission_level_override: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }
     }
@@ -517,8 +517,8 @@ impl CreateAgentRequest {
         self
     }
 
-    pub fn with_machine(mut self, machine_ref: impl Into<String>) -> Self {
-        self.machine_ref = Some(machine_ref.into());
+    pub fn with_kernel(mut self, kernel_ref: impl Into<String>) -> Self {
+        self.kernel_ref = Some(kernel_ref.into());
         self
     }
 

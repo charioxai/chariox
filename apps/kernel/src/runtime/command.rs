@@ -504,6 +504,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::TeardownProviderProcesses(_) => "provider_process.teardown",
         LocalDaemonRequest::QueryHistory(_) => "history.query",
         LocalDaemonRequest::SearchHistory(_) => "history.search",
+        LocalDaemonRequest::SemanticSearchHistory(_) => "history.semantic_search",
         LocalDaemonRequest::GetPromptInputHistory(_) => "prompt_input_history.get",
         LocalDaemonRequest::RecordPromptInputHistory(_) => "prompt_input_history.record",
         LocalDaemonRequest::PollRuntimeNotices(_) => "runtime_notice.poll",
@@ -749,7 +750,7 @@ mod tests {
                 execution_mode: None,
                 permission_level: None,
                 worktree_id: None,
-                machine_ref: None,
+                kernel_ref: None,
                 worktree_placement: None,
             }),
         );

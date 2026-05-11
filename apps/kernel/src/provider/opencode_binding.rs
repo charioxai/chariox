@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
 use crate::session::PromptAttachment;
@@ -9,12 +9,14 @@ use super::{
     opencode_client::OpenCodeConfiguredDefaults, workspace_write_fence_active, OpenCodeClient,
     OpenCodeMessage, ProviderResumeState, RuntimeProviderRun,
 };
-use crate::provider::opencode_runtime::OpenCodeRuntimeState;
+use crate::provider::opencode_runtime::{drain_opencode_events, OpenCodeRuntimeState};
+use crate::terminal::TerminalOutputKind;
 
 const OPENCODE_EVENT_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 const OPENCODE_EVENT_SUBSCRIBE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const OPENCODE_SESSION_CREATE_TIMEOUT: Duration = Duration::from_secs(5);
 const OPENCODE_SESSION_CREATE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+const OPENCODE_UTILITY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Default)]
 pub(crate) struct OpenCodeRunSelection {
@@ -407,6 +409,113 @@ pub(super) fn submit_opencode_prompt(
     )?;
     state.note_prompt_submitted(message_id);
     Ok(())
+}
+
+pub(crate) fn run_opencode_utility_prompt(
+    run: &RuntimeProviderRun,
+    prompt: &str,
+    timeout: Duration,
+) -> Result<String, DaemonError> {
+    let base_url = run
+        .structured_endpoint()
+        .ok_or_else(|| DaemonError::ProviderProtocol {
+            provider_run_id: run.id().to_string(),
+            operation: "opencode_utility_endpoint_missing",
+            message: "opencode utility requires a structured provider endpoint".to_string(),
+        })?
+        .to_string();
+    let client = OpenCodeClient::new(run.id(), &base_url)?;
+    client.wait_until_healthy(Duration::from_secs(30))?;
+    let allow_native_bash = workspace_write_fence_active(run);
+    let session_permission = if run.requires_managed_io() {
+        Some(opencode_managed_io_permission_rules(allow_native_bash))
+    } else {
+        Some(opencode_permission_rules(run.permission_level()))
+    };
+    let session_id = client.create_session_with_retry(
+        session_permission,
+        OPENCODE_SESSION_CREATE_TIMEOUT,
+        OPENCODE_SESSION_CREATE_RETRY_INTERVAL,
+    )?;
+    let event_subscription = client.subscribe_events_with_retry(
+        OPENCODE_EVENT_SUBSCRIBE_TIMEOUT,
+        OPENCODE_EVENT_SUBSCRIBE_RETRY_INTERVAL,
+    )?;
+    let mut state = OpenCodeRuntimeState::new(base_url, session_id, event_subscription);
+    if let Err(error) = submit_opencode_prompt(run, &mut state, prompt, &[]) {
+        state.stop();
+        return Err(error);
+    }
+
+    let deadline = Instant::now() + timeout;
+    let mut output = String::new();
+    let mut completed = false;
+    while Instant::now() < deadline {
+        let drain = match drain_opencode_events(run, &mut state, None) {
+            Ok(drain) => drain,
+            Err(error) => {
+                state.stop();
+                return Err(error);
+            }
+        };
+        for chunk in drain.chunks {
+            if chunk.kind == TerminalOutputKind::ProviderOutput {
+                output.push_str(&String::from_utf8_lossy(&chunk.bytes));
+            }
+        }
+        if let Some(failure) = drain.terminal_failure {
+            state.stop();
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "opencode_utility_failed",
+                message: failure,
+            });
+        }
+        if drain.prompt_completed {
+            completed = true;
+            break;
+        }
+        std::thread::sleep(OPENCODE_UTILITY_POLL_INTERVAL);
+    }
+    if !completed {
+        let _ = abort_opencode_session(run.id(), &state);
+        state.stop();
+        return Err(DaemonError::ProviderProtocol {
+            provider_run_id: run.id().to_string(),
+            operation: "opencode_utility_timeout",
+            message: format!(
+                "opencode utility did not complete within {} ms",
+                timeout.as_millis()
+            ),
+        });
+    }
+    state.stop();
+    let output = clean_opencode_utility_output(&output);
+    if output.is_empty() {
+        return Err(DaemonError::ProviderProtocol {
+            provider_run_id: run.id().to_string(),
+            operation: "opencode_utility_empty_output",
+            message: "opencode utility returned no assistant text".to_string(),
+        });
+    }
+    Ok(output)
+}
+
+fn clean_opencode_utility_output(output: &str) -> String {
+    let trimmed = output.trim();
+    if let Some(stripped) = trimmed
+        .strip_prefix("```json")
+        .and_then(|value| value.strip_suffix("```"))
+    {
+        return stripped.trim().to_string();
+    }
+    if let Some(stripped) = trimmed
+        .strip_prefix("```")
+        .and_then(|value| value.strip_suffix("```"))
+    {
+        return stripped.trim().to_string();
+    }
+    trimmed.to_string()
 }
 
 fn next_opencode_message_id() -> String {

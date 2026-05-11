@@ -4,7 +4,7 @@ This page describes the current local protocol between the Arroba Kernel and the
 
 It reflects the current implementation, not the long-term remote/federated design.
 
-Current shared local daemon protocol version: `17`.
+Current shared local daemon protocol version: `22`.
 
 Primary implementation sources:
 
@@ -78,6 +78,10 @@ When an error is present:
 ## Kernel Event IDs
 
 Protocol version `13` adds the `agent_activity` projection to `PromptSubmitted` responses so clients update badges from kernel-owned turn state at prompt admission, without output-based inference.
+
+Protocol version `21` adds semantic history search mode selection. `SemanticSearchHistory` accepts `mode: "knn" | "agent" | null`; omitted/null defaults to KNN. `SemanticHistoryEvents` may include an `answer` for focused-agent semantic search, and each `SemanticHistoryMatch` may include a short `reason`.
+
+Protocol version `22` removes the kernel-to-kernel provider catalog request and stops embedding relay remote machine/kernel inventory in waiting-room snapshots. Browser clients now obtain per-kernel catalogs by opening target-scoped runtime connections to each available kernel.
 
 Protocol version `17` adds optional editable custom choices for choice interactions. `RuntimeInteraction` may include `custom_choice`, and `RespondToInteraction` may include `custom_reply` when responding with that custom choice id.
 

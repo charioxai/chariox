@@ -52,10 +52,8 @@ use crate::runtime::workspace_coordinator::{
 };
 use crate::session::{CreateSessionRequest, RuntimeSession, SessionService, SessionStateStore};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
+use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_client::RelayClientState;
-use crate::transport::relay_client::{
-    send_peer_request_to_known_kernel_via_relay, send_peer_request_via_temporary_connection,
-};
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 pub(crate) use kernel_agent::KernelAgentService;
@@ -471,6 +469,36 @@ fn select_remote_kernel(
                 kernel.kernel_id.clone(),
             )
         })
+}
+
+fn kernel_presence_matches_ref(kernel: &RelayKernelPresence, kernel_ref: &str) -> bool {
+    kernel.kernel_id == kernel_ref
+        || kernel.kernel_alias.as_deref() == Some(kernel_ref)
+        || kernel.relay_alias.as_deref() == Some(kernel_ref)
+}
+
+fn ensure_kernel_can_host_provider(
+    kernel: RelayKernelPresence,
+    kernel_ref: &str,
+    provider: &str,
+) -> Result<RelayKernelPresence, DaemonError> {
+    if !kernel.accepting_remote_leases {
+        return Err(DaemonError::LocalTransport {
+            operation: "select remote kernel",
+            message: format!("kernel `{kernel_ref}` is not accepting worker agents"),
+        });
+    }
+    if !kernel
+        .available_providers
+        .iter()
+        .any(|candidate| candidate == provider)
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "select remote kernel",
+            message: format!("kernel `{kernel_ref}` cannot host provider `{provider}`"),
+        });
+    }
+    Ok(kernel)
 }
 
 impl DaemonApp {
@@ -1209,21 +1237,28 @@ impl DaemonApp {
         }
     }
 
-    fn spawn_remote_agent(
+    pub(crate) fn kernel_ref_is_local(&self, kernel_ref: &str) -> bool {
+        let kernel_ref = kernel_ref.trim();
+        !kernel_ref.is_empty()
+            && (self.config.daemon_id == kernel_ref
+                || self.config.daemon_alias.as_deref() == Some(kernel_ref))
+    }
+
+    pub(crate) fn spawn_worker_agent(
         &mut self,
-        request: CreateAgentRequest,
-        machine_ref: &str,
+        mut request: CreateAgentRequest,
+        kernel_ref: &str,
     ) -> Result<AgentInstance, DaemonError> {
-        let worker_kernel =
-            self.select_remote_kernel_for_machine(machine_ref, &request.provider)?;
-        let worktree_placement = request.worktree_placement.clone();
+        let worker_kernel = self.select_remote_kernel_by_ref(kernel_ref, &request.provider)?;
+        request.kernel_ref = None;
+        request.worktree_id = None;
+        request.worktree_placement = None;
         let session_store = self.session_state_store();
         let agent = {
             let mut sessions = session_store.write();
             self.agents.create_agent(request, &mut sessions)?
         };
-        let remote_setup =
-            self.bind_remote_agent_to_worker(&agent, &worker_kernel, worktree_placement);
+        let remote_setup = self.bind_remote_agent_to_worker(&agent, &worker_kernel, None);
         if remote_setup.is_err() {
             let mut sessions = session_store.write();
             let _ = self.agents.destroy_agent(agent.id(), &mut sessions);
@@ -1244,33 +1279,28 @@ impl DaemonApp {
             daemon_id: Some(worker_kernel.kernel_id.clone()),
             daemon_alias: None,
         };
-        let lease =
-            match self.block_on_relay_future(send_peer_request_to_known_kernel_via_relay(
+        let lease = match self.block_on_relay_future(send_peer_request_via_temporary_connection(
+            &self.config,
+            target.clone(),
+            RelayPeerRequest::CreateExecutionLease {
+                home_kernel_id: self.config.daemon_id.clone(),
+                home_session_id: agent.session_id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                owner_user_id: agent.owner_user_id().to_string(),
+            },
+        ))? {
+            RelayPeerResponse::ExecutionLeaseCreated { lease } => lease,
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "create remote execution lease",
+                    message: format!("unexpected peer response: {other:?}"),
+                });
+            }
+        };
+        let leased_agent =
+            match self.block_on_relay_future(send_peer_request_via_temporary_connection(
                 &self.config,
-                &self.relay_client_state,
                 target.clone(),
-                &worker_kernel.public_key,
-                RelayPeerRequest::CreateExecutionLease {
-                    home_kernel_id: self.config.daemon_id.clone(),
-                    home_session_id: agent.session_id().to_string(),
-                    home_agent_id: agent.id().to_string(),
-                    owner_user_id: agent.owner_user_id().to_string(),
-                },
-            ))? {
-                RelayPeerResponse::ExecutionLeaseCreated { lease } => lease,
-                other => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "create remote execution lease",
-                        message: format!("unexpected peer response: {other:?}"),
-                    });
-                }
-            };
-        let leased_agent = match self.block_on_relay_future(
-            send_peer_request_to_known_kernel_via_relay(
-                &self.config,
-                &self.relay_client_state,
-                target.clone(),
-                &worker_kernel.public_key,
                 RelayPeerRequest::SpawnLeasedAgent {
                     lease_id: lease.id.clone(),
                     provider: agent.provider().to_string(),
@@ -1281,37 +1311,32 @@ impl DaemonApp {
                     worktree_id: agent.worktree_id().map(ToOwned::to_owned),
                     worktree_placement,
                 },
-            ),
-        ) {
-            Ok(RelayPeerResponse::LeasedAgentSpawned { leased_agent }) => leased_agent,
-            Ok(other) => {
-                let _ = self.block_on_relay_future(send_peer_request_to_known_kernel_via_relay(
-                    &self.config,
-                    &self.relay_client_state,
-                    target,
-                    &worker_kernel.public_key,
-                    RelayPeerRequest::DestroyExecutionLease {
-                        lease_id: lease.id.clone(),
-                    },
-                ));
-                return Err(DaemonError::LocalTransport {
-                    operation: "spawn remote leased agent",
-                    message: format!("unexpected peer response: {other:?}"),
-                });
-            }
-            Err(error) => {
-                let _ = self.block_on_relay_future(send_peer_request_to_known_kernel_via_relay(
-                    &self.config,
-                    &self.relay_client_state,
-                    target,
-                    &worker_kernel.public_key,
-                    RelayPeerRequest::DestroyExecutionLease {
-                        lease_id: lease.id.clone(),
-                    },
-                ));
-                return Err(error);
-            }
-        };
+            )) {
+                Ok(RelayPeerResponse::LeasedAgentSpawned { leased_agent }) => leased_agent,
+                Ok(other) => {
+                    let _ = self.block_on_relay_future(send_peer_request_via_temporary_connection(
+                        &self.config,
+                        target,
+                        RelayPeerRequest::DestroyExecutionLease {
+                            lease_id: lease.id.clone(),
+                        },
+                    ));
+                    return Err(DaemonError::LocalTransport {
+                        operation: "spawn remote leased agent",
+                        message: format!("unexpected peer response: {other:?}"),
+                    });
+                }
+                Err(error) => {
+                    let _ = self.block_on_relay_future(send_peer_request_via_temporary_connection(
+                        &self.config,
+                        target,
+                        RelayPeerRequest::DestroyExecutionLease {
+                            lease_id: lease.id.clone(),
+                        },
+                    ));
+                    return Err(error);
+                }
+            };
         let bound = self.agents.bind_remote_execution(
             agent.id(),
             RemoteAgentBinding {
@@ -1555,6 +1580,24 @@ impl DaemonApp {
                 provider: provider.to_string(),
             }
         })
+    }
+
+    fn select_remote_kernel_by_ref(
+        &self,
+        kernel_ref: &str,
+        provider: &str,
+    ) -> Result<RelayKernelPresence, DaemonError> {
+        let kernel_ref = kernel_ref.trim();
+        let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
+        if let Some(kernel) = projected_kernels
+            .into_iter()
+            .find(|kernel| kernel_presence_matches_ref(kernel, kernel_ref))
+        {
+            return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
+        }
+        let kernel =
+            self.block_on_relay_future(relay_discovery::get_live_kernel(&self.config, kernel_ref))?;
+        ensure_kernel_can_host_provider(kernel, kernel_ref, provider)
     }
 
     pub(crate) fn block_on_relay_future<F, T>(&self, future: F) -> Result<T, DaemonError>

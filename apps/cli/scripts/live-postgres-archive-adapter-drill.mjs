@@ -337,7 +337,9 @@ function startAdapter({ container, minioClientContainer, port, token }) {
           append: true,
           query: false,
           search: state.searchEnabled,
+          semantic_search: state.searchEnabled,
           full_text_search: state.searchEnabled,
+          vector_search: state.searchEnabled,
           blob_refs: false,
         }))
         return
@@ -440,6 +442,54 @@ LIMIT ${limit};
           events,
           next_sequence: events.length === limit ? events[events.length - 1].sequence : null,
         }))
+        return
+      }
+      if (request.method === 'POST' && request.url === '/arroba/history/semantic-search') {
+        state.searchRequests += 1
+        if (!state.searchEnabled) {
+          response.writeHead(404, { 'content-type': 'application/json' })
+          response.end(JSON.stringify({ error: 'archive semantic search disabled' }))
+          return
+        }
+        let body = ''
+        for await (const chunk of request) body += chunk.toString()
+        const payload = JSON.parse(body)
+        const query = payload.query ?? {}
+        const queryText = String(query.text ?? '').trim().toLowerCase()
+        const clauses = ['1 = 1']
+        pushSqlFilter(clauses, 'session_id', query.session_id)
+        pushSqlFilter(clauses, 'agent_id', query.agent_id)
+        pushSqlFilter(clauses, 'provider', query.provider)
+        pushSqlFilter(clauses, 'model', query.model)
+        pushSqlFilter(clauses, 'kind', query.kind)
+        const limit = Math.max(1, Math.min(100, Number(query.limit ?? 20)))
+        const result = await psql(container, `
+SELECT payload::text
+FROM archive_events
+WHERE ${clauses.join(' AND ')}
+ORDER BY sequence ASC, event_id ASC
+LIMIT 500;
+`, { tuplesOnly: true })
+        const events = result.stdout
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => JSON.parse(line))
+        const scored = events
+          .map((event) => {
+            const haystack = `${event.content ?? ''} ${JSON.stringify(event.metadata ?? {})}`.toLowerCase()
+            const score = queryText && haystack.includes(queryText) ? 1000 : 100
+            return {
+              event,
+              score_millis: score,
+              chunk_index: 0,
+              chunk_text: event.content ?? '',
+            }
+          })
+          .sort((left, right) => right.score_millis - left.score_millis || left.event.sequence - right.event.sequence)
+          .slice(0, limit)
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ results: scored, next_cursor: null }))
         return
       }
       if (request.method !== 'POST' || request.url !== '/arroba/history/events') {

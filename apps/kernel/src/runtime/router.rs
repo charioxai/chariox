@@ -12,9 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
-use tokio::time::{sleep, Duration};
-
-use arroba_relay::protocol::RelayKernelPresence;
+use tokio::time::{sleep, Duration, Instant as TokioInstant};
 
 use crate::agent::{AgentInstance, AgentState};
 use crate::app::{DaemonApp, PromptActivityStore};
@@ -43,11 +41,11 @@ use crate::local::{
     CreateWorkspaceLinkRequest, CreateWorkspacePullRequestRequest, CreateWorkspaceWorktreeRequest,
     DeleteCredentialSecretRequest, DeleteKernelRequest, DeleteWorkspaceWorktreeRequest,
     DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GenerateWorkspaceCommitMessageRequest,
-    GetMcpServerRequest, GetPromptInputHistoryRequest, GetProviderAuthStatusRequest,
-    GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest,
-    GetUserConfigRequest, GetUserConfigSchemaRequest, GetWorkspaceFileContentRequest,
-    GetWorkspaceGitOverviewRequest, GrantAgentCapabilityRequest, ImportMcpServersRequest,
-    ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
+    GetMcpServerRequest, GetPromptInputHistoryRequest,
+    GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+    GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
+    GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest, GrantAgentCapabilityRequest,
+    ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
     IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest, JoinSessionInviteRequest,
     JoinTerminalPairingLinkRequest, ListAgentsRequest, ListCloudCollaboratorsRequest,
     ListCloudSessionMembersRequest, ListMcpServersRequest, ListProviderProcessesRequest,
@@ -61,25 +59,27 @@ use crate::local::{
     RecordPromptInputHistoryRequest, RelayStatus, RenameRemoteMachineRequest,
     ResolveSessionRequest, RevokeAgentCapabilityRequest, RevokeCloudSessionInviteRequest,
     RevokePairedClientRequest, RevokeSessionInviteRequest, RunAgentUtilityRequest,
-    SearchHistoryRequest, SearchWorkspaceDirectoriesRequest, SessionInviteRecord,
-    SetCredentialSecretRequest, SetUserConfigValueRequest, ShowCloudSessionInviteRequest,
-    ShowWorkspaceLinkRequest, StartCloudRelayLoginRequest, StartProviderLoginRequest,
-    TeardownProviderProcessesRequest, TerminalPairingLinkRecord, TerminalRecord, TerminalType,
-    UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
-    UpdateMcpServerRequest, UpdateSkillRequest, UserConfigMutationEffect,
-    UserConfigProviderReloadSummary, WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary,
-    WaitingRoomPublicItemActivitySummary, WaitingRoomPublicSessionSummary,
-    WaitingRoomPublicSnapshot, WaitingRoomPublicWorkflowEdgeSummary,
-    WaitingRoomPublicWorkflowEndpointSummary, WaitingRoomPublicWorkflowNodeSummary,
-    WaitingRoomPublicWorkflowSummary, WaitingRoomSessionActivitySummary,
-    WorkspaceCommitMessageUtilityInput, WorkspaceFileContent, WorkspaceGitActionResult,
-    WorkspaceGitChangeTotals, WorkspaceGitCompareRef, WorkspaceGitFileChange, WorkspaceGitOverview,
-    WorkspacePullRequestRecord, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
-    WorkspaceWorktreeRecord,
+    SearchHistoryRequest, SearchWorkspaceDirectoriesRequest, SemanticHistoryMatch,
+    SemanticHistorySearchUtilityInput, SemanticSearchHistoryMode, SemanticSearchHistoryRequest,
+    SessionInviteRecord, SetCredentialSecretRequest, SetUserConfigValueRequest,
+    ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest, StartCloudRelayLoginRequest,
+    StartProviderLoginRequest, TeardownProviderProcessesRequest, TerminalPairingLinkRecord,
+    TerminalRecord, TerminalType, UninstallMcpServerRequest, UninstallSkillRequest,
+    UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
+    UserConfigMutationEffect, UserConfigProviderReloadSummary, WaitingRoomLaunchTarget,
+    WaitingRoomPublicAgentSummary, WaitingRoomPublicItemActivitySummary,
+    WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
+    WaitingRoomPublicWorkflowEdgeSummary, WaitingRoomPublicWorkflowEndpointSummary,
+    WaitingRoomPublicWorkflowNodeSummary, WaitingRoomPublicWorkflowSummary,
+    WaitingRoomSessionActivitySummary, WorkspaceCommitMessageUtilityInput, WorkspaceFileContent,
+    WorkspaceGitActionResult, WorkspaceGitChangeTotals, WorkspaceGitCompareRef,
+    WorkspaceGitFileChange, WorkspaceGitOverview, WorkspacePullRequestRecord,
+    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
 };
 use crate::provider::{
-    run_codex_utility_prompt, ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
-    ProviderRunOperationLanes, ProviderRunState, RuntimeProviderRun,
+    run_codex_utility_prompt, run_opencode_utility_prompt, ProviderNativeInteractionBridge,
+    ProviderNativeInteractionResolution, ProviderRunOperationLanes, ProviderRunState,
+    RuntimeProviderRun,
 };
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::capability_executor::{
@@ -113,6 +113,7 @@ pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 const CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS: u64 = 300_000;
 const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
 const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
+const AGENT_UTILITY_PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 enum UserConfigMutation {
     Set { path: String, value: String },
@@ -1559,6 +1560,9 @@ impl CommandRouter {
                 self.execute_query_history_request(history_query_from_search_request(request))
                     .await
             }
+            LocalDaemonRequest::SemanticSearchHistory(request) => {
+                self.execute_semantic_search_history_request(request).await
+            }
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 self.execute_terminal_output_request(request).await
             }
@@ -2223,8 +2227,6 @@ impl CommandRouter {
     async fn projected_waiting_room_public_snapshot(
         &self,
     ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
-        self.request_remote_relay_inventory_projection_refresh()
-            .await;
         let runtime_sessions = match self
             .execute_cold_list_sessions_request(ListSessionsRequest)
             .await?
@@ -2239,26 +2241,21 @@ impl CommandRouter {
         };
         let sessions = waiting_room_session_summaries(runtime_sessions);
         let relay_status = self.projected_relay_status().await;
-        let (remote_machines, remote_kernels) = self.remote_relay_inventory_projection.snapshot();
         let launch_target = infer_waiting_room_launch_target();
         let terminals = paired_terminal_records();
         let generated_at_ms = unix_epoch_ms();
         let inventory_version = waiting_room_inventory_version(
             &sessions,
             &relay_status,
-            &remote_machines,
-            &remote_kernels,
             &terminals,
             launch_target.as_ref(),
         )?;
         Ok(WaitingRoomPublicSnapshot {
-            schema_version: 4,
+            schema_version: 5,
             inventory_version,
             generated_at_ms,
             sessions,
             relay_status,
-            remote_machines,
-            remote_kernels,
             terminals,
             launch_target,
         })
@@ -2477,7 +2474,12 @@ impl CommandRouter {
                 ),
             })
             .await?;
-        let AgentUtilityOutput::WorkspaceCommitMessage { message } = result.output;
+        let AgentUtilityOutput::WorkspaceCommitMessage { message } = result.output else {
+            return Err(DaemonError::LocalTransport {
+                operation: "generate workspace commit message",
+                message: "workspace commit message utility returned unexpected output".to_string(),
+            });
+        };
         Ok(LocalDaemonResponse::WorkspaceCommitMessageGenerated { message })
     }
 
@@ -2497,6 +2499,19 @@ impl CommandRouter {
                     .run_workspace_commit_message_utility(provider_run, input)
                     .await?,
             },
+            (
+                AgentUtilityKind::SemanticHistorySearch,
+                AgentUtilityInput::SemanticHistorySearch(input),
+            ) => {
+                self.run_semantic_history_search_utility(provider_run, input)
+                    .await?
+            }
+            (kind, _) => {
+                return Err(DaemonError::LocalTransport {
+                    operation: agent_utility_operation(kind),
+                    message: "agent utility input kind did not match requested utility".to_string(),
+                })
+            }
         };
         Ok(AgentUtilityResult {
             utility_run_id: format!("utility-{}", random_hex_id()),
@@ -2562,48 +2577,57 @@ impl CommandRouter {
         agent_id: &str,
         kind: &AgentUtilityKind,
     ) -> Result<(AgentInstance, RuntimeProviderRun), DaemonError> {
-        let mut app = self.app.lock().await;
-        let session = app.sessions().get_session(session_id)?;
-        let agent = app
-            .agents()
-            .get_session_agents(session_id)
-            .iter()
-            .find(|agent| agent.id() == agent_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: agent_utility_operation(kind),
-                message: format!("agent `{agent_id}` does not belong to session `{session_id}`"),
-            })?;
-        if agent.remote_execution().is_some() {
-            return Err(DaemonError::LocalTransport {
-                operation: agent_utility_operation(kind),
-                message: format!("agent `{agent_id}` is remote-backed; hidden utilities must run on its worker kernel"),
-            });
+        let started_at = TokioInstant::now();
+        loop {
+            let mut app = self.app.lock().await;
+            let session = app.sessions().get_session(session_id)?;
+            let agent = app
+                .agents()
+                .get_session_agents(session_id)
+                .iter()
+                .find(|agent| agent.id() == agent_id)
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: agent_utility_operation(kind),
+                    message: format!("agent `{agent_id}` does not belong to session `{session_id}`"),
+                })?;
+            if agent.remote_execution().is_some() {
+                return Err(DaemonError::LocalTransport {
+                    operation: agent_utility_operation(kind),
+                    message: format!("agent `{agent_id}` is remote-backed; hidden utilities must run on its worker kernel"),
+                });
+            }
+            if session.active_prompt_for_agent(agent_id).is_some() {
+                return Err(DaemonError::LocalTransport {
+                    operation: agent_utility_operation(kind),
+                    message: format!("agent `{agent_id}` is busy"),
+                });
+            }
+            let provider_run = if let Some(provider_run) =
+                app.providers().get_run_for_agent(session_id, agent_id)
+            {
+                provider_run
+            } else {
+                let provider_run_id = app.ensure_prompt_provider_run_for_agent(session_id, agent_id)?;
+                app.providers().get_run(&provider_run_id)?
+            };
+            if provider_run.state() == ProviderRunState::Running {
+                return Ok((agent, provider_run));
+            }
+            let state = provider_run.state();
+            drop(app);
+            if state != ProviderRunState::Starting
+                || started_at.elapsed() >= AGENT_UTILITY_PROVIDER_READY_TIMEOUT
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: agent_utility_operation(kind),
+                    message: format!(
+                        "agent `{agent_id}` provider runtime is not running ({state:?})",
+                    ),
+                });
+            }
+            sleep(Duration::from_millis(250)).await;
         }
-        if session.active_prompt_for_agent(agent_id).is_some() {
-            return Err(DaemonError::LocalTransport {
-                operation: agent_utility_operation(kind),
-                message: format!("agent `{agent_id}` is busy"),
-            });
-        }
-        let provider_run = if let Some(provider_run) =
-            app.providers().get_run_for_agent(session_id, agent_id)
-        {
-            provider_run
-        } else {
-            let provider_run_id = app.ensure_prompt_provider_run_for_agent(session_id, agent_id)?;
-            app.providers().get_run(&provider_run_id)?
-        };
-        if provider_run.state() != ProviderRunState::Running {
-            return Err(DaemonError::LocalTransport {
-                operation: agent_utility_operation(kind),
-                message: format!(
-                    "agent `{agent_id}` provider runtime is not running ({:?})",
-                    provider_run.state()
-                ),
-            });
-        }
-        Ok((agent, provider_run))
     }
 
     async fn run_workspace_commit_message_utility(
@@ -2611,24 +2635,39 @@ impl CommandRouter {
         provider_run: RuntimeProviderRun,
         input: WorkspaceCommitMessageUtilityInput,
     ) -> Result<String, DaemonError> {
-        if provider_run.adapter_key() != "codex" {
+        let prompt = workspace_commit_message_utility_prompt(&input)?;
+        run_provider_utility_prompt(provider_run, prompt, "run workspace commit message utility")
+            .await
+    }
+
+    async fn run_semantic_history_search_utility(
+        &self,
+        provider_run: RuntimeProviderRun,
+        input: SemanticHistorySearchUtilityInput,
+    ) -> Result<AgentUtilityOutput, DaemonError> {
+        let requested_limit = input.limit.unwrap_or(20).clamp(1, 50);
+        let search_request = semantic_search_request_from_utility_input(&input);
+        let (candidates, _next_cursor, unavailable_reason) = self
+            .knn_semantic_history_search(search_request, requested_limit)
+            .await?;
+        if let Some(reason) = unavailable_reason {
             return Err(DaemonError::LocalTransport {
-                operation: "run workspace commit message utility",
-                message: format!(
-                    "workspace commit message utility requires a codex provider runtime; `{}` is not supported yet",
-                    provider_run.adapter_key()
-                ),
+                operation: "run semantic history search utility",
+                message: reason,
             });
         }
-        let prompt = workspace_commit_message_utility_prompt(&input)?;
-        tokio::task::spawn_blocking(move || {
-            run_codex_utility_prompt(&provider_run, &prompt, AGENT_UTILITY_TIMEOUT)
+        let prompt = semantic_history_search_utility_prompt(&input, &candidates)?;
+        let output = run_provider_utility_prompt(
+            provider_run,
+            prompt,
+            "run semantic history search utility",
+        )
+        .await?;
+        let parsed = parse_semantic_history_search_utility_output(&output, &candidates)?;
+        Ok(AgentUtilityOutput::SemanticHistorySearch {
+            answer: parsed.answer,
+            matches: parsed.matches,
         })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "run workspace commit message utility",
-            message: format!("workspace commit message utility task failed: {error}"),
-        })?
     }
 
     async fn request_remote_relay_inventory_projection_refresh(&self) {
@@ -4511,6 +4550,124 @@ impl CommandRouter {
         })?
     }
 
+    async fn execute_semantic_search_history_request(
+        &self,
+        request: SemanticSearchHistoryRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        match request.mode.unwrap_or_default() {
+            SemanticSearchHistoryMode::Knn => {
+                self.execute_knn_semantic_search_history_request(request)
+                    .await
+            }
+            SemanticSearchHistoryMode::Agent => {
+                self.execute_agent_semantic_search_history_request(request)
+                    .await
+            }
+        }
+    }
+
+    async fn execute_knn_semantic_search_history_request(
+        &self,
+        request: SemanticSearchHistoryRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let requested_limit = request.limit.unwrap_or(20).clamp(1, 100);
+        let (results, next_cursor, unavailable_reason) = self
+            .knn_semantic_history_search(request, requested_limit)
+            .await?;
+        Ok(LocalDaemonResponse::SemanticHistoryEvents {
+            results,
+            next_cursor,
+            unavailable_reason,
+            answer: None,
+        })
+    }
+
+    async fn execute_agent_semantic_search_history_request(
+        &self,
+        request: SemanticSearchHistoryRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let Some(session_id) = request.session_id.clone() else {
+            return Ok(LocalDaemonResponse::SemanticHistoryEvents {
+                results: Vec::new(),
+                next_cursor: None,
+                unavailable_reason: Some(
+                    "focused-agent semantic history search requires a session".to_string(),
+                ),
+                answer: None,
+            });
+        };
+        let Some(agent_id) = self.runtime_state.focused_agent_id(&session_id).await? else {
+            return Ok(LocalDaemonResponse::SemanticHistoryEvents {
+                results: Vec::new(),
+                next_cursor: None,
+                unavailable_reason: Some(
+                    "focused-agent semantic history search requires a focused agent".to_string(),
+                ),
+                answer: None,
+            });
+        };
+        let result = self
+            .run_agent_utility(RunAgentUtilityRequest {
+                session_id,
+                agent_id,
+                kind: AgentUtilityKind::SemanticHistorySearch,
+                input: AgentUtilityInput::SemanticHistorySearch(
+                    semantic_utility_input_from_search_request(request),
+                ),
+            })
+            .await?;
+        let AgentUtilityOutput::SemanticHistorySearch { answer, matches } = result.output else {
+            return Err(DaemonError::LocalTransport {
+                operation: "semantic history agent search",
+                message: "semantic history utility returned unexpected output".to_string(),
+            });
+        };
+        Ok(LocalDaemonResponse::SemanticHistoryEvents {
+            results: matches,
+            next_cursor: None,
+            unavailable_reason: None,
+            answer: Some(answer),
+        })
+    }
+
+    async fn knn_semantic_history_search(
+        &self,
+        request: SemanticSearchHistoryRequest,
+        requested_limit: usize,
+    ) -> Result<(Vec<SemanticHistoryMatch>, Option<String>, Option<String>), DaemonError> {
+        let archive_config = self
+            .config_projection
+            .snapshot()
+            .user_config
+            .history
+            .archive;
+        let response = tokio::task::spawn_blocking(move || {
+            let archive_client = HistoryArchiveClient::from_config(&archive_config)?;
+            let archive_capabilities = archive_client.capabilities().ok();
+            if !archive_capabilities
+                .as_ref()
+                .map(|capabilities| capabilities.semantic_search || capabilities.vector_search)
+                .unwrap_or(false)
+            {
+                return Ok((
+                    Vec::new(),
+                    None,
+                    Some("semantic history search is not configured for this kernel".to_string()),
+                ));
+            }
+            let mut query = history_query_from_semantic_search_request(request);
+            query.limit = Some(requested_limit);
+            let response = archive_client.semantic_search_events(query)?;
+            Ok((response.results, response.next_cursor, None))
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "semantic search history",
+            message: error.to_string(),
+        })??;
+        Ok(response)
+    }
+
     async fn execute_terminal_output_request(
         &self,
         request: PumpTerminalOutputRequest,
@@ -4976,6 +5133,9 @@ impl CommandRouter {
             LocalDaemonRequest::SearchHistory(request) => {
                 self.execute_query_history_request(history_query_from_search_request(request))
                     .await
+            }
+            LocalDaemonRequest::SemanticSearchHistory(request) => {
+                self.execute_semantic_search_history_request(request).await
             }
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 self.execute_terminal_output_request(request).await
@@ -5599,16 +5759,12 @@ impl CommandRouter {
 fn waiting_room_inventory_version(
     sessions: &[WaitingRoomPublicSessionSummary],
     relay_status: &RelayStatus,
-    remote_machines: &[crate::local::RemoteMachineRecord],
-    remote_kernels: &[RelayKernelPresence],
     terminals: &[TerminalRecord],
     launch_target: Option<&WaitingRoomLaunchTarget>,
 ) -> Result<String, DaemonError> {
     let payload = serde_json::to_vec(&serde_json::json!({
         "sessions": sessions,
         "relay_status": relay_status,
-        "remote_machines": remote_machines,
-        "remote_kernels": remote_kernels,
         "terminals": terminals,
         "launch_target": launch_target,
     }))
@@ -6730,7 +6886,189 @@ fn workspace_file_mime(language: &str) -> &'static str {
 fn agent_utility_operation(kind: &AgentUtilityKind) -> &'static str {
     match kind {
         AgentUtilityKind::WorkspaceCommitMessage => "run workspace commit message utility",
+        AgentUtilityKind::SemanticHistorySearch => "run semantic history search utility",
     }
+}
+
+async fn run_provider_utility_prompt(
+    provider_run: RuntimeProviderRun,
+    prompt: String,
+    operation: &'static str,
+) -> Result<String, DaemonError> {
+    tokio::task::spawn_blocking(move || match provider_run.adapter_key() {
+        "codex" => run_codex_utility_prompt(&provider_run, &prompt, AGENT_UTILITY_TIMEOUT),
+        "opencode" => run_opencode_utility_prompt(&provider_run, &prompt, AGENT_UTILITY_TIMEOUT),
+        adapter_key => Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "agent utility prompts are not supported for provider adapter `{adapter_key}`"
+            ),
+        }),
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation,
+        message: format!("agent utility prompt task failed: {error}"),
+    })?
+}
+
+#[derive(Debug, Deserialize)]
+struct SemanticHistoryUtilityOutput {
+    answer: String,
+    matches: Vec<SemanticHistoryUtilityOutputMatch>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SemanticHistoryUtilityOutputMatch {
+    event_id: String,
+    #[serde(default)]
+    chunk_index: Option<usize>,
+    relevance: String,
+    reason: String,
+}
+
+fn semantic_history_search_utility_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["answer", "matches"],
+        "additionalProperties": false,
+        "properties": {
+            "answer": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "matches": {
+                "type": "array",
+                "maxItems": 20,
+                "items": {
+                    "type": "object",
+                    "required": ["event_id", "relevance", "reason"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "event_id": {"type": "string", "minLength": 1},
+                        "chunk_index": {"type": ["integer", "null"], "minimum": 0},
+                        "relevance": {"type": "string", "enum": ["high", "medium", "low"]},
+                        "reason": {"type": "string", "minLength": 1, "maxLength": 300}
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn parse_semantic_history_search_utility_output(
+    output: &str,
+    candidates: &[SemanticHistoryMatch],
+) -> Result<SemanticHistoryUtilityParsedOutput, DaemonError> {
+    let json = extract_json_object(output).ok_or_else(|| DaemonError::LocalTransport {
+        operation: "run semantic history search utility",
+        message: "semantic history utility did not return a JSON object".to_string(),
+    })?;
+    let schema = semantic_history_search_utility_schema();
+    crate::transport::runtime_tools::validate_json_output_schema(
+        "semantic_history_search_utility_output",
+        &schema,
+        json,
+    )
+    .map_err(|warning| DaemonError::LocalTransport {
+        operation: "run semantic history search utility",
+        message: format!("semantic history utility output failed validation: {warning}"),
+    })?;
+    let output = serde_json::from_str::<SemanticHistoryUtilityOutput>(json).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "run semantic history search utility",
+            message: format!("semantic history utility output was not parseable: {error}"),
+        }
+    })?;
+    let candidates_by_event = candidates
+        .iter()
+        .map(|candidate| (candidate.event.event_id.as_str(), candidate))
+        .collect::<HashMap<_, _>>();
+    let mut matches = Vec::new();
+    let mut seen = HashSet::new();
+    for selected in output.matches {
+        if !seen.insert(selected.event_id.clone()) {
+            continue;
+        }
+        let Some(candidate) = candidates_by_event.get(selected.event_id.as_str()) else {
+            return Err(DaemonError::LocalTransport {
+                operation: "run semantic history search utility",
+                message: format!(
+                    "semantic history utility referenced unknown event `{}`",
+                    selected.event_id
+                ),
+            });
+        };
+        let mut candidate = (*candidate).clone();
+        candidate.chunk_index = selected.chunk_index.or(candidate.chunk_index);
+        candidate.reason = Some(format!("{}: {}", selected.relevance, selected.reason));
+        matches.push(candidate);
+    }
+    Ok(SemanticHistoryUtilityParsedOutput {
+        answer: output.answer,
+        matches,
+    })
+}
+
+struct SemanticHistoryUtilityParsedOutput {
+    answer: String,
+    matches: Vec<SemanticHistoryMatch>,
+}
+
+fn extract_json_object(output: &str) -> Option<&str> {
+    let trimmed = output.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return Some(trimmed);
+    }
+    let start = trimmed.find('{')?;
+    let end = trimmed.rfind('}')?;
+    (start < end).then_some(&trimmed[start..=end])
+}
+
+fn semantic_history_search_utility_prompt(
+    input: &SemanticHistorySearchUtilityInput,
+    candidates: &[SemanticHistoryMatch],
+) -> Result<String, DaemonError> {
+    let schema = semantic_history_search_utility_schema();
+    let candidate_json = serde_json::to_string_pretty(
+        &candidates
+            .iter()
+            .map(semantic_history_candidate_for_prompt)
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "run semantic history search utility",
+        message: format!("could not encode semantic history candidates: {error}"),
+    })?;
+    Ok(format!(
+        "You are running an Arroba history-search utility. Answer the user's question only from the supplied history candidates.\n\
+Do not use external knowledge. Do not mention tool calls or runtime mechanics.\n\
+Return exactly one JSON object matching this JSON Schema:\n{schema}\n\n\
+User question:\n{query}\n\n\
+History candidates:\n{candidates}\n\n\
+Rules:\n\
+- Select only event_id values present in History candidates.\n\
+- If the candidates do not answer the question, say that in answer and return an empty matches array.\n\
+- Keep answer concise.\n\
+- Output JSON only.",
+        schema = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_string()),
+        query = input.query.trim(),
+        candidates = candidate_json,
+    ))
+}
+
+fn semantic_history_candidate_for_prompt(match_: &SemanticHistoryMatch) -> serde_json::Value {
+    serde_json::json!({
+        "event_id": match_.event.event_id,
+        "chunk_index": match_.chunk_index,
+        "score_millis": match_.score_millis,
+        "timestamp_ms": match_.event.timestamp_ms,
+        "session_id": match_.event.session_id,
+        "agent_id": match_.event.agent_id,
+        "provider": match_.event.provider,
+        "model": match_.event.model,
+        "kind": match_.event.kind,
+        "role": match_.event.role,
+        "content": match_.chunk_text.as_ref().or(match_.event.content.as_ref()),
+        "metadata": match_.event.metadata,
+    })
 }
 
 fn workspace_commit_message_utility_prompt(
@@ -8136,6 +8474,10 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
             .session_id
             .as_ref()
             .map(|session_id| SessionMembershipScope::SessionId(session_id.clone())),
+        LocalDaemonRequest::SemanticSearchHistory(request) => request
+            .session_id
+            .as_ref()
+            .map(|session_id| SessionMembershipScope::SessionId(session_id.clone())),
         LocalDaemonRequest::AttachToSession(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -8540,6 +8882,62 @@ fn history_query_from_search_request(request: SearchHistoryRequest) -> HistoryEv
         text: Some(request.query),
         after_sequence: request.after_sequence,
         limit: request.limit,
+    }
+}
+
+fn history_query_from_semantic_search_request(
+    request: SemanticSearchHistoryRequest,
+) -> HistoryEventQuery {
+    HistoryEventQuery {
+        session_id: request.session_id,
+        agent_id: request.agent_id,
+        provider: request.provider,
+        model: request.model,
+        workflow_id: request.workflow_id,
+        machine_id: request.machine_id,
+        repo_root: request.repo_root,
+        worktree_path: request.worktree_path,
+        kind: request.kind,
+        text: Some(request.query),
+        after_sequence: None,
+        limit: request.limit,
+    }
+}
+
+fn semantic_utility_input_from_search_request(
+    request: SemanticSearchHistoryRequest,
+) -> SemanticHistorySearchUtilityInput {
+    SemanticHistorySearchUtilityInput {
+        query: request.query,
+        session_id: request.session_id,
+        agent_id: request.agent_id,
+        provider: request.provider,
+        model: request.model,
+        workflow_id: request.workflow_id,
+        machine_id: request.machine_id,
+        repo_root: request.repo_root,
+        worktree_path: request.worktree_path,
+        kind: request.kind,
+        limit: request.limit,
+    }
+}
+
+fn semantic_search_request_from_utility_input(
+    input: &SemanticHistorySearchUtilityInput,
+) -> SemanticSearchHistoryRequest {
+    SemanticSearchHistoryRequest {
+        query: input.query.clone(),
+        mode: Some(SemanticSearchHistoryMode::Knn),
+        session_id: input.session_id.clone(),
+        agent_id: input.agent_id.clone(),
+        provider: input.provider.clone(),
+        model: input.model.clone(),
+        workflow_id: input.workflow_id.clone(),
+        machine_id: input.machine_id.clone(),
+        repo_root: input.repo_root.clone(),
+        worktree_path: input.worktree_path.clone(),
+        kind: input.kind.clone(),
+        limit: input.limit,
     }
 }
 
@@ -9966,7 +10364,7 @@ mod tests {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         });
         let spawn_command = KernelCommand::from_local_request(
@@ -11096,7 +11494,7 @@ mod tests {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         });
         let spawn_command =
@@ -13829,7 +14227,7 @@ mod tests {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         });
         let spawn_command =
@@ -14301,7 +14699,7 @@ mod tests {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         });
         let agent_one = match router
@@ -14326,7 +14724,7 @@ mod tests {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         });
         let agent_two = match router
@@ -14605,7 +15003,7 @@ mod tests {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         });
         let user_two_agent = match router

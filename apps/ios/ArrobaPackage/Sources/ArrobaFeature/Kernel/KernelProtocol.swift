@@ -1131,7 +1131,7 @@ private struct SpawnAgentPayload: Encodable {
     let executionMode: String? = nil
     let permissionLevel: String? = nil
     let worktreeID: String?
-    let machineRef: String? = nil
+    let kernelRef: String? = nil
     let worktreePlacement: EmptyWorktreePlacementPayload? = nil
 
     enum CodingKeys: String, CodingKey {
@@ -1143,7 +1143,7 @@ private struct SpawnAgentPayload: Encodable {
         case executionMode = "execution_mode"
         case permissionLevel = "permission_level"
         case worktreeID = "worktree_id"
-        case machineRef = "machine_ref"
+        case kernelRef = "kernel_ref"
         case worktreePlacement = "worktree_placement"
     }
 
@@ -1157,7 +1157,7 @@ private struct SpawnAgentPayload: Encodable {
         try container.encodeOptional(executionMode, forKey: .executionMode)
         try container.encodeOptional(permissionLevel, forKey: .permissionLevel)
         try container.encodeOptional(worktreeID, forKey: .worktreeID)
-        try container.encodeOptional(machineRef, forKey: .machineRef)
+        try container.encodeOptional(kernelRef, forKey: .kernelRef)
         try container.encodeOptional(worktreePlacement, forKey: .worktreePlacement)
     }
 }

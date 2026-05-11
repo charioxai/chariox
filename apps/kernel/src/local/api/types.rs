@@ -3,7 +3,7 @@ use super::*;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 18;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 22;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -318,6 +318,7 @@ pub struct GenerateWorkspaceCommitMessageRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentUtilityKind {
     WorkspaceCommitMessage,
+    SemanticHistorySearch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,8 +330,24 @@ pub struct WorkspaceCommitMessageUtilityInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticHistorySearchUtilityInput {
+    pub query: String,
+    pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub workflow_id: Option<String>,
+    pub machine_id: Option<String>,
+    pub repo_root: Option<String>,
+    pub worktree_path: Option<String>,
+    pub kind: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentUtilityInput {
     WorkspaceCommitMessage(WorkspaceCommitMessageUtilityInput),
+    SemanticHistorySearch(SemanticHistorySearchUtilityInput),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -343,7 +360,13 @@ pub struct RunAgentUtilityRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentUtilityOutput {
-    WorkspaceCommitMessage { message: String },
+    WorkspaceCommitMessage {
+        message: String,
+    },
+    SemanticHistorySearch {
+        answer: String,
+        matches: Vec<SemanticHistoryMatch>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1171,6 +1194,49 @@ pub struct SearchHistoryRequest {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticSearchHistoryMode {
+    Knn,
+    Agent,
+}
+
+impl Default for SemanticSearchHistoryMode {
+    fn default() -> Self {
+        Self::Knn
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticSearchHistoryRequest {
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<SemanticSearchHistoryMode>,
+    pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub workflow_id: Option<String>,
+    pub machine_id: Option<String>,
+    pub repo_root: Option<String>,
+    pub worktree_path: Option<String>,
+    pub kind: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticHistoryMatch {
+    pub event: HistoryEvent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_millis: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PollRuntimeNoticesRequest {
     pub session_id: String,
@@ -1281,7 +1347,7 @@ pub struct SpawnAgentRequest {
     pub permission_level: Option<crate::provider::AgentPermissionLevel>,
     pub worktree_id: Option<String>,
     #[serde(default)]
-    pub machine_ref: Option<String>,
+    pub kernel_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_placement: Option<crate::agent::GitWorktreePlacement>,
 }
@@ -1970,6 +2036,7 @@ pub enum LocalDaemonRequest {
     RecordPromptInputHistory(RecordPromptInputHistoryRequest),
     QueryHistory(QueryHistoryRequest),
     SearchHistory(SearchHistoryRequest),
+    SemanticSearchHistory(SemanticSearchHistoryRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
     RespondToInteraction(RespondToInteractionRequest),
     SubmitPrompt(SubmitPromptRequest),
@@ -2359,6 +2426,13 @@ pub enum LocalDaemonResponse {
         events: Vec<HistoryEvent>,
         next_sequence: Option<u64>,
     },
+    SemanticHistoryEvents {
+        results: Vec<SemanticHistoryMatch>,
+        next_cursor: Option<String>,
+        unavailable_reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answer: Option<String>,
+    },
     RuntimeNotices {
         notices: Vec<RuntimeNoticeRecord>,
     },
@@ -2699,8 +2773,6 @@ pub struct WaitingRoomInventorySnapshot {
     pub inventory_version: String,
     pub sessions: Vec<WaitingRoomPublicSessionSummary>,
     pub relay_status: RelayStatus,
-    pub remote_machines: Vec<RemoteMachineRecord>,
-    pub remote_kernels: Vec<RelayKernelPresence>,
     #[serde(default)]
     pub terminals: Vec<TerminalRecord>,
     pub launch_target: Option<WaitingRoomLaunchTarget>,
@@ -2713,8 +2785,6 @@ pub struct WaitingRoomPublicSnapshot {
     pub generated_at_ms: u64,
     pub sessions: Vec<WaitingRoomPublicSessionSummary>,
     pub relay_status: RelayStatus,
-    pub remote_machines: Vec<RemoteMachineRecord>,
-    pub remote_kernels: Vec<RelayKernelPresence>,
     #[serde(default)]
     pub terminals: Vec<TerminalRecord>,
     pub launch_target: Option<WaitingRoomLaunchTarget>,
@@ -2837,8 +2907,6 @@ impl From<WaitingRoomPublicSnapshot> for WaitingRoomInventorySnapshot {
             inventory_version: snapshot.inventory_version,
             sessions: snapshot.sessions,
             relay_status: snapshot.relay_status,
-            remote_machines: snapshot.remote_machines,
-            remote_kernels: snapshot.remote_kernels,
             terminals: snapshot.terminals,
             launch_target: snapshot.launch_target,
         }

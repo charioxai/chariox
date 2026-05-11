@@ -9,8 +9,8 @@ use crate::app::provider_output::{
 use crate::attachment::ClientCapabilityLevel;
 use crate::local::test_support::LocalRouterTestHarness;
 use crate::provider::{
-    LaunchProviderRequest, ProviderPromptChunk, ProviderPromptSignalBatch, ProviderRunTokenUsage,
-    RuntimeProviderRun,
+    AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest, ProviderPromptChunk,
+    ProviderPromptSignalBatch, ProviderRunTokenUsage, RuntimeProviderRun,
 };
 use crate::session::{
     CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload, WorkflowNodeRunStatus,
@@ -32,26 +32,27 @@ use super::{
     DeleteSessionRequest, DeleteWorkspaceWorktreeRequest, DetachFromSessionRequest,
     DetachWorkspaceLinkRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
     GetDaemonHealthRequest, GetSessionStateRequest, GetWaitingRoomInventoryRequest,
-    GetWaitingRoomPublicSnapshotRequest, GetWorkflowRunRequest, GetWorkspaceFileContentRequest,
-    GetWorkspaceGitOverviewRequest, InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest,
-    JoinSessionInviteRequest, JoinTerminalPairingLinkRequest, LaunchProviderRunRequest,
-    ListAgentsRequest, ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
-    ListSessionMembersRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
-    ListWorkspaceFilesRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
-    PollRuntimeNoticesRequest, PushWorkspaceBranchRequest, ReadDirectoryTreeCapabilityRequest,
-    ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
-    ResolveSessionRequest, ResolveWorkflowRequest, ResumeWorkflowRunRequest,
-    RevokeSessionInviteRequest, RunShellCapabilityRequest, ShowWorkspaceLinkRequest,
-    SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
-    UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest, UpdateSessionConfigRequest,
-    UpdateWorkflowCanvasLayoutRequest, UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent,
-    WorkspacePullRequestRecord, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
-    LOCAL_DAEMON_PROTOCOL_VERSION,
+    GetWaitingRoomPublicSnapshotRequest, GetWorkflowRunRequest,
+    GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest, InspectGitCapabilityRequest,
+    InvokeWorkflowEndpointRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
+    LaunchProviderRunRequest, ListAgentsRequest, ListRemoteMachineKernelsRequest,
+    ListRemoteMachinesRequest, ListSessionMembersRequest, ListSessionsRequest,
+    ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceFilesRequest,
+    ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+    PushWorkspaceBranchRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
+    RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, ResolveSessionRequest,
+    ResolveWorkflowRequest, ResumeWorkflowRunRequest, RevokeSessionInviteRequest,
+    RunShellCapabilityRequest, SemanticHistoryMatch, SemanticSearchHistoryRequest,
+    ShowWorkspaceLinkRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
+    SubmitPromptRequest, TerminalType, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
+    UpdateSessionConfigRequest, UpdateWorkflowCanvasLayoutRequest,
+    UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent, WorkspacePullRequestRecord,
+    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 18);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 22);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -438,6 +439,150 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
     );
 }
 
+#[test]
+fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 22);
+
+    let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        session_id: "session-1".to_string(),
+        alias: Some("worker".to_string()),
+        provider: Some("codex".to_string()),
+        model: Some("gpt-5".to_string()),
+        effort: Some("medium".to_string()),
+        execution_mode: Some(AgentExecutionMode::Build),
+        permission_level: Some(AgentPermissionLevel::Required),
+        worktree_id: None,
+        kernel_ref: Some("kernel-worker".to_string()),
+        worktree_placement: None,
+    });
+    let snapshot = serde_json::to_value(request).expect("request should serialize");
+    assert_eq!(
+        snapshot.pointer("/SpawnAgent/kernel_ref"),
+        Some(&serde_json::json!("kernel-worker"))
+    );
+    assert_eq!(snapshot.pointer("/SpawnAgent/machine_ref"), None);
+    let serialized =
+        serde_json::to_string(&snapshot).expect("kernel-targeted spawn snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "712cecc5815da7fa33661de8db724f62e1aa90cfdbe56e332a5d13fbc8f4b848"
+    );
+}
+
+#[test]
+fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 22);
+
+    let request = LocalDaemonRequest::SemanticSearchHistory(SemanticSearchHistoryRequest {
+        query: "why did the build fail".to_string(),
+        mode: Some(crate::local::SemanticSearchHistoryMode::Agent),
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        provider: Some("codex".to_string()),
+        model: Some("gpt-5".to_string()),
+        workflow_id: None,
+        machine_id: None,
+        repo_root: None,
+        worktree_path: None,
+        kind: Some("provider_output".to_string()),
+        limit: Some(12),
+    });
+    let request_snapshot = serde_json::to_value(request).expect("request should serialize");
+    assert_eq!(
+        request_snapshot.pointer("/SemanticSearchHistory/query"),
+        Some(&serde_json::json!("why did the build fail"))
+    );
+    assert_eq!(
+        request_snapshot.pointer("/SemanticSearchHistory/mode"),
+        Some(&serde_json::json!("agent"))
+    );
+    assert_eq!(
+        request_snapshot.pointer("/SemanticSearchHistory/session_id"),
+        Some(&serde_json::json!("session-1"))
+    );
+    assert_eq!(
+        request_snapshot.pointer("/SemanticSearchHistory/limit"),
+        Some(&serde_json::json!(12))
+    );
+
+    let event = crate::history::HistoryEvent {
+        event_id: "event-1".to_string(),
+        sequence: 7,
+        timestamp_ms: 1234,
+        workspace_id: None,
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        agent_alias: None,
+        provider: Some("codex".to_string()),
+        model: Some("gpt-5".to_string()),
+        turn_id: None,
+        prompt_id: None,
+        provider_run_id: None,
+        provider_session_id: None,
+        workflow_id: None,
+        workflow_run_id: None,
+        workflow_node_id: None,
+        machine_id: None,
+        repo_root: None,
+        worktree_path: None,
+        kind: crate::history::HistoryEventKind::ProviderOutput,
+        role: Some(crate::history::HistoryEventRole::Assistant),
+        content: Some("the build failed because tests failed".to_string()),
+        content_ref: None,
+        metadata: BTreeMap::new(),
+        candidate_agent_ids: Vec::new(),
+        candidate_prompt_ids: Vec::new(),
+        candidate_turn_ids: Vec::new(),
+        attribution_confidence: None,
+        caused_by_event_id: None,
+    };
+    let response = LocalDaemonResponse::SemanticHistoryEvents {
+        results: vec![SemanticHistoryMatch {
+            event,
+            score_millis: Some(914),
+            chunk_index: Some(0),
+            chunk_text: Some("build failed because tests failed".to_string()),
+            reason: Some("high: direct match".to_string()),
+        }],
+        next_cursor: Some("cursor-1".to_string()),
+        unavailable_reason: None,
+        answer: Some("The build failed because tests failed.".to_string()),
+    };
+    let response_snapshot = serde_json::to_value(response).expect("response should serialize");
+    assert_eq!(
+        response_snapshot.pointer("/SemanticHistoryEvents/results/0/score_millis"),
+        Some(&serde_json::json!(914))
+    );
+    assert_eq!(
+        response_snapshot.pointer("/SemanticHistoryEvents/results/0/chunk_text"),
+        Some(&serde_json::json!("build failed because tests failed"))
+    );
+    assert_eq!(
+        response_snapshot.pointer("/SemanticHistoryEvents/results/0/reason"),
+        Some(&serde_json::json!("high: direct match"))
+    );
+    assert_eq!(
+        response_snapshot.pointer("/SemanticHistoryEvents/answer"),
+        Some(&serde_json::json!("The build failed because tests failed."))
+    );
+    assert_eq!(
+        response_snapshot.pointer("/SemanticHistoryEvents/unavailable_reason"),
+        Some(&serde_json::Value::Null)
+    );
+
+    let serialized = serde_json::to_string(&serde_json::json!({
+        "request": request_snapshot,
+        "response": response_snapshot,
+    }))
+    .expect("semantic history snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "7194094514ff20c6c6c92d8da0e4e746e98364b531b983737a94813b6834528f"
+    );
+}
+
 fn launch_slow_structured_run(app: &mut DaemonApp, session_id: &str, agent_id: &str) -> String {
     app.launch_provider(
         LaunchProviderRequest::new(
@@ -545,7 +690,7 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }))
         .expect("worker agent should spawn")
@@ -662,67 +807,6 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
 }
 
 #[test]
-fn waiting_room_inventory_includes_kernels_for_pending_visible_remote_machines() {
-    let config = DaemonConfig::for_tests();
-    let host_machine_id = config.host_machine_id.clone();
-    let harness = LocalRouterTestHarness::with_config(config);
-    harness.with_app_mut(|app| {
-        app.remote_relay_inventory_projection_store().update(
-            crate::local::provider_requests::remote_machine_records(
-                vec![RelayMachinePresence {
-                    machine_id: "machine-pending".to_string(),
-                    machine_alias: Some("pending machine".to_string()),
-                    kernel_count: 1,
-                    available_providers: vec!["codex".to_string()],
-                }],
-                &host_machine_id,
-            ),
-            vec![RelayKernelPresence {
-                kernel_id: "daemon-pending".to_string(),
-                machine_id: "machine-pending".to_string(),
-                machine_alias: Some("pending machine".to_string()),
-                relay_alias: Some("pending-kernel".to_string()),
-                kernel_alias: Some("default".to_string()),
-                available_providers: vec!["codex".to_string()],
-                capabilities: vec!["kernel_ws".to_string()],
-                accepting_remote_leases: true,
-                leased_agent_count: 0,
-                local_session_count: 0,
-                public_key: "public-key".to_string(),
-            }],
-        );
-    });
-
-    let snapshot = match harness
-        .dispatch(LocalDaemonRequest::GetWaitingRoomInventory(
-            GetWaitingRoomInventoryRequest,
-        ))
-        .expect("waiting room inventory should succeed")
-    {
-        LocalDaemonResponse::WaitingRoomInventory { snapshot } => snapshot,
-        other => panic!("unexpected response: {other:?}"),
-    };
-
-    let machine = snapshot
-        .remote_machines
-        .iter()
-        .find(|machine| machine.machine_id == "machine-pending")
-        .expect("pending machine should be visible");
-    assert!(
-        machine.pending,
-        "pending machine should remain marked pending"
-    );
-    assert_eq!(machine.kernel_count, 1);
-    assert_eq!(snapshot.remote_kernels.len(), 1);
-    assert_eq!(snapshot.remote_kernels[0].machine_id, "machine-pending");
-    assert_eq!(snapshot.remote_kernels[0].kernel_id, "daemon-pending");
-    assert!(
-        snapshot.launch_target.is_some(),
-        "waiting room inventory should include the inferred launch target"
-    );
-}
-
-#[test]
 fn waiting_room_inventory_includes_session_workspace_display_labels() {
     let workspace_root = std::env::temp_dir().join("arroba-waiting-room-session-label-test");
     let _ = std::fs::remove_dir_all(&workspace_root);
@@ -807,7 +891,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         other => panic!("unexpected response: {other:?}"),
     };
 
-    assert_eq!(snapshot.schema_version, 4);
+    assert_eq!(snapshot.schema_version, 5);
     assert!(snapshot.generated_at_ms > 0);
     let session = snapshot
         .sessions
@@ -880,7 +964,7 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
             execution_mode: Some(crate::provider::AgentExecutionMode::Plan),
             permission_level: Some(crate::provider::AgentPermissionLevel::Required),
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }))
         .expect("second agent should spawn")
@@ -1460,7 +1544,7 @@ fn local_request_api_spawns_and_focuses_agents() {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }))
         .expect("spawn should succeed")
@@ -1688,7 +1772,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }))
         .expect("workflow agent should spawn")
@@ -1791,7 +1875,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }))
         .expect("spawn should succeed")
@@ -1981,7 +2065,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }))
         .expect("workflow agent should spawn")
@@ -2166,7 +2250,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }))
         .expect("first workflow agent should spawn")
@@ -2185,7 +2269,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }))
         .expect("second workflow agent should spawn")
@@ -3157,7 +3241,7 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }))
         .expect("agent spawn should succeed")
@@ -3540,7 +3624,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }))
         .expect("spawn should succeed")
@@ -3715,7 +3799,7 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }))
         .expect("spawn should succeed")
@@ -3814,7 +3898,7 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }))
         .expect("spawn should succeed")
@@ -5287,7 +5371,7 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
             execution_mode: None,
             permission_level: None,
             worktree_id: None,
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         }))
         .expect("workflow agent should spawn")

@@ -1,6 +1,7 @@
 import type {
   HistoryQueryPayload,
   PromptAttachmentPart,
+  SemanticSearchHistoryMode,
   SessionAgentDefaults,
   SessionHistoryCursor,
   WorkflowDesignOp,
@@ -1595,6 +1596,28 @@ export function searchHistoryRequest(query: string, filters: Omit<HistoryQueryPa
   }
 }
 
+export function semanticSearchHistoryRequest(
+  query: string,
+  filters: Omit<HistoryQueryPayload, "text" | "after_sequence"> & { mode?: SemanticSearchHistoryMode | null } = {},
+) {
+  return {
+    SemanticSearchHistory: {
+      query,
+      mode: filters.mode ?? null,
+      session_id: filters.session_id ?? null,
+      agent_id: filters.agent_id ?? null,
+      provider: filters.provider ?? null,
+      model: filters.model ?? null,
+      workflow_id: filters.workflow_id ?? null,
+      machine_id: filters.machine_id ?? null,
+      repo_root: filters.repo_root ?? null,
+      worktree_path: filters.worktree_path ?? null,
+      kind: filters.kind ?? null,
+      limit: filters.limit ?? null,
+    },
+  }
+}
+
 export function launchProviderRunRequest(
   sessionId: string,
   provider: string,
@@ -1743,7 +1766,7 @@ export function spawnAgentRequest(
   effort?: string | null,
   executionMode?: "build" | "plan",
   permissionLevel?: "required" | "yolo",
-  machineRef?: string,
+  kernelRef?: string,
   worktreePlacement?: Record<string, unknown>,
 ) {
   return {
@@ -1756,7 +1779,7 @@ export function spawnAgentRequest(
       execution_mode: executionMode ?? null,
       permission_level: permissionLevel ?? null,
       worktree_id: worktreeId ?? null,
-      machine_ref: machineRef ?? null,
+      kernel_ref: kernelRef ?? null,
       worktree_placement: worktreePlacement ?? null,
     },
   }

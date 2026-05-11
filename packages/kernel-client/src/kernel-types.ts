@@ -574,8 +574,6 @@ export type WaitingRoomInventorySnapshot = {
   inventory_version: string
   sessions: WaitingRoomPublicSessionSummary[]
   relay_status: RelayStatus
-  remote_machines: RemoteMachineRecord[]
-  remote_kernels: RelayKernelPresence[]
   terminals?: TerminalRecord[]
   launch_target?: {
     workspace_id: string
@@ -719,7 +717,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 18
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 22
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 
@@ -950,6 +948,23 @@ export type HistoryQueryPayload = {
 export type HistoryEventsPayload = {
   events: HistoryEvent[]
   next_sequence: number | null
+}
+
+export type SemanticHistoryMatch = {
+  event: HistoryEvent
+  score_millis?: number | null
+  chunk_index?: number | null
+  chunk_text?: string | null
+  reason?: string | null
+}
+
+export type SemanticSearchHistoryMode = "knn" | "agent"
+
+export type SemanticHistoryEventsPayload = {
+  results: SemanticHistoryMatch[]
+  next_cursor: string | null
+  unavailable_reason: string | null
+  answer?: string | null
 }
 
 export type TranscriptEntry = {

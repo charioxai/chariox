@@ -943,7 +943,7 @@ test("executeShellCommand manages agent substitutes", async () => {
   })
 })
 
-test("executeShellCommand spawns remote agent with worktree placement", async () => {
+test("executeShellCommand spawns worker agent on kernel", async () => {
   const agent = makeAgent({
     id: "agent-remote",
     agent_ref: "agent-remote",
@@ -966,8 +966,8 @@ test("executeShellCommand spawns remote agent with worktree placement", async ()
         effort: "low",
         execution_mode: null,
         permission_level: null,
-        worktree_id: "/remote/qa",
-        machine_ref: "mac-mini",
+        worktree_id: null,
+        kernel_ref: "worker-1",
         worktree_placement: null,
       },
     })
@@ -981,7 +981,7 @@ test("executeShellCommand spawns remote agent with worktree placement", async ()
     model: "gpt-5.2",
     effort: "low",
   })
-  const result = await executeShellCommand(parseShellCommand("agent spawn qa --machine mac-mini --dir /remote/qa as qa"), context, { client: fake.client })
+  const result = await executeShellCommand(parseShellCommand("agent spawn qa --kernel worker-1 as qa"), context, { client: fake.client })
   assert.equal(result.ok, true)
   assert.deepEqual(result.bindings, { qa: "agent-remote" })
   assert.deepEqual(result.contextUpdates, { agentId: "agent-remote" })
@@ -2181,6 +2181,137 @@ test("executeShellCommand manages provider auth and processes", async () => {
     { StartProviderLogin: { provider: "codex" } },
     { ListProviderProcesses: { provider: "codex" } },
     { TeardownProviderProcesses: { provider: "codex", force: false } },
+  ])
+})
+
+test("executeShellCommand searches current session history", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        return {
+          HistoryEvents: {
+            events: [{
+              event_id: "event-1",
+              sequence: 42,
+              timestamp_ms: 1_700_000_000_000,
+              session_id: "session-1",
+              agent_id: "agent-1",
+              provider: "codex",
+              model: "gpt-5",
+              kind: "provider_output",
+              role: "assistant",
+              content: "Fixed the failing build by updating the test.",
+            }],
+            next_sequence: null,
+          },
+        }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("history search failing build"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /Fixed the failing build/)
+  assert.deepEqual(requests, [
+    {
+      SearchHistory: {
+        query: "failing build",
+        session_id: "session-1",
+        agent_id: null,
+        provider: null,
+        model: null,
+        workflow_id: null,
+        machine_id: null,
+        repo_root: null,
+        worktree_path: null,
+        kind: null,
+        after_sequence: null,
+        limit: 50,
+      },
+    },
+  ])
+})
+
+test("executeShellCommand surfaces semantic history search availability", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        return {
+          SemanticHistoryEvents: {
+            results: [],
+            next_cursor: null,
+            unavailable_reason: "semantic history search is not configured for this kernel",
+          },
+        }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("history semantic-search why did tests fail"), context, { client: fake.client })
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /not configured/)
+  assert.deepEqual(requests, [
+    {
+      SemanticSearchHistory: {
+        query: "why did tests fail",
+        mode: "knn",
+        session_id: "session-1",
+        agent_id: null,
+        provider: null,
+        model: null,
+        workflow_id: null,
+        machine_id: null,
+        repo_root: null,
+        worktree_path: null,
+        kind: null,
+        limit: 20,
+      },
+    },
+  ])
+})
+
+test("executeShellCommand requests focused-agent semantic history search", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        return {
+          SemanticHistoryEvents: {
+            answer: "Tests failed because the snapshot changed.",
+            results: [],
+            next_cursor: null,
+            unavailable_reason: null,
+          },
+        }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("history semantic-search --agent why did tests fail"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /snapshot changed/)
+  assert.deepEqual(requests, [
+    {
+      SemanticSearchHistory: {
+        query: "why did tests fail",
+        mode: "agent",
+        session_id: "session-1",
+        agent_id: null,
+        provider: null,
+        model: null,
+        workflow_id: null,
+        machine_id: null,
+        repo_root: null,
+        worktree_path: null,
+        kind: null,
+        limit: 20,
+      },
+    },
   ])
 })
 

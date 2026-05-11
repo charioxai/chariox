@@ -468,18 +468,22 @@ impl<'a> KernelSessionService<'a> {
 
     pub(crate) fn spawn_agent(
         &mut self,
-        request: CreateAgentRequest,
+        mut request: CreateAgentRequest,
     ) -> Result<AgentInstance, DaemonError> {
-        if let Some(machine_ref) = request.machine_ref.clone() {
-            let agent = self.app.spawn_remote_agent(request, &machine_ref)?;
-            self.app.durable_state_store().append_event(
-                "agent.created",
-                Some(agent.id().to_string()),
-                serde_json::json!({
-                    "agent": &agent,
-                }),
-            )?;
-            return Ok(agent);
+        if let Some(kernel_ref) = request.kernel_ref.clone() {
+            if self.app.kernel_ref_is_local(&kernel_ref) {
+                request.kernel_ref = None;
+            } else {
+                let agent = self.app.spawn_worker_agent(request, &kernel_ref)?;
+                self.app.durable_state_store().append_event(
+                    "agent.created",
+                    Some(agent.id().to_string()),
+                    serde_json::json!({
+                        "agent": &agent,
+                    }),
+                )?;
+                return Ok(agent);
+            }
         }
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();

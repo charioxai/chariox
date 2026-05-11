@@ -765,17 +765,17 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     ]
 }
 
-pub fn validate_workflow_output_schema(schema_ref: &str, output_json: &str) -> Result<(), String> {
-    let schema_source = std::fs::read_to_string(schema_ref)
-        .map_err(|error| format!("schema ref `{schema_ref}` could not be read: {error}"))?;
-    let schema_value = serde_json::from_str::<Value>(&schema_source)
-        .map_err(|error| format!("schema ref `{schema_ref}` is not valid JSON: {error}"))?;
+pub fn validate_json_output_schema(
+    schema_label: &str,
+    schema_value: &Value,
+    output_json: &str,
+) -> Result<(), String> {
     let output_value = serde_json::from_str::<Value>(output_json)
         .map_err(|error| format!("output is not valid JSON: {error}"))?;
     let compiled = JSONSchema::options()
         .with_draft(jsonschema::Draft::Draft7)
-        .compile(&schema_value)
-        .map_err(|error| format!("schema ref `{schema_ref}` failed to compile: {error}"))?;
+        .compile(schema_value)
+        .map_err(|error| format!("schema `{schema_label}` failed to compile: {error}"))?;
     if let Err(errors) = compiled.validate(&output_value) {
         let message = errors
             .into_iter()
@@ -785,6 +785,14 @@ pub fn validate_workflow_output_schema(schema_ref: &str, output_json: &str) -> R
         return Err(message);
     }
     Ok(())
+}
+
+pub fn validate_workflow_output_schema(schema_ref: &str, output_json: &str) -> Result<(), String> {
+    let schema_source = std::fs::read_to_string(schema_ref)
+        .map_err(|error| format!("schema ref `{schema_ref}` could not be read: {error}"))?;
+    let schema_value = serde_json::from_str::<Value>(&schema_source)
+        .map_err(|error| format!("schema ref `{schema_ref}` is not valid JSON: {error}"))?;
+    validate_json_output_schema(schema_ref, &schema_value, output_json)
 }
 
 #[cfg(test)]
@@ -988,5 +996,53 @@ mod managed_io_tests {
         .expect("managed move args should parse");
 
         assert_eq!(args.normalized_text_transform_fields(), (None, None));
+    }
+
+    #[test]
+    fn generic_json_output_schema_validator_accepts_valid_output() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["answer"],
+            "additionalProperties": false,
+            "properties": {
+                "answer": {"type": "string"}
+            }
+        });
+        validate_json_output_schema("test_schema", &schema, r#"{"answer":"ok"}"#)
+            .expect("valid output should pass schema validation");
+    }
+
+    #[test]
+    fn generic_json_output_schema_validator_reports_invalid_output() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["answer"],
+            "additionalProperties": false,
+            "properties": {
+                "answer": {"type": "string"}
+            }
+        });
+        let error = validate_json_output_schema("test_schema", &schema, r#"{"extra":true}"#)
+            .expect_err("invalid output should fail schema validation");
+        assert!(error.contains("required") || error.contains("Additional properties"));
+    }
+
+    #[test]
+    fn workflow_output_schema_validator_keeps_schema_ref_contract() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-workflow-schema-{}.json",
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"type":"object","required":["status"],"properties":{"status":{"type":"string"}},"additionalProperties":false}"#,
+        )
+        .expect("schema file should be writable");
+        validate_workflow_output_schema(
+            path.to_str().expect("schema path should be utf8"),
+            r#"{"status":"ok"}"#,
+        )
+        .expect("workflow schema-ref validation should still pass");
+        let _ = std::fs::remove_file(path);
     }
 }

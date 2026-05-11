@@ -801,8 +801,8 @@ impl SessionRuntimeStore {
         } else {
             create_request
         };
-        let create_request = if let Some(machine_ref) = request.machine_ref {
-            create_request.with_machine(machine_ref)
+        let create_request = if let Some(kernel_ref) = request.kernel_ref {
+            create_request.with_kernel(kernel_ref)
         } else {
             create_request
         };
@@ -1759,7 +1759,7 @@ mod tests {
             execution_mode: None,
             permission_level: None,
             worktree_id: Some("worktree".to_string()),
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         });
         let command =
@@ -1829,7 +1829,7 @@ mod tests {
             execution_mode: None,
             permission_level: None,
             worktree_id: Some("worktree".to_string()),
-            machine_ref: None,
+            kernel_ref: None,
             worktree_placement: None,
         });
         let command =
