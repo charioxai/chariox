@@ -3,7 +3,7 @@ use super::*;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 22;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 23;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -138,6 +138,14 @@ pub struct UpdateAgentConfigRequest {
     pub permission_level: Option<crate::provider::AgentPermissionLevel>,
     #[serde(default)]
     pub clear_permission_level: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub clear_workspace_id: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<String>,
+    #[serde(default)]
+    pub clear_worktree_id: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

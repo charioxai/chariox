@@ -583,6 +583,8 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         execution_mode_override: Option<Option<crate::provider::AgentExecutionMode>>,
         permission_level_override: Option<Option<crate::provider::AgentPermissionLevel>>,
+        workspace_id: Option<Option<String>>,
+        worktree_id: Option<Option<String>>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let update = self.owned.update_agent_config(
             session_id,
@@ -590,6 +592,8 @@ impl KernelRuntimeState {
             caller_user_id,
             execution_mode_override.clone(),
             permission_level_override.clone(),
+            workspace_id,
+            worktree_id,
         )?;
         for provider_run_id in update.terminated_run_ids {
             let (_, process_key) = self

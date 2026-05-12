@@ -488,7 +488,21 @@ impl KernelRuntimeOwnedState {
         caller_user_id: &str,
         execution_mode_override: Option<Option<crate::provider::AgentExecutionMode>>,
         permission_level_override: Option<Option<crate::provider::AgentPermissionLevel>>,
+        workspace_id: Option<Option<String>>,
+        worktree_id: Option<Option<String>>,
     ) -> Result<owned::OwnedAgentConfigUpdate, DaemonError> {
+        let workspace_id = workspace_id.map(|value| {
+            value.and_then(|value| {
+                let trimmed = value.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            })
+        });
+        let worktree_id = worktree_id.map(|value| {
+            value.and_then(|value| {
+                let trimmed = value.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            })
+        });
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -519,6 +533,12 @@ impl KernelRuntimeOwnedState {
         }
         if let Some(permission_level_override) = permission_level_override {
             next_agent.set_permission_level_override(permission_level_override);
+        }
+        if let Some(workspace_id) = workspace_id.clone() {
+            next_agent.set_workspace_id(workspace_id);
+        }
+        if let Some(worktree_id) = worktree_id.clone() {
+            next_agent.set_worktree_id(worktree_id);
         }
         let next_config =
             crate::session::effective_agent_execution_config(&session, Some(&next_agent));
@@ -580,6 +600,8 @@ impl KernelRuntimeOwnedState {
                 agent_id,
                 execution_mode_override,
                 permission_level_override,
+                workspace_id,
+                worktree_id,
             )?;
             let agent = self.agent_store.get_agent(agent_id)?;
             let _ = self.session_snapshot(session_id)?;
@@ -624,6 +646,8 @@ impl KernelRuntimeOwnedState {
             agent_id,
             execution_mode_override,
             permission_level_override,
+            None,
+            None,
         )?;
         let agent = self.agent_store.get_agent(agent_id)?;
         let _ = self.session_snapshot(session_id)?;

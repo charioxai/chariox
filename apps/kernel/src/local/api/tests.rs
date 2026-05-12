@@ -32,19 +32,19 @@ use super::{
     DeleteSessionRequest, DeleteWorkspaceWorktreeRequest, DetachFromSessionRequest,
     DetachWorkspaceLinkRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
     GetDaemonHealthRequest, GetSessionStateRequest, GetWaitingRoomInventoryRequest,
-    GetWaitingRoomPublicSnapshotRequest, GetWorkflowRunRequest,
-    GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest, InspectGitCapabilityRequest,
-    InvokeWorkflowEndpointRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
-    LaunchProviderRunRequest, ListAgentsRequest, ListRemoteMachineKernelsRequest,
-    ListRemoteMachinesRequest, ListSessionMembersRequest, ListSessionsRequest,
-    ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceFilesRequest,
-    ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-    PushWorkspaceBranchRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
-    RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, ResolveSessionRequest,
-    ResolveWorkflowRequest, ResumeWorkflowRunRequest, RevokeSessionInviteRequest,
-    RunShellCapabilityRequest, SemanticHistoryMatch, SemanticSearchHistoryRequest,
-    ShowWorkspaceLinkRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
-    SubmitPromptRequest, TerminalType, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
+    GetWaitingRoomPublicSnapshotRequest, GetWorkflowRunRequest, GetWorkspaceFileContentRequest,
+    GetWorkspaceGitOverviewRequest, InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest,
+    JoinSessionInviteRequest, JoinTerminalPairingLinkRequest, LaunchProviderRunRequest,
+    ListAgentsRequest, ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
+    ListSessionMembersRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
+    ListWorkspaceFilesRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
+    PollRuntimeNoticesRequest, PushWorkspaceBranchRequest, ReadDirectoryTreeCapabilityRequest,
+    ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
+    ResolveSessionRequest, ResolveWorkflowRequest, ResumeWorkflowRunRequest,
+    RevokeSessionInviteRequest, RunShellCapabilityRequest, SemanticHistoryMatch,
+    SemanticSearchHistoryRequest, ShowWorkspaceLinkRequest, SpawnAgentRequest,
+    StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
+    UpdateAgentConfigRequest, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
     UpdateSessionConfigRequest, UpdateWorkflowCanvasLayoutRequest,
     UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent, WorkspacePullRequestRecord,
     WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -52,7 +52,7 @@ use super::{
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 22);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 23);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -441,7 +441,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 22);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 23);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -472,7 +472,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 22);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 23);
 
     let request = LocalDaemonRequest::SemanticSearchHistory(SemanticSearchHistoryRequest {
         query: "why did the build fail".to_string(),
@@ -580,6 +580,39 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "7194094514ff20c6c6c92d8da0e4e746e98364b531b983737a94813b6834528f"
+    );
+}
+
+#[test]
+fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 23);
+
+    let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
+        session_id: "session-1".to_string(),
+        agent_id: "agent-1".to_string(),
+        execution_mode: Some(AgentExecutionMode::Build),
+        clear_execution_mode: false,
+        permission_level: Some(AgentPermissionLevel::Required),
+        clear_permission_level: false,
+        workspace_id: Some("/repo".to_string()),
+        clear_workspace_id: false,
+        worktree_id: Some("/repo-feature".to_string()),
+        clear_worktree_id: false,
+    });
+    let snapshot = serde_json::to_value(request).expect("request should serialize");
+    assert_eq!(
+        snapshot.pointer("/UpdateAgentConfig/workspace_id"),
+        Some(&serde_json::json!("/repo"))
+    );
+    assert_eq!(
+        snapshot.pointer("/UpdateAgentConfig/worktree_id"),
+        Some(&serde_json::json!("/repo-feature"))
+    );
+    let serialized = serde_json::to_string(&snapshot).expect("agent config snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "826ea52fcd9a136d573384f51126a8b59e5829b8fd6160d6601e5d5759d5f6a2"
     );
 }
 
@@ -937,6 +970,65 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         serialized.get("active_prompt").is_none(),
         "public summary must not expose active prompt internals"
     );
+}
+
+#[test]
+fn waiting_room_agent_workspace_update_drill_updates_public_projection() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("/tmp/arroba-workspace-a", "/tmp/arroba-workspace-a"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected response: {other:?}"),
+    };
+
+    harness
+        .dispatch(LocalDaemonRequest::UpdateAgentConfig(
+            UpdateAgentConfigRequest {
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                execution_mode: None,
+                clear_execution_mode: false,
+                permission_level: None,
+                clear_permission_level: false,
+                workspace_id: Some("/tmp/arroba-workspace-b".to_string()),
+                clear_workspace_id: false,
+                worktree_id: Some("/tmp/arroba-workspace-b-feature".to_string()),
+                clear_worktree_id: false,
+            },
+        ))
+        .expect("agent workspace update should succeed");
+
+    let snapshot = match harness
+        .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+            GetWaitingRoomPublicSnapshotRequest,
+        ))
+        .expect("waiting room public snapshot should succeed")
+    {
+        LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let public_agent = snapshot
+        .sessions
+        .iter()
+        .find(|candidate| candidate.id == session.id())
+        .and_then(|session| {
+            session
+                .agents
+                .iter()
+                .find(|candidate| candidate.id == agent.id())
+        })
+        .expect("updated agent should be in public snapshot");
+
+    assert_eq!(public_agent.workspace_id, "/tmp/arroba-workspace-b");
+    assert_eq!(
+        public_agent.directory.as_deref(),
+        Some("/tmp/arroba-workspace-b")
+    );
+    assert_eq!(public_agent.worktree_id, "/tmp/arroba-workspace-b-feature");
 }
 
 #[test]
@@ -1694,6 +1786,39 @@ fn local_request_api_spawns_and_focuses_agents() {
     assert_eq!(cleared.provider(), "codex");
     assert_eq!(cleared.model(), Some("gpt-5.4"));
     assert_eq!(cleared.effort(), None);
+
+    let relocated = match harness
+        .dispatch(LocalDaemonRequest::UpdateAgentConfig(
+            UpdateAgentConfigRequest {
+                session_id: session.id().to_string(),
+                agent_id: spawned.id().to_string(),
+                execution_mode: None,
+                clear_execution_mode: false,
+                permission_level: None,
+                clear_permission_level: false,
+                workspace_id: Some("/repo/feature".to_string()),
+                clear_workspace_id: false,
+                worktree_id: Some("/repo/feature-wt".to_string()),
+                clear_worktree_id: false,
+            },
+        ))
+        .expect("agent workspace update should succeed")
+    {
+        LocalDaemonResponse::AgentConfigUpdated { agent, session } => {
+            let entry = session
+                .agents()
+                .iter()
+                .find(|entry| entry.id() == spawned.id())
+                .expect("updated agent should remain in session snapshot");
+            assert_eq!(entry.workspace_id(), Some("/repo/feature"));
+            assert_eq!(entry.worktree_id(), Some("/repo/feature-wt"));
+            agent
+        }
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(relocated.workspace_id(), Some("/repo/feature"));
+    assert_eq!(relocated.worktree_id(), Some("/repo/feature-wt"));
 
     let focused_default = match harness
         .dispatch(LocalDaemonRequest::FocusAgent(FocusAgentRequest {

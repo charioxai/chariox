@@ -111,6 +111,9 @@ pub struct AgentInstance {
     execution_mode_override: Option<AgentExecutionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     permission_level_override: Option<AgentPermissionLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     worktree_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     remote_execution: Option<RemoteAgentBinding>,
@@ -163,6 +166,7 @@ impl AgentInstance {
             primary_effort: None,
             execution_mode_override: None,
             permission_level_override: None,
+            workspace_id: None,
             worktree_id,
             remote_execution: None,
             provider_resume_state: ProviderResumeState::default(),
@@ -240,6 +244,10 @@ impl AgentInstance {
 
     pub fn permission_level_override(&self) -> Option<AgentPermissionLevel> {
         self.permission_level_override
+    }
+
+    pub fn workspace_id(&self) -> Option<&str> {
+        self.workspace_id.as_deref()
     }
 
     pub fn worktree_id(&self) -> Option<&str> {
@@ -352,6 +360,14 @@ impl AgentInstance {
         permission_level: Option<AgentPermissionLevel>,
     ) {
         self.permission_level_override = permission_level;
+    }
+
+    pub fn set_workspace_id(&mut self, workspace_id: Option<String>) {
+        self.workspace_id = workspace_id;
+    }
+
+    pub fn set_worktree_id(&mut self, worktree_id: Option<String>) {
+        self.worktree_id = worktree_id;
     }
 
     pub fn set_provider_resume_state(&mut self, resume_state: ProviderResumeState) {

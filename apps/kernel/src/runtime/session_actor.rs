@@ -579,6 +579,16 @@ impl SessionRuntimeStore {
         } else {
             request.permission_level.map(Some)
         };
+        let workspace_id = if request.clear_workspace_id {
+            Some(None)
+        } else {
+            request.workspace_id.map(Some)
+        };
+        let worktree_id = if request.clear_worktree_id {
+            Some(None)
+        } else {
+            request.worktree_id.map(Some)
+        };
         let result = match self
             .state
             .update_agent_config(
@@ -587,6 +597,8 @@ impl SessionRuntimeStore {
                 &caller_user_id,
                 execution_mode_override,
                 permission_level_override,
+                workspace_id,
+                worktree_id,
             )
             .await
         {
@@ -1910,6 +1922,10 @@ mod tests {
             clear_execution_mode: false,
             permission_level: None,
             clear_permission_level: false,
+            workspace_id: None,
+            clear_workspace_id: false,
+            worktree_id: None,
+            clear_worktree_id: false,
         });
         let command =
             KernelCommand::from_local_request("owned-agent-config-update", None, None, &request);
@@ -1995,6 +2011,10 @@ mod tests {
             clear_execution_mode: false,
             permission_level: Some(AgentPermissionLevel::Required),
             clear_permission_level: false,
+            workspace_id: None,
+            clear_workspace_id: false,
+            worktree_id: None,
+            clear_worktree_id: false,
         });
         let command = KernelCommand::from_local_request(
             "owned-turn-scoped-config-update",

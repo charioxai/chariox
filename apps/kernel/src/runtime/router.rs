@@ -41,11 +41,11 @@ use crate::local::{
     CreateWorkspaceLinkRequest, CreateWorkspacePullRequestRequest, CreateWorkspaceWorktreeRequest,
     DeleteCredentialSecretRequest, DeleteKernelRequest, DeleteWorkspaceWorktreeRequest,
     DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GenerateWorkspaceCommitMessageRequest,
-    GetMcpServerRequest, GetPromptInputHistoryRequest,
-    GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-    GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
-    GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest, GrantAgentCapabilityRequest,
-    ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
+    GetMcpServerRequest, GetPromptInputHistoryRequest, GetProviderAuthStatusRequest,
+    GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest,
+    GetUserConfigRequest, GetUserConfigSchemaRequest, GetWorkspaceFileContentRequest,
+    GetWorkspaceGitOverviewRequest, GrantAgentCapabilityRequest, ImportMcpServersRequest,
+    ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
     IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest, JoinSessionInviteRequest,
     JoinTerminalPairingLinkRequest, ListAgentsRequest, ListCloudCollaboratorsRequest,
     ListCloudSessionMembersRequest, ListMcpServersRequest, ListProviderProcessesRequest,
@@ -2589,7 +2589,9 @@ impl CommandRouter {
                 .cloned()
                 .ok_or_else(|| DaemonError::LocalTransport {
                     operation: agent_utility_operation(kind),
-                    message: format!("agent `{agent_id}` does not belong to session `{session_id}`"),
+                    message: format!(
+                        "agent `{agent_id}` does not belong to session `{session_id}`"
+                    ),
                 })?;
             if agent.remote_execution().is_some() {
                 return Err(DaemonError::LocalTransport {
@@ -2608,7 +2610,8 @@ impl CommandRouter {
             {
                 provider_run
             } else {
-                let provider_run_id = app.ensure_prompt_provider_run_for_agent(session_id, agent_id)?;
+                let provider_run_id =
+                    app.ensure_prompt_provider_run_for_agent(session_id, agent_id)?;
                 app.providers().get_run(&provider_run_id)?
             };
             if provider_run.state() == ProviderRunState::Running {
@@ -5825,13 +5828,16 @@ fn waiting_room_public_agent_summaries(
     workspace_label: Option<String>,
     worktree_labels: &mut HashMap<(String, String), Option<String>>,
 ) -> Vec<WaitingRoomPublicAgentSummary> {
-    let workspace_id = session.workspace_id().to_string();
     let mut agents = session
         .agents()
         .iter()
         .map(|agent| {
             let effective_config =
                 crate::session::effective_agent_execution_config(session, Some(agent));
+            let workspace_id = agent
+                .workspace_id()
+                .unwrap_or_else(|| session.workspace_id())
+                .to_string();
             let worktree_id = agent
                 .worktree_id()
                 .unwrap_or_else(|| session.worktree_id())

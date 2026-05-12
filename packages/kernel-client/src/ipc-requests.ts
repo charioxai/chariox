@@ -1792,6 +1792,10 @@ export function updateAgentConfigRequest(options: {
   clearExecutionMode?: boolean
   permissionLevel?: "required" | "yolo" | null
   clearPermissionLevel?: boolean
+  workspaceId?: string | null
+  clearWorkspaceId?: boolean
+  worktreeId?: string | null
+  clearWorktreeId?: boolean
 }) {
   return {
     UpdateAgentConfig: {
@@ -1801,6 +1805,10 @@ export function updateAgentConfigRequest(options: {
       clear_execution_mode: options.clearExecutionMode ?? false,
       permission_level: options.permissionLevel ?? null,
       clear_permission_level: options.clearPermissionLevel ?? false,
+      workspace_id: options.workspaceId ?? null,
+      clear_workspace_id: options.clearWorkspaceId ?? false,
+      worktree_id: options.worktreeId ?? null,
+      clear_worktree_id: options.clearWorktreeId ?? false,
     },
   }
 }

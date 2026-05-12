@@ -343,6 +343,7 @@ export type AgentInstance = {
   primary_effort?: string | null
   execution_mode_override?: "build" | "plan" | null
   permission_level_override?: "required" | "yolo" | null
+  workspace_id?: string | null
   worktree_id: string | null
   remote_execution?: {
     worker_kernel_id: string
@@ -717,7 +718,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 22
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 23
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

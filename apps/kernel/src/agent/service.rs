@@ -341,6 +341,8 @@ impl AgentService {
         agent_id: &str,
         execution_mode_override: Option<Option<AgentExecutionMode>>,
         permission_level_override: Option<Option<AgentPermissionLevel>>,
+        workspace_id: Option<Option<String>>,
+        worktree_id: Option<Option<String>>,
     ) -> Result<AgentInstance, DaemonError> {
         let agent = self
             .store
@@ -353,6 +355,12 @@ impl AgentService {
         }
         if let Some(permission_level_override) = permission_level_override {
             agent.set_permission_level_override(permission_level_override);
+        }
+        if let Some(workspace_id) = workspace_id {
+            agent.set_workspace_id(workspace_id);
+        }
+        if let Some(worktree_id) = worktree_id {
+            agent.set_worktree_id(worktree_id);
         }
         Ok(agent.clone())
     }
@@ -772,11 +780,15 @@ impl AgentServiceStore {
         agent_id: &str,
         execution_mode_override: Option<Option<AgentExecutionMode>>,
         permission_level_override: Option<Option<AgentPermissionLevel>>,
+        workspace_id: Option<Option<String>>,
+        worktree_id: Option<Option<String>>,
     ) -> Result<AgentInstance, DaemonError> {
         self.write().update_agent_config(
             agent_id,
             execution_mode_override,
             permission_level_override,
+            workspace_id,
+            worktree_id,
         )
     }
 

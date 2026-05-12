@@ -598,6 +598,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &leased_agent.backing_agent_id,
             Some(Some(execution_mode)),
             Some(Some(permission_level)),
+            None,
+            None,
         )?;
         let updated = self
             .app
