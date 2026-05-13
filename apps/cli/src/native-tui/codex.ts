@@ -83,8 +83,11 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     }
     : undefined)
   let appServer: ReturnType<typeof spawn> | null = null
+  let kernelServerPid: string | null = null
   let proxy: WebSocketServer | null = null
   let pump: { stop: () => void } | null = null
+  let cleanupSessionId: string | null = null
+  let cleanupAttachmentId: string | null = null
 
   try {
     const created = options.sessionRef
@@ -92,6 +95,8 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       : await createSession(client, workspace, worktree, options.alias, options.model, options.effort, options.mode, options.permissions)
     const session = created?.session ?? await resolveSession(client, options.sessionRef!, workspace)
     const attachment = await attachToSession(client, session.id, options.clientId)
+    cleanupSessionId = session.id
+    cleanupAttachmentId = attachment.id
     const agent = created?.agent
       ? await maybeAliasAgent(client, session.id, created.agent, options.agentAlias)
       : await spawnCodexAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions)
@@ -107,21 +112,14 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     let providerSessionId: string | null = null
     let upstreamEndpoint: string
     if (options.serverInKernel) {
-      const launched = await launchManagedNativeProviderRun({
+      upstreamEndpoint = `ws://127.0.0.1:${await reservePort()}`
+      kernelServerPid = await startCodexAppServerInKernel({
         client,
         sessionId: session.id,
-        agentId: agent.id,
-        model: options.model,
-        effort: options.effort,
+        attachmentId: attachment.id,
+        endpoint: upstreamEndpoint,
+        workingDirectory: worktree,
       })
-      const run = await waitForProviderRunReady(client, launched.id)
-      if (!run.structured_endpoint || !run.provider_session_id) {
-        throw new Error("Codex managed native server did not expose endpoint and thread id")
-      }
-      upstreamEndpoint = run.structured_endpoint
-      providerSessionId = run.provider_session_id
-      bindState.promise = Promise.resolve(run)
-      bindState.run = run
     } else {
       upstreamEndpoint = `ws://127.0.0.1:${await reservePort()}`
       appServer = await startCodexAppServer(upstreamEndpoint, worktree)
@@ -172,6 +170,9 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
         sleep(2_000),
       ])
       if (appServer.exitCode == null) appServer.kill("SIGKILL")
+    }
+    if (kernelServerPid) {
+      await stopCodexAppServerInKernel(client, cleanupSessionId, cleanupAttachmentId, kernelServerPid, worktree).catch(() => {})
     }
     await client.close()
   }
@@ -505,6 +506,70 @@ async function startCodexAppServer(endpoint: string, workingDirectory: string) {
     await sleep(150)
   }
   throw new Error(`timed out waiting for codex app-server at ${endpoint}`)
+}
+
+async function startCodexAppServerInKernel(options: {
+  client: LocalIpcClient
+  sessionId: string
+  attachmentId: string
+  endpoint: string
+  workingDirectory: string
+}): Promise<string> {
+  const executable = process.env.ARROBA_CODEX_BIN?.trim() || "codex"
+  const logFile = path.join(process.env.TMPDIR ?? "/tmp", `arroba-codex-kernel-server-${process.pid}-${Date.now()}.log`)
+  const command = [
+    `cd ${shellQuote(options.workingDirectory)}`,
+    `(${shellQuote(executable)} app-server --listen ${shellQuote(options.endpoint)} > ${shellQuote(logFile)} 2>&1 & echo $!)`,
+  ].join(" && ")
+  const response = await options.client.send<Record<string, unknown>>({
+    RunShellCommand: {
+      session_id: options.sessionId,
+      attachment_id: options.attachmentId,
+      command: "bash",
+      args: ["-lc", command],
+      working_directory: options.workingDirectory,
+      timeout_ms: 5_000,
+    },
+  })
+  const result = expectVariant<{ result: { exit_code: number; stdout: string; stderr: string } }>(
+    response,
+    "ShellCommandCompleted",
+  ).result
+  if (result.exit_code !== 0) {
+    throw new Error(`failed to start codex app-server in kernel: ${result.stderr || result.stdout}`)
+  }
+  const pid = result.stdout.trim().split(/\s+/)[0]
+  if (!pid) throw new Error("kernel codex app-server launch did not return a pid")
+  const deadline = Date.now() + 15_000
+  while (Date.now() < deadline) {
+    if (await tcpEndpointIsReady(options.endpoint)) return pid
+    await sleep(150)
+  }
+  throw new Error(`timed out waiting for kernel codex app-server at ${options.endpoint}; log ${logFile}`)
+}
+
+async function stopCodexAppServerInKernel(
+  client: LocalIpcClient,
+  sessionId: string | null,
+  attachmentId: string | null,
+  pid: string,
+  workingDirectory: string,
+) {
+  if (!sessionId || !attachmentId) return
+  await client.send<Record<string, unknown>>({
+    RunShellCommand: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      command: "bash",
+      args: ["-lc", `kill ${shellQuote(pid)} 2>/dev/null || true`],
+      working_directory: workingDirectory,
+      timeout_ms: 5_000,
+    },
+  })
+}
+
+function shellQuote(value: string): string {
+  return `'${String(value).replaceAll("'", "'\\''")}'`
 }
 
 async function tcpEndpointIsReady(endpoint: string): Promise<boolean> {

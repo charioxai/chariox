@@ -38,7 +38,7 @@ function unwrap(response, variant) {
 
 function parseArgs(argv) {
   const options = {
-    providers: ["opencode", "codex"],
+    providers: ["opencode", "codex", "claude"],
     keepArtifactsOnFailure: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -56,8 +56,8 @@ function parseArgs(argv) {
     }
   }
   for (const provider of options.providers) {
-    if (provider !== "opencode" && provider !== "codex") {
-      throw new Error(`unsupported provider ${provider}; expected opencode or codex`)
+    if (provider !== "opencode" && provider !== "codex" && provider !== "claude") {
+      throw new Error(`unsupported provider ${provider}; expected opencode, codex, or claude`)
     }
   }
   return options
@@ -73,7 +73,7 @@ function printHelp() {
     "- opens an Arroba CLI observer through the same relay",
     "- verifies native-origin and Arroba-origin prompts, no cross-contamination, and badge transitions",
     "",
-    "  --providers opencode,codex",
+    "  --providers opencode,codex,claude",
     "  --keep-artifacts-on-failure",
   ].join("\n"))
 }
@@ -385,9 +385,15 @@ async function runProviderScenario({
   const screenA = `arroba-rnt-${provider}-a-${process.pid}`
   const screenB = `arroba-rnt-${provider}-b-${process.pid}`
   const screenCli = `arroba-rnt-${provider}-cli-${process.pid}`
-  const aliases = provider === "opencode" ? ["oc-remote-a", "oc-remote-b"] : ["cdx-remote-a", "cdx-remote-b"]
+  const aliases = provider === "opencode"
+    ? ["oc-remote-a", "oc-remote-b"]
+    : provider === "codex"
+      ? ["cdx-remote-a", "cdx-remote-b"]
+      : ["cc-remote-a", "cc-remote-b"]
   const providerArgs = provider === "codex"
-    ? ["--model", "gpt-5.4-mini", "--effort", "high"]
+    ? ["--model", "gpt-5.4-mini", "--effort", "high", "--server-in-kernel"]
+    : provider === "opencode"
+      ? ["--server-in-kernel"]
     : []
   const marker = `${markerPrefix}_${provider.toUpperCase()}`
   const markers = {
@@ -434,7 +440,8 @@ async function runProviderScenario({
       "--worktree",
       worktree,
       ...providerArgs,
-      ...(provider === "codex" ? ["--initial-prompt", `Reply with exactly ${markers.nativeA} and nothing else.`] : []),
+      ...(provider === "codex" || provider === "claude" ? ["--initial-prompt", `Reply with exactly ${markers.nativeA} and nothing else.`] : []),
+      ...(provider === "claude" ? ["--remote-rendered"] : []),
     ], {
       ...process.env,
       ARROBA_CODEX_NATIVE_DEBUG: "1",
@@ -461,7 +468,8 @@ async function runProviderScenario({
       "--worktree",
       worktree,
       ...providerArgs,
-      ...(provider === "codex" ? ["--initial-prompt", `Reply with exactly ${markers.nativeB} and nothing else.`] : []),
+      ...(provider === "codex" || provider === "claude" ? ["--initial-prompt", `Reply with exactly ${markers.nativeB} and nothing else.`] : []),
+      ...(provider === "claude" ? ["--remote-rendered"] : []),
     ], {
       ...process.env,
       ARROBA_CODEX_NATIVE_DEBUG: "1",
@@ -506,7 +514,7 @@ async function runProviderScenario({
       "--provider",
       provider,
       "--model",
-      provider === "codex" ? "gpt-5.4-mini" : "default",
+      provider === "codex" ? "gpt-5.4-mini" : provider === "claude" ? "sonnet" : "default",
       ...(provider === "codex" ? ["--effort", "high"] : []),
     ], process.env)
     for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -595,7 +603,7 @@ async function runProviderScenario({
       if (!proxyALog.includes("kernel_connected") || !proxyBLog.includes("kernel_connected")) {
         throw new Error("kernel did not connect downstream to both remote Codex native proxies")
       }
-    } else if (!proxyALog.includes(markers.nativeA) || !proxyBLog.includes(markers.nativeB)) {
+    } else if (provider === "opencode" && (!proxyALog.includes(markers.nativeA) || !proxyBLog.includes(markers.nativeB))) {
       throw new Error("native OpenCode prompts did not pass through both remote native proxies")
     }
 
@@ -613,7 +621,9 @@ async function runProviderScenario({
         [aliases[1]]: providerSessionB,
       } : null,
       logs,
-      note: "relay-attached native TUIs validated on one host; true network-isolated native provider endpoints still require a reverse provider tunnel",
+      note: provider === "claude"
+        ? "remote-rendered Claude TUI validated through kernel-owned PTY"
+        : "server-in-kernel native TUI validated on one host; true network-isolated provider endpoints still require the reverse provider tunnel",
     }
   } finally {
     if (client) await client.close().catch(() => {})
