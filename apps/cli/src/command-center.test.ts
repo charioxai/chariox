@@ -58,6 +58,39 @@ test("buildCommandCenterItems filters model options", () => {
   assert.equal(items.some((item) => item.value === "openai/gpt-5.4"), false)
 })
 
+test("buildCommandCenterItems exposes Claude provider and models", () => {
+  const providerItems = buildCommandCenterItems("/provider cla", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "openai/gpt-5.4",
+    currentVariant: "high",
+  })
+  assert.equal(providerItems.some((item) => item.kind === "provider" && item.value === "claude"), true)
+
+  const modelItems = buildCommandCenterItems("/model son", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "claude",
+    focusedProvider: "claude",
+    currentModel: "claude/sonnet",
+    currentVariant: "high",
+  })
+  assert.deepEqual(modelItems.map((item) => item.value), ["claude/sonnet"])
+
+  const rootItems = buildCommandCenterItems("/", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "claude",
+    focusedProvider: "claude",
+    currentModel: "claude/sonnet",
+    currentVariant: "high",
+  })
+  assert.equal(rootItems.some((item) => item.kind === "group" && item.label === "/claude"), false)
+})
+
+
 test("buildCommandCenterItems filters variant options", () => {
   const items = buildCommandCenterItems("/variant med", {
     providerCatalog: fallbackProviderCatalog(),

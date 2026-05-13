@@ -1,8 +1,9 @@
-import { catalogModelOptions, type BackendProviderId, type ProviderCatalog } from "./provider-catalog.js"
+import { backendProviderLabel, catalogModelOptions, type BackendProviderId, type ProviderCatalog } from "./provider-catalog.js"
 import {
   type ProviderCommandCatalogs,
   providerNamespace,
   providerNamespaceDescription,
+  providerSupportsNamespaceCommands,
 } from "./provider-command-catalog.js"
 
 export type CommandCenterItem = {
@@ -379,7 +380,7 @@ export function buildCommandCenterItems(input: string, context: CommandContext):
     return buildViewItems(normalized)
   }
 
-  if (context.focusedProvider) {
+  if (context.focusedProvider && providerSupportsNamespaceCommands(context.focusedProvider)) {
     const namespace = `${providerNamespace(context.focusedProvider)} `
     if (normalized === providerNamespace(context.focusedProvider) || normalized.startsWith(namespace)) {
       return buildProviderNamespaceItems(normalized, context.focusedProvider, context.providerCommandCatalogs)
@@ -432,7 +433,7 @@ function rootItems(context: CommandContext) {
   const rootNodes = COMMAND_TREE
     .filter((node) => node.id !== "misc")
     .map((node) => mapRootGroup(node))
-  if (context.focusedProvider) {
+  if (context.focusedProvider && providerSupportsNamespaceCommands(context.focusedProvider)) {
     const catalog = context.providerCommandCatalogs[context.focusedProvider] ?? emptyProviderCommandCatalog(context.focusedProvider)
     rootNodes.push({
       id: `provider-namespace-${context.focusedProvider}`,
@@ -511,6 +512,13 @@ function buildProviderItems(input: string, context: CommandContext) {
       description: "Use the Codex backend",
       kind: "provider",
       value: "codex",
+    },
+    {
+      id: "provider-claude",
+      label: backendProviderLabel("claude"),
+      description: "Use the Claude Code backend",
+      kind: "provider",
+      value: "claude",
     },
     {
       id: "provider-status",
@@ -594,7 +602,7 @@ function buildViewItems(input: string) {
 }
 
 function buildScopedCommandItems(input: string, context: CommandContext) {
-  const scopeNodes = context.focusedProvider
+  const scopeNodes = context.focusedProvider && providerSupportsNamespaceCommands(context.focusedProvider)
     ? [
       ...COMMAND_TREE,
       {

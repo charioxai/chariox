@@ -215,8 +215,11 @@ import {
 } from "./prompt-attachments.js"
 import type { PromptMetaPart, PromptMetaTone } from "./prompt-meta.js"
 import {
+  backendProviderLabel,
   type BackendProviderId,
   fallbackProviderCatalog,
+  isBackendProviderId,
+  normalizeBackendProviderId,
   selectConfiguredModel,
   selectConfiguredVariant,
   type ProviderCatalog,
@@ -1196,6 +1199,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const agentPanePreview = (agentId: string) => agentPanePreviews()[agentId] ?? ""
   const agentActivityLabel = (agentId: string | null | undefined) => (agentId ? agentActivityLabels()[agentId] ?? null : null)
   const focusedAgent = () => sessionState().agents.find((agent) => agent.id === focusedAgentId()) ?? null
+  const focusedBackendProvider = (): BackendProviderId | null => {
+    const provider = focusedAgent()?.provider
+    return provider && isBackendProviderId(provider) ? provider : null
+  }
   const focusedProviderRun = () => {
     const run = providerRunState()
     const agentId = focusedAgentId()
@@ -2199,7 +2206,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       sessions: availableSessions(),
       catalog: providerCatalogState(),
       themeRegistry: themeRegistryState(),
-      currentProvider: currentSelection.provider === "codex" ? "codex" : "opencode",
+      currentProvider: normalizeBackendProviderId(currentSelection.provider),
       configuredEffort: currentSelection.effort,
     })
     if (decision.kind === "error") {
@@ -2240,7 +2247,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const decision = deriveWaitingRoomVariantSelectionDecision({
       variant,
       currentModelId: currentSelection.model,
-      currentProviderId: currentSelection.provider === "codex" ? "codex" : "opencode",
+      currentProviderId: normalizeBackendProviderId(currentSelection.provider),
       state: waitingRoomState(),
       sessions: availableSessions(),
       catalog: providerCatalogState(),
@@ -2280,7 +2287,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     flashFooter(`variant set to ${decision.selectedVariant}`, "info")
   }
   const applyProviderSelection = async (providerId: string) => {
-    if (providerId !== "opencode" && providerId !== "codex") {
+    if (!isBackendProviderId(providerId)) {
       flashFooter(`unknown provider: ${providerId}`, "error")
       return
     }
@@ -2351,7 +2358,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         })
       }
     }
-    flashFooter(`${providerId === "codex" ? "Codex" : "OpenCode"} selected`, "info")
+    flashFooter(`${backendProviderLabel(providerId)} selected`, "info")
   }
   const currentProviderSelection = () => deriveCurrentProviderSelection({
     providerRun: focusedProviderRun(),
@@ -2385,8 +2392,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const items = buildCommandCenterItems(value, {
       providerCatalog: providerCatalogState(),
       providerCommandCatalogs: providerCommandCatalogState(),
-      currentProvider: currentProviderSelection().provider === "codex" ? "codex" : "opencode",
-      focusedProvider: focusedAgent()?.provider === "codex" ? "codex" : focusedAgent()?.provider === "opencode" ? "opencode" : null,
+      currentProvider: normalizeBackendProviderId(currentProviderSelection().provider),
+      focusedProvider: focusedBackendProvider(),
       currentModel: currentModelId(),
       currentVariant: currentVariantId(),
     })
@@ -6503,7 +6510,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       options.effort = effort
       reconcileWaitingRoom({
         ...waitingRoomState(),
-        providerId: provider === "codex" ? "codex" : "opencode",
+        providerId: normalizeBackendProviderId(provider),
         modelId: model,
         effort,
       })
@@ -7424,7 +7431,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const allowSlashCommandSubmission = !workflowScreenShowing() || isWorkflowCommandInput(rawPrompt)
     const providerNamespaceCommand = parseProviderNamespaceCommand(
       rawPrompt,
-      focusedAgent()?.provider === "codex" ? "codex" : focusedAgent()?.provider === "opencode" ? "opencode" : null,
+      focusedBackendProvider(),
     )
     const slashCommand = allowSlashCommandSubmission ? parseSlashCommand(rawPrompt) : null
     if (slashCommand && isAttached()) {
@@ -7585,16 +7592,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     if (providerNamespaceCommand) {
-      const focusedProvider = focusedAgent()?.provider === "codex"
-        ? "codex"
-        : focusedAgent()?.provider === "opencode"
-          ? "opencode"
-          : null
+      const focusedProvider = focusedBackendProvider()
       if (providerNamespaceCommand.provider !== focusedProvider) {
         flashFooter(
           focusedProvider
             ? `${providerNamespaceCommand.raw.split(/\s+/, 1)[0]} is unavailable while the focused agent uses ${focusedProvider}`
-            : "provider-native commands require a focused OpenCode or Codex agent",
+            : "provider-native commands require a focused OpenCode, Codex, or Claude Code agent",
           "error",
         )
         return

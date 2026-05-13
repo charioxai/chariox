@@ -1,4 +1,9 @@
-import type { BackendProviderId } from "./provider-catalog.js"
+import {
+  backendProviderLabel,
+  type BackendProviderId,
+} from "./provider-catalog.js"
+
+const PROVIDER_NAMESPACE_COMMAND_IDS = ["opencode", "codex"] as const
 
 export type ProviderCommandDescriptor = {
   id: string
@@ -33,10 +38,21 @@ const EMPTY_PROVIDER_COMMAND_CATALOGS: ProviderCommandCatalogs = {
     // but no machine-readable provider-command list yet.
     commands: [],
   },
+  claude: {
+    provider: "claude",
+    source: "shipped",
+    discovery: "none",
+    // Claude Code CLI commands are not exposed through Arroba forwarding yet.
+    commands: [],
+  },
 }
 
 export function providerNamespace(provider: BackendProviderId) {
   return `/${provider}`
+}
+
+export function providerSupportsNamespaceCommands(provider: BackendProviderId) {
+  return (PROVIDER_NAMESPACE_COMMAND_IDS as readonly BackendProviderId[]).includes(provider)
 }
 
 export function fallbackProviderCommandCatalogs(): ProviderCommandCatalogs {
@@ -49,11 +65,15 @@ export function fallbackProviderCommandCatalogs(): ProviderCommandCatalogs {
       ...EMPTY_PROVIDER_COMMAND_CATALOGS.codex,
       commands: [...EMPTY_PROVIDER_COMMAND_CATALOGS.codex.commands],
     },
+    claude: {
+      ...EMPTY_PROVIDER_COMMAND_CATALOGS.claude,
+      commands: [...EMPTY_PROVIDER_COMMAND_CATALOGS.claude.commands],
+    },
   }
 }
 
 export function providerNamespaceDescription(provider: BackendProviderId, commandCount: number) {
-  const providerLabel = provider === "codex" ? "Codex" : "OpenCode"
+  const providerLabel = backendProviderLabel(provider)
   if (commandCount > 0) {
     return `Forward ${providerLabel} native commands to the focused agent (${commandCount})`
   }
@@ -71,7 +91,7 @@ export function parseProviderNamespaceCommand(
   focusedProvider: BackendProviderId | null | undefined,
 ): ParsedProviderNamespaceCommand | null {
   const trimmed = input.trim()
-  const matchedProvider = (["opencode", "codex"] as const).find((provider) => {
+  const matchedProvider = PROVIDER_NAMESPACE_COMMAND_IDS.find((provider) => {
     const namespace = providerNamespace(provider)
     return trimmed === namespace || trimmed.startsWith(`${namespace} `)
   })

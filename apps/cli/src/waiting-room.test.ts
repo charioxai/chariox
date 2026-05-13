@@ -51,6 +51,25 @@ test("waiting room cycles model and effort from provider catalog", () => {
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "effort")?.value, "Low")
 })
 
+test("waiting room cycles Claude Code as a provider backend", () => {
+  const catalog = fallbackProviderCatalog()
+  let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+
+  state = moveWaitingRoomFocus(state, [], 1)
+  state = cycleWaitingRoomValue(state, [], catalog, 1)
+  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "provider")?.value, "Codex")
+
+  state = cycleWaitingRoomValue(state, [], catalog, 1)
+  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "provider")?.value, "Claude Code")
+  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value, "Sonnet")
+
+  state = moveWaitingRoomFocus(state, [], 2)
+  state = cycleWaitingRoomValue(state, [], catalog, 1)
+  state = cycleWaitingRoomValue(state, [], catalog, 1)
+  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "effort")?.value, "Max")
+})
+
+
 test("waiting room cycles selectable themes", () => {
   const catalog = fallbackProviderCatalog()
   let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high", "sober")

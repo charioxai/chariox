@@ -31,7 +31,28 @@ export type CatalogModelOption = {
   variants: string[]
 }
 
-export type BackendProviderId = "opencode" | "codex"
+export const BACKEND_PROVIDER_IDS = ["opencode", "codex", "claude"] as const
+
+export type BackendProviderId = typeof BACKEND_PROVIDER_IDS[number]
+
+export function isBackendProviderId(value: string): value is BackendProviderId {
+  return (BACKEND_PROVIDER_IDS as readonly string[]).includes(value)
+}
+
+export function normalizeBackendProviderId(value: string): BackendProviderId {
+  return isBackendProviderId(value) ? value : "opencode"
+}
+
+export function backendProviderLabel(providerId: BackendProviderId) {
+  switch (providerId) {
+    case "codex":
+      return "Codex"
+    case "claude":
+      return "Claude Code"
+    case "opencode":
+      return "OpenCode"
+  }
+}
 
 export function fallbackProviderCatalog() {
   return {
@@ -71,12 +92,44 @@ export function fallbackProviderCatalog() {
           },
         },
       },
+      {
+        id: "claude",
+        name: "Claude Code",
+        remote_machine_aliases: [],
+        models: {
+          sonnet: {
+            id: "sonnet",
+            name: "Sonnet",
+            status: "active",
+            variants: {
+              low: {},
+              medium: {},
+              high: {},
+              xhigh: {},
+              max: {},
+            },
+          },
+          opus: {
+            id: "opus",
+            name: "Opus",
+            status: "active",
+            variants: {
+              low: {},
+              medium: {},
+              high: {},
+              xhigh: {},
+              max: {},
+            },
+          },
+        },
+      },
     ],
     default: {
       codex: "gpt-5.4",
       openai: "gpt-5.4",
+      claude: "sonnet",
     },
-    connected: ["codex", "openai"],
+    connected: ["codex", "openai", "claude"],
   } satisfies ProviderCatalog
 }
 
@@ -165,5 +218,8 @@ function providerBelongsToBackend(
   if (backendProviderId === "codex") {
     return providerId === "codex"
   }
-  return providerId !== "codex"
+  if (backendProviderId === "claude") {
+    return providerId === "claude"
+  }
+  return providerId !== "codex" && providerId !== "claude"
 }

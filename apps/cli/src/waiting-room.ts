@@ -1,6 +1,9 @@
 import { ARROBA_ASCII_ART, type SessionListEntry } from "./sessions.js"
 import {
+  BACKEND_PROVIDER_IDS,
+  backendProviderLabel,
   catalogModelOptions,
+  normalizeBackendProviderId,
   selectConfiguredModel,
   selectConfiguredVariant,
   type BackendProviderId,
@@ -286,12 +289,11 @@ export function cycleWaitingRoomValue(
     )
   }
   if (state.focus === "provider") {
-    const providers: BackendProviderId[] = ["opencode", "codex"]
-    const index = Math.max(0, providers.indexOf(state.providerId))
+    const index = Math.max(0, BACKEND_PROVIDER_IDS.indexOf(state.providerId))
     return normalizeWaitingRoomState(
       {
         ...state,
-        providerId: providers[modulo(index + delta, providers.length)]!,
+        providerId: BACKEND_PROVIDER_IDS[modulo(index + delta, BACKEND_PROVIDER_IDS.length)]!,
       },
       sessions,
       catalog,
@@ -1073,11 +1075,11 @@ function formatWaitingRoomColumn(value: string, width: number) {
 }
 
 function normalizeBackendProvider(value: string): BackendProviderId {
-  return value === "codex" ? "codex" : "opencode"
+  return normalizeBackendProviderId(value)
 }
 
 function formatBackendProviderLabel(providerId: BackendProviderId) {
-  return providerId === "codex" ? "Codex" : "OpenCode"
+  return backendProviderLabel(providerId)
 }
 
 function formatWaitingRoomModelLabel(

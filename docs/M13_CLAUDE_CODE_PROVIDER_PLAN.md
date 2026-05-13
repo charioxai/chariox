@@ -27,6 +27,9 @@ Achieved:
   `--strict-mcp-config`, keeping MCP wiring inside the provider adapter.
 - Verified local workflow parity with a Claude workflow node using a granted
   provider MCP tool plus Arroba runtime MCP workflow output submission.
+- Added Claude Code to CLI waiting-room/backend selection, command-center
+  provider selection, provider preference persistence, and backend model
+  filtering.
 
 Verified:
 
@@ -39,10 +42,18 @@ Verified:
 - `node apps/cli/scripts/live-claude-provider-drill.mjs --scenario selection --timeout-ms 180000 --keep-artifacts-on-failure`
 - `node apps/cli/scripts/live-claude-provider-drill.mjs --scenario abort --timeout-ms 180000 --keep-artifacts-on-failure`
 - `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario mcp-echo-workflow --providers claude --provider-model claude=sonnet --poll-limit 120 --poll-interval-ms 2000`
+- `pnpm --filter @arroba/cli run lint`
+- `pnpm --filter @arroba/cli run build`
+- `node --test apps/cli/dist/provider-catalog.test.js apps/cli/dist/waiting-room.test.js apps/cli/dist/provider-command-catalog.test.js apps/cli/dist/command-center.test.js`
 - `cargo test --manifest-path apps/kernel/Cargo.toml local_daemon_protocol --lib`
 
 Known verification gap:
 
+- Claude Code model catalog is static. The subscription CLI path exposes aliases
+  through `claude -p --model ...`, but does not expose a machine-readable model
+  discovery command comparable to provider APIs; Arroba therefore publishes the
+  known Claude Code aliases/full IDs in the provider catalog without SDK/API-key
+  discovery.
 - Remote live drills currently fail before provider selection: both
   `live-remote-workflow-runtime-drill.mjs --provider claude` and
   `live-remote-machine-runtime-drill.mjs --provider claude` time out waiting for
