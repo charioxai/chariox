@@ -15,6 +15,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 - 2026-05-13: `contracts.ts` split started in `arroba-cloud`; admin account/user search, detail, mutation, purge, summary, and content-count contracts moved into `contracts/admin.ts`, with `contracts.ts` preserving compatibility exports.
 - 2026-05-13: Managed-history policy, record append, search, and export job contracts moved from `contracts.ts` into `contracts/managed-history.ts`, with compatibility exports preserved.
 - 2026-05-13: Account bootstrap, organization creation, account listing, and audit event contracts moved from `contracts.ts` into `contracts/account-control.ts`, with compatibility exports preserved.
+- 2026-05-13: Device login approval/polling and logout contracts moved from `contracts.ts` into `contracts/device-login.ts`, with compatibility exports preserved.
 
 ## Summary
 
