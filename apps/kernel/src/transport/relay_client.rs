@@ -20,9 +20,10 @@ use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
 use crate::runtime::event_log::{EventLog, ReplayOutcome};
 use crate::runtime::projection::SessionSnapshotProjection;
 use crate::runtime::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
-use crate::runtime_transport::{
-    event_is_relevant_to_attachment, KernelEvent, WatchResult, RECENT_EVENT_LIMIT,
-    WATCH_INTERVAL_MS,
+use crate::runtime_transport::{WatchResult, RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS};
+use crate::transport::kernel_protocol::{
+    event_is_relevant_to_attachment, subscription_event_stream_id, KernelEvent,
+    WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
@@ -56,8 +57,6 @@ impl Default for RelayClientState {
 
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 50;
-const WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE: &str = "waiting_room_inventory";
-const WAITING_ROOM_INVENTORY_SENTINEL_ID: &str = "__waiting_room_inventory__";
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -2052,7 +2051,7 @@ async fn run_relay_subscription_loop(
     let mut previous_inventory_version = None;
     let mut last_workflow_design_sequence = 0_u64;
     let mut tick: u64 = 0;
-    let event_stream_id = relay_subscription_event_stream_id(&session_id, &attachment_id);
+    let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
         let watch_result = router
@@ -2314,10 +2313,6 @@ async fn emit_relay_event(
     send_relay_event_frame(outgoing_tx, subscription_id, event_id, encrypted_event)
 }
 
-fn relay_subscription_event_stream_id(session_id: &str, attachment_id: &str) -> String {
-    format!("session:{session_id}:attachment:{attachment_id}")
-}
-
 async fn replay_recent_relay_events(
     event_runtime: &Arc<RelayEventRuntime>,
     router: &Arc<CommandRouter>,
@@ -2332,7 +2327,7 @@ async fn replay_recent_relay_events(
     let Some(cursor) = resume_from_event_id else {
         return Ok(());
     };
-    let event_stream_id = relay_subscription_event_stream_id(session_id, attachment_id);
+    let event_stream_id = subscription_event_stream_id(session_id, attachment_id);
     let events = match event_runtime
         .event_log
         .replay_after(&event_stream_id, cursor)
@@ -2420,7 +2415,7 @@ async fn emit_relay_replay_gap_snapshot(
     session_id: &str,
     attachment_id: &str,
 ) -> Result<(), DaemonError> {
-    let event_stream_id = relay_subscription_event_stream_id(session_id, attachment_id);
+    let event_stream_id = subscription_event_stream_id(session_id, attachment_id);
     let snapshot = {
         let mut app = app.lock().await;
         build_relay_session_snapshot(&mut app, session_id)
@@ -4700,8 +4695,7 @@ mod tests {
             provider_runtime_lanes,
         ));
         let event_runtime = Arc::new(RelayEventRuntime::for_tests(1));
-        let event_stream_id =
-            relay_subscription_event_stream_id(&created_session_id, &attachment_id);
+        let event_stream_id = subscription_event_stream_id(&created_session_id, &attachment_id);
         let first = event_runtime
             .event_log
             .append(

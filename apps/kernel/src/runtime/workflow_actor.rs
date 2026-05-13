@@ -344,6 +344,7 @@ mod tests {
             app_locked.attachments().clone(),
             app_locked.providers().clone(),
             app_locked.provider_process_tracking_store(),
+            app_locked.slices(),
             app_locked.session_state_projection_store(),
             app_locked.provider_run_projection_store(),
             app_locked.history_store(),

@@ -48,6 +48,7 @@ struct KernelRuntimeOwnedState {
     attachment_store: AttachmentServiceStore,
     provider_store: ProviderProcessServiceStore,
     provider_process_tracking: ProviderProcessTrackingStore,
+    slice_store: crate::slice::SliceStore,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
     history_store: SessionHistoryStore,
@@ -196,6 +197,7 @@ impl KernelRuntimeState {
         attachment_store: AttachmentServiceStore,
         provider_store: ProviderProcessServiceStore,
         provider_process_tracking: ProviderProcessTrackingStore,
+        slice_store: crate::slice::SliceStore,
         session_projection: crate::runtime::projection::SessionStateProjectionStore,
         provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
         history_store: SessionHistoryStore,
@@ -219,6 +221,7 @@ impl KernelRuntimeState {
                 attachment_store,
                 provider_store,
                 provider_process_tracking,
+                slice_store,
                 session_projection,
                 provider_run_projection,
                 history_store,
@@ -969,18 +972,11 @@ impl KernelRuntimeState {
     }
 
     async fn destroy_session_attached_slices(&self, session_id: &str) -> Result<(), DaemonError> {
-        let attached_slices = {
-            let session_id = session_id.to_string();
-            self.with_app_side_effect(move |app| app.slices().list_by_session(&session_id))
-                .await
-        };
+        let attached_slices = self.owned.slice_store.list_by_session(session_id);
         for slice in attached_slices {
             if slice.backend == crate::slice::SliceBackendKind::LocalDocker {
-                let docker_options = self
-                    .with_app_side_effect(|app| {
-                        crate::slice::LocalDockerSliceOptions::from_config(app.config())
-                    })
-                    .await;
+                let config = self.owned.config_projection.snapshot();
+                let docker_options = crate::slice::LocalDockerSliceOptions::from_config(&config);
                 let slice_for_task = slice.clone();
                 let supervisor_result = tokio::task::spawn_blocking(move || {
                     crate::slice::run_local_docker_slice_action(
@@ -997,11 +993,7 @@ impl KernelRuntimeState {
                 })?;
                 supervisor_result?;
             }
-            let deleted = {
-                let slice_id = slice.id.clone();
-                self.with_app_side_effect(move |app| app.slices().delete(&slice_id))
-                    .await?
-            };
+            let deleted = self.owned.slice_store.delete(&slice.id)?;
             self.owned.durable_state_store.append_event(
                 "slice.deleted",
                 Some(deleted.id.clone()),
