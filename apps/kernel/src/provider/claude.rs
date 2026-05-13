@@ -93,6 +93,8 @@ fn plan_claude_launch_unlocked(
             "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
             native.context_file.display().to_string(),
         );
+        pty_env.insert("TERM".to_string(), "xterm-256color".to_string());
+        pty_env.insert("COLORTERM".to_string(), "truecolor".to_string());
         return Ok(ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: "claude:native-tui".to_string(),

@@ -169,6 +169,7 @@ pub struct HistoryEventQuery {
     pub kind: Option<String>,
     pub text: Option<String>,
     pub after_sequence: Option<u64>,
+    pub before_sequence: Option<u64>,
     pub limit: Option<usize>,
 }
 
@@ -853,13 +854,22 @@ impl OperationalHistoryStore {
             sql.push_str(" AND sequence > ?");
             values.push(Box::new(after_sequence as i64));
         }
+        if let Some(before_sequence) = query.before_sequence {
+            sql.push_str(" AND sequence < ?");
+            values.push(Box::new(before_sequence as i64));
+        }
         if let Some(text) = query.text.filter(|value| !value.trim().is_empty()) {
             sql.push_str(" AND (content LIKE ? ESCAPE '\\' OR metadata_text LIKE ? ESCAPE '\\')");
             let pattern = format!("%{}%", escape_sql_like(&text));
             values.push(Box::new(pattern.clone()));
             values.push(Box::new(pattern));
         }
-        sql.push_str(" ORDER BY sequence ASC LIMIT ?");
+        let reverse_before_page = query.before_sequence.is_some() && query.after_sequence.is_none();
+        if reverse_before_page {
+            sql.push_str(" ORDER BY sequence DESC LIMIT ?");
+        } else {
+            sql.push_str(" ORDER BY sequence ASC LIMIT ?");
+        }
         values.push(Box::new(query.limit.unwrap_or(100).clamp(1, 500) as i64));
         let params = rusqlite::params_from_iter(values.iter().map(|value| value.as_ref()));
         let mut statement =
@@ -902,6 +912,9 @@ impl OperationalHistoryStore {
                 }
             })?;
             events.push(event);
+        }
+        if reverse_before_page {
+            events.reverse();
         }
         Ok(events)
     }

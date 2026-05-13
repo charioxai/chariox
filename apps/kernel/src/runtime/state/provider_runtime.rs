@@ -1044,9 +1044,10 @@ impl KernelRuntimeState {
             );
         }
 
-        if owned
-            .provider_store
-            .run_uses_structured_prompt_io(&provider_run)
+        if provider_run.client_interface().is_arroba()
+            && owned
+                .provider_store
+                .run_uses_structured_prompt_io(&provider_run)
         {
             return self
                 .pump_owned_structured_provider_output(

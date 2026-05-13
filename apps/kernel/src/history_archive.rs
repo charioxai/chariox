@@ -68,6 +68,8 @@ pub struct HistoryArchiveSearchResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryArchiveSemanticSearchRequest {
     pub query: HistoryEventQuery,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,13 +352,14 @@ impl HistoryArchiveClient {
     pub fn semantic_search_events(
         &self,
         query: HistoryEventQuery,
+        cursor: Option<String>,
     ) -> Result<HistoryArchiveSemanticSearchResponse, DaemonError> {
         match self {
             Self::Disabled => Ok(HistoryArchiveSemanticSearchResponse {
                 results: Vec::new(),
                 next_cursor: None,
             }),
-            Self::External(client) => client.semantic_search_events(query),
+            Self::External(client) => client.semantic_search_events(query, cursor),
         }
     }
 
@@ -444,8 +447,9 @@ impl ExternalHistoryArchiveClient {
     fn semantic_search_events(
         &self,
         query: HistoryEventQuery,
+        cursor: Option<String>,
     ) -> Result<HistoryArchiveSemanticSearchResponse, DaemonError> {
-        let request_body = HistoryArchiveSemanticSearchRequest { query };
+        let request_body = HistoryArchiveSemanticSearchRequest { query, cursor };
         let payload = serde_json::to_string(&request_body).map_err(|error| {
             DaemonError::SessionHistoryFailed {
                 session_id: None,

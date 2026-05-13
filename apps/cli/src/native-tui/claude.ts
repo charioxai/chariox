@@ -319,14 +319,10 @@ async function runClaudeRemoteRendered(
 
     disposeEvents = client.onKernelEvent((event) => {
       if (event.event !== "terminal_output") return
-      for (const record of event.records ?? []) {
-        if (record.provider_run_id !== run.id) continue
-        const bytes = Array.isArray(record.bytes) ? Buffer.from(record.bytes as number[]) : null
-        if (bytes?.length) process.stdout.write(bytes)
-      }
+      writeRemoteRenderedTerminalRecords(event.records, run.id)
     })
     await client.subscribeToKernelEvents(session.id, attachment.id)
-    pump = startKernelPumpLoop(client, session.id, attachment.id)
+    pump = startRemoteRenderedPumpLoop(client, session.id, attachment.id, run.id)
     restoreStdin = forwardStdinToProviderRun(client, session.id, attachment.id, run.id)
     installResizeForwarder(client, session.id)
     if (options.initialPrompt) {
@@ -918,6 +914,42 @@ function startKernelPumpLoop(client: LocalIpcClient, sessionId: string, attachme
     stop: () => {
       stopped = true
     },
+  }
+}
+
+function startRemoteRenderedPumpLoop(
+  client: LocalIpcClient,
+  sessionId: string,
+  attachmentId: string,
+  providerRunId: string,
+): { stop: () => void } {
+  let stopped = false
+  const loop = async () => {
+    while (!stopped) {
+      const response = await client
+        .send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
+        .catch(() => ({}))
+      const records = "TerminalOutput" in response ? (response.TerminalOutput as { records?: unknown[] }).records : null
+      writeRemoteRenderedTerminalRecords(records, providerRunId)
+      await sleep(250)
+    }
+  }
+  void loop()
+  return {
+    stop: () => {
+      stopped = true
+    },
+  }
+}
+
+function writeRemoteRenderedTerminalRecords(records: unknown, providerRunId: string) {
+  if (!Array.isArray(records)) return
+  for (const record of records) {
+    if (!record || typeof record !== "object") continue
+    const payload = record as { provider_run_id?: unknown; bytes?: unknown }
+    if (payload.provider_run_id !== providerRunId) continue
+    const bytes = Array.isArray(payload.bytes) ? Buffer.from(payload.bytes as number[]) : null
+    if (bytes?.length) process.stdout.write(bytes)
   }
 }
 

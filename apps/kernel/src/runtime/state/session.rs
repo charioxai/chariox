@@ -525,6 +525,11 @@ impl KernelRuntimeOwnedState {
                 ),
             });
         }
+        self.ensure_agent_config_not_provider_native_tui(
+            session_id,
+            agent_id,
+            "update agent config",
+        )?;
         let previous_config =
             crate::session::effective_agent_execution_config(&session, Some(&agent));
         let mut next_agent = agent.clone();
@@ -698,6 +703,11 @@ impl KernelRuntimeOwnedState {
                 ),
             });
         }
+        self.ensure_agent_config_not_provider_native_tui(
+            session_id,
+            agent_id,
+            "update agent profile",
+        )?;
         let mut terminated_run_ids = Vec::new();
         if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
             match run.state() {
@@ -722,6 +732,26 @@ impl KernelRuntimeOwnedState {
             .update_agent_profile(agent_id, provider, model, effort)?;
         let _ = self.session_snapshot(session_id)?;
         Ok((agent, terminated_run_ids))
+    }
+
+    fn ensure_agent_config_not_provider_native_tui(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) else {
+            return Ok(());
+        };
+        if run.client_interface().is_arroba() {
+            return Ok(());
+        }
+        Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "agent `{agent_id}` is controlled by a provider-native TUI; change provider settings in that TUI"
+            ),
+        })
     }
 
     pub(super) fn alias_agent(
