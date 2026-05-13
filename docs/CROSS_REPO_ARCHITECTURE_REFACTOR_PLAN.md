@@ -36,6 +36,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 - 2026-05-13: Browser terminal prompt attachment value types moved from `client.ts` into `terminal/prompt-attachment-state.ts`, with focused unit coverage keeping view fields separate from upload/progress fields.
 - 2026-05-13: Browser terminal runtime state/value types moved from `client.ts` into `terminal/runtime-state.ts`. The module now owns the runtime state factory plus agent, output entry, turn, interaction, pending-frame, and agent-history state types; source-inspection tests were redirected to the new owner.
 - 2026-05-13: Browser terminal history search state moved from `client.ts` into `terminal/history-state.ts`. The module owns keyword/semantic mode, pagination cursors, selected-event context, result pages, and default search status; focused unit coverage verifies the initial keyword-search state.
+- 2026-05-13: Browser kernel directory state and target helpers moved from `client.ts` into `terminal/kernel-directory.ts`. The module owns relay target summaries, runtime view records, directory refresh bookkeeping, target ref/request normalization, online filtering, runtime-view selection, and labels; focused unit coverage verifies initial state and target selection.
 
 ## Summary
 
