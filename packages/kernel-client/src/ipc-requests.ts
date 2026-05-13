@@ -1707,6 +1707,26 @@ export function pumpTerminalOutputRequest(sessionId: string, attachmentId: strin
   }
 }
 
+export function appendNativeProviderOutputRequest(
+  sessionId: string,
+  attachmentId: string,
+  providerRunId: string,
+  kind: "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status",
+  text: string,
+  mergeKey?: string | null,
+) {
+  return {
+    AppendNativeProviderOutput: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      provider_run_id: providerRunId,
+      kind,
+      merge_key: mergeKey ?? null,
+      text,
+    },
+  }
+}
+
 export function submitPromptRequest(
   sessionId: string,
   attachmentId: string,

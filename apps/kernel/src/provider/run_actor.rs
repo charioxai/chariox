@@ -1186,6 +1186,9 @@ fn execute_submit_command(
         return result;
     }
     if run.adapter_key() == "claude" {
+        if !run.client_interface().is_arroba() {
+            return Ok(());
+        }
         let (slot, mut state) = take_claude_runtime(claude_runs, &run_id)?;
         let result = submit_claude_prompt(&run, &mut state, &prompt, &attachments);
         restore_claude_runtime_if_live(claude_runs, cleared_runs, &run_id, &slot, state);
@@ -1220,6 +1223,9 @@ fn execute_abort_command(
         return result;
     }
     if run.adapter_key() == "claude" {
+        if !run.client_interface().is_arroba() {
+            return Ok(());
+        }
         let (slot, mut state) = take_claude_runtime(claude_runs, &run_id)?;
         let result = abort_claude_turn(&run, &mut state);
         restore_claude_runtime_if_live(claude_runs, cleared_runs, &run_id, &slot, state);

@@ -53,7 +53,7 @@ use super::{
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 27);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 30);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -442,7 +442,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 27);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 30);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -474,7 +474,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 27);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 30);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -509,7 +509,7 @@ fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 27);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 30);
 
     let request = LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-1", "worktree-1")
@@ -532,7 +532,7 @@ fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 27);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 30);
 
     let request = LocalDaemonRequest::SemanticSearchHistory(SemanticSearchHistoryRequest {
         query: "why did the build fail".to_string(),
@@ -645,7 +645,7 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 27);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 30);
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
         session_id: "session-1".to_string(),
@@ -678,7 +678,7 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 27);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 30);
 
     let request =
         LocalDaemonRequest::UpdateProviderRunSelection(UpdateProviderRunSelectionRequest {
@@ -4158,6 +4158,76 @@ fn terminal_output_drain_survives_missing_focused_provider_run() {
 
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].bytes, b"late output\n");
+}
+
+#[test]
+fn append_native_provider_output_fans_out_and_records_history() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-1".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attachment should attach")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+    let provider_run_id = harness.with_app_mut(|app| {
+        app.launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "slow-structured",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id())
+            .with_client_interface(ProviderClientInterface::NativeTui),
+        )
+        .expect("native provider run should launch")
+        .id()
+        .to_string()
+    });
+
+    let records = match harness
+        .dispatch(LocalDaemonRequest::AppendNativeProviderOutput(
+            super::AppendNativeProviderOutputRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                provider_run_id: provider_run_id.clone(),
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some("native-output".to_string()),
+                text: "hello from native tui\n".to_string(),
+            },
+        ))
+        .expect("native provider output should append")
+    {
+        LocalDaemonResponse::TerminalOutput { records } => records,
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].bytes, b"hello from native tui\n");
+    let history = harness
+        .with_app(|app| app.load_session_history_entries(&session, Some(agent.id())))
+        .expect("history should load");
+    assert!(history.iter().any(|entry| {
+        entry.provider_run_id.as_deref() == Some(provider_run_id.as_str())
+            && entry.text.contains("hello from native tui")
+    }));
 }
 
 #[test]

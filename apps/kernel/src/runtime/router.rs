@@ -4884,6 +4884,41 @@ impl CommandRouter {
         self.terminal_output_executor.execute(request).await
     }
 
+    async fn execute_append_native_provider_output_request(
+        &self,
+        request: crate::local::AppendNativeProviderOutputRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let (records, session) = {
+            let mut app = self.app.lock().await;
+            crate::app::KernelSessionReadService::new(&app)
+                .ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
+            let provider_run = app.providers().get_run(&request.provider_run_id)?;
+            if provider_run.session_id() != request.session_id {
+                return Err(DaemonError::ProviderRunNotInSession {
+                    session_id: request.session_id,
+                    provider_run_id: request.provider_run_id,
+                });
+            }
+            let recipient_attachment_ids = app
+                .attachments()
+                .list_session_attachment_ids(&request.session_id);
+            let record = app.fan_out_output(
+                &request.session_id,
+                &request.provider_run_id,
+                request.kind,
+                request.merge_key,
+                recipient_attachment_ids,
+                request.text.as_bytes(),
+            );
+            let session = crate::app::KernelSessionReadService::new(&app)
+                .session_snapshot(&request.session_id)?;
+            (vec![record], session)
+        };
+        self.agent_runtime_projection.update_session(&session);
+        self.session_projection.update(session);
+        Ok(LocalDaemonResponse::TerminalOutput { records })
+    }
+
     async fn execute_teardown_provider_processes_request(
         &self,
         request: TeardownProviderProcessesRequest,
@@ -5376,6 +5411,10 @@ impl CommandRouter {
             }
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 self.execute_terminal_output_request(request).await
+            }
+            LocalDaemonRequest::AppendNativeProviderOutput(request) => {
+                self.execute_append_native_provider_output_request(request)
+                    .await
             }
             request @ (LocalDaemonRequest::RunShellCommand(_)
             | LocalDaemonRequest::ReadDirectoryTree(_)
@@ -8799,6 +8838,9 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
         LocalDaemonRequest::PumpTerminalOutput(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::AppendNativeProviderOutput(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::EndSession(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -9214,7 +9256,8 @@ fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjection
         LocalDaemonRequest::CompletePrompt(_) | LocalDaemonRequest::CancelActivePrompt(_) => {
             SessionProjectionRefresh::None
         }
-        LocalDaemonRequest::PumpTerminalOutput(_) => SessionProjectionRefresh::None,
+        LocalDaemonRequest::PumpTerminalOutput(_)
+        | LocalDaemonRequest::AppendNativeProviderOutput(_) => SessionProjectionRefresh::None,
         LocalDaemonRequest::PollRuntimeNotices(_) | LocalDaemonRequest::ResizeTerminal(_) => {
             SessionProjectionRefresh::None
         }

@@ -822,7 +822,7 @@ impl ProviderProcessService {
                 .map(ProviderRuntimeBinding::Codex)
                 .map(Some);
         }
-        if run.adapter_key() == "claude" {
+        if run.adapter_key() == "claude" && run.client_interface().is_arroba() {
             return initialize_claude_runtime(run)
                 .map(ProviderRuntimeBinding::Claude)
                 .map(Some);

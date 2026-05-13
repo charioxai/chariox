@@ -1,10 +1,10 @@
 use super::*;
 
 use crate::slice::{SliceBackendKind, SliceDisplayEndpoint, SliceRecord};
-use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
+use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 27;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -1293,6 +1293,17 @@ pub struct PumpTerminalOutputRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppendNativeProviderOutputRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub provider_run_id: String,
+    pub kind: TerminalOutputKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_key: Option<String>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndSessionRequest {
     pub session_id: String,
 }
@@ -2119,6 +2130,7 @@ pub enum LocalDaemonRequest {
     UpdateAgentSubstitutes(UpdateAgentSubstitutesRequest),
     ResizeTerminal(ResizeTerminalRequest),
     PumpTerminalOutput(PumpTerminalOutputRequest),
+    AppendNativeProviderOutput(AppendNativeProviderOutputRequest),
     RunShellCommand(RunShellCapabilityRequest),
     ReadDirectoryTree(ReadDirectoryTreeCapabilityRequest),
     ReadFile(ReadFileCapabilityRequest),

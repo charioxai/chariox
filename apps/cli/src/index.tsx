@@ -88,6 +88,7 @@ import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-cli
 import { executeShellLine } from "@arroba/kernel-client/shell-script"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
+import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
 import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
 import {
@@ -668,6 +669,10 @@ async function main() {
   }
   if (argv[0] === "opencode") {
     await runOpenCodeNativeTui(argv.slice(1))
+    return
+  }
+  if (argv[0] === "claude") {
+    await runClaudeNativeTui(argv.slice(1))
     return
   }
   if (argv[0] === "codex") {
