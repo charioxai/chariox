@@ -1,3 +1,5 @@
+mod claude;
+mod claude_runtime;
 mod codex;
 mod codex_client;
 mod codex_runtime;
@@ -13,6 +15,8 @@ mod service;
 mod types;
 mod workspace_write_fence;
 
+pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
+pub(crate) use claude_runtime::ClaudeRuntimeState;
 pub use codex::{
     codex_catalog_endpoint, ensure_codex_catalog_endpoint, logout_codex, plan_codex_launch,
     resolve_codex_executable,

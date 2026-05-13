@@ -106,6 +106,20 @@ Run syntax checks for edited scripts before committing:
 node --check apps/cli/scripts/<script>.mjs
 ```
 
+## Claude Provider Drill
+
+`live-claude-provider-drill.mjs` is the M13.1 live smoke test for the local
+Claude Code provider. It launches a kernel, creates a session, launches
+`provider=claude`, submits a deterministic prompt, pumps terminal output, and
+fails unless the marker reaches history and the prompt settles.
+
+```bash
+pnpm --filter @arroba/cli run claude-provider:drill
+```
+
+The drill uses the locally installed/logged-in `claude` CLI. It does not set
+Anthropic SDK/API-key environment variables.
+
 ## Workflow Publication Drill
 
 Use this after touching the workflow gateway, publication auth, publication

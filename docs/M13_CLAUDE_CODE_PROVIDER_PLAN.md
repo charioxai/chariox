@@ -2,7 +2,32 @@
 
 ## Status
 
-Planning draft. No implementation in this milestone document.
+M13.1 is implemented locally as of 2026-05-13.
+
+Achieved:
+
+- Added the kernel-owned Claude Code structured-stdio provider adapter.
+- Added launch-time Arroba permission/plan-mode mapping to Claude Code
+  `--permission-mode`.
+- Added static Claude catalog exposure.
+- Added stdout/stderr stream-json runtime parsing for session/model metadata,
+  assistant deltas, reasoning deltas, usage, terminal failures, and turn
+  completion.
+- Added focused unit tests and the `claude-provider:drill` live drill.
+
+Verified:
+
+- `cargo test --manifest-path apps/kernel/Cargo.toml claude --lib`
+- `cargo build --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel`
+- `node --check apps/cli/scripts/live-claude-provider-drill.mjs`
+- `node apps/cli/scripts/live-claude-provider-drill.mjs --timeout-ms 180000 --keep-artifacts-on-failure`
+
+Known verification gap:
+
+- `cargo test --manifest-path apps/kernel/Cargo.toml --lib` currently has two
+  failures outside the Claude provider slice: one pre-existing slice protocol
+  snapshot test still contains `TODO`, and one workflow IPC roundtrip fails on a
+  missing node-run reference.
 
 Claude Code should become a first-class Arroba provider at the same runtime level
 as Codex and OpenCode. The initial integration must use the local Claude Code CLI
@@ -135,6 +160,10 @@ protocol snapshot/hash tests, and add a focused drill.
 ## Milestones
 
 ### M13.1 Basic Local Claude Structured Provider
+
+Status: complete for local Arroba-client structured prompt I/O. Remote, resume,
+artifact attachment transmission, and native Claude TUI remain in later
+milestones below.
 
 Goal: launch Claude Code from the kernel, submit one prompt, stream deltas, and
 settle the turn from Claude's terminal result.

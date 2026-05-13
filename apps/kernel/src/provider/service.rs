@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::{
+    claude_runtime::{initialize_claude_runtime, ClaudeRunSelection, ClaudeRuntimeBinding},
     codex_runtime::{initialize_codex_runtime, CodexRuntimeBinding},
     opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
     LaunchProviderRequest, ProviderNativeInteractionBridge, ProviderPromptSignalBatch,
@@ -308,6 +309,7 @@ impl ProviderProcessServiceStore {
 }
 
 pub(crate) enum ProviderRuntimeBinding {
+    Claude(ClaudeRuntimeBinding),
     Codex(CodexRuntimeBinding),
     OpenCode(OpenCodeRuntimeBinding),
 }
@@ -820,6 +822,11 @@ impl ProviderProcessService {
                 .map(ProviderRuntimeBinding::Codex)
                 .map(Some);
         }
+        if run.adapter_key() == "claude" {
+            return initialize_claude_runtime(run)
+                .map(ProviderRuntimeBinding::Claude)
+                .map(Some);
+        }
         if run.adapter_key() == "opencode" {
             return initialize_opencode_runtime(run)
                 .map(ProviderRuntimeBinding::OpenCode)
@@ -834,6 +841,11 @@ impl ProviderProcessService {
         binding: ProviderRuntimeBinding,
     ) -> Result<(), DaemonError> {
         match binding {
+            ProviderRuntimeBinding::Claude(binding) => {
+                self.run_actor_mailbox
+                    .insert_claude_runtime(run_id.to_string(), binding.state);
+                self.apply_claude_run_selection(run_id, binding.selection)?;
+            }
             ProviderRuntimeBinding::Codex(binding) => {
                 self.run_actor_mailbox
                     .insert_codex_runtime(run_id.to_string(), binding.state);
@@ -863,6 +875,7 @@ impl ProviderProcessService {
 
     pub(crate) fn run_uses_structured_prompt_io(&self, run: &RuntimeProviderRun) -> bool {
         run.adapter_key() == "codex"
+            || run.adapter_key() == "claude"
             || run.adapter_key() == "opencode"
             || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
     }
@@ -1205,6 +1218,25 @@ impl ProviderProcessService {
         &mut self,
         provider_run_id: &str,
         selection: OpenCodeRunSelection,
+    ) -> Result<(), DaemonError> {
+        let run = self.get_run_mut(provider_run_id)?;
+        if let Some(model) = selection.model {
+            if run.model() != model {
+                run.set_model(model);
+            }
+        }
+        if let Some(variant) = selection.variant {
+            if run.variant() != Some(variant.as_str()) {
+                run.set_variant(Some(variant));
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_claude_run_selection(
+        &mut self,
+        provider_run_id: &str,
+        selection: ClaudeRunSelection,
     ) -> Result<(), DaemonError> {
         let run = self.get_run_mut(provider_run_id)?;
         if let Some(model) = selection.model {

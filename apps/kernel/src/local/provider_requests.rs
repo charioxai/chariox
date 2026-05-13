@@ -2,7 +2,7 @@ use crate::app::DaemonApp;
 use crate::config::{DaemonConfig, PersistedMachineRegistration};
 use crate::error::DaemonError;
 use crate::provider::{
-    default_provider_command_catalogs, ensure_codex_catalog_endpoint,
+    claude_provider_catalog, default_provider_command_catalogs, ensure_codex_catalog_endpoint,
     ensure_opencode_catalog_endpoint, logout_codex, CodexClient, LaunchProviderRequest,
     OpenCodeClient, OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderClientInterface,
 };
@@ -345,7 +345,7 @@ pub(crate) fn load_provider_catalog(
         thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
     }
 
-    let mut catalogs = Vec::new();
+    let mut catalogs = vec![claude_provider_catalog()];
     let mut source_errors = Vec::new();
 
     match ensure_opencode_catalog_endpoint() {

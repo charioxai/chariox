@@ -54,6 +54,15 @@ pub fn default_provider_command_catalogs() -> BTreeMap<String, ProviderCommandCa
             },
         ),
         (
+            "claude".to_string(),
+            ProviderCommandCatalog {
+                provider: "claude".to_string(),
+                source: ProviderCommandCatalogSource::Shipped,
+                discovery: ProviderCommandCatalogDiscovery::None,
+                commands: Vec::new(),
+            },
+        ),
+        (
             "codex".to_string(),
             ProviderCommandCatalog {
                 provider: "codex".to_string(),
@@ -867,7 +876,7 @@ fn default_control_capabilities(
 ) -> Vec<ControlCapability> {
     let mut capabilities = Vec::new();
 
-    if matches!(adapter_key, "codex" | "opencode") {
+    if matches!(adapter_key, "claude" | "codex" | "opencode") {
         capabilities.push(ControlCapability::new(
             ControlOperation::InterruptTurn,
             ControlCapabilityMode::Native,

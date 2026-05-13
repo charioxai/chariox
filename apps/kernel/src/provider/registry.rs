@@ -1,6 +1,6 @@
 use super::{
-    apply_workspace_write_fence, plan_codex_launch, plan_opencode_launch, AgentEndpointMode,
-    LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    apply_workspace_write_fence, plan_claude_launch, plan_codex_launch, plan_opencode_launch,
+    AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
 };
 use crate::error::DaemonError;
 
@@ -30,18 +30,19 @@ impl ProviderRegistry {
     pub fn registered_adapter_count(&self) -> usize {
         #[cfg(test)]
         {
-            5
+            6
         }
 
         #[cfg(not(test))]
         {
-            3
+            4
         }
     }
 
     pub fn resolve(&self, key: &str) -> Option<&'static dyn AgentEndpointAdapter> {
         match key {
             DevStubAdapter::KEY => Some(&DEV_STUB_ADAPTER),
+            ClaudeAdapter::KEY => Some(&CLAUDE_ADAPTER),
             CodexAdapter::KEY => Some(&CODEX_ADAPTER),
             OpenCodeAdapter::KEY => Some(&OPENCODE_ADAPTER),
             #[cfg(test)]
@@ -55,6 +56,7 @@ impl ProviderRegistry {
     pub fn registered_adapter_keys(&self) -> Vec<String> {
         let keys = vec![
             DevStubAdapter::KEY.to_string(),
+            ClaudeAdapter::KEY.to_string(),
             CodexAdapter::KEY.to_string(),
             OpenCodeAdapter::KEY.to_string(),
         ];
@@ -249,6 +251,37 @@ fn dev_stub_large_output_script() -> String {
     format!(
         "stty -echo 2>/dev/null || true; while IFS= read -r _line; do i=1; while [ \"$i\" -le {line_count} ]; do printf 'large-output-drill %06d ' \"$i\"; printf '%*s' {payload_bytes} '' | tr ' ' x; printf '\\n'; i=$((i + 1)); done; done"
     )
+}
+
+#[derive(Debug, Default)]
+struct ClaudeAdapter;
+
+impl ClaudeAdapter {
+    const KEY: &'static str = "claude";
+}
+
+static CLAUDE_ADAPTER: ClaudeAdapter = ClaudeAdapter;
+
+impl AgentEndpointAdapter for ClaudeAdapter {
+    fn key(&self) -> &'static str {
+        Self::KEY
+    }
+
+    fn connect(
+        &self,
+        request: &LaunchProviderRequest,
+    ) -> Result<ProviderLaunchResult, DaemonError> {
+        let mut launch = plan_claude_launch(Some(request))?;
+        launch.process_label = format!("claude:{}:{}", request.provider, request.model);
+        launch.working_directory = request.working_directory.clone();
+        Ok(launch)
+    }
+
+    fn park(&self, _run: &RuntimeProviderRun) {}
+
+    fn resume(&self, _run: &RuntimeProviderRun) {}
+
+    fn terminate(&self, _run: &RuntimeProviderRun) {}
 }
 
 #[derive(Debug, Default)]

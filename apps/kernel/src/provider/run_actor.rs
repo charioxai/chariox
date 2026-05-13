@@ -13,16 +13,18 @@ use crate::session::PromptAttachment;
 use crate::session::RuntimeInteraction;
 
 use super::{
+    claude_runtime::{abort_claude_turn, drain_claude_events, submit_claude_prompt},
     codex_runtime::{abort_codex_turn, drain_codex_events, submit_codex_prompt},
     opencode_binding::{
         abort_opencode_session, submit_opencode_prompt, sync_opencode_run_selection_for_session,
         OpenCodeRunSelection,
     },
     opencode_runtime::{drain_opencode_events, OpenCodeRuntimeState},
-    CodexRuntimeState, ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
-    RuntimeProviderRun,
+    ClaudeRuntimeState, CodexRuntimeState, ProviderAssistantCompletion, ProviderPromptChunk,
+    ProviderPromptSignalBatch, RuntimeProviderRun,
 };
 
+type ClaudeRuntimeSlot = Arc<Mutex<Option<ClaudeRuntimeState>>>;
 type CodexRuntimeSlot = Arc<Mutex<Option<CodexRuntimeState>>>;
 type OpenCodeRuntimeSlot = Arc<Mutex<Option<OpenCodeRuntimeState>>>;
 const PROVIDER_RUN_COMMAND_QUEUE_LIMIT: usize = 64;
@@ -68,6 +70,7 @@ pub(crate) struct ProviderRunActorMailbox {
     operation_lanes: ProviderRunOperationLanes,
     native_interaction_bridge: ProviderNativeInteractionBridgeStore,
     workers: Arc<Mutex<BTreeMap<String, mpsc::SyncSender<ProviderRunActorCommand>>>>,
+    claude_runs: Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: Arc<Mutex<BTreeSet<String>>>,
@@ -223,6 +226,17 @@ impl ProviderRunActorMailbox {
         self.native_interaction_bridge.set(bridge);
     }
 
+    pub(crate) fn insert_claude_runtime(&self, run_id: String, state: ClaudeRuntimeState) {
+        self.cleared_runs
+            .lock()
+            .expect("cleared provider run set poisoned")
+            .remove(&run_id);
+        self.claude_runs
+            .lock()
+            .expect("claude runtime map poisoned")
+            .insert(run_id, Arc::new(Mutex::new(Some(state))));
+    }
+
     pub(crate) fn insert_codex_runtime(&self, run_id: String, state: CodexRuntimeState) {
         self.cleared_runs
             .lock()
@@ -253,6 +267,15 @@ impl ProviderRunActorMailbox {
     }
 
     pub(crate) fn structured_runtime_state_bound(&self, run_id: &str) -> bool {
+        if self
+            .claude_runs
+            .lock()
+            .expect("claude runtime map poisoned")
+            .get(run_id)
+            .is_some_and(|slot| slot.lock().expect("claude runtime slot poisoned").is_some())
+        {
+            return true;
+        }
         if self
             .codex_runs
             .lock()
@@ -298,7 +321,13 @@ impl ProviderRunActorMailbox {
             .remove(run_id);
         self.clear_structured_prompt_io_in_flight(run_id);
         self.clear_structured_output_poll_in_flight(run_id);
-        clear_runtime_state(&self.codex_runs, &self.opencode_runs, run_id, true);
+        clear_runtime_state(
+            &self.claude_runs,
+            &self.codex_runs,
+            &self.opencode_runs,
+            run_id,
+            true,
+        );
     }
 
     #[doc(hidden)]
@@ -421,6 +450,7 @@ impl ProviderRunActorMailbox {
                 Self::spawn_worker(
                     provider_run_id.clone(),
                     self.native_interaction_bridge.clone(),
+                    Arc::clone(&self.claude_runs),
                     Arc::clone(&self.codex_runs),
                     Arc::clone(&self.opencode_runs),
                     Arc::clone(&self.cleared_runs),
@@ -643,6 +673,7 @@ impl ProviderRunActorMailbox {
                 Self::spawn_worker(
                     provider_run_id.to_string(),
                     self.native_interaction_bridge.clone(),
+                    Arc::clone(&self.claude_runs),
                     Arc::clone(&self.codex_runs),
                     Arc::clone(&self.opencode_runs),
                     Arc::clone(&self.cleared_runs),
@@ -661,6 +692,7 @@ impl ProviderRunActorMailbox {
     fn spawn_worker(
         provider_run_id: String,
         native_interaction_bridge: ProviderNativeInteractionBridgeStore,
+        claude_runs: Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
         codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
         opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
         cleared_runs: Arc<Mutex<BTreeSet<String>>>,
@@ -685,6 +717,7 @@ impl ProviderRunActorMailbox {
                         attachments,
                     } => {
                         let result = execute_submit_command(
+                            &claude_runs,
                             &codex_runs,
                             &opencode_runs,
                             &cleared_runs,
@@ -709,8 +742,13 @@ impl ProviderRunActorMailbox {
                         provider_run_id,
                         run,
                     } => {
-                        let result =
-                            execute_abort_command(&codex_runs, &opencode_runs, &cleared_runs, run);
+                        let result = execute_abort_command(
+                            &claude_runs,
+                            &codex_runs,
+                            &opencode_runs,
+                            &cleared_runs,
+                            run,
+                        );
                         clear_structured_prompt_io_in_flight(
                             &structured_prompt_submissions,
                             &provider_run_id,
@@ -727,6 +765,7 @@ impl ProviderRunActorMailbox {
                         run,
                     } => {
                         if let Err(error) = execute_terminate_command(
+                            &claude_runs,
                             &codex_runs,
                             &opencode_runs,
                             &cleared_runs,
@@ -749,7 +788,13 @@ impl ProviderRunActorMailbox {
                             .lock()
                             .expect("provider output poll delay map poisoned")
                             .remove(&provider_run_id);
-                        clear_runtime_state(&codex_runs, &opencode_runs, &provider_run_id, true);
+                        clear_runtime_state(
+                            &claude_runs,
+                            &codex_runs,
+                            &opencode_runs,
+                            &provider_run_id,
+                            true,
+                        );
                         break;
                     }
                     ProviderRunActorCommand::SyncSelection {
@@ -771,6 +816,7 @@ impl ProviderRunActorMailbox {
                     } => {
                         let result = execute_output_poll_command(
                             &native_interaction_bridge,
+                            &claude_runs,
                             &codex_runs,
                             &opencode_runs,
                             &cleared_runs,
@@ -1120,6 +1166,7 @@ fn provider_actor_enqueue_error(
 }
 
 fn execute_submit_command(
+    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
@@ -1138,6 +1185,12 @@ fn execute_submit_command(
         restore_codex_runtime_if_live(codex_runs, cleared_runs, &run_id, &slot, state);
         return result;
     }
+    if run.adapter_key() == "claude" {
+        let (slot, mut state) = take_claude_runtime(claude_runs, &run_id)?;
+        let result = submit_claude_prompt(&run, &mut state, &prompt, &attachments);
+        restore_claude_runtime_if_live(claude_runs, cleared_runs, &run_id, &slot, state);
+        return result;
+    }
     if run.adapter_key() != "opencode" {
         return Ok(());
     }
@@ -1149,6 +1202,7 @@ fn execute_submit_command(
 }
 
 fn execute_abort_command(
+    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
@@ -1165,6 +1219,12 @@ fn execute_abort_command(
         restore_codex_runtime_if_live(codex_runs, cleared_runs, &run_id, &slot, state);
         return result;
     }
+    if run.adapter_key() == "claude" {
+        let (slot, mut state) = take_claude_runtime(claude_runs, &run_id)?;
+        let result = abort_claude_turn(&run_id, &mut state);
+        restore_claude_runtime_if_live(claude_runs, cleared_runs, &run_id, &slot, state);
+        return result;
+    }
     if run.adapter_key() != "opencode" {
         return Ok(());
     }
@@ -1176,6 +1236,7 @@ fn execute_abort_command(
 }
 
 fn execute_terminate_command(
+    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
@@ -1185,12 +1246,15 @@ fn execute_terminate_command(
     if run.adapter_key() == "codex" && runtime_slot_missing_or_empty_codex(codex_runs, &run_id) {
         return Ok(());
     }
+    if run.adapter_key() == "claude" && runtime_slot_missing_or_empty_claude(claude_runs, &run_id) {
+        return Ok(());
+    }
     if run.adapter_key() == "opencode"
         && runtime_slot_missing_or_empty_opencode(opencode_runs, &run_id)
     {
         return Ok(());
     }
-    execute_abort_command(codex_runs, opencode_runs, cleared_runs, run)
+    execute_abort_command(claude_runs, codex_runs, opencode_runs, cleared_runs, run)
 }
 
 fn execute_selection_sync_command(
@@ -1221,6 +1285,7 @@ fn execute_selection_sync_command(
 
 fn execute_output_poll_command(
     native_interaction_bridge: &ProviderNativeInteractionBridgeStore,
+    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
@@ -1283,6 +1348,18 @@ fn execute_output_poll_command(
             resolved_usage: poll.resolved_usage,
         }));
     }
+    if run.adapter_key() == "claude" {
+        let (slot, mut state) = match take_claude_runtime(claude_runs, run_id) {
+            Ok((slot, state)) => (slot, state),
+            Err(_) => return Ok(None),
+        };
+        if !output_poll_delay.is_zero() {
+            thread::sleep(output_poll_delay);
+        }
+        let drain = drain_claude_events(run, &mut state);
+        restore_claude_runtime_if_live(claude_runs, cleared_runs, run_id, &slot, state);
+        return drain.map(Some);
+    }
     if run.adapter_key() != "opencode" {
         return Ok(None);
     }
@@ -1325,6 +1402,22 @@ fn execute_output_poll_command(
     }))
 }
 
+fn claude_slot(
+    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
+    run_id: &str,
+) -> Result<ClaudeRuntimeSlot, DaemonError> {
+    claude_runs
+        .lock()
+        .expect("claude runtime map poisoned")
+        .get(run_id)
+        .cloned()
+        .ok_or_else(|| DaemonError::ProviderProtocol {
+            provider_run_id: run_id.to_string(),
+            operation: "claude_session_missing",
+            message: "no Claude Code session is bound to this provider run".to_string(),
+        })
+}
+
 fn codex_slot(
     codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     run_id: &str,
@@ -1355,6 +1448,23 @@ fn opencode_slot(
             operation: "opencode_session_missing",
             message: "no OpenCode session is bound to this provider run".to_string(),
         })
+}
+
+fn take_claude_runtime(
+    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
+    run_id: &str,
+) -> Result<(ClaudeRuntimeSlot, ClaudeRuntimeState), DaemonError> {
+    let slot = claude_slot(claude_runs, run_id)?;
+    let state = slot
+        .lock()
+        .expect("claude runtime slot poisoned")
+        .take()
+        .ok_or_else(|| DaemonError::ProviderProtocol {
+            provider_run_id: run_id.to_string(),
+            operation: "claude_session_missing",
+            message: "no Claude Code session is bound to this provider run".to_string(),
+        })?;
+    Ok((slot, state))
 }
 
 fn take_codex_runtime(
@@ -1391,6 +1501,16 @@ fn take_opencode_runtime(
     Ok((slot, state))
 }
 
+fn runtime_slot_missing_or_empty_claude(
+    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
+    run_id: &str,
+) -> bool {
+    match claude_slot(claude_runs, run_id) {
+        Ok(slot) => slot.lock().expect("claude runtime slot poisoned").is_none(),
+        Err(_) => true,
+    }
+}
+
 fn runtime_slot_missing_or_empty_codex(
     codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     run_id: &str,
@@ -1411,6 +1531,18 @@ fn runtime_slot_missing_or_empty_opencode(
             .expect("opencode runtime slot poisoned")
             .is_none(),
         Err(_) => true,
+    }
+}
+
+fn restore_claude_runtime_if_live(
+    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
+    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
+    run_id: &str,
+    slot: &ClaudeRuntimeSlot,
+    state: ClaudeRuntimeState,
+) {
+    if runtime_should_restore(cleared_runs, claude_runs, run_id, slot) {
+        *slot.lock().expect("claude runtime slot poisoned") = Some(state);
     }
 }
 
@@ -1480,11 +1612,19 @@ fn clear_structured_output_poll_in_flight(
 }
 
 fn clear_runtime_state(
+    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     run_id: &str,
     stop_opencode: bool,
 ) {
+    if let Some(slot) = claude_runs
+        .lock()
+        .expect("claude runtime map poisoned")
+        .remove(run_id)
+    {
+        let _ = slot.lock().expect("claude runtime slot poisoned").take();
+    }
     if let Some(slot) = codex_runs
         .lock()
         .expect("codex runtime map poisoned")

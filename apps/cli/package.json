@@ -39,6 +39,7 @@
     "agent-footer-status:drill": "pnpm run build && node scripts/agent-footer-status-drill.mjs",
     "native-tui:codex-drill": "pnpm run build && node scripts/live-codex-native-tui-drill.mjs",
     "native-tui:opencode-drill": "pnpm run build && node scripts/live-opencode-native-tui-drill.mjs",
+    "claude-provider:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-claude-provider-drill.mjs",
     "native-tui:permission-drill": "pnpm run build && node scripts/live-native-tui-permission-drill.mjs",
     "native-tui:provider-command-drill": "pnpm run build && node scripts/live-native-tui-provider-command-drill.mjs",
     "native-tui:prompt-injection-drill": "pnpm run build && node scripts/live-native-tui-prompt-injection-drill.mjs",
