@@ -25,6 +25,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 - 2026-05-13: Cloud API HTTP adapter request/response contracts moved from `contracts.ts` into `contracts/http.ts`, with compatibility exports preserved.
 - 2026-05-13: Cloud API service construction options and relay realm allocation contracts moved from `contracts.ts` into `contracts/service-options.ts`, with compatibility exports preserved.
 - 2026-05-13: `CloudApiService` moved from `contracts.ts` into `contracts/service.ts`; `contracts.ts` is now a compatibility barrel over focused domain contract files.
+- 2026-05-13: Browser terminal storage ownership extraction started in `arroba-cloud`. Current active browser storage keys now use the `arroba:terminal:*` namespace, with one-time read/migration fallback from legacy `arroba:web-cli:*` keys. Prompt draft persistence moved into `terminal/prompt-draft-store.ts`; badge trace persistence, size bounding, opt-in flag, and max-size storage moved into `terminal/badge-trace-store.ts`; key naming and migration helpers live in `terminal/storage-keys.ts`; `client.ts` now delegates storage details through narrow wrappers while keeping UI orchestration behavior unchanged.
 
 ## Summary
 
