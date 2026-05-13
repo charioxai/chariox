@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::{DaemonConfig, SliceImageBuildPolicy};
 use crate::error::DaemonError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +37,8 @@ pub struct SliceRecord {
     pub name: String,
     pub owner_kernel_id: String,
     pub owner_machine_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub backend: SliceBackendKind,
     pub os: String,
     pub status: SliceStatus,
@@ -105,6 +108,7 @@ pub struct CreateSliceInput {
 pub enum LocalDockerSliceAction {
     Provision,
     Stop,
+    Destroy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +116,44 @@ pub struct LocalDockerSliceRelay {
     pub relay_url: String,
     pub container_relay_url: Option<String>,
     pub relay_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalDockerSliceOptions {
+    pub root: PathBuf,
+    pub docker_image: String,
+    pub build_image: SliceImageBuildPolicy,
+    pub extension_dockerfile: Option<PathBuf>,
+    pub memory_mb: Option<u32>,
+    pub cpus: Option<String>,
+    pub screen_width: u32,
+    pub screen_height: u32,
+}
+
+impl LocalDockerSliceOptions {
+    pub fn from_config(config: &DaemonConfig) -> Self {
+        let linux = &config.user_config.slices.linux;
+        Self {
+            root: config.slice_root(),
+            docker_image: linux
+                .docker_image
+                .clone()
+                .unwrap_or_else(|| "arroba-slice-linux-spike:local".to_string()),
+            build_image: linux.build_image.unwrap_or(SliceImageBuildPolicy::Auto),
+            extension_dockerfile: linux
+                .extension_dockerfile
+                .as_deref()
+                .map(expand_user_path_for_slice),
+            memory_mb: linux.memory_mb,
+            cpus: linux.cpus.clone(),
+            screen_width: linux.screen_width.unwrap_or(1280),
+            screen_height: linux.screen_height.unwrap_or(800),
+        }
+    }
+
+    fn screen_geometry(&self) -> String {
+        format!("{}x{}x24", self.screen_width, self.screen_height)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -174,6 +216,7 @@ impl SliceStore {
             name: input.name,
             owner_kernel_id: owner_kernel_id.to_string(),
             owner_machine_id: owner_machine_id.to_string(),
+            session_id: None,
             backend: input.backend,
             os: input.os,
             status: SliceStatus::Stopped,
@@ -319,6 +362,48 @@ impl SliceStore {
             })
     }
 
+    pub fn attach_session(
+        &self,
+        slice_ref: &str,
+        session_id: &str,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.attach_session",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        if let Some(attached_session_id) = record.session_id.as_deref() {
+            if attached_session_id != session_id {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.attach_session",
+                    message: format!(
+                        "slice `{}` is already attached to session `{attached_session_id}`",
+                        record.name
+                    ),
+                });
+            }
+        }
+        record.session_id = Some(session_id.to_string());
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn list_by_session(&self, session_id: &str) -> Vec<SliceRecord> {
+        let state = self.inner.lock().expect("slice store poisoned");
+        state
+            .records
+            .values()
+            .filter(|record| record.session_id.as_deref() == Some(session_id))
+            .cloned()
+            .collect()
+    }
+
     pub fn resolve_worker_kernel_ref(&self, slice_ref: &str) -> Result<String, DaemonError> {
         let record = self.resolve(slice_ref)?;
         Ok(record
@@ -359,6 +444,7 @@ pub fn run_local_docker_slice_action(
     record: &SliceRecord,
     action: LocalDockerSliceAction,
     relay: Option<LocalDockerSliceRelay>,
+    options: &LocalDockerSliceOptions,
 ) -> Result<(), DaemonError> {
     if record.backend != SliceBackendKind::LocalDocker {
         return Err(DaemonError::LocalTransport {
@@ -382,12 +468,19 @@ pub fn run_local_docker_slice_action(
         .arg(match action {
             LocalDockerSliceAction::Provision => "provision",
             LocalDockerSliceAction::Stop => "stop",
+            LocalDockerSliceAction::Destroy => "destroy",
         })
         .env("ARROBA_SLICE_NAME", local_docker_container_name(record))
+        .env("ARROBA_SLICE_DOCKER_IMAGE", &options.docker_image)
+        .env(
+            "ARROBA_SLICE_BUILD_IMAGE",
+            options.build_image.as_env_value(),
+        )
         .env(
             "ARROBA_SLICE_HOME_VOLUME",
             format!("{}-home", local_docker_container_name(record)),
         )
+        .env("ARROBA_SLICE_SCREEN_GEOMETRY", options.screen_geometry())
         .env("ARROBA_SLICE_CODEX_PORT", ports.codex.to_string())
         .env("ARROBA_SLICE_OPENCODE_PORT", ports.opencode.to_string())
         .env("ARROBA_SLICE_KERNEL_PORT", ports.kernel.to_string())
@@ -404,6 +497,15 @@ pub fn run_local_docker_slice_action(
         )
         .env("ARROBA_SLICE_MACHINE_ID", format!("slice:{}", record.id))
         .env("ARROBA_SLICE_MACHINE_ALIAS", record.name.clone());
+    if let Some(memory_mb) = options.memory_mb {
+        command.env("ARROBA_SLICE_DOCKER_MEMORY", format!("{memory_mb}m"));
+    }
+    if let Some(cpus) = options.cpus.as_deref() {
+        command.env("ARROBA_SLICE_DOCKER_CPUS", cpus);
+    }
+    if let Some(extension_dockerfile) = options.extension_dockerfile.as_deref() {
+        command.env("ARROBA_SLICE_EXTENSION_DOCKERFILE", extension_dockerfile);
+    }
     if let Some(relay) = relay {
         command.env("ARROBA_SLICE_RELAY_TOKEN", relay.relay_token);
         if let Some(container_relay_url) = relay.container_relay_url {
@@ -417,7 +519,16 @@ pub fn run_local_docker_slice_action(
         command.env("ARROBA_SLICE_WORKSPACE", workspace_mount);
     }
 
-    let log_path = local_docker_slice_action_log_path(record, action);
+    let log_path = local_docker_slice_action_log_path(&options.root, record, action);
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "failed to create slice log dir {}: {error}",
+                parent.display()
+            ),
+        })?;
+    }
     let log_file = OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -505,6 +616,7 @@ impl LocalDockerSliceAction {
         match self {
             Self::Provision => "provision",
             Self::Stop => "stop",
+            Self::Destroy => "destroy",
         }
     }
 }
@@ -542,14 +654,30 @@ fn local_docker_container_name(record: &SliceRecord) -> String {
 }
 
 fn local_docker_slice_action_log_path(
+    root: &Path,
     record: &SliceRecord,
     action: LocalDockerSliceAction,
 ) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "arroba-{}-{}.log",
+    root.join("logs").join(format!(
+        "{}-{}.log",
         local_docker_container_name(record),
         action.as_str()
     ))
+}
+
+fn expand_user_path_for_slice(value: &str) -> PathBuf {
+    let value = value.trim();
+    if value == "~" {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(value));
+    }
+    if let Some(suffix) = value.strip_prefix("~/") {
+        if let Some(home_dir) = std::env::var_os("HOME").map(PathBuf::from) {
+            return home_dir.join(suffix);
+        }
+    }
+    PathBuf::from(value)
 }
 
 fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
@@ -690,6 +818,23 @@ mod tests {
             .create("kernel-1", "machine-1", create_input("next"))
             .expect("new slice should create after restore");
         assert_eq!(next.id, "slice-2");
+    }
+
+    #[test]
+    fn slice_store_attaches_records_to_one_session() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+
+        let attached = store
+            .attach_session(&slice.id, "session-1", 44)
+            .expect("slice should attach");
+
+        assert_eq!(attached.session_id.as_deref(), Some("session-1"));
+        assert_eq!(attached.updated_at_ms, 44);
+        assert_eq!(store.list_by_session("session-1").len(), 1);
+        assert!(store.attach_session(&slice.id, "session-2", 45).is_err());
     }
 
     #[test]

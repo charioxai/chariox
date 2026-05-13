@@ -145,8 +145,11 @@ impl DaemonConfig {
                 .or(runtime_identity.daemon_alias),
             relay_url: env_relay_url
                 .or_else(|| persisted_config.clone().and_then(|config| config.relay_url)),
-            relay_token: env_relay_token
-                .or_else(|| persisted_config.clone().and_then(|config| config.relay_token)),
+            relay_token: env_relay_token.or_else(|| {
+                persisted_config
+                    .clone()
+                    .and_then(|config| config.relay_token)
+            }),
             cloud_relay: if env_relay_configured {
                 None
             } else {
@@ -352,6 +355,15 @@ impl DaemonConfig {
                     .join(&self.daemon_id)
                     .join("state.db")
             })
+    }
+
+    pub fn slice_root(&self) -> PathBuf {
+        self.user_config
+            .slices
+            .root
+            .as_deref()
+            .map(expand_user_path)
+            .unwrap_or_else(|| default_config_dir().join("slices"))
     }
 
     pub fn kernel_event_counter_path(&self) -> PathBuf {
@@ -725,6 +737,15 @@ fn user_config_schema_entries() -> Vec<UserConfigSchemaEntry> {
         user_config_schema_entry("state.backend", "enum", &["sqlite"], true, false, "restart_required", "boot", "Durable kernel state backend."),
         user_config_schema_entry("state.path", "string", &[], true, true, "restart_required", "boot", "Durable kernel state SQLite database path."),
         user_config_schema_entry("state.snapshot_interval_events", "u32", &[], true, true, "none", "live", "Number of state events between durable snapshots."),
+        user_config_schema_entry("slices.root", "string", &[], true, true, "none", "live", "Arroba-owned slice metadata, logs, and build-helper root."),
+        user_config_schema_entry("slices.linux.docker_image", "string", &[], true, true, "none", "live", "Docker image tag used for new Linux slices."),
+        user_config_schema_entry("slices.linux.build_image", "enum", &["auto", "always", "never"], true, true, "none", "live", "Linux slice image build policy."),
+        user_config_schema_entry("slices.linux.extension_dockerfile", "string", &[], true, true, "none", "live", "Optional user Dockerfile layered on top of the Linux slice image."),
+        user_config_schema_entry("slices.linux.memory_mb", "u32", &[], true, true, "none", "live", "Optional Docker memory limit for new Linux slice containers."),
+        user_config_schema_entry("slices.linux.cpus", "string", &[], true, true, "none", "live", "Optional Docker CPU limit for new Linux slice containers."),
+        user_config_schema_entry("slices.linux.idle_timeout_minutes", "u32", &[], true, true, "no_runtime_effect", "unwired", "Future idle-stop timeout for Linux slices."),
+        user_config_schema_entry("slices.linux.screen_width", "u32", &[], true, true, "none", "live", "Linux slice virtual screen width."),
+        user_config_schema_entry("slices.linux.screen_height", "u32", &[], true, true, "none", "live", "Linux slice virtual screen height."),
         user_config_schema_entry("kernel.websocket_host", "string", &[], true, true, "restart_required", "boot", "Kernel websocket bind host."),
         user_config_schema_entry("kernel.websocket_port", "port", &[], true, true, "restart_required", "boot", "Kernel websocket bind port."),
         user_config_schema_entry("kernel.runtime_mcp_host", "string", &[], true, true, "restart_required", "boot", "Runtime MCP bind host."),
@@ -747,6 +768,8 @@ pub struct ArrobaUserConfig {
     #[serde(default)]
     pub state: UserStateConfig,
     #[serde(default)]
+    pub slices: UserSlicesConfig,
+    #[serde(default)]
     pub ui: UserUiConfig,
     #[serde(default)]
     pub relay: UserRelayConfig,
@@ -766,6 +789,7 @@ impl Default for ArrobaUserConfig {
             history: UserHistoryConfig::default(),
             artifacts: UserArtifactsConfig::default(),
             state: UserStateConfig::default(),
+            slices: UserSlicesConfig::default(),
             ui: UserUiConfig::default(),
             relay: UserRelayConfig::default(),
             kernel: UserKernelConfig::default(),
@@ -781,6 +805,7 @@ impl ArrobaUserConfig {
         self.history.validate()?;
         self.artifacts.validate()?;
         self.state.validate()?;
+        self.slices.validate()?;
         validate_non_empty("credential_vault.service", &self.credential_vault.service)?;
         validate_credentials(&self.credentials)?;
         Ok(())
@@ -971,6 +996,47 @@ impl ArrobaUserConfig {
                     true,
                 )?)
             }
+            "slices.root" => {
+                self.slices.root = Some(non_empty_config_string("slices.root", value)?)
+            }
+            "slices.linux.docker_image" => {
+                self.slices.linux.docker_image =
+                    Some(non_empty_config_string("slices.linux.docker_image", value)?)
+            }
+            "slices.linux.build_image" => {
+                self.slices.linux.build_image = Some(SliceImageBuildPolicy::parse(&value)?)
+            }
+            "slices.linux.extension_dockerfile" => {
+                self.slices.linux.extension_dockerfile = Some(non_empty_config_string(
+                    "slices.linux.extension_dockerfile",
+                    value,
+                )?)
+            }
+            "slices.linux.memory_mb" => {
+                self.slices.linux.memory_mb =
+                    Some(parse_config_u32("slices.linux.memory_mb", &value, true)?)
+            }
+            "slices.linux.cpus" => {
+                self.slices.linux.cpus = Some(non_empty_config_string("slices.linux.cpus", value)?)
+            }
+            "slices.linux.idle_timeout_minutes" => {
+                self.slices.linux.idle_timeout_minutes = Some(parse_config_u32(
+                    "slices.linux.idle_timeout_minutes",
+                    &value,
+                    true,
+                )?)
+            }
+            "slices.linux.screen_width" => {
+                self.slices.linux.screen_width =
+                    Some(parse_config_u32("slices.linux.screen_width", &value, true)?)
+            }
+            "slices.linux.screen_height" => {
+                self.slices.linux.screen_height = Some(parse_config_u32(
+                    "slices.linux.screen_height",
+                    &value,
+                    true,
+                )?)
+            }
             "kernel.websocket_host" => {
                 self.kernel.websocket_host =
                     Some(non_empty_config_string("kernel.websocket_host", value)?)
@@ -1083,6 +1149,15 @@ impl ArrobaUserConfig {
             }
             "state.path" => self.state.path = None,
             "state.snapshot_interval_events" => self.state.snapshot_interval_events = None,
+            "slices.root" => self.slices.root = None,
+            "slices.linux.docker_image" => self.slices.linux.docker_image = None,
+            "slices.linux.build_image" => self.slices.linux.build_image = None,
+            "slices.linux.extension_dockerfile" => self.slices.linux.extension_dockerfile = None,
+            "slices.linux.memory_mb" => self.slices.linux.memory_mb = None,
+            "slices.linux.cpus" => self.slices.linux.cpus = None,
+            "slices.linux.idle_timeout_minutes" => self.slices.linux.idle_timeout_minutes = None,
+            "slices.linux.screen_width" => self.slices.linux.screen_width = None,
+            "slices.linux.screen_height" => self.slices.linux.screen_height = None,
             "kernel.websocket_host" => self.kernel.websocket_host = None,
             "kernel.websocket_port" => self.kernel.websocket_port = None,
             "kernel.runtime_mcp_host" => self.kernel.runtime_mcp_host = None,
@@ -1721,6 +1796,119 @@ impl ManagedIoMode {
 
     pub fn requires_managed_io(&self) -> bool {
         matches!(self, Self::Required)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserSlicesConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    #[serde(default)]
+    pub linux: UserLinuxSliceConfig,
+}
+
+impl Default for UserSlicesConfig {
+    fn default() -> Self {
+        Self {
+            root: Some("~/.arroba/slices".to_string()),
+            linux: UserLinuxSliceConfig::default(),
+        }
+    }
+}
+
+impl UserSlicesConfig {
+    fn validate(&self) -> Result<(), DaemonError> {
+        if let Some(root) = &self.root {
+            validate_non_empty("slices.root", root)?;
+        }
+        self.linux.validate()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserLinuxSliceConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker_image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_image: Option<SliceImageBuildPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension_dockerfile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_minutes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_height: Option<u32>,
+}
+
+impl Default for UserLinuxSliceConfig {
+    fn default() -> Self {
+        Self {
+            docker_image: Some("arroba-slice-linux-spike:local".to_string()),
+            build_image: Some(SliceImageBuildPolicy::Auto),
+            extension_dockerfile: None,
+            memory_mb: None,
+            cpus: None,
+            idle_timeout_minutes: Some(30),
+            screen_width: Some(1280),
+            screen_height: Some(800),
+        }
+    }
+}
+
+impl UserLinuxSliceConfig {
+    fn validate(&self) -> Result<(), DaemonError> {
+        if let Some(image) = &self.docker_image {
+            validate_non_empty("slices.linux.docker_image", image)?;
+        }
+        if let Some(path) = &self.extension_dockerfile {
+            validate_non_empty("slices.linux.extension_dockerfile", path)?;
+        }
+        validate_optional_nonzero("slices.linux.memory_mb", self.memory_mb)?;
+        validate_optional_nonzero(
+            "slices.linux.idle_timeout_minutes",
+            self.idle_timeout_minutes,
+        )?;
+        validate_optional_nonzero("slices.linux.screen_width", self.screen_width)?;
+        validate_optional_nonzero("slices.linux.screen_height", self.screen_height)?;
+        if let Some(cpus) = &self.cpus {
+            validate_non_empty("slices.linux.cpus", cpus)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SliceImageBuildPolicy {
+    Auto,
+    Always,
+    Never,
+}
+
+impl SliceImageBuildPolicy {
+    fn parse(value: &str) -> Result<Self, DaemonError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "always" => Ok(Self::Always),
+            "never" | "off" | "false" | "0" => Ok(Self::Never),
+            _ => Err(DaemonError::InvalidConfig {
+                field: "slices.linux.build_image",
+                message: "value must be `auto`, `always`, or `never`",
+            }),
+        }
+    }
+
+    pub fn as_env_value(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Always => "always",
+            Self::Never => "never",
+        }
     }
 }
 
@@ -2563,6 +2751,44 @@ injection = { kind = "header", name = "authorization", value = "Bearer ${secret}
             config.credentials[0].allowed_uses,
             vec![UserCredentialUse::Http]
         );
+    }
+
+    #[test]
+    fn user_config_parses_slice_defaults() {
+        let payload = r#"
+version = 1
+
+[slices]
+root = "~/.arroba/slices-dev"
+
+[slices.linux]
+docker_image = "arroba-slice-linux-custom:local"
+build_image = "never"
+extension_dockerfile = "~/.arroba/slices/extensions/Dockerfile"
+memory_mb = 4096
+cpus = "2.5"
+idle_timeout_minutes = 45
+screen_width = 1440
+screen_height = 900
+"#;
+
+        let config =
+            toml::from_str::<ArrobaUserConfig>(payload).expect("slice config should parse");
+        config.validate().expect("slice config should validate");
+
+        assert_eq!(config.slices.root.as_deref(), Some("~/.arroba/slices-dev"));
+        assert_eq!(
+            config.slices.linux.docker_image.as_deref(),
+            Some("arroba-slice-linux-custom:local")
+        );
+        assert_eq!(
+            config.slices.linux.build_image,
+            Some(SliceImageBuildPolicy::Never)
+        );
+        assert_eq!(config.slices.linux.memory_mb, Some(4096));
+        assert_eq!(config.slices.linux.cpus.as_deref(), Some("2.5"));
+        assert_eq!(config.slices.linux.screen_width, Some(1440));
+        assert_eq!(config.slices.linux.screen_height, Some(900));
     }
 
     #[test]

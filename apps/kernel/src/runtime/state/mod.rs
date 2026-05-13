@@ -410,14 +410,48 @@ impl KernelRuntimeState {
         request: crate::session::CreateSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let slice_ref = request.slice_ref.clone();
-        let response = if let Some(slice_ref) = slice_ref {
-            let worker_kernel_ref = self.resolve_slice_worker_kernel_ref(&slice_ref).await?;
+        let response = if let Some(slice_ref) = slice_ref.as_deref() {
+            {
+                let slice_ref = slice_ref.to_string();
+                self.with_app_side_effect(move |app| {
+                    let slice = app.slices().resolve(&slice_ref)?;
+                    if let Some(session_id) = slice.session_id.as_deref() {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "slice.attach_session",
+                            message: format!(
+                                "slice `{}` is already attached to session `{session_id}`",
+                                slice.name
+                            ),
+                        });
+                    }
+                    Ok(())
+                })
+                .await?;
+            }
+            let worker_kernel_ref = self.resolve_slice_worker_kernel_ref(slice_ref).await?;
             self.create_sliced_session_response(request, worker_kernel_ref)
                 .await?
         } else {
             self.owned.create_session_response(request)?
         };
         if let LocalDaemonResponse::SessionCreated { session, agent } = &response {
+            if let Some(slice_ref) = slice_ref {
+                let session_id = session.id().to_string();
+                let slice = self
+                    .with_app_side_effect(move |app| {
+                        app.slices().attach_session(
+                            &slice_ref,
+                            &session_id,
+                            crate::session::unix_epoch_ms(),
+                        )
+                    })
+                    .await?;
+                self.owned.durable_state_store.append_event(
+                    "slice.updated",
+                    Some(slice.id.clone()),
+                    serde_json::json!({ "slice": &slice }),
+                )?;
+            }
             self.owned.durable_state_store.append_event(
                 "session.created",
                 Some(session.id().to_string()),
@@ -879,6 +913,7 @@ impl KernelRuntimeState {
         }
         self.append_session_durable_event("session.ended", &session, "runtime_end_session")
             .await?;
+        self.destroy_session_attached_slices(session.id()).await?;
         Ok(session)
     }
 
@@ -900,7 +935,51 @@ impl KernelRuntimeState {
         }
         self.append_session_durable_event("session.deleted", &session, "runtime_delete_session")
             .await?;
+        self.destroy_session_attached_slices(session.id()).await?;
         Ok(session)
+    }
+
+    async fn destroy_session_attached_slices(&self, session_id: &str) -> Result<(), DaemonError> {
+        let attached_slices = {
+            let session_id = session_id.to_string();
+            self.with_app_side_effect(move |app| app.slices().list_by_session(&session_id))
+                .await
+        };
+        for slice in attached_slices {
+            if slice.backend == crate::slice::SliceBackendKind::LocalDocker {
+                let docker_options = self
+                    .with_app_side_effect(|app| {
+                        crate::slice::LocalDockerSliceOptions::from_config(app.config())
+                    })
+                    .await;
+                let slice_for_task = slice.clone();
+                let supervisor_result = tokio::task::spawn_blocking(move || {
+                    crate::slice::run_local_docker_slice_action(
+                        &slice_for_task,
+                        crate::slice::LocalDockerSliceAction::Destroy,
+                        None,
+                        &docker_options,
+                    )
+                })
+                .await
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "slice.destroy_session_attached",
+                    message: format!("slice supervisor task failed: {error}"),
+                })?;
+                supervisor_result?;
+            }
+            let deleted = {
+                let slice_id = slice.id.clone();
+                self.with_app_side_effect(move |app| app.slices().delete(&slice_id))
+                    .await?
+            };
+            self.owned.durable_state_store.append_event(
+                "slice.deleted",
+                Some(deleted.id.clone()),
+                serde_json::json!({ "slice": &deleted }),
+            )?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn delete_current_kernel_sessions(

@@ -509,6 +509,7 @@ export type SliceRecord = {
   name: string
   owner_kernel_id: string
   owner_machine_id: string
+  session_id?: string | null
   backend: "local_docker" | "ssh_docker"
   os: string
   status: "stopped" | "starting" | "running" | "unhealthy"
@@ -757,7 +758,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 30
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 31
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

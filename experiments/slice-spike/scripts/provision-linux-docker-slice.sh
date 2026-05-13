@@ -6,6 +6,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 SLICE_NAME="${ARROBA_SLICE_NAME:-arroba-slice-linux-spike}"
 SLICE_IMAGE="${ARROBA_SLICE_DOCKER_IMAGE:-arroba-slice-linux-spike:local}"
+SLICE_BUILD_IMAGE="${ARROBA_SLICE_BUILD_IMAGE:-auto}"
+SLICE_EXTENSION_DOCKERFILE="${ARROBA_SLICE_EXTENSION_DOCKERFILE:-}"
+SLICE_DOCKER_MEMORY="${ARROBA_SLICE_DOCKER_MEMORY:-}"
+SLICE_DOCKER_CPUS="${ARROBA_SLICE_DOCKER_CPUS:-}"
 SLICE_HOME_VOLUME="${ARROBA_SLICE_HOME_VOLUME:-${SLICE_NAME}-home}"
 SLICE_WORKSPACE="${ARROBA_SLICE_WORKSPACE:-$REPO_ROOT}"
 SLICE_RECREATE="${ARROBA_SLICE_RECREATE:-0}"
@@ -40,7 +44,7 @@ fail() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [provision|status|stop|import-provider-auth|start-desktop|validate-screen|start-runtime|start-providers|shell]
+Usage: $(basename "$0") [provision|status|stop|destroy|import-provider-auth|start-desktop|validate-screen|start-runtime|start-providers|shell]
        $(basename "$0") [login-codex|logout-codex|login-opencode|logout-opencode]
 
 This Docker path is a provider/runtime validation fallback for Mac hosts when
@@ -54,7 +58,34 @@ require_docker() {
 }
 
 build_image() {
+  case "$SLICE_BUILD_IMAGE" in
+    auto|always|never) ;;
+    *) fail "ARROBA_SLICE_BUILD_IMAGE must be auto, always, or never" ;;
+  esac
+
+  if [[ "$SLICE_BUILD_IMAGE" == "never" ]]; then
+    if docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1; then
+      log "using existing $SLICE_IMAGE"
+      return 0
+    fi
+    fail "Docker image $SLICE_IMAGE does not exist and build policy is never"
+  fi
+
+  if [[ "$SLICE_BUILD_IMAGE" == "auto" ]] && docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1; then
+    log "using cached $SLICE_IMAGE"
+    return 0
+  fi
+
   log "building $SLICE_IMAGE"
+  if [[ -n "$SLICE_EXTENSION_DOCKERFILE" ]]; then
+    [[ -f "$SLICE_EXTENSION_DOCKERFILE" ]] || fail "extension Dockerfile not found: $SLICE_EXTENSION_DOCKERFILE"
+    docker build \
+      --build-arg "ARROBA_SLICE_BASE_IMAGE=arroba-slice-linux-spike:local" \
+      -f "$SLICE_EXTENSION_DOCKERFILE" \
+      -t "$SLICE_IMAGE" \
+      "$(dirname "$SLICE_EXTENSION_DOCKERFILE")"
+    return 0
+  fi
   docker build \
     -f "$REPO_ROOT/experiments/slice-spike/docker/Dockerfile" \
     -t "$SLICE_IMAGE" \
@@ -72,17 +103,24 @@ ensure_container() {
   else
     log "creating container $SLICE_NAME"
     docker volume create "$SLICE_HOME_VOLUME" >/dev/null
-    docker create \
-      --name "$SLICE_NAME" \
-      --security-opt seccomp=unconfined \
-      -p "127.0.0.1:$SLICE_CODEX_PORT:$SLICE_CODEX_PORT" \
-      -p "127.0.0.1:$SLICE_OPENCODE_PORT:$SLICE_OPENCODE_PORT" \
-      -p "127.0.0.1:$SLICE_KERNEL_PORT:$SLICE_KERNEL_PORT" \
-      -p "127.0.0.1:$SLICE_RELAY_PORT:$SLICE_RELAY_PORT" \
-      -p "127.0.0.1:$SLICE_NOVNC_PORT:$SLICE_NOVNC_PORT" \
-      -v "$SLICE_HOME_VOLUME:/home/slice" \
-      -v "$SLICE_WORKSPACE:/workspace" \
-      "$SLICE_IMAGE" >/dev/null
+    local docker_create_args=(
+      --name "$SLICE_NAME"
+      --security-opt seccomp=unconfined
+      -p "127.0.0.1:$SLICE_CODEX_PORT:$SLICE_CODEX_PORT"
+      -p "127.0.0.1:$SLICE_OPENCODE_PORT:$SLICE_OPENCODE_PORT"
+      -p "127.0.0.1:$SLICE_KERNEL_PORT:$SLICE_KERNEL_PORT"
+      -p "127.0.0.1:$SLICE_RELAY_PORT:$SLICE_RELAY_PORT"
+      -p "127.0.0.1:$SLICE_NOVNC_PORT:$SLICE_NOVNC_PORT"
+      -v "$SLICE_HOME_VOLUME:/home/slice"
+      -v "$SLICE_WORKSPACE:/workspace"
+    )
+    if [[ -n "$SLICE_DOCKER_MEMORY" ]]; then
+      docker_create_args+=(--memory "$SLICE_DOCKER_MEMORY")
+    fi
+    if [[ -n "$SLICE_DOCKER_CPUS" ]]; then
+      docker_create_args+=(--cpus "$SLICE_DOCKER_CPUS")
+    fi
+    docker create "${docker_create_args[@]}" "$SLICE_IMAGE" >/dev/null
   fi
 
   if ! docker ps --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
@@ -106,6 +144,7 @@ exec_slice() {
     -e ARROBA_SLICE_DAEMON_ALIAS="$SLICE_DAEMON_ALIAS" \
     -e ARROBA_SLICE_MACHINE_ID="$SLICE_MACHINE_ID" \
     -e ARROBA_SLICE_MACHINE_ALIAS="$SLICE_MACHINE_ALIAS" \
+    -e ARROBA_SLICE_SCREEN_GEOMETRY="${ARROBA_SLICE_SCREEN_GEOMETRY:-1280x800x24}" \
     -u slice \
     "$SLICE_NAME" \
     "$@"
@@ -176,6 +215,18 @@ stop_container() {
   fi
 }
 
+destroy_container() {
+  stop_container
+  if docker ps -a --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
+    log "removing container $SLICE_NAME"
+    docker rm "$SLICE_NAME" >/dev/null
+  fi
+  if docker volume inspect "$SLICE_HOME_VOLUME" >/dev/null 2>&1; then
+    log "removing volume $SLICE_HOME_VOLUME"
+    docker volume rm "$SLICE_HOME_VOLUME" >/dev/null
+  fi
+}
+
 main() {
   local action="${1:-provision}"
   case "$action" in
@@ -207,6 +258,10 @@ main() {
     stop)
       require_docker
       stop_container
+      ;;
+    destroy)
+      require_docker
+      destroy_container
       ;;
     import-provider-auth)
       require_docker

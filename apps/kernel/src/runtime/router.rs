@@ -246,6 +246,7 @@ fn user_config_path_is_unwired(path: &str) -> bool {
             | "history.archive.archive_before_delete"
             | "history.archive.delete_operational_after_verified_archive"
             | "artifacts.operational.retention_days"
+            | "slices.linux.idle_timeout_minutes"
     ) || path.starts_with("ui.worktree_aliases.")
 }
 
@@ -3739,11 +3740,16 @@ impl CommandRouter {
         };
         let supervisor_slice = initial_slice.clone();
         let relay = Some(crate::slice::local_docker_private_relay(&supervisor_slice));
+        let docker_options = {
+            let app = self.app.lock().await;
+            crate::slice::LocalDockerSliceOptions::from_config(app.config())
+        };
         let supervisor_result = tokio::task::spawn_blocking(move || {
             crate::slice::run_local_docker_slice_action(
                 &supervisor_slice,
                 crate::slice::LocalDockerSliceAction::Provision,
                 relay,
+                &docker_options,
             )
         })
         .await
@@ -3807,11 +3813,16 @@ impl CommandRouter {
             let app = self.app.lock().await;
             app.slices().resolve(&request.slice_ref)?
         };
+        let docker_options = {
+            let app = self.app.lock().await;
+            crate::slice::LocalDockerSliceOptions::from_config(app.config())
+        };
         let supervisor_result = tokio::task::spawn_blocking(move || {
             crate::slice::run_local_docker_slice_action(
                 &resolved_slice,
                 crate::slice::LocalDockerSliceAction::Stop,
                 None,
+                &docker_options,
             )
         })
         .await
@@ -3841,6 +3852,30 @@ impl CommandRouter {
         &self,
         request: SliceRefRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let resolved_slice = {
+            let app = self.app.lock().await;
+            app.slices().resolve(&request.slice_ref)?
+        };
+        if resolved_slice.backend == crate::slice::SliceBackendKind::LocalDocker {
+            let docker_options = {
+                let app = self.app.lock().await;
+                crate::slice::LocalDockerSliceOptions::from_config(app.config())
+            };
+            let supervisor_result = tokio::task::spawn_blocking(move || {
+                crate::slice::run_local_docker_slice_action(
+                    &resolved_slice,
+                    crate::slice::LocalDockerSliceAction::Destroy,
+                    None,
+                    &docker_options,
+                )
+            })
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "slice.delete",
+                message: format!("slice supervisor task failed: {error}"),
+            })?;
+            supervisor_result?;
+        }
         let slice = {
             let app = self.app.lock().await;
             let slice = app.slices().delete(&request.slice_ref)?;

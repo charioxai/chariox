@@ -4,7 +4,7 @@ use crate::slice::{SliceBackendKind, SliceDisplayEndpoint, SliceRecord};
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 30;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 31;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
