@@ -9,8 +9,8 @@ use crate::app::provider_output::{
 use crate::attachment::ClientCapabilityLevel;
 use crate::local::test_support::LocalRouterTestHarness;
 use crate::provider::{
-    AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest, ProviderPromptChunk,
-    ProviderPromptSignalBatch, ProviderRunTokenUsage, RuntimeProviderRun,
+    AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest, ProviderClientInterface,
+    ProviderPromptChunk, ProviderPromptSignalBatch, ProviderRunTokenUsage, RuntimeProviderRun,
 };
 use crate::session::{
     CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload, WorkflowNodeRunStatus,
@@ -53,7 +53,7 @@ use super::{
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 25);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 26);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -442,7 +442,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 25);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 26);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -474,7 +474,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 25);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 26);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -508,8 +508,31 @@ fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
 }
 
 #[test]
+fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 26);
+
+    let request = LocalDaemonRequest::CreateSession(
+        CreateSessionRequest::new("workspace-1", "worktree-1")
+            .with_alias("slice-session")
+            .with_slice_ref("linux-dev"),
+    );
+    let snapshot = serde_json::to_value(request).expect("request should serialize");
+    assert_eq!(
+        snapshot.pointer("/CreateSession/slice_ref"),
+        Some(&serde_json::json!("linux-dev"))
+    );
+    let serialized = serde_json::to_string(&snapshot)
+        .expect("slice-targeted create session snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "0d6c7b4337eedcd0f3f33f231a81f639e9b3285e729e2fd32a00abb1d8901db1"
+    );
+}
+
+#[test]
 fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 25);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 26);
 
     let request = LocalDaemonRequest::SemanticSearchHistory(SemanticSearchHistoryRequest {
         query: "why did the build fail".to_string(),
@@ -622,7 +645,7 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 25);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 26);
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
         session_id: "session-1".to_string(),
@@ -655,7 +678,7 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 25);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 26);
 
     let request =
         LocalDaemonRequest::UpdateProviderRunSelection(UpdateProviderRunSelectionRequest {
@@ -1942,6 +1965,74 @@ fn local_request_api_spawns_and_focuses_agents() {
             .state(),
         crate::agent::AgentState::Focused
     );
+}
+
+#[test]
+fn local_request_api_rejects_config_updates_for_native_tui_provider_agents() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+
+    harness.with_app_mut(|app| {
+        app.launch_provider(
+            LaunchProviderRequest::new(session.id(), "dev-stub", "codex", "default", "gpt-5.4")
+                .with_agent_id(agent.id())
+                .with_client_interface(ProviderClientInterface::NativeTui),
+        )
+        .expect("native TUI provider launch should succeed");
+    });
+
+    let profile_error = harness
+        .dispatch(LocalDaemonRequest::UpdateAgentProfile(
+            UpdateAgentProfileRequest {
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                provider: Some("codex".to_string()),
+                model: Some("gpt-5.5".to_string()),
+                effort: Some("high".to_string()),
+                clear_effort: false,
+            },
+        ))
+        .expect_err("native TUI provider profile should be read-only from Arroba");
+    assert_native_tui_config_error(profile_error, "update agent profile");
+
+    let config_error = harness
+        .dispatch(LocalDaemonRequest::UpdateAgentConfig(
+            UpdateAgentConfigRequest {
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                execution_mode: Some(AgentExecutionMode::Plan),
+                clear_execution_mode: false,
+                permission_level: Some(AgentPermissionLevel::Required),
+                clear_permission_level: false,
+                workspace_id: None,
+                clear_workspace_id: false,
+                worktree_id: None,
+                clear_worktree_id: false,
+            },
+        ))
+        .expect_err("native TUI provider config should be read-only from Arroba");
+    assert_native_tui_config_error(config_error, "update agent config");
+}
+
+fn assert_native_tui_config_error(error: DaemonError, operation: &'static str) {
+    match error {
+        DaemonError::LocalTransport {
+            operation: actual,
+            message,
+        } => {
+            assert_eq!(actual, operation);
+            assert!(message.contains("provider-native TUI"));
+        }
+        other => panic!("unexpected error: {other}"),
+    }
 }
 
 #[test]

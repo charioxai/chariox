@@ -2615,6 +2615,8 @@ pub struct CreateSessionRequest {
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_defaults: Option<SessionAgentDefaults>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice_ref: Option<String>,
     #[serde(default)]
     pub hidden: bool,
     #[serde(default = "default_session_owner_user_id")]
@@ -2755,6 +2757,7 @@ impl CreateSessionRequest {
             worktree_id: worktree_id.into(),
             alias: None,
             agent_defaults: None,
+            slice_ref: None,
             hidden: false,
             owner_user_id: default_session_owner_user_id(),
         }
@@ -2772,6 +2775,11 @@ impl CreateSessionRequest {
 
     pub fn with_agent_defaults(mut self, agent_defaults: SessionAgentDefaults) -> Self {
         self.agent_defaults = Some(agent_defaults);
+        self
+    }
+
+    pub fn with_slice_ref(mut self, slice_ref: impl Into<String>) -> Self {
+        self.slice_ref = Some(slice_ref.into());
         self
     }
 

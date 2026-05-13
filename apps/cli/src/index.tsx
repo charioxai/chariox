@@ -1674,6 +1674,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         machines: remoteMachinesState(),
         kernels: remoteKernelsState(),
         terminals: terminalsState(),
+        slices: slicesState(),
       },
       themeRegistry: themeRegistryState(),
       currentProvider: (options.provider ?? "opencode") as BackendProviderId,
@@ -1794,6 +1795,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         catalog: providerCatalogState(),
         currentProvider: (options.provider ?? "opencode") as BackendProviderId,
         currentModel: options.model,
+        remote: {
+          relay: relayStatusState(),
+          machines: remoteMachinesState(),
+          kernels: remoteKernelsState(),
+          terminals: terminalsState(),
+          slices: slicesState(),
+        },
       })
       if (decision.action === "create") {
         const session = await createSession(client, pendingWorkspaceTarget(), pendingWorktreeTarget(), undefined, {
@@ -1803,7 +1811,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           account_profile: options.accountProfile,
           execution_mode: "build",
           permission_level: "yolo",
-        })
+        }, decision.launch.sliceRef)
         await attachBinding(session, true, decision.launch)
         flashFooter(`created session ${session.alias ?? session.id}`, "info")
         return
@@ -2171,6 +2179,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       || !waitingRoomRemoteKernelCanDelete(kernel)
     )))
     setTerminalsState(snapshot.terminals)
+    setSlicesState(snapshot.slices)
     reconcileWaitingRoom(waitingRoomState())
   }
   const refreshWaitingRoomData = async () => {
@@ -8164,6 +8173,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
                   machines: remoteMachinesState(),
                   kernels: remoteKernelsState(),
                   terminals: terminalsState(),
+                  slices: slicesState(),
                 })
               : keyName === "down"
                 ? moveWaitingRoomFocus(next, availableSessions(), 1, {
@@ -8171,8 +8181,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
                     machines: remoteMachinesState(),
                     kernels: remoteKernelsState(),
                     terminals: terminalsState(),
+                    slices: slicesState(),
                   })
-                : cycleWaitingRoomValue(next, availableSessions(), providerCatalogState(), keyName === "left" ? -1 : 1, themeRegistryState()),
+                : cycleWaitingRoomValue(next, availableSessions(), providerCatalogState(), keyName === "left" ? -1 : 1, themeRegistryState(), {
+                    slices: slicesState(),
+                  }),
           )
           return
         }
@@ -8253,6 +8266,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             machines: remoteMachinesState(),
             kernels: remoteKernelsState(),
             terminals: terminalsState(),
+            slices: slicesState(),
           }, waitingRoomTargets(), themeRegistryState()).map((row) => ({
             id: row.id,
             title: row.title,
@@ -9808,11 +9822,13 @@ async function getWaitingRoomInventory(client: LocalIpcClient): Promise<{
   remoteMachines: RemoteMachineView[]
   remoteKernels: RemoteKernelView[]
   terminals: TerminalView[]
+  slices: SliceRecord[]
 }> {
   const response = await client.send<Record<string, unknown>>(getWaitingRoomPublicSnapshotRequest())
   const payload = expectVariant<{
     snapshot: WaitingRoomPublicSnapshot
   }>(response, "WaitingRoomPublicSnapshot").snapshot
+  const slices = await listSlices(client).catch(() => [])
   return {
     inventoryVersion: payload.inventory_version,
     sessions: payload.sessions.slice().sort((left, right) => right.created_at_ms - left.created_at_ms),
@@ -9820,6 +9836,7 @@ async function getWaitingRoomInventory(client: LocalIpcClient): Promise<{
     remoteMachines: payload.remote_machines,
     remoteKernels: payload.remote_kernels,
     terminals: payload.terminals ?? [],
+    slices,
   }
 }
 
@@ -10138,9 +10155,10 @@ async function createSession(
   worktree: string,
   alias?: string,
   agentDefaults?: RuntimeSession["agent_defaults"],
+  sliceRef?: string | null,
 ): Promise<RuntimeSession> {
   const resolvedWorktree = await resolvePendingWaitingRoomWorktreePath(workspace, worktree)
-  const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, resolvedWorktree, alias, agentDefaults))
+  const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, resolvedWorktree, alias, agentDefaults, sliceRef))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
   return normalizeRuntimeSession(payload.session)
 }

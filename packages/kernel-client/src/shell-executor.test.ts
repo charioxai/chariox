@@ -471,7 +471,7 @@ test("executeShellCommand removes shell-local variables", async () => {
 test("executeShellCommand creates a session and binds assignment", async () => {
   const session = makeSession({ id: "session-2", worktree_id: "/repo/qa", focused_agent_id: "agent-1" })
   const fake = fakeClient((request) => {
-    assert.deepEqual(request, { CreateSession: { workspace_id: "/repo", worktree_id: "/repo/qa", alias: null } })
+    assert.deepEqual(request, { CreateSession: { workspace_id: "/repo", worktree_id: "/repo/qa", alias: null, slice_ref: null } })
     return { SessionCreated: { session } }
   })
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
@@ -512,7 +512,7 @@ test("executeShellCommand attaches standalone shell clients when switching sessi
   assert.equal(result.ok, true)
   assert.equal(result.contextUpdates?.attachmentId, "attachment-shell")
   assert.deepEqual(requests, [
-    { CreateSession: { workspace_id: "/repo", worktree_id: "/repo/qa", alias: null } },
+    { CreateSession: { workspace_id: "/repo", worktree_id: "/repo/qa", alias: null, slice_ref: null } },
     { AttachToSession: { session_id: "session-2", client_id: "arroba-shell-test", capability_level: "FullTerminal" } },
   ])
 })

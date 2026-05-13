@@ -20,6 +20,7 @@ import {
   describeWaitingRoomWorktreeSelection,
   normalizeWaitingRoomWorktreeSelectionId,
 } from "./waiting-room-worktrees.js"
+import type { SliceRecord } from "./cli-types.js"
 
 export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = 2
 const WAITING_ROOM_ROW_TITLE_MIN_WIDTH = 24
@@ -39,6 +40,7 @@ export type WaitingRoomFocus =
   | "effort"
   | "workspace"
   | "worktree"
+  | "slice"
   | "theme"
   | "join-sessions"
   | "session"
@@ -62,6 +64,7 @@ export type WaitingRoomState = {
   remoteKernelIndex: number
   terminalIndex: number
   worktreeSelectionId: string
+  sliceSelectionId?: string
   providerId: BackendProviderId
   modelId: string
   effort: string
@@ -106,6 +109,7 @@ export type WaitingRoomRemoteState = {
   machines?: WaitingRoomRemoteMachine[]
   kernels?: WaitingRoomRemoteKernel[]
   terminals?: WaitingRoomTerminal[]
+  slices?: SliceRecord[]
 }
 
 export type WaitingRoomTerminalType = "cli" | "web" | "ios" | "android"
@@ -153,6 +157,7 @@ export function createWaitingRoomState(
       remoteKernelIndex: 0,
       terminalIndex: 0,
       worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(),
+      sliceSelectionId: "none",
       providerId,
       modelId: selected?.id ?? model,
       effort: selectConfiguredVariant(selected, effort),
@@ -178,6 +183,7 @@ export function normalizeWaitingRoomState(
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const terminals = waitingRoomTerminals(remote)
+  const slices = waitingRoomSlices(remote)
   const providerId = normalizeBackendProvider(state.providerId)
   const selected = selectConfiguredModel(catalog, state.modelId, providerId)
   const efforts = waitingRoomEfforts(selected)
@@ -191,6 +197,8 @@ export function normalizeWaitingRoomState(
         ? "relay"
         : terminals.length === 0 && state.focus === "terminal"
           ? "add-terminal"
+        : slices.length === 0 && state.focus === "slice"
+          ? "worktree"
         : state.focus
   return {
     ...state,
@@ -201,6 +209,7 @@ export function normalizeWaitingRoomState(
     remoteKernelIndex: remoteKernels.length === 0 ? 0 : modulo(state.remoteKernelIndex, remoteKernels.length),
     terminalIndex: terminals.length === 0 ? 0 : modulo(state.terminalIndex, terminals.length),
     worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(state.worktreeSelectionId),
+    sliceSelectionId: normalizeWaitingRoomSliceSelectionId(state.sliceSelectionId, slices),
     modelId: selected?.id ?? state.modelId,
     effort: efforts.includes(state.effort) ? state.effort : efforts[0] ?? "",
     themeId: normalizeThemeName(state.themeId, themeRegistry),
@@ -256,6 +265,7 @@ export function cycleWaitingRoomValue(
   catalog: ProviderCatalog,
   delta: number,
   themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
+  remote: WaitingRoomRemoteState = {},
 ) {
   if (state.focus === "model") {
     const options = catalogModelOptions(catalog, state.providerId)
@@ -272,6 +282,7 @@ export function cycleWaitingRoomValue(
       sessions,
       catalog,
       themeRegistry,
+      remote,
     )
   }
   if (state.focus === "provider") {
@@ -285,6 +296,7 @@ export function cycleWaitingRoomValue(
       sessions,
       catalog,
       themeRegistry,
+      remote,
     )
   }
   if (state.focus === "effort") {
@@ -310,6 +322,14 @@ export function cycleWaitingRoomValue(
       worktreeSelectionId: cycleWaitingRoomWorktreeSelectionId(state.worktreeSelectionId, delta),
     }
   }
+  if (state.focus === "slice") {
+    const options = waitingRoomSliceOptions({ slices: waitingRoomSlices(remote), selectionId: state.sliceSelectionId })
+    const index = Math.max(0, options.findIndex((option) => option.id === state.sliceSelectionId))
+    return {
+      ...state,
+      sliceSelectionId: options[modulo(index + delta, options.length)]?.id ?? "none",
+    }
+  }
   return state
 }
 
@@ -324,11 +344,14 @@ export function waitingRoomChoice(
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const terminals = waitingRoomTerminals(remote)
+  const slices = waitingRoomSlices(remote)
   return {
     session: visibleSessions[state.sessionIndex] ?? null,
     remoteMachine: remoteMachines[state.machineIndex] ?? null,
     remoteKernel: remoteKernels[state.remoteKernelIndex] ?? null,
     terminal: terminals[state.terminalIndex] ?? null,
+    slice: waitingRoomSelectedSlice(state.sliceSelectionId, slices),
+    sliceRef: selectedWaitingRoomSliceRef(state.sliceSelectionId, slices),
     providerId: state.providerId,
     model,
     effort: state.effort,
@@ -343,7 +366,7 @@ export function waitingRoomRows(
   targets?: WaitingRoomTargetState,
   themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
 ) {
-  const choice = waitingRoomChoice(state, sessions, catalog)
+  const choice = waitingRoomChoice(state, sessions, catalog, remote)
   const inventoryLoading = remote.inventoryStatus === "loading"
   const loadingText = waitingRoomLoadingText(remote.loadingFrame)
   const modelOptions = catalogModelOptions(catalog, state.providerId)
@@ -359,6 +382,7 @@ export function waitingRoomRows(
     state.worktreeSelectionId,
     targets?.worktreePath,
   )
+  const selectedSliceLabel = formatWaitingRoomSliceSelection(state.sliceSelectionId, waitingRoomSlices(remote))
   const statusWidth = Math.max(
     WAITING_ROOM_STATUS_MIN_WIDTH,
     ...visibleSessions.map((session) => formatWaitingRoomSessionStatus(session).length),
@@ -437,6 +461,16 @@ export function waitingRoomRows(
       titleWidth,
       indent: 1,
       focused: state.focus === "worktree",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
+      id: "slice",
+      title: "Slice",
+      value: inventoryLoading ? loadingText : selectedSliceLabel,
+      titleWidth,
+      indent: 1,
+      focused: state.focus === "slice",
       selectable: true,
       scrollbar: "",
     },
@@ -762,6 +796,49 @@ export function waitingRoomTerminals(remote: WaitingRoomRemoteState) {
   return remote.terminals ?? []
 }
 
+function waitingRoomSlices(remote: WaitingRoomRemoteState = {}) {
+  return (remote.slices ?? [])
+    .slice()
+    .sort((left, right) => formatWaitingRoomSliceLabel(left).localeCompare(formatWaitingRoomSliceLabel(right)))
+}
+
+function waitingRoomSliceOptions(options: { slices: SliceRecord[]; selectionId?: string | null | undefined }) {
+  return [
+    { id: "none", slice: null },
+    ...options.slices.map((slice) => ({ id: slice.id, slice })),
+  ]
+}
+
+function normalizeWaitingRoomSliceSelectionId(selectionId: string | null | undefined, slices: SliceRecord[]) {
+  const normalized = selectionId?.trim() || "none"
+  if (normalized === "none") {
+    return "none"
+  }
+  return waitingRoomSliceOptions({ slices, selectionId: normalized }).some((option) => option.id === normalized)
+    ? normalized
+    : "none"
+}
+
+function waitingRoomSelectedSlice(selectionId: string | null | undefined, slices: SliceRecord[]) {
+  if (selectionId === "none") {
+    return null
+  }
+  return slices.find((slice) => slice.id === selectionId || slice.name === selectionId) ?? null
+}
+
+function selectedWaitingRoomSliceRef(selectionId: string | null | undefined, slices: SliceRecord[]) {
+  return waitingRoomSelectedSlice(selectionId, slices)?.id ?? null
+}
+
+function formatWaitingRoomSliceSelection(selectionId: string | null | undefined, slices: SliceRecord[]) {
+  const slice = waitingRoomSelectedSlice(selectionId, slices)
+  return slice ? formatWaitingRoomSliceLabel(slice) : "None"
+}
+
+function formatWaitingRoomSliceLabel(slice: SliceRecord) {
+  return slice.name || slice.id
+}
+
 function waitingRoomLoadingText(frame = 0) {
   return `loading${".".repeat(Math.abs(frame) % 4)}`
 }
@@ -868,6 +945,7 @@ function waitingRoomFocusTargets(sessions: SessionListEntry[], remote: WaitingRo
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const terminals = waitingRoomTerminals(remote)
+  const slices = waitingRoomSlices(remote)
   return [
     { focus: "new" as const, sessionIndex: 0 },
     { focus: "provider" as const, sessionIndex: 0 },
@@ -875,6 +953,7 @@ function waitingRoomFocusTargets(sessions: SessionListEntry[], remote: WaitingRo
     { focus: "effort" as const, sessionIndex: 0 },
     { focus: "workspace" as const, sessionIndex: 0 },
     { focus: "worktree" as const, sessionIndex: 0 },
+    ...(slices.length > 0 ? [{ focus: "slice" as const, sessionIndex: 0 }] : []),
     ...(visibleSessions.length > 0 ? [{ focus: "join-sessions" as const, sessionIndex: 0 }] : []),
     ...previewSessions.map((session) => ({
       focus: "session" as const,

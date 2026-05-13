@@ -8,6 +8,7 @@ import {
   createWaitingRoomState,
   cycleWaitingRoomValue,
   moveWaitingRoomFocus,
+  waitingRoomChoice,
   waitingRoomRows,
 } from "./waiting-room.js"
 import { __setWaitingRoomWorktreeInventoryForTest } from "./waiting-room-worktrees.js"
@@ -111,6 +112,36 @@ test("waiting room cycles existing worktrees and the create-worktree option", ()
   }
 })
 
+test("waiting room cycles slices for new sessions", () => {
+  const catalog = fallbackProviderCatalog()
+  const slices = [{
+    id: "slice-1",
+    name: "linux-dev",
+    owner_kernel_id: "kernel-local",
+    owner_machine_id: "machine-local",
+    backend: "local_docker" as const,
+    os: "linux",
+    status: "running" as const,
+    workspace_mount: null,
+    worker_kernel_ref: "slice:slice-1",
+    worker_kernel_id: "kernel-slice",
+    worker_machine_id: "machine-slice",
+    providers: ["codex"],
+    display_endpoint: null,
+    created_at_ms: 0,
+    updated_at_ms: 0,
+  }]
+  let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+
+  state = moveWaitingRoomFocus(state, [], 6, { slices })
+  assert.equal(state.focus, "slice")
+  assert.equal(waitingRoomRows(state, [], catalog, { slices }).find((row) => row.id === "slice")?.value, "None")
+
+  state = cycleWaitingRoomValue(state, [], catalog, 1, undefined, { slices })
+  assert.equal(waitingRoomChoice(state, [], catalog, { slices }).sliceRef, "slice-1")
+  assert.equal(waitingRoomRows(state, [], catalog, { slices }).find((row) => row.id === "slice")?.value, "linux-dev")
+})
+
 test("waiting room renders indented sections and only previews the last two active sessions", () => {
   const catalog = fallbackProviderCatalog()
   const baseCreatedAt = Date.UTC(2026, 3, 6, 10, 0)
@@ -135,10 +166,12 @@ test("waiting room renders indented sections and only previews the last two acti
   assert.equal(firstWindow[3]?.id, "effort")
   assert.equal(firstWindow[4]?.id, "workspace")
   assert.equal(firstWindow[5]?.id, "worktree")
-  assert.equal(firstWindow[6]?.id, "join-header")
-  assert.equal(firstWindow[6]?.indent, 0)
-  assert.equal(firstWindow[6]?.focused, true)
-  assert.equal(firstWindow[6]?.value, "Press Enter")
+  assert.equal(firstWindow[6]?.id, "slice")
+  assert.equal(firstWindow[6]?.value, "None")
+  assert.equal(firstWindow[7]?.id, "join-header")
+  assert.equal(firstWindow[7]?.indent, 0)
+  assert.equal(firstWindow[7]?.focused, true)
+  assert.equal(firstWindow[7]?.value, "Press Enter")
   assert.equal(firstWindow.at(-1)?.id, "theme")
   assert.equal(firstWindow.at(-1)?.indent, 0)
   assert.deepEqual(
@@ -231,8 +264,10 @@ test("waiting room places join below start configuration and makes cloud relay l
   assert.equal(rows[3]?.id, "effort")
   assert.equal(rows[4]?.id, "workspace")
   assert.equal(rows[5]?.id, "worktree")
-  assert.equal(rows[6]?.id, "join-header")
-  assert.equal(rows[6]?.title, "Join Existing Session")
+  assert.equal(rows[6]?.id, "slice")
+  assert.equal(rows[6]?.value, "None")
+  assert.equal(rows[7]?.id, "join-header")
+  assert.equal(rows[7]?.title, "Join Existing Session")
   assert.equal(rows.at(-1)?.id, "theme")
   assert.equal(rows.at(-1)?.indent, 0)
 

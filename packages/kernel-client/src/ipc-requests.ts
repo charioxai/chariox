@@ -12,6 +12,7 @@ export function createSessionRequest(
   worktreeId: string,
   alias?: string,
   agentDefaults?: SessionAgentDefaults,
+  sliceRef?: string | null,
 ) {
   return {
     CreateSession: {
@@ -19,6 +20,7 @@ export function createSessionRequest(
       worktree_id: worktreeId,
       alias: alias ?? null,
       ...(agentDefaults ? { agent_defaults: agentDefaults } : {}),
+      slice_ref: sliceRef ?? null,
     },
   }
 }

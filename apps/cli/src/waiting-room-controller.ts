@@ -23,6 +23,7 @@ export type WaitingRoomLaunchConfig = {
   provider: BackendProviderId
   model: string
   effort: string
+  sliceRef?: string | null
 }
 
 export type WaitingRoomStateUpdate = {
@@ -112,12 +113,14 @@ export function deriveWaitingRoomActivationDecision(options: {
   catalog: ProviderCatalog
   currentProvider: BackendProviderId
   currentModel: string
+  remote?: WaitingRoomRemoteState
 }): WaitingRoomActivationDecision {
-  const choice = waitingRoomChoice(options.state, options.sessions, options.catalog)
+  const choice = waitingRoomChoice(options.state, options.sessions, options.catalog, options.remote)
   const launch = {
     provider: choice.providerId ?? options.currentProvider,
     model: choice.model?.id ?? options.currentModel,
     effort: choice.effort,
+    ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
   }
 
   if (options.state.focus === "join-sessions") {
