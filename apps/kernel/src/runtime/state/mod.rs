@@ -656,7 +656,15 @@ impl KernelRuntimeState {
         }
         let mut agent = update.agent;
         if let Some(remote_update) = update.remote_update {
-            let config = self.config_snapshot().await;
+            let mut config = self.config_snapshot().await;
+            if let (Some(relay_url), Some(relay_token)) = (
+                remote_update.relay_url.clone(),
+                remote_update.relay_token.clone(),
+            ) {
+                config.relay_url = Some(relay_url);
+                config.relay_token = Some(relay_token);
+                config.cloud_relay = None;
+            }
             match tokio::time::timeout(
                 Duration::from_secs(5),
                 crate::transport::relay_client::send_peer_request_via_temporary_connection(

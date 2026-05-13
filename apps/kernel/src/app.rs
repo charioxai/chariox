@@ -622,6 +622,12 @@ impl DaemonApp {
             }
             self.sessions.restore_session(session);
         }
+        let restored_slices = snapshot
+            .slices
+            .into_iter()
+            .filter(|slice| slice.owner_kernel_id == self.config.daemon_id)
+            .collect::<Vec<_>>();
+        self.slices.restore_records(restored_slices);
         for agent in snapshot.agents {
             if !restored_session_ids.contains(agent.session_id()) {
                 continue;
@@ -685,7 +691,8 @@ impl DaemonApp {
     #[allow(dead_code)]
     pub(crate) fn save_durable_state_snapshot(&self) -> Result<(), DaemonError> {
         let sequence = self.durable_state.latest_event_sequence()?;
-        let payload = DurableKernelSnapshotPayload::capture(&self.sessions, &self.agents);
+        let payload =
+            DurableKernelSnapshotPayload::capture(&self.sessions, &self.agents, &self.slices);
         self.durable_state.save_snapshot(
             sequence,
             serde_json::to_value(payload).map_err(|error| DaemonError::LocalTransport {
@@ -702,6 +709,7 @@ impl DaemonApp {
             self.durable_state_store(),
             self.session_state_store(),
             self.agents.clone(),
+            self.slices.clone(),
             interval_events,
         ))
     }
@@ -795,6 +803,28 @@ impl DaemonApp {
                 self.session_projection.remove(session.id());
                 self.history_projection.remove(session.id());
                 self.agent_runtime_projection.update_session(&session);
+            }
+            "slice.created" | "slice.updated" => {
+                let slice: crate::slice::SliceRecord =
+                    decode_durable_payload_field(&event, "slice", "durable_state.restore_slice")?;
+                if slice.owner_kernel_id == self.config.daemon_id {
+                    let mut slices = self.slices.list();
+                    slices.retain(|record| record.id != slice.id);
+                    slices.push(slice);
+                    self.slices.restore_records(slices);
+                }
+            }
+            "slice.deleted" => {
+                let slice: crate::slice::SliceRecord = decode_durable_payload_field(
+                    &event,
+                    "slice",
+                    "durable_state.restore_deleted_slice",
+                )?;
+                if slice.owner_kernel_id == self.config.daemon_id {
+                    let mut slices = self.slices.list();
+                    slices.retain(|record| record.id != slice.id);
+                    self.slices.restore_records(slices);
+                }
             }
             _ => {}
         }
@@ -1255,7 +1285,13 @@ impl DaemonApp {
         mut request: CreateAgentRequest,
         kernel_ref: &str,
     ) -> Result<AgentInstance, DaemonError> {
-        let worker_kernel = self.select_remote_kernel_by_ref(kernel_ref, &request.provider)?;
+        let relay_override = self.slice_relay_config_for_kernel_ref(kernel_ref);
+        let relay_config = relay_override.as_ref().unwrap_or(&self.config);
+        let worker_kernel = self.select_remote_kernel_by_ref_with_config(
+            kernel_ref,
+            &request.provider,
+            relay_config,
+        )?;
         request.kernel_ref = None;
         request.worktree_id = None;
         request.worktree_placement = None;
@@ -1264,7 +1300,8 @@ impl DaemonApp {
             let mut sessions = session_store.write();
             self.agents.create_agent(request, &mut sessions)?
         };
-        let remote_setup = self.bind_remote_agent_to_worker(&agent, &worker_kernel, None);
+        let remote_setup =
+            self.bind_remote_agent_to_worker(&agent, &worker_kernel, None, relay_override);
         if remote_setup.is_err() {
             let mut sessions = session_store.write();
             let _ = self.agents.destroy_agent(agent.id(), &mut sessions);
@@ -1277,7 +1314,9 @@ impl DaemonApp {
         agent: &AgentInstance,
         worker_kernel: &RelayKernelPresence,
         worktree_placement: Option<crate::agent::GitWorktreePlacement>,
+        relay_override: Option<DaemonConfig>,
     ) -> Result<AgentInstance, DaemonError> {
+        let relay_config = relay_override.as_ref().unwrap_or(&self.config);
         let session = self.sessions().get_session(agent.session_id())?;
         let effective_config =
             crate::session::effective_agent_execution_config(&session, Some(agent));
@@ -1286,7 +1325,7 @@ impl DaemonApp {
             daemon_alias: None,
         };
         let lease = match self.block_on_relay_future(send_peer_request_via_temporary_connection(
-            &self.config,
+            relay_config,
             target.clone(),
             RelayPeerRequest::CreateExecutionLease {
                 home_kernel_id: self.config.daemon_id.clone(),
@@ -1305,7 +1344,7 @@ impl DaemonApp {
         };
         let leased_agent =
             match self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                &self.config,
+                relay_config,
                 target.clone(),
                 RelayPeerRequest::SpawnLeasedAgent {
                     lease_id: lease.id.clone(),
@@ -1321,7 +1360,7 @@ impl DaemonApp {
                 Ok(RelayPeerResponse::LeasedAgentSpawned { leased_agent }) => leased_agent,
                 Ok(other) => {
                     let _ = self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                        &self.config,
+                        relay_config,
                         target,
                         RelayPeerRequest::DestroyExecutionLease {
                             lease_id: lease.id.clone(),
@@ -1334,7 +1373,7 @@ impl DaemonApp {
                 }
                 Err(error) => {
                     let _ = self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                        &self.config,
+                        relay_config,
                         target,
                         RelayPeerRequest::DestroyExecutionLease {
                             lease_id: lease.id.clone(),
@@ -1350,6 +1389,12 @@ impl DaemonApp {
                 worker_machine_id: worker_kernel.machine_id.clone(),
                 execution_lease_id: lease.id,
                 leased_agent_id: leased_agent.id,
+                relay_url: relay_override
+                    .as_ref()
+                    .and_then(|config| config.relay_url.clone()),
+                relay_token: relay_override
+                    .as_ref()
+                    .and_then(|config| config.relay_token.clone()),
             },
         )?;
         self.ensure_remote_agent_skill_packages(&bound)?;
@@ -1372,7 +1417,7 @@ impl DaemonApp {
             &remote_execution.worker_machine_id,
             agent.provider(),
         )?;
-        let rebound = self.bind_remote_agent_to_worker(&agent, &worker_kernel, None)?;
+        let rebound = self.bind_remote_agent_to_worker(&agent, &worker_kernel, None, None)?;
         self.durable_state_store().append_event(
             "agent.updated",
             Some(rebound.id().to_string()),
@@ -1422,7 +1467,7 @@ impl DaemonApp {
             });
         }
         let worker_kernel = self.select_remote_kernel_for_machine(machine_ref, agent.provider())?;
-        self.bind_remote_agent_to_worker(&agent, &worker_kernel, None)
+        self.bind_remote_agent_to_worker(&agent, &worker_kernel, None, None)
     }
 
     fn ensure_remote_agent_skill_packages(
@@ -1458,8 +1503,9 @@ impl DaemonApp {
         if packages.is_empty() {
             return Ok(());
         }
+        let relay_config = self.relay_config_for_remote_execution(remote_execution);
         let response = self.block_on_relay_future(send_peer_request_via_temporary_connection(
-            &self.config,
+            &relay_config,
             ClientTarget {
                 daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                 daemon_alias: None,
@@ -1521,8 +1567,9 @@ impl DaemonApp {
         if required_mcps.is_empty() {
             return Ok(());
         }
+        let relay_config = self.relay_config_for_remote_execution(remote_execution);
         let response = self.block_on_relay_future(send_peer_request_via_temporary_connection(
-            &self.config,
+            &relay_config,
             ClientTarget {
                 daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                 daemon_alias: None,
@@ -1588,22 +1635,53 @@ impl DaemonApp {
         })
     }
 
-    fn select_remote_kernel_by_ref(
+    fn select_remote_kernel_by_ref_with_config(
         &self,
         kernel_ref: &str,
         provider: &str,
+        relay_config: &DaemonConfig,
     ) -> Result<RelayKernelPresence, DaemonError> {
         let kernel_ref = kernel_ref.trim();
-        let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
-        if let Some(kernel) = projected_kernels
-            .into_iter()
-            .find(|kernel| kernel_presence_matches_ref(kernel, kernel_ref))
+        if relay_config.relay_url == self.config.relay_url
+            && relay_config.relay_token == self.config.relay_token
         {
-            return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
+            let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
+            if let Some(kernel) = projected_kernels
+                .into_iter()
+                .find(|kernel| kernel_presence_matches_ref(kernel, kernel_ref))
+            {
+                return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
+            }
         }
         let kernel =
-            self.block_on_relay_future(relay_discovery::get_live_kernel(&self.config, kernel_ref))?;
+            self.block_on_relay_future(relay_discovery::get_live_kernel(relay_config, kernel_ref))?;
         ensure_kernel_can_host_provider(kernel, kernel_ref, provider)
+    }
+
+    fn slice_relay_config_for_kernel_ref(&self, kernel_ref: &str) -> Option<DaemonConfig> {
+        let slice = self.slices.resolve_by_worker_kernel_ref(kernel_ref)?;
+        let relay = crate::slice::local_docker_private_relay(&slice);
+        let mut config = self.config.clone();
+        config.relay_url = Some(relay.relay_url);
+        config.relay_token = Some(relay.relay_token);
+        config.cloud_relay = None;
+        Some(config)
+    }
+
+    pub(crate) fn relay_config_for_remote_execution(
+        &self,
+        remote_execution: &RemoteAgentBinding,
+    ) -> DaemonConfig {
+        let mut config = self.config.clone();
+        if let (Some(relay_url), Some(relay_token)) = (
+            remote_execution.relay_url.clone(),
+            remote_execution.relay_token.clone(),
+        ) {
+            config.relay_url = Some(relay_url);
+            config.relay_token = Some(relay_token);
+            config.cloud_relay = None;
+        }
+        config
     }
 
     pub(crate) fn block_on_relay_future<F, T>(&self, future: F) -> Result<T, DaemonError>
@@ -1791,6 +1869,97 @@ mod tests {
         assert!(app_a.sessions().get_session(&session_id).is_ok());
 
         let _ = std::fs::remove_file(state_path);
+    }
+
+    #[test]
+    fn durable_restore_keeps_slices_bound_to_their_owner_kernel_id() {
+        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+            "shared-slice-state-{}.db",
+            crate::session::unix_epoch_ms()
+        ));
+        let mut config_a = DaemonConfig::for_tests();
+        config_a.daemon_id = "kernel-a".to_string();
+        config_a.user_config.state.path = Some(state_path.display().to_string());
+        let slice_id = {
+            let app = DaemonApp::bootstrap(config_a.clone()).expect("kernel a should boot");
+            let slice = app
+                .slices()
+                .create(
+                    &app.config().daemon_id,
+                    &app.config().host_machine_id,
+                    crate::slice::CreateSliceInput {
+                        name: "linux-dev".to_string(),
+                        backend: crate::slice::SliceBackendKind::LocalDocker,
+                        os: "linux".to_string(),
+                        workspace_mount: Some("/repo".to_string()),
+                        worker_kernel_ref: None,
+                        display_url: Some("http://127.0.0.1:6080".to_string()),
+                        now_ms: 42,
+                    },
+                )
+                .expect("slice should create");
+            app.durable_state_store()
+                .append_event(
+                    "slice.created",
+                    Some(slice.id.clone()),
+                    serde_json::json!({ "slice": &slice }),
+                )
+                .expect("slice event should persist");
+            slice.id
+        };
+
+        let mut config_b = DaemonConfig::for_tests();
+        config_b.daemon_id = "kernel-b".to_string();
+        config_b.user_config.state.path = Some(state_path.display().to_string());
+        let app_b = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
+        assert!(app_b.slices().list().is_empty());
+
+        let app_a = DaemonApp::bootstrap(config_a).expect("kernel a should reboot");
+        assert_eq!(
+            app_a
+                .slices()
+                .resolve("linux-dev")
+                .expect("slice should restore")
+                .id,
+            slice_id
+        );
+
+        let _ = std::fs::remove_file(state_path);
+    }
+
+    #[test]
+    fn slice_worker_kernel_refs_resolve_to_private_relay_config() {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let slice = app
+            .slices()
+            .create(
+                &app.config().daemon_id,
+                &app.config().host_machine_id,
+                crate::slice::CreateSliceInput {
+                    name: "linux-dev".to_string(),
+                    backend: crate::slice::SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    workspace_mount: Some("/repo".to_string()),
+                    worker_kernel_ref: None,
+                    display_url: Some("http://127.0.0.1:6080".to_string()),
+                    now_ms: 42,
+                },
+            )
+            .expect("slice should create");
+
+        let relay_config = app
+            .slice_relay_config_for_kernel_ref(&slice.worker_kernel_ref)
+            .expect("slice worker ref should have relay config");
+
+        assert_eq!(
+            relay_config.relay_url.as_deref(),
+            Some("ws://127.0.0.1:43130")
+        );
+        assert_eq!(
+            relay_config.relay_token.as_deref(),
+            Some("slice-local-daemon-test-slice-1")
+        );
+        assert!(relay_config.cloud_relay.is_none());
     }
 
     #[test]

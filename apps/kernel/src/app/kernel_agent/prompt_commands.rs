@@ -4,6 +4,7 @@ use super::super::prompt_lifecycle::{
 };
 use super::{select_next_queued_prompt_candidate, KernelAgentService};
 use crate::agent::RemoteAgentBinding;
+use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::ProviderRunState;
 use crate::session::{
@@ -43,6 +44,21 @@ fn remote_git_turn_context(
             &dispatch.attachments,
         ),
     }
+}
+
+fn remote_dispatch_relay_config(
+    app: &DaemonApp,
+    dispatch: &KernelRemotePromptDispatch,
+) -> crate::config::DaemonConfig {
+    let mut config = app.config().clone();
+    if let (Some(relay_url), Some(relay_token)) =
+        (dispatch.relay_url.clone(), dispatch.relay_token.clone())
+    {
+        config.relay_url = Some(relay_url);
+        config.relay_token = Some(relay_token);
+        config.cloud_relay = None;
+    }
+    config
 }
 
 fn remote_git_turn_context_for_prompt(
@@ -156,11 +172,12 @@ impl<'a> KernelAgentService<'a> {
         let attachments = self
             .app
             .serialize_remote_prompt_attachments(&dispatch.attachments)?;
+        let relay_config = remote_dispatch_relay_config(self.app, &dispatch);
         let result =
             match self
                 .app
                 .block_on_relay_future(send_peer_request_via_temporary_connection(
-                    self.app.config(),
+                    &relay_config,
                     ClientTarget {
                         daemon_id: Some(dispatch.worker_kernel_id.clone()),
                         daemon_alias: None,
@@ -298,6 +315,8 @@ impl<'a> KernelAgentService<'a> {
                 prompt_id: prompt.id().to_string(),
                 worker_kernel_id: remote_execution.worker_kernel_id.clone(),
                 leased_agent_id: remote_execution.leased_agent_id.clone(),
+                relay_url: remote_execution.relay_url.clone(),
+                relay_token: remote_execution.relay_token.clone(),
                 source_attachment_id: prompt.source_attachment_id().to_string(),
                 prompt: prompt.prompt().to_string(),
                 attachments: prompt.attachments().to_vec(),
@@ -460,11 +479,14 @@ impl<'a> KernelAgentService<'a> {
             });
         };
 
+        let relay_config = self
+            .app
+            .relay_config_for_remote_execution(&remote_execution);
         let remote_provider_run_id =
             match self
                 .app
                 .block_on_relay_future(send_peer_request_via_temporary_connection(
-                    self.app.config(),
+                    &relay_config,
                     ClientTarget {
                         daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                         daemon_alias: None,
@@ -540,6 +562,8 @@ impl<'a> KernelAgentService<'a> {
                 &completion.agent_id,
                 &remote_execution.worker_kernel_id,
                 &remote_execution.leased_agent_id,
+                remote_execution.relay_url.as_deref(),
+                remote_execution.relay_token.as_deref(),
                 completion.next_queued_prompt.as_ref(),
             )?
         } else {
@@ -874,8 +898,16 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         worker_kernel_id: &str,
         leased_agent_id: &str,
+        relay_url: Option<&str>,
+        relay_token: Option<&str>,
         expected_next: Option<&PromptQueueItem>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        let mut relay_config = self.app.config().clone();
+        if let (Some(relay_url), Some(relay_token)) = (relay_url, relay_token) {
+            relay_config.relay_url = Some(relay_url.to_string());
+            relay_config.relay_token = Some(relay_token.to_string());
+            relay_config.cloud_relay = None;
+        }
         loop {
             let next_candidate =
                 self.next_queued_prompt_candidate(session_id, agent_id, expected_next)?;
@@ -910,7 +942,7 @@ impl<'a> KernelAgentService<'a> {
             let response =
                 self.app
                     .block_on_relay_future(send_peer_request_via_temporary_connection(
-                        self.app.config(),
+                        &relay_config,
                         ClientTarget {
                             daemon_id: Some(worker_kernel_id.to_string()),
                             daemon_alias: None,
@@ -1084,10 +1116,13 @@ impl<'a> KernelAgentService<'a> {
         }
         let target_agent = self.app.agents.get_agent(agent_id)?;
         if let Some(remote_execution) = target_agent.remote_execution().cloned() {
+            let relay_config = self
+                .app
+                .relay_config_for_remote_execution(&remote_execution);
             match self
                 .app
                 .block_on_relay_future(send_peer_request_via_temporary_connection(
-                    self.app.config(),
+                    &relay_config,
                     ClientTarget {
                         daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                         daemon_alias: None,

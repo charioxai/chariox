@@ -516,10 +516,16 @@ export type SliceRecord = {
   worker_kernel_ref: string
   worker_kernel_id?: string | null
   worker_machine_id?: string | null
+  relay_endpoint?: SliceRelayEndpoint | null
   providers?: string[]
   display_endpoint?: SliceDisplayEndpoint | null
   created_at_ms: number
   updated_at_ms: number
+}
+
+export type SliceRelayEndpoint = {
+  url: string
+  private?: boolean
 }
 
 export type SliceDisplayEndpoint = {
@@ -976,6 +982,7 @@ export type HistoryQueryPayload = {
   kind?: HistoryEventKind | string | null
   text?: string | null
   after_sequence?: number | null
+  before_sequence?: number | null
   limit?: number | null
 }
 

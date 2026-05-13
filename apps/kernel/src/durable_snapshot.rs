@@ -7,18 +7,30 @@ use crate::agent::{AgentInstance, AgentServiceStore};
 use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
 use crate::session::{RuntimeSession, SessionStateStore};
+use crate::slice::{SliceRecord, SliceStore};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DurableKernelSnapshotPayload {
     pub(crate) sessions: Vec<RuntimeSession>,
     pub(crate) agents: Vec<AgentInstance>,
+    #[serde(default)]
+    pub(crate) slices: Vec<SliceRecord>,
 }
 
 impl DurableKernelSnapshotPayload {
-    pub(crate) fn capture(sessions: &SessionStateStore, agents: &AgentServiceStore) -> Self {
+    pub(crate) fn capture(
+        sessions: &SessionStateStore,
+        agents: &AgentServiceStore,
+        slices: &SliceStore,
+    ) -> Self {
         let sessions = sessions.read().store().list();
         let agents = agents.list_agents();
-        Self { sessions, agents }
+        let slices = slices.list();
+        Self {
+            sessions,
+            agents,
+            slices,
+        }
     }
 }
 
@@ -34,6 +46,7 @@ pub(crate) struct DurableSnapshotScheduler {
     durable_state: DurableKernelStateStore,
     sessions: SessionStateStore,
     agents: AgentServiceStore,
+    slices: SliceStore,
     interval_events: u64,
 }
 
@@ -42,12 +55,14 @@ impl DurableSnapshotScheduler {
         durable_state: DurableKernelStateStore,
         sessions: SessionStateStore,
         agents: AgentServiceStore,
+        slices: SliceStore,
         interval_events: u64,
     ) -> Self {
         Self {
             durable_state,
             sessions,
             agents,
+            slices,
             interval_events,
         }
     }
@@ -63,7 +78,8 @@ impl DurableSnapshotScheduler {
             });
         }
 
-        let payload = DurableKernelSnapshotPayload::capture(&self.sessions, &self.agents);
+        let payload =
+            DurableKernelSnapshotPayload::capture(&self.sessions, &self.agents, &self.slices);
         let payload =
             serde_json::to_value(payload).map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.encode_snapshot_payload",
@@ -127,6 +143,7 @@ mod tests {
             app.durable_state_store(),
             app.session_state_store(),
             app.agents().clone(),
+            app.slices(),
             10,
         );
         let outcome = scheduler.tick_once().expect("tick should succeed");
@@ -147,11 +164,28 @@ mod tests {
         let (session, _) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
+        let slice = app
+            .slices()
+            .create(
+                &app.config().daemon_id,
+                &app.config().host_machine_id,
+                crate::slice::CreateSliceInput {
+                    name: "linux-dev".to_string(),
+                    backend: crate::slice::SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    workspace_mount: Some("/repo".to_string()),
+                    worker_kernel_ref: None,
+                    display_url: Some("http://127.0.0.1:6080".to_string()),
+                    now_ms: 42,
+                },
+            )
+            .expect("slice should create");
 
         let scheduler = DurableSnapshotScheduler::new(
             app.durable_state_store(),
             app.session_state_store(),
             app.agents().clone(),
+            app.slices(),
             1,
         );
         let outcome = scheduler.tick_once().expect("tick should succeed");
@@ -164,6 +198,7 @@ mod tests {
         assert!(outcome.wrote_snapshot);
         assert_eq!(snapshot.sequence, outcome.latest_event_sequence);
         assert_eq!(snapshot.payload["sessions"][0]["id"], session.id());
+        assert_eq!(snapshot.payload["slices"][0]["id"], slice.id);
     }
 
     #[tokio::test]
@@ -177,6 +212,7 @@ mod tests {
             app.durable_state_store(),
             app.session_state_store(),
             app.agents().clone(),
+            app.slices(),
             1,
         );
         let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));

@@ -1202,6 +1202,7 @@ pub struct QueryHistoryRequest {
     pub kind: Option<String>,
     pub text: Option<String>,
     pub after_sequence: Option<u64>,
+    pub before_sequence: Option<u64>,
     pub limit: Option<usize>,
 }
 
@@ -1248,6 +1249,8 @@ pub struct SemanticSearchHistoryRequest {
     pub repo_root: Option<String>,
     pub worktree_path: Option<String>,
     pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
     pub limit: Option<usize>,
 }
 

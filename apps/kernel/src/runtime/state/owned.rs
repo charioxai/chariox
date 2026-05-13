@@ -17,6 +17,8 @@ pub(in crate::runtime::state) struct OwnedAgentConfigUpdate {
 pub(in crate::runtime::state) struct OwnedRemoteAgentConfigUpdate {
     pub(in crate::runtime::state) worker_kernel_id: String,
     pub(in crate::runtime::state) leased_agent_id: String,
+    pub(in crate::runtime::state) relay_url: Option<String>,
+    pub(in crate::runtime::state) relay_token: Option<String>,
     pub(in crate::runtime::state) execution_mode: crate::provider::AgentExecutionMode,
     pub(in crate::runtime::state) permission_level: crate::provider::AgentPermissionLevel,
 }

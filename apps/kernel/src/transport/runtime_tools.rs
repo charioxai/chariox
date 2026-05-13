@@ -42,6 +42,20 @@ pub const SEND_SECRET_TO_TERMINAL_TOOL: &str = "arroba.send_secret_to_terminal";
 pub const SEND_SECRET_TO_TERMINAL_TOOL_ALIAS: &str = "send_secret_to_terminal";
 pub const REQUEST_POPUP_TOOL: &str = "arroba.request_popup";
 pub const REQUEST_POPUP_TOOL_ALIAS: &str = "request_popup";
+pub const SLICE_SCREEN_STATUS_TOOL: &str = "arroba.slice_screen_status";
+pub const SLICE_SCREEN_STATUS_TOOL_ALIAS: &str = "slice_screen_status";
+pub const SLICE_SCREENSHOT_TOOL: &str = "arroba.slice_screenshot";
+pub const SLICE_SCREENSHOT_TOOL_ALIAS: &str = "slice_screenshot";
+pub const SLICE_OCR_TOOL: &str = "arroba.slice_ocr";
+pub const SLICE_OCR_TOOL_ALIAS: &str = "slice_ocr";
+pub const SLICE_FIND_TEXT_TOOL: &str = "arroba.slice_find_text";
+pub const SLICE_FIND_TEXT_TOOL_ALIAS: &str = "slice_find_text";
+pub const SLICE_MOUSE_TOOL: &str = "arroba.slice_mouse";
+pub const SLICE_MOUSE_TOOL_ALIAS: &str = "slice_mouse";
+pub const SLICE_KEYBOARD_TOOL: &str = "arroba.slice_keyboard";
+pub const SLICE_KEYBOARD_TOOL_ALIAS: &str = "slice_keyboard";
+pub const SLICE_OPEN_URL_TOOL: &str = "arroba.slice_open_url";
+pub const SLICE_OPEN_URL_TOOL_ALIAS: &str = "slice_open_url";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -232,6 +246,56 @@ pub struct RequestPopupArgs {
     pub timeout_sec: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_on_timeout: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceScreenshotArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub return_image_base64: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceOcrArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceFindTextArgs {
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceMouseArgs {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_x: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_y: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceKeyboardArgs {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceOpenUrlArgs {
+    pub url: String,
 }
 
 fn default_append_newline() -> bool {
@@ -678,6 +742,174 @@ pub fn canonical_managed_io_tool_name(tool_name: &str) -> Option<&'static str> {
     }
 }
 
+pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
+    let canonical = vec![
+        RuntimeToolSpec {
+            name: SLICE_SCREEN_STATUS_TOOL.to_string(),
+            description: "Return the Arroba slice display status, including screen size and the local noVNC viewer URL when available.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_SCREENSHOT_TOOL.to_string(),
+            description: "Capture the current Arroba slice screen to a PNG file. Use return_image_base64 only when the image bytes are needed in the tool result.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "return_image_base64": {"type": "boolean"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_OCR_TOOL.to_string(),
+            description: "Extract visible text from a slice screenshot with the slice OCR engine. If image_path is omitted, Arroba captures a fresh screenshot first.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "image_path": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_FIND_TEXT_TOOL.to_string(),
+            description: "Locate text on the slice screen and return its bounding box and center point. If image_path is omitted, Arroba captures a fresh screenshot first.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string"},
+                    "image_path": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_MOUSE_TOOL.to_string(),
+            description: "Control the Arroba slice virtual mouse. Actions: move, click, double_click, scroll, drag.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["move", "click", "double_click", "scroll", "drag"]
+                    },
+                    "x": {"type": "integer"},
+                    "y": {"type": "integer"},
+                    "to_x": {"type": "integer"},
+                    "to_y": {"type": "integer"},
+                    "amount": {"type": "integer"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_KEYBOARD_TOOL.to_string(),
+            description: "Control the Arroba slice virtual keyboard. Use action=type with text or action=key with an xdotool-compatible key name.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["type", "key"]
+                    },
+                    "text": {"type": "string"},
+                    "key": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_OPEN_URL_TOOL.to_string(),
+            description: "Open a URL in the Arroba slice browser.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["url"],
+                "properties": {
+                    "url": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+    ];
+    let aliases = canonical
+        .iter()
+        .filter_map(slice_alias_spec)
+        .collect::<Vec<_>>();
+    let mut specs = canonical;
+    specs.extend(aliases);
+    specs
+}
+
+fn slice_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
+    let alias = match spec.name.as_str() {
+        SLICE_SCREEN_STATUS_TOOL => SLICE_SCREEN_STATUS_TOOL_ALIAS,
+        SLICE_SCREENSHOT_TOOL => SLICE_SCREENSHOT_TOOL_ALIAS,
+        SLICE_OCR_TOOL => SLICE_OCR_TOOL_ALIAS,
+        SLICE_FIND_TEXT_TOOL => SLICE_FIND_TEXT_TOOL_ALIAS,
+        SLICE_MOUSE_TOOL => SLICE_MOUSE_TOOL_ALIAS,
+        SLICE_KEYBOARD_TOOL => SLICE_KEYBOARD_TOOL_ALIAS,
+        SLICE_OPEN_URL_TOOL => SLICE_OPEN_URL_TOOL_ALIAS,
+        _ => return None,
+    };
+    let mut spec = spec.clone();
+    spec.name = alias.to_string();
+    spec.description = format!(
+        "{} Alias for `{}`.",
+        spec.description,
+        canonical_slice_tool_name(alias).unwrap_or(alias)
+    );
+    Some(spec)
+}
+
+pub fn canonical_slice_tool_name(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        SLICE_SCREEN_STATUS_TOOL
+        | SLICE_SCREEN_STATUS_TOOL_ALIAS
+        | "arroba_slice_screen_status"
+        | "mcp__arroba__slice_screen_status"
+        | "mcp__arroba__arroba_slice_screen_status" => Some(SLICE_SCREEN_STATUS_TOOL),
+        SLICE_SCREENSHOT_TOOL
+        | SLICE_SCREENSHOT_TOOL_ALIAS
+        | "arroba_slice_screenshot"
+        | "mcp__arroba__slice_screenshot"
+        | "mcp__arroba__arroba_slice_screenshot" => Some(SLICE_SCREENSHOT_TOOL),
+        SLICE_OCR_TOOL
+        | SLICE_OCR_TOOL_ALIAS
+        | "arroba_slice_ocr"
+        | "mcp__arroba__slice_ocr"
+        | "mcp__arroba__arroba_slice_ocr" => Some(SLICE_OCR_TOOL),
+        SLICE_FIND_TEXT_TOOL
+        | SLICE_FIND_TEXT_TOOL_ALIAS
+        | "arroba_slice_find_text"
+        | "mcp__arroba__slice_find_text"
+        | "mcp__arroba__arroba_slice_find_text" => Some(SLICE_FIND_TEXT_TOOL),
+        SLICE_MOUSE_TOOL
+        | SLICE_MOUSE_TOOL_ALIAS
+        | "arroba_slice_mouse"
+        | "mcp__arroba__slice_mouse"
+        | "mcp__arroba__arroba_slice_mouse" => Some(SLICE_MOUSE_TOOL),
+        SLICE_KEYBOARD_TOOL
+        | SLICE_KEYBOARD_TOOL_ALIAS
+        | "arroba_slice_keyboard"
+        | "mcp__arroba__slice_keyboard"
+        | "mcp__arroba__arroba_slice_keyboard" => Some(SLICE_KEYBOARD_TOOL),
+        SLICE_OPEN_URL_TOOL
+        | SLICE_OPEN_URL_TOOL_ALIAS
+        | "arroba_slice_open_url"
+        | "mcp__arroba__slice_open_url"
+        | "mcp__arroba__arroba_slice_open_url" => Some(SLICE_OPEN_URL_TOOL),
+        _ => None,
+    }
+}
+
 pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
@@ -845,6 +1077,26 @@ mod managed_io_tests {
     }
 
     #[test]
+    fn slice_specs_expose_screen_input_and_ocr_tools() {
+        let specs = slice_runtime_tool_specs();
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_SCREEN_STATUS_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_SCREEN_STATUS_TOOL_ALIAS));
+        assert!(specs.iter().any(|spec| spec.name == SLICE_SCREENSHOT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_SCREENSHOT_TOOL_ALIAS));
+        assert!(specs.iter().any(|spec| spec.name == SLICE_OCR_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == SLICE_FIND_TEXT_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == SLICE_MOUSE_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == SLICE_KEYBOARD_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == SLICE_OPEN_URL_TOOL));
+    }
+
+    #[test]
     fn canonical_capability_tool_name_accepts_provider_aliases() {
         assert_eq!(
             canonical_capability_tool_name("mcp__arroba__list_capabilities"),
@@ -855,6 +1107,23 @@ mod managed_io_tests {
             Some(REQUEST_CAPABILITY_TOOL)
         );
         assert_eq!(canonical_capability_tool_name("unknown"), None);
+    }
+
+    #[test]
+    fn canonical_slice_tool_name_accepts_provider_aliases() {
+        assert_eq!(
+            canonical_slice_tool_name("mcp__arroba__slice_screenshot"),
+            Some(SLICE_SCREENSHOT_TOOL)
+        );
+        assert_eq!(
+            canonical_slice_tool_name("mcp__arroba__arroba_slice_mouse"),
+            Some(SLICE_MOUSE_TOOL)
+        );
+        assert_eq!(
+            canonical_slice_tool_name("slice_open_url"),
+            Some(SLICE_OPEN_URL_TOOL)
+        );
+        assert_eq!(canonical_slice_tool_name("unknown"), None);
     }
 
     #[test]

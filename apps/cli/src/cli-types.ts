@@ -371,6 +371,11 @@ export type SliceDisplayEndpoint = {
   capabilities?: string[]
 }
 
+export type SliceRelayEndpoint = {
+  url: string
+  private?: boolean
+}
+
 export type SliceRecord = {
   id: string
   name: string
@@ -383,6 +388,7 @@ export type SliceRecord = {
   worker_kernel_ref: string
   worker_kernel_id?: string | null
   worker_machine_id?: string | null
+  relay_endpoint?: SliceRelayEndpoint | null
   providers?: string[]
   display_endpoint?: SliceDisplayEndpoint | null
   created_at_ms: number

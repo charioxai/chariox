@@ -38,12 +38,12 @@ use super::{
     ListAgentsRequest, ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
     ListSessionMembersRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
     ListWorkspaceFilesRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
-    PollRuntimeNoticesRequest, PushWorkspaceBranchRequest, ReadDirectoryTreeCapabilityRequest,
-    ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
-    ResolveSessionRequest, ResolveWorkflowRequest, ResumeWorkflowRunRequest,
-    RevokeSessionInviteRequest, RunShellCapabilityRequest, SemanticHistoryMatch,
-    SemanticSearchHistoryRequest, ShowWorkspaceLinkRequest, SpawnAgentRequest,
-    StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
+    PollRuntimeNoticesRequest, PushWorkspaceBranchRequest, QueryHistoryRequest,
+    ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
+    RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
+    ResumeWorkflowRunRequest, RevokeSessionInviteRequest, RunShellCapabilityRequest,
+    SemanticHistoryMatch, SemanticSearchHistoryRequest, ShowWorkspaceLinkRequest,
+    SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
     UpdateAgentConfigRequest, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
     UpdateProviderRunSelectionRequest, UpdateSessionConfigRequest,
     UpdateWorkflowCanvasLayoutRequest, UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent,
@@ -531,6 +531,50 @@ fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
 }
 
 #[test]
+fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 30);
+
+    let response = LocalDaemonResponse::Slice {
+        slice: crate::slice::SliceRecord {
+            id: "slice-1".to_string(),
+            name: "linux-dev".to_string(),
+            owner_kernel_id: "home-kernel".to_string(),
+            owner_machine_id: "home-machine".to_string(),
+            backend: crate::slice::SliceBackendKind::LocalDocker,
+            os: "linux".to_string(),
+            status: crate::slice::SliceStatus::Running,
+            workspace_mount: Some("/repo".to_string()),
+            worker_kernel_ref: "slice:linux-dev".to_string(),
+            worker_kernel_id: Some("slice-worker".to_string()),
+            worker_machine_id: Some("slice:slice-1".to_string()),
+            relay_endpoint: Some(crate::slice::SliceRelayEndpoint {
+                url: "ws://127.0.0.1:43130".to_string(),
+                private: true,
+            }),
+            providers: vec!["codex".to_string(), "opencode".to_string()],
+            display_endpoint: None,
+            created_at_ms: 1000,
+            updated_at_ms: 2000,
+        },
+    };
+    let snapshot = serde_json::to_value(response).expect("response should serialize");
+    assert_eq!(
+        snapshot.pointer("/Slice/slice/relay_endpoint/url"),
+        Some(&serde_json::json!("ws://127.0.0.1:43130"))
+    );
+    assert_eq!(
+        snapshot.pointer("/Slice/slice/relay_endpoint/private"),
+        Some(&serde_json::json!(true))
+    );
+    let serialized = serde_json::to_string(&snapshot).expect("slice record snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "af0c672203a4ca95a44e701b8aaf183a3ce6654cd78afc5ceb44750d9f4f4c41"
+    );
+}
+
+#[test]
 fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 30);
 
@@ -546,6 +590,7 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
         repo_root: None,
         worktree_path: None,
         kind: Some("provider_output".to_string()),
+        cursor: Some("cursor-0".to_string()),
         limit: Some(12),
     });
     let request_snapshot = serde_json::to_value(request).expect("request should serialize");
@@ -564,6 +609,10 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
     assert_eq!(
         request_snapshot.pointer("/SemanticSearchHistory/limit"),
         Some(&serde_json::json!(12))
+    );
+    assert_eq!(
+        request_snapshot.pointer("/SemanticSearchHistory/cursor"),
+        Some(&serde_json::json!("cursor-0"))
     );
 
     let event = crate::history::HistoryEvent {
@@ -639,7 +688,41 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "7194094514ff20c6c6c92d8da0e4e746e98364b531b983737a94813b6834528f"
+        "6f8e40065757d56ae36fd7f8609d4aaed543d76a582dcffe20c2dae514688196"
+    );
+}
+
+#[test]
+fn local_daemon_protocol_query_history_context_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 30);
+
+    let request = LocalDaemonRequest::QueryHistory(QueryHistoryRequest {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        provider: None,
+        model: None,
+        workflow_id: None,
+        machine_id: None,
+        repo_root: None,
+        worktree_path: None,
+        kind: Some("provider_output".to_string()),
+        text: None,
+        after_sequence: None,
+        before_sequence: Some(42),
+        limit: Some(10),
+    });
+    let snapshot = serde_json::to_value(request).expect("request should serialize");
+    assert_eq!(
+        snapshot.pointer("/QueryHistory/before_sequence"),
+        Some(&serde_json::json!(42))
+    );
+
+    let serialized =
+        serde_json::to_string(&snapshot).expect("query history snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "e58f083c2b36e276158bcde1483d734b76fd29067f613ea61b51a3ea1eda3a7d"
     );
 }
 

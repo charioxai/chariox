@@ -173,6 +173,8 @@ pub(crate) struct KernelRemotePromptDispatch {
     pub(crate) prompt_id: String,
     pub(crate) worker_kernel_id: String,
     pub(crate) leased_agent_id: String,
+    pub(crate) relay_url: Option<String>,
+    pub(crate) relay_token: Option<String>,
     pub(crate) source_attachment_id: String,
     pub(crate) prompt: String,
     pub(crate) attachments: Vec<PromptAttachment>,
@@ -471,12 +473,16 @@ impl DaemonApp {
         agent_id: &str,
         worker_kernel_id: &str,
         leased_agent_id: &str,
+        relay_url: Option<&str>,
+        relay_token: Option<&str>,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
         crate::app::KernelAgentService::new(self).advance_next_queued_prompt_remote(
             session_id,
             agent_id,
             worker_kernel_id,
             leased_agent_id,
+            relay_url,
+            relay_token,
             None,
         )
     }

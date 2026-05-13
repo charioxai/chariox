@@ -77,6 +77,8 @@ mod tests {
                         worker_machine_id: "worker-machine-1".to_string(),
                         execution_lease_id: "lease-1".to_string(),
                         leased_agent_id: "leased-agent-1".to_string(),
+                        relay_url: None,
+                        relay_token: None,
                     },
                 )
                 .expect("agent should bind to remote execution");

@@ -6,6 +6,7 @@ pub(crate) const MANAGED_IO_INSTRUCTIONS_SOURCE_PATH: &str =
 const MANAGED_IO_INSTRUCTIONS: &str = include_str!("managed_io_instructions.md");
 const NATIVE_PERMISSION_INSTRUCTIONS: &str = include_str!("native_permission_instructions.md");
 const RUNTIME_INSTRUCTIONS: &str = include_str!("runtime_instructions.md");
+const SLICE_RUNTIME_INSTRUCTIONS: &str = include_str!("slice_runtime_instructions.md");
 pub(crate) const NATIVE_TUI_HIDDEN_INSTRUCTIONS_START: &str =
     "<<<ARROBA_NATIVE_TUI_HIDDEN_INSTRUCTIONS>>>";
 pub(crate) const NATIVE_TUI_HIDDEN_INSTRUCTIONS_END: &str =
@@ -15,8 +16,8 @@ pub(crate) fn runtime_instructions() -> &'static str {
     RUNTIME_INSTRUCTIONS.trim()
 }
 
-pub(crate) fn apply_runtime_instructions(prompt: &str) -> String {
-    format!("{}\n\n{}", runtime_instructions(), prompt)
+pub(crate) fn slice_runtime_instructions() -> &'static str {
+    SLICE_RUNTIME_INSTRUCTIONS.trim()
 }
 
 pub(crate) fn managed_io_instructions() -> &'static str {
@@ -42,6 +43,32 @@ fn execution_path_instructions_for_run(run: &RuntimeProviderRun) -> &'static str
     }
 }
 
+fn runtime_instructions_for_current_kernel() -> String {
+    if std::env::var("ARROBA_MACHINE_ID")
+        .ok()
+        .is_some_and(|machine_id| machine_id.starts_with("slice:"))
+        || std::env::var("ARROBA_SLICE_MACHINE_ID")
+            .ok()
+            .is_some_and(|machine_id| machine_id.starts_with("slice:"))
+    {
+        format!(
+            "{}\n\n{}",
+            runtime_instructions(),
+            slice_runtime_instructions()
+        )
+    } else {
+        runtime_instructions().to_string()
+    }
+}
+
+pub(crate) fn apply_runtime_instructions(prompt: &str) -> String {
+    format!(
+        "{}\n\n{}",
+        runtime_instructions_for_current_kernel(),
+        prompt
+    )
+}
+
 pub(crate) fn apply_execution_path_instructions(prompt: &str, run: &RuntimeProviderRun) -> String {
     let path_instructions = execution_path_instructions_for_run(run);
     format!("{}\n\n{}", path_instructions, prompt)
@@ -55,7 +82,7 @@ pub(crate) fn apply_structured_prompt_instructions(
         let hidden_instructions = format!(
             "{}\n\n{}",
             execution_path_instructions_for_run(run),
-            runtime_instructions()
+            runtime_instructions_for_current_kernel()
         );
         return format!(
             "{}\n\n{prompt}",
@@ -108,7 +135,18 @@ mod tests {
         assert!(instructions.contains("list_capabilities"));
         assert!(instructions.contains("request_capability"));
         assert!(instructions.contains("request_popup"));
+        assert!(!instructions.contains("slice_screenshot"));
         assert!(!instructions.contains("native provider actions"));
+        assert!(!instructions.ends_with('\n'));
+    }
+
+    #[test]
+    fn slice_runtime_instructions_are_loaded_from_policy_file() {
+        let instructions = slice_runtime_instructions();
+
+        assert!(instructions.contains("slice_screenshot"));
+        assert!(instructions.contains("slice_find_text"));
+        assert!(instructions.contains("slice_mouse"));
         assert!(!instructions.ends_with('\n'));
     }
 
@@ -155,20 +193,43 @@ mod tests {
 
     #[test]
     fn structured_prompt_instructions_are_added_for_arroba_runs() {
+        let _guard = crate::env_lock::lock();
+        std::env::remove_var("ARROBA_MACHINE_ID");
+        std::env::remove_var("ARROBA_SLICE_MACHINE_ID");
         let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "gpt-5.4");
         let run = RuntimeProviderRun::new("provider-run-3", &request, launch_result());
         let prompt = apply_structured_prompt_instructions("hello", &run);
 
         assert!(prompt.starts_with(native_permission_instructions()));
         assert!(prompt.contains(runtime_instructions()));
+        assert!(!prompt.contains(slice_runtime_instructions()));
+        assert!(prompt.ends_with("\n\nhello"));
+    }
+
+    #[test]
+    fn structured_prompt_instructions_include_slice_tools_only_in_slice_kernels() {
+        let _guard = crate::env_lock::lock();
+        std::env::set_var("ARROBA_MACHINE_ID", "slice:slice-test");
+        std::env::remove_var("ARROBA_SLICE_MACHINE_ID");
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "gpt-5.4");
+        let run = RuntimeProviderRun::new("provider-run-4", &request, launch_result());
+        let prompt = apply_structured_prompt_instructions("hello", &run);
+        std::env::remove_var("ARROBA_MACHINE_ID");
+
+        assert!(prompt.contains(runtime_instructions()));
+        assert!(prompt.contains(slice_runtime_instructions()));
+        assert!(prompt.contains("slice_screenshot"));
         assert!(prompt.ends_with("\n\nhello"));
     }
 
     #[test]
     fn structured_prompt_instructions_for_native_tui_runs_are_marked_hidden() {
+        let _guard = crate::env_lock::lock();
+        std::env::remove_var("ARROBA_MACHINE_ID");
+        std::env::remove_var("ARROBA_SLICE_MACHINE_ID");
         let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "gpt-5.4")
             .with_client_interface(ProviderClientInterface::NativeTui);
-        let run = RuntimeProviderRun::new("provider-run-4", &request, launch_result());
+        let run = RuntimeProviderRun::new("provider-run-5", &request, launch_result());
         let prompt = apply_structured_prompt_instructions("hello", &run);
 
         assert!(prompt.starts_with(NATIVE_TUI_HIDDEN_INSTRUCTIONS_START));

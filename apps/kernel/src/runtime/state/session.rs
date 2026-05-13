@@ -551,6 +551,8 @@ impl KernelRuntimeOwnedState {
                     .map(|binding| owned::OwnedRemoteAgentConfigUpdate {
                         worker_kernel_id: binding.worker_kernel_id.clone(),
                         leased_agent_id: binding.leased_agent_id.clone(),
+                        relay_url: binding.relay_url.clone(),
+                        relay_token: binding.relay_token.clone(),
                         execution_mode: next_config.mode,
                         permission_level: next_config.permission_level,
                     })

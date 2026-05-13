@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -44,12 +45,21 @@ pub struct SliceRecord {
     pub worker_kernel_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_machine_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_endpoint: Option<SliceRelayEndpoint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_endpoint: Option<SliceDisplayEndpoint>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceRelayEndpoint {
+    pub url: String,
+    #[serde(default)]
+    pub private: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +110,7 @@ pub enum LocalDockerSliceAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalDockerSliceRelay {
     pub relay_url: String,
+    pub container_relay_url: Option<String>,
     pub relay_token: String,
 }
 
@@ -170,6 +181,7 @@ impl SliceStore {
             worker_kernel_ref,
             worker_kernel_id: None,
             worker_machine_id: None,
+            relay_endpoint: None,
             providers: Vec::new(),
             display_endpoint,
             created_at_ms: input.now_ms,
@@ -182,6 +194,22 @@ impl SliceStore {
     pub fn list(&self) -> Vec<SliceRecord> {
         let state = self.inner.lock().expect("slice store poisoned");
         state.records.values().cloned().collect()
+    }
+
+    pub fn restore_records(&self, records: Vec<SliceRecord>) {
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        state.records.clear();
+        state.next_slice_number = 0;
+        for record in records {
+            if let Some(number) = record
+                .id
+                .strip_prefix("slice-")
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                state.next_slice_number = state.next_slice_number.max(number);
+            }
+            state.records.insert(record.id.clone(), record);
+        }
     }
 
     pub fn resolve(&self, slice_ref: &str) -> Result<SliceRecord, DaemonError> {
@@ -233,6 +261,52 @@ impl SliceStore {
         Ok(record.clone())
     }
 
+    pub fn set_relay_endpoint(
+        &self,
+        slice_ref: &str,
+        endpoint: Option<SliceRelayEndpoint>,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.relay_endpoint",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.relay_endpoint = endpoint;
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn set_worker_presence(
+        &self,
+        slice_ref: &str,
+        worker_kernel_id: Option<String>,
+        worker_machine_id: Option<String>,
+        providers: Vec<String>,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.worker_presence",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.worker_kernel_id = worker_kernel_id;
+        record.worker_machine_id = worker_machine_id;
+        record.providers = providers;
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
     pub fn delete(&self, slice_ref: &str) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
         let mut state = self.inner.lock().expect("slice store poisoned");
@@ -251,6 +325,23 @@ impl SliceStore {
             .worker_kernel_id
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(record.worker_kernel_ref))
+    }
+
+    pub fn resolve_by_worker_kernel_ref(&self, kernel_ref: &str) -> Option<SliceRecord> {
+        let kernel_ref = kernel_ref.trim();
+        if kernel_ref.is_empty() {
+            return None;
+        }
+        let state = self.inner.lock().expect("slice store poisoned");
+        state
+            .records
+            .values()
+            .find(|record| {
+                record.worker_kernel_ref == kernel_ref
+                    || record.worker_kernel_id.as_deref() == Some(kernel_ref)
+                    || record.worker_machine_id.as_deref() == Some(kernel_ref)
+            })
+            .cloned()
     }
 
     pub fn display_endpoint(&self, slice_ref: &str) -> Result<SliceDisplayEndpoint, DaemonError> {
@@ -300,6 +391,7 @@ pub fn run_local_docker_slice_action(
         .env("ARROBA_SLICE_CODEX_PORT", ports.codex.to_string())
         .env("ARROBA_SLICE_OPENCODE_PORT", ports.opencode.to_string())
         .env("ARROBA_SLICE_KERNEL_PORT", ports.kernel.to_string())
+        .env("ARROBA_SLICE_MCP_PORT", ports.mcp.to_string())
         .env("ARROBA_SLICE_RELAY_PORT", ports.relay.to_string())
         .env("ARROBA_SLICE_NOVNC_PORT", ports.novnc.to_string())
         .env("ARROBA_SLICE_START_DESKTOP", "1")
@@ -313,39 +405,87 @@ pub fn run_local_docker_slice_action(
         .env("ARROBA_SLICE_MACHINE_ID", format!("slice:{}", record.id))
         .env("ARROBA_SLICE_MACHINE_ALIAS", record.name.clone());
     if let Some(relay) = relay {
-        command
-            .env(
+        command.env("ARROBA_SLICE_RELAY_TOKEN", relay.relay_token);
+        if let Some(container_relay_url) = relay.container_relay_url {
+            command.env(
                 "ARROBA_SLICE_RELAY_URL",
-                relay_url_for_container(&relay.relay_url),
-            )
-            .env("ARROBA_SLICE_RELAY_TOKEN", relay.relay_token);
+                relay_url_for_container(&container_relay_url),
+            );
+        }
     }
     if let Some(workspace_mount) = record.workspace_mount.as_deref() {
         command.env("ARROBA_SLICE_WORKSPACE", workspace_mount);
     }
-    let output = command
-        .output()
+
+    let log_path = local_docker_slice_action_log_path(record, action);
+    let log_file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&log_path)
         .map_err(|error| DaemonError::LocalTransport {
             operation: "slice.local_docker",
             message: format!(
-                "failed to run {} {}: {error}",
-                script.display(),
-                action.as_str()
+                "failed to open slice provisioner log {}: {error}",
+                log_path.display()
             ),
         })?;
-    if output.status.success() {
+    let stderr_log = log_file
+        .try_clone()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "failed to open slice provisioner stderr log {}: {error}",
+                log_path.display()
+            ),
+        })?;
+    let status = command
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(stderr_log))
+        .status()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "failed to run {} {} (log: {}): {error}",
+                script.display(),
+                action.as_str(),
+                log_path.display()
+            ),
+        })?;
+    if status.success() {
         return Ok(());
     }
     Err(DaemonError::LocalTransport {
         operation: "slice.local_docker",
         message: format!(
-            "{} {} failed with status {}: {}",
+            "{} {} failed with status {} (log: {}): {}",
             script.display(),
             action.as_str(),
-            output.status,
-            command_output_preview(&output)
+            status,
+            log_path.display(),
+            command_log_preview(&log_path)
         ),
     })
+}
+
+pub fn local_docker_private_relay(record: &SliceRecord) -> LocalDockerSliceRelay {
+    let ports = LocalDockerSlicePorts::for_slice_id(&record.id);
+    LocalDockerSliceRelay {
+        relay_url: format!("ws://127.0.0.1:{}", ports.relay),
+        container_relay_url: None,
+        relay_token: local_docker_private_relay_token(record),
+    }
+}
+
+pub fn local_docker_private_relay_endpoint(record: &SliceRecord) -> SliceRelayEndpoint {
+    SliceRelayEndpoint {
+        url: local_docker_private_relay(record).relay_url,
+        private: true,
+    }
+}
+
+pub fn local_docker_private_relay_token(record: &SliceRecord) -> String {
+    format!("slice-local-{}-{}", record.owner_kernel_id, record.id)
 }
 
 fn relay_url_for_container(relay_url: &str) -> String {
@@ -374,6 +514,7 @@ struct LocalDockerSlicePorts {
     codex: u16,
     opencode: u16,
     kernel: u16,
+    mcp: u16,
     relay: u16,
     novnc: u16,
 }
@@ -389,6 +530,7 @@ impl LocalDockerSlicePorts {
             codex: 43252_u16.saturating_add(ordinal),
             opencode: 43140_u16.saturating_add(ordinal),
             kernel: 43119_u16.saturating_add(ordinal),
+            mcp: 43120_u16.saturating_add(ordinal),
             relay: 43130_u16.saturating_add(ordinal),
             novnc: 6080_u16.saturating_add(ordinal),
         }
@@ -397,6 +539,17 @@ impl LocalDockerSlicePorts {
 
 fn local_docker_container_name(record: &SliceRecord) -> String {
     format!("arroba-slice-{}", record.name)
+}
+
+fn local_docker_slice_action_log_path(
+    record: &SliceRecord,
+    action: LocalDockerSliceAction,
+) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "arroba-{}-{}.log",
+        local_docker_container_name(record),
+        action.as_str()
+    ))
 }
 
 fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
@@ -423,27 +576,18 @@ fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
     }
 }
 
-fn command_output_preview(output: &std::process::Output) -> String {
-    let mut text = String::new();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !stdout.trim().is_empty() {
-        text.push_str(stdout.trim());
-    }
-    if !stderr.trim().is_empty() {
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        text.push_str(stderr.trim());
-    }
+fn command_log_preview(path: &Path) -> String {
+    let mut text = std::fs::read_to_string(path).unwrap_or_default();
     if text.len() > 4_000 {
-        text.truncate(4_000);
+        let start = text.len().saturating_sub(4_000);
+        text = text[start..].to_string();
         text.push_str("...");
     }
+    let text = text.trim();
     if text.is_empty() {
         "<no output>".to_string()
     } else {
-        text
+        text.to_string()
     }
 }
 
@@ -516,6 +660,50 @@ mod tests {
         assert!(store
             .create("kernel-1", "machine-1", create_input("slice-1"))
             .is_err());
+    }
+
+    #[test]
+    fn slice_store_restores_records_and_continues_numbering() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+        let slice = store
+            .set_relay_endpoint(
+                &slice.id,
+                Some(local_docker_private_relay_endpoint(&slice)),
+                43,
+            )
+            .expect("relay endpoint should update");
+
+        let restored = SliceStore::default();
+        restored.restore_records(vec![slice.clone()]);
+        assert_eq!(
+            restored
+                .resolve_by_worker_kernel_ref("slice:dev")
+                .expect("worker ref should resolve")
+                .relay_endpoint,
+            slice.relay_endpoint
+        );
+
+        let next = restored
+            .create("kernel-1", "machine-1", create_input("next"))
+            .expect("new slice should create after restore");
+        assert_eq!(next.id, "slice-2");
+    }
+
+    #[test]
+    fn local_docker_private_relay_uses_host_endpoint_without_container_override() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+
+        let relay = local_docker_private_relay(&slice);
+
+        assert_eq!(relay.relay_url, "ws://127.0.0.1:43130");
+        assert_eq!(relay.container_relay_url, None);
+        assert_eq!(relay.relay_token, "slice-local-kernel-1-slice-1");
     }
 
     #[test]

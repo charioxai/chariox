@@ -1640,6 +1640,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         agent_id,
                         &remote_execution.worker_kernel_id,
                         &remote_execution.leased_agent_id,
+                        remote_execution.relay_url.as_deref(),
+                        remote_execution.relay_token.as_deref(),
                     )?;
                     if started_next.is_none() {
                         self.app.sync_focused_provider_run_if_idle(session_id)?;

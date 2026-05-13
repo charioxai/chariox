@@ -1590,6 +1590,7 @@ export function queryHistoryRequest(query: HistoryQueryPayload) {
       kind: query.kind ?? null,
       text: query.text ?? null,
       after_sequence: query.after_sequence ?? null,
+      before_sequence: query.before_sequence ?? null,
       limit: query.limit ?? null,
     },
   }
@@ -1616,7 +1617,7 @@ export function searchHistoryRequest(query: string, filters: Omit<HistoryQueryPa
 
 export function semanticSearchHistoryRequest(
   query: string,
-  filters: Omit<HistoryQueryPayload, "text" | "after_sequence"> & { mode?: SemanticSearchHistoryMode | null } = {},
+  filters: Omit<HistoryQueryPayload, "text" | "after_sequence" | "before_sequence"> & { mode?: SemanticSearchHistoryMode | null; cursor?: string | null } = {},
 ) {
   return {
     SemanticSearchHistory: {
@@ -1631,6 +1632,7 @@ export function semanticSearchHistoryRequest(
       repo_root: filters.repo_root ?? null,
       worktree_path: filters.worktree_path ?? null,
       kind: filters.kind ?? null,
+      cursor: filters.cursor ?? null,
       limit: filters.limit ?? null,
     },
   }

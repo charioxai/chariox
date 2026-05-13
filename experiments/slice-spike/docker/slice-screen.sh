@@ -48,6 +48,7 @@ start_desktop() {
   pkill -f "websockify.*$NOVNC_PORT" >/dev/null 2>&1 || true
   pkill -f "chromium.*$CHROME_PROFILE" >/dev/null 2>&1 || true
   pkill -f "/usr/lib/chromium/chromium" >/dev/null 2>&1 || true
+  rm -f "/tmp/.X${DISPLAY_ID#:}-lock" "/tmp/.X11-unix/X${DISPLAY_ID#:}"
 
   nohup Xvfb "$DISPLAY_ID" -screen 0 "$SCREEN_GEOMETRY" -ac +extension RANDR +extension XTEST >"$LOGS/xvfb.log" 2>&1 &
   wait_for_display
@@ -109,6 +110,11 @@ click() {
 double_click() {
   focus_chromium
   xdotool mousemove "$1" "$2" click --repeat 2 --delay 80 1
+}
+
+drag() {
+  focus_chromium
+  xdotool mousemove "$1" "$2" mousedown 1 mousemove --sync "$3" "$4" mouseup 1
 }
 
 move_mouse() {
@@ -232,6 +238,7 @@ case "${1:-status}" in
   screenshot) shift; screenshot "$@" ;;
   click) shift; click "$@" ;;
   double-click|double_click) shift; double_click "$@" ;;
+  drag) shift; drag "$@" ;;
   move|move_mouse) shift; move_mouse "$@" ;;
   scroll) shift; scroll "$@" ;;
   type|type_text) shift; type_text "$@" ;;
@@ -244,7 +251,7 @@ case "${1:-status}" in
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|ocr|find-text|open-url
 EOF
     exit 2
     ;;

@@ -1062,6 +1062,14 @@ impl CommandRouter {
             .await
     }
 
+    pub(crate) fn runtime_tool_specs_for_auth_token(
+        &self,
+        auth_token: &str,
+    ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
+        self.runtime_state
+            .runtime_tool_specs_for_auth_token(auth_token)
+    }
+
     pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call(
         &self,
         context: crate::execution_lease::RemoteWorkflowTurnContext,
@@ -3669,7 +3677,7 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let slice = {
             let app = self.app.lock().await;
-            app.slices().create(
+            let slice = app.slices().create(
                 &app.config().daemon_id,
                 &app.config().host_machine_id,
                 crate::slice::CreateSliceInput {
@@ -3681,7 +3689,13 @@ impl CommandRouter {
                     display_url: request.display_url,
                     now_ms: crate::session::unix_epoch_ms(),
                 },
-            )?
+            )?;
+            app.durable_state_store().append_event(
+                "slice.created",
+                Some(slice.id.clone()),
+                serde_json::json!({ "slice": &slice }),
+            )?;
+            slice
         };
         Ok(LocalDaemonResponse::SliceCreated { slice })
     }
@@ -3703,26 +3717,28 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let initial_slice = {
             let app = self.app.lock().await;
-            app.slices().set_status(
+            let relay_endpoint = crate::slice::local_docker_private_relay_endpoint(
+                &app.slices().resolve(&request.slice_ref)?,
+            );
+            app.slices().set_relay_endpoint(
+                &request.slice_ref,
+                Some(relay_endpoint),
+                crate::session::unix_epoch_ms(),
+            )?;
+            let slice = app.slices().set_status(
                 &request.slice_ref,
                 crate::slice::SliceStatus::Starting,
                 crate::session::unix_epoch_ms(),
-            )?
+            )?;
+            app.durable_state_store().append_event(
+                "slice.updated",
+                Some(slice.id.clone()),
+                serde_json::json!({ "slice": &slice }),
+            )?;
+            slice
         };
         let supervisor_slice = initial_slice.clone();
-        let relay = {
-            let app = self.app.lock().await;
-            match (
-                app.config().relay_url.clone(),
-                app.config().relay_token.clone(),
-            ) {
-                (Some(relay_url), Some(relay_token)) => Some(crate::slice::LocalDockerSliceRelay {
-                    relay_url,
-                    relay_token,
-                }),
-                _ => None,
-            }
-        };
+        let relay = Some(crate::slice::local_docker_private_relay(&supervisor_slice));
         let supervisor_result = tokio::task::spawn_blocking(move || {
             crate::slice::run_local_docker_slice_action(
                 &supervisor_slice,
@@ -3742,15 +3758,43 @@ impl CommandRouter {
                 crate::slice::SliceStatus::Unhealthy,
                 crate::session::unix_epoch_ms(),
             );
+            if let Ok(slice) = app.slices().resolve(&request.slice_ref) {
+                let _ = app.durable_state_store().append_event(
+                    "slice.updated",
+                    Some(slice.id.clone()),
+                    serde_json::json!({ "slice": &slice }),
+                );
+            }
             return Err(error);
         }
+        let discovered = self
+            .discover_started_slice_worker(&initial_slice)
+            .await
+            .ok();
         let slice = {
             let app = self.app.lock().await;
-            app.slices().set_status(
+            let slice = app.slices().set_status(
                 &request.slice_ref,
                 crate::slice::SliceStatus::Running,
                 crate::session::unix_epoch_ms(),
-            )?
+            )?;
+            let slice = if let Some(worker) = discovered {
+                app.slices().set_worker_presence(
+                    &request.slice_ref,
+                    Some(worker.kernel_id),
+                    Some(worker.machine_id),
+                    worker.available_providers,
+                    crate::session::unix_epoch_ms(),
+                )?
+            } else {
+                slice
+            };
+            app.durable_state_store().append_event(
+                "slice.updated",
+                Some(slice.id.clone()),
+                serde_json::json!({ "slice": &slice }),
+            )?;
+            slice
         };
         Ok(LocalDaemonResponse::SliceStarted { slice })
     }
@@ -3778,11 +3822,17 @@ impl CommandRouter {
         supervisor_result?;
         let slice = {
             let app = self.app.lock().await;
-            app.slices().set_status(
+            let slice = app.slices().set_status(
                 &request.slice_ref,
                 crate::slice::SliceStatus::Stopped,
                 crate::session::unix_epoch_ms(),
-            )?
+            )?;
+            app.durable_state_store().append_event(
+                "slice.updated",
+                Some(slice.id.clone()),
+                serde_json::json!({ "slice": &slice }),
+            )?;
+            slice
         };
         Ok(LocalDaemonResponse::SliceStopped { slice })
     }
@@ -3793,7 +3843,13 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let slice = {
             let app = self.app.lock().await;
-            app.slices().delete(&request.slice_ref)?
+            let slice = app.slices().delete(&request.slice_ref)?;
+            app.durable_state_store().append_event(
+                "slice.deleted",
+                Some(slice.id.clone()),
+                serde_json::json!({ "slice": &slice }),
+            )?;
+            slice
         };
         Ok(LocalDaemonResponse::SliceDeleted { slice })
     }
@@ -3822,6 +3878,32 @@ impl CommandRouter {
             app.slices().display_endpoint(&request.slice_ref)?
         };
         Ok(LocalDaemonResponse::SliceDisplayEndpoint { endpoint })
+    }
+
+    async fn discover_started_slice_worker(
+        &self,
+        slice: &crate::slice::SliceRecord,
+    ) -> Result<arroba_relay::protocol::RelayKernelPresence, DaemonError> {
+        let mut config = self.config_projection.snapshot();
+        let relay = crate::slice::local_docker_private_relay(slice);
+        config.relay_url = Some(relay.relay_url);
+        config.relay_token = Some(relay.relay_token);
+        config.cloud_relay = None;
+        let worker_ref = slice.worker_kernel_ref.clone();
+        let mut last_error = None;
+        for _ in 0..20 {
+            match crate::transport::relay_discovery::get_live_kernel(&config, &worker_ref).await {
+                Ok(kernel) => return Ok(kernel),
+                Err(error) => {
+                    last_error = Some(error);
+                    sleep(Duration::from_millis(250)).await;
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| DaemonError::LocalTransport {
+            operation: "slice.discover_worker",
+            message: format!("slice `{}` worker did not appear", slice.name),
+        }))
     }
 
     async fn execute_delete_kernel_request(
@@ -4742,11 +4824,12 @@ impl CommandRouter {
                     .then_with(|| left.event_id.cmp(&right.event_id))
             });
             events.truncate(requested_limit);
-            let next_sequence = if events.len() == requested_limit {
-                events.last().map(|event| event.sequence)
-            } else {
-                None
-            };
+            let next_sequence =
+                if query.before_sequence.is_none() && events.len() == requested_limit {
+                    events.last().map(|event| event.sequence)
+                } else {
+                    None
+                };
             Ok(LocalDaemonResponse::HistoryEvents {
                 events,
                 next_sequence,
@@ -4864,9 +4947,10 @@ impl CommandRouter {
                     Some("semantic history search is not configured for this kernel".to_string()),
                 ));
             }
+            let cursor = request.cursor.clone();
             let mut query = history_query_from_semantic_search_request(request);
             query.limit = Some(requested_limit);
-            let response = archive_client.semantic_search_events(query)?;
+            let response = archive_client.semantic_search_events(query, cursor)?;
             Ok((response.results, response.next_cursor, None))
         })
         .await
@@ -9149,6 +9233,7 @@ fn history_query_from_request(request: QueryHistoryRequest) -> HistoryEventQuery
         kind: request.kind,
         text: request.text,
         after_sequence: request.after_sequence,
+        before_sequence: request.before_sequence,
         limit: request.limit,
     }
 }
@@ -9166,6 +9251,7 @@ fn history_query_from_search_request(request: SearchHistoryRequest) -> HistoryEv
         kind: request.kind,
         text: Some(request.query),
         after_sequence: request.after_sequence,
+        before_sequence: None,
         limit: request.limit,
     }
 }
@@ -9185,6 +9271,7 @@ fn history_query_from_semantic_search_request(
         kind: request.kind,
         text: Some(request.query),
         after_sequence: None,
+        before_sequence: None,
         limit: request.limit,
     }
 }
@@ -9222,6 +9309,7 @@ fn semantic_search_request_from_utility_input(
         repo_root: input.repo_root.clone(),
         worktree_path: input.worktree_path.clone(),
         kind: input.kind.clone(),
+        cursor: None,
         limit: input.limit,
     }
 }

@@ -9,6 +9,10 @@ pub struct RemoteAgentBinding {
     pub worker_machine_id: String,
     pub execution_lease_id: String,
     pub leased_agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

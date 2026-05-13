@@ -123,9 +123,11 @@ impl KernelRuntimeState {
                     .expect("remote execution checked above");
                 match self
                     .with_app_side_effect(|app| {
+                        let relay_config =
+                            app.relay_config_for_remote_execution(&remote_execution);
                         app.block_on_relay_future(
                             crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                                app.config(),
+                                &relay_config,
                                 ClientTarget {
                                     daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                                     daemon_alias: None,
@@ -194,9 +196,11 @@ impl KernelRuntimeState {
             {
                 let completion_response = self
                     .with_app_side_effect(|app| {
+                        let relay_config =
+                            app.relay_config_for_remote_execution(&remote_execution);
                         app.block_on_relay_future(
                             crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                                app.config(),
+                                &relay_config,
                                 ClientTarget {
                                     daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                                     daemon_alias: None,
@@ -320,9 +324,11 @@ impl KernelRuntimeState {
                         };
                     let submit_result = self
                         .with_app_side_effect(|app| {
+                            let relay_config =
+                                app.relay_config_for_remote_execution(&remote_execution);
                             app.block_on_relay_future(
                                 crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                                    app.config(),
+                                    &relay_config,
                                     ClientTarget {
                                         daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                                         daemon_alias: None,
@@ -969,7 +975,7 @@ impl KernelRuntimeState {
                     return;
                 }
             };
-            let config = state.config_snapshot().await;
+            let config = remote_dispatch_relay_config(state.config_snapshot().await, &dispatch);
             let attachments = dispatch.attachments.clone();
             let serialized_attachments = match tokio::task::spawn_blocking(move || {
                 crate::app::serialize_remote_prompt_attachments(&attachments)
@@ -1048,6 +1054,12 @@ impl KernelRuntimeState {
                         Some(remote_execution) => {
                             dispatch.worker_kernel_id = remote_execution.worker_kernel_id;
                             dispatch.leased_agent_id = remote_execution.leased_agent_id;
+                            dispatch.relay_url = remote_execution.relay_url;
+                            dispatch.relay_token = remote_execution.relay_token;
+                            let config = remote_dispatch_relay_config(
+                                state.config_snapshot().await,
+                                &dispatch,
+                            );
                             match tokio::time::timeout(
                                 std::time::Duration::from_secs(5),
                                 crate::transport::relay_client::send_peer_request_via_temporary_connection(
@@ -1202,6 +1214,20 @@ fn remote_git_turn_context(
             &dispatch.attachments,
         ),
     }
+}
+
+fn remote_dispatch_relay_config(
+    mut config: crate::config::DaemonConfig,
+    dispatch: &crate::app::KernelRemotePromptDispatch,
+) -> crate::config::DaemonConfig {
+    if let (Some(relay_url), Some(relay_token)) =
+        (dispatch.relay_url.clone(), dispatch.relay_token.clone())
+    {
+        config.relay_url = Some(relay_url);
+        config.relay_token = Some(relay_token);
+        config.cloud_relay = None;
+    }
+    config
 }
 
 fn remote_git_turn_context_for_prompt(

@@ -682,6 +682,8 @@ impl KernelRuntimeOwnedState {
                     prompt_id: prompt.id().to_string(),
                     worker_kernel_id: remote_execution.worker_kernel_id,
                     leased_agent_id: remote_execution.leased_agent_id,
+                    relay_url: remote_execution.relay_url,
+                    relay_token: remote_execution.relay_token,
                     source_attachment_id: prompt.source_attachment_id().to_string(),
                     prompt: prompt.prompt().to_string(),
                     attachments: prompt.attachments().to_vec(),

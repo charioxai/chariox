@@ -147,10 +147,7 @@ pub(crate) fn build_workflow_turn_prompt(context: WorkflowPromptInjectionContext
         render_workflow_node_system_prompt(context.base_directory.as_ref(), &context.node_turn);
     let workflow_instructions = format!(
         "Workflow-level prompt:\n{}\n\nNode-level instructions:\n{}\n\n{}\n{}",
-        context.workflow_prompt,
-        context.node_instructions,
-        system_prompt,
-        system_node_prompt
+        context.workflow_prompt, context.node_instructions, system_prompt, system_node_prompt
     );
     if context.hide_in_native_tui {
         format!(
