@@ -185,7 +185,6 @@ async fn kernel_websocket_closes_slow_consumers_when_the_outgoing_queue_overflow
     )
     .await;
     let _subscribe_response = wait_for_response(&mut socket, "subscribe-session").await;
-    let _snapshot_event = wait_for_event(&mut socket, "session_snapshot").await;
 
     for index in 0..12 {
         send_frame(
@@ -734,6 +733,9 @@ async fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         }),
     )
     .await;
@@ -860,6 +862,9 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         }),
     )
     .await;
@@ -975,6 +980,9 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         }),
     )
     .await;
@@ -1091,10 +1099,13 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializi
                 session_id: session_id.clone(),
                 agent_id: Some(agent_id.clone()),
                 adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
+                provider: "slow-structured".to_string(),
                 account_profile: "default".to_string(),
                 model: "sonnet".to_string(),
                 variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
             }),
         }),
     )
@@ -1224,6 +1235,9 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         }),
     )
     .await;
@@ -1262,6 +1276,9 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         }),
     )
     .await;
@@ -1553,6 +1570,9 @@ async fn kernel_websocket_reports_async_provider_launch_failure() {
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         }),
     )
     .await;
@@ -1633,6 +1653,9 @@ async fn kernel_websocket_replaces_starting_provider_launch() {
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         }),
     )
     .await;
@@ -1653,6 +1676,9 @@ async fn kernel_websocket_replaces_starting_provider_launch() {
             account_profile: "default".to_string(),
             model: "opus".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         }),
     )
     .await;
@@ -1735,6 +1761,9 @@ async fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         }),
     )
     .await;

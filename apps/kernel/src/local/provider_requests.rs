@@ -4,7 +4,7 @@ use crate::error::DaemonError;
 use crate::provider::{
     default_provider_command_catalogs, ensure_codex_catalog_endpoint,
     ensure_opencode_catalog_endpoint, logout_codex, CodexClient, LaunchProviderRequest,
-    OpenCodeClient, OpenCodeProviderCatalog, OpenCodeProviderInfo,
+    OpenCodeClient, OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderClientInterface,
 };
 use arroba_relay::protocol::RelayMachinePresence;
 use std::thread;
@@ -17,7 +17,7 @@ use super::api::{
     GetProviderAuthStatusRequest, GetProviderRunRequest, LaunchProviderRunRequest,
     ListRemoteMachineKernelsRequest, LocalDaemonResponse, LogoutProviderRequest, RelayStatus,
     RemoteMachineRecord, RemoteMachineTrustStatus, RenameRemoteMachineRequest,
-    StartProviderLoginRequest,
+    StartProviderLoginRequest, UpdateProviderRunSelectionRequest,
 };
 
 pub(crate) const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
@@ -33,6 +33,27 @@ pub(crate) fn get_provider_run_response(
     let provider_run = app.providers().get_run(&request.provider_run_id)?;
     app.update_provider_run_projection(provider_run.clone());
     Ok(LocalDaemonResponse::ProviderRun { provider_run })
+}
+
+pub(crate) fn update_provider_run_selection_response(
+    app: &mut DaemonApp,
+    request: UpdateProviderRunSelectionRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let run = app.providers().get_run(&request.provider_run_id)?;
+    if run.session_id() != request.session_id {
+        return Err(DaemonError::ProviderRunNotInSession {
+            session_id: request.session_id,
+            provider_run_id: request.provider_run_id,
+        });
+    }
+    let provider_run = app.providers_mut().update_run_selection(
+        &request.provider_run_id,
+        request.model,
+        request.variant,
+        request.clear_variant,
+    )?;
+    app.update_provider_run_projection(provider_run.clone());
+    Ok(LocalDaemonResponse::ProviderRunSelectionUpdated { provider_run })
 }
 
 #[allow(dead_code)]
@@ -261,6 +282,23 @@ pub(crate) fn launch_provider_request_from_local(
         request.model,
     )
     .with_variant(request.variant);
+    if let Some(endpoint) = request.structured_endpoint {
+        launch_request = launch_request.with_structured_endpoint(endpoint);
+    }
+    if request.native_tui {
+        launch_request = launch_request.with_client_interface(ProviderClientInterface::NativeTui);
+    }
+    if let Some(provider_session_id) = request.provider_session_id {
+        if launch_request.adapter_key == "codex" {
+            launch_request = launch_request.with_resume_state(
+                crate::provider::ProviderResumeState::from_codex_thread_id(provider_session_id),
+            );
+        } else if launch_request.adapter_key == "opencode" {
+            launch_request = launch_request.with_resume_state(
+                crate::provider::ProviderResumeState::from_opencode_session_id(provider_session_id),
+            );
+        }
+    }
     let session = app.sessions().get_session(&request.session_id).ok();
     let focused_agent_id = session
         .as_ref()
@@ -902,6 +940,9 @@ mod tests {
                 account_profile: "default".to_string(),
                 model: "model-a".to_string(),
                 variant: Some("low".to_string()),
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: false,
             },
         );
 

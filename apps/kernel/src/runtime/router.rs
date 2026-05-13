@@ -65,9 +65,9 @@ use crate::local::{
     ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest, StartCloudRelayLoginRequest,
     StartProviderLoginRequest, TeardownProviderProcessesRequest, TerminalPairingLinkRecord,
     TerminalRecord, TerminalType, UninstallMcpServerRequest, UninstallSkillRequest,
-    UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateSkillRequest,
-    UserConfigMutationEffect, UserConfigProviderReloadSummary, WaitingRoomLaunchTarget,
-    WaitingRoomPublicAgentSummary, WaitingRoomPublicItemActivitySummary,
+    UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateProviderRunSelectionRequest,
+    UpdateSkillRequest, UserConfigMutationEffect, UserConfigProviderReloadSummary,
+    WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary, WaitingRoomPublicItemActivitySummary,
     WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
     WaitingRoomPublicWorkflowEdgeSummary, WaitingRoomPublicWorkflowEndpointSummary,
     WaitingRoomPublicWorkflowNodeSummary, WaitingRoomPublicWorkflowSummary,
@@ -2784,6 +2784,14 @@ impl CommandRouter {
         crate::local::provider_requests::get_provider_run_response(&mut app, request)
     }
 
+    async fn execute_update_provider_run_selection_request(
+        &self,
+        request: UpdateProviderRunSelectionRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut app = self.app.lock().await;
+        crate::local::provider_requests::update_provider_run_selection_response(&mut app, request)
+    }
+
     async fn execute_get_provider_auth_status_request(
         request: GetProviderAuthStatusRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -4861,6 +4869,10 @@ impl CommandRouter {
             }),
             LocalDaemonRequest::GetProviderRun(request) => {
                 self.execute_get_provider_run_request(request).await
+            }
+            LocalDaemonRequest::UpdateProviderRunSelection(request) => {
+                self.execute_update_provider_run_selection_request(request)
+                    .await
             }
             LocalDaemonRequest::GetPromptInputHistory(request) => {
                 self.execute_prompt_input_history_request(request).await
@@ -8490,6 +8502,9 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
         LocalDaemonRequest::LaunchProviderRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::UpdateProviderRunSelection(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::ListSessionMembers(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -12860,6 +12875,9 @@ mod tests {
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         });
         let launch_command =
             KernelCommand::from_local_request("cmd-provider-launch", None, None, &launch_request);
@@ -12975,6 +12993,9 @@ mod tests {
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         });
         let launch_command = KernelCommand::from_local_request(
             "cmd-provider-launch-async",
@@ -13173,6 +13194,9 @@ mod tests {
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         });
         let launch_command = KernelCommand::from_local_request(
             "cmd-process-provider-launch",
@@ -13371,6 +13395,9 @@ mod tests {
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         });
         let launch_command = KernelCommand::from_local_request(
             "cmd-teardown-refresh-launch",

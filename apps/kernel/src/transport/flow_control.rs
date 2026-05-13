@@ -80,10 +80,7 @@ pub(crate) fn prompt_completion_recorded(app: &DaemonApp, provider_run_id: &str)
         .unwrap_or(false)
 }
 
-pub(crate) fn prompt_completion_settlement_pending(
-    app: &DaemonApp,
-    provider_run_id: &str,
-) -> bool {
+pub(crate) fn prompt_completion_settlement_pending(app: &DaemonApp, provider_run_id: &str) -> bool {
     app.prompt_activity
         .read()
         .get(provider_run_id)

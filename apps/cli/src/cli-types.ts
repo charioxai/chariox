@@ -442,6 +442,12 @@ export type RuntimeProviderRun = {
     context_window?: number | null
   }
   state: string
+  endpoint_mode?: string
+  client_interface?: "arroba" | "native_tui" | string
+  process_label?: string
+  structured_endpoint?: string | null
+  provider_session_id?: string | null
+  working_directory?: string | null
   started_at_ms?: number
   last_activity_at_ms?: number
   control_capabilities?: {

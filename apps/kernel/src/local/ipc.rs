@@ -536,6 +536,9 @@ mod tests {
                     account_profile: "default".to_string(),
                     model: "default".to_string(),
                     variant: None,
+                    structured_endpoint: None,
+                    provider_session_id: None,
+                    native_tui: false,
                 },
             ))
             .expect("launch should succeed");
@@ -673,6 +676,9 @@ mod tests {
                     account_profile: "default".to_string(),
                     model: "default".to_string(),
                     variant: None,
+                    structured_endpoint: None,
+                    provider_session_id: None,
+                    native_tui: false,
                 },
             ))
             .expect("launch should succeed");
@@ -884,6 +890,9 @@ mod tests {
                     account_profile: "default".to_string(),
                     model: "default".to_string(),
                     variant: None,
+                    structured_endpoint: None,
+                    provider_session_id: None,
+                    native_tui: false,
                 },
             ))
             .expect("provider run launch should succeed")

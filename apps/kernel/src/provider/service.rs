@@ -1118,6 +1118,34 @@ impl ProviderProcessService {
         Ok(run.clone())
     }
 
+    pub(crate) fn update_run_selection(
+        &mut self,
+        provider_run_id: &str,
+        model: Option<String>,
+        variant: Option<String>,
+        clear_variant: bool,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.get_run_mut(provider_run_id)?;
+        if let Some(model) = model
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            if run.model() != model {
+                run.set_model(model);
+            }
+        }
+        if clear_variant {
+            if run.variant().is_some() {
+                run.set_variant(None);
+            }
+        } else if let Some(variant) = variant {
+            if run.variant() != Some(variant.as_str()) {
+                run.set_variant(Some(variant));
+            }
+        }
+        Ok(run.clone())
+    }
+
     pub(crate) fn mark_run_ended_provider_only(
         &mut self,
         session_id: &str,

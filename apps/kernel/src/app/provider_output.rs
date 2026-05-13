@@ -1020,10 +1020,11 @@ impl<'a> ProviderOutputPumpContext<'a> {
         };
         let completion_recorded =
             crate::transport::flow_control::prompt_completion_recorded(self.app, provider_run_id);
-        let settlement_pending = crate::transport::flow_control::prompt_completion_settlement_pending(
-            self.app,
-            provider_run_id,
-        );
+        let settlement_pending =
+            crate::transport::flow_control::prompt_completion_settlement_pending(
+                self.app,
+                provider_run_id,
+            );
         if completion_recorded && saw_settlement_blocking_activity {
             self.note_prompt_settlement_requested(provider_run_id);
             let _ =

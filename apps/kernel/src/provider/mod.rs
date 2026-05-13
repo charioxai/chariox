@@ -48,10 +48,10 @@ pub(crate) use types::{
 pub use types::{
     default_provider_command_catalogs, AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel,
     ControlCapability, ControlCapabilityMode, ControlOperation, LaunchProviderRequest,
-    ProviderAssistantCompletion, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
-    ProviderCommandCatalogSource, ProviderCommandDescriptor, ProviderLaunchResult,
-    ProviderProcessInfo, ProviderProcessStatus, ProviderPromptChunk, ProviderPromptSignalBatch,
-    ProviderResumeState, ProviderRunState, ProviderRunTokenUsage, ProviderWriteAccessMode,
-    RuntimeMcpBinding, RuntimeProviderRun,
+    ProviderAssistantCompletion, ProviderClientInterface, ProviderCommandCatalog,
+    ProviderCommandCatalogDiscovery, ProviderCommandCatalogSource, ProviderCommandDescriptor,
+    ProviderLaunchResult, ProviderProcessInfo, ProviderProcessStatus, ProviderPromptChunk,
+    ProviderPromptSignalBatch, ProviderResumeState, ProviderRunState, ProviderRunTokenUsage,
+    ProviderWriteAccessMode, RuntimeMcpBinding, RuntimeProviderRun,
 };
 pub(crate) use workspace_write_fence::{apply_workspace_write_fence, workspace_write_fence_active};

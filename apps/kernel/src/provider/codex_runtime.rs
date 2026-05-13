@@ -13,9 +13,9 @@ use crate::session::PromptAttachment;
 use crate::terminal::TerminalOutputKind;
 
 use super::{
-    codex_client::codex_endpoint_is_healthy, CodexClient, CodexNotification, CodexRunSelection,
-    CodexSocket, ProviderNativeInteractionBridge, ProviderResumeState, ProviderRunTokenUsage,
-    RuntimeProviderRun,
+    codex_client::codex_endpoint_is_healthy, AgentEndpointMode, CodexClient, CodexNotification,
+    CodexRunSelection, CodexSocket, ProviderNativeInteractionBridge, ProviderResumeState,
+    ProviderRunTokenUsage, RuntimeProviderRun,
 };
 
 const CODEX_EVENT_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(1);
@@ -189,6 +189,23 @@ pub fn initialize_codex_runtime(
     let model = normalize_codex_model(run.model());
     let resumable_thread_id = run.resume_state().codex_thread_id().map(str::to_string);
     let (thread_id, selection) = match resumable_thread_id {
+        Some(thread_id) if run.endpoint_mode() == AgentEndpointMode::External => {
+            crate::logging::info_with_fields(
+                "daemon.provider.codex",
+                "binding native codex thread without resume",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "thread_id": thread_id,
+                }),
+            );
+            (
+                thread_id,
+                CodexRunSelection {
+                    model: Some(format!("codex/{}", run.model())),
+                    variant: run.variant().map(str::to_string),
+                },
+            )
+        }
         Some(thread_id) => {
             crate::logging::info_with_fields(
                 "daemon.provider.codex",
@@ -503,6 +520,20 @@ pub fn drain_codex_events(
                 state.buffered_notifications.push(notification);
             })
             .is_none();
+    }
+    if run.endpoint_mode() == AgentEndpointMode::External
+        && state.active_turn_id.is_some()
+        && state.turn_tracker.pending_terminal.is_none()
+    {
+        backfill_external_completed_turn(
+            &client,
+            state,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+        )?;
     }
     if drained_to_quiet {
         maybe_finalize_terminal_signal(
@@ -863,6 +894,89 @@ fn maybe_finalize_terminal_signal(
     }
     *prompt_completed = true;
     *active_turn_id = None;
+}
+
+fn backfill_external_completed_turn(
+    client: &CodexClient,
+    state: &mut CodexRuntimeState,
+    chunks: &mut Vec<CodexOutputChunk>,
+    completions: &mut Vec<CodexAssistantCompletion>,
+    notices: &mut Vec<String>,
+    prompt_completed: &mut bool,
+    terminal_failure: &mut Option<String>,
+) -> Result<(), DaemonError> {
+    let Some(active_turn_id) = state.active_turn_id.clone() else {
+        return Ok(());
+    };
+    let response = client.thread_turns_list(
+        &mut state.socket,
+        &mut state.next_request_id,
+        &state.thread_id,
+        &mut state.buffered_notifications,
+    )?;
+    let Some(turn) = response
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|turns| {
+            turns.iter().find(|turn| {
+                turn.get("id").and_then(Value::as_str) == Some(active_turn_id.as_str())
+            })
+        })
+    else {
+        return Ok(());
+    };
+    let status = turn
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !matches!(status, "completed" | "failed" | "cancelled" | "canceled") {
+        return Ok(());
+    }
+    if let Some(items) = turn.get("items").and_then(Value::as_array) {
+        for item in items {
+            if let Some(chunk) = sync_tool_item(&mut state.tool_items, item) {
+                chunks.push(chunk);
+            } else if let Some(chunk) = sync_completed_text_item(&mut state.text_items, item) {
+                chunks.push(chunk);
+            }
+        }
+    }
+    if status == "failed" {
+        *terminal_failure =
+            Some(codex_turn_error_message(turn).unwrap_or_else(|| "Codex turn failed".to_string()));
+    }
+    if let Some(message) = codex_turn_error_message(turn) {
+        notices.push(message);
+    }
+    completions.push(CodexAssistantCompletion {
+        message_id: format!("codex-turn:{active_turn_id}"),
+        completed_at_ms: codex_turn_completed_at_ms(turn).unwrap_or_else(unix_epoch_ms),
+    });
+    *prompt_completed = true;
+    state.active_turn_id = None;
+    Ok(())
+}
+
+fn codex_turn_completed_at_ms(turn: &Value) -> Option<u64> {
+    turn.get("completedAt")
+        .and_then(Value::as_u64)
+        .map(|seconds| seconds.saturating_mul(1_000))
+}
+
+fn codex_turn_error_message(turn: &Value) -> Option<String> {
+    let error = turn.get("error")?;
+    if error.is_null() {
+        return None;
+    }
+    if let Some(message) = error.as_str() {
+        return (!message.is_empty()).then(|| message.to_string());
+    }
+    error
+        .get("message")
+        .or_else(|| error.get("details"))
+        .and_then(Value::as_str)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
 }
 
 fn trace_codex_tool_item(label: &str, item: &Value) {

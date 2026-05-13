@@ -141,6 +141,30 @@ impl fmt::Display for AgentEndpointMode {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderClientInterface {
+    #[default]
+    Arroba,
+    NativeTui,
+}
+
+impl ProviderClientInterface {
+    pub fn is_arroba(&self) -> bool {
+        matches!(self, Self::Arroba)
+    }
+}
+
+impl fmt::Display for ProviderClientInterface {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Arroba => "arroba",
+            Self::NativeTui => "native_tui",
+        };
+        write!(f, "{value}")
+    }
+}
+
 impl fmt::Display for ProviderRunState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
@@ -238,6 +262,10 @@ pub struct LaunchProviderRequest {
     pub permission_level: Option<AgentPermissionLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_state: Option<ProviderResumeState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "ProviderClientInterface::is_arroba")]
+    pub client_interface: ProviderClientInterface,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -353,6 +381,8 @@ impl LaunchProviderRequest {
             execution_mode: None,
             permission_level: None,
             resume_state: None,
+            structured_endpoint: None,
+            client_interface: ProviderClientInterface::Arroba,
         }
     }
 
@@ -417,6 +447,16 @@ impl LaunchProviderRequest {
         self.resume_state = (!resume_state.is_empty()).then_some(resume_state);
         self
     }
+
+    pub fn with_structured_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.structured_endpoint = Some(endpoint.into());
+        self
+    }
+
+    pub fn with_client_interface(mut self, client_interface: ProviderClientInterface) -> Self {
+        self.client_interface = client_interface;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -465,6 +505,8 @@ pub struct RuntimeProviderRun {
     usage: ProviderRunTokenUsage,
     state: ProviderRunState,
     endpoint_mode: AgentEndpointMode,
+    #[serde(default, skip_serializing_if = "ProviderClientInterface::is_arroba")]
+    client_interface: ProviderClientInterface,
     process_label: String,
     pty_target: Option<String>,
     pty_program: Option<String>,
@@ -521,6 +563,7 @@ impl RuntimeProviderRun {
             usage: ProviderRunTokenUsage::default(),
             state: ProviderRunState::Starting,
             endpoint_mode: launch_result.endpoint_mode,
+            client_interface: request.client_interface,
             process_label: launch_result.process_label,
             pty_target: launch_result.pty_target,
             pty_program: launch_result.pty_program,
@@ -584,6 +627,7 @@ impl RuntimeProviderRun {
             usage: ProviderRunTokenUsage::default(),
             state: ProviderRunState::Starting,
             endpoint_mode: AgentEndpointMode::Managed,
+            client_interface: ProviderClientInterface::Arroba,
             process_label: "inferred-control-capabilities".to_string(),
             pty_target: None,
             pty_program: None,
@@ -685,6 +729,9 @@ impl RuntimeProviderRun {
     }
     pub fn endpoint_mode(&self) -> AgentEndpointMode {
         self.endpoint_mode
+    }
+    pub fn client_interface(&self) -> ProviderClientInterface {
+        self.client_interface
     }
     pub fn process_label(&self) -> &str {
         &self.process_label

@@ -1937,6 +1937,7 @@ fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AttachToSession(_) => "session.attach",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
         LocalDaemonRequest::LaunchProviderRun(_) => "provider.run.launch",
+        LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider.run.selection.update",
         LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",
         LocalDaemonRequest::CreateWorkspaceWorktree(_) => "workspace.worktree.create",
         LocalDaemonRequest::GetWorkspaceGitOverview(_) => "workspace.git.overview",

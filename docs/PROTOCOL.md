@@ -162,6 +162,30 @@ Required properties:
 
 Existing providers like OpenCode may continue to be adapted through their native protocols.
 
+## 3.3.2 Native TUI Agents
+
+Native TUI agents let a user run a familiar provider CLI UI while the Arroba kernel remains the session authority.
+
+Current commands:
+
+- `arroba codex [session-ref]`
+- `arroba opencode [session-ref]`
+
+Semantics:
+
+- if no session ref is provided, Arroba creates a session and its first native TUI agent
+- if a session ref is provided, Arroba attaches a new top-level native TUI agent to that Arroba session
+- a native TUI launch never attaches to an existing provider run; every native TUI agent owns its own provider run
+- prompts from the provider TUI are intercepted and submitted through the same kernel prompt path as Arroba clients
+- prompts from Arroba clients are forwarded through the kernel-managed provider run so the provider TUI observes the same turns
+- native TUI provider runs are marked with `client_interface = native_tui`
+- Arroba clients must treat model/variant controls for those runs as provider-controlled; provider-native changes may be recorded when observable, but Arroba-side parameter mutation is disabled for the active native TUI run
+
+Provider-specific transport:
+
+- Codex uses a native WebSocket proxy in front of a Codex app-server endpoint and binds the observed Codex thread to the Arroba provider run.
+- OpenCode uses the kernel-launched OpenCode server and a native HTTP proxy in front of the provider session used by `opencode attach`.
+
 ## 3.4 Workflow Coordination Semantics
 
 Multi-agent workflow coordination is a daemon-owned structured protocol concern.
@@ -505,7 +529,7 @@ The kernel owns managed artifact I/O for Arroba-launched provider sessions. Supp
 
 macOS hardening moves this from provider-specific policy to an Arroba-owned process launch boundary. Arroba-managed provider processes are launched behind a macOS workspace write fence that denies filesystem writes under the canonical worktree path while still allowing provider state/cache/temp writes outside the worktree. Codex provider-native sandboxing remains enabled as defense in depth. OpenCode native shell may be enabled only when this Arroba fence is active. Linux and Windows write-fence backends are deferred.
 
-External provider endpoints are not a managed-runtime mode. A provider process must be launched by Arroba before Arroba can apply the workspace write fence or claim managed-I/O enforcement.
+External provider endpoints are not a managed-runtime mode. A provider process must be launched by Arroba before Arroba can apply the workspace write fence or claim managed-I/O enforcement. Native TUI agents that bind an externally launched provider app-server are therefore not managed-I/O runs unless that process was launched behind the Arroba runtime boundary.
 
 The v1 contract is:
 

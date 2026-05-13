@@ -308,6 +308,26 @@ impl KernelRuntimeState {
             request.model,
         )
         .with_variant(request.variant);
+        if let Some(endpoint) = request.structured_endpoint {
+            launch_request = launch_request.with_structured_endpoint(endpoint);
+        }
+        if request.native_tui {
+            launch_request = launch_request
+                .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+        }
+        if let Some(provider_session_id) = request.provider_session_id {
+            if launch_request.adapter_key == "codex" {
+                launch_request = launch_request.with_resume_state(
+                    crate::provider::ProviderResumeState::from_codex_thread_id(provider_session_id),
+                );
+            } else if launch_request.adapter_key == "opencode" {
+                launch_request = launch_request.with_resume_state(
+                    crate::provider::ProviderResumeState::from_opencode_session_id(
+                        provider_session_id,
+                    ),
+                );
+            }
+        }
         let config = self.owned.config_projection.snapshot();
         if crate::provider::provider_requires_managed_io_by_default(
             &launch_request.provider,

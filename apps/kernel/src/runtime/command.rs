@@ -400,6 +400,11 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
             LocalRequestMetadata::new("provider_run.get", Normal)
                 .provider_run(&request.provider_run_id)
         }
+        LocalDaemonRequest::UpdateProviderRunSelection(request) => {
+            LocalRequestMetadata::new("provider_run.selection.update", Normal)
+                .session(&request.session_id)
+                .provider_run(&request.provider_run_id)
+        }
         LocalDaemonRequest::CancelWorkflowRun(request) => {
             LocalRequestMetadata::new("workflow_run.cancel", Normal)
                 .session(&request.session_id)
@@ -418,6 +423,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::LaunchProviderRun(_) => "provider_run.launch",
+        LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider_run.selection.update",
         LocalDaemonRequest::ListSessionMembers(_) => "session.members.list",
         LocalDaemonRequest::CreateSessionInvite(_) => "session.invite.create",
         LocalDaemonRequest::JoinSessionInvite(_) => "session.invite.join",

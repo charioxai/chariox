@@ -471,6 +471,9 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
                 account_profile: "default".to_string(),
                 model: "sonnet".to_string(),
                 variant: None,
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: false,
             },
         ))
         .expect("provider launch should succeed")
@@ -3213,6 +3216,15 @@ fn write_sse_event(stream: &mut std::net::TcpStream, payload: &str) -> std::io::
     stream.flush()
 }
 
+fn mock_user_prompt_text(prompt: &str) -> &str {
+    prompt
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or_else(|| prompt.trim())
+}
+
 fn schedule_mock_response(
     state: Arc<Mutex<MockOpenCodeState>>,
     session_id: String,
@@ -3386,7 +3398,7 @@ fn schedule_mock_response(
         state.next_message_number += 1;
         let message_id = format!("assistant-message-{}", state.next_message_number);
         let part_id = format!("assistant-part-{}", state.next_message_number);
-        let response_text = format!("fixture response: {prompt}\n");
+        let response_text = format!("fixture response: {}\n", mock_user_prompt_text(&prompt));
         if let Some(session_state) = state.sessions.get_mut(&session_id) {
             session_state.messages.push(json!({
                 "info": {
@@ -3715,7 +3727,94 @@ fn create_opencode_fixture_script(delay_seconds: u64) -> PathBuf {
 }
 
 fn fixture_script_contents(delay_seconds: u64) -> String {
-    format!("#!/bin/sh\nsleep {delay_seconds}\n")
+    format!(
+        r#"#!/bin/sh
+PORT=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --port)
+      PORT="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$PORT" ] || [ -z "$ARROBA_OPENCODE_PORT" ]; then
+  exit 2
+fi
+
+export ARROBA_OPENCODE_FIXTURE_LISTEN_PORT="$PORT"
+export ARROBA_OPENCODE_FIXTURE_MAX_SECONDS="{delay_seconds}"
+python3 - <<'PY'
+import os
+import signal
+import socket
+import sys
+import threading
+import time
+
+listen_port = int(os.environ["ARROBA_OPENCODE_FIXTURE_LISTEN_PORT"])
+target_port = int(os.environ["ARROBA_OPENCODE_PORT"])
+max_seconds = float(os.environ["ARROBA_OPENCODE_FIXTURE_MAX_SECONDS"])
+deadline = time.monotonic() + max_seconds
+stopping = threading.Event()
+
+def stop(_signum=None, _frame=None):
+    stopping.set()
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+
+def relay(source, destination):
+    try:
+        while not stopping.is_set():
+            chunk = source.recv(65536)
+            if not chunk:
+                break
+            destination.sendall(chunk)
+    except OSError:
+        pass
+    finally:
+        for sock in (source, destination):
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+def handle(client):
+    try:
+        upstream = socket.create_connection(("127.0.0.1", target_port), timeout=10)
+    except OSError:
+        client.close()
+        return
+    threading.Thread(target=relay, args=(client, upstream), daemon=True).start()
+    threading.Thread(target=relay, args=(upstream, client), daemon=True).start()
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", listen_port))
+    server.listen()
+    server.settimeout(0.1)
+    while not stopping.is_set() and time.monotonic() < deadline:
+        try:
+            client, _addr = server.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        threading.Thread(target=handle, args=(client,), daemon=True).start()
+
+sys.exit(0)
+PY
+"#
+    )
 }
 
 #[test]

@@ -471,6 +471,22 @@ impl CodexClient {
         Ok(())
     }
 
+    pub fn thread_turns_list(
+        &self,
+        socket: &mut CodexSocket,
+        next_request_id: &mut u64,
+        thread_id: &str,
+        buffered_notifications: &mut Vec<CodexNotification>,
+    ) -> Result<Value, DaemonError> {
+        self.send_request_buffering_notifications(
+            socket,
+            next_request_id,
+            "thread/turns/list",
+            json!({ "threadId": thread_id }),
+            buffered_notifications,
+        )
+    }
+
     pub fn provider_catalog(&self) -> Result<OpenCodeProviderCatalog, DaemonError> {
         let mut socket = self.connect_initialized()?;
         let mut next_request_id = 1;

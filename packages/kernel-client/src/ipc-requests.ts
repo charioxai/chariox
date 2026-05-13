@@ -940,6 +940,22 @@ export function getProviderRunRequest(providerRunId: string) {
   }
 }
 
+export function updateProviderRunSelectionRequest(
+  sessionId: string,
+  providerRunId: string,
+  options: { model?: string | null; variant?: string | null; clearVariant?: boolean } = {},
+) {
+  return {
+    UpdateProviderRunSelection: {
+      session_id: sessionId,
+      provider_run_id: providerRunId,
+      model: options.model ?? null,
+      variant: options.variant ?? null,
+      clear_variant: options.clearVariant ?? false,
+    },
+  }
+}
+
 export function getProviderCatalogRequest() {
   return { GetProviderCatalog: null }
 }
@@ -1625,6 +1641,11 @@ export function launchProviderRunRequest(
   model: string,
   effort: string,
   agentId?: string | null,
+  native?: {
+    structuredEndpoint?: string | null
+    providerSessionId?: string | null
+    nativeTui?: boolean | null
+  } | null,
 ) {
   const normalizedModel = provider === "codex" && model.startsWith("codex/")
     ? model.slice("codex/".length)
@@ -1638,6 +1659,9 @@ export function launchProviderRunRequest(
       account_profile: accountProfile,
       model: normalizedModel,
       variant: effort.trim() || null,
+      structured_endpoint: native?.structuredEndpoint ?? null,
+      provider_session_id: native?.providerSessionId ?? null,
+      native_tui: native?.nativeTui ?? false,
     },
   }
 }

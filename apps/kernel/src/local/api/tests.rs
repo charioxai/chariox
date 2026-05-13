@@ -45,14 +45,15 @@ use super::{
     SemanticSearchHistoryRequest, ShowWorkspaceLinkRequest, SpawnAgentRequest,
     StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
     UpdateAgentConfigRequest, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
-    UpdateSessionConfigRequest, UpdateWorkflowCanvasLayoutRequest,
-    UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent, WorkspacePullRequestRecord,
-    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
+    UpdateProviderRunSelectionRequest, UpdateSessionConfigRequest,
+    UpdateWorkflowCanvasLayoutRequest, UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent,
+    WorkspacePullRequestRecord, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
+    LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 23);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 24);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -441,7 +442,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 23);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 24);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -472,7 +473,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 23);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 24);
 
     let request = LocalDaemonRequest::SemanticSearchHistory(SemanticSearchHistoryRequest {
         query: "why did the build fail".to_string(),
@@ -585,7 +586,7 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 23);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 24);
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
         session_id: "session-1".to_string(),
@@ -613,6 +614,36 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "826ea52fcd9a136d573384f51126a8b59e5829b8fd6160d6601e5d5759d5f6a2"
+    );
+}
+
+#[test]
+fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 24);
+
+    let request =
+        LocalDaemonRequest::UpdateProviderRunSelection(UpdateProviderRunSelectionRequest {
+            session_id: "session-1".to_string(),
+            provider_run_id: "provider-run-1".to_string(),
+            model: Some("openai/gpt-5.4".to_string()),
+            variant: Some("high".to_string()),
+            clear_variant: false,
+        });
+    let snapshot = serde_json::to_value(request).expect("request should serialize");
+    assert_eq!(
+        snapshot.pointer("/UpdateProviderRunSelection/model"),
+        Some(&serde_json::json!("openai/gpt-5.4"))
+    );
+    assert_eq!(
+        snapshot.pointer("/UpdateProviderRunSelection/variant"),
+        Some(&serde_json::json!("high"))
+    );
+    let serialized =
+        serde_json::to_string(&snapshot).expect("provider selection snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "bce42e6fc169c8747199a98a5dc059e5b40ac7f8aafb0f9a7a67f4b336ef57e5"
     );
 }
 
@@ -2251,6 +2282,9 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
                 account_profile: "default".to_string(),
                 model: "default".to_string(),
                 variant: None,
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: false,
             },
         ))
         .expect("provider run should launch")
@@ -4395,6 +4429,9 @@ fn local_request_api_rejects_invalid_provider_adapter() {
                 account_profile: "default".to_string(),
                 model: "sonnet".to_string(),
                 variant: None,
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: false,
             },
         ))
         .expect_err("unknown adapters should be rejected");

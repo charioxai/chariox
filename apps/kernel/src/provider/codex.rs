@@ -67,6 +67,21 @@ pub fn plan_codex_launch(
 fn plan_codex_launch_unlocked(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
+    if let Some(endpoint) = request.and_then(|request| request.structured_endpoint.clone()) {
+        let working_directory = request.and_then(|request| request.working_directory.clone());
+        return Ok(ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::External,
+            process_label: "codex:native-app-server".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: codex_provider_env_remove(request),
+            working_directory,
+            structured_endpoint: Some(endpoint),
+        });
+    }
+
     let port = if request.is_some() {
         reserve_unused_port()?
     } else {

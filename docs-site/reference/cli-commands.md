@@ -25,6 +25,22 @@ Leave the current workspace/session view and return to the waiting room.
 
 ## Provider Selection
 
+## Native TUI Agents
+
+### `arroba codex [session-ref]`
+
+Launch a Codex-native TUI agent managed by Arroba.
+
+If `session-ref` is omitted, Arroba creates a new session. If it is provided, Arroba adds a new Codex native TUI agent to that Arroba session.
+
+### `arroba opencode [session-ref]`
+
+Launch an OpenCode-native TUI agent managed by Arroba.
+
+If `session-ref` is omitted, Arroba creates a new session. If it is provided, Arroba adds a new OpenCode native TUI agent to that Arroba session.
+
+For native TUI agents, model and variant are controlled from the provider TUI. Arroba CLIs observe the run and can send prompts, but they do not mutate those parameters.
+
 ### `/provider <name>`
 
 Select the active provider backend.

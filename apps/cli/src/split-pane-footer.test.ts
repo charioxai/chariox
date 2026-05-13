@@ -206,3 +206,50 @@ test("buildSplitPaneFooterState keeps a pane working while its busy latch is set
 
   assert.deepEqual(state.primary.badge, { label: "THINKING", tone: "working" })
 })
+
+test("buildSplitPaneFooterState marks an agent working for the turn and idle after completion", () => {
+  const workingState = buildSplitPaneFooterState({
+    mode: "working",
+    selection: {
+      primary: primaryAgent,
+      secondary: null,
+      tertiary: null,
+    },
+    focusedAgentId: "agent-a",
+    streamingAgentId: null,
+    activityLabels: {
+      "agent-a": null,
+    },
+    hasPromptWorkByAgent: {
+      "agent-a": true,
+    },
+    activeRun: null,
+    fallbackModel: "gpt-5.4",
+  })
+
+  assert.deepEqual(workingState.primary.badge, { label: "THINKING", tone: "working" })
+
+  const completedState = buildSplitPaneFooterState({
+    mode: "idle",
+    selection: {
+      primary: primaryAgent,
+      secondary: null,
+      tertiary: null,
+    },
+    focusedAgentId: "agent-a",
+    streamingAgentId: null,
+    activityLabels: {
+      "agent-a": null,
+    },
+    hasPromptWorkByAgent: {
+      "agent-a": false,
+    },
+    busyLatchesByAgent: {
+      "agent-a": false,
+    },
+    activeRun: null,
+    fallbackModel: "gpt-5.4",
+  })
+
+  assert.deepEqual(completedState.primary.badge, { label: "IDLE", tone: "idle" })
+})

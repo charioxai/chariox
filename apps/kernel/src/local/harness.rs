@@ -65,6 +65,9 @@ pub fn run_local_harness(app: DaemonApp) -> Result<LocalHarnessReport, DaemonErr
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
             variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
         },
     ))? {
         LocalDaemonResponse::ProviderRunLaunched { provider_run }

@@ -86,6 +86,8 @@ import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-cli
 import { executeShellLine } from "@arroba/kernel-client/shell-script"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
+import { runCodexNativeTui } from "./native-tui/codex.js"
+import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
 import {
   aliasAgentRequest,
   attachToSessionRequest,
@@ -649,6 +651,14 @@ async function main() {
   const argv = process.argv.slice(2)
   if (argv[0] === "logs") {
     await runLogViewer(argv.slice(1))
+    return
+  }
+  if (argv[0] === "opencode") {
+    await runOpenCodeNativeTui(argv.slice(1))
+    return
+  }
+  if (argv[0] === "codex") {
+    await runCodexNativeTui(argv.slice(1))
     return
   }
 
@@ -2172,6 +2182,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       flashFooter("no focused agent to update", "error")
       return
     }
+    const activeRun = providerRunState()
+    if (activeRun?.agent_instance_id === agentId && providerRunUsesNativeTui(activeRun)) {
+      flashFooter("model is controlled by the provider-native TUI for this agent", "error")
+      return
+    }
     const payload = await updateAgentProfile(
       client,
       sessionState().id,
@@ -2209,6 +2224,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const agentId = focusedAgentId()
     if (!agentId) {
       flashFooter("no focused agent to update", "error")
+      return
+    }
+    const activeRun = providerRunState()
+    if (activeRun?.agent_instance_id === agentId && providerRunUsesNativeTui(activeRun)) {
+      flashFooter("variant is controlled by the provider-native TUI for this agent", "error")
       return
     }
     const payload = await updateAgentProfile(
@@ -8114,6 +8134,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         worktree: sessionState().worktree_id,
         focusedAgentId: focusedAgentId(),
         agentCount: sessionState().agents.length,
+        agents: sessionState().agents.map((agent) => {
+          const badge = agentPaneStatusBadge(
+            agent,
+            agentActivityLabels()[agent.id] ?? null,
+            hasPromptWorkByAgent()[agent.id] ?? false,
+            agent.id === streamingAgentId(),
+            agentBusyLatch(agent.id),
+          )
+          return {
+            id: agent.id,
+            alias: agent.alias,
+            provider: agent.provider,
+            state: agent.state,
+            isProcessing: agent.is_processing,
+            badge,
+          }
+        }),
       },
       interactions: (sessionState().active_interactions ?? []).map((interaction) => ({
         id: interaction.id,
@@ -10311,8 +10348,13 @@ function sameProviderRun(left: RuntimeProviderRun, right: RuntimeProviderRun) {
     && left.account_profile === right.account_profile
     && left.model === right.model
     && left.variant === right.variant
+    && left.client_interface === right.client_interface
     && left.usage_tokens_total === right.usage_tokens_total
     && left.state === right.state
+}
+
+function providerRunUsesNativeTui(run: RuntimeProviderRun | null | undefined): boolean {
+  return run?.client_interface === "native_tui"
 }
 
 function defaultKernelEndpoint(): string {

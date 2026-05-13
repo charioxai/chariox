@@ -3,7 +3,7 @@ use super::*;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 23;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -21,6 +21,12 @@ pub struct LaunchProviderRunRequest {
     pub account_profile: String,
     pub model: String,
     pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<String>,
+    #[serde(default)]
+    pub native_tui: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +214,18 @@ pub struct GetDaemonHealthRequest;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProviderRunRequest {
     pub provider_run_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateProviderRunSelectionRequest {
+    pub session_id: String,
+    pub provider_run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(default)]
+    pub clear_variant: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1969,6 +1987,7 @@ pub enum LocalDaemonRequest {
     GetSessionState(GetSessionStateRequest),
     GetDaemonHealth(GetDaemonHealthRequest),
     GetProviderRun(GetProviderRunRequest),
+    UpdateProviderRunSelection(UpdateProviderRunSelectionRequest),
     GetProviderCatalog(GetProviderCatalogRequest),
     GetProviderCommandCatalogs(GetProviderCommandCatalogsRequest),
     InstallMcpServer(InstallMcpServerRequest),
@@ -2191,6 +2210,9 @@ pub enum LocalDaemonResponse {
         projection: DaemonHealthProjection,
     },
     ProviderRun {
+        provider_run: RuntimeProviderRun,
+    },
+    ProviderRunSelectionUpdated {
         provider_run: RuntimeProviderRun,
     },
     ProviderCatalog {

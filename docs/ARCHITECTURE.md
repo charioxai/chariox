@@ -747,7 +747,19 @@ Provider authentication is not part of the control lane in v1; adapters probe an
 
 Provider-facing extension projection is also adapter-owned: the daemon resolves the authoritative extension bindings, and the adapter materializes the provider-specific runtime view.
 
-### 5.3.1 OpenCode Structured Adapter
+### 5.3.1 Native TUI Client Interface
+
+Some agents can be launched through a provider-native TUI client interface, for example `arroba codex [session-ref]` or `arroba opencode [session-ref]`.
+
+Boundary rules:
+
+- the kernel still owns the Arroba session, top-level agent, provider run, prompt history, output fanout, and active/idle state
+- the provider TUI owns provider-native parameter controls and display semantics
+- the native TUI launcher is responsible for starting the provider UI process and local provider-facing proxy needed by that provider
+- the relay remains transport-only; it must not inspect or own provider-native traffic
+- Arroba clients must not mutate model/variant for a provider run marked `native_tui`
+
+### 5.3.2 OpenCode Structured Adapter
 
 OpenCode is the first provider where Arroba intentionally prefers a structured local provider protocol over PTY-only inference.
 
