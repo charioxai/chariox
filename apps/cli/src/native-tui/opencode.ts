@@ -581,6 +581,12 @@ async function handleProxyRequest(
     debugNativeMutation(path.includes("/prompt_async") ? "prompt_async" : "message", body)
     const prompt = extractPromptText(body)
     const attachments = extractPromptAttachments(body)
+    if (attachments.length > 0) {
+      debugNativeMutation("native_prompt_attachments_observed", {
+        path,
+        attachmentCount: attachments.length,
+      })
+    }
     const selection = extractOpenCodeSelection(body)
     if (selection) {
       debugNativeMutation("selection_observed", selection)
@@ -663,6 +669,9 @@ async function proxyToOpenCode(
     const body = await readRequestBuffer(request)
     if (body.includes(hiddenInstructionsStart)) {
       debugNativeMutation("hidden_instructions_forwarded", { method, path: request.url ?? "/" })
+    }
+    if (body.includes("\"type\":\"file\"") || body.includes("\"type\": \"file\"")) {
+      debugNativeMutation("attachments_forwarded", { method, path: request.url ?? "/" })
     }
     init.body = body as unknown as BodyInit
   }

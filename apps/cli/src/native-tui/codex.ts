@@ -12,6 +12,7 @@ import WebSocket, { WebSocketServer } from "ws"
 import {
   normalizeRuntimeSession,
   type AgentInstance,
+  type PromptAttachmentPart,
   type RuntimeAttachment,
   type RuntimeProviderRun,
   type RuntimeSession,
@@ -507,6 +508,11 @@ async function startCodexProxy(options: {
         method: typeof message === "object" && message && "method" in message ? (message as JsonRpcMessage).method : null,
       })
     }
+    if (payload.includes("\"localImage\"") || payload.includes("\"image\"")) {
+      debugNativeCodex("attachments_forwarded", {
+        method: typeof message === "object" && message && "method" in message ? (message as JsonRpcMessage).method : null,
+      })
+    }
     if (socket.readyState === WebSocket.OPEN) socket.send(payload)
     else socket.once("open", () => socket.send(payload))
   }
@@ -727,8 +733,9 @@ async function handleNativeTurnStart(
   }
     await bindPromise
     const prompt = extractCodexPrompt(message.params)
+    const attachments = extractCodexAttachments(message.params)
     await options.client.send<Record<string, unknown>>(
-      submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, []),
+      submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
     )
     const turnId = `arroba-native-${Date.now()}`
     sendClient({
@@ -746,7 +753,7 @@ async function handleNativeTurnStart(
         },
       },
     })
-    debugNativeCodex("native_prompt_submitted", { agentId: options.agentId, prompt })
+    debugNativeCodex("native_prompt_submitted", { agentId: options.agentId, prompt, attachmentCount: attachments.length })
   } catch (error) {
     sendClient({
       id: message.id,
@@ -777,6 +784,48 @@ function extractCodexPrompt(params: Record<string, unknown> | undefined): string
     return record.type === "text" && typeof record.text === "string" ? [record.text] : []
   }).join("\n")
   return text.endsWith("\n") ? text : `${text}\n`
+}
+
+function extractCodexAttachments(params: Record<string, unknown> | undefined): PromptAttachmentPart[] {
+  const input = Array.isArray(params?.input) ? params.input : []
+  return input.flatMap((part) => {
+    if (!part || typeof part !== "object") return []
+    const record = part as Record<string, unknown>
+    if (record.type === "image" && typeof record.url === "string") {
+      return [{
+        url: record.url,
+        mime: inferImageMime(record.url),
+        filename: filenameFromUrl(record.url),
+      }]
+    }
+    if (record.type === "localImage" && typeof record.path === "string") {
+      return [{
+        url: record.path,
+        mime: inferImageMime(record.path),
+        filename: path.basename(record.path),
+      }]
+    }
+    return []
+  })
+}
+
+function inferImageMime(value: string): string {
+  const lower = value.toLowerCase()
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg"
+  if (lower.endsWith(".gif")) return "image/gif"
+  if (lower.endsWith(".webp")) return "image/webp"
+  return "image/png"
+}
+
+function filenameFromUrl(value: string): string | null {
+  try {
+    const url = new URL(value)
+    const name = path.basename(url.pathname)
+    return name || null
+  } catch {
+    const name = path.basename(value)
+    return name || null
+  }
 }
 
 function startKernelPumpLoop(

@@ -41,7 +41,8 @@
     "native-tui:opencode-drill": "pnpm run build && node scripts/live-opencode-native-tui-drill.mjs",
     "native-tui:permission-drill": "pnpm run build && node scripts/live-native-tui-permission-drill.mjs",
     "native-tui:provider-command-drill": "pnpm run build && node scripts/live-native-tui-provider-command-drill.mjs",
-    "native-tui:prompt-injection-drill": "pnpm run build && node scripts/live-native-tui-prompt-injection-drill.mjs"
+    "native-tui:prompt-injection-drill": "pnpm run build && node scripts/live-native-tui-prompt-injection-drill.mjs",
+    "native-tui:attachment-drill": "pnpm run build && node scripts/live-native-tui-attachment-drill.mjs"
   },
   "dependencies": {
     "@opentui/core": "0.1.87",
