@@ -390,6 +390,11 @@ Live drills:
 
 ### M13.7 Native Claude TUI
 
+Status: research needed before implementation. Claude Code v2.1.140 exposes a
+rich interactive TUI, background sessions, `claude attach`, Remote Control, and
+hooks, but does not expose the same local provider-server protocol shape that
+Codex/OpenCode expose.
+
 Goal: add a native Claude Code TUI mode comparable to native Codex/OpenCode TUI
 work, while the kernel remains session authority.
 
@@ -399,8 +404,23 @@ Work:
 - Mark runs with `client_interface = native_tui`.
 - Ensure Arroba clients treat model/effort controls as provider-controlled for
   native TUI runs.
-- Decide whether native TUI uses a proxy, hooks/session files, or a sidecar
-  stream-json process. Keep provider-TUI-specific code out of transport.
+- Validate the hook-assisted interactive architecture:
+  - launch `claude` in an Arroba-owned PTY with a temporary settings overlay;
+  - register `UserPromptSubmit`, `Stop`, `StopFailure`, `PermissionRequest`,
+    `PreToolUse`, `PostToolUse`, `ConfigChange`, and `SessionEnd` hooks;
+  - use `UserPromptSubmit` to observe native prompts and add Arroba hidden
+    prompt context through `additionalContext`, not visible plain prompt text;
+  - use `Stop`/`StopFailure` and transcript tailing to settle Arroba turn state;
+  - use `PermissionRequest`/`PreToolUse` to surface native approval state to
+    Arroba when possible.
+- Validate Arroba-client prompt injection into a native Claude TUI:
+  - first attempt PTY input injection while the TUI is idle;
+  - separately investigate whether background sessions expose a stable local
+    reply API beyond `claude attach`;
+  - do not rely on Remote Control for Arroba runtime traffic, because it routes
+    through Anthropic services and is not an Arroba relay/kernel path.
+- Treat `claude -p --input-format stream-json --output-format stream-json` as
+  the structured Arroba provider path, not the native TUI path.
 - Preserve one provider run per native TUI agent.
 
 Live drills:
@@ -409,10 +429,41 @@ Live drills:
   creates session, agent, provider run, and output fanout.
 - `native-claude-existing-session`: attach native Claude TUI as a new top-level
   agent in an existing session.
-- `native-claude-arroba-client-prompt`: submit from Arroba client and verify the
-  native Claude side observes/continues the same provider session when supported.
+- `native-claude-hook-observation`: submit from the Claude TUI, verify
+  `UserPromptSubmit` reaches Arroba, the prompt appears in Arroba history, and
+  `Stop` returns the badge to idle.
+- `native-claude-hidden-context`: verify Arroba prompt injection is delivered
+  through hook `additionalContext` or launch prompt flags without appearing as
+  visible prompt text in the native TUI.
+- `native-claude-arroba-client-prompt`: submit from Arroba client and verify
+  the native Claude side receives the prompt and the full response turn without
+  corrupting the TUI input state.
+- `native-claude-permission`: trigger a native Claude permission prompt, verify
+  the native TUI behaves as raw Claude Code, and verify Arroba can observe or
+  proxy the approval state when the hook data supports it.
+- `native-claude-attachments`: validate native TUI attachments and Arroba client
+  attachments separately; expect Arroba-to-native binary/image injection to need
+  file-path materialization unless Claude exposes a running-session attachment
+  API.
 - `native-claude-detach-reattach`: detach/reconnect client without losing kernel
   provider-run state.
+
+Research notes:
+
+- Claude Code interactive TUI has no documented local app-server or
+  provider-owned websocket endpoint equivalent to `codex app-server` or
+  `opencode serve`.
+- Claude Code hooks are the strongest integration seam for native TUI mode:
+  `UserPromptSubmit` exposes submitted prompt text before processing and can add
+  hidden context; `Stop`/`StopFailure` mark turn completion; tool and permission
+  hooks expose provider-native execution decisions.
+- Background sessions and `claude attach` prove Claude Code can detach and
+  reattach a native TUI to a provider-owned local session, but the documented
+  shell surface exposes attach/log/stop/respawn/remove, not a stable
+  machine-to-session prompt API.
+- Remote Control proves Claude Code can split controller and local execution,
+  but routes through Anthropic infrastructure. It is not an Arroba runtime
+  transport and should not be used for kernel/relay session traffic.
 
 ### M13.8 Slice Support
 
