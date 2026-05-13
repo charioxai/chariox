@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
@@ -18,6 +19,13 @@ const CLAUDE_AUTH_ENV_VARS: &[&str] = &[
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_CUSTOM_HEADERS",
+];
+const CLAUDE_KNOWN_MODELS: &[(&str, &str)] = &[
+    ("sonnet", "Claude Sonnet"),
+    ("opus", "Claude Opus"),
+    ("haiku", "Claude Haiku"),
+    ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+    ("claude-opus-4-7", "Claude Opus 4.7"),
 ];
 
 pub fn resolve_claude_executable() -> Result<PathBuf, DaemonError> {
@@ -292,14 +300,8 @@ fn claude_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<St
 
 pub fn claude_provider_catalog() -> OpenCodeProviderCatalog {
     let mut models = BTreeMap::new();
-    for (id, name) in [
-        ("sonnet", "Claude Sonnet"),
-        ("opus", "Claude Opus"),
-        ("haiku", "Claude Haiku"),
-        ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
-        ("claude-opus-4-7", "Claude Opus 4.7"),
-    ] {
-        models.insert(id.to_string(), claude_model(id, name));
+    for (id, name) in claude_catalog_model_entries() {
+        models.insert(id.clone(), claude_model(&id, &name));
     }
     OpenCodeProviderCatalog {
         all: vec![OpenCodeProviderInfo {
@@ -314,6 +316,129 @@ pub fn claude_provider_catalog() -> OpenCodeProviderCatalog {
         } else {
             Vec::new()
         },
+    }
+}
+
+fn claude_catalog_model_entries() -> Vec<(String, String)> {
+    let mut entries = CLAUDE_KNOWN_MODELS
+        .iter()
+        .map(|(id, name)| ((*id).to_string(), (*name).to_string()))
+        .collect::<Vec<_>>();
+    for (id, name) in claude_config_model_entries() {
+        if !entries.iter().any(|(existing, _)| existing == &id) {
+            entries.push((id, name));
+        }
+    }
+    entries
+}
+
+fn claude_config_model_entries() -> Vec<(String, String)> {
+    let Some(path) = claude_config_path() else {
+        return Vec::new();
+    };
+    let Ok(contents) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return Vec::new();
+    };
+
+    let mut entries = Vec::new();
+    collect_claude_model_options(value.get("additionalModelOptionsCache"), &mut entries);
+    collect_claude_model_cost_keys(value.get("additionalModelCostsCache"), &mut entries);
+    entries
+}
+
+fn claude_config_path() -> Option<PathBuf> {
+    env::var_os("ARROBA_CLAUDE_CONFIG")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude.json")))
+}
+
+fn collect_claude_model_options(
+    value: Option<&serde_json::Value>,
+    entries: &mut Vec<(String, String)>,
+) {
+    match value {
+        Some(serde_json::Value::Array(items)) => {
+            for item in items {
+                match item {
+                    serde_json::Value::String(id) => push_claude_model_entry(entries, id, None),
+                    serde_json::Value::Object(map) => {
+                        let id = ["model", "id", "value"]
+                            .iter()
+                            .find_map(|key| map.get(*key).and_then(|value| value.as_str()));
+                        let name = ["displayName", "display_name", "label", "name"]
+                            .iter()
+                            .find_map(|key| map.get(*key).and_then(|value| value.as_str()));
+                        if let Some(id) = id {
+                            push_claude_model_entry(entries, id, name);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some(serde_json::Value::Object(map)) => {
+            for (id, metadata) in map {
+                let name = metadata.as_object().and_then(|metadata| {
+                    ["displayName", "display_name", "label", "name"]
+                        .iter()
+                        .find_map(|key| metadata.get(*key).and_then(|value| value.as_str()))
+                });
+                push_claude_model_entry(entries, id, name);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_claude_model_cost_keys(
+    value: Option<&serde_json::Value>,
+    entries: &mut Vec<(String, String)>,
+) {
+    if let Some(serde_json::Value::Object(map)) = value {
+        for id in map.keys() {
+            push_claude_model_entry(entries, id, None);
+        }
+    }
+}
+
+fn push_claude_model_entry(entries: &mut Vec<(String, String)>, id: &str, name: Option<&str>) {
+    let id = normalized_claude_model(id);
+    if !is_supported_claude_model_ref(&id) || entries.iter().any(|(existing, _)| existing == &id) {
+        return;
+    }
+    let name = name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| display_name_for_claude_model(&id));
+    entries.push((id, name));
+}
+
+fn is_supported_claude_model_ref(id: &str) -> bool {
+    matches!(id, "sonnet" | "opus" | "haiku") || id.starts_with("claude-")
+}
+
+fn display_name_for_claude_model(id: &str) -> String {
+    let title = id
+        .trim_start_matches("claude-")
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if title.is_empty() {
+        id.to_string()
+    } else {
+        format!("Claude {title}")
     }
 }
 
@@ -367,7 +492,7 @@ mod tests {
         RuntimeMcpBinding,
     };
 
-    use super::{plan_claude_launch, resolve_claude_executable};
+    use super::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 
     fn env_guard() -> crate::env_lock::EnvGuard {
         crate::env_lock::lock()
@@ -386,6 +511,48 @@ mod tests {
         std::env::remove_var("ARROBA_CLAUDE_BIN");
         let _ = fs::remove_file(&path);
         assert_eq!(resolved, path);
+    }
+
+    #[test]
+    fn catalog_reads_additional_claude_model_options_cache() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-claude-config-models-{}.json",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            serde_json::json!({
+                "additionalModelOptionsCache": [
+                    { "model": "claude-sonnet-4-8", "displayName": "Claude Sonnet 4.8" },
+                    "claude-opus-4-8",
+                    { "model": "not-a-claude-model", "displayName": "Ignored" }
+                ],
+                "additionalModelCostsCache": {
+                    "claude-haiku-4-5": {}
+                }
+            })
+            .to_string(),
+        )
+        .expect("fixture should exist");
+        std::env::set_var("ARROBA_CLAUDE_CONFIG", &path);
+
+        let catalog = claude_provider_catalog();
+
+        std::env::remove_var("ARROBA_CLAUDE_CONFIG");
+        let _ = fs::remove_file(&path);
+
+        let models = &catalog.all[0].models;
+        assert!(models.contains_key("sonnet"));
+        assert_eq!(
+            models
+                .get("claude-sonnet-4-8")
+                .map(|model| model.name.as_str()),
+            Some("Claude Sonnet 4.8")
+        );
+        assert!(models.contains_key("claude-opus-4-8"));
+        assert!(models.contains_key("claude-haiku-4-5"));
+        assert!(!models.contains_key("not-a-claude-model"));
     }
 
     #[test]

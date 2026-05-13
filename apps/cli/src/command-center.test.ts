@@ -15,7 +15,7 @@ test("buildCommandCenterItems shows root slash commands", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 
@@ -97,7 +97,7 @@ test("buildCommandCenterItems filters variant options", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 

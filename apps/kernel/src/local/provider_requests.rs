@@ -7,6 +7,7 @@ use crate::provider::{
     OpenCodeClient, OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderClientInterface,
 };
 use arroba_relay::protocol::RelayMachinePresence;
+use std::collections::BTreeMap;
 use std::thread;
 use std::time::Duration;
 use tokio::runtime::Handle;
@@ -355,7 +356,7 @@ pub(crate) fn load_provider_catalog(
     match ensure_opencode_catalog_endpoint() {
         Ok(endpoint) => match OpenCodeClient::new("catalog", endpoint) {
             Ok(client) => match client.provider_catalog() {
-                Ok(catalog) => catalogs.push(catalog),
+                Ok(catalog) => catalogs.push(opencode_backend_catalog(catalog)),
                 Err(error) => source_errors.push(format!("opencode catalog request: {error}")),
             },
             Err(error) => source_errors.push(format!("opencode client: {error}")),
@@ -526,6 +527,60 @@ fn merge_provider_catalogs(
         .all
         .sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
     Some(merged)
+}
+
+fn opencode_backend_catalog(catalog: OpenCodeProviderCatalog) -> OpenCodeProviderCatalog {
+    let mut models = BTreeMap::new();
+    let mut first_model = None;
+    let mut connected = false;
+
+    for provider in catalog
+        .all
+        .into_iter()
+        .filter(|provider| provider.id == "opencode")
+    {
+        connected = connected || catalog.connected.iter().any(|id| id == &provider.id);
+        for (model_id, model) in provider.models {
+            if first_model.is_none() {
+                first_model = Some(model_id.clone());
+            }
+            models.insert(model_id, model);
+        }
+    }
+
+    if models.is_empty() {
+        return OpenCodeProviderCatalog {
+            all: Vec::new(),
+            default: Default::default(),
+            connected: Vec::new(),
+        };
+    }
+
+    let default_model = catalog
+        .default
+        .get("opencode")
+        .filter(|model_id| models.contains_key(*model_id))
+        .cloned()
+        .or(first_model);
+
+    let default = default_model
+        .map(|model_id| BTreeMap::from([("opencode".to_string(), model_id)]))
+        .unwrap_or_default();
+
+    OpenCodeProviderCatalog {
+        all: vec![OpenCodeProviderInfo {
+            id: "opencode".to_string(),
+            name: "OpenCode".to_string(),
+            remote_machine_aliases: Vec::new(),
+            models,
+        }],
+        default,
+        connected: if connected {
+            vec!["opencode".to_string()]
+        } else {
+            Vec::new()
+        },
+    }
 }
 
 fn remote_only_provider_catalog(
@@ -809,9 +864,10 @@ pub(crate) fn forgotten_machine_record(
 mod tests {
     use super::*;
     use crate::app::KernelSessionService;
-    use crate::provider::OpenCodeProviderInfo;
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+    use crate::provider::{OpenCodeProviderInfo, OpenCodeProviderModel};
     use crate::session::{CreateSessionRequest, SessionAgentDefaults};
+    use serde_json::json;
 
     #[test]
     fn annotates_remote_machine_provider_aliases_without_including_local_machine() {
@@ -917,6 +973,58 @@ mod tests {
         assert_eq!(codex.remote_machine_aliases, vec!["builder".to_string()]);
         assert_eq!(opencode.name, "OpenCode");
         assert_eq!(opencode.remote_machine_aliases, vec!["builder".to_string()]);
+    }
+
+    #[test]
+    fn opencode_backend_catalog_hides_upstream_provider_ids() {
+        let catalog = opencode_backend_catalog(OpenCodeProviderCatalog {
+            all: vec![
+                OpenCodeProviderInfo {
+                    id: "openai".to_string(),
+                    name: "OpenAI".to_string(),
+                    remote_machine_aliases: Vec::new(),
+                    models: BTreeMap::from([(
+                        "gpt-5.2".to_string(),
+                        OpenCodeProviderModel {
+                            id: "gpt-5.2".to_string(),
+                            name: "GPT-5.2".to_string(),
+                            status: "active".to_string(),
+                            limit: None,
+                            variants: Default::default(),
+                        },
+                    )]),
+                },
+                OpenCodeProviderInfo {
+                    id: "opencode".to_string(),
+                    name: "OpenCode Zen".to_string(),
+                    remote_machine_aliases: Vec::new(),
+                    models: BTreeMap::from([(
+                        "gpt-5.2".to_string(),
+                        OpenCodeProviderModel {
+                            id: "gpt-5.2".to_string(),
+                            name: "GPT-5.2".to_string(),
+                            status: "active".to_string(),
+                            limit: None,
+                            variants: BTreeMap::from([("low".to_string(), json!({}))]),
+                        },
+                    )]),
+                },
+            ],
+            default: BTreeMap::from([
+                ("openai".to_string(), "gpt-5.2".to_string()),
+                ("opencode".to_string(), "gpt-5.2".to_string()),
+            ]),
+            connected: vec!["openai".to_string(), "opencode".to_string()],
+        });
+
+        assert_eq!(catalog.connected, vec!["opencode".to_string()]);
+        assert_eq!(
+            catalog.default.get("opencode"),
+            Some(&"gpt-5.2".to_string())
+        );
+        assert_eq!(catalog.all.len(), 1);
+        assert_eq!(catalog.all[0].id, "opencode");
+        assert!(catalog.all[0].models.contains_key("gpt-5.2"));
     }
 
     #[test]

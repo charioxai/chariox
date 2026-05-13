@@ -10,7 +10,8 @@ Achieved:
 - Added the kernel-owned Claude Code structured-stdio provider adapter.
 - Added launch-time Arroba permission/plan-mode mapping to Claude Code
   `--permission-mode`.
-- Added static Claude catalog exposure.
+- Added Claude catalog exposure with known CLI aliases plus defensive
+  `~/.claude.json` model-cache discovery when Claude Code writes model options.
 - Added stdout/stderr stream-json runtime parsing for session/model metadata,
   assistant deltas, reasoning deltas, usage, terminal failures, and turn
   completion.
@@ -30,6 +31,9 @@ Achieved:
 - Added Claude Code to CLI waiting-room/backend selection, command-center
   provider selection, provider preference persistence, and backend model
   filtering.
+- Normalized OpenCode's upstream provider catalog into the single Arroba
+  backend provider `opencode`, so `openai` is no longer surfaced as a connected
+  top-level provider. Codex remains the top-level OpenAI-backed Arroba provider.
 
 Verified:
 
@@ -44,22 +48,26 @@ Verified:
 - `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario mcp-echo-workflow --providers claude --provider-model claude=sonnet --poll-limit 120 --poll-interval-ms 2000`
 - `node apps/cli/scripts/live-claude-provider-drill.mjs --scenario selection --model sonnet --effort low --timeout-ms 180000 --keep-artifacts-on-failure`
 - `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario validated-increment-chain --providers claude,codex,opencode --provider-model claude=sonnet --provider-model codex=gpt-5.2 --provider-model opencode=opencode/gpt-5.2 --poll-limit 180 --poll-interval-ms 2000`
+- `cargo test --manifest-path apps/kernel/Cargo.toml opencode_backend_catalog --lib`
 - `pnpm --filter @arroba/cli run lint`
 - `pnpm --filter @arroba/cli run build`
 - `node --test apps/cli/dist/provider-catalog.test.js apps/cli/dist/waiting-room.test.js apps/cli/dist/provider-command-catalog.test.js apps/cli/dist/command-center.test.js`
 - Live kernel catalog probe returned connected providers
-  `["claude","codex","openai","opencode"]`, Claude models
-  `["claude-opus-4-7","claude-sonnet-4-6","haiku","opus","sonnet"]`, and
-  default `sonnet`.
+  `["claude","codex","opencode"]`, Claude models
+  `["claude-opus-4-7","claude-sonnet-4-6","haiku","opus","sonnet"]`,
+  default `sonnet`, and a single OpenCode backend with 40 OpenCode-namespace
+  models.
 - `cargo test --manifest-path apps/kernel/Cargo.toml local_daemon_protocol --lib`
 
 Known verification gap:
 
-- Claude Code model catalog is static. The subscription CLI path exposes aliases
-  through `claude -p --model ...`, but does not expose a machine-readable model
-  discovery command comparable to provider APIs; Arroba therefore publishes the
-  known Claude Code aliases/full IDs in the provider catalog without SDK/API-key
-  discovery.
+- Claude Code model catalog discovery is best-effort. The subscription CLI path
+  exposes aliases through `claude -p --model ...`, but does not expose a stable
+  machine-readable model listing command comparable to provider APIs. Arroba
+  publishes known aliases/full IDs and also reads Claude Code's
+  `additionalModelOptionsCache` / `additionalModelCostsCache` from
+  `~/.claude.json` defensively when those caches exist. Cache shape changes must
+  be handled by updating the parser and tests.
 - OpenCode all-provider validation must use a locally working OpenCode model
   namespace. `openai/gpt-5.2` failed on this machine with `Token refresh failed:
   401`; the same Claude/Codex/OpenCode workflow passed with

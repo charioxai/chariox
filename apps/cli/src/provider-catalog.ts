@@ -76,8 +76,8 @@ export function fallbackProviderCatalog() {
         },
       },
       {
-        id: "openai",
-        name: "OpenAI",
+        id: "opencode",
+        name: "OpenCode",
         remote_machine_aliases: [],
         models: {
           "gpt-5.4": {
@@ -126,10 +126,10 @@ export function fallbackProviderCatalog() {
     ],
     default: {
       codex: "gpt-5.4",
-      openai: "gpt-5.4",
+      opencode: "gpt-5.4",
       claude: "sonnet",
     },
-    connected: ["codex", "openai", "claude"],
+    connected: ["codex", "opencode", "claude"],
   } satisfies ProviderCatalog
 }
 
