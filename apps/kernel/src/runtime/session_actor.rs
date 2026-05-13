@@ -9,7 +9,7 @@ use crate::local::{
     AliasAgentRequest, AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest,
     DeleteSessionRequest, DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest,
     FocusAgentRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-    ResizeTerminalRequest, RespondToInteractionRequest, SpawnAgentRequest,
+    ResizeTerminalRequest, RespondToInteractionRequest, SendTerminalInputRequest, SpawnAgentRequest,
     UpdateAgentConfigRequest, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
     UpdateSessionConfigRequest,
 };
@@ -162,6 +162,11 @@ impl SessionRuntime {
             LocalDaemonRequest::ResizeTerminal(request) => {
                 self.resolve_direct_session_lane_key(&request.session_id)
             }
+            LocalDaemonRequest::SendTerminalInput(request) => self
+                .resolve_attachment_scoped_session_lane_key(
+                    &request.session_id,
+                    &request.attachment_id,
+                ),
             LocalDaemonRequest::PollRuntimeNotices(request) => self
                 .resolve_attachment_scoped_session_lane_key(
                     &request.session_id,
@@ -505,6 +510,29 @@ impl SessionRuntimeStore {
                 session_id: request.session_id,
                 cols: request.cols,
                 rows: request.rows,
+            });
+        self.with_session_projection_action_result(result).await
+    }
+
+    async fn send_terminal_input(
+        &self,
+        request: SendTerminalInputRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .send_terminal_input(
+                &request.session_id,
+                &request.attachment_id,
+                &request.data_base64,
+            )
+            .await
+            .map(|byte_count| LocalDaemonResponse::TerminalInputSent {
+                session_id: request.session_id,
+                attachment_id: request.attachment_id,
+                byte_count,
             });
         self.with_session_projection_action_result(result).await
     }
@@ -1024,6 +1052,10 @@ impl SessionRuntimeCommandExecutor {
             };
             (result, projection_action)
         } else if let Some(result) =
+            projected_terminal_input_absence_response(&self.session_projection, &request)
+        {
+            (result, None)
+        } else if let Some(result) =
             projected_config_update_absence_response(&self.session_projection, &request)
         {
             (result, None)
@@ -1092,6 +1124,9 @@ impl SessionRuntimeCommandExecutor {
             }
             LocalDaemonRequest::ResizeTerminal(request) => {
                 self.store.resize_terminal(request).await
+            }
+            LocalDaemonRequest::SendTerminalInput(request) => {
+                self.store.send_terminal_input(request).await
             }
             LocalDaemonRequest::PollRuntimeNotices(request) => {
                 self.store.poll_runtime_notices(request).await
@@ -1263,6 +1298,40 @@ fn projected_resize_terminal_response(
     }))
 }
 
+fn projected_terminal_input_absence_response(
+    session_projection: &SessionStateProjectionStore,
+    request: &LocalDaemonRequest,
+) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+    let LocalDaemonRequest::SendTerminalInput(request) = request else {
+        return None;
+    };
+    if let Some(session) = session_projection.get(&request.session_id) {
+        if !session.has_attachment(&request.attachment_id) {
+            return match session_projection.session_id_for_attachment(&request.attachment_id) {
+                Some(_) => Some(Err(DaemonError::AttachmentNotInSession {
+                    session_id: request.session_id.clone(),
+                    attachment_id: request.attachment_id.clone(),
+                })),
+                None => Some(Err(DaemonError::AttachmentNotFound {
+                    attachment_id: request.attachment_id.clone(),
+                })),
+            };
+        }
+        if session.active_provider_run_id().is_none() {
+            return Some(Err(DaemonError::NoActiveProviderRun {
+                session_id: request.session_id.clone(),
+            }));
+        }
+        return None;
+    }
+    if !session_projection.has_warmed_list() {
+        return None;
+    }
+    Some(Err(DaemonError::SessionNotFound {
+        session_id: request.session_id.clone(),
+    }))
+}
+
 fn projected_config_update_absence_response(
     session_projection: &SessionStateProjectionStore,
     request: &LocalDaemonRequest,
@@ -1390,6 +1459,7 @@ impl SessionActor {
                 | LocalDaemonRequest::FocusAgent(_)
                 | LocalDaemonRequest::CycleAgentFocus(_)
                 | LocalDaemonRequest::ResizeTerminal(_)
+                | LocalDaemonRequest::SendTerminalInput(_)
                 | LocalDaemonRequest::PollRuntimeNotices(_)
                 | LocalDaemonRequest::RespondToInteraction(_)
                 | LocalDaemonRequest::UpdateSessionConfig(_)

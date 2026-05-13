@@ -9,6 +9,11 @@ native TUI drill passes with two native TUIs plus one Arroba observer CLI,
 bidirectional prompt/response observation, and `IDLE -> working tone -> IDLE`
 badge transitions.
 
+The second implementation slice added protocol v32 `SendTerminalInput`, a
+session/attachment-scoped base64 PTY input request. This reuses the kernel's
+existing provider PTY input path and gives local, relay, web, and future native
+clients the missing raw-input primitive for remote-rendered native TUIs.
+
 This milestone captures the remaining work to split or remotely render
 provider-native TUIs after the local native Codex, OpenCode, and Claude Code TUI
 paths proved the value of provider-native UX under Arroba session authority.

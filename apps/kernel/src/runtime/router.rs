@@ -5620,6 +5620,7 @@ impl CommandRouter {
             | LocalDaemonRequest::UpdateAgentProfile(_)
             | LocalDaemonRequest::UpdateAgentSubstitutes(_)
             | LocalDaemonRequest::ResizeTerminal(_)
+            | LocalDaemonRequest::SendTerminalInput(_)
             | LocalDaemonRequest::EndSession(_)
             | LocalDaemonRequest::DeleteSession(_)
             | LocalDaemonRequest::AliasSession(_)
@@ -8954,6 +8955,9 @@ fn request_session_scope(request: &LocalDaemonRequest) -> Option<SessionMembersh
         LocalDaemonRequest::ResizeTerminal(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::SendTerminalInput(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::PumpTerminalOutput(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -9380,6 +9384,7 @@ fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjection
             SessionProjectionRefresh::None
         }
         LocalDaemonRequest::PumpTerminalOutput(_)
+        | LocalDaemonRequest::SendTerminalInput(_)
         | LocalDaemonRequest::AppendNativeProviderOutput(_) => SessionProjectionRefresh::None,
         LocalDaemonRequest::PollRuntimeNotices(_) | LocalDaemonRequest::ResizeTerminal(_) => {
             SessionProjectionRefresh::None

@@ -42,10 +42,10 @@ use super::{
     ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
     RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
     ResumeWorkflowRunRequest, RevokeSessionInviteRequest, RunShellCapabilityRequest,
-    SemanticHistoryMatch, SemanticSearchHistoryRequest, ShowWorkspaceLinkRequest,
-    SpawnAgentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
-    UpdateAgentConfigRequest, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
-    UpdateProviderRunSelectionRequest, UpdateSessionConfigRequest,
+    SemanticHistoryMatch, SemanticSearchHistoryRequest, SendTerminalInputRequest,
+    ShowWorkspaceLinkRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
+    SubmitPromptRequest, TerminalType, UpdateAgentConfigRequest, UpdateAgentProfileRequest,
+    UpdateAgentSubstitutesRequest, UpdateProviderRunSelectionRequest, UpdateSessionConfigRequest,
     UpdateWorkflowCanvasLayoutRequest, UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent,
     WorkspacePullRequestRecord, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
     LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -53,7 +53,7 @@ use super::{
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 31);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 32);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -442,7 +442,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 31);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 32);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -474,7 +474,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 31);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 32);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -509,7 +509,7 @@ fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 31);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 32);
 
     let request = LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-1", "worktree-1")
@@ -532,7 +532,7 @@ fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 31);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 32);
 
     let response = LocalDaemonResponse::Slice {
         slice: crate::slice::SliceRecord {
@@ -581,7 +581,7 @@ fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 31);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 32);
 
     let request = LocalDaemonRequest::SemanticSearchHistory(SemanticSearchHistoryRequest {
         query: "why did the build fail".to_string(),
@@ -699,7 +699,7 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_query_history_context_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 31);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 32);
 
     let request = LocalDaemonRequest::QueryHistory(QueryHistoryRequest {
         session_id: Some("session-1".to_string()),
@@ -733,7 +733,7 @@ fn local_daemon_protocol_query_history_context_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 31);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 32);
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
         session_id: "session-1".to_string(),
@@ -766,7 +766,7 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 31);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 32);
 
     let request =
         LocalDaemonRequest::UpdateProviderRunSelection(UpdateProviderRunSelectionRequest {
@@ -791,6 +791,37 @@ fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "bce42e6fc169c8747199a98a5dc059e5b40ac7f8aafb0f9a7a67f4b336ef57e5"
+    );
+}
+
+#[test]
+fn local_daemon_protocol_terminal_input_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 32);
+
+    let request = LocalDaemonRequest::SendTerminalInput(SendTerminalInputRequest {
+        session_id: "session-1".to_string(),
+        attachment_id: "attachment-1".to_string(),
+        data_base64: "aGVsbG8N".to_string(),
+    });
+    let snapshot = serde_json::to_value(request).expect("request should serialize");
+    assert_eq!(
+        snapshot.pointer("/SendTerminalInput/session_id"),
+        Some(&serde_json::json!("session-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/SendTerminalInput/attachment_id"),
+        Some(&serde_json::json!("attachment-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/SendTerminalInput/data_base64"),
+        Some(&serde_json::json!("aGVsbG8N"))
+    );
+    let serialized =
+        serde_json::to_string(&snapshot).expect("terminal input snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "0b228086de44cd36437a7c72006a05c5c7c7621d2b7cab0a96125a171021ab1e"
     );
 }
 
@@ -864,6 +895,45 @@ fn local_request_api_supports_session_attach_and_end() {
     harness.with_app(|app| {
         assert!(app.attachments().get_attachment(detached.id()).is_err());
     });
+}
+
+#[test]
+fn local_request_api_rejects_terminal_input_without_active_run() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-terminal-input", "worktree-terminal-input"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-terminal-input".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected response: {other:?}"),
+    };
+
+    let error = harness
+        .dispatch(LocalDaemonRequest::SendTerminalInput(SendTerminalInputRequest {
+            session_id: session.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+            data_base64: "WA==".to_string(),
+        }))
+        .expect_err("terminal input requires an active provider run");
+    assert!(matches!(
+        error,
+        DaemonError::NoActiveProviderRun { ref session_id } if session_id == session.id()
+    ), "unexpected error: {error:?}");
 }
 
 #[test]

@@ -4,7 +4,7 @@ use crate::slice::{SliceBackendKind, SliceDisplayEndpoint, SliceRecord};
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 31;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -1290,6 +1290,13 @@ pub struct ResizeTerminalRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendTerminalInputRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub data_base64: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PumpTerminalOutputRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -2132,6 +2139,7 @@ pub enum LocalDaemonRequest {
     UpdateAgentProfile(UpdateAgentProfileRequest),
     UpdateAgentSubstitutes(UpdateAgentSubstitutesRequest),
     ResizeTerminal(ResizeTerminalRequest),
+    SendTerminalInput(SendTerminalInputRequest),
     PumpTerminalOutput(PumpTerminalOutputRequest),
     AppendNativeProviderOutput(AppendNativeProviderOutputRequest),
     RunShellCommand(RunShellCapabilityRequest),
@@ -2578,6 +2586,11 @@ pub enum LocalDaemonResponse {
         session_id: String,
         cols: u16,
         rows: u16,
+    },
+    TerminalInputSent {
+        session_id: String,
+        attachment_id: String,
+        byte_count: usize,
     },
     TerminalOutput {
         records: Vec<TerminalOutputRecord>,

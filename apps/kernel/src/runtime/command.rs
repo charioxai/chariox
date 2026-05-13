@@ -305,6 +305,11 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
         LocalDaemonRequest::ResizeTerminal(request) => {
             LocalRequestMetadata::new("terminal.resize", Interactive).session(&request.session_id)
         }
+        LocalDaemonRequest::SendTerminalInput(request) => {
+            LocalRequestMetadata::new("terminal.input.send", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
         LocalDaemonRequest::PollRuntimeNotices(request) => {
             LocalRequestMetadata::new("runtime_notice.poll", Interactive)
                 .session(&request.session_id)
@@ -613,6 +618,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::SubmitPrompt(_)
         | LocalDaemonRequest::CancelActivePrompt(_)
         | LocalDaemonRequest::ResizeTerminal(_)
+        | LocalDaemonRequest::SendTerminalInput(_)
         | LocalDaemonRequest::FocusAgent(_)
         | LocalDaemonRequest::CycleAgentFocus(_)
         | LocalDaemonRequest::EndSession(_)
