@@ -41,6 +41,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 - 2026-05-13: Browser history search projection moved from `client.ts` into `terminal/history-projection.ts`. The module owns sidebar/route view models, selected-result detail metadata, context event projection, pagination clamping, result dedupe, and context merge helpers; focused unit coverage verifies disconnected/ready views, detail projection, and pure helpers.
 - 2026-05-13: Browser kernel subscription resume storage moved from `browser-kernel-client.ts` into `kernel/browser-kernel-subscriptions.ts`. The module owns subscription keys, event context projection, persisted resume cursor serialization, waiting-room subscription exclusion, and storage cleanup while preserving the public `BrowserKernelClient` API.
 - 2026-05-13: Browser kernel request correlation moved from `browser-kernel-client.ts` into `kernel/browser-kernel-request-correlation.ts`. The module owns pending request registration, timeout cleanup, lane counts, lane-scoped rejection, request-kind detection, safe request summaries, and relay error message formatting.
+- 2026-05-13: Browser kernel relay transport primitives moved from `browser-kernel-client.ts` into `kernel/browser-kernel-transport.ts`. The module owns relay target/frame types, JSON frame parsing, token-expiry parsing, websocket close diagnostics, and websocket error text; public target and lane types remain re-exported for compatibility.
 
 ## Summary
 
