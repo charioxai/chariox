@@ -812,8 +812,12 @@ impl SessionService {
                 .as_ref()
                 .is_some_and(|snapshot| snapshot.output().is_some())
                 || has_pending_final_output);
-        let pending_outputs =
+        let mut pending_outputs =
             Self::take_pending_workflow_turn_outputs(node_run.turn_envelope_mut());
+        if pending_outputs.final_output.is_none() {
+            pending_outputs.final_output =
+                Self::fallback_terminal_completion_as_final_output(&context, completion.as_ref());
+        }
         Self::apply_workflow_node_completion(node_run, completion);
         workflow_run.clear_active_node_run();
         Self::commit_pending_workflow_turn_outputs(
@@ -1123,6 +1127,40 @@ impl SessionService {
             intermediate,
             final_output,
         }
+    }
+
+    fn fallback_terminal_completion_as_final_output(
+        context: &WorkflowCompletionContext,
+        completion: Option<&WorkflowCompletionSnapshot>,
+    ) -> Option<WorkflowRunOutputSubmission> {
+        let source_node = context.workflow.node(context.source_node_run.node_id())?;
+        if !source_node.can_complete_workflow_run() {
+            return None;
+        }
+        if context
+            .workflow
+            .edges()
+            .iter()
+            .any(|edge| edge.from_node_id() == source_node.id())
+        {
+            return None;
+        }
+        let output = completion.and_then(|snapshot| snapshot.output())?.clone();
+        let warning = context
+            .workflow
+            .run_output_schema_ref()
+            .and_then(|schema_ref| {
+                crate::transport::runtime_tools::validate_workflow_output_schema(
+                    schema_ref,
+                    output.message(),
+                )
+                .err()
+            });
+        Some(WorkflowRunOutputSubmission::new(
+            output,
+            warning.is_none(),
+            warning,
+        ))
     }
 
     fn apply_workflow_node_completion(

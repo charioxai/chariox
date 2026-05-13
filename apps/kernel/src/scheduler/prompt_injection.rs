@@ -14,6 +14,7 @@ pub(crate) struct WorkflowPromptInjectionContext {
     pub delivery_token: String,
     pub node_turn: Option<WorkflowNodeTurnPromptContext>,
     pub base_directory: Option<PathBuf>,
+    pub hide_in_native_tui: bool,
 }
 
 pub(crate) struct WorkflowNodeTurnPromptContext {
@@ -98,6 +99,7 @@ pub(crate) fn render_workflow_turn_prompt(
             workflow_run_id,
             workflow_node_run_id,
         ),
+        hide_in_native_tui: false,
     }))
 }
 
@@ -143,14 +145,22 @@ pub(crate) fn build_workflow_turn_prompt(context: WorkflowPromptInjectionContext
     );
     let system_node_prompt =
         render_workflow_node_system_prompt(context.base_directory.as_ref(), &context.node_turn);
-    format!(
-        "{}Workflow-level prompt:\n{}\n\nNode-level instructions:\n{}\n\n{}\n{}",
-        entry_line,
+    let workflow_instructions = format!(
+        "Workflow-level prompt:\n{}\n\nNode-level instructions:\n{}\n\n{}\n{}",
         context.workflow_prompt,
         context.node_instructions,
         system_prompt,
         system_node_prompt
-    )
+    );
+    if context.hide_in_native_tui {
+        format!(
+            "{}{}",
+            entry_line,
+            crate::provider::native_tui_hidden_instructions_block(&workflow_instructions)
+        )
+    } else {
+        format!("{entry_line}{workflow_instructions}")
+    }
 }
 
 fn workflow_node_instructions(

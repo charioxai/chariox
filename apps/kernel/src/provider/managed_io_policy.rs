@@ -6,9 +6,9 @@ pub(crate) const MANAGED_IO_INSTRUCTIONS_SOURCE_PATH: &str =
 const MANAGED_IO_INSTRUCTIONS: &str = include_str!("managed_io_instructions.md");
 const NATIVE_PERMISSION_INSTRUCTIONS: &str = include_str!("native_permission_instructions.md");
 const RUNTIME_INSTRUCTIONS: &str = include_str!("runtime_instructions.md");
-const NATIVE_TUI_HIDDEN_INSTRUCTIONS_START: &str =
+pub(crate) const NATIVE_TUI_HIDDEN_INSTRUCTIONS_START: &str =
     "<<<ARROBA_NATIVE_TUI_HIDDEN_INSTRUCTIONS>>>";
-const NATIVE_TUI_HIDDEN_INSTRUCTIONS_END: &str =
+pub(crate) const NATIVE_TUI_HIDDEN_INSTRUCTIONS_END: &str =
     "<<<END_ARROBA_NATIVE_TUI_HIDDEN_INSTRUCTIONS>>>";
 
 pub(crate) fn runtime_instructions() -> &'static str {
@@ -25,6 +25,13 @@ pub(crate) fn managed_io_instructions() -> &'static str {
 
 pub(crate) fn native_permission_instructions() -> &'static str {
     NATIVE_PERMISSION_INSTRUCTIONS.trim()
+}
+
+pub(crate) fn native_tui_hidden_instructions_block(instructions: &str) -> String {
+    format!(
+        "{NATIVE_TUI_HIDDEN_INSTRUCTIONS_START}\n{}\n{NATIVE_TUI_HIDDEN_INSTRUCTIONS_END}",
+        instructions.trim()
+    )
 }
 
 fn execution_path_instructions_for_run(run: &RuntimeProviderRun) -> &'static str {
@@ -51,7 +58,8 @@ pub(crate) fn apply_structured_prompt_instructions(
             runtime_instructions()
         );
         return format!(
-            "{NATIVE_TUI_HIDDEN_INSTRUCTIONS_START}\n{hidden_instructions}\n{NATIVE_TUI_HIDDEN_INSTRUCTIONS_END}\n\n{prompt}"
+            "{}\n\n{prompt}",
+            native_tui_hidden_instructions_block(&hidden_instructions)
         );
     }
 

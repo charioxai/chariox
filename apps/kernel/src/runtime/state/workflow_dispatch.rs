@@ -963,9 +963,38 @@ impl KernelRuntimeOwnedState {
                         }
                     }),
                     base_directory,
+                    hide_in_native_tui: self.workflow_node_uses_native_tui(
+                        session_id,
+                        workflow_run_id,
+                        workflow_node_run_id,
+                    ),
                 },
             ),
         )
+    }
+
+    fn workflow_node_uses_native_tui(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> bool {
+        self.session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| session.workflow_run(workflow_run_id).cloned())
+            .and_then(|workflow_run| {
+                workflow_run
+                    .node_runs()
+                    .iter()
+                    .find(|candidate| candidate.id() == workflow_node_run_id)
+                    .map(|node_run| node_run.agent_id().to_string())
+            })
+            .and_then(|agent_id| {
+                self.provider_store
+                    .get_latest_run_for_agent(session_id, &agent_id)
+            })
+            .is_some_and(|run| !run.client_interface().is_arroba())
     }
 
     pub(super) fn workflow_runtime_base_directory(
