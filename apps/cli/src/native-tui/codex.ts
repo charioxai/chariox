@@ -39,6 +39,10 @@ type NativeCodexOptions = {
   socketPath?: string
   kernelUrl?: string
   kernelPort?: string
+  relayUrl?: string
+  relayToken?: string
+  targetDaemonId?: string
+  targetDaemonAlias?: string
   clientId: string
   workspace?: string
   worktree?: string
@@ -69,7 +73,14 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
   const inferredTargets = await inferWorkspaceTargetsFromLaunchDirectory(process.cwd())
   const workspace = options.workspace ?? inferredTargets.workspace
   const worktree = options.worktree ?? inferredTargets.worktree
-  const client = new LocalIpcClient(options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint(options.kernelPort))
+  const kernelEndpoint = options.relayUrl ?? options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint(options.kernelPort)
+  const client = new LocalIpcClient(kernelEndpoint, options.relayUrl
+    ? {
+      relayAuthToken: options.relayToken,
+      targetDaemonId: options.targetDaemonId,
+      targetDaemonAlias: options.targetDaemonAlias,
+    }
+    : undefined)
   let appServer: ReturnType<typeof spawn> | null = null
   let proxy: WebSocketServer | null = null
   let pump: { stop: () => void } | null = null
@@ -172,6 +183,18 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
       case "--port":
         options.kernelPort = parseKernelPort(next(), arg)
         break
+      case "--relay-url":
+        options.relayUrl = next()
+        break
+      case "--relay-token":
+        options.relayToken = next()
+        break
+      case "--target-daemon-id":
+        options.targetDaemonId = next()
+        break
+      case "--target-daemon-alias":
+        options.targetDaemonAlias = next()
+        break
       case "--client-id":
         options.clientId = next()
         break
@@ -217,6 +240,14 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
     }
   }
   if (positional.length > 1) throw new Error("usage: arroba codex [session-ref]")
+  if (options.relayUrl && !options.relayToken) throw new Error("--relay-url requires --relay-token")
+  if (options.relayUrl && !options.targetDaemonId && !options.targetDaemonAlias) {
+    throw new Error("--relay-url requires --target-daemon-id or --target-daemon-alias")
+  }
+  if (options.relayUrl && (options.kernelUrl || options.socketPath)) {
+    throw new Error("--relay-url cannot be used together with --kernel-url or --socket")
+  }
+  if (options.relayUrl && options.kernelPort) throw new Error("--relay-url cannot be used together with --kernel-port")
   if (options.kernelUrl && options.kernelPort) throw new Error("--kernel-url cannot be used together with --kernel-port")
   if (options.socketPath && options.kernelPort) throw new Error("--socket cannot be used together with --kernel-port")
   if (positional[0] !== undefined) options.sessionRef = positional[0]
@@ -226,6 +257,7 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
 function printNativeCodexUsage() {
   process.stdout.write([
     "usage: arroba codex [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--mode build|plan] [--permissions required|yolo]",
+    "       arroba codex [session-ref] --relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)",
     "",
     "behavior:",
     "  creates a new Arroba agent in the selected session and launches native `codex --remote` for it.",
