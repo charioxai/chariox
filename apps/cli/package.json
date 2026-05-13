@@ -38,7 +38,8 @@
     "tui-plan-mode:drill": "pnpm run build && node scripts/live-tui-plan-mode-drill.mjs",
     "agent-footer-status:drill": "pnpm run build && node scripts/agent-footer-status-drill.mjs",
     "native-tui:codex-drill": "pnpm run build && node scripts/live-codex-native-tui-drill.mjs",
-    "native-tui:opencode-drill": "pnpm run build && node scripts/live-opencode-native-tui-drill.mjs"
+    "native-tui:opencode-drill": "pnpm run build && node scripts/live-opencode-native-tui-drill.mjs",
+    "native-tui:permission-drill": "pnpm run build && node scripts/live-native-tui-permission-drill.mjs"
   },
   "dependencies": {
     "@opentui/core": "0.1.87",

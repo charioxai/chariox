@@ -581,6 +581,10 @@ async function startCodexProxy(options: {
       if (message.method === "initialized" && downstream.kind === "kernel") {
         return
       }
+      if (message.id !== undefined && !message.method) {
+        sendUpstream(message)
+        return
+      }
       if (message.method === "initialize") downstream.kind = "tui"
       if (message.method === "thread/start") {
         downstream.kind = "tui"
