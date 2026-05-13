@@ -295,3 +295,4 @@ Protocol-sensitive gates:
 - No iOS work is included.
 - No kernel protocol, relay packet, or serialized local daemon shape changes are intended.
 - New modules are accepted only when they represent a real responsibility boundary, not an arbitrary chunk of an existing large file.
+- Refactor progress docs are committed and pushed as their own slice instead of being treated as local dirty work to preserve.
