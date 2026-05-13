@@ -12,15 +12,18 @@ import type {
   RelayConnectedFrame,
   RelayEventFrame,
   RelayResponseFrame,
-  RelaySubscribeFrame,
   RelayTarget,
-  RelayUnsubscribeFrame,
 } from "./kernel-transport-frames.js"
 import { normalizeWebSocketRequest } from "./kernel-transport-requests.js"
 import { LocalIpcError } from "./local-ipc-error.js"
 import { sendLocalSocketRequest } from "./local-socket-transport.js"
-import { createRelayKeypair, decryptRelayPayload, relayPublicKeyFromPrivateKey } from "./relay-crypto.js"
-import { buildRelayConnectFrame, normalizeRelayRequest, requireRelayTarget } from "./relay-transport.js"
+import { createRelayKeypair, decryptRelayPayload } from "./relay-crypto.js"
+import {
+  buildRelayConnectFrame,
+  buildRelaySubscribeFrame,
+  buildRelayUnsubscribeFrame,
+  normalizeRelayRequest,
+} from "./relay-transport.js"
 import { KernelPendingRequestRegistry } from "./websocket-pending-requests.js"
 import { formatTransportError, isWebSocketEndpoint } from "./websocket-transport-diagnostics.js"
 
@@ -302,19 +305,16 @@ export class LocalIpcClient {
     pending.setRelayPrivateKey(keypair.privateKey)
 
     try {
-      const frame: RelaySubscribeFrame = {
-        kind: "client_subscribe",
-        request_id: requestId,
-        subscription_id: subscriptionId,
-        target: requireRelayTarget(this.relayTarget),
-        session_id: sessionId,
-        attachment_id: attachmentId,
-        client_public_key: keypair.publicKeyBase64,
-        resume_from_event_id: resumeFromEventId,
-      }
-      if (subscriptionScope) {
-        frame.subscription_scope = subscriptionScope
-      }
+      const frame = buildRelaySubscribeFrame({
+        requestId,
+        subscriptionId,
+        target: this.relayTarget,
+        sessionId,
+        attachmentId,
+        clientPublicKey: keypair.publicKeyBase64,
+        resumeFromEventId,
+        subscriptionScope,
+      })
       socket.send(JSON.stringify(frame))
     } catch (error) {
       pending.reject(new LocalIpcError("write relay subscribe", error instanceof Error ? error.message : String(error), "write_failed", true))
@@ -327,18 +327,12 @@ export class LocalIpcClient {
     const lane: KernelSocketLane = "event"
     const socket = await this.ensureWebSocket(lane)
     const requestId = randomUUID()
-    const publicKeyBase64 = relayPublicKeyFromPrivateKey(privateKey)
 
     const pending = this.pendingRequests.register<void>(requestId, lane)
     pending.setRelayPrivateKey(privateKey)
 
     try {
-      const frame: RelayUnsubscribeFrame = {
-        kind: "client_unsubscribe",
-        request_id: requestId,
-        subscription_id: subscriptionId,
-        client_public_key: publicKeyBase64,
-      }
+      const frame = buildRelayUnsubscribeFrame(requestId, subscriptionId, privateKey)
       socket.send(JSON.stringify(frame))
     } catch (error) {
       pending.reject(new LocalIpcError("write relay unsubscribe", error instanceof Error ? error.message : String(error), "write_failed", true))
