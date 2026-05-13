@@ -2,7 +2,14 @@
 
 ## Status
 
-Planned. This milestone captures the deferred work to split or remotely render
+In progress. The first implementation slice removed the normal attached Claude
+Code native TUI path's dependency on GNU `screen` by running it through a direct
+PTY helper, while keeping `--detached-screen` as a drill-only mode. The Claude
+native TUI drill passes with two native TUIs plus one Arroba observer CLI,
+bidirectional prompt/response observation, and `IDLE -> working tone -> IDLE`
+badge transitions.
+
+This milestone captures the remaining work to split or remotely render
 provider-native TUIs after the local native Codex, OpenCode, and Claude Code TUI
 paths proved the value of provider-native UX under Arroba session authority.
 

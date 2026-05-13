@@ -62,6 +62,13 @@ type ClaudeHookEvent = {
   transcript_path?: string | null
 }
 
+type ClaudeTuiController = {
+  label: string
+  submitPrompt: (prompt: string) => Promise<void>
+  waitForExit: () => Promise<void>
+  stop: () => Promise<void>
+}
+
 export async function runClaudeNativeTui(args: string[]): Promise<void> {
   const options = parseNativeClaudeArgs(args)
   const inferredTargets = await inferWorkspaceTargetsFromLaunchDirectory(process.cwd())
@@ -85,6 +92,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
   const screenLogDir = path.join(tempRoot, "screen")
   let bridge: { stop: () => void } | null = null
   let pump: { stop: () => void } | null = null
+  let tui: ClaudeTuiController | null = null
 
   try {
     await mkdir(screenLogDir, { recursive: true })
@@ -108,7 +116,8 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       `  arroba session: ${session.id}${session.alias ? ` (${session.alias})` : ""}`,
       `  arroba agent:   ${agent.id}${agent.alias ? ` (${agent.alias})` : ""}`,
       `  provider run:   ${run.id}`,
-      `  screen:         ${screenName}`,
+      `  tui:            ${options.detachedScreen ? `screen:${screenName}` : "attached-pty"}`,
+      ...(options.detachedScreen ? [`  screen:         ${screenName}`] : []),
       "  prompt policy:  Claude Code TUI is native; Arroba observes hooks and injects queued prompts through the PTY",
       "",
     ].join("\n"))
@@ -125,7 +134,9 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
         ARROBA_CLAUDE_NATIVE_CONTEXT: contextFile,
       },
     }
-    await startClaudeScreen(screenName, screenLogDir, launchOptions)
+    tui = options.detachedScreen
+      ? await startClaudeScreen(screenName, screenLogDir, launchOptions)
+      : await startClaudeAttachedPty(launchOptions)
     bridge = startClaudeBridge({
       client,
       sessionId: session.id,
@@ -134,23 +145,19 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       providerRunId: run.id,
       eventsFile,
       contextFile,
-      screenName,
+      submitPrompt: tui.submitPrompt,
     })
     pump = startKernelPumpLoop(client, session.id, attachment.id)
     if (options.initialPrompt) {
       await sleep(1_000)
-      await submitScreenPrompt(screenName, options.initialPrompt)
+      await tui.submitPrompt(options.initialPrompt)
     }
 
-    if (options.detachedScreen) {
-      while (await screenExists(screenName)) await sleep(500)
-    } else {
-      await attachScreen(screenName)
-    }
+    await tui.waitForExit()
   } finally {
     bridge?.stop()
     pump?.stop()
-    await screenQuit(screenName)
+    await tui?.stop()
     await client.close()
     if (!options.detachedScreen) {
       await rm(tempRoot, { recursive: true, force: true }).catch(() => {})
@@ -276,7 +283,7 @@ function startClaudeBridge(options: {
   providerRunId: string
   eventsFile: string
   contextFile: string
-  screenName: string
+  submitPrompt: (prompt: string) => Promise<void>
 }): { stop: () => void } {
   let stopped = false
   let nextEventIndex = 0
@@ -340,7 +347,7 @@ function startClaudeBridge(options: {
           await writeFile(options.contextFile, hidden, "utf8")
           const visible = redactHiddenInstructions(activePrompt.prompt).trim()
           if (visible) {
-            await submitScreenPrompt(options.screenName, visible)
+            await options.submitPrompt(visible)
           }
         }
       } catch (error) {
@@ -420,18 +427,8 @@ async function startClaudeScreen(name: string, logDir: string, options: {
   effort: string
   permissions: "required" | "yolo"
   env: NodeJS.ProcessEnv
-}) {
-  const claudeArgs = [
-    "claude",
-    "--settings",
-    options.settingsPath,
-    "--permission-mode",
-    options.permissions === "yolo" ? "bypassPermissions" : "default",
-    "--model",
-    options.model,
-    "--effort",
-    options.effort,
-  ]
+}): Promise<ClaudeTuiController> {
+  const claudeArgs = claudeCommandArgs(options)
   await execFileAsync("screen", [
     "-dmS",
     name,
@@ -443,14 +440,116 @@ async function startClaudeScreen(name: string, logDir: string, options: {
     cwd: logDir,
     env: options.env,
   })
+  return {
+    label: `screen:${name}`,
+    submitPrompt: async (prompt) => {
+      await waitForScreenReady(logDir, name)
+      await submitScreenPrompt(name, prompt)
+    },
+    waitForExit: async () => {
+      while (await screenExists(name)) await sleep(500)
+    },
+    stop: () => screenQuit(name),
+  }
 }
 
-async function attachScreen(name: string) {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn("screen", ["-r", name], { stdio: "inherit" })
-    child.on("error", reject)
-    child.on("exit", () => resolve())
+async function startClaudeAttachedPty(options: {
+  worktree: string
+  settingsPath: string
+  model: string
+  effort: string
+  permissions: "required" | "yolo"
+  env: NodeJS.ProcessEnv
+}): Promise<ClaudeTuiController> {
+  const command = `cd ${shellQuote(options.worktree)} && exec ${claudeCommandArgs(options).map(shellQuote).join(" ")}`
+  const child = spawn("script", scriptArgs(command), {
+    cwd: options.worktree,
+    env: options.env,
+    stdio: ["pipe", "pipe", "pipe"],
   })
+  child.stdout?.on("data", (chunk) => process.stdout.write(chunk))
+  child.stderr?.on("data", (chunk) => process.stderr.write(chunk))
+
+  const stdin = child.stdin
+  if (!stdin) {
+    child.kill("SIGTERM")
+    throw new Error("failed to start attached Claude PTY: script stdin was unavailable")
+  }
+  const ready = sleep(1_500)
+
+  const forwardInput = (chunk: Buffer) => {
+    if (!stdin.destroyed) stdin.write(chunk)
+  }
+  const wasRaw = Boolean(process.stdin.isTTY && process.stdin.isRaw)
+  if (process.stdin.isTTY) process.stdin.setRawMode?.(true)
+  process.stdin.resume()
+  process.stdin.on("data", forwardInput)
+
+  let stopped = false
+  const waitForExit = new Promise<void>((resolve, reject) => {
+    child.once("error", (error) => reject(new Error(`failed to start attached Claude PTY via script: ${error.message}`)))
+    child.once("exit", () => resolve())
+  }).finally(() => {
+    process.stdin.off("data", forwardInput)
+    if (process.stdin.isTTY) process.stdin.setRawMode?.(wasRaw)
+  })
+
+  return {
+    label: "attached-pty",
+    submitPrompt: async (prompt) => {
+      await ready
+      if (stdin.destroyed) throw new Error("attached Claude PTY is closed")
+      stdin.write(prompt)
+      await sleep(250)
+      stdin.write("\r")
+    },
+    waitForExit: () => waitForExit,
+    stop: async () => {
+      if (stopped) return
+      stopped = true
+      if (child.exitCode == null && child.signalCode == null) {
+        child.kill("SIGTERM")
+        await Promise.race([waitForExit, sleep(2_000)]).catch(() => {})
+        if (child.exitCode == null && child.signalCode == null) child.kill("SIGKILL")
+      }
+    },
+  }
+}
+
+function claudeCommandArgs(options: {
+  settingsPath: string
+  model: string
+  effort: string
+  permissions: "required" | "yolo"
+}): string[] {
+  return [
+    "claude",
+    "--settings",
+    options.settingsPath,
+    "--permission-mode",
+    options.permissions === "yolo" ? "bypassPermissions" : "default",
+    "--model",
+    options.model,
+    "--effort",
+    options.effort,
+  ]
+}
+
+function scriptArgs(command: string): string[] {
+  if (process.platform === "linux") return ["-q", "-c", command, "/dev/null"]
+  return ["-q", "/dev/null", "bash", "-lc", command]
+}
+
+async function waitForScreenReady(logDir: string, name: string) {
+  const logPath = path.join(logDir, "screenlog.0")
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    if (!(await screenExists(name))) throw new Error(`Claude TUI screen exited before it became ready: ${name}`)
+    const log = await readFile(logPath, "utf8").catch(() => "")
+    if (log.includes("Claude") && log.includes("Code")) return
+    await sleep(250)
+  }
+  throw new Error(`timed out waiting for Claude TUI screen to become ready: ${name}`)
 }
 
 async function screenStuff(name: string, text: string) {
