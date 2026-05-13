@@ -193,11 +193,15 @@ pub struct ProviderResumeState {
     opencode_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     codex_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claude_session_id: Option<String>,
 }
 
 impl ProviderResumeState {
     pub fn is_empty(&self) -> bool {
-        self.opencode_session_id.is_none() && self.codex_thread_id.is_none()
+        self.opencode_session_id.is_none()
+            && self.codex_thread_id.is_none()
+            && self.claude_session_id.is_none()
     }
 
     pub fn from_opencode_session_id(session_id: impl Into<String>) -> Self {
@@ -212,12 +216,22 @@ impl ProviderResumeState {
         state
     }
 
+    pub fn from_claude_session_id(session_id: impl Into<String>) -> Self {
+        let mut state = Self::default();
+        state.set_claude_session_id(session_id);
+        state
+    }
+
     pub fn opencode_session_id(&self) -> Option<&str> {
         self.opencode_session_id.as_deref()
     }
 
     pub fn codex_thread_id(&self) -> Option<&str> {
         self.codex_thread_id.as_deref()
+    }
+
+    pub fn claude_session_id(&self) -> Option<&str> {
+        self.claude_session_id.as_deref()
     }
 
     pub fn set_opencode_session_id(&mut self, session_id: impl Into<String>) {
@@ -228,10 +242,15 @@ impl ProviderResumeState {
         self.codex_thread_id = Some(thread_id.into());
     }
 
+    pub fn set_claude_session_id(&mut self, session_id: impl Into<String>) {
+        self.claude_session_id = Some(session_id.into());
+    }
+
     pub fn without_opencode_session_id(&self) -> Self {
         Self {
             opencode_session_id: None,
             codex_thread_id: self.codex_thread_id.clone(),
+            claude_session_id: self.claude_session_id.clone(),
         }
     }
 
@@ -239,6 +258,15 @@ impl ProviderResumeState {
         Self {
             opencode_session_id: self.opencode_session_id.clone(),
             codex_thread_id: None,
+            claude_session_id: self.claude_session_id.clone(),
+        }
+    }
+
+    pub fn without_claude_session_id(&self) -> Self {
+        Self {
+            opencode_session_id: self.opencode_session_id.clone(),
+            codex_thread_id: self.codex_thread_id.clone(),
+            claude_session_id: None,
         }
     }
 }
@@ -606,6 +634,7 @@ impl RuntimeProviderRun {
                     state
                         .opencode_session_id()
                         .or_else(|| state.codex_thread_id())
+                        .or_else(|| state.claude_session_id())
                 })
                 .map(str::to_string),
             terminal_diagnostic: None,
@@ -620,7 +649,8 @@ impl RuntimeProviderRun {
         agent_instance_id: Option<String>,
         adapter_key: String,
     ) -> Self {
-        let inferred_has_runtime_mcp_binding = matches!(adapter_key.as_str(), "codex" | "opencode");
+        let inferred_has_runtime_mcp_binding =
+            matches!(adapter_key.as_str(), "claude" | "codex" | "opencode");
         let now = unix_epoch_ms();
         Self {
             id: id.into(),
@@ -965,6 +995,7 @@ pub struct ProviderPromptSignalBatch {
     pub resolved_variant: Option<String>,
     pub resolved_usage_tokens_total: Option<u64>,
     pub resolved_usage: Option<ProviderRunTokenUsage>,
+    pub resolved_resume_state: Option<ProviderResumeState>,
 }
 
 pub(crate) fn classify_provider_terminal_failure_text(
@@ -1120,6 +1151,7 @@ impl ProviderProcessInfo {
                     run.resume_state()
                         .opencode_session_id()
                         .or_else(|| run.resume_state().codex_thread_id())
+                        .or_else(|| run.resume_state().claude_session_id())
                         .map(str::to_string)
                 })
             })

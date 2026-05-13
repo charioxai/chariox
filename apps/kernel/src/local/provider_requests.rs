@@ -297,6 +297,10 @@ pub(crate) fn launch_provider_request_from_local(
             launch_request = launch_request.with_resume_state(
                 crate::provider::ProviderResumeState::from_opencode_session_id(provider_session_id),
             );
+        } else if launch_request.adapter_key == "claude" {
+            launch_request = launch_request.with_resume_state(
+                crate::provider::ProviderResumeState::from_claude_session_id(provider_session_id),
+            );
         }
     }
     let session = app.sessions().get_session(&request.session_id).ok();

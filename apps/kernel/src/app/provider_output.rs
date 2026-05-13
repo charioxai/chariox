@@ -732,6 +732,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         self.provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        self.persist_resolved_resume_state(&provider_run, &poll_result)?;
         self.app
             .update_provider_run_projection(provider_run.clone());
         let terminal_sink = ProviderOutputFanout::new(self.app);
@@ -851,6 +852,37 @@ impl<'a> ProviderOutputPumpContext<'a> {
         Ok(records)
     }
 
+    fn persist_resolved_resume_state(
+        &mut self,
+        provider_run: &RuntimeProviderRun,
+        poll_result: &ProviderPromptSignalBatch,
+    ) -> Result<(), DaemonError> {
+        let Some(resume_state) = poll_result.resolved_resume_state.as_ref() else {
+            return Ok(());
+        };
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(());
+        };
+        let agent = self.app.agents.set_agent_runtime_profile(
+            agent_id,
+            provider_run.provider(),
+            Some(provider_run.model().to_string()),
+            provider_run.variant().map(str::to_string),
+            resume_state.clone(),
+        )?;
+        self.app.durable_state_store().append_event(
+            "agent.runtime_profile_updated",
+            Some(agent.id().to_string()),
+            serde_json::json!({
+                "agent": &agent,
+                "provider_run_id": provider_run.id(),
+            }),
+        )?;
+        let _ = crate::app::KernelSessionReadService::new(self.app)
+            .session_snapshot(provider_run.session_id())?;
+        Ok(())
+    }
+
     fn trace_structured_poll_batch(
         &self,
         session_id: &str,
@@ -867,6 +899,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
             && poll_result.resolved_variant.is_none()
             && poll_result.resolved_usage_tokens_total.is_none()
             && poll_result.resolved_usage.is_none()
+            && poll_result.resolved_resume_state.is_none()
         {
             return;
         }

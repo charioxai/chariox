@@ -599,6 +599,23 @@ impl KernelRuntimeOwnedState {
                 provider_run.id()
             ),
         );
+        if provider_run.adapter_key() == "claude" {
+            let cancellation = self.finalize_local_prompt_cancellation_with_queued_advance(
+                session_id,
+                target_agent_id,
+                Some(provider_run.id()),
+            )?;
+            let session = self.session_snapshot(session_id)?;
+            return Ok(Some(crate::app::KernelPromptCancellation {
+                cancellation: cancellation.cancellation,
+                session,
+                dispatch: Some(crate::app::KernelPromptAbortDispatch {
+                    session_id: session_id.to_string(),
+                    provider_run_id: provider_run.id().to_string(),
+                    source_attachment_id: attachment_id.to_string(),
+                }),
+            }));
+        }
         let session = self.session_snapshot(session_id)?;
 
         Ok(Some(crate::app::KernelPromptCancellation {
@@ -945,6 +962,17 @@ impl KernelRuntimeOwnedState {
                     recipients,
                     format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
                 );
+            } else if let Ok(provider_run) = self.provider_store.get_run(&finished.provider_run_id)
+            {
+                if provider_run.adapter_key() == "claude" {
+                    if let Some(agent_id) = provider_run.agent_instance_id() {
+                        let _ = self.finalize_local_prompt_cancellation_with_queued_advance(
+                            &finished.session_id,
+                            agent_id,
+                            Some(&finished.provider_run_id),
+                        );
+                    }
+                }
             }
         }
     }

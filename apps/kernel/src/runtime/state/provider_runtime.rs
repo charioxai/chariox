@@ -326,6 +326,12 @@ impl KernelRuntimeState {
                         provider_session_id,
                     ),
                 );
+            } else if launch_request.adapter_key == "claude" {
+                launch_request = launch_request.with_resume_state(
+                    crate::provider::ProviderResumeState::from_claude_session_id(
+                        provider_session_id,
+                    ),
+                );
             }
         }
         let config = self.owned.config_projection.snapshot();
@@ -1307,6 +1313,7 @@ impl KernelRuntimeState {
             || poll_result.resolved_variant.is_some()
             || poll_result.resolved_usage_tokens_total.is_some()
             || poll_result.resolved_usage.is_some()
+            || poll_result.resolved_resume_state.is_some()
         {
             crate::logging::debug_with_fields(
                 "daemon.provider",
@@ -1325,6 +1332,20 @@ impl KernelRuntimeState {
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        if let Some(resume_state) = poll_result.resolved_resume_state.as_ref() {
+            if let Some(agent_id) = provider_run.agent_instance_id() {
+                let agent = owned.agent_store.set_agent_runtime_profile(
+                    agent_id,
+                    provider_run.provider(),
+                    Some(provider_run.model().to_string()),
+                    provider_run.variant().map(str::to_string),
+                    resume_state.clone(),
+                )?;
+                let _ = owned.session_snapshot(provider_run.session_id())?;
+                self.append_agent_durable_event("agent.runtime_profile_updated", &agent, None)
+                    .await?;
+            }
+        }
         owned.provider_run_projection.update(provider_run);
         for notice in &poll_result.notices {
             owned.record_notice(

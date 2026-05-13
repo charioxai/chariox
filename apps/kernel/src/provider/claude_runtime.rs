@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
@@ -12,8 +13,9 @@ use crate::session::{unix_epoch_ms, PromptAttachment};
 use crate::terminal::TerminalOutputKind;
 
 use super::{
+    claude::claude_launch_args_for_run, AgentExecutionMode, AgentPermissionLevel,
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
-    ProviderRunTokenUsage, RuntimeProviderRun,
+    ProviderResumeState, ProviderRunTokenUsage, RuntimeProviderRun,
 };
 
 const CLAUDE_EVENT_DRAIN_MAX_MESSAGES: usize = 256;
@@ -36,11 +38,20 @@ enum ClaudeRuntimeMessage {
 }
 
 pub struct ClaudeRuntimeState {
+    program: String,
+    env: BTreeMap<String, String>,
+    env_remove: Vec<String>,
+    working_directory: Option<PathBuf>,
     child: Child,
     stdin: ChildStdin,
     receiver: Receiver<ClaudeRuntimeMessage>,
+    active_model: String,
+    active_variant: Option<String>,
+    active_execution_mode: AgentExecutionMode,
+    active_permission_level: AgentPermissionLevel,
     session_id: Option<String>,
     active_turn_id: Option<String>,
+    cancelled_turn_pending_settlement: bool,
     next_turn_number: u64,
     result_number: u64,
     emitted_text_offsets: BTreeMap<String, usize>,
@@ -51,8 +62,18 @@ pub struct ClaudeRuntimeState {
 impl std::fmt::Debug for ClaudeRuntimeState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClaudeRuntimeState")
+            .field("program", &self.program)
+            .field("working_directory", &self.working_directory)
+            .field("active_model", &self.active_model)
+            .field("active_variant", &self.active_variant)
+            .field("active_execution_mode", &self.active_execution_mode)
+            .field("active_permission_level", &self.active_permission_level)
             .field("session_id", &self.session_id)
             .field("active_turn_id", &self.active_turn_id)
+            .field(
+                "cancelled_turn_pending_settlement",
+                &self.cancelled_turn_pending_settlement,
+            )
             .field("next_turn_number", &self.next_turn_number)
             .field("result_number", &self.result_number)
             .field("emitted_text_offsets", &self.emitted_text_offsets)
@@ -64,14 +85,7 @@ impl std::fmt::Debug for ClaudeRuntimeState {
 
 impl Drop for ClaudeRuntimeState {
     fn drop(&mut self) {
-        match self.child.try_wait() {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-            }
-            Err(_) => {}
-        }
+        stop_child(&mut self.child);
     }
 }
 
@@ -86,47 +100,99 @@ pub(crate) fn initialize_claude_runtime(
             message: "Claude provider run did not include an executable".to_string(),
         })?
         .to_string();
+    let args = run.pty_args().to_vec();
+    let env = run.pty_env().clone();
+    let env_remove = run.pty_env_remove().to_vec();
+    let working_directory = run.working_directory().cloned();
+    let (child, stdin, receiver) = spawn_claude_child(
+        run.id(),
+        &program,
+        &args,
+        &env,
+        &env_remove,
+        working_directory.as_ref(),
+        "initialize_claude_runtime",
+    )?;
+
+    Ok(ClaudeRuntimeBinding {
+        state: ClaudeRuntimeState {
+            program,
+            env,
+            env_remove,
+            working_directory,
+            child,
+            stdin,
+            receiver,
+            active_model: run.model().to_string(),
+            active_variant: run.variant().map(str::to_string),
+            active_execution_mode: run.execution_mode(),
+            active_permission_level: run.permission_level(),
+            session_id: run.resume_state().claude_session_id().map(str::to_string),
+            active_turn_id: None,
+            cancelled_turn_pending_settlement: false,
+            next_turn_number: 1,
+            result_number: 1,
+            emitted_text_offsets: BTreeMap::new(),
+            saw_text_delta: false,
+            exit_reported: false,
+        },
+        selection: ClaudeRunSelection {
+            model: Some(format!("claude/{}", run.model())),
+            variant: run.variant().map(str::to_string),
+        },
+    })
+}
+
+fn spawn_claude_child(
+    provider_run_id: &str,
+    program: &str,
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    env_remove: &[String],
+    working_directory: Option<&PathBuf>,
+    operation: &'static str,
+) -> Result<(Child, ChildStdin, Receiver<ClaudeRuntimeMessage>), DaemonError> {
     let mut command = Command::new(program);
     command
-        .args(run.pty_args())
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for name in run.pty_env_remove() {
+    for name in env_remove {
         command.env_remove(name);
     }
-    for (name, value) in run.pty_env() {
+    for (name, value) in env {
         command.env(name, value);
     }
-    if let Some(working_directory) = run.working_directory() {
+    if let Some(working_directory) = working_directory {
         command.current_dir(working_directory);
     }
 
     let mut child = command
         .spawn()
         .map_err(|error| DaemonError::LocalTransport {
-            operation: "initialize_claude_runtime",
-            message: format!("failed to start Claude Code: {error}"),
+            operation,
+            message: format!("failed to start Claude Code for `{provider_run_id}`: {error}"),
         })?;
     let stdin = child
         .stdin
         .take()
         .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "initialize_claude_runtime",
+            operation,
             message: "Claude Code did not expose stdin".to_string(),
         })?;
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "initialize_claude_runtime",
+            operation,
             message: "Claude Code did not expose stdout".to_string(),
         })?;
     let stderr = child
         .stderr
         .take()
         .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "initialize_claude_runtime",
+            operation,
             message: "Claude Code did not expose stderr".to_string(),
         })?;
     let (tx, receiver) = mpsc::channel();
@@ -169,32 +235,18 @@ pub(crate) fn initialize_claude_runtime(
         }
     });
 
-    Ok(ClaudeRuntimeBinding {
-        state: ClaudeRuntimeState {
-            child,
-            stdin,
-            receiver,
-            session_id: None,
-            active_turn_id: None,
-            next_turn_number: 1,
-            result_number: 1,
-            emitted_text_offsets: BTreeMap::new(),
-            saw_text_delta: false,
-            exit_reported: false,
-        },
-        selection: ClaudeRunSelection {
-            model: Some(format!("claude/{}", run.model())),
-            variant: run.variant().map(str::to_string),
-        },
-    })
+    Ok((child, stdin, receiver))
 }
 
 pub(crate) fn submit_claude_prompt(
-    _run: &RuntimeProviderRun,
+    run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
     prompt: &str,
     attachments: &[PromptAttachment],
 ) -> Result<(), DaemonError> {
+    if claude_runtime_selection_changed(run, state) {
+        restart_claude_runtime(run, state, "claude_restart_for_selection_change")?;
+    }
     let turn_id = format!("turn-{}", state.next_turn_number);
     state.next_turn_number += 1;
     state.active_turn_id = Some(turn_id);
@@ -211,17 +263,18 @@ pub(crate) fn submit_claude_prompt(
 }
 
 pub(crate) fn abort_claude_turn(
-    run_id: &str,
+    run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
 ) -> Result<(), DaemonError> {
     let message = json!({
         "type": "control_request",
-        "request_id": format!("arroba-claude-interrupt-{run_id}"),
+        "request_id": format!("arroba-claude-interrupt-{}", run.id()),
         "request": { "subtype": "interrupt" }
     });
-    write_json_line(&mut state.stdin, &message)?;
+    let _ = write_json_line(&mut state.stdin, &message);
     state.active_turn_id = None;
-    Ok(())
+    state.cancelled_turn_pending_settlement = true;
+    restart_claude_runtime(run, state, "claude_restart_after_abort")
 }
 
 pub(crate) fn drain_claude_events(
@@ -267,8 +320,64 @@ pub(crate) fn drain_claude_events(
             }
         }
     }
+    if !batch.prompt_completed && state.cancelled_turn_pending_settlement {
+        state.cancelled_turn_pending_settlement = false;
+        batch.prompt_completed = true;
+    }
 
     Ok(batch)
+}
+
+fn claude_runtime_selection_changed(run: &RuntimeProviderRun, state: &ClaudeRuntimeState) -> bool {
+    state.active_model != run.model()
+        || state.active_variant.as_deref() != run.variant()
+        || state.active_execution_mode != run.execution_mode()
+        || state.active_permission_level != run.permission_level()
+}
+
+fn restart_claude_runtime(
+    run: &RuntimeProviderRun,
+    state: &mut ClaudeRuntimeState,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    stop_child(&mut state.child);
+    let resume_session_id = state
+        .session_id
+        .as_deref()
+        .or_else(|| run.resume_state().claude_session_id());
+    let args = claude_launch_args_for_run(run, resume_session_id)?;
+    let (child, stdin, receiver) = spawn_claude_child(
+        run.id(),
+        &state.program,
+        &args,
+        &state.env,
+        &state.env_remove,
+        state.working_directory.as_ref(),
+        operation,
+    )?;
+    state.child = child;
+    state.stdin = stdin;
+    state.receiver = receiver;
+    state.active_model = run.model().to_string();
+    state.active_variant = run.variant().map(str::to_string);
+    state.active_execution_mode = run.execution_mode();
+    state.active_permission_level = run.permission_level();
+    state.active_turn_id = None;
+    state.emitted_text_offsets.clear();
+    state.saw_text_delta = false;
+    state.exit_reported = false;
+    Ok(())
+}
+
+fn stop_child(child: &mut Child) {
+    match child.try_wait() {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        Err(_) => {}
+    }
 }
 
 fn write_json_line(stdin: &mut ChildStdin, value: &Value) -> Result<(), DaemonError> {
@@ -379,9 +488,10 @@ fn apply_system_message(
     value: &Value,
     batch: &mut ProviderPromptSignalBatch,
 ) {
-    if state.session_id.is_none() {
-        state.session_id =
-            string_field(value, "session_id").or_else(|| string_field(value, "sessionId"));
+    if let Some(session_id) =
+        string_field(value, "session_id").or_else(|| string_field(value, "sessionId"))
+    {
+        record_claude_session_id(state, batch, session_id);
     }
     if batch.resolved_model.is_none() {
         if let Some(model) = string_field(value, "model") {
@@ -510,7 +620,7 @@ fn apply_result_message(
     batch: &mut ProviderPromptSignalBatch,
 ) {
     if let Some(session_id) = string_field(value, "session_id") {
-        state.session_id = Some(session_id);
+        record_claude_session_id(state, batch, session_id);
     }
     if let Some(usage) = value.get("usage").and_then(usage_from_value) {
         batch.resolved_usage_tokens_total = usage.total_tokens;
@@ -546,6 +656,17 @@ fn apply_result_message(
     });
     batch.prompt_completed = true;
     state.active_turn_id = None;
+}
+
+fn record_claude_session_id(
+    state: &mut ClaudeRuntimeState,
+    batch: &mut ProviderPromptSignalBatch,
+    session_id: String,
+) {
+    if state.session_id.as_deref() != Some(session_id.as_str()) {
+        state.session_id = Some(session_id.clone());
+    }
+    batch.resolved_resume_state = Some(ProviderResumeState::from_claude_session_id(session_id));
 }
 
 fn emit_text_suffix(
@@ -639,6 +760,7 @@ mod tests {
     use base64::Engine as _;
     use serde_json::json;
 
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
     use crate::session::PromptAttachment;
     use crate::terminal::TerminalOutputKind;
 
@@ -659,11 +781,20 @@ mod tests {
         let (_tx, receiver) = std::sync::mpsc::channel();
         (
             ClaudeRuntimeState {
+                program: "/bin/sh".to_string(),
+                env: Default::default(),
+                env_remove: Vec::new(),
+                working_directory: None,
                 child,
                 stdin,
                 receiver,
+                active_model: "sonnet".to_string(),
+                active_variant: Some("low".to_string()),
+                active_execution_mode: AgentExecutionMode::Build,
+                active_permission_level: AgentPermissionLevel::Yolo,
                 session_id: None,
                 active_turn_id: Some("turn-1".to_string()),
+                cancelled_turn_pending_settlement: false,
                 next_turn_number: 1,
                 result_number: 1,
                 emitted_text_offsets: Default::default(),

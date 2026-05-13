@@ -2,7 +2,8 @@
 
 ## Status
 
-M13.1 is implemented locally as of 2026-05-13.
+M13.1, M13.2, M13.3, and the local M13.4 workflow path are implemented as
+of 2026-05-13.
 
 Achieved:
 
@@ -16,6 +17,16 @@ Achieved:
 - Added focused unit tests and the `claude-provider:drill` live drill.
 - Added M13.2 text/base64 attachment transmission into Claude user content,
   including opaque attachment fallback references.
+- Added M13.3 Claude resume state with serialized `claude_session_id`,
+  provider-session-id launch mapping, and protocol version 27.
+- Added Claude restart/resume for changed Arroba model/effort/execution config.
+- Added Claude abort recovery by interrupting the stream-json process, restarting
+  with `--resume` when a Claude session id is known, and settling Arroba
+  cancellation state.
+- Added Claude runtime MCP launch config through `--mcp-config` and
+  `--strict-mcp-config`, keeping MCP wiring inside the provider adapter.
+- Verified local workflow parity with a Claude workflow node using a granted
+  provider MCP tool plus Arroba runtime MCP workflow output submission.
 
 Verified:
 
@@ -24,13 +35,22 @@ Verified:
 - `node --check apps/cli/scripts/live-claude-provider-drill.mjs`
 - `node apps/cli/scripts/live-claude-provider-drill.mjs --timeout-ms 180000 --keep-artifacts-on-failure`
 - `node apps/cli/scripts/live-claude-provider-drill.mjs --scenario attachment --timeout-ms 180000 --keep-artifacts-on-failure`
+- `node apps/cli/scripts/live-claude-provider-drill.mjs --scenario resume --timeout-ms 180000 --keep-artifacts-on-failure`
+- `node apps/cli/scripts/live-claude-provider-drill.mjs --scenario selection --timeout-ms 180000 --keep-artifacts-on-failure`
+- `node apps/cli/scripts/live-claude-provider-drill.mjs --scenario abort --timeout-ms 180000 --keep-artifacts-on-failure`
+- `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario mcp-echo-workflow --providers claude --provider-model claude=sonnet --poll-limit 120 --poll-interval-ms 2000`
+- `cargo test --manifest-path apps/kernel/Cargo.toml local_daemon_protocol --lib`
 
 Known verification gap:
 
-- `cargo test --manifest-path apps/kernel/Cargo.toml --lib` currently has two
-  failures outside the Claude provider slice: one pre-existing slice protocol
-  snapshot test still contains `TODO`, and one workflow IPC roundtrip fails on a
-  missing node-run reference.
+- Remote live drills currently fail before provider selection: both
+  `live-remote-workflow-runtime-drill.mjs --provider claude` and
+  `live-remote-machine-runtime-drill.mjs --provider claude` time out waiting for
+  relay target `home`, while relay logs report `daemon_count:0`. That blocks
+  live remote Claude validation independently of Claude provider launch/runtime
+  behavior.
+- Auth/status UX, larger artifact helper surfaces, native Claude TUI, slice
+  support, and managed I/O remain out of scope for this implementation slice.
 
 Claude Code should become a first-class Arroba provider at the same runtime level
 as Codex and OpenCode. The initial integration must use the local Claude Code CLI
@@ -164,9 +184,7 @@ protocol snapshot/hash tests, and add a focused drill.
 
 ### M13.1 Basic Local Claude Structured Provider
 
-Status: complete for local Arroba-client structured prompt I/O. Remote, resume,
-artifact attachment transmission, and native Claude TUI remain in later
-milestones below.
+Status: complete for local Arroba-client structured prompt I/O.
 
 Goal: launch Claude Code from the kernel, submit one prompt, stream deltas, and
 settle the turn from Claude's terminal result.
@@ -232,6 +250,8 @@ Live drills:
 
 ### M13.3 Resume, Abort, And Selection Updates
 
+Status: complete locally. Remote validation is tracked in M13.5.
+
 Goal: make Claude runs behave like persistent Arroba provider runs.
 
 Work:
@@ -256,6 +276,10 @@ Live drills:
 
 ### M13.4 Workflows And Multi-Agent Parity
 
+Status: complete for the local workflow MCP/runtime path. Mixed-provider and
+remote workflow drills remain follow-up validation once the remote relay target
+bootstrap issue is resolved.
+
 Goal: Claude participates in freeform and workflow runtime at the same level as
 Codex/OpenCode, without managed I/O guarantees yet.
 
@@ -279,6 +303,11 @@ Live drills:
   verify configured substitute activation.
 
 ### M13.5 Remote Claude Code
+
+Status: adapter support is expected to follow existing remote provider launch
+paths because Claude is now in the provider catalog/runtime stack. Live drills
+are currently blocked before provider use by remote relay target bootstrap
+failure.
 
 Goal: use Claude Code from remote Arroba clients and remote worker kernels while
 preserving the relay architecture.

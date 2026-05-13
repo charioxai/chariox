@@ -1064,6 +1064,7 @@ impl ProviderProcessService {
             && batch.resolved_variant.is_none()
             && batch.resolved_usage_tokens_total.is_none()
             && batch.resolved_usage.is_none()
+            && batch.resolved_resume_state.is_none()
             && !has_terminal_diagnostic
         {
             return Ok(());
@@ -1116,6 +1117,16 @@ impl ProviderProcessService {
             if run.usage() != usage {
                 run.set_usage(usage);
             }
+        }
+        if let Some(resume_state) = batch.resolved_resume_state.as_ref() {
+            run.set_resume_state(resume_state.clone());
+            run.set_provider_session_id(
+                resume_state
+                    .opencode_session_id()
+                    .or_else(|| resume_state.codex_thread_id())
+                    .or_else(|| resume_state.claude_session_id())
+                    .map(str::to_string),
+            );
         }
         Ok(())
     }

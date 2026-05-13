@@ -13,7 +13,7 @@ const DEFAULT_MODEL = 'sonnet'
 const DEFAULT_EFFORT = 'low'
 const DEFAULT_TIMEOUT_MS = 180_000
 const DEFAULT_POLL_MS = 1_000
-const SCENARIOS = new Set(['echo', 'attachment'])
+const SCENARIOS = new Set(['echo', 'attachment', 'resume', 'selection', 'abort'])
 
 function parseArgs(argv) {
   const options = {
@@ -59,7 +59,7 @@ function printHelp() {
     'Options:',
     `  --model ${DEFAULT_MODEL}`,
     `  --effort ${DEFAULT_EFFORT}`,
-    '  --scenario echo|attachment',
+    '  --scenario echo|attachment|resume|selection|abort',
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     '  --kernel ws://127.0.0.1:43284',
     `  --workspace ${repoRoot}`,
@@ -133,6 +133,14 @@ async function waitForKernel(LocalIpcClient, listSessionsRequest, kernelUrl) {
   throw new Error(`kernel did not become ready: ${lastError?.message ?? lastError}`)
 }
 
+async function getProviderRun(client, requests, providerRunId) {
+  const response = unwrap(
+    await client.send(requests.getProviderRunRequest(providerRunId)),
+    'ProviderRun',
+  )
+  return response.provider_run
+}
+
 async function waitForProviderRunReady(client, requests, providerRunId, timeoutMs) {
   const deadline = Date.now() + Math.min(timeoutMs, 60_000)
   let lastRun = null
@@ -147,6 +155,30 @@ async function waitForProviderRunReady(client, requests, providerRunId, timeoutM
     await sleep(250)
   }
   throw new Error(`timed out waiting for provider run ${providerRunId} to become ready\n${JSON.stringify(lastRun)}`)
+}
+
+async function waitForProviderSessionId(client, requests, providerRunId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  let lastRun = null
+  while (Date.now() < deadline) {
+    lastRun = await getProviderRun(client, requests, providerRunId)
+    if (lastRun?.provider_session_id) return lastRun.provider_session_id
+    await sleep(500)
+  }
+  throw new Error(`timed out waiting for Claude provider_session_id\n${JSON.stringify(lastRun)}`)
+}
+
+async function waitForNoActivePrompt(client, requests, sessionId, attachmentId, timeoutMs, pollMs) {
+  const deadline = Date.now() + timeoutMs
+  let lastState = null
+  while (Date.now() < deadline) {
+    await client.send(requests.pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
+    const stateResponse = await client.send(requests.getSessionStateRequest(sessionId))
+    lastState = stateResponse.SessionState?.session ?? stateResponse.SessionStateLoaded?.session ?? null
+    if (!lastState?.active_prompt) return lastState
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for active prompt to clear\n${JSON.stringify(lastState)}`)
 }
 
 async function terminateChild(child, signal = 'SIGTERM') {
@@ -209,6 +241,32 @@ function promptFixture(scenario, marker) {
     ].join('\n'),
     attachments: [],
   }
+}
+
+async function submitAndWaitForMarker(client, requests, sessionId, attachmentId, prompt, expected, options, attachments = []) {
+  await client.send(requests.submitPromptRequest(
+    sessionId,
+    attachmentId,
+    null,
+    prompt,
+    attachments,
+  ))
+  return waitForHistory(
+    client,
+    requests,
+    sessionId,
+    attachmentId,
+    expected,
+    options.timeoutMs,
+    options.pollMs,
+  )
+}
+
+function nextEffort(effort) {
+  const efforts = ['low', 'medium', 'high', 'xhigh', 'max']
+  const index = efforts.indexOf(effort)
+  if (index < 0) return 'medium'
+  return efforts[Math.min(index + 1, efforts.length - 1)] === effort ? 'medium' : efforts[Math.min(index + 1, efforts.length - 1)]
 }
 
 async function main() {
@@ -287,22 +345,117 @@ async function main() {
       variant: launched.variant,
       endpointMode: launched.endpoint_mode,
     })
-    await client.send(requests.submitPromptRequest(
-      session.id,
-      attachment.id,
-      null,
-      fixture.prompt,
-      fixture.attachments,
-    ))
-    const history = await waitForHistory(
-      client,
-      requests,
-      session.id,
-      attachment.id,
-      fixture.expected,
-      options.timeoutMs,
-      options.pollMs,
-    )
+    let history = null
+    if (options.scenario === 'resume') {
+      const remembered = `${marker}_REMEMBERED`
+      await submitAndWaitForMarker(
+        client,
+        requests,
+        session.id,
+        attachment.id,
+        [
+          `Remember this marker for the next resumed turn: ${remembered}`,
+          `Respond with exactly READY_${marker} and no extra prose.`,
+        ].join('\n'),
+        `READY_${marker}`,
+        options,
+      )
+      const providerSessionId = await waitForProviderSessionId(
+        client,
+        requests,
+        launched.id,
+        options.timeoutMs,
+      )
+      const resumeResponse = await client.send(requests.launchProviderRunRequest(
+        session.id,
+        'claude',
+        'default',
+        options.model,
+        options.effort,
+        null,
+        { providerSessionId },
+      ))
+      const resumePayload = resumeResponse.ProviderRunLaunched ?? resumeResponse.ProviderRunLaunchAccepted
+      if (!resumePayload?.provider_run) throw new Error(`unexpected resume launch response: ${JSON.stringify(resumeResponse)}`)
+      await waitForProviderRunReady(client, requests, resumePayload.provider_run.id, options.timeoutMs)
+      history = await submitAndWaitForMarker(
+        client,
+        requests,
+        session.id,
+        attachment.id,
+        'What marker were you asked to remember in the previous turn? Respond with exactly that marker and no extra prose.',
+        remembered,
+        options,
+      )
+      log('resume-verified', { providerSessionId, resumedProviderRunId: resumePayload.provider_run.id })
+    } else if (options.scenario === 'selection') {
+      const firstMarker = `${marker}_SELECTION_BEFORE`
+      await submitAndWaitForMarker(
+        client,
+        requests,
+        session.id,
+        attachment.id,
+        `Respond with exactly this marker and no extra prose:\n${firstMarker}`,
+        firstMarker,
+        options,
+      )
+      const updatedEffort = nextEffort(options.effort)
+      await client.send(requests.updateProviderRunSelectionRequest(session.id, launched.id, {
+        model: options.model,
+        variant: updatedEffort,
+      }))
+      const secondMarker = `${marker}_SELECTION_AFTER`
+      history = await submitAndWaitForMarker(
+        client,
+        requests,
+        session.id,
+        attachment.id,
+        `Respond with exactly this marker and no extra prose:\n${secondMarker}`,
+        secondMarker,
+        options,
+      )
+      const updatedRun = await getProviderRun(client, requests, launched.id)
+      if (updatedRun.variant !== updatedEffort) {
+        throw new Error(`provider run variant did not update to ${updatedEffort}: ${JSON.stringify(updatedRun)}`)
+      }
+      log('selection-verified', { providerRunId: launched.id, effort: updatedEffort })
+    } else if (options.scenario === 'abort') {
+      await client.send(requests.submitPromptRequest(
+        session.id,
+        attachment.id,
+        null,
+        [
+          'Start a long response and keep writing for a while.',
+          'Do not finish immediately; this prompt is intentionally cancelled by a live drill.',
+        ].join('\n'),
+        [],
+      ))
+      await sleep(2_000)
+      await client.send(requests.cancelActivePromptRequest(session.id, attachment.id))
+      await waitForNoActivePrompt(client, requests, session.id, attachment.id, options.timeoutMs, options.pollMs)
+      const recoveryMarker = `${marker}_ABORT_RECOVERY`
+      history = await submitAndWaitForMarker(
+        client,
+        requests,
+        session.id,
+        attachment.id,
+        `Respond with exactly this marker and no extra prose:\n${recoveryMarker}`,
+        recoveryMarker,
+        options,
+      )
+      log('abort-recovery-verified', { providerRunId: launched.id, marker: recoveryMarker })
+    } else {
+      history = await submitAndWaitForMarker(
+        client,
+        requests,
+        session.id,
+        attachment.id,
+        fixture.prompt,
+        fixture.expected,
+        options,
+        fixture.attachments,
+      )
+    }
     log('verified', { scenario: options.scenario, marker: fixture.expected, historyEntries: history.entries.length })
     await client.send(requests.endSessionRequest(session.id)).catch(() => {})
     succeeded = true

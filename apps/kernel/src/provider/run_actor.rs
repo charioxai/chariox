@@ -1221,7 +1221,7 @@ fn execute_abort_command(
     }
     if run.adapter_key() == "claude" {
         let (slot, mut state) = take_claude_runtime(claude_runs, &run_id)?;
-        let result = abort_claude_turn(&run_id, &mut state);
+        let result = abort_claude_turn(&run, &mut state);
         restore_claude_runtime_if_live(claude_runs, cleared_runs, &run_id, &slot, state);
         return result;
     }
@@ -1346,6 +1346,7 @@ fn execute_output_poll_command(
             resolved_variant: None,
             resolved_usage_tokens_total: poll.resolved_usage.and_then(|usage| usage.total_tokens),
             resolved_usage: poll.resolved_usage,
+            resolved_resume_state: None,
         }));
     }
     if run.adapter_key() == "claude" {
@@ -1399,6 +1400,7 @@ fn execute_output_poll_command(
         resolved_variant: drain.resolved_variant,
         resolved_usage_tokens_total: drain.resolved_usage_tokens_total,
         resolved_usage: None,
+        resolved_resume_state: None,
     }))
 }
 

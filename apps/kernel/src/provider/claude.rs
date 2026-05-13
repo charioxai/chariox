@@ -3,9 +3,11 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
+use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
 use crate::provider::{
     AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest,
     OpenCodeProviderCatalog, OpenCodeProviderInfo, OpenCodeProviderModel, ProviderLaunchResult,
+    RuntimeProviderRun,
 };
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";
@@ -76,7 +78,7 @@ fn plan_claude_launch_unlocked(
         process_label: "claude:stream-json".to_string(),
         pty_target: None,
         pty_program: Some(executable.display().to_string()),
-        pty_args: claude_launch_args(request),
+        pty_args: claude_launch_args(request)?,
         pty_env: BTreeMap::new(),
         pty_env_remove: claude_provider_env_remove(Some(request)),
         working_directory: request.working_directory.clone(),
@@ -84,7 +86,54 @@ fn plan_claude_launch_unlocked(
     })
 }
 
-fn claude_launch_args(request: &LaunchProviderRequest) -> Vec<String> {
+pub(crate) fn claude_launch_args_for_run(
+    run: &RuntimeProviderRun,
+    resume_session_id: Option<&str>,
+) -> Result<Vec<String>, DaemonError> {
+    claude_launch_args_from_parts(
+        run.model(),
+        run.variant(),
+        run.execution_mode(),
+        run.permission_level(),
+        resume_session_id,
+        run.runtime_mcp_server_url(),
+        run.runtime_mcp_auth_token(),
+        run.mcp_servers(),
+    )
+}
+
+fn claude_launch_args(request: &LaunchProviderRequest) -> Result<Vec<String>, DaemonError> {
+    claude_launch_args_from_parts(
+        request.model.as_str(),
+        request.variant.as_deref(),
+        request.execution_mode.unwrap_or_default(),
+        request.permission_level.unwrap_or_default(),
+        request
+            .resume_state
+            .as_ref()
+            .and_then(|state| state.claude_session_id()),
+        request
+            .runtime_mcp_binding
+            .as_ref()
+            .map(|binding| binding.server_url.as_str()),
+        request
+            .runtime_mcp_binding
+            .as_ref()
+            .map(|binding| binding.auth_token.as_str()),
+        &request.mcp_servers,
+    )
+}
+
+fn claude_launch_args_from_parts(
+    model: &str,
+    variant: Option<&str>,
+    execution_mode: AgentExecutionMode,
+    permission_level: AgentPermissionLevel,
+    resume_session_id: Option<&str>,
+    runtime_mcp_server_url: Option<&str>,
+    runtime_mcp_auth_token: Option<&str>,
+    mcp_servers: &[ArrobaMcpServerConfig],
+) -> Result<Vec<String>, DaemonError> {
     let mut args = vec![
         "-p".to_string(),
         "--input-format".to_string(),
@@ -96,30 +145,24 @@ fn claude_launch_args(request: &LaunchProviderRequest) -> Vec<String> {
         "--replay-user-messages".to_string(),
     ];
 
-    let model = normalized_claude_model(request.model.as_str());
+    let model = normalized_claude_model(model);
     if !model.is_empty() && model != "default" {
         args.extend(["--model".to_string(), model]);
     }
-    if let Some(variant) = request
-        .variant
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(variant) = variant.map(str::trim).filter(|value| !value.is_empty()) {
         args.extend(["--effort".to_string(), variant.to_string()]);
     }
-    if let Some(session_id) = request.resume_state.as_ref().and_then(|state| {
-        state
-            .opencode_session_id()
-            .or_else(|| state.codex_thread_id())
-    }) {
+    if let Some(session_id) = resume_session_id {
         args.extend(["--resume".to_string(), session_id.to_string()]);
     }
+    if let Some(config) =
+        claude_mcp_config(mcp_servers, runtime_mcp_server_url, runtime_mcp_auth_token)?
+    {
+        args.extend(["--mcp-config".to_string(), config]);
+        args.push("--strict-mcp-config".to_string());
+    }
 
-    match (
-        request.execution_mode.unwrap_or_default(),
-        request.permission_level.unwrap_or_default(),
-    ) {
+    match (execution_mode, permission_level) {
         (AgentExecutionMode::Plan, _) => {
             args.extend(["--permission-mode".to_string(), "plan".to_string()]);
         }
@@ -135,7 +178,96 @@ fn claude_launch_args(request: &LaunchProviderRequest) -> Vec<String> {
         }
     }
 
-    args
+    Ok(args)
+}
+
+fn claude_mcp_config(
+    backing_servers: &[ArrobaMcpServerConfig],
+    runtime_mcp_url: Option<&str>,
+    runtime_mcp_auth_token: Option<&str>,
+) -> Result<Option<String>, DaemonError> {
+    let mut mcp_servers = serde_json::Map::new();
+    let provider_mcp_servers = super::mcp_proxy::provider_facing_mcp_proxy_configs(
+        backing_servers,
+        runtime_mcp_url,
+        runtime_mcp_auth_token,
+    )?;
+    for server in &provider_mcp_servers {
+        mcp_servers.insert(server.name.clone(), claude_mcp_server_config(server));
+    }
+    if let (Some(url), Some(token)) = (runtime_mcp_url, runtime_mcp_auth_token) {
+        mcp_servers.insert(
+            "arroba".to_string(),
+            serde_json::json!({
+                "type": "http",
+                "url": url,
+                "headers": {
+                    "Authorization": format!("Bearer {token}"),
+                },
+            }),
+        );
+    }
+    if mcp_servers.is_empty() {
+        return Ok(None);
+    }
+    serde_json::to_string(&serde_json::json!({ "mcpServers": mcp_servers }))
+        .map(Some)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "claude_mcp_config",
+            message: error.to_string(),
+        })
+}
+
+fn claude_mcp_server_config(server: &ArrobaMcpServerConfig) -> serde_json::Value {
+    match &server.transport {
+        ArrobaMcpTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            env_vars,
+            cwd,
+        } => {
+            let mut resolved_env = env.clone();
+            for name in env_vars {
+                if let Ok(value) = std::env::var(name) {
+                    resolved_env.insert(name.clone(), value);
+                }
+            }
+            let mut config = serde_json::json!({
+                "type": "stdio",
+                "command": command,
+                "args": args,
+                "env": resolved_env,
+            });
+            if let Some(cwd) = cwd {
+                config["cwd"] = serde_json::Value::String(cwd.display().to_string());
+            }
+            config
+        }
+        ArrobaMcpTransportConfig::StreamableHttp {
+            url,
+            bearer_token_env_var,
+            http_headers,
+            env_http_headers,
+        } => {
+            let mut headers = http_headers.clone();
+            for (header, env_var) in env_http_headers {
+                if let Ok(value) = std::env::var(env_var) {
+                    headers.insert(header.clone(), value);
+                }
+            }
+            if let Some(env_var) = bearer_token_env_var {
+                if let Ok(value) = std::env::var(env_var) {
+                    headers.insert("Authorization".to_string(), format!("Bearer {value}"));
+                }
+            }
+            serde_json::json!({
+                "type": "http",
+                "url": url,
+                "headers": headers,
+            })
+        }
+    }
 }
 
 fn normalized_claude_model(model: &str) -> String {
@@ -232,6 +364,7 @@ mod tests {
 
     use crate::provider::{
         AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest,
+        RuntimeMcpBinding,
     };
 
     use super::{plan_claude_launch, resolve_claude_executable};
@@ -325,5 +458,51 @@ mod tests {
             .pty_args
             .iter()
             .any(|arg| arg == "--allow-dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn injects_runtime_mcp_config_into_launch_args() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-claude-resolve-test-{}-mcp",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+
+        let request =
+            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
+                .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+                    "http://127.0.0.1:43120/mcp",
+                    "token-123",
+                ));
+        let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
+
+        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        let _ = fs::remove_file(&path);
+
+        let config_arg = launch
+            .pty_args
+            .windows(2)
+            .find_map(|pair| (pair[0] == "--mcp-config").then(|| pair[1].as_str()))
+            .expect("mcp config should be passed");
+        let config: serde_json::Value =
+            serde_json::from_str(config_arg).expect("mcp config should be JSON");
+        assert_eq!(
+            config.pointer("/mcpServers/arroba/type"),
+            Some(&serde_json::json!("http"))
+        );
+        assert_eq!(
+            config.pointer("/mcpServers/arroba/url"),
+            Some(&serde_json::json!("http://127.0.0.1:43120/mcp"))
+        );
+        assert_eq!(
+            config.pointer("/mcpServers/arroba/headers/Authorization"),
+            Some(&serde_json::json!("Bearer token-123"))
+        );
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "--strict-mcp-config"));
     }
 }
