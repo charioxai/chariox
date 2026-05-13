@@ -609,7 +609,7 @@ impl OpenCodeClient {
             .map_err(|error| self.protocol_error("event_subscribe", error.to_string()))?;
 
         let request = format!(
-            "GET /event HTTP/1.1\r\nHost: {address}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
+            "GET /event HTTP/1.1\r\nHost: {address}\r\nAccept: text/event-stream\r\nX-Arroba-Provider-Client: kernel\r\nConnection: close\r\n\r\n"
         );
         stream
             .write_all(request.as_bytes())
@@ -815,7 +815,7 @@ impl OpenCodeClient {
             })?
             .unwrap_or_default();
         let request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nX-Arroba-Provider-Client: kernel\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body_bytes.len()
         );
         stream

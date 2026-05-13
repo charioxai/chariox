@@ -185,7 +185,7 @@ Semantics:
 Provider-specific transport:
 
 - Codex uses a native WebSocket proxy in front of a Codex app-server endpoint and binds the observed Codex thread to the Arroba provider run.
-- OpenCode uses the kernel-launched OpenCode server and a native HTTP proxy in front of the provider session used by `opencode attach`.
+- OpenCode uses a native HTTP proxy in front of a launcher-managed `opencode serve` endpoint. The kernel binds its provider run to the proxy endpoint, while the provider TUI attaches to the same proxy/provider session.
 
 ## 3.4 Workflow Coordination Semantics
 
@@ -350,6 +350,7 @@ OpenCode current runtime note:
 
 - the daemon already routes OpenCode prompt submit through the provider-native local HTTP session APIs
 - the daemon already consumes OpenCode output and completion through the provider event stream
+- provider-native TUI mode can supply an external OpenCode structured endpoint so the native launcher can proxy both kernel and provider-TUI traffic before forwarding to `opencode serve`
 - active-turn cancellation is routed through the OpenCode abort API and reconciled from provider events before queued prompts advance
 - PTY remains a liveness/process-management surface for the OpenCode server process, not the primary prompt/output transport
 - the same daemon-owned local request/response surface remains the client contract while the adapter becomes more provider-specific internally

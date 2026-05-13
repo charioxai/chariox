@@ -442,7 +442,7 @@ async function main() {
     const state = (stateResponse.SessionState ?? stateResponse.SessionStateLoaded).session
     console.log(JSON.stringify({
       status: "ok",
-      architecture: "opencode-tui + opencode-native-cli + arroba-cli -> native HTTP proxy -> kernel-managed opencode server",
+      architecture: "opencode-tui + opencode-native-cli + arroba-cli -> native HTTP proxy -> cli-managed opencode server",
       kernelUrl,
       sessionId,
       marker,

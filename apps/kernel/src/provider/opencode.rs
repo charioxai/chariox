@@ -53,6 +53,23 @@ pub fn plan_opencode_launch(
 fn plan_opencode_launch_unlocked(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
+    if let Some(endpoint) = request.and_then(|request| request.structured_endpoint.clone()) {
+        let working_directory = request.and_then(|request| request.working_directory.clone());
+        return Ok(ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::External,
+            process_label: "opencode:native-server-proxy".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: request
+                .map(|request| request.provider_env_remove.clone())
+                .unwrap_or_default(),
+            working_directory,
+            structured_endpoint: Some(endpoint),
+        });
+    }
+
     if request.is_some() {
         let executable = resolve_opencode_executable_unlocked()?;
         let port = reserve_unused_port()?;
@@ -467,6 +484,23 @@ mod tests {
         assert_eq!(
             launch.structured_endpoint.as_deref(),
             Some(endpoint.as_str())
+        );
+    }
+
+    #[test]
+    fn plans_external_launch_when_structured_endpoint_is_supplied() {
+        let request =
+            LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "default")
+                .with_structured_endpoint("http://127.0.0.1:45678");
+
+        let launch = plan_opencode_launch(Some(&request)).expect("launch plan should resolve");
+
+        assert_eq!(launch.endpoint_mode, AgentEndpointMode::External);
+        assert_eq!(launch.pty_program, None);
+        assert!(launch.pty_args.is_empty());
+        assert_eq!(
+            launch.structured_endpoint.as_deref(),
+            Some("http://127.0.0.1:45678"),
         );
     }
 

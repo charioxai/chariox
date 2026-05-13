@@ -1,6 +1,7 @@
 import { spawn, execFile } from "node:child_process"
 import { appendFileSync } from "node:fs"
 import http, { type IncomingMessage, type ServerResponse } from "node:http"
+import net from "node:net"
 import path from "node:path"
 import process from "node:process"
 import { Readable } from "node:stream"
@@ -64,6 +65,11 @@ type NativeProviderSelection = {
   agent?: string
 }
 
+type OpenCodeProxyState = {
+  providerRunId: string | null
+  lastNativeSelection: NativeProviderSelection | null
+}
+
 export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
   const options = parseNativeOpenCodeArgs(args)
   const inferredTargets = await inferWorkspaceTargetsFromLaunchDirectory(process.cwd())
@@ -79,6 +85,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     : undefined)
 
   let proxy: http.Server | null = null
+  let openCodeServer: ReturnType<typeof spawn> | null = null
   let pump: { stop: () => void } | null = null
   try {
     const created = options.sessionRef
@@ -93,34 +100,40 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     const agent = created?.agent
       ? await maybeAliasAgent(client, session.id, created.agent, options.agentAlias)
       : await spawnOpenCodeAgent(client, session.id, options.agentAlias)
-    const launched = await launchProviderRun(client, session.id, "opencode", "default", "default", "", agent.id)
-    const run = await waitForOpenCodeRunReady(client, launched.id)
-    const structuredEndpoint = run.structured_endpoint
-    const providerSessionId = run.provider_session_id
-    if (!structuredEndpoint || !providerSessionId) {
-      throw new Error("OpenCode provider run did not expose structured_endpoint and provider_session_id")
+    const upstreamBaseUrl = `http://127.0.0.1:${await reservePort()}`
+    openCodeServer = await startOpenCodeServer(upstreamBaseUrl, worktree)
+    const proxyState: OpenCodeProxyState = {
+      providerRunId: null,
+      lastNativeSelection: null,
     }
-    assertLocalStructuredEndpoint(structuredEndpoint)
-
     proxy = await startOpenCodeProxy({
-      upstreamBaseUrl: structuredEndpoint,
+      upstreamBaseUrl,
       client,
       sessionId: session.id,
       attachmentId: attachment.id,
       agentId: agent.id,
-      providerRunId: run.id,
-    })
+    }, proxyState)
     const proxyAddress = proxy.address()
     if (!proxyAddress || typeof proxyAddress === "string") {
       throw new Error("OpenCode proxy did not expose a TCP port")
     }
     const proxyUrl = `http://127.0.0.1:${proxyAddress.port}`
+    const launched = await launchProviderRun(client, session.id, "opencode", "default", "default", "", agent.id, {
+      structuredEndpoint: proxyUrl,
+    })
+    const run = await waitForOpenCodeRunReady(client, launched.id)
+    const providerSessionId = run.provider_session_id
+    if (!providerSessionId) {
+      throw new Error("OpenCode provider run did not expose provider_session_id")
+    }
+    proxyState.providerRunId = run.id
     process.stderr.write([
       "[arroba opencode native-tui]",
       `  arroba session: ${session.id}${session.alias ? ` (${session.alias})` : ""}`,
       `  arroba agent:   ${agent.id}${agent.alias ? ` (${agent.alias})` : ""}`,
       `  provider run:   ${run.id}`,
       `  opencode sess:  ${providerSessionId}`,
+      `  opencode server:${upstreamBaseUrl}`,
       `  proxy:          ${proxyUrl}`,
       "  prompt policy:  native prompts pass through; Arroba observes the session",
       "",
@@ -136,6 +149,14 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     pump?.stop()
     if (proxy) {
       await new Promise<void>((resolve) => proxy!.close(() => resolve()))
+    }
+    if (openCodeServer && openCodeServer.exitCode == null) {
+      openCodeServer.kill("SIGTERM")
+      await Promise.race([
+        new Promise((resolve) => openCodeServer?.once("exit", resolve)),
+        sleep(2_000),
+      ])
+      if (openCodeServer.exitCode == null) openCodeServer.kill("SIGKILL")
     }
     await client.close()
   }
@@ -349,9 +370,18 @@ async function launchProviderRun(
   model: string,
   effort: string,
   agentId: string,
+  native?: {
+    structuredEndpoint?: string | null
+    providerSessionId?: string | null
+  },
 ): Promise<RuntimeProviderRun> {
+  const nativeBinding = {
+    ...(native?.structuredEndpoint !== undefined ? { structuredEndpoint: native.structuredEndpoint } : {}),
+    ...(native?.providerSessionId !== undefined ? { providerSessionId: native.providerSessionId } : {}),
+    nativeTui: true,
+  }
   const response = await client.send<Record<string, unknown>>(
-    launchProviderRunRequest(sessionId, provider, accountProfile, model, effort, agentId, { nativeTui: true }),
+    launchProviderRunRequest(sessionId, provider, accountProfile, model, effort, agentId, nativeBinding),
   )
   const payload = "ProviderRunLaunched" in response
     ? expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched")
@@ -413,19 +443,67 @@ function assertLocalStructuredEndpoint(endpoint: string) {
   }
 }
 
+async function reservePort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address()
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("port reservation did not expose a TCP address")))
+        return
+      }
+      const port = address.port
+      server.close(() => resolve(port))
+    })
+  })
+}
+
+async function startOpenCodeServer(baseUrl: string, workingDirectory: string) {
+  assertLocalStructuredEndpoint(baseUrl)
+  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
+  const url = new URL(baseUrl)
+  const child = spawn(executable, [
+    "serve",
+    "--hostname",
+    url.hostname,
+    "--port",
+    url.port,
+  ], {
+    cwd: workingDirectory,
+    stdio: ["ignore", "ignore", "inherit"],
+    env: process.env,
+  })
+  child.once("error", (error) => {
+    throw error
+  })
+  const deadline = Date.now() + 15_000
+  while (Date.now() < deadline) {
+    if (await openCodeHealthIsReady(baseUrl)) return child
+    if (child.exitCode !== null) {
+      throw new Error(`opencode serve exited before becoming ready with ${child.exitCode}`)
+    }
+    await sleep(100)
+  }
+  throw new Error(`timed out waiting for opencode serve at ${baseUrl}`)
+}
+
+async function openCodeHealthIsReady(baseUrl: string): Promise<boolean> {
+  try {
+    const response = await fetch(new URL("/global/health", baseUrl))
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
 async function startOpenCodeProxy(options: {
   upstreamBaseUrl: string
   client: LocalIpcClient
   sessionId: string
   attachmentId: string
   agentId: string
-  providerRunId: string
-}): Promise<http.Server> {
-  const state: {
-    lastNativeSelection: NativeProviderSelection | null
-  } = {
-    lastNativeSelection: null,
-  }
+}, state: OpenCodeProxyState): Promise<http.Server> {
   const server = http.createServer((request, response) => {
     handleProxyRequest(request, response, options, state).catch((error) => {
       if (!response.headersSent) {
@@ -454,17 +532,24 @@ async function handleProxyRequest(
     sessionId: string
     attachmentId: string
     agentId: string
-    providerRunId: string
   },
-  state: {
-    lastNativeSelection: NativeProviderSelection | null
-  },
+  state: OpenCodeProxyState,
 ): Promise<void> {
   const method = request.method ?? "GET"
   const path = request.url ?? "/"
+  const isKernelRequest = request.headers["x-arroba-provider-client"] === "kernel"
   debugNativeMutation("request", { method, path })
   const promptMatch = method === "POST" ? path.match(/^\/session\/([^/]+)\/(?:message|prompt_async)(?:\?.*)?$/) : null
+  if (promptMatch && isKernelRequest) {
+    await proxyToOpenCode(request, response, options.upstreamBaseUrl)
+    return
+  }
   if (promptMatch) {
+    if (!state.providerRunId) {
+      response.writeHead(503, { "content-type": "application/json" })
+      response.end(JSON.stringify({ error: "OpenCode provider run is not bound yet" }))
+      return
+    }
     const body = await readRequestJson<OpenCodePromptBody>(request)
     debugNativeMutation(path.includes("/prompt_async") ? "prompt_async" : "message", body)
     const prompt = extractPromptText(body)
@@ -473,12 +558,12 @@ async function handleProxyRequest(
     if (selection) {
       debugNativeMutation("selection_observed", selection)
     }
-    const run = await getProviderRun(options.client, options.providerRunId)
+    const run = await getProviderRun(options.client, state.providerRunId)
     if (selection && shouldApplyNativeSelection(selection, state.lastNativeSelection, run)) {
       const updated = await updateProviderRunSelection(
         options.client,
         options.sessionId,
-        options.providerRunId,
+        state.providerRunId,
         selection,
       )
       debugNativeMutation("selection_applied", {
@@ -506,7 +591,7 @@ async function handleProxyRequest(
   }
 
   const abortMatch = method === "POST" ? path.match(/^\/session\/([^/]+)\/abort(?:\?.*)?$/) : null
-  if (abortMatch) {
+  if (abortMatch && !isKernelRequest) {
     await options.client.send<Record<string, unknown>>(
       cancelActivePromptRequest(options.sessionId, options.attachmentId),
     )
@@ -515,7 +600,7 @@ async function handleProxyRequest(
     return
   }
 
-  if (method === "POST" && /^\/session\/[^/]+\/permissions\//.test(path)) {
+  if (!isKernelRequest && method === "POST" && /^\/session\/[^/]+\/permissions\//.test(path)) {
     response.writeHead(409, { "content-type": "application/json" })
     response.end(JSON.stringify({
       error: "OpenCode permission responses are blocked for Arroba native TUI agents; answer provider permissions through Arroba.",
