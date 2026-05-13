@@ -4,14 +4,31 @@ set -Eeuo pipefail
 ROOT="${ARROBA_SLICE_ROOT:-/opt/arroba-slice}"
 LOGS="$ROOT/logs"
 KERNEL_PORT="${ARROBA_SLICE_KERNEL_PORT:-43119}"
+RELAY_PORT="${ARROBA_SLICE_RELAY_PORT:-43130}"
+RELAY_URL="${ARROBA_SLICE_RELAY_URL:-ws://127.0.0.1:$RELAY_PORT}"
+RELAY_TOKEN="${ARROBA_SLICE_RELAY_TOKEN:-slice-local}"
+DAEMON_ALIAS="${ARROBA_SLICE_DAEMON_ALIAS:-slice:linux}"
+MACHINE_ID="${ARROBA_SLICE_MACHINE_ID:-slice:linux}"
+MACHINE_ALIAS="${ARROBA_SLICE_MACHINE_ALIAS:-linux}"
 mkdir -p "$LOGS"
 
 screen -S arroba-slice-relay -X quit >/dev/null 2>&1 || true
 screen -S arroba-slice-kernel -X quit >/dev/null 2>&1 || true
 
-screen -dmS arroba-slice-relay "$ROOT/bin/arroba-relay"
-sleep 1
-screen -dmS arroba-slice-kernel env ARROBA_KERNEL_PORT="$KERNEL_PORT" "$ROOT/bin/arroba-kernel"
+if [[ -z "${ARROBA_SLICE_RELAY_URL:-}" ]]; then
+  screen -dmS arroba-slice-relay env ARROBA_RELAY_PORT="$RELAY_PORT" ARROBA_RELAY_TOKEN="$RELAY_TOKEN" "$ROOT/bin/arroba-relay"
+  sleep 1
+fi
+
+screen -dmS arroba-slice-kernel env \
+  ARROBA_KERNEL_PORT="$KERNEL_PORT" \
+  ARROBA_DAEMON_ALIAS="$DAEMON_ALIAS" \
+  ARROBA_MACHINE_ID="$MACHINE_ID" \
+  ARROBA_MACHINE_ALIAS="$MACHINE_ALIAS" \
+  ARROBA_OS_NAME="Linux slice" \
+  ARROBA_RELAY_URL="$RELAY_URL" \
+  ARROBA_RELAY_TOKEN="$RELAY_TOKEN" \
+  ARROBA_ACCEPT_REMOTE_LEASES=1 \
+  "$ROOT/bin/arroba-kernel"
 
 screen -ls | sed -n '/arroba-slice-/p'
-

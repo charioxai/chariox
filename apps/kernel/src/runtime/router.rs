@@ -3710,10 +3710,24 @@ impl CommandRouter {
             )?
         };
         let supervisor_slice = initial_slice.clone();
+        let relay = {
+            let app = self.app.lock().await;
+            match (
+                app.config().relay_url.clone(),
+                app.config().relay_token.clone(),
+            ) {
+                (Some(relay_url), Some(relay_token)) => Some(crate::slice::LocalDockerSliceRelay {
+                    relay_url,
+                    relay_token,
+                }),
+                _ => None,
+            }
+        };
         let supervisor_result = tokio::task::spawn_blocking(move || {
             crate::slice::run_local_docker_slice_action(
                 &supervisor_slice,
                 crate::slice::LocalDockerSliceAction::Provision,
+                relay,
             )
         })
         .await
@@ -3753,6 +3767,7 @@ impl CommandRouter {
             crate::slice::run_local_docker_slice_action(
                 &resolved_slice,
                 crate::slice::LocalDockerSliceAction::Stop,
+                None,
             )
         })
         .await

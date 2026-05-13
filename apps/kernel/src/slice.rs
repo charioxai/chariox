@@ -97,6 +97,12 @@ pub enum LocalDockerSliceAction {
     Stop,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalDockerSliceRelay {
+    pub relay_url: String,
+    pub relay_token: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SliceStore {
     inner: Arc<Mutex<SliceStoreState>>,
@@ -261,6 +267,7 @@ impl SliceStore {
 pub fn run_local_docker_slice_action(
     record: &SliceRecord,
     action: LocalDockerSliceAction,
+    relay: Option<LocalDockerSliceRelay>,
 ) -> Result<(), DaemonError> {
     if record.backend != SliceBackendKind::LocalDocker {
         return Err(DaemonError::LocalTransport {
@@ -298,7 +305,21 @@ pub fn run_local_docker_slice_action(
         .env("ARROBA_SLICE_START_DESKTOP", "1")
         .env("ARROBA_SLICE_START_PROVIDER_SERVERS", "1")
         .env("ARROBA_SLICE_START_RUNTIME", "1")
-        .env("ARROBA_SLICE_IMPORT_PROVIDER_AUTH", "0");
+        .env("ARROBA_SLICE_IMPORT_PROVIDER_AUTH", "0")
+        .env(
+            "ARROBA_SLICE_DAEMON_ALIAS",
+            record.worker_kernel_ref.clone(),
+        )
+        .env("ARROBA_SLICE_MACHINE_ID", format!("slice:{}", record.id))
+        .env("ARROBA_SLICE_MACHINE_ALIAS", record.name.clone());
+    if let Some(relay) = relay {
+        command
+            .env(
+                "ARROBA_SLICE_RELAY_URL",
+                relay_url_for_container(&relay.relay_url),
+            )
+            .env("ARROBA_SLICE_RELAY_TOKEN", relay.relay_token);
+    }
     if let Some(workspace_mount) = record.workspace_mount.as_deref() {
         command.env("ARROBA_SLICE_WORKSPACE", workspace_mount);
     }
@@ -325,6 +346,18 @@ pub fn run_local_docker_slice_action(
             command_output_preview(&output)
         ),
     })
+}
+
+fn relay_url_for_container(relay_url: &str) -> String {
+    relay_url
+        .strip_prefix("ws://127.0.0.1:")
+        .map(|rest| format!("ws://host.docker.internal:{rest}"))
+        .or_else(|| {
+            relay_url
+                .strip_prefix("ws://localhost:")
+                .map(|rest| format!("ws://host.docker.internal:{rest}"))
+        })
+        .unwrap_or_else(|| relay_url.to_string())
 }
 
 impl LocalDockerSliceAction {
@@ -483,5 +516,21 @@ mod tests {
         assert!(store
             .create("kernel-1", "machine-1", create_input("slice-1"))
             .is_err());
+    }
+
+    #[test]
+    fn local_docker_relay_url_rewrites_host_loopback_for_container() {
+        assert_eq!(
+            relay_url_for_container("ws://127.0.0.1:43130"),
+            "ws://host.docker.internal:43130"
+        );
+        assert_eq!(
+            relay_url_for_container("ws://localhost:43130"),
+            "ws://host.docker.internal:43130"
+        );
+        assert_eq!(
+            relay_url_for_container("wss://relay.example/ws"),
+            "wss://relay.example/ws"
+        );
     }
 }
