@@ -24,6 +24,7 @@ use crate::session::{
 };
 
 const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
+const INLINE_PROMPT_ATTACHMENT_DIR: &str = "arroba-terminal-prompt-attachments";
 
 #[derive(Debug)]
 enum AgentCommand {
@@ -231,7 +232,7 @@ fn materialize_inline_prompt_attachments(
                 .map(sanitize_attachment_filename)
                 .unwrap_or_else(|| format!("attachment-{index}"));
             let root = std::env::temp_dir()
-                .join("arroba-web-cli-prompt-attachments")
+                .join(INLINE_PROMPT_ATTACHMENT_DIR)
                 .join(sanitize_path_component(session_id))
                 .join(sanitize_path_component(agent_id));
             fs::create_dir_all(&root).map_err(|error| DaemonError::LocalTransport {
@@ -763,7 +764,9 @@ mod tests {
         SubmitPromptRequest,
     };
     use crate::provider::{LaunchProviderRequest, ProviderRunOperationLanes};
-    use crate::runtime::agent_actor::{materialize_inline_prompt_attachments, AgentRuntime};
+    use crate::runtime::agent_actor::{
+        materialize_inline_prompt_attachments, AgentRuntime, INLINE_PROMPT_ATTACHMENT_DIR,
+    };
     use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::runtime::prompt_state::PromptStateOwner;
     use crate::runtime::session_actor::FocusedAgentProjection;
@@ -801,6 +804,7 @@ mod tests {
         );
         assert!(path.contains("session-one"));
         assert!(path.contains("agent-one"));
+        assert!(path.contains(INLINE_PROMPT_ATTACHMENT_DIR));
     }
 
     fn launch_dev_stub_provider(

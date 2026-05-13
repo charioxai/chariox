@@ -407,7 +407,7 @@ fn provider_run_switching_parks_previous_run_and_keeps_terminal_flow_working() {
         ProviderRunState::Running
     );
 
-    app.send_terminal_input(session.id(), source.id(), b"switched run\n")
+    app.send_terminal_input(session.id(), source.id(), None, b"switched run\n")
         .expect("attachment input should reach active provider run");
     let records = wait_for_terminal_output(&mut app, session.id(), source.id());
     let combined = records
