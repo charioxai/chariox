@@ -32,10 +32,24 @@ pub(crate) fn apply_execution_path_instructions(prompt: &str, run: &RuntimeProvi
     format!("{}\n\n{}", path_instructions, prompt)
 }
 
+pub(crate) fn apply_structured_prompt_instructions(
+    prompt: &str,
+    run: &RuntimeProviderRun,
+) -> String {
+    if !run.client_interface().is_arroba() {
+        return prompt.to_string();
+    }
+
+    let prompt = apply_runtime_instructions(prompt);
+    apply_execution_path_instructions(&prompt, run)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderClientInterface, ProviderLaunchResult,
+    };
     use std::collections::BTreeMap;
 
     fn launch_result() -> ProviderLaunchResult {
@@ -114,5 +128,28 @@ mod tests {
 
         assert!(prompt.starts_with(runtime_instructions()));
         assert!(prompt.ends_with("\n\nhello"));
+    }
+
+    #[test]
+    fn structured_prompt_instructions_are_added_for_arroba_runs() {
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "gpt-5.4");
+        let run = RuntimeProviderRun::new("provider-run-3", &request, launch_result());
+        let prompt = apply_structured_prompt_instructions("hello", &run);
+
+        assert!(prompt.starts_with(native_permission_instructions()));
+        assert!(prompt.contains(runtime_instructions()));
+        assert!(prompt.ends_with("\n\nhello"));
+    }
+
+    #[test]
+    fn structured_prompt_instructions_skip_native_tui_runs() {
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "gpt-5.4")
+            .with_client_interface(ProviderClientInterface::NativeTui);
+        let run = RuntimeProviderRun::new("provider-run-4", &request, launch_result());
+        let prompt = apply_structured_prompt_instructions("hello", &run);
+
+        assert_eq!(prompt, "hello");
+        assert!(!prompt.contains(runtime_instructions()));
+        assert!(!prompt.contains(native_permission_instructions()));
     }
 }

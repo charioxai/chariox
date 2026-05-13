@@ -457,7 +457,7 @@ private struct AgentPaneFooter: View {
             Button(action: focus) {
                 HStack(spacing: 8) {
                     Text(agent.isProcessing ? "BUSY" : agent.state.uppercased())
-                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .font(.system(.caption, design: .monospaced, weight: .bold))
                         .foregroundStyle(agent.isProcessing ? ArrobaPalette.red : ArrobaPalette.orange)
                     Text(agent.displayName)
                         .font(.system(.caption, design: .monospaced, weight: .semibold))
@@ -801,7 +801,7 @@ private struct TerminalRowContent: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(marker)
-                .font(.system(.body, design: .monospaced, weight: .bold))
+                .font(.system(.caption, design: .monospaced, weight: .bold))
                 .foregroundStyle(ArrobaPalette.orange)
                 .frame(width: 16)
             Text(label)
@@ -809,7 +809,7 @@ private struct TerminalRowContent: View {
                 .foregroundStyle(selected ? .white : ArrobaPalette.muted)
                 .frame(minWidth: 128, alignment: .leading)
             Text(value)
-                .font(.system(.caption2, design: .monospaced))
+                .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(ArrobaPalette.muted)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -888,7 +888,7 @@ private struct SummaryLine: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(label.uppercased())
-                .font(.system(.caption2, design: .monospaced, weight: .bold))
+                .font(.system(.caption, design: .monospaced, weight: .bold))
                 .foregroundStyle(ArrobaPalette.muted)
                 .frame(width: 82, alignment: .leading)
             Text(value)

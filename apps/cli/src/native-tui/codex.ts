@@ -113,6 +113,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       `  arroba agent:   ${agent.id}${agent.alias ? ` (${agent.alias})` : ""}`,
       `  app-server:     ${upstreamEndpoint}`,
       `  proxy:          ${proxyUrl}`,
+      "  prompt policy:  native prompts pass through; Arroba observes the session",
       "",
     ].join("\n"))
     pump = startKernelPumpLoop(client, session.id, attachment.id)

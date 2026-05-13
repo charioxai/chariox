@@ -122,6 +122,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       `  provider run:   ${run.id}`,
       `  opencode sess:  ${providerSessionId}`,
       `  proxy:          ${proxyUrl}`,
+      "  prompt policy:  native prompts pass through; Arroba observes the session",
       "",
     ].join("\n"))
     pump = startKernelPumpLoop(client, session.id, attachment.id)
