@@ -813,7 +813,24 @@ impl SessionRuntimeStore {
         } else {
             create_request
         };
+        if request.kernel_ref.is_some() && request.slice_ref.is_some() {
+            return self
+                .with_session_projection_action_result(Err(DaemonError::LocalTransport {
+                    operation: "agent.spawn",
+                    message: "use either kernel_ref or slice_ref, not both".to_string(),
+                }))
+                .await;
+        }
+        let slice_kernel_ref = match request.slice_ref {
+            Some(slice_ref) => match self.state.resolve_slice_worker_kernel_ref(&slice_ref).await {
+                Ok(kernel_ref) => Some(kernel_ref),
+                Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+            },
+            None => None,
+        };
         let create_request = if let Some(kernel_ref) = request.kernel_ref {
+            create_request.with_kernel(kernel_ref)
+        } else if let Some(kernel_ref) = slice_kernel_ref {
             create_request.with_kernel(kernel_ref)
         } else {
             create_request
@@ -1772,6 +1789,7 @@ mod tests {
             permission_level: None,
             worktree_id: Some("worktree".to_string()),
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         });
         let command =
@@ -1842,6 +1860,7 @@ mod tests {
             permission_level: None,
             worktree_id: Some("worktree".to_string()),
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         });
         let command =

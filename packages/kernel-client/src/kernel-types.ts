@@ -504,6 +504,33 @@ export type RemoteMachineRecord = {
   available_providers?: string[]
 }
 
+export type SliceRecord = {
+  id: string
+  name: string
+  owner_kernel_id: string
+  owner_machine_id: string
+  backend: "local_docker" | "ssh_docker"
+  os: string
+  status: "stopped" | "starting" | "running" | "unhealthy"
+  workspace_mount?: string | null
+  worker_kernel_ref: string
+  worker_kernel_id?: string | null
+  worker_machine_id?: string | null
+  providers?: string[]
+  display_endpoint?: SliceDisplayEndpoint | null
+  created_at_ms: number
+  updated_at_ms: number
+}
+
+export type SliceDisplayEndpoint = {
+  slice_id: string
+  kind: "novnc" | "arroba_viewer" | "external"
+  url: string
+  access: "local" | "tunnel" | "public"
+  expires_at_ms?: number | null
+  capabilities?: string[]
+}
+
 export type PairedClientRecord = {
   client_id: string
   alias?: string | null
@@ -724,7 +751,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 24
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 25
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

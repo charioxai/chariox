@@ -1,9 +1,10 @@
 use super::*;
 
+use crate::slice::{SliceBackendKind, SliceDisplayEndpoint, SliceRecord};
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 24;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 25;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -1375,7 +1376,42 @@ pub struct SpawnAgentRequest {
     #[serde(default)]
     pub kernel_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_placement: Option<crate::agent::GitWorktreePlacement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListSlicesRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateSliceRequest {
+    pub name: String,
+    #[serde(default)]
+    pub backend: SliceBackendKind,
+    #[serde(default = "default_slice_os")]
+    pub os: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_mount: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_kernel_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceRefRequest {
+    pub slice_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportSliceProviderAuthRequest {
+    pub slice_ref: String,
+    pub provider: String,
+}
+
+fn default_slice_os() -> String {
+    "linux".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2024,6 +2060,14 @@ pub enum LocalDaemonRequest {
     UnsetUserConfigValue(UnsetUserConfigValueRequest),
     SetCredentialSecret(SetCredentialSecretRequest),
     DeleteCredentialSecret(DeleteCredentialSecretRequest),
+    ListSlices(ListSlicesRequest),
+    CreateSlice(CreateSliceRequest),
+    GetSlice(SliceRefRequest),
+    StartSlice(SliceRefRequest),
+    StopSlice(SliceRefRequest),
+    DeleteSlice(SliceRefRequest),
+    ImportSliceProviderAuth(ImportSliceProviderAuthRequest),
+    GetSliceDisplayEndpoint(SliceRefRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetWaitingRoomInventory(GetWaitingRoomInventoryRequest),
@@ -2332,6 +2376,32 @@ pub enum LocalDaemonResponse {
     },
     CredentialSecretDeleted {
         key: String,
+    },
+    SlicesListed {
+        slices: Vec<SliceRecord>,
+    },
+    SliceCreated {
+        slice: SliceRecord,
+    },
+    Slice {
+        slice: SliceRecord,
+    },
+    SliceStarted {
+        slice: SliceRecord,
+    },
+    SliceStopped {
+        slice: SliceRecord,
+    },
+    SliceDeleted {
+        slice: SliceRecord,
+    },
+    SliceProviderAuthImported {
+        slice: SliceRecord,
+        provider: String,
+        status: String,
+    },
+    SliceDisplayEndpoint {
+        endpoint: SliceDisplayEndpoint,
     },
     RemoteMachinesListed {
         machines: Vec<RemoteMachineRecord>,

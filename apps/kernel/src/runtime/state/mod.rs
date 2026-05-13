@@ -764,6 +764,15 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn resolve_slice_worker_kernel_ref(
+        &self,
+        slice_ref: &str,
+    ) -> Result<String, DaemonError> {
+        let slice_ref = slice_ref.to_string();
+        self.with_app_side_effect(move |app| app.slices().resolve_worker_kernel_ref(&slice_ref))
+            .await
+    }
+
     pub(crate) async fn move_agent_to_remote(
         &self,
         session_id: &str,

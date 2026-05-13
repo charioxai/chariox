@@ -53,7 +53,7 @@ use super::{
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 24);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 25);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -442,7 +442,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 24);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 25);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -454,6 +454,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
         permission_level: Some(AgentPermissionLevel::Required),
         worktree_id: None,
         kernel_ref: Some("kernel-worker".to_string()),
+        slice_ref: None,
         worktree_placement: None,
     });
     let snapshot = serde_json::to_value(request).expect("request should serialize");
@@ -472,8 +473,43 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
 }
 
 #[test]
+fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 25);
+
+    let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        session_id: "session-1".to_string(),
+        alias: Some("worker".to_string()),
+        provider: Some("codex".to_string()),
+        model: Some("gpt-5".to_string()),
+        effort: Some("medium".to_string()),
+        execution_mode: Some(AgentExecutionMode::Build),
+        permission_level: Some(AgentPermissionLevel::Required),
+        worktree_id: None,
+        kernel_ref: None,
+        slice_ref: Some("linux-dev".to_string()),
+        worktree_placement: None,
+    });
+    let snapshot = serde_json::to_value(request).expect("request should serialize");
+    assert_eq!(
+        snapshot.pointer("/SpawnAgent/slice_ref"),
+        Some(&serde_json::json!("linux-dev"))
+    );
+    assert_eq!(
+        snapshot.pointer("/SpawnAgent/kernel_ref"),
+        Some(&serde_json::Value::Null)
+    );
+    let serialized =
+        serde_json::to_string(&snapshot).expect("slice-targeted spawn snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "a7bd0c2bb693c63aa515a2e89f98a5b6144bb750fdcd266bc87e9d4903d4a1d4"
+    );
+}
+
+#[test]
 fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 24);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 25);
 
     let request = LocalDaemonRequest::SemanticSearchHistory(SemanticSearchHistoryRequest {
         query: "why did the build fail".to_string(),
@@ -586,7 +622,7 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 24);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 25);
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
         session_id: "session-1".to_string(),
@@ -619,7 +655,7 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 24);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 25);
 
     let request =
         LocalDaemonRequest::UpdateProviderRunSelection(UpdateProviderRunSelectionRequest {
@@ -755,6 +791,7 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }))
         .expect("worker agent should spawn")
@@ -1088,6 +1125,7 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
             permission_level: Some(crate::provider::AgentPermissionLevel::Required),
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }))
         .expect("second agent should spawn")
@@ -1668,6 +1706,7 @@ fn local_request_api_spawns_and_focuses_agents() {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }))
         .expect("spawn should succeed")
@@ -1929,6 +1968,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }))
         .expect("workflow agent should spawn")
@@ -2032,6 +2072,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }))
         .expect("spawn should succeed")
@@ -2222,6 +2263,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }))
         .expect("workflow agent should spawn")
@@ -2410,6 +2452,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }))
         .expect("first workflow agent should spawn")
@@ -2429,6 +2472,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }))
         .expect("second workflow agent should spawn")
@@ -3401,6 +3445,7 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }))
         .expect("agent spawn should succeed")
@@ -3784,6 +3829,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }))
         .expect("spawn should succeed")
@@ -3959,6 +4005,7 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }))
         .expect("spawn should succeed")
@@ -4058,6 +4105,7 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }))
         .expect("spawn should succeed")
@@ -5534,6 +5582,7 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }))
         .expect("workflow agent should spawn")

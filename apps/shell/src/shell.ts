@@ -134,6 +134,7 @@ export function shellUsage(): string {
     "  @ mcp list",
     "  @ skill list",
     "  @ machine list",
+    "  @ slice list",
     "  @ relay status",
     "  @ credential set github-token",
     "  @ provider status codex",

@@ -27,6 +27,7 @@ pub mod secret;
 pub mod session;
 pub mod session_history_page;
 pub mod skill;
+pub mod slice;
 pub mod terminal;
 pub mod transport;
 

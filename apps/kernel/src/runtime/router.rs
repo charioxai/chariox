@@ -37,19 +37,20 @@ use crate::local::{
     CloudSessionInviteAcceptance, CloudSessionInviteDetails, CloudSessionMember,
     CommitAndPushWorkspaceChangesRequest, CommitWorkspaceChangesRequest, ConfigureRelayRequest,
     ConnectCloudRelayRequest, CreateCloudSessionInviteRequest, CreatePairingInviteRequest,
-    CreateSessionInviteRequest, CreateTerminalPairingLinkRequest, CreateWorkspaceDirectoryRequest,
-    CreateWorkspaceLinkRequest, CreateWorkspacePullRequestRequest, CreateWorkspaceWorktreeRequest,
-    DeleteCredentialSecretRequest, DeleteKernelRequest, DeleteWorkspaceWorktreeRequest,
-    DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GenerateWorkspaceCommitMessageRequest,
-    GetMcpServerRequest, GetPromptInputHistoryRequest, GetProviderAuthStatusRequest,
-    GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest, GetSkillRequest,
-    GetUserConfigRequest, GetUserConfigSchemaRequest, GetWorkspaceFileContentRequest,
-    GetWorkspaceGitOverviewRequest, GrantAgentCapabilityRequest, ImportMcpServersRequest,
-    ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
-    IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest, JoinSessionInviteRequest,
-    JoinTerminalPairingLinkRequest, ListAgentsRequest, ListCloudCollaboratorsRequest,
-    ListCloudSessionMembersRequest, ListMcpServersRequest, ListProviderProcessesRequest,
-    ListSessionMembersRequest, ListSessionsRequest, ListSkillsRequest, ListWorkspaceFilesRequest,
+    CreateSessionInviteRequest, CreateSliceRequest, CreateTerminalPairingLinkRequest,
+    CreateWorkspaceDirectoryRequest, CreateWorkspaceLinkRequest, CreateWorkspacePullRequestRequest,
+    CreateWorkspaceWorktreeRequest, DeleteCredentialSecretRequest, DeleteKernelRequest,
+    DeleteWorkspaceWorktreeRequest, DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest,
+    GenerateWorkspaceCommitMessageRequest, GetMcpServerRequest, GetPromptInputHistoryRequest,
+    GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+    GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
+    GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest, GrantAgentCapabilityRequest,
+    ImportMcpServersRequest, ImportSkillsRequest, ImportSliceProviderAuthRequest,
+    InstallMcpServerRequest, InstallSkillRequest, IssueCloudRelayClientTokenRequest,
+    JoinPairingInviteRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
+    ListAgentsRequest, ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest,
+    ListMcpServersRequest, ListProviderProcessesRequest, ListSessionMembersRequest,
+    ListSessionsRequest, ListSkillsRequest, ListSlicesRequest, ListWorkspaceFilesRequest,
     ListWorkspaceLinksRequest, ListWorkspaceWorktreesRequest, LocalDaemonRequest,
     LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
     PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairedClientRecord,
@@ -62,19 +63,20 @@ use crate::local::{
     SearchHistoryRequest, SearchWorkspaceDirectoriesRequest, SemanticHistoryMatch,
     SemanticHistorySearchUtilityInput, SemanticSearchHistoryMode, SemanticSearchHistoryRequest,
     SessionInviteRecord, SetCredentialSecretRequest, SetUserConfigValueRequest,
-    ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest, StartCloudRelayLoginRequest,
-    StartProviderLoginRequest, TeardownProviderProcessesRequest, TerminalPairingLinkRecord,
-    TerminalRecord, TerminalType, UninstallMcpServerRequest, UninstallSkillRequest,
-    UnsetUserConfigValueRequest, UpdateMcpServerRequest, UpdateProviderRunSelectionRequest,
-    UpdateSkillRequest, UserConfigMutationEffect, UserConfigProviderReloadSummary,
-    WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary, WaitingRoomPublicItemActivitySummary,
-    WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
-    WaitingRoomPublicWorkflowEdgeSummary, WaitingRoomPublicWorkflowEndpointSummary,
-    WaitingRoomPublicWorkflowNodeSummary, WaitingRoomPublicWorkflowSummary,
-    WaitingRoomSessionActivitySummary, WorkspaceCommitMessageUtilityInput, WorkspaceFileContent,
-    WorkspaceGitActionResult, WorkspaceGitChangeTotals, WorkspaceGitCompareRef,
-    WorkspaceGitFileChange, WorkspaceGitOverview, WorkspacePullRequestRecord,
-    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
+    ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest, SliceRefRequest,
+    StartCloudRelayLoginRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
+    TerminalPairingLinkRecord, TerminalRecord, TerminalType, UninstallMcpServerRequest,
+    UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest,
+    UpdateProviderRunSelectionRequest, UpdateSkillRequest, UserConfigMutationEffect,
+    UserConfigProviderReloadSummary, WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary,
+    WaitingRoomPublicItemActivitySummary, WaitingRoomPublicSessionSummary,
+    WaitingRoomPublicSnapshot, WaitingRoomPublicWorkflowEdgeSummary,
+    WaitingRoomPublicWorkflowEndpointSummary, WaitingRoomPublicWorkflowNodeSummary,
+    WaitingRoomPublicWorkflowSummary, WaitingRoomSessionActivitySummary,
+    WorkspaceCommitMessageUtilityInput, WorkspaceFileContent, WorkspaceGitActionResult,
+    WorkspaceGitChangeTotals, WorkspaceGitCompareRef, WorkspaceGitFileChange, WorkspaceGitOverview,
+    WorkspacePullRequestRecord, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
+    WorkspaceWorktreeRecord,
 };
 use crate::provider::{
     run_codex_utility_prompt, run_opencode_utility_prompt, ProviderNativeInteractionBridge,
@@ -1474,6 +1476,30 @@ impl CommandRouter {
             }
             LocalDaemonRequest::DeleteCredentialSecret(request) => {
                 self.execute_delete_credential_secret_request(request).await
+            }
+            LocalDaemonRequest::ListSlices(request) => {
+                self.execute_list_slices_request(request).await
+            }
+            LocalDaemonRequest::CreateSlice(request) => {
+                self.execute_create_slice_request(request).await
+            }
+            LocalDaemonRequest::GetSlice(request) => self.execute_get_slice_request(request).await,
+            LocalDaemonRequest::StartSlice(request) => {
+                self.execute_start_slice_request(request).await
+            }
+            LocalDaemonRequest::StopSlice(request) => {
+                self.execute_stop_slice_request(request).await
+            }
+            LocalDaemonRequest::DeleteSlice(request) => {
+                self.execute_delete_slice_request(request).await
+            }
+            LocalDaemonRequest::ImportSliceProviderAuth(request) => {
+                self.execute_import_slice_provider_auth_request(request)
+                    .await
+            }
+            LocalDaemonRequest::GetSliceDisplayEndpoint(request) => {
+                self.execute_get_slice_display_endpoint_request(request)
+                    .await
             }
             LocalDaemonRequest::DeleteKernel(request) => {
                 self.execute_delete_kernel_request(request).await
@@ -3626,6 +3652,118 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::CredentialSecretDeleted { key: request.key })
     }
 
+    async fn execute_list_slices_request(
+        &self,
+        _request: ListSlicesRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let slices = {
+            let app = self.app.lock().await;
+            app.slices().list()
+        };
+        Ok(LocalDaemonResponse::SlicesListed { slices })
+    }
+
+    async fn execute_create_slice_request(
+        &self,
+        request: CreateSliceRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let slice = {
+            let app = self.app.lock().await;
+            app.slices().create(
+                &app.config().daemon_id,
+                &app.config().host_machine_id,
+                crate::slice::CreateSliceInput {
+                    name: request.name,
+                    backend: request.backend,
+                    os: request.os,
+                    workspace_mount: request.workspace_mount,
+                    worker_kernel_ref: request.worker_kernel_ref,
+                    display_url: request.display_url,
+                    now_ms: crate::session::unix_epoch_ms(),
+                },
+            )?
+        };
+        Ok(LocalDaemonResponse::SliceCreated { slice })
+    }
+
+    async fn execute_get_slice_request(
+        &self,
+        request: SliceRefRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let slice = {
+            let app = self.app.lock().await;
+            app.slices().resolve(&request.slice_ref)?
+        };
+        Ok(LocalDaemonResponse::Slice { slice })
+    }
+
+    async fn execute_start_slice_request(
+        &self,
+        request: SliceRefRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let slice = {
+            let app = self.app.lock().await;
+            app.slices().set_status(
+                &request.slice_ref,
+                crate::slice::SliceStatus::Running,
+                crate::session::unix_epoch_ms(),
+            )?
+        };
+        Ok(LocalDaemonResponse::SliceStarted { slice })
+    }
+
+    async fn execute_stop_slice_request(
+        &self,
+        request: SliceRefRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let slice = {
+            let app = self.app.lock().await;
+            app.slices().set_status(
+                &request.slice_ref,
+                crate::slice::SliceStatus::Stopped,
+                crate::session::unix_epoch_ms(),
+            )?
+        };
+        Ok(LocalDaemonResponse::SliceStopped { slice })
+    }
+
+    async fn execute_delete_slice_request(
+        &self,
+        request: SliceRefRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let slice = {
+            let app = self.app.lock().await;
+            app.slices().delete(&request.slice_ref)?
+        };
+        Ok(LocalDaemonResponse::SliceDeleted { slice })
+    }
+
+    async fn execute_import_slice_provider_auth_request(
+        &self,
+        request: ImportSliceProviderAuthRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let slice = {
+            let app = self.app.lock().await;
+            app.slices().resolve(&request.slice_ref)?
+        };
+        Ok(LocalDaemonResponse::SliceProviderAuthImported {
+            slice,
+            provider: request.provider,
+            status: "not_implemented".to_string(),
+        })
+    }
+
+    async fn execute_get_slice_display_endpoint_request(
+        &self,
+        request: SliceRefRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let endpoint = {
+            let app = self.app.lock().await;
+            app.slices().display_endpoint(&request.slice_ref)?
+        };
+        Ok(LocalDaemonResponse::SliceDisplayEndpoint { endpoint })
+    }
+
     async fn execute_delete_kernel_request(
         &self,
         _request: DeleteKernelRequest,
@@ -4879,6 +5017,30 @@ impl CommandRouter {
             }
             LocalDaemonRequest::RecordPromptInputHistory(request) => {
                 self.execute_record_prompt_input_history_request(request)
+                    .await
+            }
+            LocalDaemonRequest::ListSlices(request) => {
+                self.execute_list_slices_request(request).await
+            }
+            LocalDaemonRequest::CreateSlice(request) => {
+                self.execute_create_slice_request(request).await
+            }
+            LocalDaemonRequest::GetSlice(request) => self.execute_get_slice_request(request).await,
+            LocalDaemonRequest::StartSlice(request) => {
+                self.execute_start_slice_request(request).await
+            }
+            LocalDaemonRequest::StopSlice(request) => {
+                self.execute_stop_slice_request(request).await
+            }
+            LocalDaemonRequest::DeleteSlice(request) => {
+                self.execute_delete_slice_request(request).await
+            }
+            LocalDaemonRequest::ImportSliceProviderAuth(request) => {
+                self.execute_import_slice_provider_auth_request(request)
+                    .await
+            }
+            LocalDaemonRequest::GetSliceDisplayEndpoint(request) => {
+                self.execute_get_slice_display_endpoint_request(request)
                     .await
             }
             LocalDaemonRequest::GetProviderCatalog(_) => {
@@ -10386,6 +10548,7 @@ mod tests {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         });
         let spawn_command = KernelCommand::from_local_request(
@@ -11516,6 +11679,7 @@ mod tests {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         });
         let spawn_command =
@@ -14261,6 +14425,7 @@ mod tests {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         });
         let spawn_command =
@@ -14733,6 +14898,7 @@ mod tests {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         });
         let agent_one = match router
@@ -14758,6 +14924,7 @@ mod tests {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         });
         let agent_two = match router
@@ -15037,6 +15204,7 @@ mod tests {
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         });
         let user_two_agent = match router

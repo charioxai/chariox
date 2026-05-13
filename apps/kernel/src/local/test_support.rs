@@ -120,6 +120,7 @@ impl LocalRouterTestHarness {
                 permission_level: None,
                 worktree_id: worktree_id.map(str::to_string),
                 kernel_ref: None,
+                slice_ref: None,
                 worktree_placement: None,
             }))
             .expect("workflow test agent should spawn")

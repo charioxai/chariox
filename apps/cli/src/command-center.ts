@@ -53,7 +53,7 @@ const COMMAND_TREE: CommandNode[] = [
       {
         id: "agent-spawn",
         label: "spawn",
-        description: "Spawn one or more local or remote agents, optionally in a directory/worktree",
+        description: "Spawn local, remote, or slice agents, optionally in a directory/worktree",
         value: "/agent spawn ",
       },
       { id: "agent-delete", label: "delete", description: "Delete the focused or named agent", value: "/agent delete " },
@@ -217,6 +217,22 @@ const COMMAND_TREE: CommandNode[] = [
           { id: "workflow-endpoint-bind", label: "bind", description: "Bind an endpoint to a workflow node", value: "/workflow endpoint bind " },
         ],
       },
+    ],
+  },
+  {
+    id: "slice",
+    label: "/slice",
+    description: "Manage kernel-owned slices",
+    value: "/slice ",
+    children: [
+      { id: "slice-list", label: "list", description: "List slices owned by this kernel", value: "/slice list" },
+      { id: "slice-create", label: "create", description: "Create a slice inventory entry", value: "/slice create " },
+      { id: "slice-status", label: "status", description: "Show a slice", value: "/slice status " },
+      { id: "slice-start", label: "start", description: "Start a slice", value: "/slice start " },
+      { id: "slice-stop", label: "stop", description: "Stop a slice", value: "/slice stop " },
+      { id: "slice-delete", label: "delete", description: "Delete a slice", value: "/slice delete " },
+      { id: "slice-screen", label: "screen", description: "Open or show the slice screen URL", value: "/slice screen " },
+      { id: "slice-auth-import", label: "auth import", description: "Import host provider auth into a slice", value: "/slice auth import " },
     ],
   },
   {

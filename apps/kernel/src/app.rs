@@ -129,6 +129,7 @@ pub struct DaemonApp {
     leased_agents: BTreeMap<String, LeasedAgent>,
     leased_workflow_turns: BTreeMap<String, LeasedWorkflowTurnBinding>,
     remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
+    slices: crate::slice::SliceStore,
     next_execution_lease_number: u64,
     next_leased_agent_number: u64,
 }
@@ -571,6 +572,7 @@ impl DaemonApp {
             leased_agents: BTreeMap::new(),
             leased_workflow_turns: BTreeMap::new(),
             remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
+            slices: crate::slice::SliceStore::default(),
             next_execution_lease_number: 0,
             next_leased_agent_number: 0,
             started_at_ms: crate::session::unix_epoch_ms(),
@@ -805,6 +807,10 @@ impl DaemonApp {
 
     pub fn config(&self) -> &DaemonConfig {
         &self.config
+    }
+
+    pub(crate) fn slices(&self) -> crate::slice::SliceStore {
+        self.slices.clone()
     }
 
     pub(crate) fn relay_client_state(&self) -> Arc<tokio::sync::RwLock<RelayClientState>> {

@@ -30,6 +30,8 @@ import type {
   RelayKernelPresence,
   RelayStatus,
   RemoteMachineRecord,
+  SliceDisplayEndpoint,
+  SliceRecord,
   RuntimeSession,
   CloudCollaborator,
   CloudSessionMember,
@@ -79,18 +81,23 @@ import {
   createWorkflowRequest,
   createWorkflowWatchdogRequest,
   createSessionRequest,
+  createSliceRequest,
   deleteCredentialSecretRequest,
   deleteKernelRequest,
+  deleteSliceRequest,
   focusAgentRequest,
   getMcpServerRequest,
   getProviderAuthStatusRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
   getSkillRequest,
+  getSliceDisplayEndpointRequest,
+  getSliceRequest,
   getWorkflowPublicationRequest,
   getWorkflowRunRequest,
   grantAgentCapabilityRequest,
   importMcpServersRequest,
+  importSliceProviderAuthRequest,
   importSkillsRequest,
   invokeWorkflowEndpointRequest,
   installMcpServerRequest,
@@ -113,6 +120,7 @@ import {
   listSessionMembersRequest,
   listSessionsRequest,
   listSkillsRequest,
+  listSlicesRequest,
   listWorkspaceLinksRequest,
   listWorkflowWatchdogsRequest,
   listWorkflowPublicationsRequest,
@@ -138,6 +146,7 @@ import {
   resolveWorkflowRequest,
   resumeWorkflowRunRequest,
   resolveSessionRequest,
+  startSliceRequest,
   setWorkflowFlushContextRequest,
   setWorkflowIntermediateOutputSchemaRequest,
   setWorkflowLaunchPolicyRequest,
@@ -154,6 +163,7 @@ import {
   showWorkspaceLinkRequest,
   spawnAgentRequest,
   startProviderLoginRequest,
+  stopSliceRequest,
   submitPromptRequest,
   cycleAgentFocusRequest,
   teardownProviderProcessesRequest,
@@ -189,6 +199,7 @@ type PlacementOptions = {
   branch?: string | undefined
   fromRef?: string | undefined
   kernelRef?: string | undefined
+  sliceRef?: string | undefined
 }
 
 export type ShellExecutorDeps = {
@@ -227,6 +238,8 @@ export async function executeShellCommand(
       return executeClientCommand(parsed, deps)
     case "machine":
       return executeMachineCommand(parsed, deps)
+    case "slice":
+      return executeSliceCommand(parsed, context, deps)
     case "relay":
       return executeRelayCommand(parsed, deps)
     case "cloud":
@@ -275,6 +288,7 @@ function executeShellLocalCommand(parsed: ParsedShellCommand, context: ShellCont
           "agent list|spawn|focus|cycle|mode|permissions|substitute",
           "client invite create|join|list|record|revoke",
           "machine invite create|join|list|kernels|approve|rename|revoke",
+          "slice list|create|status|start|stop|delete|auth import|screen",
           "relay status",
           "config show|path|keys|schema|set|unset|managed-io",
           "credential list|set|delete",
@@ -747,10 +761,13 @@ async function executeAgentCommand(
       }
       const [alias, model] = parsedSpawn.options.positional
       if (parsedSpawn.options.positional.length > 2) {
-        return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--kernel <kernel-ref>]" }
+        return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--kernel <kernel-ref>|--slice <slice-ref>]" }
       }
       if (parsedSpawn.options.kernelRef && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
         return { ok: false, message: "usage: agent spawn [alias] [model] --kernel <kernel-ref> uses the worker kernel default directory" }
+      }
+      if (parsedSpawn.options.sliceRef && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
+        return { ok: false, message: "usage: agent spawn [alias] [model] --slice <slice-ref> uses the slice worker default directory" }
       }
       const worktree = await resolveShellPlacement(parsedSpawn.options, context.worktree, "agent working directory", deps)
       const response = await deps.client.send(spawnAgentRequest(
@@ -763,10 +780,14 @@ async function executeAgentCommand(
         undefined,
         undefined,
         parsedSpawn.options.kernelRef,
+        undefined,
+        parsedSpawn.options.sliceRef,
       ))
       const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
       const placement = agent.remote_execution
-        ? ` on ${parsedSpawn.options.kernelRef ?? agent.remote_execution.worker_machine_id}`
+        ? parsedSpawn.options.sliceRef
+          ? ` in slice ${parsedSpawn.options.sliceRef}`
+          : ` on ${parsedSpawn.options.kernelRef ?? agent.remote_execution.worker_machine_id}`
         : agent.worktree_id ? ` in ${agent.worktree_id}` : ""
       return resourceResult(
         `spawned agent ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${placement}`,
@@ -1323,6 +1344,101 @@ async function executeMachineCommand(
     }
     default:
       return { ok: false, message: "usage: machine invite create|join|list|kernels|approve|rename|revoke" }
+  }
+}
+
+async function executeSliceCommand(
+  parsed: ParsedShellCommand,
+  context: ShellContext,
+  deps: ShellExecutorDeps,
+): Promise<ShellCommandResult> {
+  const [action, first, ...rest] = parsed.args
+  switch (action ?? "list") {
+    case "list":
+    case "ls": {
+      const response = await deps.client.send(listSlicesRequest())
+      const slices = expectVariant<{ slices: SliceRecord[] }>(response, "SlicesListed").slices
+      return { ok: true, message: formatSlices(slices), data: { slices } }
+    }
+    case "create": {
+      if (!first) {
+        return { ok: false, message: "usage: slice create <name> [--kernel <worker-kernel-ref>] [--display-url <url>]" }
+      }
+      let workerKernelRef: string | undefined
+      let displayUrl: string | undefined
+      for (let index = 0; index < rest.length; index += 1) {
+        const arg = rest[index]
+        const value = rest[index + 1]
+        if (arg === "--kernel" && value && !value.startsWith("--")) {
+          workerKernelRef = value
+          index += 1
+        } else if (arg === "--display-url" && value && !value.startsWith("--")) {
+          displayUrl = value
+          index += 1
+        } else if (arg?.startsWith("--")) {
+          return { ok: false, message: `unknown or incomplete slice create option: ${arg}` }
+        } else if (arg) {
+          return { ok: false, message: "usage: slice create <name> [--kernel <worker-kernel-ref>] [--display-url <url>]" }
+        }
+      }
+      const response = await deps.client.send(createSliceRequest({
+        name: first,
+        workspaceMount: context.worktree,
+        workerKernelRef: workerKernelRef ?? null,
+        displayUrl: displayUrl ?? null,
+      }))
+      const slice = expectVariant<{ slice: SliceRecord }>(response, "SliceCreated").slice
+      return resourceResult(`created slice ${formatSliceLabel(slice)}`, parsed.assignment, slice.id, {}, { slice })
+    }
+    case "status":
+    case "show": {
+      const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
+      const response = await deps.client.send(getSliceRequest(sliceRef))
+      const slice = expectVariant<{ slice: SliceRecord }>(response, "Slice").slice
+      return { ok: true, message: formatSlice(slice), data: { slice } }
+    }
+    case "start": {
+      const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
+      const response = await deps.client.send(startSliceRequest(sliceRef))
+      const slice = expectVariant<{ slice: SliceRecord }>(response, "SliceStarted").slice
+      return { ok: true, message: `started slice ${formatSliceLabel(slice)}`, data: { slice } }
+    }
+    case "stop": {
+      const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
+      const response = await deps.client.send(stopSliceRequest(sliceRef))
+      const slice = expectVariant<{ slice: SliceRecord }>(response, "SliceStopped").slice
+      return { ok: true, message: `stopped slice ${formatSliceLabel(slice)}`, data: { slice } }
+    }
+    case "delete":
+    case "rm": {
+      if (!first) {
+        return { ok: false, message: "usage: slice delete <slice-ref>" }
+      }
+      const response = await deps.client.send(deleteSliceRequest(first))
+      const slice = expectVariant<{ slice: SliceRecord }>(response, "SliceDeleted").slice
+      return { ok: true, message: `deleted slice ${formatSliceLabel(slice)}`, data: { slice } }
+    }
+    case "screen": {
+      const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
+      const response = await deps.client.send(getSliceDisplayEndpointRequest(sliceRef))
+      const endpoint = expectVariant<{ endpoint: SliceDisplayEndpoint }>(response, "SliceDisplayEndpoint").endpoint
+      return { ok: true, message: endpoint.url, data: { endpoint } }
+    }
+    case "auth": {
+      if (first !== "import") {
+        return { ok: false, message: "usage: slice auth import [slice-ref] <provider>" }
+      }
+      const sliceRef = rest.length > 1 ? rest[0]! : await focusedAgentSliceRef(context, deps)
+      const provider = rest.length > 1 ? rest[1] : rest[0]
+      if (!provider) {
+        return { ok: false, message: "usage: slice auth import [slice-ref] <provider>" }
+      }
+      const response = await deps.client.send(importSliceProviderAuthRequest(sliceRef, provider))
+      const payload = expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthImported")
+      return { ok: true, message: `slice ${formatSliceLabel(payload.slice)} auth import ${payload.provider}: ${payload.status}`, data: payload }
+    }
+    default:
+      return { ok: false, message: "usage: slice list|create|status|start|stop|delete|auth import|screen" }
   }
 }
 
@@ -3006,6 +3122,9 @@ function parsePlacementOptions(args: string[], allowMachine: boolean): { options
     } else if (arg === "--kernel" && next && allowMachine) {
       options.kernelRef = next
       index += 1
+    } else if (arg === "--slice" && next && allowMachine) {
+      options.sliceRef = next
+      index += 1
     } else if (arg?.startsWith("--")) {
       return { options, error: `unknown or incomplete option: ${arg}` }
     } else if (arg) {
@@ -3017,6 +3136,9 @@ function parsePlacementOptions(args: string[], allowMachine: boolean): { options
   }
   if ((options.branch || options.fromRef) && !options.gitWorktree) {
     return { options, error: "--branch/--from require --worktree" }
+  }
+  if (options.kernelRef && options.sliceRef) {
+    return { options, error: "use either --kernel or --slice, not both" }
   }
   return { options }
 }
@@ -3112,6 +3234,45 @@ function formatRemoteMachines(machines: RemoteMachineRecord[]): string {
     const offline = machine.online ? "" : ",offline"
     return `${name} id=${machine.machine_id} status=${machine.trust_status}${offline} kernels=${machine.kernel_count} providers=${providers}`
   }).join("\n")
+}
+
+function formatSlices(slices: SliceRecord[]): string {
+  if (slices.length === 0) {
+    return "no slices"
+  }
+  return slices.map(formatSlice).join("\n")
+}
+
+function formatSlice(slice: SliceRecord): string {
+  const providers = (slice.providers ?? []).join(",") || "-"
+  const display = slice.display_endpoint?.url ? ` display=${slice.display_endpoint.url}` : ""
+  return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} providers=${providers}${display}`
+}
+
+function formatSliceLabel(slice: SliceRecord): string {
+  return slice.name ? `${slice.name} id=${slice.id}` : slice.id
+}
+
+async function focusedAgentSliceRef(context: ShellContext, deps: ShellExecutorDeps): Promise<string> {
+  const resolved = await resolveShellAgent(context, deps, undefined)
+  if (!resolved.ok) {
+    throw new Error("no slice specified and focused agent is not running in a slice")
+  }
+  const remote = resolved.agent.remote_execution
+  if (!remote) {
+    throw new Error("no slice specified and focused agent is not running in a slice")
+  }
+  const response = await deps.client.send(listSlicesRequest())
+  const slices = expectVariant<{ slices: SliceRecord[] }>(response, "SlicesListed").slices
+  const match = slices.find((slice) =>
+    slice.worker_kernel_id === remote.worker_kernel_id
+    || slice.worker_kernel_ref === remote.worker_kernel_id
+    || slice.worker_machine_id === remote.worker_machine_id
+  )
+  if (!match) {
+    throw new Error("no slice specified and focused agent is not running in a slice")
+  }
+  return match.id
 }
 
 function formatRemoteMachineLabel(machine: RemoteMachineRecord): string {

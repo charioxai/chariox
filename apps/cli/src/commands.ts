@@ -19,6 +19,7 @@ export type ParsedSlashCommand =
   | { kind: "agent"; raw: string; args: string[] }
   | { kind: "kernel"; raw: string; args: string[] }
   | { kind: "machine"; raw: string; args: string[] }
+  | { kind: "slice"; raw: string; args: string[] }
   | { kind: "relay"; raw: string; args: string[] }
   | { kind: "cloud"; raw: string; args: string[] }
   | { kind: "config"; raw: string; args: string[] }
@@ -41,6 +42,7 @@ export type SlashCommandHandlers = {
   onAgent: (command: Extract<ParsedSlashCommand, { kind: "agent" }>) => Promise<unknown> | unknown
   onKernel: (command: Extract<ParsedSlashCommand, { kind: "kernel" }>) => Promise<unknown> | unknown
   onMachine: (command: Extract<ParsedSlashCommand, { kind: "machine" }>) => Promise<unknown> | unknown
+  onSlice: (command: Extract<ParsedSlashCommand, { kind: "slice" }>) => Promise<unknown> | unknown
   onRelay: (command: Extract<ParsedSlashCommand, { kind: "relay" }>) => Promise<unknown> | unknown
   onCloud: (command: Extract<ParsedSlashCommand, { kind: "cloud" }>) => Promise<unknown> | unknown
   onConfig: (command: Extract<ParsedSlashCommand, { kind: "config" }>) => Promise<unknown> | unknown
@@ -125,6 +127,13 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       kind: "machine",
       raw: trimmed,
       args: trimmed.replace(/^\/machine\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
+  if (trimmed.startsWith("/slice")) {
+    return {
+      kind: "slice",
+      raw: trimmed,
+      args: trimmed.replace(/^\/slice\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
   if (trimmed.startsWith("/relay")) {
@@ -232,6 +241,9 @@ export async function executeSlashCommand(
     case "machine":
       await handlers.onMachine(command)
       break
+    case "slice":
+      await handlers.onSlice(command)
+      break
     case "relay":
       await handlers.onRelay(command)
       break
@@ -269,6 +281,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "agent":
     case "kernel":
     case "machine":
+    case "slice":
     case "relay":
     case "cloud":
     case "config":

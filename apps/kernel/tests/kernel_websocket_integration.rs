@@ -1257,6 +1257,7 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
             permission_level: None,
             worktree_id: None,
             kernel_ref: None,
+            slice_ref: None,
             worktree_placement: None,
         }),
     )

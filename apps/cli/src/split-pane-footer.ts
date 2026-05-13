@@ -17,6 +17,7 @@ export type SplitPaneFooterAgent = {
   last_substitution?: { reason: string } | null
   execution_mode?: "build" | "plan" | null
   permission_level?: "required" | "yolo" | null
+  location_label?: string | null
   state: "Idle" | "Working" | "Focused" | "Error"
   is_processing: boolean
 }
@@ -37,7 +38,7 @@ export type SplitPaneFooterPart = PromptMetaPart | {
   text: string
   tone: PromptMetaTone
 } | {
-  kind: "mode" | "permission"
+  kind: "mode" | "permission" | "location"
   text: string
   tone: PromptMetaTone
 }
@@ -139,6 +140,7 @@ export function formatSplitPaneFooterParts(
       tone: toneForAgent(aliasLabel),
     },
     ...formatPromptMetaParts(provider, model, effectiveVariant ?? ""),
+    ...(agent.location_label ? [{ kind: "location" as const, text: agent.location_label, tone: "accent" as const }] : []),
     ...(substitutePart ? [substitutePart] : []),
     { kind: "mode", text: executionMode, tone: "info" },
     { kind: "permission", text: permissionLevel, tone: "warning" },

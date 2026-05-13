@@ -976,6 +976,7 @@ test("executeShellCommand spawns worker agent on kernel", async () => {
         permission_level: null,
         worktree_id: null,
         kernel_ref: "worker-1",
+        slice_ref: null,
         worktree_placement: null,
       },
     })
