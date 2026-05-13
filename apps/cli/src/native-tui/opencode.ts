@@ -109,7 +109,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       lastNativeSelection: null,
     }
     let upstreamBaseUrl: string
-    let run: RuntimeProviderRun
+    let run: RuntimeProviderRun | null = null
     if (options.serverInKernel) {
       const launched = await launchProviderRun(client, session.id, "opencode", "default", "default", "", agent.id, {
         nativeTui: true,
@@ -141,6 +141,9 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
         nativeTui: true,
       })
       run = await waitForOpenCodeRunReady(client, launched.id)
+    }
+    if (!run) {
+      throw new Error("OpenCode provider run was not launched")
     }
     const providerSessionId = run.provider_session_id
     if (!providerSessionId) {

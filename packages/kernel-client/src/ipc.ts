@@ -1,112 +1,31 @@
 import net from "node:net"
-import {
-  createCipheriv,
-  createDecipheriv,
-  createECDH,
-  hkdfSync,
-  randomBytes,
-  randomUUID,
-} from "node:crypto"
+import { randomUUID } from "node:crypto"
 
 import WebSocket from "ws"
+
+import type { KernelEvent } from "./kernel-events.js"
+import type {
+  IpcEnvelope,
+  KernelSocketLane,
+  KernelTransportEventFrame,
+  KernelTransportResponseFrame,
+  RelayCloseFrame,
+  RelayConnectedFrame,
+  RelayEventFrame,
+  RelayResponseFrame,
+  RelaySubscribeFrame,
+  RelayTarget,
+  RelayUnsubscribeFrame,
+} from "./kernel-transport-frames.js"
+import { normalizeWebSocketRequest } from "./kernel-transport-requests.js"
+import { createRelayKeypair, decryptRelayPayload, relayPublicKeyFromPrivateKey } from "./relay-crypto.js"
+import { buildRelayConnectFrame, normalizeRelayRequest, requireRelayTarget } from "./relay-transport.js"
 
 const IPC_TIMEOUT_MS = 120_000
 const DEFAULT_KERNEL_EVENT_STALE_MS = 0
 const DEFAULT_KERNEL_PING_INTERVAL_MS = 5_000
 const DEFAULT_KERNEL_MAX_MISSED_PONGS = 2
 const IPC_WEBSOCKET_CLOSE_TIMEOUT_MS = 1_000
-
-type IpcEnvelope<TResponse> = {
-  response: TResponse | null
-  error: string | null
-}
-
-type KernelTransportResponseFrame<TResponse> = {
-  type: "response"
-  request_id: string
-  response: TResponse | null
-  error: KernelTransportError | null
-}
-
-type KernelTransportEventFrame<TEvent> = {
-  type: "event"
-  event_id: number
-  event: TEvent
-}
-
-type KernelTransportError = {
-  code: string
-  message: string
-  retryable: boolean
-}
-
-type RelayTarget = {
-  daemon_id?: string | null
-  daemon_alias?: string | null
-}
-
-type RelayConnectFrame = {
-  kind: "client_connect"
-  auth_token: string
-  target: RelayTarget
-}
-
-type RelayConnectedFrame = {
-  kind: "client_connected"
-  target: RelayTarget
-  daemon_public_key: string
-}
-
-type EncryptedRelayPayload = {
-  sender_public_key: string
-  nonce: string
-  ciphertext: string
-}
-
-type RelayRequestFrame = {
-  kind: "client_request"
-  request_id: string
-  target: RelayTarget
-  encrypted_request: EncryptedRelayPayload
-}
-
-type RelayResponseFrame<TResponse> = {
-  kind: "client_response"
-  request_id: string
-  encrypted_response: EncryptedRelayPayload | null
-  error: KernelTransportError | null
-}
-
-type RelaySubscribeFrame = {
-  kind: "client_subscribe"
-  request_id: string
-  subscription_id: string
-  target: RelayTarget
-  session_id: string
-  attachment_id: string
-  client_public_key: string
-  subscription_scope?: string
-  resume_from_event_id: number | null
-}
-
-type RelayUnsubscribeFrame = {
-  kind: "client_unsubscribe"
-  request_id: string
-  subscription_id: string
-  client_public_key: string
-}
-
-type RelayEventFrame = {
-  kind: "client_event"
-  subscription_id: string
-  event_id: number
-  encrypted_event: EncryptedRelayPayload
-}
-
-type RelayCloseFrame = {
-  kind: "close"
-  reason: string
-}
 
 type PendingRequest<TResponse> = {
   resolve: (value: TResponse) => void
@@ -116,87 +35,7 @@ type PendingRequest<TResponse> = {
   lane: KernelSocketLane
 }
 
-type KernelSocketLane = "control" | "event"
-
-export type KernelEvent =
-  | {
-    event: "terminal_output"
-    records: Array<Record<string, unknown>>
-  }
-  | {
-    event: "runtime_notices"
-    notices: Array<Record<string, unknown>>
-  }
-  | {
-    event: "assistant_message_completed"
-    session_id: string
-    provider_run_id: string
-    agent_id: string | null
-    message_id: string
-    completed_at_ms: number
-  }
-  | {
-    event: "session_snapshot"
-    session: Record<string, unknown>
-    provider_run: Record<string, unknown> | null
-    agent_activity: Record<string, unknown>
-  }
-  | {
-    event: "session_unavailable"
-    session_id: string
-    message: string
-  }
-  | {
-    event: "relay_status_changed"
-    status: {
-      configured: boolean
-      connected: boolean
-      relay_url?: string | null
-      relay_token_configured: boolean
-      daemon_id: string
-      machine_id: string
-      machine_alias?: string | null
-    }
-  }
-  | {
-    event: "remote_machines_changed"
-    machines: Array<{
-      machine_id: string
-      machine_alias?: string | null
-      registry_alias?: string | null
-      display_name: string
-      trust_status: "approved" | "pending" | "forgotten"
-      online: boolean
-      pending: boolean
-      kernel_count: number
-      available_providers?: string[]
-    }>
-  }
-  | {
-    event: "waiting_room_inventory_changed"
-    inventory_version: string
-  }
-  | {
-    event: "heartbeat"
-    session_id: string
-  }
-  | {
-    event: "transport_resumed"
-    session_id: string
-    resumed_from_event_id: number | null
-  }
-  | {
-    event: "replay_gap"
-    session_id: string
-    requested_from_event_id: number
-    first_retained_event_id: number | null
-    latest_event_id: number | null
-    message: string
-  }
-  | {
-    event: "transport_closed"
-    message: string
-  }
+export type { KernelEvent } from "./kernel-events.js"
 
 export class LocalIpcError extends Error {
   constructor(
@@ -1127,43 +966,6 @@ export class LocalIpcClient {
   }
 }
 
-function buildRelayConnectFrame(authToken: string | null, target: RelayTarget | null): RelayConnectFrame {
-  if (!authToken) {
-    throw new Error("relay auth token is required")
-  }
-  if (!target?.daemon_id && !target?.daemon_alias) {
-    throw new Error("relay target daemon id or alias is required")
-  }
-  return {
-    kind: "client_connect",
-    auth_token: authToken,
-    target: target ?? {},
-  }
-}
-
-function normalizeRelayRequest(
-  requestId: string,
-  request: unknown,
-  target: RelayTarget | null,
-  daemonPublicKey: string | null,
-): { frame: RelayRequestFrame; privateKey: Buffer } {
-  const resolvedTarget = requireRelayTarget(target)
-  if (!daemonPublicKey) {
-    throw new Error("relay daemon public key is required")
-  }
-  const plaintext = Buffer.from(JSON.stringify(request), "utf8")
-  const { privateKey, payload } = encryptRelayPayload(daemonPublicKey, plaintext)
-  return {
-    frame: {
-      kind: "client_request",
-      request_id: requestId,
-      target: resolvedTarget,
-      encrypted_request: payload,
-    },
-    privateKey,
-  }
-}
-
 function isWebSocketEndpoint(value: string) {
   return value.startsWith("ws://") || value.startsWith("wss://")
 }
@@ -1205,134 +1007,4 @@ function extractTransportErrorMessage(error: unknown): string | null {
     return `websocket ${fields.type}`
   }
   return null
-}
-
-function normalizeWebSocketRequest(requestId: string, request: unknown) {
-  const transportRequest = extractTransportRequest(request)
-  if (transportRequest?.type === "subscribe") {
-    return {
-      type: "subscribe",
-      request_id: requestId,
-      session_id: transportRequest.session_id,
-      attachment_id: transportRequest.attachment_id,
-      subscription_scope: transportRequest.subscription_scope ?? null,
-      resume_from_event_id: transportRequest.resume_from_event_id ?? null,
-    }
-  }
-  if (transportRequest?.type === "unsubscribe") {
-    return {
-      type: "unsubscribe",
-      request_id: requestId,
-    }
-  }
-  return {
-    type: "request",
-    request_id: requestId,
-    request,
-  }
-}
-
-function extractTransportRequest(request: unknown):
-  | { type: "subscribe"; session_id: string; attachment_id: string; subscription_scope?: string | null; resume_from_event_id?: number | null }
-  | { type: "unsubscribe" }
-  | null {
-  if (!request || typeof request !== "object") {
-    return null
-  }
-  const value = (request as { __kernel_transport?: unknown }).__kernel_transport
-  if (!value || typeof value !== "object") {
-    return null
-  }
-  const transport = value as Record<string, unknown>
-  if (
-    transport.type === "subscribe"
-    && typeof transport.session_id === "string"
-    && typeof transport.attachment_id === "string"
-  ) {
-    return {
-      type: "subscribe",
-      session_id: transport.session_id,
-      attachment_id: transport.attachment_id,
-      subscription_scope: typeof transport.subscription_scope === "string" ? transport.subscription_scope : null,
-      resume_from_event_id:
-        typeof transport.resume_from_event_id === "number" ? transport.resume_from_event_id : null,
-    }
-  }
-  if (transport.type === "unsubscribe") {
-    return { type: "unsubscribe" }
-  }
-  return null
-}
-
-const RELAY_NONCE_LEN = 12
-const RELAY_TAG_LEN = 16
-const RELAY_INFO = Buffer.from("arroba-relay-v1", "utf8")
-
-function encryptRelayPayload(
-  peerPublicKeyBase64: string,
-  plaintext: Buffer,
-): { privateKey: Buffer; payload: EncryptedRelayPayload } {
-  const ecdh = createECDH("prime256v1")
-  const publicKey = ecdh.generateKeys()
-  const privateKey = ecdh.getPrivateKey()
-  const sharedSecret = ecdh.computeSecret(Buffer.from(peerPublicKeyBase64, "base64"))
-  const key = deriveRelayKey(sharedSecret)
-  const nonce = randomBytes(RELAY_NONCE_LEN)
-  const cipher = createCipheriv("aes-256-gcm", key, nonce)
-  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()])
-  return {
-    privateKey,
-    payload: {
-      sender_public_key: publicKey.toString("base64"),
-      nonce: nonce.toString("base64"),
-      ciphertext: ciphertext.toString("base64"),
-    },
-  }
-}
-
-function decryptRelayPayload(privateKey: Buffer, payload: EncryptedRelayPayload): string {
-  const ecdh = createECDH("prime256v1")
-  ecdh.setPrivateKey(privateKey)
-  const sharedSecret = ecdh.computeSecret(Buffer.from(payload.sender_public_key, "base64"))
-  const key = deriveRelayKey(sharedSecret)
-  const nonce = Buffer.from(payload.nonce, "base64")
-  if (nonce.length !== RELAY_NONCE_LEN) {
-    throw new Error("invalid relay nonce")
-  }
-  const ciphertext = Buffer.from(payload.ciphertext, "base64")
-  if (ciphertext.length < RELAY_TAG_LEN) {
-    throw new Error("invalid relay ciphertext")
-  }
-  const body = ciphertext.subarray(0, ciphertext.length - RELAY_TAG_LEN)
-  const tag = ciphertext.subarray(ciphertext.length - RELAY_TAG_LEN)
-  const decipher = createDecipheriv("aes-256-gcm", key, nonce)
-  decipher.setAuthTag(tag)
-  const plaintext = Buffer.concat([decipher.update(body), decipher.final()])
-  return plaintext.toString("utf8")
-}
-
-function deriveRelayKey(sharedSecret: Buffer): Buffer {
-  return Buffer.from(hkdfSync("sha256", sharedSecret, Buffer.alloc(0), RELAY_INFO, 32))
-}
-
-function createRelayKeypair(): { privateKey: Buffer; publicKeyBase64: string } {
-  const ecdh = createECDH("prime256v1")
-  const publicKey = ecdh.generateKeys()
-  return {
-    privateKey: ecdh.getPrivateKey(),
-    publicKeyBase64: publicKey.toString("base64"),
-  }
-}
-
-function relayPublicKeyFromPrivateKey(privateKey: Buffer): string {
-  const ecdh = createECDH("prime256v1")
-  ecdh.setPrivateKey(privateKey)
-  return ecdh.getPublicKey().toString("base64")
-}
-
-function requireRelayTarget(target: RelayTarget | null): RelayTarget {
-  if (!target?.daemon_id && !target?.daemon_alias) {
-    throw new Error("relay target daemon id or alias is required")
-  }
-  return target
 }

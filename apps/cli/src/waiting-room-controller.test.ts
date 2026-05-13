@@ -59,14 +59,14 @@ test("waiting room activation stages existing worktree selections for session cr
       sessions: [],
       catalog,
       currentProvider: "opencode",
-      currentModel: "openai/gpt-5.4",
+      currentModel: "opencode/gpt-5.4",
     })
 
     assert.deepEqual(decision, {
       action: "create",
       launch: {
         provider: "opencode",
-        model: "openai/gpt-5.4",
+        model: "opencode/gpt-5.4",
         effort: "high",
       },
     })
