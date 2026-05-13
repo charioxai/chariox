@@ -14,6 +14,8 @@ Achieved:
   assistant deltas, reasoning deltas, usage, terminal failures, and turn
   completion.
 - Added focused unit tests and the `claude-provider:drill` live drill.
+- Added M13.2 text/base64 attachment transmission into Claude user content,
+  including opaque attachment fallback references.
 
 Verified:
 
@@ -21,6 +23,7 @@ Verified:
 - `cargo build --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel`
 - `node --check apps/cli/scripts/live-claude-provider-drill.mjs`
 - `node apps/cli/scripts/live-claude-provider-drill.mjs --timeout-ms 180000 --keep-artifacts-on-failure`
+- `node apps/cli/scripts/live-claude-provider-drill.mjs --scenario attachment --timeout-ms 180000 --keep-artifacts-on-failure`
 
 Known verification gap:
 
@@ -197,6 +200,10 @@ Live drills:
   expected permission mode is used.
 
 ### M13.2 Early Artifact Transmission
+
+Status: complete for inline text/base64 attachments and opaque fallback
+references. Runtime MCP-backed artifact helpers remain deferred until a later
+artifact/tooling hardening slice.
 
 Goal: after basic streaming is proven, support Arroba prompt attachments and
 artifact references for Claude turns before remote/native work.

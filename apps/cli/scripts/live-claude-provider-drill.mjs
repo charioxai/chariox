@@ -13,6 +13,7 @@ const DEFAULT_MODEL = 'sonnet'
 const DEFAULT_EFFORT = 'low'
 const DEFAULT_TIMEOUT_MS = 180_000
 const DEFAULT_POLL_MS = 1_000
+const SCENARIOS = new Set(['echo', 'attachment'])
 
 function parseArgs(argv) {
   const options = {
@@ -21,6 +22,7 @@ function parseArgs(argv) {
     worktree: null,
     model: DEFAULT_MODEL,
     effort: DEFAULT_EFFORT,
+    scenario: 'echo',
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     spawnDaemon: true,
@@ -33,6 +35,10 @@ function parseArgs(argv) {
     else if (arg === '--worktree') options.worktree = argv[++index]
     else if (arg === '--model') options.model = argv[++index]
     else if (arg === '--effort') options.effort = argv[++index]
+    else if (arg === '--scenario') {
+      options.scenario = argv[++index]
+      if (!SCENARIOS.has(options.scenario)) throw new Error(`unknown scenario: ${options.scenario}`)
+    }
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++index])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++index])
     else if (arg === '--no-spawn-daemon') options.spawnDaemon = false
@@ -53,6 +59,7 @@ function printHelp() {
     'Options:',
     `  --model ${DEFAULT_MODEL}`,
     `  --effort ${DEFAULT_EFFORT}`,
+    '  --scenario echo|attachment',
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     '  --kernel ws://127.0.0.1:43284',
     `  --workspace ${repoRoot}`,
@@ -166,11 +173,42 @@ async function waitForHistory(client, requests, sessionId, attachmentId, expecte
     lastState = stateResponse.SessionState?.session ?? stateResponse.SessionStateLoaded?.session ?? null
     const entries = history.entries.map((entry) => entry.entry).filter(Boolean)
     lastText = entries.map((entry) => entry.text ?? '').join('\n')
+    const compactText = lastText.replace(/\s+/g, '')
+    const compactExpected = expected.replace(/\s+/g, '')
     const completed = !lastState?.active_prompt
-    if (lastText.includes(expected) && completed) return { entries, text: lastText }
+    if ((lastText.includes(expected) || compactText.includes(compactExpected)) && completed) {
+      return { entries, text: lastText }
+    }
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for Claude output marker ${expected}\nlastState=${JSON.stringify(lastState)}\n${lastText.slice(-4000)}`)
+}
+
+function promptFixture(scenario, marker) {
+  if (scenario === 'attachment') {
+    const attachmentMarker = `${marker}_ATTACHED`
+    return {
+      expected: attachmentMarker,
+      prompt: [
+        'Read the attached text artifact.',
+        'Respond with exactly the marker inside it and no extra prose.',
+      ].join('\n'),
+      attachments: [{
+        url: 'artifact://claude-provider-drill/text-marker',
+        mime: 'text/plain',
+        filename: 'claude-marker.txt',
+        contents_base64: Buffer.from(attachmentMarker, 'utf8').toString('base64'),
+      }],
+    }
+  }
+  return {
+    expected: marker,
+    prompt: [
+      'Respond with exactly this marker and no extra prose:',
+      marker,
+    ].join('\n'),
+    attachments: [],
+  }
 }
 
 async function main() {
@@ -189,10 +227,7 @@ async function main() {
   await mkdir(worktree, { recursive: true })
 
   const marker = `ARROBA_CLAUDE_DRILL_${process.pid}_${Date.now()}`
-  const prompt = [
-    'Respond with exactly this marker and no extra prose:',
-    marker,
-  ].join('\n')
+  const fixture = promptFixture(options.scenario, marker)
   const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
 
   let daemon = null
@@ -252,17 +287,23 @@ async function main() {
       variant: launched.variant,
       endpointMode: launched.endpoint_mode,
     })
-    await client.send(requests.submitPromptRequest(session.id, attachment.id, null, prompt, []))
+    await client.send(requests.submitPromptRequest(
+      session.id,
+      attachment.id,
+      null,
+      fixture.prompt,
+      fixture.attachments,
+    ))
     const history = await waitForHistory(
       client,
       requests,
       session.id,
       attachment.id,
-      marker,
+      fixture.expected,
       options.timeoutMs,
       options.pollMs,
     )
-    log('verified', { marker, historyEntries: history.entries.length })
+    log('verified', { scenario: options.scenario, marker: fixture.expected, historyEntries: history.entries.length })
     await client.send(requests.endSessionRequest(session.id)).catch(() => {})
     succeeded = true
   } finally {

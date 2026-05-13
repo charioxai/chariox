@@ -115,6 +115,7 @@ fails unless the marker reaches history and the prompt settles.
 
 ```bash
 pnpm --filter @arroba/cli run claude-provider:drill
+node apps/cli/scripts/live-claude-provider-drill.mjs --scenario attachment
 ```
 
 The drill uses the locally installed/logged-in `claude` CLI. It does not set

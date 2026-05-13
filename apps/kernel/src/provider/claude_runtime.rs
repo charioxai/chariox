@@ -4,6 +4,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
+use base64::Engine as _;
 use serde_json::{json, Value};
 
 use crate::error::DaemonError;
@@ -192,7 +193,7 @@ pub(crate) fn submit_claude_prompt(
     _run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
     prompt: &str,
-    _attachments: &[PromptAttachment],
+    attachments: &[PromptAttachment],
 ) -> Result<(), DaemonError> {
     let turn_id = format!("turn-{}", state.next_turn_number);
     state.next_turn_number += 1;
@@ -203,9 +204,7 @@ pub(crate) fn submit_claude_prompt(
         "type": "user",
         "message": {
             "role": "user",
-            "content": [
-                { "type": "text", "text": prompt }
-            ]
+            "content": claude_user_content(prompt, attachments)
         }
     });
     write_json_line(&mut state.stdin, &message)
@@ -284,6 +283,77 @@ fn write_json_line(stdin: &mut ChildStdin, value: &Value) -> Result<(), DaemonEr
             operation: "claude_write_stdin",
             message: error.to_string(),
         })
+}
+
+fn claude_user_content(prompt: &str, attachments: &[PromptAttachment]) -> Vec<Value> {
+    let mut content = Vec::new();
+    if !prompt.trim().is_empty() {
+        content.push(json!({ "type": "text", "text": prompt }));
+    }
+    for attachment in attachments {
+        content.extend(claude_attachment_content(attachment));
+    }
+    if content.is_empty() {
+        content.push(json!({ "type": "text", "text": "" }));
+    }
+    content
+}
+
+fn claude_attachment_content(attachment: &PromptAttachment) -> Vec<Value> {
+    let label = attachment
+        .filename()
+        .map(str::to_string)
+        .unwrap_or_else(|| attachment.url().to_string());
+    if let Some(data) = attachment.contents_base64() {
+        if attachment.mime().starts_with("image/") {
+            return vec![json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": attachment.mime(),
+                    "data": data,
+                }
+            })];
+        }
+        if attachment_is_textual(attachment.mime()) {
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
+                if let Ok(text) = String::from_utf8(bytes) {
+                    return vec![json!({
+                        "type": "text",
+                        "text": format!(
+                            "Attachment: {label} ({}) at {}\n\n{}",
+                            attachment.mime(),
+                            attachment.url(),
+                            text,
+                        ),
+                    })];
+                }
+            }
+        }
+    }
+    vec![json!({
+        "type": "text",
+        "text": format!(
+            "Attachment: {label} ({}) at {}",
+            attachment.mime(),
+            attachment.url(),
+        ),
+    })]
+}
+
+fn attachment_is_textual(mime: &str) -> bool {
+    mime.starts_with("text/")
+        || matches!(
+            mime,
+            "application/json"
+                | "application/javascript"
+                | "application/typescript"
+                | "application/xml"
+                | "application/yaml"
+                | "application/x-yaml"
+        )
+        || mime.ends_with("+json")
+        || mime.ends_with("+xml")
 }
 
 fn apply_claude_message(
@@ -566,11 +636,15 @@ fn u64_field(value: &Value, field: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine as _;
     use serde_json::json;
 
+    use crate::session::PromptAttachment;
     use crate::terminal::TerminalOutputKind;
 
-    use super::{apply_claude_message, ClaudeRuntimeState, ProviderPromptSignalBatch};
+    use super::{
+        apply_claude_message, claude_user_content, ClaudeRuntimeState, ProviderPromptSignalBatch,
+    };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
         let mut child = std::process::Command::new("/bin/sh")
@@ -671,5 +745,41 @@ mod tests {
         assert_eq!(batch.completions.len(), 1);
         assert_eq!(batch.resolved_usage_tokens_total, Some(10));
         assert_eq!(state.active_turn_id, None);
+    }
+
+    #[test]
+    fn user_content_includes_text_attachment_contents() {
+        let attachment = PromptAttachment::new(
+            "artifact://note",
+            "text/plain",
+            Some("note.txt".to_string()),
+        )
+        .with_contents_base64(base64::engine::general_purpose::STANDARD.encode("attached marker"));
+
+        let content = claude_user_content("read this", &[attachment]);
+
+        assert_eq!(content[0]["text"], "read this");
+        assert!(content[1]["text"]
+            .as_str()
+            .expect("attachment should render as text")
+            .contains("attached marker"));
+    }
+
+    #[test]
+    fn user_content_falls_back_to_attachment_reference_for_opaque_data() {
+        let attachment = PromptAttachment::new(
+            "artifact://archive",
+            "application/octet-stream",
+            Some("archive.bin".to_string()),
+        )
+        .with_contents_base64(base64::engine::general_purpose::STANDARD.encode([0, 1, 2]));
+
+        let content = claude_user_content("", &[attachment]);
+
+        assert_eq!(content.len(), 1);
+        assert!(content[0]["text"]
+            .as_str()
+            .expect("opaque attachment should render as reference")
+            .contains("archive.bin"));
     }
 }
