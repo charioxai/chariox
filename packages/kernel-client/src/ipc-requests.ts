@@ -1700,12 +1700,18 @@ export function resizeTerminalRequest(sessionId: string, cols: number, rows: num
   }
 }
 
-export function sendTerminalInputRequest(sessionId: string, attachmentId: string, input: string | Uint8Array) {
+export function sendTerminalInputRequest(
+  sessionId: string,
+  attachmentId: string,
+  input: string | Uint8Array,
+  providerRunId?: string | null,
+) {
   const bytes = typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input)
   return {
     SendTerminalInput: {
       session_id: sessionId,
       attachment_id: attachmentId,
+      provider_run_id: providerRunId ?? null,
       data_base64: bytes.toString("base64"),
     },
   }

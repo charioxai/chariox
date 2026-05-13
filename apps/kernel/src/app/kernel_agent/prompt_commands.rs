@@ -149,6 +149,52 @@ impl<'a> KernelAgentService<'a> {
         Ok(outcome)
     }
 
+    pub(crate) fn record_native_prompt_started(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        target_agent_id: &str,
+        prompt: &str,
+    ) -> Result<PromptSubmissionOutcome, DaemonError> {
+        crate::app::KernelSessionReadService::new(self.app)
+            .ensure_attachment_in_session(session_id, attachment_id)?;
+        let prepared_prompt = PromptQueueItem::new(
+            self.app.sessions_mut().reserve_prompt_id(),
+            attachment_id,
+            target_agent_id,
+            prompt,
+            PromptStatus::Queued,
+        );
+        let admission = self.prepare_prompt_admission(KernelPreparedPromptSubmission {
+            session_id: session_id.to_string(),
+            prompt: prepared_prompt,
+            force_queue: false,
+        })?;
+        if admission.remote_execution.is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "record native prompt",
+                message: "native provider prompt recording requires a local provider run"
+                    .to_string(),
+            });
+        }
+        self.spawn_prompt_history_append(&admission)?;
+        let submitted = self.submit_admitted_prompt_to_owner(admission)?;
+        let provider_run_id = submitted.admission.provider_run_id.clone();
+        let (dispatch, _) = self.prepare_local_prompt_submission_effects(&submitted)?;
+        if matches!(submitted.outcome, PromptSubmissionOutcome::Started { .. }) {
+            if let Some(provider_run_id) = provider_run_id.or_else(|| {
+                dispatch
+                    .as_ref()
+                    .map(|dispatch| dispatch.provider_run_id.clone())
+            }) {
+                crate::transport::flow_control::note_prompt_started(self.app, &provider_run_id);
+            }
+        }
+        let _ = crate::app::KernelSessionReadService::new(self.app)
+            .session_snapshot(&submitted.admission.session_id)?;
+        Ok(submitted.outcome)
+    }
+
     fn finish_compat_prompt_dispatch(
         &mut self,
         dispatch: Option<KernelPromptDispatch>,

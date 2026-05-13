@@ -28,6 +28,7 @@ pub use codex_client::{
 pub use codex_runtime::{run_codex_utility_prompt, CodexRuntimeState};
 pub(crate) use managed_io_policy::{
     native_tui_hidden_instructions_block, MANAGED_IO_INSTRUCTIONS_SOURCE_PATH,
+    NATIVE_TUI_HIDDEN_INSTRUCTIONS_END, NATIVE_TUI_HIDDEN_INSTRUCTIONS_START,
 };
 pub(crate) use mcp_proxy::dispatch_provider_mcp_proxy_request;
 pub use opencode::{

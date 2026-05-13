@@ -213,6 +213,21 @@ impl DaemonApp {
         )
     }
 
+    pub(crate) fn record_native_prompt_started(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        target_agent_id: &str,
+        prompt: &str,
+    ) -> Result<PromptSubmissionOutcome, DaemonError> {
+        crate::app::KernelAgentService::new(self).record_native_prompt_started(
+            session_id,
+            attachment_id,
+            target_agent_id,
+            prompt,
+        )
+    }
+
     pub(crate) fn prepare_provider_prompt_dispatch(
         &mut self,
         session_id: &str,

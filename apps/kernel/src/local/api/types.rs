@@ -4,7 +4,7 @@ use crate::slice::{SliceBackendKind, SliceDisplayEndpoint, SliceRecord};
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 32;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 33;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -1293,6 +1293,8 @@ pub struct ResizeTerminalRequest {
 pub struct SendTerminalInputRequest {
     pub session_id: String,
     pub attachment_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_run_id: Option<String>,
     pub data_base64: String,
 }
 

@@ -26,6 +26,8 @@ import {
   launchProviderRunRequest,
   pumpTerminalOutputRequest,
   resolveSessionRequest,
+  resizeTerminalRequest,
+  sendTerminalInputRequest,
   spawnAgentRequest,
   submitPromptRequest,
 } from "../ipc-requests.js"
@@ -53,6 +55,7 @@ type NativeClaudeOptions = {
   permissions: "required" | "yolo"
   initialPrompt?: string
   detachedScreen: boolean
+  remoteRendered: boolean
 }
 
 type ClaudeHookEvent = {
@@ -82,6 +85,10 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       targetDaemonAlias: options.targetDaemonAlias,
     }
     : undefined)
+  if (options.remoteRendered) {
+    await runClaudeRemoteRendered(options, client, workspace, worktree)
+    return
+  }
 
   const tempRoot = path.join(os.tmpdir(), `arroba-claude-native-${process.pid}-${Date.now()}`)
   const eventsFile = path.join(tempRoot, "events.jsonl")
@@ -173,6 +180,7 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
     mode: "build",
     permissions: "required",
     detachedScreen: false,
+    remoteRendered: false,
   }
   const positional: string[] = []
   for (let index = 0; index < args.length; index += 1) {
@@ -240,6 +248,9 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
       case "--detached-screen":
         options.detachedScreen = true
         break
+      case "--remote-rendered":
+        options.remoteRendered = true
+        break
       case "--help":
       case "-h":
         printNativeClaudeUsage()
@@ -271,8 +282,99 @@ function printNativeClaudeUsage() {
     "  --effort <effort>                Claude effort argument (default low)",
     "  --mode <build|plan>              Arroba agent mode (default build)",
     "  --permissions <required|yolo>    Claude permission mode mapping (default required)",
+    "  --remote-rendered                Run Claude Code in the target kernel PTY and render it here",
     "",
   ].join("\n"))
+}
+
+async function runClaudeRemoteRendered(
+  options: NativeClaudeOptions,
+  client: LocalIpcClient,
+  workspace: string,
+  worktree: string,
+): Promise<void> {
+  let pump: { stop: () => void } | null = null
+  let disposeEvents: (() => void) | null = null
+  let restoreStdin: (() => void) | null = null
+  try {
+    const created = options.sessionRef
+      ? null
+      : await createSession(client, workspace, worktree, options.alias, options.model, options.effort, options.mode, options.permissions)
+    const session = created?.session ?? await resolveSession(client, options.sessionRef!, workspace)
+    const attachment = await attachToSession(client, session.id, options.clientId)
+    const agent = created?.agent
+      ? await maybeAliasAgent(client, session.id, created.agent, options.agentAlias)
+      : await spawnClaudeAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions)
+    const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
+    const run = await waitForProviderRunReady(client, launched.id)
+
+    process.stderr.write([
+      "[arroba claude remote-native-tui]",
+      `  arroba session: ${session.id}${session.alias ? ` (${session.alias})` : ""}`,
+      `  arroba agent:   ${agent.id}${agent.alias ? ` (${agent.alias})` : ""}`,
+      `  provider run:   ${run.id}`,
+      "  tui:            target-kernel-pty",
+      "",
+    ].join("\n"))
+
+    disposeEvents = client.onKernelEvent((event) => {
+      if (event.event !== "terminal_output") return
+      for (const record of event.records ?? []) {
+        if (record.provider_run_id !== run.id) continue
+        const bytes = Array.isArray(record.bytes) ? Buffer.from(record.bytes as number[]) : null
+        if (bytes?.length) process.stdout.write(bytes)
+      }
+    })
+    await client.subscribeToKernelEvents(session.id, attachment.id)
+    pump = startKernelPumpLoop(client, session.id, attachment.id)
+    restoreStdin = forwardStdinToProviderRun(client, session.id, attachment.id, run.id)
+    installResizeForwarder(client, session.id)
+    if (options.initialPrompt) {
+      await sleep(1_000)
+      await client.send<Record<string, unknown>>(
+        sendTerminalInputRequest(session.id, attachment.id, `${options.initialPrompt}\r`, run.id),
+      )
+    }
+    await waitForRemoteRenderedRunExit(client, run.id)
+  } finally {
+    restoreStdin?.()
+    disposeEvents?.()
+    pump?.stop()
+    await client.unsubscribeFromKernelEvents().catch(() => {})
+    await client.close()
+  }
+}
+
+function forwardStdinToProviderRun(
+  client: LocalIpcClient,
+  sessionId: string,
+  attachmentId: string,
+  providerRunId: string,
+): () => void {
+  const wasRaw = Boolean(process.stdin.isTTY && process.stdin.isRaw)
+  const onData = (chunk: Buffer) => {
+    void client.send<Record<string, unknown>>(
+      sendTerminalInputRequest(sessionId, attachmentId, chunk, providerRunId),
+    ).catch(() => {})
+  }
+  if (process.stdin.isTTY) process.stdin.setRawMode?.(true)
+  process.stdin.resume()
+  process.stdin.on("data", onData)
+  return () => {
+    process.stdin.off("data", onData)
+    if (process.stdin.isTTY) process.stdin.setRawMode?.(wasRaw)
+  }
+}
+
+function installResizeForwarder(client: LocalIpcClient, sessionId: string) {
+  const sendResize = () => {
+    const cols = process.stdout.columns
+    const rows = process.stdout.rows
+    if (!cols || !rows) return
+    void client.send<Record<string, unknown>>(resizeTerminalRequest(sessionId, cols, rows)).catch(() => {})
+  }
+  process.stdout.on("resize", sendResize)
+  sendResize()
 }
 
 function startClaudeBridge(options: {
@@ -760,6 +862,23 @@ async function launchClaudeNativeRun(
     : expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunchAccepted").provider_run
 }
 
+async function launchClaudeRemoteRenderedRun(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+  model: string,
+  effort: string,
+): Promise<RuntimeProviderRun> {
+  const response = await client.send<Record<string, unknown>>(
+    launchProviderRunRequest(sessionId, "claude", "default", model, effort, agentId, {
+      nativeTui: true,
+    }),
+  )
+  return "ProviderRunLaunched" in response
+    ? expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched").provider_run
+    : expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunchAccepted").provider_run
+}
+
 async function waitForProviderRunReady(client: LocalIpcClient, providerRunId: string): Promise<RuntimeProviderRun> {
   const deadline = Date.now() + 30_000
   let latest: RuntimeProviderRun | null = null
@@ -773,6 +892,17 @@ async function waitForProviderRunReady(client: LocalIpcClient, providerRunId: st
     await sleep(250)
   }
   throw new Error(`timed out waiting for Claude provider run ${providerRunId}; latest state ${latest?.state ?? "unknown"}`)
+}
+
+async function waitForRemoteRenderedRunExit(client: LocalIpcClient, providerRunId: string): Promise<void> {
+  while (true) {
+    const run = expectVariant<{ provider_run: RuntimeProviderRun }>(
+      await client.send<Record<string, unknown>>(getProviderRunRequest(providerRunId)),
+      "ProviderRun",
+    ).provider_run
+    if (run.state === "Ended") return
+    await sleep(1_000)
+  }
 }
 
 function startKernelPumpLoop(client: LocalIpcClient, sessionId: string, attachmentId: string): { stop: () => void } {

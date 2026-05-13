@@ -1201,16 +1201,24 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
         attachment_id: &str,
+        provider_run_id: Option<&str>,
         bytes: &[u8],
     ) -> Result<(), DaemonError> {
-        let provider_run_id = self
-            .sessions()
-            .get_session(session_id)?
-            .active_provider_run_id()
-            .ok_or_else(|| DaemonError::NoActiveProviderRun {
-                session_id: session_id.to_string(),
-            })?
-            .to_string();
+        let provider_run_id = match provider_run_id {
+            Some(provider_run_id) => {
+                crate::app::ProviderRunReadService::new(self)
+                    .ensure_provider_run_in_session(session_id, provider_run_id)?;
+                provider_run_id.to_string()
+            }
+            None => self
+                .sessions()
+                .get_session(session_id)?
+                .active_provider_run_id()
+                .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                    session_id: session_id.to_string(),
+                })?
+                .to_string(),
+        };
         crate::app::terminal_input::ProviderTerminalInput::new(self).send_provider_input(
             session_id,
             &provider_run_id,

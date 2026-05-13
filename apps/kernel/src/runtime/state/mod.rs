@@ -631,6 +631,7 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         attachment_id: &str,
+        provider_run_id: Option<&str>,
         data_base64: &str,
     ) -> Result<usize, DaemonError> {
         let bytes = base64::engine::general_purpose::STANDARD
@@ -642,8 +643,14 @@ impl KernelRuntimeState {
         let byte_count = bytes.len();
         let session_id = session_id.to_string();
         let attachment_id = attachment_id.to_string();
+        let provider_run_id = provider_run_id.map(str::to_string);
         self.with_app_side_effect(move |app| {
-            app.send_terminal_input(&session_id, &attachment_id, &bytes)
+            app.send_terminal_input(
+                &session_id,
+                &attachment_id,
+                provider_run_id.as_deref(),
+                &bytes,
+            )
         })
         .await?;
         Ok(byte_count)

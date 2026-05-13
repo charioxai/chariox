@@ -9,9 +9,9 @@ use crate::local::{
     AliasAgentRequest, AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest,
     DeleteSessionRequest, DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest,
     FocusAgentRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-    ResizeTerminalRequest, RespondToInteractionRequest, SendTerminalInputRequest, SpawnAgentRequest,
-    UpdateAgentConfigRequest, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
-    UpdateSessionConfigRequest,
+    ResizeTerminalRequest, RespondToInteractionRequest, SendTerminalInputRequest,
+    SpawnAgentRequest, UpdateAgentConfigRequest, UpdateAgentProfileRequest,
+    UpdateAgentSubstitutesRequest, UpdateSessionConfigRequest,
 };
 use crate::runtime::command::{KernelCallerKind, KernelCommand};
 use crate::runtime::projection::{
@@ -526,6 +526,7 @@ impl SessionRuntimeStore {
             .send_terminal_input(
                 &request.session_id,
                 &request.attachment_id,
+                request.provider_run_id.as_deref(),
                 &request.data_base64,
             )
             .await
