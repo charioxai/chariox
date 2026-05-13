@@ -37,6 +37,7 @@ type NativeOpenCodeOptions = {
   sessionRef?: string
   socketPath?: string
   kernelUrl?: string
+  kernelPort?: string
   relayUrl?: string
   relayToken?: string
   targetDaemonId?: string
@@ -68,7 +69,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
   const inferredTargets = await inferWorkspaceTargetsFromLaunchDirectory(process.cwd())
   const workspace = options.workspace ?? inferredTargets.workspace
   const worktree = options.worktree ?? inferredTargets.worktree
-  const kernelEndpoint = options.relayUrl ?? options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint()
+  const kernelEndpoint = options.relayUrl ?? options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint(options.kernelPort)
   const client = new LocalIpcClient(kernelEndpoint, options.relayUrl
     ? {
       relayAuthToken: options.relayToken,
@@ -163,6 +164,10 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
       case "--kernel-url":
         options.kernelUrl = next()
         break
+      case "--kernel-port":
+      case "--port":
+        options.kernelPort = parseKernelPort(next(), arg)
+        break
       case "--relay-url":
         options.relayUrl = next()
         break
@@ -214,6 +219,15 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
   if (options.relayUrl && (options.kernelUrl || options.socketPath)) {
     throw new Error("--relay-url cannot be used together with --kernel-url or --socket")
   }
+  if (options.relayUrl && options.kernelPort) {
+    throw new Error("--relay-url cannot be used together with --kernel-port")
+  }
+  if (options.kernelUrl && options.kernelPort) {
+    throw new Error("--kernel-url cannot be used together with --kernel-port")
+  }
+  if (options.socketPath && options.kernelPort) {
+    throw new Error("--socket cannot be used together with --kernel-port")
+  }
   if (positional[0] !== undefined) {
     options.sessionRef = positional[0]
   }
@@ -222,7 +236,7 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
 
 function printNativeOpenCodeUsage() {
   process.stdout.write([
-    "usage: arroba opencode [session-ref] [--socket PATH|--kernel-url URL]",
+    "usage: arroba opencode [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT]",
     "       arroba opencode [session-ref] --relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)",
     "",
     "behavior:",
@@ -250,13 +264,24 @@ async function inferWorkspaceTargetsFromLaunchDirectory(cwd: string): Promise<{ 
   }
 }
 
-function defaultKernelEndpoint(): string {
+function defaultKernelEndpoint(kernelPort?: string): string {
   if (process.env.ARROBA_KERNEL_URL) {
     return process.env.ARROBA_KERNEL_URL
   }
   const host = process.env.ARROBA_KERNEL_HOST ?? "127.0.0.1"
-  const port = process.env.ARROBA_KERNEL_PORT ?? "43118"
+  const port = kernelPort ?? process.env.ARROBA_KERNEL_PORT ?? "43119"
   return `ws://${host}:${port}/kernel`
+}
+
+function parseKernelPort(value: string, arg: string): string {
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`${arg} must be a TCP port`)
+  }
+  const port = Number(value)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${arg} must be between 1 and 65535`)
+  }
+  return String(port)
 }
 
 async function createSession(

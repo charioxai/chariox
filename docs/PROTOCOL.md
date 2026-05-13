@@ -168,13 +168,14 @@ Native TUI agents let a user run a familiar provider CLI UI while the Arroba ker
 
 Current commands:
 
-- `arroba codex [session-ref]`
-- `arroba opencode [session-ref]`
+- `arroba codex [session-ref] [--kernel-port PORT|--kernel-url URL]`
+- `arroba opencode [session-ref] [--kernel-port PORT|--kernel-url URL]`
 
 Semantics:
 
 - if no session ref is provided, Arroba creates a session and its first native TUI agent
 - if a session ref is provided, Arroba attaches a new top-level native TUI agent to that Arroba session
+- local native TUI launchers default to the web-dev kernel at `ws://127.0.0.1:43119/kernel`; `--kernel-port` selects another local kernel port
 - a native TUI launch never attaches to an existing provider run; every native TUI agent owns its own provider run
 - prompts from the provider TUI are intercepted and submitted through the same kernel prompt path as Arroba clients
 - prompts from Arroba clients are forwarded through the kernel-managed provider run so the provider TUI observes the same turns

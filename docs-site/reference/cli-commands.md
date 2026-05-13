@@ -33,11 +33,15 @@ Launch a Codex-native TUI agent managed by Arroba.
 
 If `session-ref` is omitted, Arroba creates a new session. If it is provided, Arroba adds a new Codex native TUI agent to that Arroba session.
 
+By default the native TUI launcher connects to `ws://127.0.0.1:43119/kernel`. Use `--kernel-port <port>` for another local kernel port, or `--kernel-url <url>` for a full endpoint.
+
 ### `arroba opencode [session-ref]`
 
 Launch an OpenCode-native TUI agent managed by Arroba.
 
 If `session-ref` is omitted, Arroba creates a new session. If it is provided, Arroba adds a new OpenCode native TUI agent to that Arroba session.
+
+By default the native TUI launcher connects to `ws://127.0.0.1:43119/kernel`. Use `--kernel-port <port>` for another local kernel port, or `--kernel-url <url>` for a full endpoint.
 
 For native TUI agents, model and variant are controlled from the provider TUI. Arroba CLIs observe the run and can send prompts, but they do not mutate those parameters.
 

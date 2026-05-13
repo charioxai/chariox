@@ -36,6 +36,7 @@ type NativeCodexOptions = {
   sessionRef?: string
   socketPath?: string
   kernelUrl?: string
+  kernelPort?: string
   clientId: string
   workspace?: string
   worktree?: string
@@ -64,7 +65,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
   const inferredTargets = await inferWorkspaceTargetsFromLaunchDirectory(process.cwd())
   const workspace = options.workspace ?? inferredTargets.workspace
   const worktree = options.worktree ?? inferredTargets.worktree
-  const client = new LocalIpcClient(options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint())
+  const client = new LocalIpcClient(options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint(options.kernelPort))
   let appServer: ReturnType<typeof spawn> | null = null
   let proxy: WebSocketServer | null = null
   let pump: { stop: () => void } | null = null
@@ -160,6 +161,10 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
       case "--kernel-url":
         options.kernelUrl = next()
         break
+      case "--kernel-port":
+      case "--port":
+        options.kernelPort = parseKernelPort(next(), arg)
+        break
       case "--client-id":
         options.clientId = next()
         break
@@ -195,13 +200,15 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
     }
   }
   if (positional.length > 1) throw new Error("usage: arroba codex [session-ref]")
+  if (options.kernelUrl && options.kernelPort) throw new Error("--kernel-url cannot be used together with --kernel-port")
+  if (options.socketPath && options.kernelPort) throw new Error("--socket cannot be used together with --kernel-port")
   if (positional[0] !== undefined) options.sessionRef = positional[0]
   return options
 }
 
 function printNativeCodexUsage() {
   process.stdout.write([
-    "usage: arroba codex [session-ref] [--socket PATH|--kernel-url URL]",
+    "usage: arroba codex [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT]",
     "",
     "behavior:",
     "  creates a new Arroba agent in the selected session and launches native `codex --remote` for it.",
@@ -226,11 +233,20 @@ async function inferWorkspaceTargetsFromLaunchDirectory(cwd: string): Promise<{ 
   }
 }
 
-function defaultKernelEndpoint(): string {
+function defaultKernelEndpoint(kernelPort?: string): string {
   if (process.env.ARROBA_KERNEL_URL) return process.env.ARROBA_KERNEL_URL
   const host = process.env.ARROBA_KERNEL_HOST ?? "127.0.0.1"
-  const port = process.env.ARROBA_KERNEL_PORT ?? "43118"
+  const port = kernelPort ?? process.env.ARROBA_KERNEL_PORT ?? "43119"
   return `ws://${host}:${port}/kernel`
+}
+
+function parseKernelPort(value: string, arg: string): string {
+  if (!/^\d+$/.test(value)) throw new Error(`${arg} must be a TCP port`)
+  const port = Number(value)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${arg} must be between 1 and 65535`)
+  }
+  return String(port)
 }
 
 async function createSession(
