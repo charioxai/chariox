@@ -48,6 +48,8 @@ type NativeOpenCodeOptions = {
   worktree?: string
   alias?: string
   agentAlias?: string
+  mode: "build" | "plan"
+  permissions: "required" | "yolo"
 }
 
 type OpenCodePromptBody = {
@@ -90,7 +92,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
   try {
     const created = options.sessionRef
       ? null
-      : await createSession(client, workspace, worktree, options.alias)
+      : await createSession(client, workspace, worktree, options.alias, options.mode, options.permissions)
     const session = created?.session ?? (options.sessionRef
       ? await resolveSession(client, options.sessionRef, workspace)
       : (() => {
@@ -99,7 +101,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     const attachment = await attachToSession(client, session.id, options.clientId)
     const agent = created?.agent
       ? await maybeAliasAgent(client, session.id, created.agent, options.agentAlias)
-      : await spawnOpenCodeAgent(client, session.id, options.agentAlias)
+      : await spawnOpenCodeAgent(client, session.id, options.agentAlias, options.mode, options.permissions)
     const upstreamBaseUrl = `http://127.0.0.1:${await reservePort()}`
     openCodeServer = await startOpenCodeServer(upstreamBaseUrl, worktree)
     const proxyState: OpenCodeProxyState = {
@@ -165,6 +167,8 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
 function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
   const options: NativeOpenCodeOptions = {
     clientId: `arroba-opencode-native-${process.pid}`,
+    mode: "build",
+    permissions: "yolo",
   }
   const positional: string[] = []
 
@@ -217,6 +221,12 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
       case "--agent-alias":
         options.agentAlias = next()
         break
+      case "--mode":
+        options.mode = parseMode(next())
+        break
+      case "--permissions":
+        options.permissions = parsePermissions(next())
+        break
       case "--help":
       case "-h":
         printNativeOpenCodeUsage()
@@ -258,12 +268,22 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
 
 function printNativeOpenCodeUsage() {
   process.stdout.write([
-    "usage: arroba opencode [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT]",
+    "usage: arroba opencode [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--mode build|plan] [--permissions required|yolo]",
     "       arroba opencode [session-ref] --relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)",
     "",
     "behavior:",
     "  creates a new Arroba agent in the selected session and launches native `opencode attach` for it.",
   ].join("\n") + "\n")
+}
+
+function parseMode(value: string): "build" | "plan" {
+  if (value === "build" || value === "plan") return value
+  throw new Error("--mode must be build or plan")
+}
+
+function parsePermissions(value: string): "required" | "yolo" {
+  if (value === "required" || value === "yolo") return value
+  throw new Error("--permissions must be required or yolo")
 }
 
 async function inferWorkspaceTargetsFromLaunchDirectory(cwd: string): Promise<{ workspace: string; worktree: string }> {
@@ -311,12 +331,16 @@ async function createSession(
   workspace: string,
   worktree: string,
   alias?: string,
+  mode: "build" | "plan" = "build",
+  permissions: "required" | "yolo" = "yolo",
 ): Promise<{ session: RuntimeSession; agent: AgentInstance | null }> {
   const response = await client.send<Record<string, unknown>>(
     createSessionRequest(workspace, worktree, alias, {
       provider: "opencode",
       model: "default",
       effort: null,
+      execution_mode: mode,
+      permission_level: permissions,
     }),
   )
   const payload = expectVariant<{ session: RuntimeSession; agent?: AgentInstance | null }>(response, "SessionCreated")
@@ -344,9 +368,11 @@ async function spawnOpenCodeAgent(
   client: LocalIpcClient,
   sessionId: string,
   alias?: string,
+  mode: "build" | "plan" = "build",
+  permissions: "required" | "yolo" = "yolo",
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
-    spawnAgentRequest(sessionId, "opencode", alias, "default", undefined, null),
+    spawnAgentRequest(sessionId, "opencode", alias, "default", undefined, null, mode, permissions),
   )
   return expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
 }

@@ -44,6 +44,8 @@ type NativeCodexOptions = {
   agentAlias?: string
   model: string
   effort: string
+  mode: "build" | "plan"
+  permissions: "required" | "yolo"
   initialPrompt?: string
 }
 
@@ -73,12 +75,12 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
   try {
     const created = options.sessionRef
       ? null
-      : await createSession(client, workspace, worktree, options.alias, options.model, options.effort)
+      : await createSession(client, workspace, worktree, options.alias, options.model, options.effort, options.mode, options.permissions)
     const session = created?.session ?? await resolveSession(client, options.sessionRef!, workspace)
     const attachment = await attachToSession(client, session.id, options.clientId)
     const agent = created?.agent
       ? await maybeAliasAgent(client, session.id, created.agent, options.agentAlias)
-      : await spawnCodexAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree)
+      : await spawnCodexAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions)
     const upstreamEndpoint = `ws://127.0.0.1:${await reservePort()}`
     appServer = await startCodexAppServer(upstreamEndpoint, worktree)
 
@@ -145,6 +147,8 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
     clientId: `arroba-codex-native-${process.pid}`,
     model: "gpt-5.4-mini",
     effort: "high",
+    mode: "build",
+    permissions: "yolo",
   }
   const positional: string[] = []
   for (let index = 0; index < args.length; index += 1) {
@@ -188,6 +192,16 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
       case "--effort":
         options.effort = next()
         break
+      case "--mode": {
+        const value = parseMode(next())
+        options.mode = value
+        break
+      }
+      case "--permissions": {
+        const value = parsePermissions(next())
+        options.permissions = value
+        break
+      }
       case "--initial-prompt":
         options.initialPrompt = next()
         break
@@ -209,11 +223,21 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
 
 function printNativeCodexUsage() {
   process.stdout.write([
-    "usage: arroba codex [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT]",
+    "usage: arroba codex [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--mode build|plan] [--permissions required|yolo]",
     "",
     "behavior:",
     "  creates a new Arroba agent in the selected session and launches native `codex --remote` for it.",
   ].join("\n") + "\n")
+}
+
+function parseMode(value: string): "build" | "plan" {
+  if (value === "build" || value === "plan") return value
+  throw new Error("--mode must be build or plan")
+}
+
+function parsePermissions(value: string): "required" | "yolo" {
+  if (value === "required" || value === "yolo") return value
+  throw new Error("--permissions must be required or yolo")
 }
 
 async function inferWorkspaceTargetsFromLaunchDirectory(cwd: string): Promise<{ workspace: string; worktree: string }> {
@@ -257,12 +281,16 @@ async function createSession(
   alias?: string,
   model = "gpt-5.4-mini",
   effort = "high",
+  mode: "build" | "plan" = "build",
+  permissions: "required" | "yolo" = "yolo",
 ): Promise<{ session: RuntimeSession; agent: AgentInstance | null }> {
   const response = await client.send<Record<string, unknown>>(
     createSessionRequest(workspace, worktree, alias, {
       provider: "codex",
       model,
       effort,
+      execution_mode: mode,
+      permission_level: permissions,
     }),
   )
   const payload = expectVariant<{ session: RuntimeSession; agent?: AgentInstance | null }>(response, "SessionCreated")
@@ -293,9 +321,11 @@ async function spawnCodexAgent(
   model: string,
   effort: string,
   worktree: string,
+  mode: "build" | "plan",
+  permissions: "required" | "yolo",
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
-    spawnAgentRequest(sessionId, "codex", alias, model, worktree, effort),
+    spawnAgentRequest(sessionId, "codex", alias, model, worktree, effort, mode, permissions),
   )
   return expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
 }
