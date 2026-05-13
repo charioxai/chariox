@@ -6,6 +6,10 @@ pub(crate) const MANAGED_IO_INSTRUCTIONS_SOURCE_PATH: &str =
 const MANAGED_IO_INSTRUCTIONS: &str = include_str!("managed_io_instructions.md");
 const NATIVE_PERMISSION_INSTRUCTIONS: &str = include_str!("native_permission_instructions.md");
 const RUNTIME_INSTRUCTIONS: &str = include_str!("runtime_instructions.md");
+const NATIVE_TUI_HIDDEN_INSTRUCTIONS_START: &str =
+    "<<<ARROBA_NATIVE_TUI_HIDDEN_INSTRUCTIONS>>>";
+const NATIVE_TUI_HIDDEN_INSTRUCTIONS_END: &str =
+    "<<<END_ARROBA_NATIVE_TUI_HIDDEN_INSTRUCTIONS>>>";
 
 pub(crate) fn runtime_instructions() -> &'static str {
     RUNTIME_INSTRUCTIONS.trim()
@@ -23,12 +27,16 @@ pub(crate) fn native_permission_instructions() -> &'static str {
     NATIVE_PERMISSION_INSTRUCTIONS.trim()
 }
 
-pub(crate) fn apply_execution_path_instructions(prompt: &str, run: &RuntimeProviderRun) -> String {
-    let path_instructions = if run.requires_managed_io() {
+fn execution_path_instructions_for_run(run: &RuntimeProviderRun) -> &'static str {
+    if run.requires_managed_io() {
         managed_io_instructions()
     } else {
         native_permission_instructions()
-    };
+    }
+}
+
+pub(crate) fn apply_execution_path_instructions(prompt: &str, run: &RuntimeProviderRun) -> String {
+    let path_instructions = execution_path_instructions_for_run(run);
     format!("{}\n\n{}", path_instructions, prompt)
 }
 
@@ -37,7 +45,14 @@ pub(crate) fn apply_structured_prompt_instructions(
     run: &RuntimeProviderRun,
 ) -> String {
     if !run.client_interface().is_arroba() {
-        return prompt.to_string();
+        let hidden_instructions = format!(
+            "{}\n\n{}",
+            execution_path_instructions_for_run(run),
+            runtime_instructions()
+        );
+        return format!(
+            "{NATIVE_TUI_HIDDEN_INSTRUCTIONS_START}\n{hidden_instructions}\n{NATIVE_TUI_HIDDEN_INSTRUCTIONS_END}\n\n{prompt}"
+        );
     }
 
     let prompt = apply_runtime_instructions(prompt);
@@ -142,14 +157,15 @@ mod tests {
     }
 
     #[test]
-    fn structured_prompt_instructions_skip_native_tui_runs() {
+    fn structured_prompt_instructions_for_native_tui_runs_are_marked_hidden() {
         let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "gpt-5.4")
             .with_client_interface(ProviderClientInterface::NativeTui);
         let run = RuntimeProviderRun::new("provider-run-4", &request, launch_result());
         let prompt = apply_structured_prompt_instructions("hello", &run);
 
-        assert_eq!(prompt, "hello");
-        assert!(!prompt.contains(runtime_instructions()));
-        assert!(!prompt.contains(native_permission_instructions()));
+        assert!(prompt.starts_with(NATIVE_TUI_HIDDEN_INSTRUCTIONS_START));
+        assert!(prompt.contains(runtime_instructions()));
+        assert!(prompt.contains(native_permission_instructions()));
+        assert!(prompt.ends_with(&format!("{NATIVE_TUI_HIDDEN_INSTRUCTIONS_END}\n\nhello")));
     }
 }

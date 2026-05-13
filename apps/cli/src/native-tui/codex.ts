@@ -29,6 +29,7 @@ import {
   spawnAgentRequest,
   submitPromptRequest,
 } from "../ipc-requests.js"
+import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -501,6 +502,11 @@ async function startCodexProxy(options: {
   const sendUpstream = (message: unknown) => {
     const socket = ensureUpstream()
     const payload = JSON.stringify(message)
+    if (payload.includes(hiddenInstructionsStart)) {
+      debugNativeCodex("hidden_instructions_forwarded", {
+        method: typeof message === "object" && message && "method" in message ? (message as JsonRpcMessage).method : null,
+      })
+    }
     if (socket.readyState === WebSocket.OPEN) socket.send(payload)
     else socket.once("open", () => socket.send(payload))
   }
@@ -519,8 +525,13 @@ async function startCodexProxy(options: {
     sendUpstream({ ...message, id: upstreamId })
   }
 
+  const messageForDownstream = (downstream: CodexDownstream, message: unknown) =>
+    downstream.kind === "kernel" ? message : redactHiddenInstructionsFromJson(message)
+
   const sendDownstream = (downstream: CodexDownstream, message: unknown) => {
-    if (downstream.socket.readyState === WebSocket.OPEN) downstream.socket.send(JSON.stringify(message))
+    if (downstream.socket.readyState === WebSocket.OPEN) {
+      downstream.socket.send(JSON.stringify(messageForDownstream(downstream, message)))
+    }
   }
 
   const broadcast = (message: unknown) => {

@@ -4,7 +4,7 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http"
 import net from "node:net"
 import path from "node:path"
 import process from "node:process"
-import { Readable } from "node:stream"
+import { Readable, Transform } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
 import { promisify } from "node:util"
 
@@ -31,6 +31,7 @@ import {
   submitPromptRequest,
   updateProviderRunSelectionRequest,
 } from "../ipc-requests.js"
+import { hiddenInstructionsStart, redactHiddenInstructions } from "./hidden-instructions.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -567,7 +568,7 @@ async function handleProxyRequest(
   debugNativeMutation("request", { method, path })
   const promptMatch = method === "POST" ? path.match(/^\/session\/([^/]+)\/(?:message|prompt_async)(?:\?.*)?$/) : null
   if (promptMatch && isKernelRequest) {
-    await proxyToOpenCode(request, response, options.upstreamBaseUrl)
+    await proxyToOpenCode(request, response, options.upstreamBaseUrl, false)
     return
   }
   if (promptMatch) {
@@ -634,13 +635,14 @@ async function handleProxyRequest(
     return
   }
 
-  await proxyToOpenCode(request, response, options.upstreamBaseUrl)
+  await proxyToOpenCode(request, response, options.upstreamBaseUrl, !isKernelRequest)
 }
 
 async function proxyToOpenCode(
   request: IncomingMessage,
   response: ServerResponse,
   upstreamBaseUrl: string,
+  redactForNativeTui = false,
 ): Promise<void> {
   const method = request.method ?? "GET"
   const target = new URL(request.url ?? "/", upstreamBaseUrl)
@@ -658,7 +660,11 @@ async function proxyToOpenCode(
     headers,
   }
   if (method !== "GET" && method !== "HEAD") {
-    init.body = await readRequestBuffer(request) as unknown as BodyInit
+    const body = await readRequestBuffer(request)
+    if (body.includes(hiddenInstructionsStart)) {
+      debugNativeMutation("hidden_instructions_forwarded", { method, path: request.url ?? "/" })
+    }
+    init.body = body as unknown as BodyInit
   }
   const upstream = await fetch(target, init)
 
@@ -673,10 +679,37 @@ async function proxyToOpenCode(
     return
   }
   await new Promise<void>((resolve, reject) => {
-    Readable.fromWeb(upstream.body as never)
+    const stream = Readable.fromWeb(upstream.body as never)
+    const readable = redactForNativeTui ? stream.pipe(createHiddenInstructionRedactor()) : stream
+    readable
       .once("error", reject)
       .once("end", resolve)
       .pipe(response)
+  })
+}
+
+function createHiddenInstructionRedactor(): Transform {
+  let carry = ""
+  const keepTail = 64
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      const combined = `${carry}${chunk.toString("utf8")}`
+      const redacted = redactHiddenInstructions(combined)
+      const startIndex = redacted.lastIndexOf("<<<ARROBA_NATIVE_TUI_HIDDEN_INSTRUCTIONS>>>")
+      if (startIndex >= 0) {
+        this.push(redacted.slice(0, startIndex))
+        carry = redacted.slice(startIndex)
+      } else {
+        const emitLength = Math.max(0, redacted.length - keepTail)
+        this.push(redacted.slice(0, emitLength))
+        carry = redacted.slice(emitLength)
+      }
+      callback()
+    },
+    flush(callback) {
+      this.push(redactHiddenInstructions(carry))
+      callback()
+    },
   })
 }
 
