@@ -43,6 +43,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 - 2026-05-13: Browser kernel request correlation moved from `browser-kernel-client.ts` into `kernel/browser-kernel-request-correlation.ts`. The module owns pending request registration, timeout cleanup, lane counts, lane-scoped rejection, request-kind detection, safe request summaries, and relay error message formatting.
 - 2026-05-13: Browser kernel relay transport primitives moved from `browser-kernel-client.ts` into `kernel/browser-kernel-transport.ts`. The module owns relay target/frame types, JSON frame parsing, token-expiry parsing, websocket close diagnostics, and websocket error text; public target and lane types remain re-exported for compatibility.
 - 2026-05-13: Browser kernel event dispatch moved from `browser-kernel-client.ts` into `kernel/browser-kernel-events.ts`. The module owns the `KernelEvent` union, event handler registration/removal, handler presence checks for reconnect eligibility, and dispatch fanout while `BrowserKernelClient.onKernelEvent` remains unchanged.
+- 2026-05-13: Waiting-room core domain/state types moved from `ui/waiting-room-kernel.ts` into `ui/waiting-room-types.ts`, with `waiting-room-kernel.ts` re-exporting the existing public type surface. This starts the planned waiting-room split without changing reducer, projection, or rendering behavior.
 
 ## Summary
 
