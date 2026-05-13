@@ -16,6 +16,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 - 2026-05-13: Managed-history policy, record append, search, and export job contracts moved from `contracts.ts` into `contracts/managed-history.ts`, with compatibility exports preserved.
 - 2026-05-13: Account bootstrap, organization creation, account listing, and audit event contracts moved from `contracts.ts` into `contracts/account-control.ts`, with compatibility exports preserved.
 - 2026-05-13: Device login approval/polling and logout contracts moved from `contracts.ts` into `contracts/device-login.ts`, with compatibility exports preserved.
+- 2026-05-13: Shared session invite, session member, and collaborator contracts moved from `contracts.ts` into `contracts/session-invites.ts`, with compatibility exports preserved.
 
 ## Summary
 
