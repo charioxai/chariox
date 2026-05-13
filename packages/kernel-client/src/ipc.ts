@@ -15,6 +15,13 @@ import type {
   RelayTarget,
 } from "./kernel-transport-frames.js"
 import { normalizeWebSocketRequest } from "./kernel-transport-requests.js"
+import {
+  buildKernelSubscriptionTransportRequest,
+  createKernelSessionSubscriptionStart,
+  createWaitingRoomInventorySubscriptionStart,
+  kernelSubscriptionScopeValue,
+  type KernelSubscriptionState,
+} from "./kernel-subscriptions.js"
 import { LocalIpcError } from "./local-ipc-error.js"
 import { sendLocalSocketRequest } from "./local-socket-transport.js"
 import { createRelayKeypair, decryptRelayPayload } from "./relay-crypto.js"
@@ -35,14 +42,6 @@ const IPC_WEBSOCKET_CLOSE_TIMEOUT_MS = 1_000
 
 export type { KernelEvent } from "./kernel-events.js"
 export { LocalIpcError } from "./local-ipc-error.js"
-
-type KernelSubscriptionState = {
-  sessionId: string
-  attachmentId: string
-  scope: "session" | "waiting_room_inventory"
-  relaySubscriptionId: string | null
-  relayPrivateKey: Buffer | null
-}
 
 type LocalIpcClientOptions = {
   relayAuthToken?: string | undefined
@@ -115,34 +114,25 @@ export class LocalIpcClient {
     if (!this.supportsKernelEvents()) {
       return
     }
-    const previousSubscription = this.activeKernelSubscription
-    const resumeFromEventId =
-      previousSubscription?.sessionId === sessionId
-        && previousSubscription.attachmentId === attachmentId
-        ? this.lastReceivedEventId
-        : null
-    if (resumeFromEventId == null) {
-      this.lastReceivedEventId = null
-    }
-    this.activeKernelSubscription = {
+    const start = createKernelSessionSubscriptionStart({
+      previous: this.activeKernelSubscription,
+      lastReceivedEventId: this.lastReceivedEventId,
       sessionId,
       attachmentId,
-      scope: "session",
       relaySubscriptionId: this.isRelayMode() ? randomUUID() : null,
-      relayPrivateKey: null,
+    })
+    if (start.resetLastReceivedEventId) {
+      this.lastReceivedEventId = null
     }
+    this.activeKernelSubscription = start.subscription
     try {
       if (this.isRelayMode()) {
-        await this.sendRelaySubscribe(sessionId, attachmentId, resumeFromEventId)
+        await this.sendRelaySubscribe(sessionId, attachmentId, start.resumeFromEventId)
       } else {
-        await this.sendWebSocket<Record<string, unknown>>({
-          __kernel_transport: {
-            type: "subscribe",
-            session_id: sessionId,
-            attachment_id: attachmentId,
-            resume_from_event_id: resumeFromEventId,
-          },
-        }, "event")
+        await this.sendWebSocket<Record<string, unknown>>(
+          buildKernelSubscriptionTransportRequest(start.subscription, start.resumeFromEventId),
+          "event",
+        )
       }
       this.clearReconnectState()
       this.markKernelEventReceived()
@@ -156,34 +146,28 @@ export class LocalIpcClient {
     if (!this.supportsKernelEvents()) {
       return
     }
-    const sessionId = "__waiting_room_inventory__"
-    const attachmentId = "__waiting_room_inventory__"
-    const previousSubscription = this.activeKernelSubscription
-    const resumeFromEventId =
-      previousSubscription?.scope === "waiting_room_inventory" ? this.lastReceivedEventId : null
-    if (resumeFromEventId == null) {
+    const start = createWaitingRoomInventorySubscriptionStart({
+      previous: this.activeKernelSubscription,
+      lastReceivedEventId: this.lastReceivedEventId,
+      relaySubscriptionId: this.isRelayMode() ? randomUUID() : null,
+    })
+    if (start.resetLastReceivedEventId) {
       this.lastReceivedEventId = null
     }
-    this.activeKernelSubscription = {
-      sessionId,
-      attachmentId,
-      scope: "waiting_room_inventory",
-      relaySubscriptionId: this.isRelayMode() ? randomUUID() : null,
-      relayPrivateKey: null,
-    }
+    this.activeKernelSubscription = start.subscription
     try {
       if (this.isRelayMode()) {
-        await this.sendRelaySubscribe(sessionId, attachmentId, resumeFromEventId, "waiting_room_inventory")
+        await this.sendRelaySubscribe(
+          start.subscription.sessionId,
+          start.subscription.attachmentId,
+          start.resumeFromEventId,
+          kernelSubscriptionScopeValue(start.subscription),
+        )
       } else {
-        await this.sendWebSocket<Record<string, unknown>>({
-          __kernel_transport: {
-            type: "subscribe",
-            session_id: sessionId,
-            attachment_id: attachmentId,
-            subscription_scope: "waiting_room_inventory",
-            resume_from_event_id: resumeFromEventId,
-          },
-        }, "event")
+        await this.sendWebSocket<Record<string, unknown>>(
+          buildKernelSubscriptionTransportRequest(start.subscription, start.resumeFromEventId),
+          "event",
+        )
       }
       this.clearReconnectState()
       this.markKernelEventReceived()
@@ -691,18 +675,13 @@ export class LocalIpcClient {
           subscription.sessionId,
           subscription.attachmentId,
           this.lastReceivedEventId,
-          subscription.scope === "waiting_room_inventory" ? "waiting_room_inventory" : undefined,
+          kernelSubscriptionScopeValue(subscription),
         )
       } else {
-        await this.sendWebSocket<Record<string, unknown>>({
-          __kernel_transport: {
-            type: "subscribe",
-            session_id: subscription.sessionId,
-            attachment_id: subscription.attachmentId,
-            subscription_scope: subscription.scope === "waiting_room_inventory" ? "waiting_room_inventory" : undefined,
-            resume_from_event_id: this.lastReceivedEventId,
-          },
-        }, "event")
+        await this.sendWebSocket<Record<string, unknown>>(
+          buildKernelSubscriptionTransportRequest(subscription, this.lastReceivedEventId),
+          "event",
+        )
       }
       this.clearReconnectState()
       this.markKernelEventReceived()
