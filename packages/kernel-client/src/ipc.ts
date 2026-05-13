@@ -21,6 +21,7 @@ import { LocalIpcError } from "./local-ipc-error.js"
 import { sendLocalSocketRequest } from "./local-socket-transport.js"
 import { createRelayKeypair, decryptRelayPayload, relayPublicKeyFromPrivateKey } from "./relay-crypto.js"
 import { buildRelayConnectFrame, normalizeRelayRequest, requireRelayTarget } from "./relay-transport.js"
+import { KernelPendingRequestRegistry } from "./websocket-pending-requests.js"
 import { formatTransportError, isWebSocketEndpoint } from "./websocket-transport-diagnostics.js"
 
 const IPC_TIMEOUT_MS = 120_000
@@ -28,14 +29,6 @@ const DEFAULT_KERNEL_EVENT_STALE_MS = 0
 const DEFAULT_KERNEL_PING_INTERVAL_MS = 5_000
 const DEFAULT_KERNEL_MAX_MISSED_PONGS = 2
 const IPC_WEBSOCKET_CLOSE_TIMEOUT_MS = 1_000
-
-type PendingRequest<TResponse> = {
-  resolve: (value: TResponse) => void
-  reject: (error: LocalIpcError) => void
-  timeout: NodeJS.Timeout
-  relayPrivateKey: Buffer | null
-  lane: KernelSocketLane
-}
 
 export type { KernelEvent } from "./kernel-events.js"
 export { LocalIpcError } from "./local-ipc-error.js"
@@ -65,7 +58,7 @@ export class LocalIpcClient {
   private eventWebsocket: WebSocket | null = null
   private controlWebsocketConnectPromise: Promise<WebSocket> | null = null
   private eventWebsocketConnectPromise: Promise<WebSocket> | null = null
-  private pending = new Map<string, PendingRequest<unknown>>()
+  private readonly pendingRequests = new KernelPendingRequestRegistry(IPC_TIMEOUT_MS)
   private eventHandlers = new Set<(event: KernelEvent) => void>()
   private activeKernelSubscription: KernelSubscriptionState | null = null
   private reconnectTimeout: NodeJS.Timeout | null = null
@@ -268,41 +261,24 @@ export class LocalIpcClient {
   private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control"): Promise<TResponse> {
     const socket = await this.ensureWebSocket(lane)
     const requestId = randomUUID()
+    const pending = this.pendingRequests.register<TResponse>(requestId, lane)
 
-    return new Promise<TResponse>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pending.delete(requestId)
-        reject(new LocalIpcError("handle kernel response", "timed out", "request_timeout", true))
-      }, IPC_TIMEOUT_MS)
-
-      this.pending.set(requestId, {
-        resolve: resolve as (value: unknown) => void,
-        reject,
-        timeout,
-        relayPrivateKey: null,
-        lane,
-      })
-
-      try {
-        const relayRequest = this.isRelayMode()
-          ? normalizeRelayRequest(requestId, request, this.relayTarget, this.getRelayDaemonPublicKey(lane))
-          : null
-        if (relayRequest) {
-          const pending = this.pending.get(requestId)
-          if (pending) {
-            pending.relayPrivateKey = relayRequest.privateKey
-          }
-        }
-        const payload = relayRequest
-          ? relayRequest.frame
-          : normalizeWebSocketRequest(requestId, request)
-        socket.send(JSON.stringify(payload))
-      } catch (error) {
-        clearTimeout(timeout)
-        this.pending.delete(requestId)
-        reject(new LocalIpcError("write kernel request", error instanceof Error ? error.message : String(error), "write_failed", true))
+    try {
+      const relayRequest = this.isRelayMode()
+        ? normalizeRelayRequest(requestId, request, this.relayTarget, this.getRelayDaemonPublicKey(lane))
+        : null
+      if (relayRequest) {
+        pending.setRelayPrivateKey(relayRequest.privateKey)
       }
-    })
+      const payload = relayRequest
+        ? relayRequest.frame
+        : normalizeWebSocketRequest(requestId, request)
+      socket.send(JSON.stringify(payload))
+    } catch (error) {
+      pending.reject(new LocalIpcError("write kernel request", error instanceof Error ? error.message : String(error), "write_failed", true))
+    }
+
+    return pending.promise
   }
 
   private async sendRelaySubscribe(
@@ -322,41 +298,29 @@ export class LocalIpcClient {
     const keypair = createRelayKeypair()
     subscription.relayPrivateKey = keypair.privateKey
 
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pending.delete(requestId)
-        reject(new LocalIpcError("handle kernel response", "timed out", "request_timeout", true))
-      }, IPC_TIMEOUT_MS)
+    const pending = this.pendingRequests.register<void>(requestId, lane)
+    pending.setRelayPrivateKey(keypair.privateKey)
 
-      this.pending.set(requestId, {
-        resolve: () => resolve(),
-        reject,
-        timeout,
-        relayPrivateKey: keypair.privateKey,
-        lane,
-      })
-
-      try {
-        const frame: RelaySubscribeFrame = {
-          kind: "client_subscribe",
-          request_id: requestId,
-          subscription_id: subscriptionId,
-          target: requireRelayTarget(this.relayTarget),
-          session_id: sessionId,
-          attachment_id: attachmentId,
-          client_public_key: keypair.publicKeyBase64,
-          resume_from_event_id: resumeFromEventId,
-        }
-        if (subscriptionScope) {
-          frame.subscription_scope = subscriptionScope
-        }
-        socket.send(JSON.stringify(frame))
-      } catch (error) {
-        clearTimeout(timeout)
-        this.pending.delete(requestId)
-        reject(new LocalIpcError("write relay subscribe", error instanceof Error ? error.message : String(error), "write_failed", true))
+    try {
+      const frame: RelaySubscribeFrame = {
+        kind: "client_subscribe",
+        request_id: requestId,
+        subscription_id: subscriptionId,
+        target: requireRelayTarget(this.relayTarget),
+        session_id: sessionId,
+        attachment_id: attachmentId,
+        client_public_key: keypair.publicKeyBase64,
+        resume_from_event_id: resumeFromEventId,
       }
-    })
+      if (subscriptionScope) {
+        frame.subscription_scope = subscriptionScope
+      }
+      socket.send(JSON.stringify(frame))
+    } catch (error) {
+      pending.reject(new LocalIpcError("write relay subscribe", error instanceof Error ? error.message : String(error), "write_failed", true))
+    }
+
+    await pending.promise
   }
 
   private async sendRelayUnsubscribe(subscriptionId: string, privateKey: Buffer): Promise<void> {
@@ -365,34 +329,22 @@ export class LocalIpcClient {
     const requestId = randomUUID()
     const publicKeyBase64 = relayPublicKeyFromPrivateKey(privateKey)
 
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pending.delete(requestId)
-        reject(new LocalIpcError("handle kernel response", "timed out", "request_timeout", true))
-      }, IPC_TIMEOUT_MS)
+    const pending = this.pendingRequests.register<void>(requestId, lane)
+    pending.setRelayPrivateKey(privateKey)
 
-      this.pending.set(requestId, {
-        resolve: () => resolve(),
-        reject,
-        timeout,
-        relayPrivateKey: privateKey,
-        lane,
-      })
-
-      try {
-        const frame: RelayUnsubscribeFrame = {
-          kind: "client_unsubscribe",
-          request_id: requestId,
-          subscription_id: subscriptionId,
-          client_public_key: publicKeyBase64,
-        }
-        socket.send(JSON.stringify(frame))
-      } catch (error) {
-        clearTimeout(timeout)
-        this.pending.delete(requestId)
-        reject(new LocalIpcError("write relay unsubscribe", error instanceof Error ? error.message : String(error), "write_failed", true))
+    try {
+      const frame: RelayUnsubscribeFrame = {
+        kind: "client_unsubscribe",
+        request_id: requestId,
+        subscription_id: subscriptionId,
+        client_public_key: publicKeyBase64,
       }
-    })
+      socket.send(JSON.stringify(frame))
+    } catch (error) {
+      pending.reject(new LocalIpcError("write relay unsubscribe", error instanceof Error ? error.message : String(error), "write_failed", true))
+    }
+
+    await pending.promise
   }
 
   private async ensureWebSocket(lane: KernelSocketLane = "control"): Promise<WebSocket> {
@@ -572,12 +524,10 @@ export class LocalIpcClient {
     }
 
     const requestId = "type" in frame ? frame.request_id : frame.request_id
-    const pending = this.pending.get(requestId)
+    const pending = this.pendingRequests.take(requestId)
     if (!pending) {
       return
     }
-    clearTimeout(pending.timeout)
-    this.pending.delete(requestId)
 
     if (frame.error) {
       pending.reject(new LocalIpcError("handle kernel response", frame.error.message, frame.error.code, frame.error.retryable))
@@ -609,15 +559,7 @@ export class LocalIpcClient {
   }
 
   private rejectPending(message: string, lane?: KernelSocketLane) {
-    const pendingEntries = Array.from(this.pending.entries())
-      .filter(([, pending]) => !lane || pending.lane === lane)
-    for (const [requestId] of pendingEntries) {
-      this.pending.delete(requestId)
-    }
-    for (const [, pending] of pendingEntries) {
-      clearTimeout(pending.timeout)
-      pending.reject(new LocalIpcError("kernel websocket", message, "connection_closed", true))
-    }
+    this.pendingRequests.rejectMatching(message, lane)
   }
 
   private emitSyntheticEvent(event: KernelEvent) {
