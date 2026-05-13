@@ -21,6 +21,7 @@ import { LocalIpcError } from "./local-ipc-error.js"
 import { sendLocalSocketRequest } from "./local-socket-transport.js"
 import { createRelayKeypair, decryptRelayPayload, relayPublicKeyFromPrivateKey } from "./relay-crypto.js"
 import { buildRelayConnectFrame, normalizeRelayRequest, requireRelayTarget } from "./relay-transport.js"
+import { formatTransportError, isWebSocketEndpoint } from "./websocket-transport-diagnostics.js"
 
 const IPC_TIMEOUT_MS = 120_000
 const DEFAULT_KERNEL_EVENT_STALE_MS = 0
@@ -870,47 +871,4 @@ export class LocalIpcClient {
       socket.close()
     })
   }
-}
-
-function isWebSocketEndpoint(value: string) {
-  return value.startsWith("ws://") || value.startsWith("wss://")
-}
-
-function formatTransportError(error: unknown, endpoint: string): string {
-  const message = extractTransportErrorMessage(error)
-  if (message) {
-    return message
-  }
-  return `websocket error at ${endpoint}`
-}
-
-function extractTransportErrorMessage(error: unknown): string | null {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message
-  }
-  if (typeof error === "string" && error.trim()) {
-    return error
-  }
-  if (!error || typeof error !== "object") {
-    return null
-  }
-
-  const fields = error as Record<string, unknown>
-  const nested = extractTransportErrorMessage(fields.error)
-  if (nested) {
-    return nested
-  }
-  if (typeof fields.message === "string" && fields.message.trim()) {
-    return fields.message
-  }
-  if (typeof fields.reason === "string" && fields.reason.trim()) {
-    return fields.reason
-  }
-  if (typeof fields.code === "string" && fields.code.trim()) {
-    return fields.code
-  }
-  if (typeof fields.type === "string" && fields.type.trim() && fields.type !== "error") {
-    return `websocket ${fields.type}`
-  }
-  return null
 }
