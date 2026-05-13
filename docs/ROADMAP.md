@@ -46,7 +46,7 @@ Current milestone status:
 - M6.5: Multi-User Collaboration. See `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`.
 - M7: Arroba-owned MCP and skill management. In progress: MCP/skill registries, slash-command install/list/show/import/grant/revoke/grants, Codex/OpenCode MCP and skill import, per-agent grants, local Codex/OpenCode MCP rendering, granted-skill summary injection, local explicit full skill-body injection, runtime discovery/request tools, and strict local MCP/skill drills are landed; remote materialization remains open.
 - M7.5: Arroba Shell. New milestone for a kernel-facing `arroba-shell` command REPL, script runner, shared command executor, and workspace-pane shell integration. See `docs/M7_5_ARROBA_SHELL_PLAN.md`.
-- M14: Split Native TUI. Deferred milestone for separating provider-native TUI control from provider-server execution across local, remote, and slice kernels. See `docs/M14_SPLIT_NATIVE_TUI_PLAN.md`.
+- M14: Distributed Native TUI. Deferred milestone for split Codex/OpenCode native TUIs and remote-rendered Claude Code native TUIs across local, remote, and slice kernels. See `docs/M14_SPLIT_NATIVE_TUI_PLAN.md`.
 - M8: Workflow Interconnection
 - M9: Multi-Provider Expansion and Adapter Generalization
 - M10: v1 Stabilization and Launch
