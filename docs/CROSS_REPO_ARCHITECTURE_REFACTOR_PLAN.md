@@ -38,6 +38,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 - 2026-05-13: Browser terminal history search state moved from `client.ts` into `terminal/history-state.ts`. The module owns keyword/semantic mode, pagination cursors, selected-event context, result pages, and default search status; focused unit coverage verifies the initial keyword-search state.
 - 2026-05-13: Browser kernel directory state and target helpers moved from `client.ts` into `terminal/kernel-directory.ts`. The module owns relay target summaries, runtime view records, directory refresh bookkeeping, target ref/request normalization, online filtering, runtime-view selection, and labels; focused unit coverage verifies initial state and target selection.
 - 2026-05-13: Browser terminal prompt attachment session state moved from loose `client.ts` globals into `terminal/prompt-state.ts`. Active terminal records now persist a single prompt state object for attachments and object URL lifecycle, with focused unit coverage for the empty initial state.
+- 2026-05-13: Browser history search projection moved from `client.ts` into `terminal/history-projection.ts`. The module owns sidebar/route view models, selected-result detail metadata, context event projection, pagination clamping, result dedupe, and context merge helpers; focused unit coverage verifies disconnected/ready views, detail projection, and pure helpers.
 
 ## Summary
 
