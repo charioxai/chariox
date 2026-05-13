@@ -42,9 +42,15 @@ Verified:
 - `node apps/cli/scripts/live-claude-provider-drill.mjs --scenario selection --timeout-ms 180000 --keep-artifacts-on-failure`
 - `node apps/cli/scripts/live-claude-provider-drill.mjs --scenario abort --timeout-ms 180000 --keep-artifacts-on-failure`
 - `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario mcp-echo-workflow --providers claude --provider-model claude=sonnet --poll-limit 120 --poll-interval-ms 2000`
+- `node apps/cli/scripts/live-claude-provider-drill.mjs --scenario selection --model sonnet --effort low --timeout-ms 180000 --keep-artifacts-on-failure`
+- `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario validated-increment-chain --providers claude,codex,opencode --provider-model claude=sonnet --provider-model codex=gpt-5.2 --provider-model opencode=opencode/gpt-5.2 --poll-limit 180 --poll-interval-ms 2000`
 - `pnpm --filter @arroba/cli run lint`
 - `pnpm --filter @arroba/cli run build`
 - `node --test apps/cli/dist/provider-catalog.test.js apps/cli/dist/waiting-room.test.js apps/cli/dist/provider-command-catalog.test.js apps/cli/dist/command-center.test.js`
+- Live kernel catalog probe returned connected providers
+  `["claude","codex","openai","opencode"]`, Claude models
+  `["claude-opus-4-7","claude-sonnet-4-6","haiku","opus","sonnet"]`, and
+  default `sonnet`.
 - `cargo test --manifest-path apps/kernel/Cargo.toml local_daemon_protocol --lib`
 
 Known verification gap:
@@ -54,6 +60,10 @@ Known verification gap:
   discovery command comparable to provider APIs; Arroba therefore publishes the
   known Claude Code aliases/full IDs in the provider catalog without SDK/API-key
   discovery.
+- OpenCode all-provider validation must use a locally working OpenCode model
+  namespace. `openai/gpt-5.2` failed on this machine with `Token refresh failed:
+  401`; the same Claude/Codex/OpenCode workflow passed with
+  `opencode/gpt-5.2`.
 - Remote live drills currently fail before provider selection: both
   `live-remote-workflow-runtime-drill.mjs --provider claude` and
   `live-remote-machine-runtime-drill.mjs --provider claude` time out waiting for
