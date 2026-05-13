@@ -24,6 +24,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 - 2026-05-13: Cloud API health/readiness/metrics/audit operational contracts moved from `contracts.ts` into `contracts/operational.ts`, with compatibility exports preserved.
 - 2026-05-13: Cloud API HTTP adapter request/response contracts moved from `contracts.ts` into `contracts/http.ts`, with compatibility exports preserved.
 - 2026-05-13: Cloud API service construction options and relay realm allocation contracts moved from `contracts.ts` into `contracts/service-options.ts`, with compatibility exports preserved.
+- 2026-05-13: `CloudApiService` moved from `contracts.ts` into `contracts/service.ts`; `contracts.ts` is now a compatibility barrel over focused domain contract files.
 
 ## Summary
 
