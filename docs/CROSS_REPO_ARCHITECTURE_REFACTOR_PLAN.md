@@ -18,6 +18,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 - 2026-05-13: Device login approval/polling and logout contracts moved from `contracts.ts` into `contracts/device-login.ts`, with compatibility exports preserved.
 - 2026-05-13: Shared session invite, session member, and collaborator contracts moved from `contracts.ts` into `contracts/session-invites.ts`, with compatibility exports preserved.
 - 2026-05-13: Browser billing checkout and portal contracts moved from `contracts.ts` into `contracts/billing.ts`, with compatibility exports preserved.
+- 2026-05-13: Pairing token, client/machine pair, machine runtime profile, and client/machine revoke contracts moved from `contracts.ts` into `contracts/pairing.ts`, with compatibility exports preserved.
 
 ## Summary
 
