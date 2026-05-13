@@ -31,6 +31,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 - 2026-05-13: Browser terminal session registry ownership moved out of `client.ts` into `terminal/session-store.ts`. The new store module owns active-session ids, record lookup, activation, active clearing, and deletion; `client.ts` now keeps side-effecting timer/DOM transitions but no longer reaches directly into the registry map/id. Unit coverage was added for active record tracking and active-id clearing on delete.
 - 2026-05-13: Browser terminal prompt input history state moved from `client.ts` into `terminal/prompt-history-state.ts`, with focused unit coverage for the empty/idle initial state.
 - 2026-05-13: Browser terminal session value state moved from `client.ts` into `terminal/session-state.ts`, with focused unit coverage for the detached initial session shape.
+- 2026-05-13: Browser terminal capabilities sidebar state moved from `client.ts` into `terminal/capabilities-state.ts`, with focused unit coverage for the idle/no-selection initial state.
 
 ## Summary
 
