@@ -125,7 +125,6 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
         ARROBA_CLAUDE_NATIVE_CONTEXT: contextFile,
       },
     }
-    if (options.initialPrompt !== undefined) launchOptions.initialPrompt = options.initialPrompt
     await startClaudeScreen(screenName, screenLogDir, launchOptions)
     bridge = startClaudeBridge({
       client,
@@ -138,6 +137,10 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       screenName,
     })
     pump = startKernelPumpLoop(client, session.id, attachment.id)
+    if (options.initialPrompt) {
+      await sleep(1_000)
+      await submitScreenPrompt(screenName, options.initialPrompt)
+    }
 
     if (options.detachedScreen) {
       while (await screenExists(screenName)) await sleep(500)
@@ -279,6 +282,7 @@ function startClaudeBridge(options: {
   let nextEventIndex = 0
   let activePromptId: string | null = null
   const injectedPromptIds = new Set<string>()
+  const nativeSubmittedPromptIds = new Set<string>()
   const transcriptLineOffsets = new Map<string, number>()
 
   const loop = async () => {
@@ -291,15 +295,22 @@ function startClaudeBridge(options: {
             const prompt = event.prompt.trim()
             const isInjected = activePromptId && injectedPromptIds.has(activePromptId)
             if (!isInjected) {
-              await options.client.send<Record<string, unknown>>(
+              const response = await options.client.send<Record<string, unknown>>(
                 submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, []),
               )
-              const state = await sessionState(options.client, options.sessionId)
-              activePromptId = promptForAgent(state, options.agentId)?.id ?? activePromptId
+              const submittedPrompt = extractSubmittedPromptId(response, options.agentId)
+              if (submittedPrompt) {
+                activePromptId = submittedPrompt
+                nativeSubmittedPromptIds.add(submittedPrompt)
+              } else {
+                const state = await sessionState(options.client, options.sessionId)
+                activePromptId = promptForAgent(state, options.agentId)?.id ?? activePromptId
+                if (activePromptId) nativeSubmittedPromptIds.add(activePromptId)
+              }
             }
           } else if (event.hook_event_name === "Stop") {
             const output = event.transcript_path
-              ? await drainAssistantText(event.transcript_path, transcriptLineOffsets)
+              ? await waitForAssistantText(event.transcript_path, transcriptLineOffsets)
               : ""
             if (output.trim()) {
               await options.client.send<Record<string, unknown>>(
@@ -322,16 +333,14 @@ function startClaudeBridge(options: {
 
         const state = await sessionState(options.client, options.sessionId)
         const activePrompt = promptForAgent(state, options.agentId)
-        if (activePrompt && activePrompt.source_attachment_id !== options.attachmentId && activePrompt.id !== activePromptId) {
+        if (activePrompt && activePrompt.id !== activePromptId && !nativeSubmittedPromptIds.has(activePrompt.id)) {
           activePromptId = activePrompt.id
           injectedPromptIds.add(activePrompt.id)
           const hidden = extractHiddenInstructions(activePrompt.prompt)
           await writeFile(options.contextFile, hidden, "utf8")
           const visible = redactHiddenInstructions(activePrompt.prompt).trim()
           if (visible) {
-            await screenStuff(options.screenName, visible)
-            await sleep(100)
-            await screenStuff(options.screenName, "\r")
+            await submitScreenPrompt(options.screenName, visible)
           }
         }
       } catch (error) {
@@ -379,14 +388,12 @@ if (eventName === "UserPromptSubmit") {
   try {
     additionalContext = readFileSync(process.env.ARROBA_CLAUDE_NATIVE_CONTEXT, "utf8")
   } catch {}
-  if (additionalContext.trim()) {
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "UserPromptSubmit",
-        additionalContext
-      }
-    }))
-  }
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "UserPromptSubmit",
+      additionalContext
+    }
+  }))
 }
 `, "utf8")
 }
@@ -413,7 +420,6 @@ async function startClaudeScreen(name: string, logDir: string, options: {
   effort: string
   permissions: "required" | "yolo"
   env: NodeJS.ProcessEnv
-  initialPrompt?: string
 }) {
   const claudeArgs = [
     "claude",
@@ -426,7 +432,6 @@ async function startClaudeScreen(name: string, logDir: string, options: {
     "--effort",
     options.effort,
   ]
-  if (options.initialPrompt) claudeArgs.push(options.initialPrompt)
   await execFileAsync("screen", [
     "-dmS",
     name,
@@ -452,16 +457,25 @@ async function screenStuff(name: string, text: string) {
   await execFileAsync("screen", ["-S", name, "-p", "0", "-X", "stuff", text])
 }
 
+async function submitScreenPrompt(name: string, prompt: string) {
+  await screenStuff(name, prompt)
+  await sleep(250)
+  await screenStuff(name, "\r")
+}
+
 async function screenQuit(name: string) {
   await execFileAsync("screen", ["-S", name, "-p", "0", "-X", "quit"]).catch(() => {})
 }
 
 async function screenExists(name: string): Promise<boolean> {
   try {
-    await execFileAsync("screen", ["-S", name, "-Q", "windows"])
-    return true
-  } catch {
-    return false
+    const { stdout } = await execFileAsync("screen", ["-ls"])
+    return stdout.includes(`.${name}`)
+  } catch (error) {
+    const output = typeof error === "object" && error && "stdout" in error
+      ? String((error as { stdout?: unknown }).stdout ?? "")
+      : ""
+    return output.includes(`.${name}`)
   }
 }
 
@@ -482,10 +496,31 @@ async function readClaudeHookEvents(file: string): Promise<ClaudeHookEvent[]> {
 }
 
 async function drainAssistantText(transcriptPath: string, offsets: Map<string, number>): Promise<string> {
+  const { text, lineCount } = await readAssistantTextAfterOffset(transcriptPath, offsets.get(transcriptPath) ?? 0)
+  offsets.set(transcriptPath, lineCount)
+  return text
+}
+
+async function waitForAssistantText(transcriptPath: string, offsets: Map<string, number>): Promise<string> {
+  const start = offsets.get(transcriptPath) ?? 0
+  const deadline = Date.now() + 5_000
+  let latestLineCount = start
+  while (Date.now() < deadline) {
+    const { text, lineCount } = await readAssistantTextAfterOffset(transcriptPath, start)
+    latestLineCount = Math.max(latestLineCount, lineCount)
+    if (text.trim()) {
+      offsets.set(transcriptPath, lineCount)
+      return text
+    }
+    await sleep(200)
+  }
+  offsets.set(transcriptPath, latestLineCount)
+  return ""
+}
+
+async function readAssistantTextAfterOffset(transcriptPath: string, start: number): Promise<{ text: string; lineCount: number }> {
   const raw = await readFile(transcriptPath, "utf8").catch(() => "")
   const lines = raw.split("\n").filter((line) => line.trim())
-  const start = offsets.get(transcriptPath) ?? 0
-  offsets.set(transcriptPath, lines.length)
   const texts: string[] = []
   for (const line of lines.slice(start)) {
     try {
@@ -496,7 +531,7 @@ async function drainAssistantText(transcriptPath: string, offsets: Map<string, n
       }
     } catch {}
   }
-  return texts.join("\n")
+  return { text: texts.join("\n"), lineCount: lines.length }
 }
 
 function isAssistantTranscriptEntry(value: unknown): boolean {
@@ -526,6 +561,19 @@ function extractHiddenInstructions(prompt: string): string {
 function promptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
   return session.prompt_states?.[agentId]?.active_prompt
     ?? (session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null)
+}
+
+function extractSubmittedPromptId(response: Record<string, unknown>, agentId: string): string | null {
+  const payload = response.PromptSubmitted as { outcome?: Record<string, unknown>; session?: RuntimeSession } | undefined
+  if (!payload) return null
+  for (const variant of Object.values(payload.outcome ?? {})) {
+    const prompt = variant && typeof variant === "object"
+      ? (variant as { prompt?: PromptQueueItem | null }).prompt
+      : null
+    if (prompt?.id) return prompt.id
+  }
+  const session = payload.session ? normalizeRuntimeSession(payload.session) : null
+  return session ? promptForAgent(session, agentId)?.id ?? null : null
 }
 
 async function sessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {

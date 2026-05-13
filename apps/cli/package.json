@@ -46,6 +46,7 @@
     "native-tui:attachment-drill": "pnpm run build && node scripts/live-native-tui-attachment-drill.mjs",
     "native-tui:workflow-drill": "pnpm run build && node scripts/live-native-tui-workflow-drill.mjs",
     "native-tui:remote-drill": "pnpm run build && node scripts/live-remote-native-tui-drill.mjs",
+    "native-tui:claude-drill": "pnpm run build && node scripts/live-claude-native-tui-drill.mjs",
     "native-tui:claude-spike": "node scripts/live-claude-native-tui-spike.mjs"
   },
   "dependencies": {
