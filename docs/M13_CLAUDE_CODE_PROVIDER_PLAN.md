@@ -34,6 +34,14 @@ Achieved:
 - Normalized OpenCode's upstream provider catalog into the single Arroba
   backend provider `opencode`, so `openai` is no longer surfaced as a connected
   top-level provider. Codex remains the top-level OpenAI-backed Arroba provider.
+- Fixed local-drill relay startup when a persisted Cloud relay profile exists:
+  explicit `ARROBA_RELAY_URL` / `ARROBA_RELAY_TOKEN` now take precedence and do
+  not get replaced by automatic Cloud relay token refresh during daemon startup.
+- Verified the remote machine Claude path through a local relay: home and worker
+  daemons registered in the same scoped relay realm, the waiting room surfaced
+  the worker kernel with Claude/Codex/OpenCode, a remote Claude agent spawned on
+  the worker machine, completed one prompt, and accepted cancellation of a second
+  prompt.
 
 Verified:
 
@@ -58,6 +66,11 @@ Verified:
   default `sonnet`, and a single OpenCode backend with 40 OpenCode-namespace
   models.
 - `cargo test --manifest-path apps/kernel/Cargo.toml local_daemon_protocol --lib`
+- `cargo test --manifest-path apps/kernel/Cargo.toml env_relay_config_takes_precedence_over_persisted_cloud_relay_profile`
+- `cargo check --manifest-path apps/kernel/Cargo.toml`
+- `cargo build --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel`
+- `cargo build --manifest-path apps/relay/Cargo.toml --bin arroba-relay`
+- `node apps/cli/scripts/live-remote-machine-runtime-drill.mjs --provider claude --provider-model claude=sonnet --timeout-ms 180000`
 
 Known verification gap:
 
@@ -72,12 +85,13 @@ Known verification gap:
   namespace. `openai/gpt-5.2` failed on this machine with `Token refresh failed:
   401`; the same Claude/Codex/OpenCode workflow passed with
   `opencode/gpt-5.2`.
-- Remote live drills currently fail before provider selection: both
-  `live-remote-workflow-runtime-drill.mjs --provider claude` and
-  `live-remote-machine-runtime-drill.mjs --provider claude` time out waiting for
-  relay target `home`, while relay logs report `daemon_count:0`. That blocks
-  live remote Claude validation independently of Claude provider launch/runtime
-  behavior.
+- Remote machine Claude validation now passes through a local scoped relay. The
+  remaining remote workflow drill no longer fails at relay discovery; it reaches
+  workflow invocation and Claude provider launch, but
+  `live-remote-workflow-runtime-drill.mjs --provider claude --provider-model claude=sonnet`
+  timed out with the workflow node still `Running` and only prompt echoes
+  recorded. That is a workflow/runtime-MCP Claude follow-up, not a relay target
+  registration blocker.
 - Auth/status UX, larger artifact helper surfaces, native Claude TUI, slice
   support, and managed I/O remain out of scope for this implementation slice.
 

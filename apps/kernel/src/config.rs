@@ -68,6 +68,15 @@ impl DaemonConfig {
         let runtime_identity =
             load_or_create_runtime_identity(&kernel_websocket_host, kernel_websocket_port);
         let persisted_config = load_persisted_relay_config();
+        let env_relay_url = env::var("ARROBA_RELAY_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let env_relay_token = env::var("ARROBA_RELAY_TOKEN")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let env_relay_configured = env_relay_url.is_some() || env_relay_token.is_some();
         let daemon_id = env::var("ARROBA_DAEMON_ID")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -134,21 +143,15 @@ impl DaemonConfig {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .or(runtime_identity.daemon_alias),
-            relay_url: env::var("ARROBA_RELAY_URL")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
+            relay_url: env_relay_url
                 .or_else(|| persisted_config.clone().and_then(|config| config.relay_url)),
-            relay_token: env::var("ARROBA_RELAY_TOKEN")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .or_else(|| {
-                    persisted_config
-                        .clone()
-                        .and_then(|config| config.relay_token)
-                }),
-            cloud_relay: persisted_config.and_then(|config| config.cloud_relay),
+            relay_token: env_relay_token
+                .or_else(|| persisted_config.clone().and_then(|config| config.relay_token)),
+            cloud_relay: if env_relay_configured {
+                None
+            } else {
+                persisted_config.and_then(|config| config.cloud_relay)
+            },
             relay_public_key: runtime_identity.relay_public_key,
             relay_private_key: runtime_identity.relay_private_key,
             relay_heartbeat_ms: env::var("ARROBA_RELAY_HEARTBEAT_MS")
@@ -2421,6 +2424,66 @@ mod tests {
         );
         assert_eq!(default_identity.host_machine_id, other_port.host_machine_id);
         assert_ne!(default_identity.daemon_id, other_port.daemon_id);
+    }
+
+    #[test]
+    fn env_relay_config_takes_precedence_over_persisted_cloud_relay_profile() {
+        let _guard = env_test_guard().lock().expect("env test guard poisoned");
+        let temp_home = std::env::temp_dir().join(format!(
+            "arroba-config-relay-env-test-{}",
+            generate_identity_suffix()
+        ));
+        let old_home = env::var_os("HOME");
+        let old_xdg_config_home = env::var_os("XDG_CONFIG_HOME");
+        let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
+        let old_relay_url = env::var_os("ARROBA_RELAY_URL");
+        let old_relay_token = env::var_os("ARROBA_RELAY_TOKEN");
+        unsafe {
+            env::set_var("HOME", &temp_home);
+            env::remove_var("XDG_CONFIG_HOME");
+            env::remove_var("XDG_STATE_HOME");
+            env::set_var("ARROBA_RELAY_URL", "ws://127.0.0.1:47000");
+            env::set_var("ARROBA_RELAY_TOKEN", "local-drill-token");
+        }
+        let daemon_config_path = DaemonConfig::default_daemon_config_path();
+        if let Some(parent) = daemon_config_path.parent() {
+            fs::create_dir_all(parent).expect("daemon config parent should be created");
+        }
+        fs::write(
+            &daemon_config_path,
+            r#"{
+              "relay_url": "wss://cloud-relay.example",
+              "relay_token": "cloud-token",
+              "cloud_relay": {
+                "api_url": "https://cloud.example",
+                "email": "test@example.com",
+                "account_id": "account-1",
+                "user_id": "user-1",
+                "account_slug": "account",
+                "realm_id": "realm-1",
+                "relay_url": "wss://cloud-relay.example",
+                "issuer_id": "issuer-1",
+                "machine_credential": "machine-credential",
+                "token_expires_at_ms": 1
+              }
+            }"#,
+        )
+        .expect("daemon config should write");
+
+        let config = DaemonConfig::load_from_env();
+
+        unsafe {
+            restore_env_var("HOME", old_home);
+            restore_env_var("XDG_CONFIG_HOME", old_xdg_config_home);
+            restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
+            restore_env_var("ARROBA_RELAY_URL", old_relay_url);
+            restore_env_var("ARROBA_RELAY_TOKEN", old_relay_token);
+        }
+        let _ = fs::remove_dir_all(temp_home);
+
+        assert_eq!(config.relay_url.as_deref(), Some("ws://127.0.0.1:47000"));
+        assert_eq!(config.relay_token.as_deref(), Some("local-drill-token"));
+        assert_eq!(config.cloud_relay, None);
     }
 
     #[test]
