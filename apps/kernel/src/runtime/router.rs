@@ -68,15 +68,14 @@ use crate::local::{
     TerminalPairingLinkRecord, TerminalRecord, TerminalType, UninstallMcpServerRequest,
     UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest,
     UpdateProviderRunSelectionRequest, UpdateSkillRequest, UserConfigMutationEffect,
-    UserConfigProviderReloadSummary, WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary,
-    WaitingRoomPublicItemActivitySummary, WaitingRoomPublicSessionSummary,
-    WaitingRoomPublicSnapshot, WaitingRoomPublicWorkflowEdgeSummary,
-    WaitingRoomPublicWorkflowEndpointSummary, WaitingRoomPublicWorkflowNodeSummary,
-    WaitingRoomPublicWorkflowSummary, WaitingRoomSessionActivitySummary,
-    WorkspaceCommitMessageUtilityInput, WorkspaceFileContent, WorkspaceGitActionResult,
-    WorkspaceGitChangeTotals, WorkspaceGitCompareRef, WorkspaceGitFileChange, WorkspaceGitOverview,
-    WorkspacePullRequestRecord, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
-    WorkspaceWorktreeRecord,
+    WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary, WaitingRoomPublicItemActivitySummary,
+    WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
+    WaitingRoomPublicWorkflowEdgeSummary, WaitingRoomPublicWorkflowEndpointSummary,
+    WaitingRoomPublicWorkflowNodeSummary, WaitingRoomPublicWorkflowSummary,
+    WaitingRoomSessionActivitySummary, WorkspaceCommitMessageUtilityInput, WorkspaceFileContent,
+    WorkspaceGitActionResult, WorkspaceGitChangeTotals, WorkspaceGitCompareRef,
+    WorkspaceGitFileChange, WorkspaceGitOverview, WorkspacePullRequestRecord,
+    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
 };
 use crate::provider::{
     run_codex_utility_prompt, run_opencode_utility_prompt, ProviderNativeInteractionBridge,
@@ -101,8 +100,12 @@ use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_launch_executor::ProviderLaunchCommandExecutor;
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::runtime::state::KernelRuntimeState;
-use crate::runtime::state::{ProviderReloadOutcome, ProviderReloadTrigger};
+use crate::runtime::state::ProviderReloadTrigger;
 use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
+use crate::runtime::user_config_policy::{
+    summarize_provider_reload_outcomes, user_config_path_is_unwired,
+    user_config_path_requires_daemon_restart, UserConfigMutation,
+};
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::session::{unix_epoch_ms, PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
@@ -116,11 +119,6 @@ const CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS: u64 = 300_000;
 const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
 const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
 const AGENT_UTILITY_PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
-
-enum UserConfigMutation {
-    Set { path: String, value: String },
-    Unset { path: String },
-}
 
 struct RuntimeStateNativeInteractionBridge {
     handle: tokio::runtime::Handle,
@@ -191,63 +189,6 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
             reply: resolution.reply,
         })
     }
-}
-
-fn summarize_provider_reload_outcomes(
-    outcomes: &[ProviderReloadOutcome],
-) -> UserConfigProviderReloadSummary {
-    let mut summary = UserConfigProviderReloadSummary {
-        reloaded: 0,
-        deferred: 0,
-        unaffected: 0,
-    };
-    for outcome in outcomes {
-        match outcome {
-            ProviderReloadOutcome::Reloaded => summary.reloaded += 1,
-            ProviderReloadOutcome::Deferred => summary.deferred += 1,
-            ProviderReloadOutcome::Unaffected => summary.unaffected += 1,
-        }
-    }
-    summary
-}
-
-fn user_config_path_requires_daemon_restart(path: &str) -> bool {
-    matches!(
-        path,
-        "history.operational.backend"
-            | "history.operational.path"
-            | "state.backend"
-            | "state.path"
-            | "kernel.websocket_host"
-            | "kernel.websocket_port"
-            | "kernel.runtime_mcp_host"
-            | "kernel.runtime_mcp_port"
-    )
-}
-
-fn user_config_path_is_unwired(path: &str) -> bool {
-    matches!(
-        path,
-        "providers.default"
-            | "providers.model"
-            | "providers.account_profile"
-            | "providers.effort"
-            | "ui.theme"
-            | "ui.multi_agent_response_layout"
-            | "ui.max_agents_per_screen"
-            | "relay.url"
-            | "relay.accept_remote_leases"
-            | "history.operational.retention_days"
-            | "history.operational.max_size_mb"
-            | "history.operational.keep_pinned_sessions"
-            | "history.operational.archive_inactive_after_days"
-            | "history.operational.archive_deleted_agents"
-            | "history.archive.archive_deleted_agents"
-            | "history.archive.archive_before_delete"
-            | "history.archive.delete_operational_after_verified_archive"
-            | "artifacts.operational.retention_days"
-            | "slices.linux.idle_timeout_minutes"
-    ) || path.starts_with("ui.worktree_aliases.")
 }
 
 #[derive(Clone)]
