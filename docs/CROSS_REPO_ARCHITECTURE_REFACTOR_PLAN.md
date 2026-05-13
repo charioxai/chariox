@@ -9,6 +9,10 @@ Planning baseline for the next architecture refactor across:
 
 This plan intentionally excludes iOS. The iOS app is early enough that it should follow the stabilized protocol and boundaries after this refactor, not drive the cutover.
 
+## Progress
+
+- 2026-05-13: Cloud browser relay kernel bootstrap ownership cutover started in `arroba-cloud`. `/browser/relay-kernel/bootstrap` now delegates target selection, relay URL validation, relay token minting, and cached waiting-room snapshot lookup to `CloudApiService.bootstrapBrowserRelayKernel`; target selection/relay URL validation live in a focused `browser-relay-target-selection` module; API architecture tests guard against active `/web-cli` routes and direct bootstrap token minting in `server.ts`.
+
 ## Summary
 
 Refactor `arroba` and `arroba-cloud` together while preserving compatibility.
