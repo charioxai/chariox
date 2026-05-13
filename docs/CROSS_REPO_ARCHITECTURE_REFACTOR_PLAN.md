@@ -21,6 +21,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 - 2026-05-13: Pairing token, client/machine pair, machine runtime profile, and client/machine revoke contracts moved from `contracts.ts` into `contracts/pairing.ts`, with compatibility exports preserved.
 - 2026-05-13: Runtime relay token, relay target listing, and kernel presence contracts moved from `contracts.ts` into `contracts/relay.ts`, with compatibility exports preserved.
 - 2026-05-13: Browser dashboard/cloud-session/waiting-room cache contracts moved into `contracts/browser-session.ts`, and browser relay-kernel bootstrap contracts moved into `contracts/browser-relay-kernel.ts`, with compatibility exports preserved.
+- 2026-05-13: Cloud API health/readiness/metrics/audit operational contracts moved from `contracts.ts` into `contracts/operational.ts`, with compatibility exports preserved.
 
 ## Summary
 
