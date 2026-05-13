@@ -33,6 +33,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 - 2026-05-13: Browser terminal session value state moved from `client.ts` into `terminal/session-state.ts`, with focused unit coverage for the detached initial session shape.
 - 2026-05-13: Browser terminal capabilities sidebar state moved from `client.ts` into `terminal/capabilities-state.ts`, with focused unit coverage for the idle/no-selection initial state.
 - 2026-05-13: Browser terminal workspace panel state/types moved from `client.ts` into `terminal/workspace-state.ts`, with focused unit coverage for the initial changes-tab/no-workspace-data state. `client.ts` still owns the workspace controller/rendering orchestration.
+- 2026-05-13: Browser terminal prompt attachment value types moved from `client.ts` into `terminal/prompt-attachment-state.ts`, with focused unit coverage keeping view fields separate from upload/progress fields.
 
 ## Summary
 
