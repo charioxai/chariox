@@ -11,7 +11,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 
 ## Progress
 
-- 2026-05-13: Cloud browser relay kernel bootstrap ownership cutover started in `arroba-cloud`. `/browser/relay-kernel/bootstrap` now delegates target selection, relay URL validation, relay token minting, and cached waiting-room snapshot lookup to `CloudApiService.bootstrapBrowserRelayKernel`; target selection/relay URL validation live in a focused `browser-relay-target-selection` module; bootstrap route registration moved into `routes/browser-relay-kernel.ts`; browser session/dashboard/waiting-room-cache/cloud-session/logout routes moved into `routes/browser-session.ts`; API architecture tests guard against active `/web-cli` routes and direct bootstrap token minting in the route module.
+- 2026-05-13: Cloud browser relay kernel bootstrap ownership cutover started in `arroba-cloud`. `/browser/relay-kernel/bootstrap` now delegates target selection, relay URL validation, relay token minting, and cached waiting-room snapshot lookup to `CloudApiService.bootstrapBrowserRelayKernel`; target selection/relay URL validation live in a focused `browser-relay-target-selection` module; bootstrap route registration moved into `routes/browser-relay-kernel.ts`; browser session/dashboard/waiting-room-cache/cloud-session/logout routes moved into `routes/browser-session.ts`; device login, dev login, poll, and logout routes moved into `routes/device-login.ts`; API architecture tests guard against active `/web-cli` routes and direct bootstrap token minting in the route module.
 
 ## Summary
 
