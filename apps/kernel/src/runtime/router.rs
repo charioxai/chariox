@@ -3701,6 +3701,35 @@ impl CommandRouter {
         &self,
         request: SliceRefRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let initial_slice = {
+            let app = self.app.lock().await;
+            app.slices().set_status(
+                &request.slice_ref,
+                crate::slice::SliceStatus::Starting,
+                crate::session::unix_epoch_ms(),
+            )?
+        };
+        let supervisor_slice = initial_slice.clone();
+        let supervisor_result = tokio::task::spawn_blocking(move || {
+            crate::slice::run_local_docker_slice_action(
+                &supervisor_slice,
+                crate::slice::LocalDockerSliceAction::Provision,
+            )
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.start",
+            message: format!("slice supervisor task failed: {error}"),
+        })?;
+        if let Err(error) = supervisor_result {
+            let app = self.app.lock().await;
+            let _ = app.slices().set_status(
+                &request.slice_ref,
+                crate::slice::SliceStatus::Unhealthy,
+                crate::session::unix_epoch_ms(),
+            );
+            return Err(error);
+        }
         let slice = {
             let app = self.app.lock().await;
             app.slices().set_status(
@@ -3716,6 +3745,22 @@ impl CommandRouter {
         &self,
         request: SliceRefRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let resolved_slice = {
+            let app = self.app.lock().await;
+            app.slices().resolve(&request.slice_ref)?
+        };
+        let supervisor_result = tokio::task::spawn_blocking(move || {
+            crate::slice::run_local_docker_slice_action(
+                &resolved_slice,
+                crate::slice::LocalDockerSliceAction::Stop,
+            )
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.stop",
+            message: format!("slice supervisor task failed: {error}"),
+        })?;
+        supervisor_result?;
         let slice = {
             let app = self.app.lock().await;
             app.slices().set_status(

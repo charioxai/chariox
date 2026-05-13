@@ -34,7 +34,7 @@ fail() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [provision|status|import-provider-auth|start-desktop|validate-screen|start-runtime|start-providers|shell]
+Usage: $(basename "$0") [provision|status|stop|import-provider-auth|start-desktop|validate-screen|start-runtime|start-providers|shell]
        $(basename "$0") [login-codex|logout-codex|login-opencode|logout-opencode]
 
 This Docker path is a provider/runtime validation fallback for Mac hosts when
@@ -144,6 +144,26 @@ print_status() {
   print_provider_auth_status
 }
 
+stop_container() {
+  if ! docker ps -a --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
+    log "container $SLICE_NAME does not exist"
+    return 0
+  fi
+  if docker ps --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
+    log "stopping slice processes in $SLICE_NAME"
+    docker exec -u slice "$SLICE_NAME" bash -lc "
+      screen -S arroba-slice-relay -X quit >/dev/null 2>&1 || true
+      screen -S arroba-slice-kernel -X quit >/dev/null 2>&1 || true
+      /opt/arroba-slice/slice-screen.sh stop >/dev/null 2>&1 || true
+      pkill -f 'codex app-server' >/dev/null 2>&1 || true
+      pkill -f 'opencode serve' >/dev/null 2>&1 || true
+    " || true
+    docker stop "$SLICE_NAME" >/dev/null
+  else
+    log "container $SLICE_NAME is already stopped"
+  fi
+}
+
 main() {
   local action="${1:-provision}"
   case "$action" in
@@ -171,6 +191,10 @@ main() {
     status)
       require_docker
       print_status
+      ;;
+    stop)
+      require_docker
+      stop_container
       ;;
     import-provider-auth)
       require_docker

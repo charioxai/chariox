@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -89,6 +91,12 @@ pub struct CreateSliceInput {
     pub now_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalDockerSliceAction {
+    Provision,
+    Stop,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SliceStore {
     inner: Arc<Mutex<SliceStoreState>>,
@@ -125,7 +133,14 @@ impl SliceStore {
             .worker_kernel_ref
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| format!("slice:{}", input.name));
-        let display_endpoint = input.display_url.map(|url| SliceDisplayEndpoint {
+        let display_url = input.display_url.or_else(|| {
+            let ports = LocalDockerSlicePorts::for_slice_id(&id);
+            Some(format!(
+                "http://127.0.0.1:{}/vnc.html?autoconnect=true",
+                ports.novnc
+            ))
+        });
+        let display_endpoint = display_url.map(|url| SliceDisplayEndpoint {
             slice_id: id.clone(),
             kind: SliceDisplayEndpointKind::Novnc,
             url,
@@ -240,6 +255,162 @@ impl SliceStore {
                 operation: "slice.display_endpoint",
                 message: format!("slice `{}` has no display endpoint", record.name),
             })
+    }
+}
+
+pub fn run_local_docker_slice_action(
+    record: &SliceRecord,
+    action: LocalDockerSliceAction,
+) -> Result<(), DaemonError> {
+    if record.backend != SliceBackendKind::LocalDocker {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!("slice `{}` is not a local Docker slice", record.name),
+        });
+    }
+    if record.os != "linux" {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "local Docker slices only support linux, got `{}`",
+                record.os
+            ),
+        });
+    }
+    let script = linux_docker_slice_script()?;
+    let ports = LocalDockerSlicePorts::for_slice_id(&record.id);
+    let mut command = Command::new(&script);
+    command
+        .arg(match action {
+            LocalDockerSliceAction::Provision => "provision",
+            LocalDockerSliceAction::Stop => "stop",
+        })
+        .env("ARROBA_SLICE_NAME", local_docker_container_name(record))
+        .env(
+            "ARROBA_SLICE_HOME_VOLUME",
+            format!("{}-home", local_docker_container_name(record)),
+        )
+        .env("ARROBA_SLICE_CODEX_PORT", ports.codex.to_string())
+        .env("ARROBA_SLICE_OPENCODE_PORT", ports.opencode.to_string())
+        .env("ARROBA_SLICE_KERNEL_PORT", ports.kernel.to_string())
+        .env("ARROBA_SLICE_RELAY_PORT", ports.relay.to_string())
+        .env("ARROBA_SLICE_NOVNC_PORT", ports.novnc.to_string())
+        .env("ARROBA_SLICE_START_DESKTOP", "1")
+        .env("ARROBA_SLICE_START_PROVIDER_SERVERS", "1")
+        .env("ARROBA_SLICE_START_RUNTIME", "1")
+        .env("ARROBA_SLICE_IMPORT_PROVIDER_AUTH", "0");
+    if let Some(workspace_mount) = record.workspace_mount.as_deref() {
+        command.env("ARROBA_SLICE_WORKSPACE", workspace_mount);
+    }
+    let output = command
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "failed to run {} {}: {error}",
+                script.display(),
+                action.as_str()
+            ),
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "slice.local_docker",
+        message: format!(
+            "{} {} failed with status {}: {}",
+            script.display(),
+            action.as_str(),
+            output.status,
+            command_output_preview(&output)
+        ),
+    })
+}
+
+impl LocalDockerSliceAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Provision => "provision",
+            Self::Stop => "stop",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LocalDockerSlicePorts {
+    codex: u16,
+    opencode: u16,
+    kernel: u16,
+    relay: u16,
+    novnc: u16,
+}
+
+impl LocalDockerSlicePorts {
+    fn for_slice_id(slice_id: &str) -> Self {
+        let ordinal = slice_id
+            .strip_prefix("slice-")
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(1)
+            .saturating_sub(1);
+        Self {
+            codex: 43252_u16.saturating_add(ordinal),
+            opencode: 43140_u16.saturating_add(ordinal),
+            kernel: 43119_u16.saturating_add(ordinal),
+            relay: 43130_u16.saturating_add(ordinal),
+            novnc: 6080_u16.saturating_add(ordinal),
+        }
+    }
+}
+
+fn local_docker_container_name(record: &SliceRecord) -> String {
+    format!("arroba-slice-{}", record.name)
+}
+
+fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: "failed to resolve repository root for slice scripts".to_string(),
+        })?;
+    let script = repo_root
+        .join("experiments")
+        .join("slice-spike")
+        .join("scripts")
+        .join("provision-linux-docker-slice.sh");
+    if script.is_file() {
+        Ok(script)
+    } else {
+        Err(DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!("slice Docker provisioner not found at {}", script.display()),
+        })
+    }
+}
+
+fn command_output_preview(output: &std::process::Output) -> String {
+    let mut text = String::new();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stdout.trim().is_empty() {
+        text.push_str(stdout.trim());
+    }
+    if !stderr.trim().is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(stderr.trim());
+    }
+    if text.len() > 4_000 {
+        text.truncate(4_000);
+        text.push_str("...");
+    }
+    if text.is_empty() {
+        "<no output>".to_string()
+    } else {
+        text
     }
 }
 

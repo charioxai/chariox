@@ -77,6 +77,14 @@ status() {
   pgrep -af "Xvfb $DISPLAY_ID|openbox|x11vnc|websockify|chromium.*$CHROME_PROFILE" | grep -v defunct || true
 }
 
+stop_desktop() {
+  pkill -f "Xvfb $DISPLAY_ID" >/dev/null 2>&1 || true
+  pkill -f "openbox" >/dev/null 2>&1 || true
+  pkill -f "x11vnc.*$DISPLAY_ID" >/dev/null 2>&1 || true
+  pkill -f "websockify.*$NOVNC_PORT" >/dev/null 2>&1 || true
+  pkill -f "chromium.*$CHROME_PROFILE" >/dev/null 2>&1 || true
+}
+
 screenshot() {
   local path="${1:-/tmp/arroba-slice-screenshot.png}"
   scrot -z "$path"
@@ -219,6 +227,7 @@ open_url() {
 
 case "${1:-status}" in
   start) start_desktop ;;
+  stop) stop_desktop ;;
   status) status ;;
   screenshot) shift; screenshot "$@" ;;
   click) shift; click "$@" ;;
@@ -235,7 +244,7 @@ case "${1:-status}" in
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|status|screenshot|click|double-click|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|ocr|find-text|open-url
 EOF
     exit 2
     ;;
