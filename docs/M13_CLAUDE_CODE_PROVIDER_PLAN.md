@@ -218,7 +218,31 @@ Live drills:
 - `claude-selection-update`: change model/effort through Arroba, verify either
   live application or restart/resume behavior and correct run metadata.
 
-### M13.4 Remote Claude Code
+### M13.4 Workflows And Multi-Agent Parity
+
+Goal: Claude participates in freeform and workflow runtime at the same level as
+Codex/OpenCode, without managed I/O guarantees yet.
+
+Work:
+
+- Add Claude to workflow provider mapping.
+- Verify workflow runtime MCP tools are usable from Claude turns.
+- Ensure workflow output validation and ack tools behave like other providers.
+- Add Claude to substitute-provider failure rules.
+- Add mixed-provider workflow drill coverage.
+
+Live drills:
+
+- `claude-workflow-validated-increment`: single Claude node emits validated
+  workflow output.
+- `claude-codex-opencode-chain`: three-node workflow, one provider each, with
+  structured handoff.
+- `claude-workflow-cancel-resume`: cancel a Claude node turn, resume/retry, and
+  verify workflow state remains coherent.
+- `claude-substitute-after-auth-failure`: force Claude auth/launch failure and
+  verify configured substitute activation.
+
+### M13.5 Remote Claude Code
 
 Goal: use Claude Code from remote Arroba clients and remote worker kernels while
 preserving the relay architecture.
@@ -245,30 +269,6 @@ Live drills:
   across local/remote kernels; verify prompt routing and provider run metadata.
 - `stale-claude-target`: make a Claude-capable worker stale; verify it is not
   selected for provider launch.
-
-### M13.5 Workflows And Multi-Agent Parity
-
-Goal: Claude participates in freeform and workflow runtime at the same level as
-Codex/OpenCode, without managed I/O guarantees yet.
-
-Work:
-
-- Add Claude to workflow provider mapping.
-- Verify workflow runtime MCP tools are usable from Claude turns.
-- Ensure workflow output validation and ack tools behave like other providers.
-- Add Claude to substitute-provider failure rules.
-- Add mixed-provider workflow drill coverage.
-
-Live drills:
-
-- `claude-workflow-validated-increment`: single Claude node emits validated
-  workflow output.
-- `claude-codex-opencode-chain`: three-node workflow, one provider each, with
-  structured handoff.
-- `claude-workflow-cancel-resume`: cancel a Claude node turn, resume/retry, and
-  verify workflow state remains coherent.
-- `claude-substitute-after-auth-failure`: force Claude auth/launch failure and
-  verify configured substitute activation.
 
 ### M13.6 Provider Auth And Command Catalog Polish
 
@@ -381,4 +381,3 @@ Commit and push after each meaningful improvement:
 
 Every functional milestone must add or extend at least one live drill before the
 milestone is considered complete.
-
