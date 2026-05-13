@@ -53,6 +53,7 @@ type NativeCodexOptions = {
   mode: "build" | "plan"
   permissions: "required" | "yolo"
   initialPrompt?: string
+  serverInKernel: boolean
 }
 
 type JsonRpcMessage = {
@@ -94,9 +95,6 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     const agent = created?.agent
       ? await maybeAliasAgent(client, session.id, created.agent, options.agentAlias)
       : await spawnCodexAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions)
-    const upstreamEndpoint = `ws://127.0.0.1:${await reservePort()}`
-    appServer = await startCodexAppServer(upstreamEndpoint, worktree)
-
     const bindState: {
       promise: Promise<RuntimeProviderRun> | null
       run: RuntimeProviderRun | null
@@ -105,6 +103,28 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       promise: null,
       run: null,
       structuredEndpoint: null,
+    }
+    let providerSessionId: string | null = null
+    let upstreamEndpoint: string
+    if (options.serverInKernel) {
+      const launched = await launchManagedNativeProviderRun({
+        client,
+        sessionId: session.id,
+        agentId: agent.id,
+        model: options.model,
+        effort: options.effort,
+      })
+      const run = await waitForProviderRunReady(client, launched.id)
+      if (!run.structured_endpoint || !run.provider_session_id) {
+        throw new Error("Codex managed native server did not expose endpoint and thread id")
+      }
+      upstreamEndpoint = run.structured_endpoint
+      providerSessionId = run.provider_session_id
+      bindState.promise = Promise.resolve(run)
+      bindState.run = run
+    } else {
+      upstreamEndpoint = `ws://127.0.0.1:${await reservePort()}`
+      appServer = await startCodexAppServer(upstreamEndpoint, worktree)
     }
     proxy = await startCodexProxy({
       upstreamEndpoint,
@@ -128,6 +148,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       `  arroba agent:   ${agent.id}${agent.alias ? ` (${agent.alias})` : ""}`,
       `  app-server:     ${upstreamEndpoint}`,
       `  proxy:          ${proxyUrl}`,
+      ...(providerSessionId ? [`  codex thread:   ${providerSessionId}`] : []),
       "  prompt policy:  native prompts pass through; Arroba observes the session",
       "",
     ].join("\n"))
@@ -136,6 +157,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       proxyUrl,
       model: options.model,
       workingDirectory: worktree,
+      providerSessionId,
       initialPrompt: options.initialPrompt,
     })
   } finally {
@@ -162,6 +184,7 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
     effort: "high",
     mode: "build",
     permissions: "yolo",
+    serverInKernel: false,
   }
   const positional: string[] = []
   for (let index = 0; index < args.length; index += 1) {
@@ -229,6 +252,9 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
       }
       case "--initial-prompt":
         options.initialPrompt = next()
+        break
+      case "--server-in-kernel":
+        options.serverInKernel = true
         break
       case "--help":
       case "-h":
@@ -403,6 +429,29 @@ async function launchNativeProviderRun(options: {
     ? expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched").provider_run
     : expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunchAccepted").provider_run
   return waitForProviderRunReady(options.client, run.id)
+}
+
+async function launchManagedNativeProviderRun(options: {
+  client: LocalIpcClient
+  sessionId: string
+  agentId: string
+  model: string
+  effort: string
+}): Promise<RuntimeProviderRun> {
+  const response = await options.client.send<Record<string, unknown>>(
+    launchProviderRunRequest(
+      options.sessionId,
+      "codex",
+      "default",
+      options.model,
+      options.effort,
+      options.agentId,
+      { nativeTui: true },
+    ),
+  )
+  return "ProviderRunLaunched" in response
+    ? expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched").provider_run
+    : expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunchAccepted").provider_run
 }
 
 async function waitForProviderRunReady(
@@ -895,10 +944,11 @@ async function runCodexTui(options: {
   proxyUrl: string
   model: string
   workingDirectory: string
+  providerSessionId?: string | null
   initialPrompt?: string | undefined
 }): Promise<void> {
   const executable = process.env.ARROBA_CODEX_BIN?.trim() || "codex"
-  const args = [
+  const baseArgs = [
     "--remote",
     options.proxyUrl,
     "--no-alt-screen",
@@ -907,6 +957,9 @@ async function runCodexTui(options: {
     "-m",
     options.model,
   ]
+  const args = options.providerSessionId
+    ? ["resume", ...baseArgs, options.providerSessionId]
+    : baseArgs
   if (options.initialPrompt) args.push(options.initialPrompt)
   await new Promise<void>((resolve, reject) => {
     const child = spawn(executable, args, {

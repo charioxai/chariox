@@ -10,9 +10,24 @@ bidirectional prompt/response observation, and `IDLE -> working tone -> IDLE`
 badge transitions.
 
 The second implementation slice added protocol v32 `SendTerminalInput`, a
-session/attachment-scoped base64 PTY input request. This reuses the kernel's
-existing provider PTY input path and gives local, relay, web, and future native
-clients the missing raw-input primitive for remote-rendered native TUIs.
+session/attachment-scoped base64 PTY input request. The third slice bumped the
+protocol to v33 so terminal input can optionally target a provider run directly;
+this is required for multiple remote-rendered native PTYs in one Arroba session.
+
+Current M14 implementation status:
+
+- Claude Code has a kernel-owned `native_tui` managed PTY launch path plus
+  `arroba claude --remote-rendered`, which streams the target kernel PTY locally,
+  forwards input/resize, records native prompts through Claude hooks without
+  re-dispatching them, injects Arroba-origin prompts through the PTY with hidden
+  context in `UserPromptSubmit`, and completes active turns from Claude stop
+  hooks.
+- Codex and OpenCode wrappers have an internal `--server-in-kernel` mode that
+  launches the provider server through the target kernel-owned provider run and
+  attaches the local native TUI through the existing local proxy. This validates
+  the provider-server ownership boundary on same-host/relay drills. The remaining
+  product gap for true different-machine split mode is the private loopback
+  tunnel between the TUI-side proxy and the server-side provider endpoint.
 
 This milestone captures the remaining work to split or remotely render
 provider-native TUIs after the local native Codex, OpenCode, and Claude Code TUI

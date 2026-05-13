@@ -51,6 +51,7 @@ type NativeOpenCodeOptions = {
   agentAlias?: string
   mode: "build" | "plan"
   permissions: "required" | "yolo"
+  serverInKernel: boolean
 }
 
 type OpenCodePromptBody = {
@@ -103,11 +104,24 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     const agent = created?.agent
       ? await maybeAliasAgent(client, session.id, created.agent, options.agentAlias)
       : await spawnOpenCodeAgent(client, session.id, options.agentAlias, options.mode, options.permissions)
-    const upstreamBaseUrl = `http://127.0.0.1:${await reservePort()}`
-    openCodeServer = await startOpenCodeServer(upstreamBaseUrl, worktree)
     const proxyState: OpenCodeProxyState = {
       providerRunId: null,
       lastNativeSelection: null,
+    }
+    let upstreamBaseUrl: string
+    let run: RuntimeProviderRun
+    if (options.serverInKernel) {
+      const launched = await launchProviderRun(client, session.id, "opencode", "default", "default", "", agent.id, {
+        nativeTui: true,
+      })
+      run = await waitForOpenCodeRunReady(client, launched.id)
+      if (!run.structured_endpoint) {
+        throw new Error("OpenCode managed native server did not expose an endpoint")
+      }
+      upstreamBaseUrl = run.structured_endpoint
+    } else {
+      upstreamBaseUrl = `http://127.0.0.1:${await reservePort()}`
+      openCodeServer = await startOpenCodeServer(upstreamBaseUrl, worktree)
     }
     proxy = await startOpenCodeProxy({
       upstreamBaseUrl,
@@ -121,10 +135,13 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       throw new Error("OpenCode proxy did not expose a TCP port")
     }
     const proxyUrl = `http://127.0.0.1:${proxyAddress.port}`
-    const launched = await launchProviderRun(client, session.id, "opencode", "default", "default", "", agent.id, {
-      structuredEndpoint: proxyUrl,
-    })
-    const run = await waitForOpenCodeRunReady(client, launched.id)
+    if (!options.serverInKernel) {
+      const launched = await launchProviderRun(client, session.id, "opencode", "default", "default", "", agent.id, {
+        structuredEndpoint: proxyUrl,
+        nativeTui: true,
+      })
+      run = await waitForOpenCodeRunReady(client, launched.id)
+    }
     const providerSessionId = run.provider_session_id
     if (!providerSessionId) {
       throw new Error("OpenCode provider run did not expose provider_session_id")
@@ -170,6 +187,7 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
     clientId: `arroba-opencode-native-${process.pid}`,
     mode: "build",
     permissions: "yolo",
+    serverInKernel: false,
   }
   const positional: string[] = []
 
@@ -227,6 +245,9 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
         break
       case "--permissions":
         options.permissions = parsePermissions(next())
+        break
+      case "--server-in-kernel":
+        options.serverInKernel = true
         break
       case "--help":
       case "-h":
@@ -400,6 +421,7 @@ async function launchProviderRun(
   native?: {
     structuredEndpoint?: string | null
     providerSessionId?: string | null
+    nativeTui?: boolean | null
   },
 ): Promise<RuntimeProviderRun> {
   const nativeBinding = {
