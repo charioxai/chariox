@@ -26,6 +26,7 @@ const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
 const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
 const relayBinary = path.join(repoRoot, "apps/relay/target/debug/arroba-relay")
+const sliceDockerScript = path.join(repoRoot, "experiments/slice-spike/scripts/provision-linux-docker-slice.sh")
 const realHomeDir = os.homedir()
 
 function unwrap(response, variant) {
@@ -39,6 +40,7 @@ function parseArgs(argv) {
   const options = {
     providers: ["opencode", "codex", "claude"],
     keepArtifactsOnFailure: false,
+    sliceLocalDocker: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -48,6 +50,8 @@ function parseArgs(argv) {
       options.providers = argv[++index].split(",").map((provider) => provider.trim()).filter(Boolean)
     } else if (arg === "--keep-artifacts-on-failure") {
       options.keepArtifactsOnFailure = true
+    } else if (arg === "--slice-local-docker") {
+      options.sliceLocalDocker = true
     } else if (arg === "--help" || arg === "-h") {
       options.help = true
     } else {
@@ -73,12 +77,12 @@ function printHelp() {
     "- verifies native-origin and Arroba-origin prompts, no cross-contamination, and badge transitions",
     "",
     "  --providers opencode,codex,claude",
+    "  --slice-local-docker          Run against a local Docker slice kernel instead of a host kernel",
     "  --keep-artifacts-on-failure",
   ].join("\n"))
 }
 
-function makePorts() {
-  const base = 52000 + Math.floor(Math.random() * 4000)
+function makePorts(base = 52000 + Math.floor(Math.random() * 4000)) {
   return {
     relayPort: base,
     kernelPort: base + 1000,
@@ -86,6 +90,50 @@ function makePorts() {
     openCodePort: base + 2000,
     codexPort: base + 2001,
   }
+}
+
+async function makeAvailablePorts({ includeSliceRanges = false } = {}) {
+  const preferredBases = includeSliceRanges ? [43000, 44000, 45000, 46000, 47000, 48000] : []
+  for (const base of preferredBases) {
+    const ports = makePorts(base)
+    if (await portsAreAvailable(ports, includeSliceRanges)) return ports
+  }
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const ports = makePorts()
+    if (await portsAreAvailable(ports, includeSliceRanges)) return ports
+  }
+  throw new Error("could not find available drill ports")
+}
+
+async function portsAreAvailable(ports, includeSliceRanges) {
+  const candidates = [
+    ports.relayPort,
+    ports.kernelPort,
+    ports.mcpPort,
+    ports.openCodePort,
+    ports.codexPort,
+  ]
+  if (includeSliceRanges) {
+    candidates.push(ports.relayPort + 3000)
+    for (let offset = 10; offset < 30; offset += 1) {
+      candidates.push(ports.openCodePort + offset)
+      candidates.push(ports.codexPort + 100 + offset)
+    }
+  }
+  for (const port of candidates) {
+    if (!(await portIsAvailable(port))) return false
+  }
+  return true
+}
+
+async function portIsAvailable(port) {
+  return await new Promise((resolve) => {
+    const server = net.createServer()
+    server.once("error", () => resolve(false))
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolve(true))
+    })
+  })
 }
 
 async function assertBinary(binaryPath, manifestPath, binName) {
@@ -174,6 +222,24 @@ async function terminateChild(child, signal = "SIGTERM") {
       sleep(2_000),
     ])
   }
+}
+
+async function runLogged(command, args, options = {}) {
+  await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd ?? repoRoot,
+      env: options.env ?? process.env,
+      stdio: "inherit",
+    })
+    child.once("error", reject)
+    child.once("exit", (code, signal) => {
+      if (code === 0) {
+        resolve()
+        return
+      }
+      reject(new Error(`${command} ${args.join(" ")} exited with ${signal ?? code}`))
+    })
+  })
 }
 
 async function screen(name, args) {
@@ -379,6 +445,7 @@ async function runProviderScenario({
   targetDaemonAlias,
   workspace,
   worktree,
+  nativeEnv = {},
 }) {
   const scenarioRoot = path.join(root, provider)
   const screenA = `arroba-rnt-${provider}-a-${process.pid}`
@@ -443,6 +510,7 @@ async function runProviderScenario({
       ...(provider === "claude" ? ["--remote-rendered"] : []),
     ], {
       ...process.env,
+      ...nativeEnv,
       ARROBA_CODEX_NATIVE_DEBUG: "1",
       ARROBA_CODEX_NATIVE_DEBUG_FILE: logs.proxyA,
       ARROBA_OPENCODE_NATIVE_DEBUG: "1",
@@ -471,6 +539,7 @@ async function runProviderScenario({
       ...(provider === "claude" ? ["--remote-rendered"] : []),
     ], {
       ...process.env,
+      ...nativeEnv,
       ARROBA_CODEX_NATIVE_DEBUG: "1",
       ARROBA_CODEX_NATIVE_DEBUG_FILE: logs.proxyB,
       ARROBA_OPENCODE_NATIVE_DEBUG: "1",
@@ -591,8 +660,11 @@ async function runProviderScenario({
     const proxyALog = await readFile(logs.proxyA, "utf8").catch(() => "")
     const proxyBLog = await readFile(logs.proxyB, "utf8").catch(() => "")
     if (provider === "codex") {
-      if (!proxyALog.includes("kernel_connected") || !proxyBLog.includes("kernel_connected")) {
-        throw new Error("kernel did not connect downstream to both remote Codex native proxies")
+      const expectedProxySignal = nativeEnv.ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE
+        ? "provider_run_bound"
+        : "kernel_connected"
+      if (!proxyALog.includes(expectedProxySignal) || !proxyBLog.includes(expectedProxySignal)) {
+        throw new Error(`remote Codex native proxies did not record ${expectedProxySignal}`)
       }
     } else if (provider === "opencode" && (!proxyALog.includes(markers.nativeA) || !proxyBLog.includes(markers.nativeB))) {
       throw new Error("native OpenCode prompts did not pass through both remote native proxies")
@@ -625,6 +697,83 @@ async function runProviderScenario({
   }
 }
 
+function sliceDockerEnv({ root, ports, targetDaemonAlias }) {
+  const sliceName = `arroba-rnt-slice-${process.pid}`
+  const codexRangeStart = ports.codexPort + 110
+  const opencodeRangeStart = ports.openCodePort + 10
+  return {
+    ...process.env,
+    ARROBA_SLICE_NAME: sliceName,
+    ARROBA_SLICE_HOME_VOLUME: `${sliceName}-home`,
+    ARROBA_SLICE_RECREATE: "1",
+    ARROBA_SLICE_WORKSPACE: repoRoot,
+    ARROBA_SLICE_BUILD_IMAGE: process.env.ARROBA_SLICE_BUILD_IMAGE ?? "always",
+    ARROBA_SLICE_START_DESKTOP: "0",
+    ARROBA_SLICE_START_PROVIDER_SERVERS: "0",
+    ARROBA_SLICE_START_RUNTIME: "1",
+    ARROBA_SLICE_IMPORT_PROVIDER_AUTH: "1",
+    ARROBA_SLICE_CODEX_PORT: String(ports.codexPort),
+    ARROBA_SLICE_OPENCODE_PORT: String(ports.openCodePort),
+    ARROBA_SLICE_CODEX_PORT_RANGE: `${codexRangeStart}-${codexRangeStart + 19}`,
+    ARROBA_SLICE_OPENCODE_PORT_RANGE: `${opencodeRangeStart}-${opencodeRangeStart + 19}`,
+    ARROBA_SLICE_PROVIDER_BIND_HOST: "0.0.0.0",
+    ARROBA_SLICE_KERNEL_PORT: String(ports.kernelPort),
+    ARROBA_SLICE_MCP_PORT: String(ports.mcpPort),
+    ARROBA_SLICE_RELAY_PORT: String(ports.relayPort),
+    ARROBA_SLICE_NOVNC_PORT: String(ports.relayPort + 3000),
+    ARROBA_SLICE_DAEMON_ALIAS: targetDaemonAlias,
+    ARROBA_SLICE_MACHINE_ID: `slice-rnt-machine-${process.pid}`,
+    ARROBA_SLICE_MACHINE_ALIAS: targetDaemonAlias,
+    ARROBA_SLICE_ROOT: path.join(root, "slice-root"),
+  }
+}
+
+async function runSliceDockerScenarios({ options, root, ports }) {
+  const targetDaemonAlias = `rnt-slice-${process.pid}`
+  const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
+  const env = sliceDockerEnv({ root, ports, targetDaemonAlias })
+  let succeeded = false
+  try {
+    await runLogged("bash", [sliceDockerScript, "provision"], { env })
+    await waitForTcpPort(ports.relayPort)
+    await waitForRelayTarget(relayUrl, env.ARROBA_SLICE_RELAY_TOKEN ?? "slice-local", targetDaemonAlias)
+
+    const scenarios = []
+    for (const provider of options.providers) {
+      scenarios.push(await runProviderScenario({
+        provider,
+        root,
+        relayUrl,
+        relayToken: env.ARROBA_SLICE_RELAY_TOKEN ?? "slice-local",
+        targetDaemonAlias,
+        workspace: repoRoot,
+        worktree: repoRoot,
+        nativeEnv: {
+          ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE: env.ARROBA_SLICE_CODEX_PORT_RANGE,
+          ARROBA_CODEX_KERNEL_SERVER_BIND_HOST: "0.0.0.0",
+        },
+      }))
+    }
+    console.log(JSON.stringify({
+      status: "ok",
+      mode: "remote-native-tui-slice-local-docker-drill",
+      relayUrl,
+      targetDaemonAlias,
+      providers: options.providers,
+      scenarios,
+    }, null, 2))
+    succeeded = true
+  } finally {
+    if (succeeded || !options.keepArtifactsOnFailure) {
+      await runLogged("bash", [sliceDockerScript, "destroy"], { env }).catch((error) => {
+        console.error(`slice cleanup failed: ${error.message}`)
+      })
+    } else {
+      console.error(`remote native TUI slice drill artifacts kept at ${root}; Docker slice ${env.ARROBA_SLICE_NAME} left running`)
+    }
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -635,7 +784,12 @@ async function main() {
   await assertBinary(relayBinary, path.join(repoRoot, "apps/relay/Cargo.toml"), "arroba-relay")
 
   const root = path.join("/tmp", `arb-remote-native-tui-${process.pid}-${Date.now()}`)
-  const ports = makePorts()
+  const ports = await makeAvailablePorts({ includeSliceRanges: options.sliceLocalDocker })
+  if (options.sliceLocalDocker) {
+    await mkdir(root, { recursive: true })
+    await runSliceDockerScenarios({ options, root, ports })
+    return
+  }
   const relayToken = `remote-native-token-${process.pid}`
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.kernelPort}`

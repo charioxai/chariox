@@ -704,7 +704,8 @@ async function proxyToOpenCode(
 
   response.statusCode = upstream.status
   upstream.headers.forEach((value, key) => {
-    if (key.toLowerCase() !== "content-encoding") {
+    const lowerKey = key.toLowerCase()
+    if (lowerKey !== "content-encoding" && lowerKey !== "content-length") {
       response.setHeader(key, value)
     }
   })
@@ -714,12 +715,49 @@ async function proxyToOpenCode(
   }
   await new Promise<void>((resolve, reject) => {
     const stream = Readable.fromWeb(upstream.body as never)
-    const readable = redactForNativeTui ? stream.pipe(createHiddenInstructionRedactor()) : stream
+    const readable = redactForNativeTui
+      ? stream.pipe(target.pathname === "/event"
+        ? createSseHiddenInstructionRedactor()
+        : createHiddenInstructionRedactor())
+      : stream
     readable
       .once("error", reject)
       .once("end", resolve)
       .pipe(response)
   })
+}
+
+function createSseHiddenInstructionRedactor(): Transform {
+  let carry = ""
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      carry += chunk.toString("utf8")
+      while (true) {
+        const separator = findSseFrameSeparator(carry)
+        if (!separator) break
+        const frame = carry.slice(0, separator.index)
+        const delimiter = carry.slice(separator.index, separator.index + separator.length)
+        this.push(redactHiddenInstructions(frame))
+        this.push(delimiter)
+        carry = carry.slice(separator.index + separator.length)
+      }
+      callback()
+    },
+    flush(callback) {
+      this.push(redactHiddenInstructions(carry))
+      callback()
+    },
+  })
+}
+
+function findSseFrameSeparator(value: string): { index: number; length: number } | null {
+  const candidates = [
+    { index: value.indexOf("\r\n\r\n"), length: 4 },
+    { index: value.indexOf("\n\n"), length: 2 },
+  ].filter((candidate) => candidate.index >= 0)
+  if (candidates.length === 0) return null
+  candidates.sort((left, right) => left.index - right.index)
+  return candidates[0] ?? null
 }
 
 function createHiddenInstructionRedactor(): Transform {

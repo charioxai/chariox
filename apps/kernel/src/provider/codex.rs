@@ -17,6 +17,8 @@ use super::codex_client::codex_endpoint_is_healthy;
 
 const CODEX_ENV_OVERRIDE: &str = "ARROBA_CODEX_BIN";
 const CODEX_PORT_OVERRIDE: &str = "ARROBA_CODEX_PORT";
+const CODEX_PORT_RANGE_OVERRIDE: &str = "ARROBA_CODEX_PORT_RANGE";
+const CODEX_BIND_HOST_OVERRIDE: &str = "ARROBA_CODEX_BIND_HOST";
 pub(crate) const CODEX_MCP_TOKEN_ENV: &str = "ARROBA_MCP_TOKEN";
 static CODEX_MANAGED_CATALOG_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
 const CODEX_AUTH_ENV_VARS: &[&str] = &[
@@ -83,11 +85,13 @@ fn plan_codex_launch_unlocked(
     }
 
     let port = if request.is_some() {
-        reserve_unused_port()?
+        reserve_unused_port_from_range(CODEX_PORT_RANGE_OVERRIDE, "codex_reserve_port_range")?
+            .unwrap_or(reserve_unused_port()?)
     } else {
         resolve_codex_port()?
     };
     let endpoint = format!("ws://127.0.0.1:{port}");
+    let listen_endpoint = format!("ws://{}:{port}", resolve_codex_bind_host());
 
     let executable = resolve_codex_executable_unlocked()?;
     let (config_args, env) = runtime_mcp_config(request)?;
@@ -100,7 +104,7 @@ fn plan_codex_launch_unlocked(
         pty_args: {
             let mut args = vec!["app-server".to_string()];
             args.extend(config_args);
-            args.extend(["--listen".to_string(), endpoint.clone()]);
+            args.extend(["--listen".to_string(), listen_endpoint]);
             args
         },
         pty_env: env,
@@ -108,6 +112,10 @@ fn plan_codex_launch_unlocked(
         working_directory,
         structured_endpoint: Some(endpoint),
     })
+}
+
+fn resolve_codex_bind_host() -> String {
+    env::var(CODEX_BIND_HOST_OVERRIDE).unwrap_or_else(|_| "127.0.0.1".to_string())
 }
 
 fn codex_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<String> {
@@ -491,6 +499,47 @@ fn reserve_unused_port() -> Result<u16, DaemonError> {
             operation: "codex_reserve_port",
             message: error.to_string(),
         })
+}
+
+fn reserve_unused_port_from_range(
+    env_name: &'static str,
+    operation: &'static str,
+) -> Result<Option<u16>, DaemonError> {
+    let Some(value) = env::var_os(env_name) else {
+        return Ok(None);
+    };
+    let value = value.to_string_lossy();
+    let Some((start, end)) = value.split_once('-') else {
+        return Err(DaemonError::InvalidConfig {
+            field: env_name,
+            message: "must use START-END TCP port range syntax",
+        });
+    };
+    let start = start
+        .parse::<u16>()
+        .map_err(|_| DaemonError::InvalidConfig {
+            field: env_name,
+            message: "range start must be a valid TCP port",
+        })?;
+    let end = end.parse::<u16>().map_err(|_| DaemonError::InvalidConfig {
+        field: env_name,
+        message: "range end must be a valid TCP port",
+    })?;
+    if start > end {
+        return Err(DaemonError::InvalidConfig {
+            field: env_name,
+            message: "range start must be less than or equal to range end",
+        });
+    }
+    for port in start..=end {
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Ok(Some(port));
+        }
+    }
+    Err(DaemonError::LocalTransport {
+        operation,
+        message: format!("no available port in {env_name}={value}"),
+    })
 }
 
 fn resolve_candidate(candidate: PathBuf, treat_as_literal_path: bool) -> Option<PathBuf> {

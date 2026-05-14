@@ -15,6 +15,8 @@ use crate::provider::{
 
 const OPENCODE_ENV_OVERRIDE: &str = "ARROBA_OPENCODE_BIN";
 const OPENCODE_PORT_OVERRIDE: &str = "ARROBA_OPENCODE_PORT";
+const OPENCODE_PORT_RANGE_OVERRIDE: &str = "ARROBA_OPENCODE_PORT_RANGE";
+const OPENCODE_BIND_HOST_OVERRIDE: &str = "ARROBA_OPENCODE_BIND_HOST";
 static OPENCODE_MANAGED_CATALOG_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
 
 pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
@@ -72,11 +74,16 @@ fn plan_opencode_launch_unlocked(
 
     if request.is_some() {
         let executable = resolve_opencode_executable_unlocked()?;
-        let port = reserve_unused_port()?;
+        let port = reserve_unused_port_from_range(
+            OPENCODE_PORT_RANGE_OVERRIDE,
+            "opencode_reserve_port_range",
+        )?
+        .unwrap_or(reserve_unused_port()?);
         let base_url = format!("http://127.0.0.1:{port}");
         return Ok(managed_launch(
             executable,
             port,
+            resolve_opencode_bind_host(),
             base_url,
             runtime_mcp_env(request)?,
             request
@@ -92,6 +99,7 @@ fn plan_opencode_launch_unlocked(
     Ok(managed_launch(
         executable,
         port,
+        resolve_opencode_bind_host(),
         base_url,
         runtime_mcp_env(request)?,
         request
@@ -103,6 +111,7 @@ fn plan_opencode_launch_unlocked(
 fn managed_launch(
     executable: PathBuf,
     port: u16,
+    bind_host: String,
     base_url: String,
     pty_env: BTreeMap<String, String>,
     pty_env_remove: Vec<String>,
@@ -115,7 +124,7 @@ fn managed_launch(
         pty_args: vec![
             "serve".to_string(),
             "--hostname".to_string(),
-            "127.0.0.1".to_string(),
+            bind_host,
             "--port".to_string(),
             port.to_string(),
         ],
@@ -124,6 +133,10 @@ fn managed_launch(
         working_directory: None,
         structured_endpoint: Some(base_url),
     }
+}
+
+fn resolve_opencode_bind_host() -> String {
+    env::var(OPENCODE_BIND_HOST_OVERRIDE).unwrap_or_else(|_| "127.0.0.1".to_string())
 }
 
 pub fn opencode_catalog_endpoint() -> Result<String, DaemonError> {
@@ -271,6 +284,47 @@ fn reserve_unused_port() -> Result<u16, DaemonError> {
             operation: "opencode_reserve_port",
             message: error.to_string(),
         })
+}
+
+fn reserve_unused_port_from_range(
+    env_name: &'static str,
+    operation: &'static str,
+) -> Result<Option<u16>, DaemonError> {
+    let Some(value) = env::var_os(env_name) else {
+        return Ok(None);
+    };
+    let value = value.to_string_lossy();
+    let Some((start, end)) = value.split_once('-') else {
+        return Err(DaemonError::InvalidConfig {
+            field: env_name,
+            message: "must use START-END TCP port range syntax",
+        });
+    };
+    let start = start
+        .parse::<u16>()
+        .map_err(|_| DaemonError::InvalidConfig {
+            field: env_name,
+            message: "range start must be a valid TCP port",
+        })?;
+    let end = end.parse::<u16>().map_err(|_| DaemonError::InvalidConfig {
+        field: env_name,
+        message: "range end must be a valid TCP port",
+    })?;
+    if start > end {
+        return Err(DaemonError::InvalidConfig {
+            field: env_name,
+            message: "range start must be less than or equal to range end",
+        });
+    }
+    for port in start..=end {
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Ok(Some(port));
+        }
+    }
+    Err(DaemonError::LocalTransport {
+        operation,
+        message: format!("no available port in {env_name}={value}"),
+    })
 }
 
 pub(crate) fn opencode_mcp_config(server: &ArrobaMcpServerConfig) -> serde_json::Value {

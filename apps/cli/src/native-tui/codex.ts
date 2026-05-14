@@ -1,5 +1,5 @@
 import { spawn, execFile } from "node:child_process"
-import { appendFileSync } from "node:fs"
+import { appendFileSync, closeSync, openSync, unlinkSync } from "node:fs"
 import http from "node:http"
 import net from "node:net"
 import path from "node:path"
@@ -33,6 +33,7 @@ import {
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
 
 const execFileAsync = promisify(execFile)
+const reservedKernelPortLocks: string[] = []
 
 type NativeCodexOptions = {
   sessionRef?: string
@@ -111,18 +112,25 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     }
     let providerSessionId: string | null = null
     let upstreamEndpoint: string
+    let bindProviderEndpoint: string
     if (options.serverInKernel) {
-      upstreamEndpoint = `ws://127.0.0.1:${await reservePort()}`
+      const port = await reserveCodexKernelServerPort()
+      upstreamEndpoint = `ws://127.0.0.1:${port}`
+      const listenHost = process.env.ARROBA_CODEX_KERNEL_SERVER_BIND_HOST?.trim() || "127.0.0.1"
+      const listenEndpoint = `ws://${listenHost}:${port}`
       kernelServerPid = await startCodexAppServerInKernel({
         client,
         sessionId: session.id,
         attachmentId: attachment.id,
         endpoint: upstreamEndpoint,
+        listenEndpoint,
         workingDirectory: worktree,
       })
+      bindProviderEndpoint = process.env.ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE ? upstreamEndpoint : ""
     } else {
       upstreamEndpoint = `ws://127.0.0.1:${await reservePort()}`
       appServer = await startCodexAppServer(upstreamEndpoint, worktree)
+      bindProviderEndpoint = ""
     }
     proxy = await startCodexProxy({
       upstreamEndpoint,
@@ -139,7 +147,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       throw new Error("Codex proxy did not expose a TCP port")
     }
     const proxyUrl = `ws://127.0.0.1:${proxyAddress.port}`
-    bindState.structuredEndpoint = proxyUrl
+    bindState.structuredEndpoint = bindProviderEndpoint || proxyUrl
     process.stderr.write([
       "[arroba codex native-tui]",
       `  arroba session: ${session.id}${session.alias ? ` (${session.alias})` : ""}`,
@@ -174,6 +182,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     if (kernelServerPid) {
       await stopCodexAppServerInKernel(client, cleanupSessionId, cleanupAttachmentId, kernelServerPid, worktree).catch(() => {})
     }
+    releaseKernelPortLocks()
     await client.close()
   }
 }
@@ -489,6 +498,42 @@ async function reservePort(): Promise<number> {
   })
 }
 
+async function reserveCodexKernelServerPort(): Promise<number> {
+  const range = process.env.ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE?.trim()
+  if (!range) return reservePort()
+  const match = range.match(/^(\d+)-(\d+)$/)
+  if (!match) throw new Error("ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE must use START-END TCP port range syntax")
+  const start = Number.parseInt(match[1]!, 10)
+  const end = Number.parseInt(match[2]!, 10)
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end > 65535 || start > end) {
+    throw new Error("ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE must be a valid TCP port range")
+  }
+  for (let port = start; port <= end; port += 1) {
+    const lockPath = path.join("/tmp", `arroba-codex-kernel-server-port-${port}.lock`)
+    try {
+      const fd = openSync(lockPath, "wx")
+      closeSync(fd)
+      reservedKernelPortLocks.push(lockPath)
+      return port
+    } catch {
+      continue
+    }
+  }
+  throw new Error(`no available port in ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE=${range}`)
+}
+
+function releaseKernelPortLocks() {
+  while (reservedKernelPortLocks.length > 0) {
+    const lockPath = reservedKernelPortLocks.pop()
+    if (!lockPath) continue
+    try {
+      unlinkSync(lockPath)
+    } catch {
+      // best-effort cleanup for short-lived native TUI processes
+    }
+  }
+}
+
 async function startCodexAppServer(endpoint: string, workingDirectory: string) {
   const executable = process.env.ARROBA_CODEX_BIN?.trim() || "codex"
   const child = spawn(executable, ["app-server", "--listen", endpoint], {
@@ -513,13 +558,14 @@ async function startCodexAppServerInKernel(options: {
   sessionId: string
   attachmentId: string
   endpoint: string
+  listenEndpoint: string
   workingDirectory: string
 }): Promise<string> {
   const executable = process.env.ARROBA_CODEX_BIN?.trim() || "codex"
-  const logFile = path.join(process.env.TMPDIR ?? "/tmp", `arroba-codex-kernel-server-${process.pid}-${Date.now()}.log`)
+  const logFile = path.join("/tmp", `arroba-codex-kernel-server-${process.pid}-${Date.now()}.log`)
   const command = [
     `cd ${shellQuote(options.workingDirectory)}`,
-    `(${shellQuote(executable)} app-server --listen ${shellQuote(options.endpoint)} > ${shellQuote(logFile)} 2>&1 & echo $!)`,
+    `(${shellQuote(executable)} app-server --listen ${shellQuote(options.listenEndpoint)} > ${shellQuote(logFile)} 2>&1 & echo $!)`,
   ].join(" && ")
   const response = await options.client.send<Record<string, unknown>>({
     RunShellCommand: {
