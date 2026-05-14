@@ -194,6 +194,8 @@ pub(super) struct ManagedIoTextSnapshot {
     pub(super) text: String,
 }
 
+mod patch_parser;
+pub(super) use patch_parser::*;
 mod patch;
 pub(super) use patch::*;
 
