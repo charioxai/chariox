@@ -7,24 +7,24 @@ use std::time::{Duration, Instant};
 use crate::agent::AgentState;
 use crate::app::{ActivePromptState, ActiveTurnState, DaemonApp};
 use crate::error::DaemonError;
-use crate::history::SessionHistoryEntry;
 use crate::provider::ProviderRunState;
 use crate::provider::{OpenCodeProviderCatalog, ProviderProcessInfo, RuntimeProviderRun};
 use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
 use crate::runtime::workspace_coordinator::WorkspaceOperationClaimSnapshot;
 use crate::session::{unix_epoch_ms, PromptQueueItem, PromptStatus, RuntimeSession};
-use crate::session_history_page::{paginate_session_history, SessionHistoryPage};
 use crate::terminal::TerminalStreamHealthSnapshot;
 use serde::{Deserialize, Serialize};
 
 mod agent_runtime_projection;
 mod config_projection;
 mod remote_relay_inventory_projection;
+mod session_history_projection;
 mod session_state_projection;
 
 pub(crate) use agent_runtime_projection::{AgentRuntimeProjection, AgentRuntimeProjectionStore};
 pub(crate) use config_projection::DaemonConfigProjectionStore;
 pub(crate) use remote_relay_inventory_projection::RemoteRelayInventoryProjectionStore;
+pub(crate) use session_history_projection::{page_history_entries, SessionHistoryProjectionStore};
 pub(crate) use session_state_projection::SessionStateProjectionStore;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,84 +85,6 @@ pub struct AgentActiveTurnProjection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_run_id: Option<String>,
     pub status: AgentPromptRuntimeStatus,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct SessionHistoryProjectionStore {
-    entries: Arc<StdMutex<HashMap<String, Vec<SessionHistoryEntry>>>>,
-}
-
-impl SessionHistoryProjectionStore {
-    pub(crate) fn page(
-        &self,
-        session_id: &str,
-        agent_id: Option<&str>,
-        round_count: Option<usize>,
-        max_chars: Option<usize>,
-        before_entry_index: Option<usize>,
-        before_entry_char_offset: Option<usize>,
-    ) -> Option<SessionHistoryPage> {
-        let entries = self
-            .entries
-            .lock()
-            .expect("session history projection lock should not be poisoned")
-            .get(session_id)
-            .cloned()?;
-        Some(page_history_entries(
-            entries,
-            agent_id,
-            round_count,
-            max_chars,
-            before_entry_index,
-            before_entry_char_offset,
-        ))
-    }
-
-    pub(crate) fn update_entries(&self, session_id: &str, entries: Vec<SessionHistoryEntry>) {
-        self.entries
-            .lock()
-            .expect("session history projection lock should not be poisoned")
-            .insert(session_id.to_string(), entries);
-    }
-
-    pub(crate) fn append(&self, entry: SessionHistoryEntry) {
-        let mut entries_by_session = self
-            .entries
-            .lock()
-            .expect("session history projection lock should not be poisoned");
-        if let Some(entries) = entries_by_session.get_mut(&entry.session_id) {
-            entries.push(entry);
-        }
-    }
-
-    pub(crate) fn remove(&self, session_id: &str) {
-        self.entries
-            .lock()
-            .expect("session history projection lock should not be poisoned")
-            .remove(session_id);
-    }
-}
-
-pub(crate) fn page_history_entries(
-    mut entries: Vec<SessionHistoryEntry>,
-    agent_id: Option<&str>,
-    round_count: Option<usize>,
-    max_chars: Option<usize>,
-    before_entry_index: Option<usize>,
-    before_entry_char_offset: Option<usize>,
-) -> SessionHistoryPage {
-    if let Some(agent_id) = agent_id {
-        entries.retain(|entry| {
-            entry.agent_id.is_none() || entry.agent_id.as_deref() == Some(agent_id)
-        });
-    }
-    paginate_session_history(
-        &entries,
-        round_count,
-        max_chars,
-        before_entry_index,
-        before_entry_char_offset,
-    )
 }
 
 #[derive(Clone, Default)]
