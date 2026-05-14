@@ -3,6 +3,7 @@
 //! This module owns leased-agent prompt submission, binding refresh, and remote dispatch result
 //! settlement after owned prompt state has already admitted the prompt.
 
+use super::remote_prompt_worker_submission_runtime::submit_remote_prompt_to_worker_with_binding_refresh;
 use super::*;
 
 impl KernelRuntimeState {
@@ -100,7 +101,6 @@ impl KernelRuntimeState {
                     return;
                 }
             };
-            let config = remote_dispatch_relay_config(state.config_snapshot().await, &dispatch);
             let attachments = dispatch.attachments.clone();
             let serialized_attachments = match tokio::task::spawn_blocking(move || {
                 crate::app::serialize_remote_prompt_attachments(&attachments)
@@ -122,115 +122,14 @@ impl KernelRuntimeState {
                     return;
                 }
             };
-            let result = match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                    &config,
-                    ClientTarget {
-                        daemon_id: Some(dispatch.worker_kernel_id.clone()),
-                        daemon_alias: None,
-                    },
-                    RelayPeerRequest::SubmitLeasedPrompt {
-                        leased_agent_id: dispatch.leased_agent_id.clone(),
-                        prompt: prompt.clone(),
-                        attachments: attachments.clone(),
-                        workflow_context: dispatch.workflow_context.clone(),
-                        git_context: Some(remote_git_turn_context(&dispatch)),
-                        required_mcps: required_mcps.clone(),
-                    },
-                ),
+            let result = submit_remote_prompt_to_worker_with_binding_refresh(
+                &state,
+                &mut dispatch,
+                prompt,
+                attachments,
+                required_mcps,
             )
-            .await
-            {
-                Ok(response) => match response {
-                    Ok(RelayPeerResponse::LeasedPromptSubmitted {
-                        provider_run_id, ..
-                    }) => Ok(provider_run_id),
-                    Ok(other) => Err(DaemonError::LocalTransport {
-                        operation: "submit remote prepared prompt",
-                        message: format!("unexpected remote prompt response: {other:?}"),
-                    }),
-                    Err(error) => Err(error),
-                },
-                Err(_) => Err(DaemonError::LocalTransport {
-                    operation: "submit remote prepared prompt",
-                    message: "remote prompt dispatch timed out waiting for worker response"
-                        .to_string(),
-                }),
-            };
-            let result = if remote_prompt_dispatch_should_refresh_binding(&result) {
-                crate::logging::warn_with_fields(
-                    "daemon.remote_prompt_dispatch",
-                    "remote prompt lease stale; refreshing binding",
-                    serde_json::json!({
-                        "session_id": dispatch.session_id,
-                        "agent_id": dispatch.agent_id,
-                        "worker_kernel_id": dispatch.worker_kernel_id,
-                        "leased_agent_id": dispatch.leased_agent_id,
-                    }),
-                );
-                match state
-                    .with_app_side_effect(|app| {
-                        app.refresh_remote_agent_binding(&dispatch.agent_id)
-                    })
-                    .await
-                {
-                    Ok(agent) => match agent.remote_execution().cloned() {
-                        Some(remote_execution) => {
-                            dispatch.worker_kernel_id = remote_execution.worker_kernel_id;
-                            dispatch.leased_agent_id = remote_execution.leased_agent_id;
-                            dispatch.relay_url = remote_execution.relay_url;
-                            dispatch.relay_token = remote_execution.relay_token;
-                            let config = remote_dispatch_relay_config(
-                                state.config_snapshot().await,
-                                &dispatch,
-                            );
-                            match tokio::time::timeout(
-                                std::time::Duration::from_secs(5),
-                                crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                                &config,
-                                ClientTarget {
-                                    daemon_id: Some(dispatch.worker_kernel_id.clone()),
-                                    daemon_alias: None,
-                                },
-                                RelayPeerRequest::SubmitLeasedPrompt {
-                                    leased_agent_id: dispatch.leased_agent_id.clone(),
-                                    prompt,
-                                    attachments,
-                                    workflow_context: dispatch.workflow_context.clone(),
-                                    git_context: Some(remote_git_turn_context(&dispatch)),
-                                    required_mcps,
-                                },
-                            ))
-                            .await
-                            {
-                                Ok(Ok(RelayPeerResponse::LeasedPromptSubmitted {
-                                    provider_run_id, ..
-                                })) => Ok(provider_run_id),
-                                Ok(Ok(other)) => Err(DaemonError::LocalTransport {
-                                    operation: "submit remote prepared prompt",
-                                    message: format!("unexpected remote prompt response after binding refresh: {other:?}"),
-                                }),
-                                Ok(Err(error)) => Err(error),
-                                Err(_) => Err(DaemonError::LocalTransport {
-                                    operation: "submit remote prepared prompt",
-                                    message: "remote prompt dispatch timed out after binding refresh".to_string(),
-                                }),
-                            }
-                        }
-                        None => Err(DaemonError::LocalTransport {
-                            operation: "refresh remote prompt binding",
-                            message: format!(
-                                "agent `{}` did not have remote execution after binding refresh",
-                                dispatch.agent_id
-                            ),
-                        }),
-                    },
-                    Err(error) => Err(error),
-                }
-            } else {
-                result
-            };
+            .await;
             match &result {
                 Ok(provider_run_id) => crate::logging::info_with_fields(
                     "daemon.remote_prompt_dispatch",
@@ -258,52 +157,4 @@ impl KernelRuntimeState {
             let _ = state.finish_remote_prompt_dispatch(dispatch, result).await;
         });
     }
-}
-
-fn remote_prompt_dispatch_should_refresh_binding(result: &Result<String, DaemonError>) -> bool {
-    let Err(error) = result else {
-        return false;
-    };
-    match error {
-        DaemonError::LeasedAgentNotFound { .. } | DaemonError::ExecutionLeaseNotFound { .. } => {
-            true
-        }
-        DaemonError::LocalTransport { message, .. } => {
-            message.contains("leased agent") && message.contains("was not found")
-                || message.contains("execution lease") && message.contains("was not found")
-                || message.contains("leased_agent_not_found")
-                || message.contains("execution_lease_not_found")
-                || message.contains("timed out waiting for worker response")
-        }
-        _ => false,
-    }
-}
-
-fn remote_git_turn_context(
-    dispatch: &crate::app::KernelRemotePromptDispatch,
-) -> crate::transport::relay_peer::RemoteGitTurnContext {
-    crate::transport::relay_peer::RemoteGitTurnContext {
-        home_session_id: dispatch.session_id.clone(),
-        home_agent_id: dispatch.agent_id.clone(),
-        home_prompt_id: dispatch.prompt_id.clone(),
-        home_turn_id: dispatch.prompt_id.clone(),
-        prompt_summary: crate::prompt_transcript::render_prompt_transcript(
-            &dispatch.prompt,
-            &dispatch.attachments,
-        ),
-    }
-}
-
-fn remote_dispatch_relay_config(
-    mut config: crate::config::DaemonConfig,
-    dispatch: &crate::app::KernelRemotePromptDispatch,
-) -> crate::config::DaemonConfig {
-    if let (Some(relay_url), Some(relay_token)) =
-        (dispatch.relay_url.clone(), dispatch.relay_token.clone())
-    {
-        config.relay_url = Some(relay_url);
-        config.relay_token = Some(relay_token);
-        config.cloud_relay = None;
-    }
-    config
 }
