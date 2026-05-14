@@ -14,11 +14,11 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 2026-05-14:
 
-- Cloud API boundary split is in place: `server.ts` is route composition; relay-kernel bootstrap delegates to service-layer target selection/token minting; route/helper/contract files are domain-owned.
+- Cloud API boundary split is in place: `server.ts` is route composition; relay-kernel bootstrap delegates to a focused service use case for target selection/token minting/cache lookup; route/helper/contract files are domain-owned.
 - Cloud web responsibility modules now cover browser kernel transport, waiting-room state/projection/rendering/cache persistence/connection display/refresh scheduling/refresh controller/kernel event policy/kernel-directory refresh, app sidebar/context/resize/workflow/history/prompt/output/workspace/capabilities, terminal lifecycle/transport/target/launch/provider profile, freeform policy, and session projection fingerprinting. `client.ts` is still the main coordinator and is 10,005 lines.
 - OSS responsibility modules now cover kernel transport, router factory/composition/store+actor wiring, command admission/refresh, pre-lane dispatch, refresh-tracked dispatch, priority fallback dispatch, session actor focus/lane/execution/store/projection policy, capability runtime dispatch, credential/slice/workflow-forwarding runtime tool adapters, authenticated workflow runtime tool dispatch, local and remote managed-I/O dispatch, managed-I/O access/permission policy, capability registry packaging, remote capability sync, relay/cloud/runtime/status bridges, caller identity/redaction, membership authorization, runtime projections, provider/agent/session/workspace/history/capability/waiting-room execution, launch tracking, response refresh, runtime lane cleanup, visibility policy, response redaction, and active drill naming cleanup. `runtime/router.rs` is still the main command router and is 5,824 lines.
-- Latest verified batch: OSS live cloud relay drill no longer depends on deleted `/web-cli` inventory streams.
-- Latest gates for owned files: script syntax check, stale-name scan for the edited drill, and diff check. Full OSS fmt is blocked by unrelated native-provider protocol formatting drift.
+- Latest verified batch: Cloud browser relay-kernel bootstrap use case moved to `apps/api/src/browser-relay-kernel-service.ts`.
+- Latest gates for owned files: Cloud API build, targeted API service/architecture tests, and diff check. Full Cloud API test is blocked by unrelated dirty web client work.
 
 ## Responsibility Rule
 
