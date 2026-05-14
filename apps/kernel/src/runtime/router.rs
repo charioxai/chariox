@@ -11,9 +11,7 @@ use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::agent_control_executor::execute_agent_control_request;
-use crate::runtime::agent_utility_executor::{
-    execute_generate_workspace_commit_message_request, execute_run_agent_utility_request,
-};
+use crate::runtime::agent_utility_executor::execute_agent_utility_request;
 use crate::runtime::capability_executor::{
     execute_required_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
 };
@@ -860,16 +858,9 @@ impl CommandRouter {
                 )
                 .await;
             }
-            LocalDaemonRequest::RunAgentUtility(request) => {
-                return execute_run_agent_utility_request(
-                    Arc::clone(&self.app),
-                    &self.config_projection,
-                    request.clone(),
-                )
-                .await;
-            }
-            LocalDaemonRequest::GenerateWorkspaceCommitMessage(request) => {
-                return execute_generate_workspace_commit_message_request(
+            request @ (LocalDaemonRequest::RunAgentUtility(_)
+            | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)) => {
+                return execute_agent_utility_request(
                     Arc::clone(&self.app),
                     &self.config_projection,
                     request.clone(),
@@ -1398,16 +1389,9 @@ impl CommandRouter {
                 execute_workspace_command_request(&self.app, &self.session_projection, request)
                     .await
             }
-            LocalDaemonRequest::RunAgentUtility(request) => {
-                execute_run_agent_utility_request(
-                    Arc::clone(&self.app),
-                    &self.config_projection,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::GenerateWorkspaceCommitMessage(request) => {
-                execute_generate_workspace_commit_message_request(
+            request @ (LocalDaemonRequest::RunAgentUtility(_)
+            | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)) => {
+                execute_agent_utility_request(
                     Arc::clone(&self.app),
                     &self.config_projection,
                     request,

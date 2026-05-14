@@ -11,8 +11,8 @@ use crate::config::UserArchiveHistoryConfig;
 use crate::error::DaemonError;
 use crate::local::{
     AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, AgentUtilityResult,
-    GenerateWorkspaceCommitMessageRequest, LocalDaemonResponse, RunAgentUtilityRequest,
-    SemanticHistorySearchUtilityInput, WorkspaceCommitMessageUtilityInput,
+    GenerateWorkspaceCommitMessageRequest, LocalDaemonRequest, LocalDaemonResponse,
+    RunAgentUtilityRequest, SemanticHistorySearchUtilityInput, WorkspaceCommitMessageUtilityInput,
 };
 use crate::provider::{
     run_codex_utility_prompt, run_opencode_utility_prompt, ProviderRunState, RuntimeProviderRun,
@@ -65,6 +65,25 @@ pub(crate) async fn execute_generate_workspace_commit_message_request(
         });
     };
     Ok(LocalDaemonResponse::WorkspaceCommitMessageGenerated { message })
+}
+
+pub(crate) async fn execute_agent_utility_request(
+    app: Arc<Mutex<DaemonApp>>,
+    config_projection: &DaemonConfigProjectionStore,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::RunAgentUtility(request) => {
+            execute_run_agent_utility_request(app, config_projection, request).await
+        }
+        LocalDaemonRequest::GenerateWorkspaceCommitMessage(request) => {
+            execute_generate_workspace_commit_message_request(app, config_projection, request).await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "agent utility request",
+            message: "unsupported agent utility request".to_string(),
+        }),
+    }
 }
 
 fn archive_config(config_projection: &DaemonConfigProjectionStore) -> UserArchiveHistoryConfig {
