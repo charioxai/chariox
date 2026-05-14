@@ -4,14 +4,10 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
-use arroba_relay::protocol::RelayKernelPresence;
-
 use crate::agent::AgentState;
 use crate::app::{ActivePromptState, ActiveTurnState, DaemonApp};
-use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::history::SessionHistoryEntry;
-use crate::local::RemoteMachineRecord;
 use crate::provider::ProviderRunState;
 use crate::provider::{OpenCodeProviderCatalog, ProviderProcessInfo, RuntimeProviderRun};
 use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
@@ -20,6 +16,12 @@ use crate::session::{unix_epoch_ms, PromptQueueItem, PromptStatus, RuntimeSessio
 use crate::session_history_page::{paginate_session_history, SessionHistoryPage};
 use crate::terminal::TerminalStreamHealthSnapshot;
 use serde::{Deserialize, Serialize};
+
+mod config_projection;
+mod remote_relay_inventory_projection;
+
+pub(crate) use config_projection::DaemonConfigProjectionStore;
+pub(crate) use remote_relay_inventory_projection::RemoteRelayInventoryProjectionStore;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectionMetadata {
@@ -79,104 +81,6 @@ pub struct AgentActiveTurnProjection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_run_id: Option<String>,
     pub status: AgentPromptRuntimeStatus,
-}
-
-#[derive(Clone)]
-pub(crate) struct DaemonConfigProjectionStore {
-    config: Arc<StdMutex<DaemonConfig>>,
-}
-
-impl DaemonConfigProjectionStore {
-    pub(crate) fn new(config: DaemonConfig) -> Self {
-        Self {
-            config: Arc::new(StdMutex::new(config)),
-        }
-    }
-
-    pub(crate) fn snapshot(&self) -> DaemonConfig {
-        self.config
-            .lock()
-            .expect("daemon config projection lock should not be poisoned")
-            .clone()
-    }
-
-    pub(crate) fn update(&self, config: DaemonConfig) {
-        *self
-            .config
-            .lock()
-            .expect("daemon config projection lock should not be poisoned") = config;
-    }
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct RemoteRelayInventoryProjectionStore {
-    state: Arc<StdMutex<RemoteRelayInventoryProjectionState>>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct RemoteRelayInventoryProjectionState {
-    remote_machines: Vec<RemoteMachineRecord>,
-    remote_kernels: Vec<RelayKernelPresence>,
-    refreshed_at_ms: u64,
-    refresh_requested_at_ms: u64,
-}
-
-impl RemoteRelayInventoryProjectionStore {
-    pub(crate) fn snapshot(&self) -> (Vec<RemoteMachineRecord>, Vec<RelayKernelPresence>) {
-        let state = self
-            .state
-            .lock()
-            .expect("remote relay inventory projection lock should not be poisoned");
-        (state.remote_machines.clone(), state.remote_kernels.clone())
-    }
-
-    pub(crate) fn should_request_refresh(
-        &self,
-        now_ms: u64,
-        stale_after_ms: u64,
-        cooldown_ms: u64,
-    ) -> bool {
-        let mut state = self
-            .state
-            .lock()
-            .expect("remote relay inventory projection lock should not be poisoned");
-        let empty = state.remote_machines.is_empty() && state.remote_kernels.is_empty();
-        let stale = state.refreshed_at_ms == 0
-            || now_ms.saturating_sub(state.refreshed_at_ms) >= stale_after_ms;
-        let cooled_down = state.refresh_requested_at_ms == 0
-            || now_ms.saturating_sub(state.refresh_requested_at_ms) >= cooldown_ms;
-        if (empty || stale) && cooled_down {
-            state.refresh_requested_at_ms = now_ms;
-            return true;
-        }
-        false
-    }
-
-    pub(crate) fn update(
-        &self,
-        remote_machines: Vec<RemoteMachineRecord>,
-        remote_kernels: Vec<RelayKernelPresence>,
-    ) {
-        let mut state = self
-            .state
-            .lock()
-            .expect("remote relay inventory projection lock should not be poisoned");
-        state.remote_machines = remote_machines;
-        state.remote_kernels = remote_kernels;
-        state.refreshed_at_ms = unix_epoch_ms();
-        state.refresh_requested_at_ms = state.refreshed_at_ms;
-    }
-
-    pub(crate) fn clear(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .expect("remote relay inventory projection lock should not be poisoned");
-        state.remote_machines.clear();
-        state.remote_kernels.clear();
-        state.refreshed_at_ms = 0;
-        state.refresh_requested_at_ms = 0;
-    }
 }
 
 #[derive(Clone, Default)]
