@@ -20,9 +20,7 @@ use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelComman
 use crate::runtime::command_response_refresh::{
     refresh_command_response_state, CommandResponseRefreshContext,
 };
-use crate::runtime::daemon_health_projection::{
-    build_daemon_health_projection, execute_daemon_health_request, DaemonHealthProjectionInput,
-};
+use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::history_executor::{
     execute_history_request, projected_session_history_response,
 };
@@ -31,8 +29,8 @@ use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
 use crate::runtime::native_interaction_bridge::install_provider_native_interaction_bridge;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
 use crate::runtime::projection::{
-    AgentRuntimeProjectionStore, DaemonConfigProjectionStore, DaemonHealthProjection,
-    ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
+    AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
+    ProviderProcessProjectionStore, ProviderRunProjectionStore,
     RemoteRelayInventoryProjectionStore, SessionHistoryProjectionStore,
     SessionStateProjectionStore, TransportHealthStore,
 };
@@ -68,9 +66,7 @@ use crate::runtime::terminal_output_executor::{
     execute_append_native_provider_output_request, TerminalOutputExecutor,
 };
 use crate::runtime::user_config_executor::execute_user_config_request;
-use crate::runtime::waiting_room_control::{
-    execute_waiting_room_request, waiting_room_inventory_version,
-};
+use crate::runtime::waiting_room_control::execute_waiting_room_request;
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_command_executor::execute_workspace_command_request;
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
@@ -81,6 +77,7 @@ use crate::transport::relay_client::RelayClientState;
 mod cloud_relay_bridge;
 mod relay_peer_bridge;
 mod runtime_tool_bridge;
+mod status_projection_bridge;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -751,44 +748,6 @@ impl CommandRouter {
         result.and_then(|response| {
             redact_response_for_user(response, caller_user_id, &self.provider_run_projection)
         })
-    }
-
-    pub(crate) async fn waiting_room_inventory_version(&self) -> Result<String, DaemonError> {
-        waiting_room_inventory_version(
-            &self.app,
-            Arc::clone(&self.relay_state),
-            self.config_projection.clone(),
-        )
-        .await
-    }
-
-    #[allow(dead_code)]
-    pub(crate) async fn daemon_health_projection(
-        &self,
-        last_event_id: u64,
-    ) -> DaemonHealthProjection {
-        build_daemon_health_projection(self.daemon_health_projection_input(last_event_id)).await
-    }
-
-    fn daemon_health_projection_input(
-        &self,
-        last_event_id: u64,
-    ) -> DaemonHealthProjectionInput<'_> {
-        DaemonHealthProjectionInput {
-            last_event_id,
-            session_runtime: &self.session_runtime,
-            agent_runtime: &self.agent_runtime,
-            workflow_runtime: &self.workflow_runtime,
-            provider_runtime_lanes: &self.provider_runtime_lanes,
-            capability_health: &self.capability_health,
-            session_projection: &self.session_projection,
-            agent_runtime_projection: &self.agent_runtime_projection,
-            provider_catalog_projection: &self.provider_catalog_projection,
-            transport_health: &self.transport_health,
-            terminal_health: &self.terminal_health,
-            workspace_coordinator: &self.workspace_coordinator,
-            runtime_state: &self.runtime_state,
-        }
     }
 
     async fn dispatch_interactive(
