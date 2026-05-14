@@ -184,6 +184,8 @@ mod remote_state;
 pub(super) use remote_state::*;
 mod remote_patch;
 pub(super) use remote_patch::*;
+mod remote_whole_file;
+pub(super) use remote_whole_file::*;
 mod remote;
 pub(super) use remote::*;
 
