@@ -1,10 +1,32 @@
 use crate::error::DaemonError;
 use crate::local::{
-    AgentGrantKind, GrantAgentCapabilityRequest, LocalDaemonResponse, MoveAgentToRemoteRequest,
-    RevokeAgentCapabilityRequest,
+    AgentGrantKind, GrantAgentCapabilityRequest, LocalDaemonRequest, LocalDaemonResponse,
+    MoveAgentToRemoteRequest, RevokeAgentCapabilityRequest,
 };
 use crate::runtime::capability_registry::{ensure_mcp_exists, ensure_skill_exists};
 use crate::runtime::state::KernelRuntimeState;
+
+pub(crate) async fn execute_agent_control_request(
+    runtime_state: &KernelRuntimeState,
+    caller_user_id: &str,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::GrantAgentCapability(request) => {
+            execute_grant_agent_capability_request(runtime_state, caller_user_id, request).await
+        }
+        LocalDaemonRequest::MoveAgentToRemote(request) => {
+            execute_move_agent_to_remote_request(runtime_state, caller_user_id, request).await
+        }
+        LocalDaemonRequest::RevokeAgentCapability(request) => {
+            execute_revoke_agent_capability_request(runtime_state, caller_user_id, request).await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "agent control request",
+            message: "unsupported agent control request".to_string(),
+        }),
+    }
+}
 
 pub(crate) async fn execute_grant_agent_capability_request(
     runtime_state: &KernelRuntimeState,

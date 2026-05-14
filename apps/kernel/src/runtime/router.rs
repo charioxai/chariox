@@ -10,10 +10,7 @@ use crate::history::SessionHistoryStore;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_actor::AgentRuntime;
-use crate::runtime::agent_control_executor::{
-    execute_grant_agent_capability_request, execute_move_agent_to_remote_request,
-    execute_revoke_agent_capability_request,
-};
+use crate::runtime::agent_control_executor::execute_agent_control_request;
 use crate::runtime::agent_utility_executor::{
     execute_generate_workspace_commit_message_request, execute_run_agent_utility_request,
 };
@@ -1230,27 +1227,11 @@ impl CommandRouter {
         }
 
         match request {
-            LocalDaemonRequest::GrantAgentCapability(request) => {
+            request @ (LocalDaemonRequest::GrantAgentCapability(_)
+            | LocalDaemonRequest::MoveAgentToRemote(_)
+            | LocalDaemonRequest::RevokeAgentCapability(_)) => {
                 let caller_user_id = command_caller_user_id(&command);
-                return execute_grant_agent_capability_request(
-                    &self.runtime_state,
-                    &caller_user_id,
-                    request,
-                )
-                .await;
-            }
-            LocalDaemonRequest::MoveAgentToRemote(request) => {
-                let caller_user_id = command_caller_user_id(&command);
-                return execute_move_agent_to_remote_request(
-                    &self.runtime_state,
-                    &caller_user_id,
-                    request,
-                )
-                .await;
-            }
-            LocalDaemonRequest::RevokeAgentCapability(request) => {
-                let caller_user_id = command_caller_user_id(&command);
-                return execute_revoke_agent_capability_request(
+                return execute_agent_control_request(
                     &self.runtime_state,
                     &caller_user_id,
                     request,
