@@ -96,6 +96,7 @@ mod prompt_skill_context_state;
 mod prompt_transcript_owned_state;
 mod provider;
 mod provider_focus_owned_state;
+mod provider_launch_failure_runtime;
 mod provider_launch_owned_state;
 mod provider_launch_runtime;
 mod provider_liveness_runtime;
