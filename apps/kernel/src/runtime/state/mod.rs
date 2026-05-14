@@ -84,6 +84,7 @@ mod owned;
 mod pending_runtime_state;
 use pending_runtime_state::*;
 mod prompt;
+mod prompt_activity_owned_state;
 mod prompt_dispatch;
 mod provider;
 mod provider_launch_owned_state;
