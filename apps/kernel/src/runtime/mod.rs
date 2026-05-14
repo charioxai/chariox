@@ -4,6 +4,7 @@ pub mod capability_executor;
 pub(crate) mod capability_registry;
 pub mod command;
 pub mod event_log;
+pub(crate) mod history_requests;
 pub mod projection;
 pub mod prompt_state;
 pub mod provider_launch_executor;

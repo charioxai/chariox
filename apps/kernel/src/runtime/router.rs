@@ -15,11 +15,8 @@ use crate::agent::AgentInstance;
 use crate::app::{DaemonApp, PromptActivityStore};
 use crate::config::PersistedCloudRelayProfile;
 use crate::error::DaemonError;
+use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
-use crate::history::{
-    HistoryEventKind, HistoryEventQuery, HistoryEventRole, OperationalHistoryStore,
-};
-use crate::history_archive::HistoryArchiveClient;
 use crate::local::provider_requests::{
     forgotten_machine_record, load_provider_catalog, logout_provider_response,
     provider_auth_status_response, provider_command_catalogs_response, record_for_machine_id,
@@ -50,19 +47,17 @@ use crate::local::{
     LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
     PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairedClientRecord,
     PairingInviteIntent, PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest,
-    PromptInputHistoryEntry, PromptInputHistoryEntryKind, PumpTerminalOutputRequest,
-    PushWorkspaceBranchRequest, QueryHistoryRequest, RecordPairedClientRequest,
+    PumpTerminalOutputRequest, PushWorkspaceBranchRequest, RecordPairedClientRequest,
     RecordPromptInputHistoryRequest, RelayStatus, RenameRemoteMachineRequest,
     ResolveSessionRequest, RevokeAgentCapabilityRequest, RevokeCloudSessionInviteRequest,
     RevokePairedClientRequest, RevokeSessionInviteRequest, RunAgentUtilityRequest,
-    SearchHistoryRequest, SearchWorkspaceDirectoriesRequest, SemanticHistoryMatch,
-    SemanticHistorySearchUtilityInput, SemanticSearchHistoryMode, SemanticSearchHistoryRequest,
-    SessionInviteRecord, SetCredentialSecretRequest, SetUserConfigValueRequest,
-    ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest, SliceRefRequest,
-    StartCloudRelayLoginRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
-    TerminalPairingLinkRecord, TerminalRecord, TerminalType, UnsetUserConfigValueRequest,
-    UpdateProviderRunSelectionRequest, UserConfigMutationEffect, WaitingRoomPublicSnapshot,
-    WorkspaceCommitMessageUtilityInput,
+    SearchWorkspaceDirectoriesRequest, SemanticHistoryMatch, SemanticHistorySearchUtilityInput,
+    SemanticSearchHistoryMode, SemanticSearchHistoryRequest, SessionInviteRecord,
+    SetCredentialSecretRequest, SetUserConfigValueRequest, ShowCloudSessionInviteRequest,
+    ShowWorkspaceLinkRequest, SliceRefRequest, StartCloudRelayLoginRequest,
+    StartProviderLoginRequest, TeardownProviderProcessesRequest, TerminalPairingLinkRecord,
+    TerminalRecord, TerminalType, UnsetUserConfigValueRequest, UpdateProviderRunSelectionRequest,
+    UserConfigMutationEffect, WaitingRoomPublicSnapshot, WorkspaceCommitMessageUtilityInput,
 };
 use crate::provider::{
     run_codex_utility_prompt, run_opencode_utility_prompt, ProviderNativeInteractionBridge,
@@ -84,8 +79,14 @@ use crate::runtime::capability_registry::{
 use crate::runtime::command::{
     KernelCallerKind, KernelCommand, KernelCommandPriority, KernelCommandSource,
 };
+use crate::runtime::history_requests::{
+    execute_prompt_input_history_request, execute_query_history_request,
+    execute_record_prompt_input_history_request, execute_session_history_request_from_session,
+    history_query_from_request, history_query_from_search_request, knn_semantic_history_search,
+    semantic_search_request_from_utility_input, semantic_utility_input_from_search_request,
+};
 use crate::runtime::projection::{
-    agent_activity_for_session_projection, page_history_entries, AgentRuntimeProjectionStore,
+    agent_activity_for_session_projection, AgentRuntimeProjectionStore,
     DaemonConfigProjectionStore, DaemonHealthProjection, ProviderCatalogProjectionStore,
     ProviderProcessProjectionStore, ProviderRunProjectionStore,
     RemoteRelayInventoryProjectionStore, SessionHistoryProjectionStore,
@@ -4657,139 +4658,33 @@ impl CommandRouter {
         &self,
         request: GetPromptInputHistoryRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let session_id = request.session_id.clone();
-        let limit = request.limit.unwrap_or(5000).clamp(1, 5000);
-        let after_sequence = request.after_sequence;
-        let history = self.operational_history_store.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut events = prompt_input_history_events_for_kind(
-                &history,
-                &session_id,
-                "user_prompt",
-                after_sequence,
-                limit,
-            )?;
-            events.extend(prompt_input_history_events_for_kind(
-                &history,
-                &session_id,
-                "prompt_input",
-                after_sequence,
-                limit,
-            )?);
-            events.sort_by_key(|event| event.sequence);
-            events.truncate(limit);
-            Ok(LocalDaemonResponse::PromptInputHistory {
-                entries: events
-                    .into_iter()
-                    .filter_map(prompt_input_history_entry_from_event)
-                    .collect(),
-            })
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "load prompt input history",
-            message: error.to_string(),
-        })?
+        execute_prompt_input_history_request(self.operational_history_store.clone(), request).await
     }
 
     async fn execute_record_prompt_input_history_request(
         &self,
         request: RecordPromptInputHistoryRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        if request.text.trim().is_empty() {
-            return Ok(LocalDaemonResponse::PromptInputHistoryRecorded {
-                entry: PromptInputHistoryEntry {
-                    sequence: 0,
-                    timestamp_ms: 0,
-                    session_id: request.session_id,
-                    source_attachment_id: request.attachment_id,
-                    kind: request.kind,
-                    text: String::new(),
-                },
-            });
-        }
-        let mut metadata = BTreeMap::new();
-        metadata.insert(
-            "input_kind".to_string(),
-            serde_json::Value::String(
-                match request.kind {
-                    PromptInputHistoryEntryKind::Prompt => "prompt",
-                    PromptInputHistoryEntryKind::Command => "command",
-                }
-                .to_string(),
-            ),
-        );
-        if let Some(attachment_id) = request.attachment_id.clone() {
-            metadata.insert(
-                "source_attachment_id".to_string(),
-                serde_json::Value::String(attachment_id),
-            );
-        }
-        let event = self.operational_history_store.append_operational_event(
-            HistoryEventKind::PromptInput,
-            Some(HistoryEventRole::User),
-            Some(request.text),
-            metadata,
-            crate::history::HistoryEventTurnContext {
-                session_id: Some(request.session_id),
-                ..Default::default()
-            },
-        )?;
-        let entry = prompt_input_history_entry_from_event(event).ok_or_else(|| {
-            DaemonError::LocalTransport {
-                operation: "record prompt input history",
-                message: "recorded event could not be converted".to_string(),
-            }
-        })?;
-        Ok(LocalDaemonResponse::PromptInputHistoryRecorded { entry })
+        execute_record_prompt_input_history_request(self.operational_history_store.clone(), request)
+            .await
     }
 
     async fn execute_query_history_request(
         &self,
-        query: HistoryEventQuery,
+        query: crate::history::HistoryEventQuery,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let requested_limit = query.limit.unwrap_or(100).clamp(1, 500);
-        let history = self.operational_history_store.clone();
         let archive_config = self
             .config_projection
             .snapshot()
             .user_config
             .history
             .archive;
-        tokio::task::spawn_blocking(move || {
-            let mut events = history.query_events(query.clone())?;
-            let archive_client = HistoryArchiveClient::from_config(&archive_config)?;
-            let archive_capabilities = archive_client.capabilities().ok();
-            if archive_capabilities
-                .as_ref()
-                .map(|capabilities| capabilities.search)
-                .unwrap_or(false)
-            {
-                let archive_response = archive_client.search_events(query.clone())?;
-                merge_history_events(&mut events, archive_response.events);
-            }
-            events.sort_by(|left, right| {
-                left.sequence
-                    .cmp(&right.sequence)
-                    .then_with(|| left.event_id.cmp(&right.event_id))
-            });
-            events.truncate(requested_limit);
-            let next_sequence =
-                if query.before_sequence.is_none() && events.len() == requested_limit {
-                    events.last().map(|event| event.sequence)
-                } else {
-                    None
-                };
-            Ok(LocalDaemonResponse::HistoryEvents {
-                events,
-                next_sequence,
-            })
-        })
+        execute_query_history_request(
+            self.operational_history_store.clone(),
+            archive_config,
+            query,
+        )
         .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "query history",
-            message: error.to_string(),
-        })?
     }
 
     async fn execute_semantic_search_history_request(
@@ -4883,32 +4778,7 @@ impl CommandRouter {
             .user_config
             .history
             .archive;
-        let response = tokio::task::spawn_blocking(move || {
-            let archive_client = HistoryArchiveClient::from_config(&archive_config)?;
-            let archive_capabilities = archive_client.capabilities().ok();
-            if !archive_capabilities
-                .as_ref()
-                .map(|capabilities| capabilities.semantic_search || capabilities.vector_search)
-                .unwrap_or(false)
-            {
-                return Ok((
-                    Vec::new(),
-                    None,
-                    Some("semantic history search is not configured for this kernel".to_string()),
-                ));
-            }
-            let cursor = request.cursor.clone();
-            let mut query = history_query_from_semantic_search_request(request);
-            query.limit = Some(requested_limit);
-            let response = archive_client.semantic_search_events(query, cursor)?;
-            Ok((response.results, response.next_cursor, None))
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "semantic search history",
-            message: error.to_string(),
-        })??;
-        Ok(response)
+        knn_semantic_history_search(archive_config, request, requested_limit).await
     }
 
     async fn execute_terminal_output_request(
@@ -4988,39 +4858,14 @@ impl CommandRouter {
         session: crate::session::RuntimeSession,
         request: GetSessionHistoryRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let history = self.history_store.clone();
-        let operational_history = self.operational_history_store.clone();
-        let history_projection = self.history_projection.clone();
-        tokio::task::spawn_blocking(move || {
-            let operational_entries =
-                operational_history.load_session_history_entries(session.id(), None)?;
-            let entries = if operational_entries.is_empty()
-                && !operational_history.has_session_events(session.id())?
-                && !operational_history.legacy_fallback_disabled(session.id())?
-            {
-                history.load(&session)?
-            } else {
-                operational_entries
-            };
-            history_projection.update_entries(session.id(), entries.clone());
-            let page = page_history_entries(
-                entries,
-                request.agent_id.as_deref(),
-                request.round_count,
-                request.max_chars,
-                request.before_entry_index,
-                request.before_entry_char_offset,
-            );
-            Ok(LocalDaemonResponse::SessionHistory {
-                entries: page.entries,
-                next_cursor: page.next_cursor,
-            })
-        })
+        execute_session_history_request_from_session(
+            self.history_store.clone(),
+            self.operational_history_store.clone(),
+            self.history_projection.clone(),
+            session,
+            request,
+        )
         .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "load session history",
-            message: error.to_string(),
-        })?
     }
 
     #[allow(dead_code)]
@@ -6773,175 +6618,6 @@ impl SessionProjectionRefresh {
                 }
                 _ => Vec::new(),
             },
-        }
-    }
-}
-
-fn prompt_input_history_entry_from_event(
-    event: crate::history::HistoryEvent,
-) -> Option<PromptInputHistoryEntry> {
-    let session_id = event.session_id.clone()?;
-    let kind = match event.kind {
-        HistoryEventKind::UserPrompt => PromptInputHistoryEntryKind::Prompt,
-        HistoryEventKind::PromptInput => match event
-            .metadata
-            .get("input_kind")
-            .and_then(|value| value.as_str())
-        {
-            Some("command") => PromptInputHistoryEntryKind::Command,
-            _ => PromptInputHistoryEntryKind::Prompt,
-        },
-        _ => return None,
-    };
-    Some(PromptInputHistoryEntry {
-        sequence: event.sequence,
-        timestamp_ms: event.timestamp_ms,
-        session_id,
-        source_attachment_id: event
-            .metadata
-            .get("source_attachment_id")
-            .and_then(|value| value.as_str())
-            .map(str::to_string),
-        kind,
-        text: event.content.unwrap_or_default(),
-    })
-}
-
-fn prompt_input_history_events_for_kind(
-    history: &OperationalHistoryStore,
-    session_id: &str,
-    kind: &str,
-    after_sequence: Option<u64>,
-    limit: usize,
-) -> Result<Vec<crate::history::HistoryEvent>, DaemonError> {
-    let mut events = Vec::new();
-    let mut cursor = after_sequence;
-    while events.len() < limit {
-        let batch = history.query_events(HistoryEventQuery {
-            session_id: Some(session_id.to_string()),
-            kind: Some(kind.to_string()),
-            after_sequence: cursor,
-            limit: Some((limit - events.len()).min(500)),
-            ..HistoryEventQuery::default()
-        })?;
-        let Some(last_sequence) = batch.last().map(|event| event.sequence) else {
-            break;
-        };
-        let batch_len = batch.len();
-        events.extend(batch);
-        cursor = Some(last_sequence);
-        if batch_len < 500 {
-            break;
-        }
-    }
-    Ok(events)
-}
-
-fn history_query_from_request(request: QueryHistoryRequest) -> HistoryEventQuery {
-    HistoryEventQuery {
-        session_id: request.session_id,
-        agent_id: request.agent_id,
-        provider: request.provider,
-        model: request.model,
-        workflow_id: request.workflow_id,
-        machine_id: request.machine_id,
-        repo_root: request.repo_root,
-        worktree_path: request.worktree_path,
-        kind: request.kind,
-        text: request.text,
-        after_sequence: request.after_sequence,
-        before_sequence: request.before_sequence,
-        limit: request.limit,
-    }
-}
-
-fn history_query_from_search_request(request: SearchHistoryRequest) -> HistoryEventQuery {
-    HistoryEventQuery {
-        session_id: request.session_id,
-        agent_id: request.agent_id,
-        provider: request.provider,
-        model: request.model,
-        workflow_id: request.workflow_id,
-        machine_id: request.machine_id,
-        repo_root: request.repo_root,
-        worktree_path: request.worktree_path,
-        kind: request.kind,
-        text: Some(request.query),
-        after_sequence: request.after_sequence,
-        before_sequence: None,
-        limit: request.limit,
-    }
-}
-
-fn history_query_from_semantic_search_request(
-    request: SemanticSearchHistoryRequest,
-) -> HistoryEventQuery {
-    HistoryEventQuery {
-        session_id: request.session_id,
-        agent_id: request.agent_id,
-        provider: request.provider,
-        model: request.model,
-        workflow_id: request.workflow_id,
-        machine_id: request.machine_id,
-        repo_root: request.repo_root,
-        worktree_path: request.worktree_path,
-        kind: request.kind,
-        text: Some(request.query),
-        after_sequence: None,
-        before_sequence: None,
-        limit: request.limit,
-    }
-}
-
-fn semantic_utility_input_from_search_request(
-    request: SemanticSearchHistoryRequest,
-) -> SemanticHistorySearchUtilityInput {
-    SemanticHistorySearchUtilityInput {
-        query: request.query,
-        session_id: request.session_id,
-        agent_id: request.agent_id,
-        provider: request.provider,
-        model: request.model,
-        workflow_id: request.workflow_id,
-        machine_id: request.machine_id,
-        repo_root: request.repo_root,
-        worktree_path: request.worktree_path,
-        kind: request.kind,
-        limit: request.limit,
-    }
-}
-
-fn semantic_search_request_from_utility_input(
-    input: &SemanticHistorySearchUtilityInput,
-) -> SemanticSearchHistoryRequest {
-    SemanticSearchHistoryRequest {
-        query: input.query.clone(),
-        mode: Some(SemanticSearchHistoryMode::Knn),
-        session_id: input.session_id.clone(),
-        agent_id: input.agent_id.clone(),
-        provider: input.provider.clone(),
-        model: input.model.clone(),
-        workflow_id: input.workflow_id.clone(),
-        machine_id: input.machine_id.clone(),
-        repo_root: input.repo_root.clone(),
-        worktree_path: input.worktree_path.clone(),
-        kind: input.kind.clone(),
-        cursor: None,
-        limit: input.limit,
-    }
-}
-
-fn merge_history_events(
-    events: &mut Vec<crate::history::HistoryEvent>,
-    archive_events: Vec<crate::history::HistoryEvent>,
-) {
-    let mut seen = events
-        .iter()
-        .map(|event| event.event_id.clone())
-        .collect::<HashSet<_>>();
-    for event in archive_events {
-        if seen.insert(event.event_id.clone()) {
-            events.push(event);
         }
     }
 }
