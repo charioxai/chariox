@@ -159,6 +159,7 @@ Documentation updates for this refactor are progress artifacts. Do not leave dir
 - 2026-05-14: Cloud freeform transcript rendering moved into `terminal/freeform-transcript-renderer.ts`; web tests pass with 509 tests and `client.ts` is down to 12,888 lines.
 - 2026-05-14: OSS session membership/caller-scope policy moved into `runtime/session_membership.rs`; kernel lib tests pass with 712 tests and `runtime/router.rs` is down to 12,061 lines.
 - 2026-05-14: Cloud runtime interaction HTML projection moved into `terminal/runtime-interaction-renderer.ts`; web tests pass with 512 tests and `client.ts` is down to 12,776 lines.
+- 2026-05-14: OSS terminal/client pairing record projection moved into `runtime/terminal_pairings.rs`; kernel lib tests pass with 716 tests and `runtime/router.rs` is down to 11,971 lines.
 
 ## Summary
 
