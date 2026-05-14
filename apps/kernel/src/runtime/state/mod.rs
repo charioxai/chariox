@@ -77,6 +77,7 @@ struct KernelRuntimeOwnedState {
 
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
+mod attachment_owned_state;
 mod owned;
 mod pending_runtime_state;
 use pending_runtime_state::*;
