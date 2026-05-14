@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::Mutex;
 
 use crate::agent::AgentServiceStore;
 use crate::app::{
@@ -82,6 +82,7 @@ mod prompt;
 mod prompt_dispatch;
 mod provider;
 mod provider_runtime;
+mod runtime_interaction_state;
 mod session;
 mod terminal_runtime_state;
 mod tool_dispatch;
@@ -664,37 +665,6 @@ impl KernelRuntimeState {
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.owned
             .update_agent_substitutes(session_id, agent_id, caller_user_id, action)
-    }
-
-    pub(super) async fn create_runtime_interaction(
-        &self,
-        session_id: &str,
-        interaction: crate::session::RuntimeInteraction,
-    ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
-        let (tx, rx) = oneshot::channel();
-        self.owned
-            .register_runtime_interaction(session_id, interaction, tx)?;
-        Ok(rx)
-    }
-
-    pub(crate) async fn resolve_runtime_interaction(
-        &self,
-        session_id: &str,
-        interaction_id: &str,
-        choice_id: &str,
-        custom_reply: Option<&str>,
-    ) -> Result<(), DaemonError> {
-        self.owned
-            .resolve_runtime_interaction(session_id, interaction_id, choice_id, custom_reply)
-    }
-
-    pub(crate) async fn timeout_runtime_interaction(
-        &self,
-        session_id: &str,
-        interaction_id: &str,
-    ) -> Result<(), DaemonError> {
-        self.owned
-            .timeout_runtime_interaction(session_id, interaction_id)
     }
 
     pub(crate) async fn alias_session(
