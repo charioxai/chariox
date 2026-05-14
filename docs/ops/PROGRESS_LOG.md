@@ -4,6 +4,11 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-05-14
 
+### M14B native TUI validation reset
+
+- Replaced the stale M14 split-native plan with `docs/M14B_NATIVE_TUI_VALIDATION_PLAN.md`, focused on Arroba-managed native TUI validation across local, standard remote home-worker, and slice scenarios.
+- Removed the misleading native-TUI managed-I/O artifact checks from `live-remote-native-tui-drill.mjs`. Native TUI attachment validation now explicitly means prompt files/images, while managed I/O remains covered by dedicated managed-I/O drills.
+
 ### M14 remote native TUI same-host relay
 
 - Confirmed `apps/cli/scripts/live-remote-native-tui-drill.mjs --providers opencode,codex,claude --keep-artifacts-on-failure` against the same-host relay topology.

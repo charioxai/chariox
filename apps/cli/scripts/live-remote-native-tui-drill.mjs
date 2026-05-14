@@ -44,7 +44,6 @@ function parseArgs(argv) {
     keepArtifactsOnFailure: false,
     sliceLocalDocker: false,
     includePermissions: false,
-    includeArtifacts: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -58,8 +57,6 @@ function parseArgs(argv) {
       options.sliceLocalDocker = true
     } else if (arg === "--include-permissions") {
       options.includePermissions = true
-    } else if (arg === "--include-artifacts") {
-      options.includeArtifacts = true
     } else if (arg === "--help" || arg === "-h") {
       options.help = true
     } else {
@@ -87,7 +84,6 @@ function printHelp() {
     "  --providers opencode,codex,claude",
     "  --slice-local-docker          Run against a local Docker slice kernel instead of a host kernel",
     "  --include-permissions         Validate provider-native permissions through the Arroba observer",
-    "  --include-artifacts           Validate Arroba MCP artifact read/write through native TUI providers",
     "  --keep-artifacts-on-failure",
   ].join("\n"))
 }
@@ -649,39 +645,6 @@ function permissionPrompt(markerText, filePath, content) {
   return `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
 }
 
-function managedIoToolNames(provider) {
-  if (provider === "opencode") {
-    return {
-      read: "arroba_read_artifact",
-      write: "arroba_write_artifact",
-    }
-  }
-  return {
-    read: "mcp__arroba__read_artifact",
-    write: "mcp__arroba__write_artifact",
-  }
-}
-
-function artifactPrompt(provider, markerText, artifactPath, content) {
-  const tools = managedIoToolNames(provider)
-  return [
-    "Use only Arroba MCP/runtime tools for artifact I/O. Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.",
-    `Step 1: call \`${tools.write}\` exactly once with JSON arguments {"path":${JSON.stringify(artifactPath)},"content_text":${JSON.stringify(content)},"domain":"text"}.`,
-    `Step 2: call \`${tools.read}\` exactly once with JSON arguments {"path":${JSON.stringify(artifactPath)},"domain":"text"} and verify the returned text is ${JSON.stringify(content)}.`,
-    `Only after both managed artifact tool calls succeed and the artifact exists, reply exactly ${markerText} and nothing else.`,
-    `If any managed artifact tool reports applied:false or an error, reply exactly ${markerText}_FAILED and stop.`,
-  ].join("\n")
-}
-
-function artifactToolMatcher(pathFragment, toolSuffix) {
-  return (update, raw) => {
-    const tool = String(update.tool ?? update.name ?? update.title ?? "")
-    const inputPath = String(update.input?.path ?? update.input?.artifact_path ?? "")
-    return (tool.endsWith(toolSuffix) || raw.includes(toolSuffix))
-      && (inputPath === pathFragment || raw.includes(pathFragment))
-  }
-}
-
 function relayClient(relayUrl, relayToken, targetDaemonAlias) {
   return new LocalIpcClient(relayUrl, {
     relayAuthToken: relayToken,
@@ -727,8 +690,6 @@ async function runProviderScenario({
     nativeB: `${marker}DELTA`,
     nativePermission: `${marker}NATIVEPERMISSION`,
     arrobaPermission: `${marker}ARROBAPERMISSION`,
-    nativeArtifact: `${marker}NATIVEARTIFACT`,
-    arrobaArtifact: `${marker}ARROBAARTIFACT`,
   }
   const logs = {
     aDir: path.join(scenarioRoot, "native-a-screen"),
@@ -978,49 +939,6 @@ async function runProviderScenario({
       await rm(nativePermissionFile, { force: true }).catch(() => {})
       await rm(arrobaPermissionFile, { force: true }).catch(() => {})
       extendedChecks.permissions = "validated"
-    }
-
-    if (options.includeArtifacts && (provider === "codex" || provider === "opencode")) {
-      await mkdir(path.join(worktree, "outputs"), { recursive: true })
-      const nativeArtifactPath = `outputs/remote-native-${provider}-${process.pid}-native-artifact.txt`
-      const arrobaArtifactPath = `outputs/remote-native-${provider}-${process.pid}-arroba-artifact.txt`
-      const nativeArtifactFile = path.join(worktree, nativeArtifactPath)
-      const arrobaArtifactFile = path.join(worktree, arrobaArtifactPath)
-      const nativeContent = `native-artifact-${provider}\n`
-      const arrobaContent = `arroba-artifact-${provider}\n`
-      await rm(nativeArtifactFile, { force: true }).catch(() => {})
-      await rm(arrobaArtifactFile, { force: true }).catch(() => {})
-
-      const nativePrompt = artifactPrompt(provider, markers.nativeArtifact, nativeArtifactPath, nativeContent)
-      if (provider === "opencode") {
-        const nativeRun = await runNativeOpenCodePromptDetached(proxyA, providerSessionA, worktree, nativePrompt)
-        await answerPermissionFromCli(automationSocket, aliases[0])
-        await nativeRun.wait()
-      } else {
-        await runNativeCodexPrompt(proxyA, providerSessionA, nativePrompt)
-        await answerPermissionFromCli(automationSocket, aliases[0])
-      }
-      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
-        [aliases[0]]: { prompts: [markers.nativeArtifact], outputs: [markers.nativeArtifact] },
-      })
-      await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, artifactToolMatcher(nativeArtifactPath, "write_artifact"))
-      await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, artifactToolMatcher(nativeArtifactPath, "read_artifact"))
-      await waitForFileContent(nativeArtifactFile, nativeContent)
-
-      await fireAutomationRequest(automationSocket, {
-        action: "workspace_shell_exec",
-        command: `prompt ${aliases[0]} ${artifactPrompt(provider, markers.arrobaArtifact, arrobaArtifactPath, arrobaContent)}`,
-      })
-      await answerPermissionFromCli(automationSocket, aliases[0])
-      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
-        [aliases[0]]: { prompts: [markers.arrobaArtifact], outputs: [markers.arrobaArtifact] },
-      })
-      await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, artifactToolMatcher(arrobaArtifactPath, "write_artifact"))
-      await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, artifactToolMatcher(arrobaArtifactPath, "read_artifact"))
-      await waitForFileContent(arrobaArtifactFile, arrobaContent)
-      await rm(nativeArtifactFile, { force: true }).catch(() => {})
-      await rm(arrobaArtifactFile, { force: true }).catch(() => {})
-      extendedChecks.artifacts = "validated"
     }
 
     return {
