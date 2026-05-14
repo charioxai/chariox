@@ -1,11 +1,18 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
+use tokio::sync::Mutex;
+
+use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::local::{LocalDaemonResponse, PumpTerminalOutputRequest};
+use crate::local::{
+    AppendNativeProviderOutputRequest, LocalDaemonResponse, PumpTerminalOutputRequest,
+};
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, ProviderRunProjectionStore, SessionStateProjectionStore,
 };
+use crate::runtime::session_read_control::projected_session_or_absence;
 use crate::runtime::state::KernelRuntimeState;
 use crate::terminal::TerminalStreamStore;
 
@@ -91,6 +98,44 @@ impl TerminalOutputExecutor {
             .await?;
         drop(permits);
         Ok(LocalDaemonResponse::TerminalOutput { records })
+    }
+
+    pub(crate) fn projected_response(
+        &self,
+        request: &PumpTerminalOutputRequest,
+    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+        let session =
+            match projected_session_or_absence(&self.session_projection, &request.session_id)? {
+                Ok(session) => session,
+                Err(error) => return Some(Err(error)),
+            };
+        if !session.has_attachment(&request.attachment_id) {
+            return Some(Err(DaemonError::AttachmentNotInSession {
+                session_id: request.session_id.clone(),
+                attachment_id: request.attachment_id.clone(),
+            }));
+        }
+        let active_provider_run_id = session.active_provider_run_id();
+        if active_provider_run_id.is_none()
+            || active_provider_run_id.is_some_and(|provider_run_id| {
+                self.provider_run_projection
+                    .get(provider_run_id)
+                    .is_some_and(|run| {
+                        run.session_id() == request.session_id
+                            && matches!(
+                                run.state(),
+                                ProviderRunState::Ended | ProviderRunState::Parked
+                            )
+                    })
+            })
+        {
+            return Some(Ok(LocalDaemonResponse::TerminalOutput {
+                records: self
+                    .terminal_stream
+                    .drain_output_records(&request.session_id, &request.attachment_id),
+            }));
+        }
+        None
     }
 
     fn projected_provider_run_is_idle(
@@ -194,4 +239,41 @@ impl TerminalOutputStore {
             self.session_projection.update(session);
         }
     }
+}
+
+pub(crate) async fn execute_append_native_provider_output_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    session_projection: &SessionStateProjectionStore,
+    agent_runtime_projection: &AgentRuntimeProjectionStore,
+    request: AppendNativeProviderOutputRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let (records, session) = {
+        let mut app = app.lock().await;
+        crate::app::KernelSessionReadService::new(&app)
+            .ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
+        let provider_run = app.providers().get_run(&request.provider_run_id)?;
+        if provider_run.session_id() != request.session_id {
+            return Err(DaemonError::ProviderRunNotInSession {
+                session_id: request.session_id,
+                provider_run_id: request.provider_run_id,
+            });
+        }
+        let recipient_attachment_ids = app
+            .attachments()
+            .list_session_attachment_ids(&request.session_id);
+        let record = app.fan_out_output(
+            &request.session_id,
+            &request.provider_run_id,
+            request.kind,
+            request.merge_key,
+            recipient_attachment_ids,
+            request.text.as_bytes(),
+        );
+        let session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&request.session_id)?;
+        (vec![record], session)
+    };
+    agent_runtime_projection.update_session(&session);
+    session_projection.update(session);
+    Ok(LocalDaemonResponse::TerminalOutput { records })
 }

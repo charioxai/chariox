@@ -11,10 +11,9 @@ use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
 use crate::local::{
     AgentGrantKind, DeleteKernelRequest, GenerateWorkspaceCommitMessageRequest,
     GrantAgentCapabilityRequest, LocalDaemonRequest, LocalDaemonResponse, MoveAgentToRemoteRequest,
-    PumpTerminalOutputRequest, RevokeAgentCapabilityRequest, RunAgentUtilityRequest,
-    TeardownProviderProcessesRequest,
+    RevokeAgentCapabilityRequest, RunAgentUtilityRequest, TeardownProviderProcessesRequest,
 };
-use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
+use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::agent_utility_executor::{
     execute_generate_workspace_commit_message_request, execute_run_agent_utility_request,
@@ -126,7 +125,9 @@ use crate::runtime::slice_command_executor::{
     execute_start_slice_request, execute_stop_slice_request,
 };
 use crate::runtime::state::KernelRuntimeState;
-use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
+use crate::runtime::terminal_output_executor::{
+    execute_append_native_provider_output_request, TerminalOutputExecutor,
+};
 use crate::runtime::terminal_pairings::{
     execute_list_paired_clients_request, execute_list_terminals_request,
     execute_record_paired_client_request, execute_revoke_paired_client_request,
@@ -182,7 +183,6 @@ pub(crate) struct CommandRouter {
     capability_runtime: CapabilityRuntimeStore,
     transport_health: TransportHealthStore,
     terminal_health: TerminalStreamHealthStore,
-    terminal_stream: TerminalStreamStore,
     terminal_output_executor: TerminalOutputExecutor,
     workspace_coordinator: WorkspaceCoordinator,
     provider_launch_pending: ProviderLaunchPendingTracker,
@@ -324,7 +324,6 @@ impl CommandRouter {
             capability_runtime,
             transport_health: TransportHealthStore::default(),
             terminal_health,
-            terminal_stream,
             terminal_output_executor,
             workspace_coordinator,
             provider_launch_pending,
@@ -466,7 +465,6 @@ impl CommandRouter {
             capability_runtime,
             transport_health,
             terminal_health,
-            terminal_stream,
             terminal_output_executor,
             workspace_coordinator,
             provider_launch_pending,
@@ -1099,7 +1097,7 @@ impl CommandRouter {
             return response;
         }
         if let LocalDaemonRequest::PumpTerminalOutput(request) = &request {
-            if let Some(response) = self.projected_terminal_output_response(request) {
+            if let Some(response) = self.terminal_output_executor.projected_response(request) {
                 return response;
             }
         }
@@ -1484,7 +1482,7 @@ impl CommandRouter {
                 .await
             }
             LocalDaemonRequest::PumpTerminalOutput(request) => {
-                self.execute_terminal_output_request(request).await
+                self.terminal_output_executor.execute(request).await
             }
             LocalDaemonRequest::TeardownProviderProcesses(request) => {
                 self.execute_teardown_provider_processes_request(request)
@@ -1517,44 +1515,6 @@ impl CommandRouter {
         result.and_then(|response| {
             redact_response_for_user(response, caller_user_id, &self.provider_run_projection)
         })
-    }
-
-    fn projected_terminal_output_response(
-        &self,
-        request: &PumpTerminalOutputRequest,
-    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-        let session =
-            match projected_session_or_absence(&self.session_projection, &request.session_id)? {
-                Ok(session) => session,
-                Err(error) => return Some(Err(error)),
-            };
-        if !session.has_attachment(&request.attachment_id) {
-            return Some(Err(DaemonError::AttachmentNotInSession {
-                session_id: request.session_id.clone(),
-                attachment_id: request.attachment_id.clone(),
-            }));
-        }
-        let active_provider_run_id = session.active_provider_run_id();
-        if active_provider_run_id.is_none()
-            || active_provider_run_id.is_some_and(|provider_run_id| {
-                self.provider_run_projection
-                    .get(provider_run_id)
-                    .is_some_and(|run| {
-                        run.session_id() == request.session_id
-                            && matches!(
-                                run.state(),
-                                ProviderRunState::Ended | ProviderRunState::Parked
-                            )
-                    })
-            })
-        {
-            return Some(Ok(LocalDaemonResponse::TerminalOutput {
-                records: self
-                    .terminal_stream
-                    .drain_output_records(&request.session_id, &request.attachment_id),
-            }));
-        }
-        None
     }
 
     pub(crate) async fn waiting_room_inventory_version(&self) -> Result<String, DaemonError> {
@@ -1650,48 +1610,6 @@ impl CommandRouter {
             kernel_id,
             deleted_sessions,
         })
-    }
-
-    async fn execute_terminal_output_request(
-        &self,
-        request: PumpTerminalOutputRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.terminal_output_executor.execute(request).await
-    }
-
-    async fn execute_append_native_provider_output_request(
-        &self,
-        request: crate::local::AppendNativeProviderOutputRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (records, session) = {
-            let mut app = self.app.lock().await;
-            crate::app::KernelSessionReadService::new(&app)
-                .ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
-            let provider_run = app.providers().get_run(&request.provider_run_id)?;
-            if provider_run.session_id() != request.session_id {
-                return Err(DaemonError::ProviderRunNotInSession {
-                    session_id: request.session_id,
-                    provider_run_id: request.provider_run_id,
-                });
-            }
-            let recipient_attachment_ids = app
-                .attachments()
-                .list_session_attachment_ids(&request.session_id);
-            let record = app.fan_out_output(
-                &request.session_id,
-                &request.provider_run_id,
-                request.kind,
-                request.merge_key,
-                recipient_attachment_ids,
-                request.text.as_bytes(),
-            );
-            let session = crate::app::KernelSessionReadService::new(&app)
-                .session_snapshot(&request.session_id)?;
-            (vec![record], session)
-        };
-        self.agent_runtime_projection.update_session(&session);
-        self.session_projection.update(session);
-        Ok(LocalDaemonResponse::TerminalOutput { records })
     }
 
     async fn execute_teardown_provider_processes_request(
@@ -2274,11 +2192,16 @@ impl CommandRouter {
                 .await
             }
             LocalDaemonRequest::PumpTerminalOutput(request) => {
-                self.execute_terminal_output_request(request).await
+                self.terminal_output_executor.execute(request).await
             }
             LocalDaemonRequest::AppendNativeProviderOutput(request) => {
-                self.execute_append_native_provider_output_request(request)
-                    .await
+                execute_append_native_provider_output_request(
+                    &self.app,
+                    &self.session_projection,
+                    &self.agent_runtime_projection,
+                    request,
+                )
+                .await
             }
             request @ (LocalDaemonRequest::RunShellCommand(_)
             | LocalDaemonRequest::ReadDirectoryTree(_)
