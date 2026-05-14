@@ -10,7 +10,6 @@ use crate::history::SessionHistoryStore;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_actor::AgentRuntime;
-use crate::runtime::agent_control_executor::execute_agent_control_request;
 use crate::runtime::agent_utility_executor::execute_agent_utility_request;
 use crate::runtime::capability_executor::{
     execute_required_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
@@ -24,13 +23,16 @@ use crate::runtime::cloud_relay_executor::{
     ensure_cloud_relay_connection as ensure_cloud_relay_connection_with_executor,
     execute_cloud_relay_request,
 };
-use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
+use crate::runtime::command::{
+    command_caller_user_id, KernelCommand, KernelCommandPriority, KernelCommandSource,
+};
 use crate::runtime::daemon_health_projection::{
     build_daemon_health_projection, execute_daemon_health_request, DaemonHealthProjectionInput,
 };
 use crate::runtime::history_executor::{
     execute_history_request, projected_session_history_response,
 };
+use crate::runtime::interactive_command_dispatcher::dispatch_interactive_command;
 use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
 use crate::runtime::native_interaction_bridge::{
     forward_relay_native_interaction, install_provider_native_interaction_bridge,
@@ -60,7 +62,7 @@ use crate::runtime::remote_machine_registry::execute_remote_machine_registry_req
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
 use crate::runtime::response_redaction::redact_response_for_user;
 use crate::runtime::runtime_mcp_proxy_dispatcher::dispatch_authenticated_mcp_proxy_call as dispatch_runtime_mcp_proxy_call;
-use crate::runtime::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
+use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
 use crate::runtime::session_collaboration_executor::execute_session_collaboration_request;
 use crate::runtime::session_membership::authorize_session_membership;
 use crate::runtime::session_projection_refresh::{
@@ -84,7 +86,7 @@ use crate::runtime::waiting_room_control::{
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_command_executor::execute_workspace_command_request;
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
-use crate::session::{PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
+use crate::session::PromptIdAllocator;
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
 
@@ -1173,47 +1175,14 @@ impl CommandRouter {
         command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        if SessionActor::is_session_interactive_command(&request) {
-            return self
-                .session_runtime
-                .dispatch_session_command(command, request)
-                .await;
-        }
-
-        match request {
-            request @ (LocalDaemonRequest::GrantAgentCapability(_)
-            | LocalDaemonRequest::MoveAgentToRemote(_)
-            | LocalDaemonRequest::RevokeAgentCapability(_)) => {
-                let caller_user_id = command_caller_user_id(&command);
-                return execute_agent_control_request(
-                    &self.runtime_state,
-                    &caller_user_id,
-                    request,
-                )
-                .await;
-            }
-            LocalDaemonRequest::SubmitPrompt(request) => {
-                return self
-                    .agent_runtime
-                    .dispatch_prompt_submit(&command, request)
-                    .await;
-            }
-            LocalDaemonRequest::CancelActivePrompt(request) => {
-                return self
-                    .agent_runtime
-                    .dispatch_prompt_cancel(&command, request)
-                    .await;
-            }
-            _ => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "route interactive kernel command",
-                    message: format!(
-                        "unsupported interactive command `{}` reached the explicit interactive router",
-                        command.command_type
-                    ),
-                });
-            }
-        }
+        dispatch_interactive_command(
+            &self.session_runtime,
+            &self.agent_runtime,
+            &self.runtime_state,
+            command,
+            request,
+        )
+        .await
     }
 
     async fn dispatch_normal_or_background(
@@ -1714,14 +1683,6 @@ impl CommandRouter {
             _ => {}
         }
     }
-}
-
-fn command_caller_user_id(command: &KernelCommand) -> String {
-    command
-        .caller
-        .user_id
-        .clone()
-        .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
 }
 
 fn router_projection_stores(

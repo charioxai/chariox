@@ -6,6 +6,7 @@ use arroba_relay::protocol::RelayCallerIdentity;
 
 use crate::local::LocalDaemonRequest;
 use crate::session::unix_epoch_ms;
+use crate::session::DEFAULT_LOCAL_USER_ID;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -127,6 +128,14 @@ pub struct KernelCommand {
     pub correlation_id: String,
     pub priority: KernelCommandPriority,
     pub payload: Value,
+}
+
+pub(crate) fn command_caller_user_id(command: &KernelCommand) -> String {
+    command
+        .caller
+        .user_id
+        .clone()
+        .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
 }
 
 impl KernelCommand {

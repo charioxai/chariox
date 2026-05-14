@@ -12,6 +12,7 @@ pub(crate) mod daemon_health_projection;
 pub mod event_log;
 pub(crate) mod history_executor;
 pub(crate) mod history_requests;
+pub(crate) mod interactive_command_dispatcher;
 pub(crate) mod invite_tokens;
 pub(crate) mod kernel_lifecycle_executor;
 pub(crate) mod native_interaction_bridge;
