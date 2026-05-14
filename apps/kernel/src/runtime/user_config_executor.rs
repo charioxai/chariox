@@ -1,0 +1,130 @@
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
+
+use crate::app::DaemonApp;
+use crate::error::DaemonError;
+use crate::local::{
+    DeleteCredentialSecretRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
+    LocalDaemonResponse, SetCredentialSecretRequest, SetUserConfigValueRequest,
+    UnsetUserConfigValueRequest, UserConfigMutationEffect,
+};
+use crate::runtime::projection::DaemonConfigProjectionStore;
+use crate::runtime::state::KernelRuntimeState;
+use crate::runtime::user_config_policy::{user_config_mutation_effects, UserConfigMutation};
+
+pub(crate) async fn execute_get_user_config_request(
+    config_projection: &DaemonConfigProjectionStore,
+    _request: GetUserConfigRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let config = config_projection.snapshot();
+    Ok(LocalDaemonResponse::UserConfig {
+        path: config.user_config_path().clone(),
+        config: config.user_config,
+    })
+}
+
+pub(crate) async fn execute_get_user_config_schema_request(
+    _request: GetUserConfigSchemaRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    Ok(LocalDaemonResponse::UserConfigSchema {
+        entries: crate::config::DaemonConfig::user_config_schema(),
+    })
+}
+
+pub(crate) async fn execute_set_user_config_value_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
+    request: SetUserConfigValueRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let (config, effects) = apply_user_config_mutation(
+        app,
+        config_projection,
+        runtime_state,
+        UserConfigMutation::Set {
+            path: request.path,
+            value: request.value,
+        },
+    )
+    .await?;
+    Ok(LocalDaemonResponse::UserConfigUpdated {
+        path: config.user_config_path().clone(),
+        config: config.user_config,
+        effects,
+    })
+}
+
+pub(crate) async fn execute_unset_user_config_value_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
+    request: UnsetUserConfigValueRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let (config, effects) = apply_user_config_mutation(
+        app,
+        config_projection,
+        runtime_state,
+        UserConfigMutation::Unset { path: request.path },
+    )
+    .await?;
+    Ok(LocalDaemonResponse::UserConfigUpdated {
+        path: config.user_config_path().clone(),
+        config: config.user_config,
+        effects,
+    })
+}
+
+async fn apply_user_config_mutation(
+    app: &Arc<Mutex<DaemonApp>>,
+    config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
+    mutation: UserConfigMutation,
+) -> Result<(crate::config::DaemonConfig, Vec<UserConfigMutationEffect>), DaemonError> {
+    let changed_path = match &mutation {
+        UserConfigMutation::Set { path, .. } | UserConfigMutation::Unset { path } => {
+            path.trim().to_string()
+        }
+    };
+    let config = {
+        let mut app = app.lock().await;
+        match mutation {
+            UserConfigMutation::Set { path, value } => {
+                app.set_user_config_value(path, value)?;
+            }
+            UserConfigMutation::Unset { path } => {
+                app.unset_user_config_value(path)?;
+            }
+        }
+        app.config().clone()
+    };
+    config_projection.update(config.clone());
+    let effects = user_config_mutation_effects(runtime_state, &changed_path).await?;
+    Ok((config, effects))
+}
+
+pub(crate) async fn execute_set_credential_secret_request(
+    config_projection: &DaemonConfigProjectionStore,
+    request: SetCredentialSecretRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let user_config = config_projection.snapshot().user_config;
+    let service = crate::secret::RuntimeSecretService::with_vault_service(
+        user_config.credentials,
+        user_config.credential_vault.service,
+    );
+    service.set_vault_secret(&request.key, &request.value)?;
+    Ok(LocalDaemonResponse::CredentialSecretStored { key: request.key })
+}
+
+pub(crate) async fn execute_delete_credential_secret_request(
+    config_projection: &DaemonConfigProjectionStore,
+    request: DeleteCredentialSecretRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let user_config = config_projection.snapshot().user_config;
+    let service = crate::secret::RuntimeSecretService::with_vault_service(
+        user_config.credentials,
+        user_config.credential_vault.service,
+    );
+    service.delete_vault_secret(&request.key)?;
+    Ok(LocalDaemonResponse::CredentialSecretDeleted { key: request.key })
+}

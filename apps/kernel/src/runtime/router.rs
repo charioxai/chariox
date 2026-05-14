@@ -23,11 +23,10 @@ use crate::local::{
     AttachWorkspaceLinkRequest, CloudRelayLoginPoll, CloudRelayLoginPollStatus,
     CloudRelayLoginStart, CloudRelayRuntimeToken, ConfigureRelayRequest, ConnectCloudRelayRequest,
     CreateCloudSessionInviteRequest, CreatePairingInviteRequest, CreateSessionInviteRequest,
-    CreateTerminalPairingLinkRequest, CreateWorkspaceLinkRequest, DeleteCredentialSecretRequest,
-    DeleteKernelRequest, DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest,
-    GenerateWorkspaceCommitMessageRequest, GetPromptInputHistoryRequest, GetProviderRunRequest,
-    GetSessionHistoryRequest, GetSessionStateRequest, GetUserConfigRequest,
-    GetUserConfigSchemaRequest, GrantAgentCapabilityRequest, IssueCloudRelayClientTokenRequest,
+    CreateTerminalPairingLinkRequest, CreateWorkspaceLinkRequest, DeleteKernelRequest,
+    DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GenerateWorkspaceCommitMessageRequest,
+    GetPromptInputHistoryRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+    GetSessionStateRequest, GrantAgentCapabilityRequest, IssueCloudRelayClientTokenRequest,
     JoinPairingInviteRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
     ListAgentsRequest, ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest,
     ListSessionMembersRequest, ListSessionsRequest, ListWorkspaceLinksRequest, LocalDaemonRequest,
@@ -38,11 +37,10 @@ use crate::local::{
     ResolveSessionRequest, RevokeAgentCapabilityRequest, RevokeCloudSessionInviteRequest,
     RevokeSessionInviteRequest, RunAgentUtilityRequest, SemanticHistoryMatch,
     SemanticHistorySearchUtilityInput, SemanticSearchHistoryMode, SemanticSearchHistoryRequest,
-    SessionInviteRecord, SetCredentialSecretRequest, SetUserConfigValueRequest,
-    ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest, StartCloudRelayLoginRequest,
-    TeardownProviderProcessesRequest, TerminalPairingLinkRecord, TerminalType,
-    UnsetUserConfigValueRequest, UpdateProviderRunSelectionRequest, UserConfigMutationEffect,
-    WaitingRoomPublicSnapshot, WorkspaceCommitMessageUtilityInput,
+    SessionInviteRecord, ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest,
+    StartCloudRelayLoginRequest, TeardownProviderProcessesRequest, TerminalPairingLinkRecord,
+    TerminalType, UpdateProviderRunSelectionRequest, WaitingRoomPublicSnapshot,
+    WorkspaceCommitMessageUtilityInput,
 };
 use crate::provider::{
     run_codex_utility_prompt, run_opencode_utility_prompt, ProviderRunOperationLanes,
@@ -136,7 +134,11 @@ use crate::runtime::terminal_pairings::{
     execute_record_paired_client_request, execute_revoke_paired_client_request,
     paired_terminal_records, public_key_thumbprint, terminal_record, terminal_type_from_str,
 };
-use crate::runtime::user_config_policy::{user_config_mutation_effects, UserConfigMutation};
+use crate::runtime::user_config_executor::{
+    execute_delete_credential_secret_request, execute_get_user_config_request,
+    execute_get_user_config_schema_request, execute_set_credential_secret_request,
+    execute_set_user_config_value_request, execute_unset_user_config_value_request,
+};
 use crate::runtime::waiting_room_public_projection::{
     build_waiting_room_public_snapshot, infer_waiting_room_launch_target,
 };
@@ -1257,22 +1259,34 @@ impl CommandRouter {
                 self.execute_list_cloud_collaborators_request(request).await
             }
             LocalDaemonRequest::GetUserConfig(request) => {
-                self.execute_get_user_config_request(request).await
+                execute_get_user_config_request(&self.config_projection, request).await
             }
             LocalDaemonRequest::GetUserConfigSchema(request) => {
-                self.execute_get_user_config_schema_request(request).await
+                execute_get_user_config_schema_request(request).await
             }
             LocalDaemonRequest::SetUserConfigValue(request) => {
-                self.execute_set_user_config_value_request(request).await
+                execute_set_user_config_value_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.runtime_state,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::UnsetUserConfigValue(request) => {
-                self.execute_unset_user_config_value_request(request).await
+                execute_unset_user_config_value_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.runtime_state,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::SetCredentialSecret(request) => {
-                self.execute_set_credential_secret_request(request).await
+                execute_set_credential_secret_request(&self.config_projection, request).await
             }
             LocalDaemonRequest::DeleteCredentialSecret(request) => {
-                self.execute_delete_credential_secret_request(request).await
+                execute_delete_credential_secret_request(&self.config_projection, request).await
             }
             LocalDaemonRequest::ListSlices(request) => {
                 execute_list_slices_request(&self.app, request).await
@@ -2966,109 +2980,6 @@ impl CommandRouter {
         Ok(())
     }
 
-    async fn execute_get_user_config_request(
-        &self,
-        _request: GetUserConfigRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config_projection.snapshot();
-        Ok(LocalDaemonResponse::UserConfig {
-            path: config.user_config_path().clone(),
-            config: config.user_config,
-        })
-    }
-
-    async fn execute_get_user_config_schema_request(
-        &self,
-        _request: GetUserConfigSchemaRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        Ok(LocalDaemonResponse::UserConfigSchema {
-            entries: crate::config::DaemonConfig::user_config_schema(),
-        })
-    }
-
-    async fn execute_set_user_config_value_request(
-        &self,
-        request: SetUserConfigValueRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (config, effects) = self
-            .apply_user_config_mutation(UserConfigMutation::Set {
-                path: request.path,
-                value: request.value,
-            })
-            .await?;
-        Ok(LocalDaemonResponse::UserConfigUpdated {
-            path: config.user_config_path().clone(),
-            config: config.user_config,
-            effects,
-        })
-    }
-
-    async fn execute_unset_user_config_value_request(
-        &self,
-        request: UnsetUserConfigValueRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (config, effects) = self
-            .apply_user_config_mutation(UserConfigMutation::Unset { path: request.path })
-            .await?;
-        Ok(LocalDaemonResponse::UserConfigUpdated {
-            path: config.user_config_path().clone(),
-            config: config.user_config,
-            effects,
-        })
-    }
-
-    async fn apply_user_config_mutation(
-        &self,
-        mutation: UserConfigMutation,
-    ) -> Result<(crate::config::DaemonConfig, Vec<UserConfigMutationEffect>), DaemonError> {
-        let changed_path = match &mutation {
-            UserConfigMutation::Set { path, .. } | UserConfigMutation::Unset { path } => {
-                path.trim().to_string()
-            }
-        };
-        let config = {
-            let mut app = self.app.lock().await;
-            match mutation {
-                UserConfigMutation::Set { path, value } => {
-                    app.set_user_config_value(path, value)?;
-                }
-                UserConfigMutation::Unset { path } => {
-                    app.unset_user_config_value(path)?;
-                }
-            }
-            app.config().clone()
-        };
-        self.config_projection.update(config.clone());
-        let effects = user_config_mutation_effects(&self.runtime_state, &changed_path).await?;
-        Ok((config, effects))
-    }
-
-    async fn execute_set_credential_secret_request(
-        &self,
-        request: SetCredentialSecretRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let user_config = self.config_projection.snapshot().user_config;
-        let service = crate::secret::RuntimeSecretService::with_vault_service(
-            user_config.credentials,
-            user_config.credential_vault.service,
-        );
-        service.set_vault_secret(&request.key, &request.value)?;
-        Ok(LocalDaemonResponse::CredentialSecretStored { key: request.key })
-    }
-
-    async fn execute_delete_credential_secret_request(
-        &self,
-        request: DeleteCredentialSecretRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let user_config = self.config_projection.snapshot().user_config;
-        let service = crate::secret::RuntimeSecretService::with_vault_service(
-            user_config.credentials,
-            user_config.credential_vault.service,
-        );
-        service.delete_vault_secret(&request.key)?;
-        Ok(LocalDaemonResponse::CredentialSecretDeleted { key: request.key })
-    }
-
     async fn execute_delete_kernel_request(
         &self,
         _request: DeleteKernelRequest,
@@ -4234,22 +4145,34 @@ impl CommandRouter {
                 self.execute_list_cloud_collaborators_request(request).await
             }
             LocalDaemonRequest::GetUserConfig(request) => {
-                self.execute_get_user_config_request(request).await
+                execute_get_user_config_request(&self.config_projection, request).await
             }
             LocalDaemonRequest::GetUserConfigSchema(request) => {
-                self.execute_get_user_config_schema_request(request).await
+                execute_get_user_config_schema_request(request).await
             }
             LocalDaemonRequest::SetUserConfigValue(request) => {
-                self.execute_set_user_config_value_request(request).await
+                execute_set_user_config_value_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.runtime_state,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::UnsetUserConfigValue(request) => {
-                self.execute_unset_user_config_value_request(request).await
+                execute_unset_user_config_value_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.runtime_state,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::SetCredentialSecret(request) => {
-                self.execute_set_credential_secret_request(request).await
+                execute_set_credential_secret_request(&self.config_projection, request).await
             }
             LocalDaemonRequest::DeleteCredentialSecret(request) => {
-                self.execute_delete_credential_secret_request(request).await
+                execute_delete_credential_secret_request(&self.config_projection, request).await
             }
             LocalDaemonRequest::DeleteKernel(request) => {
                 self.execute_delete_kernel_request(request).await

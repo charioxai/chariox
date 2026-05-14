@@ -182,6 +182,7 @@ Documentation updates for this refactor are progress artifacts. Do not leave dir
 - 2026-05-14: OSS Cloud session invite/member/collaborator endpoint ownership moved into `runtime/cloud_api_client.rs`; kernel lib tests pass with 727 tests and `runtime/router.rs` is down to 11,105 lines.
 - 2026-05-14: Cloud terminal session record creation, persistence snapshots, timers, and resource disposal moved into `terminal/session-record.ts`; web tests pass with 559 tests and `client.ts` is down to 11,617 lines.
 - 2026-05-14: OSS slice create/start/stop/delete/display/auth-import request execution moved into `runtime/slice_command_executor.rs`; kernel lib tests pass with 727 tests and `runtime/router.rs` is down to 10,829 lines.
+- 2026-05-14: OSS user-config reads/mutations and credential-secret writes moved into `runtime/user_config_executor.rs`; kernel lib tests pass with 727 tests and `runtime/router.rs` is down to 10,752 lines.
 
 ## Summary
 

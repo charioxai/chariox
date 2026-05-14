@@ -24,6 +24,7 @@ pub(crate) mod slice_command_executor;
 pub(crate) mod state;
 pub mod terminal_output_executor;
 pub(crate) mod terminal_pairings;
+pub(crate) mod user_config_executor;
 pub(crate) mod user_config_policy;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_public_projection;
