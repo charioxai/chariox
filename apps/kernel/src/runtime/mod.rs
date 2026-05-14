@@ -30,6 +30,7 @@ pub(crate) mod remote_machine_registry;
 pub(crate) mod remote_relay_inventory;
 pub(crate) mod response_redaction;
 pub mod router;
+pub(crate) mod runtime_lane_cleanup;
 pub(crate) mod runtime_mcp_proxy_dispatcher;
 pub(crate) mod semantic_history_utility;
 pub mod session_actor;

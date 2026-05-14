@@ -59,6 +59,7 @@ use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
 use crate::runtime::remote_machine_registry::execute_remote_machine_registry_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
 use crate::runtime::response_redaction::redact_response_for_user;
+use crate::runtime::runtime_lane_cleanup::cleanup_runtime_lanes_after_response;
 use crate::runtime::runtime_mcp_proxy_dispatcher::dispatch_authenticated_mcp_proxy_call as dispatch_runtime_mcp_proxy_call;
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
 use crate::runtime::session_collaboration_executor::execute_session_collaboration_request;
@@ -1113,7 +1114,8 @@ impl CommandRouter {
         .await;
         self.apply_provider_run_projection_refresh(&result).await;
         self.apply_provider_launch_projection_state(&result).await;
-        self.apply_agent_lane_cleanup(&result).await;
+        cleanup_runtime_lanes_after_response(&self.agent_runtime, &self.workflow_runtime, &result)
+            .await;
         self.redact_result_for_user(result, &caller_user_id)
     }
 
@@ -1637,41 +1639,6 @@ impl CommandRouter {
             | Ok(LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) => {
                 self.provider_run_projection.update(provider_run.clone());
                 self.provider_process_projection.invalidate();
-            }
-            _ => {}
-        }
-    }
-
-    async fn apply_agent_lane_cleanup(&self, result: &Result<LocalDaemonResponse, DaemonError>) {
-        let Ok(response) = result else {
-            return;
-        };
-        match response {
-            LocalDaemonResponse::AgentDestroyed { agent } => {
-                self.agent_runtime.remove_agent_lane(agent.id()).await;
-            }
-            LocalDaemonResponse::SessionDeleted { session }
-            | LocalDaemonResponse::SessionEnded { session } => {
-                self.agent_runtime.remove_session_state(session.id());
-                self.agent_runtime
-                    .remove_agent_lanes(session.agents().iter().map(|agent| agent.id()))
-                    .await;
-                self.workflow_runtime
-                    .remove_session_lane(session.id())
-                    .await;
-            }
-            LocalDaemonResponse::KernelDeleted {
-                deleted_sessions, ..
-            } => {
-                for session in deleted_sessions {
-                    self.agent_runtime.remove_session_state(session.id());
-                    self.agent_runtime
-                        .remove_agent_lanes(session.agents().iter().map(|agent| agent.id()))
-                        .await;
-                    self.workflow_runtime
-                        .remove_session_lane(session.id())
-                        .await;
-                }
             }
             _ => {}
         }
