@@ -179,6 +179,7 @@ Documentation updates for this refactor are progress artifacts. Do not leave dir
 - 2026-05-14: Cloud terminal output cache, tail-follow, image-load, scroll-intent, and turn-toggle anchor handling moved into `terminal/output-scroll-controller.ts`; web tests pass with 553 tests and `client.ts` is down to 11,729 lines.
 - 2026-05-14: OSS workspace search, directory, worktree, git action, PR, overview, and file request wrappers moved into `runtime/workspace_command_executor.rs`; kernel lib tests pass with 726 tests and `runtime/router.rs` is down to 11,185 lines.
 - 2026-05-14: Cloud badge trace text digest, output snapshot, and runtime/DOM snapshot projection moved into `terminal/badge-trace-snapshot.ts`; web tests pass with 555 tests and `client.ts` is down to 11,657 lines.
+- 2026-05-14: OSS Cloud session invite/member/collaborator endpoint ownership moved into `runtime/cloud_api_client.rs`; kernel lib tests pass with 727 tests and `runtime/router.rs` is down to 11,105 lines.
 
 ## Summary
 

@@ -63,14 +63,11 @@ use crate::runtime::capability_registry::{
     execute_update_mcp_server_request, execute_update_skill_request,
 };
 use crate::runtime::cloud_api_client::{
-    cloud_collaborator_from_response, cloud_profile_from_persisted,
-    cloud_session_invite_acceptance_from_response, cloud_session_invite_details_from_response,
-    cloud_session_invite_from_response, cloud_session_member_from_response, cloud_url_component,
-    get_cloud_json, is_stale_cloud_link_error, issue_cloud_runtime_token, normalize_cloud_api_url,
-    post_cloud_json, post_cloud_json_dynamic, CloudCollaboratorsResponse, CloudDevicePollResponse,
-    CloudDeviceStartResponse, CloudPairingTokenResponse, CloudSessionInviteAcceptanceResponse,
-    CloudSessionInviteDetailsResponse, CloudSessionInviteResponse,
-    CloudSessionInviteRevokedResponse, CloudSessionMembersResponse,
+    accept_cloud_session_invite, cloud_profile_from_persisted, create_cloud_session_invite,
+    is_stale_cloud_link_error, issue_cloud_runtime_token, list_cloud_collaborators,
+    list_cloud_session_members, normalize_cloud_api_url, post_cloud_json,
+    revoke_cloud_session_invite, show_cloud_session_invite, CloudDevicePollResponse,
+    CloudDeviceStartResponse, CloudPairingTokenResponse,
 };
 use crate::runtime::cloud_relay_control::{
     cloud_kernel_presence_body, cloud_relay_profile_has_runtime_credentials,
@@ -2797,29 +2794,14 @@ impl CommandRouter {
         request: CreateCloudSessionInviteRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let profile = self.required_cloud_relay_profile_with_session()?;
-        let invite: CloudSessionInviteResponse = match post_cloud_json(
-            profile.api_url.clone(),
-            "/sessions/invites",
-            serde_json::json!({
-                "sessionToken": profile.cloud_session_token,
-                "accountId": profile.account_id,
-                "sessionId": request.session_id,
-                "displayName": request.display_name,
-                "expiresInMs": request.expires_in_ms,
-                "maxUses": request.max_uses,
-            }),
-        )
-        .await
-        {
+        let invite = match create_cloud_session_invite(&profile, request).await {
             Ok(invite) => invite,
             Err(error) => {
                 self.clear_cloud_profile_if_stale(&error).await?;
                 return Err(error);
             }
         };
-        Ok(LocalDaemonResponse::CloudSessionInviteCreated {
-            invite: cloud_session_invite_from_response(invite),
-        })
+        Ok(LocalDaemonResponse::CloudSessionInviteCreated { invite })
     }
 
     async fn execute_show_cloud_session_invite_request(
@@ -2827,17 +2809,8 @@ impl CommandRouter {
         request: ShowCloudSessionInviteRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let profile = self.required_cloud_relay_profile()?;
-        let invite: CloudSessionInviteDetailsResponse = get_cloud_json(
-            profile.api_url.clone(),
-            format!(
-                "/sessions/invites/{}",
-                cloud_url_component(&request.invite_token)
-            ),
-        )
-        .await?;
-        Ok(LocalDaemonResponse::CloudSessionInviteShown {
-            invite: cloud_session_invite_details_from_response(invite),
-        })
+        let invite = show_cloud_session_invite(&profile, request).await?;
+        Ok(LocalDaemonResponse::CloudSessionInviteShown { invite })
     }
 
     async fn execute_accept_cloud_session_invite_request(
@@ -2845,27 +2818,14 @@ impl CommandRouter {
         request: AcceptCloudSessionInviteRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let profile = self.required_cloud_relay_profile_with_session()?;
-        let acceptance: CloudSessionInviteAcceptanceResponse = match post_cloud_json_dynamic(
-            profile.api_url.clone(),
-            format!(
-                "/sessions/invites/{}/accept",
-                cloud_url_component(&request.invite_token)
-            ),
-            serde_json::json!({
-                "sessionToken": profile.cloud_session_token,
-            }),
-        )
-        .await
-        {
+        let acceptance = match accept_cloud_session_invite(&profile, request).await {
             Ok(acceptance) => acceptance,
             Err(error) => {
                 self.clear_cloud_profile_if_stale(&error).await?;
                 return Err(error);
             }
         };
-        Ok(LocalDaemonResponse::CloudSessionInviteAccepted {
-            acceptance: cloud_session_invite_acceptance_from_response(acceptance),
-        })
+        Ok(LocalDaemonResponse::CloudSessionInviteAccepted { acceptance })
     }
 
     async fn execute_revoke_cloud_session_invite_request(
@@ -2873,18 +2833,7 @@ impl CommandRouter {
         request: RevokeCloudSessionInviteRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let profile = self.required_cloud_relay_profile_with_session()?;
-        let revoked: CloudSessionInviteRevokedResponse = match post_cloud_json(
-            profile.api_url.clone(),
-            "/sessions/invites/revoke",
-            serde_json::json!({
-                "sessionToken": profile.cloud_session_token,
-                "accountId": profile.account_id,
-                "sessionId": request.session_id,
-                "inviteId": request.invite_id,
-            }),
-        )
-        .await
-        {
+        let revoked = match revoke_cloud_session_invite(&profile, request).await {
             Ok(revoked) => revoked,
             Err(error) => {
                 self.clear_cloud_profile_if_stale(&error).await?;
@@ -2902,17 +2851,7 @@ impl CommandRouter {
         request: ListCloudSessionMembersRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let profile = self.required_cloud_relay_profile_with_session()?;
-        let listed: CloudSessionMembersResponse = match get_cloud_json(
-            profile.api_url.clone(),
-            format!(
-                "/sessions/members?sessionToken={}&accountId={}&sessionId={}",
-                cloud_url_component(profile.cloud_session_token.as_deref().unwrap_or_default()),
-                cloud_url_component(&profile.account_id),
-                cloud_url_component(&request.session_id),
-            ),
-        )
-        .await
-        {
+        let listed = match list_cloud_session_members(&profile, request).await {
             Ok(listed) => listed,
             Err(error) => {
                 self.clear_cloud_profile_if_stale(&error).await?;
@@ -2921,11 +2860,7 @@ impl CommandRouter {
         };
         Ok(LocalDaemonResponse::CloudSessionMembersListed {
             session_id: listed.session_id,
-            members: listed
-                .members
-                .into_iter()
-                .map(cloud_session_member_from_response)
-                .collect(),
+            members: listed.members,
         })
     }
 
@@ -2934,29 +2869,14 @@ impl CommandRouter {
         _request: ListCloudCollaboratorsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let profile = self.required_cloud_relay_profile_with_session()?;
-        let listed: CloudCollaboratorsResponse = match get_cloud_json(
-            profile.api_url.clone(),
-            format!(
-                "/collaborators/recent?sessionToken={}&accountId={}",
-                cloud_url_component(profile.cloud_session_token.as_deref().unwrap_or_default()),
-                cloud_url_component(&profile.account_id),
-            ),
-        )
-        .await
-        {
-            Ok(listed) => listed,
+        let collaborators = match list_cloud_collaborators(&profile).await {
+            Ok(collaborators) => collaborators,
             Err(error) => {
                 self.clear_cloud_profile_if_stale(&error).await?;
                 return Err(error);
             }
         };
-        Ok(LocalDaemonResponse::CloudCollaboratorsListed {
-            collaborators: listed
-                .collaborators
-                .into_iter()
-                .map(cloud_collaborator_from_response)
-                .collect(),
-        })
+        Ok(LocalDaemonResponse::CloudCollaboratorsListed { collaborators })
     }
 
     fn required_cloud_relay_profile(&self) -> Result<PersistedCloudRelayProfile, DaemonError> {
