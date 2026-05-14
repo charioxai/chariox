@@ -1,10 +1,10 @@
 use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::runtime::cloud_api_client::post_cloud_json;
+use crate::runtime::cloud_relay_connection_executor::ensure_cloud_relay_connection as ensure_cloud_relay_connection_with_executor;
 use crate::runtime::cloud_relay_control::{
     cloud_kernel_presence_body, cloud_relay_token_refresh_due,
 };
-use crate::runtime::cloud_relay_executor::ensure_cloud_relay_connection as ensure_cloud_relay_connection_with_executor;
 
 impl CommandRouter {
     pub(crate) fn relay_config_snapshot(&self) -> crate::config::DaemonConfig {
