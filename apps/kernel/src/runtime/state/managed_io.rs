@@ -180,6 +180,8 @@ pub(super) fn managed_io_write_snapshot_id_from_arg(
     Some(snapshot_id)
 }
 
+mod remote_state;
+pub(super) use remote_state::*;
 mod remote;
 pub(super) use remote::*;
 
