@@ -97,6 +97,7 @@ This plan intentionally excludes iOS. The iOS app is early enough that it should
 - 2026-05-14: Cloud workspace action-dialog projection moved from `apps/web/src/client.ts` into `terminal/workspace-action-dialog-projection.ts`. The module owns create/delete worktree and pull-request dialog initial state, titles, submit labels, selected-worktree labels, PR title defaults, pull-request URL projection, and active-session delete blockers while `client.ts` keeps submit/network side effects. Focused tests cover default dialog creation, running/delete view metadata, blocker projection, and pull-request fields; `pnpm --filter @arroba-cloud/web run test` passes with 337 tests, and `client.ts` is down to 17,042 lines.
 - 2026-05-14: OSS waiting-room activity projection moved from `apps/kernel/src/runtime/router.rs` into `runtime/waiting_room_activity.rs`. The module owns public agent, workflow, and session activity-count projection for the waiting room while `router.rs` keeps snapshot assembly. Focused Rust tests cover working/processing/error agents, active/failed workflow runs, and session activity totals; `cargo test --manifest-path apps/kernel/Cargo.toml --lib runtime::waiting_room_activity` passes, `cargo test --manifest-path apps/kernel/Cargo.toml --lib` passes with 667 tests, and `runtime/router.rs` is down to 15,664 lines.
 - 2026-05-14: Cloud workspace compare-picker projection moved from `apps/web/src/client.ts` into `terminal/workspace-compare-picker-projection.ts`. The module owns compare-ref option projection from kernel-provided refs and default fallback refs while `client.ts` only supplies current overview/custom-ref state. Focused tests cover kernel compare refs and standard fallback refs; `pnpm --filter @arroba-cloud/web run test` passes with 339 tests, and `client.ts` is down to 17,029 lines.
+- 2026-05-14: Cloud workspace git sidebar projection expanded in `terminal/workspace-git-projection.ts`. The module now owns changes body projection, commit menu rows, changed-file status/icon labels, and commit-message generation policy while `client.ts` keeps workspace action side effects and DOM synchronization. Focused tests cover changes body states, commit menu projection, and generation gating; `pnpm --filter @arroba-cloud/web run test` passes with 342 tests, and `client.ts` is down to 17,000 lines.
 
 ## Summary
 
@@ -135,6 +136,10 @@ Module acceptance rule:
 - A future engineer should be able to state the module's responsibility in one sentence.
 - The module should import only the stores/services/contracts needed for that responsibility.
 - Tests should exercise behavior through the new responsibility boundary, not through the old mega-file.
+
+Execution rule:
+
+- Refactor progress docs are committed and pushed as their own slice instead of being treated as local dirty work to preserve.
 
 ## Key Changes
 
@@ -307,4 +312,3 @@ Protocol-sensitive gates:
 - No iOS work is included.
 - No kernel protocol, relay packet, or serialized local daemon shape changes are intended.
 - New modules are accepted only when they represent a real responsibility boundary, not an arbitrary chunk of an existing large file.
-- Refactor progress docs are committed and pushed as their own slice instead of being treated as local dirty work to preserve.
