@@ -86,6 +86,7 @@ use pending_runtime_state::*;
 mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_dispatch;
+mod prompt_git_observer_runtime;
 mod provider;
 mod provider_launch_owned_state;
 mod provider_launch_runtime;
