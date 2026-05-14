@@ -8,7 +8,7 @@ use crate::local::{
     GetProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
     UpdateProviderRunSelectionRequest,
 };
-use crate::runtime::projection::ProviderCatalogProjectionStore;
+use crate::runtime::projection::{ProviderCatalogProjectionStore, ProviderRunProjectionStore};
 use crate::runtime::provider_auth_control::execute_logout_provider_request as execute_provider_logout;
 
 pub(crate) async fn execute_provider_run_request(
@@ -52,6 +52,21 @@ pub(crate) async fn execute_update_provider_run_selection_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let mut app = app.lock().await;
     crate::local::provider_requests::update_provider_run_selection_response(&mut app, request)
+}
+
+pub(crate) fn projected_provider_run_response(
+    provider_run_projection: &ProviderRunProjectionStore,
+    request: &GetProviderRunRequest,
+    caller_user_id: &str,
+) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+    let Some(provider_run) = provider_run_projection.get(&request.provider_run_id) else {
+        return Ok(None);
+    };
+    ensure_provider_run_visible_to_user(&provider_run, caller_user_id)?;
+    if provider_run.adapter_key() == "opencode" {
+        return Ok(None);
+    }
+    Ok(Some(LocalDaemonResponse::ProviderRun { provider_run }))
 }
 
 pub(crate) async fn execute_logout_provider_and_invalidate_catalog_request(

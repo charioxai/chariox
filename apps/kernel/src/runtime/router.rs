@@ -49,10 +49,10 @@ use crate::runtime::provider_launch_executor::{
     execute_provider_launch_command, ProviderLaunchPendingTracker,
 };
 use crate::runtime::provider_process_control::{
-    execute_provider_process_request, provider_processes_visible_to_user_from_projection,
+    execute_provider_process_request, projected_provider_processes_response,
 };
 use crate::runtime::provider_run_control::{
-    ensure_provider_run_visible_to_user, execute_provider_run_request,
+    execute_provider_run_request, projected_provider_run_response,
 };
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
@@ -928,25 +928,22 @@ impl CommandRouter {
                 .await;
         }
         if let LocalDaemonRequest::GetProviderRun(request) = &request {
-            if let Some(provider_run) = self.provider_run_projection.get(&request.provider_run_id) {
-                ensure_provider_run_visible_to_user(&provider_run, &caller_user_id)?;
-                if provider_run.adapter_key() != "opencode" {
-                    return Ok(LocalDaemonResponse::ProviderRun { provider_run });
-                }
+            if let Some(response) = projected_provider_run_response(
+                &self.provider_run_projection,
+                request,
+                &caller_user_id,
+            )? {
+                return Ok(response);
             }
         }
         if let LocalDaemonRequest::ListProviderProcesses(request) = &request {
-            if let Some(processes) = self
-                .provider_process_projection
-                .list(request.provider.as_deref())
-            {
-                return Ok(LocalDaemonResponse::ProviderProcessesListed {
-                    processes: provider_processes_visible_to_user_from_projection(
-                        processes,
-                        &self.provider_run_projection,
-                        &caller_user_id,
-                    ),
-                });
+            if let Some(response) = projected_provider_processes_response(
+                &self.provider_process_projection,
+                &self.provider_run_projection,
+                request,
+                &caller_user_id,
+            ) {
+                return Ok(response);
             }
         }
         if matches!(&request, LocalDaemonRequest::GetDaemonHealth(_)) {

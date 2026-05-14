@@ -15,10 +15,10 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 2026-05-14:
 
 - Cloud API boundary split is in place: `server.ts` is route composition; relay-kernel bootstrap delegates to service-layer target selection/token minting; route/helper/contract files are domain-owned.
-- Cloud web responsibility modules now cover browser kernel transport, waiting-room state/projection/rendering, app sidebar/workflow/history/prompt/output/workspace/capabilities, terminal lifecycle/transport/target/launch/provider profile, freeform policy, and session projection fingerprinting. `client.ts` is still the main coordinator and is 10,275 lines.
-- OSS responsibility modules now cover kernel transport, router dispatch groups, shared caller identity, membership authorization, runtime projections, provider/agent/session/workspace/history/capability/waiting-room execution, launch tracking, visibility policy, and response redaction. `runtime/router.rs` is still the main command router and is 7,628 lines.
-- Latest verified batch: OSS provider launch dispatch moved into `runtime/provider_launch_executor.rs`; Cloud terminal launch state and preset launch request policy moved under `terminal/`.
-- Latest focused gates passed: `cargo test --manifest-path apps/kernel/Cargo.toml --lib -- --test-threads=1` (730 tests), `pnpm --filter @arroba-cloud/web test -- terminal-session-launch` (726 tests).
+- Cloud web responsibility modules now cover browser kernel transport, waiting-room state/projection/rendering, app sidebar/workflow/history/prompt/output/workspace/capabilities, terminal lifecycle/transport/target/launch/provider profile, freeform policy, and session projection fingerprinting. `client.ts` is still the main coordinator and is 10,235 lines.
+- OSS responsibility modules now cover kernel transport, router dispatch groups, shared caller identity, membership authorization, runtime projections, provider/agent/session/workspace/history/capability/waiting-room execution, launch tracking, visibility policy, and response redaction. `runtime/router.rs` is still the main command router and is 7,625 lines.
+- Latest verified batch: OSS provider projection fast paths moved into provider modules; Cloud initial agent alias request/projection moved under `terminal/`.
+- Latest focused gates passed: `cargo test --manifest-path apps/kernel/Cargo.toml --lib -- --test-threads=1` (730 tests), `pnpm --filter @arroba-cloud/web test -- session-initial-agent-alias` (730 tests).
 
 ## Responsibility Rule
 
