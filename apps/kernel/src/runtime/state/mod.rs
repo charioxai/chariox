@@ -93,6 +93,7 @@ mod provider_launch_runtime;
 mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;
 mod provider_prompt_settlement_runtime;
+mod remote_prompt_dispatch_runtime;
 mod remote_prompt_owned_state;
 mod runtime_interaction_owned_state;
 mod runtime_interaction_state;
