@@ -344,91 +344,6 @@ async function browserMutationHeaders(apiUrl, identity) {
   }
 }
 
-function browserIdentity(runId) {
-  return {
-    provider: "auth0",
-    providerSubject: `auth0|${runId}`,
-    email: `${runId}@example.com`,
-    emailVerified: true,
-    displayName: runId,
-  }
-}
-
-function browserSessionHeaders(runId, cloudSessionToken) {
-  return {
-    cookie: `arroba_cloud_session=${cloudSessionToken}`,
-    "x-arroba-test-auth0-identity": JSON.stringify(browserIdentity(runId)),
-  }
-}
-
-function browserIdentityHeaders(runId) {
-  return {
-    "x-arroba-test-auth0-identity": JSON.stringify(browserIdentity(runId)),
-  }
-}
-
-async function openWebCliInventoryStream(apiUrl, headers) {
-  const controller = new AbortController()
-  const response = await fetch(`${apiUrl}/web-cli/inventory/stream?intervalMs=500`, {
-    headers,
-    signal: controller.signal,
-  })
-  if (!response.ok || !response.body) {
-    throw new Error(`GET /web-cli/inventory/stream failed with ${response.status}: ${await response.text()}`)
-  }
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ""
-
-  async function nextEvent(timeoutMs = 5_000) {
-    const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline) {
-      const boundary = buffer.indexOf("\n\n")
-      if (boundary >= 0) {
-        const raw = buffer.slice(0, boundary)
-        buffer = buffer.slice(boundary + 2)
-        const event = raw.match(/^event: (.+)$/m)?.[1] ?? "message"
-        const dataText = raw.match(/^data: (.+)$/m)?.[1] ?? "{}"
-        return { event, data: JSON.parse(dataText) }
-      }
-      const remaining = Math.max(1, deadline - Date.now())
-      const result = await Promise.race([
-        reader.read(),
-        sleep(remaining).then(() => ({ timeout: true })),
-      ])
-      if ("timeout" in result) break
-      if (result.done) {
-        throw new Error("web cli inventory stream closed")
-      }
-      buffer += decoder.decode(result.value, { stream: true })
-    }
-    throw new Error("timed out waiting for web cli inventory stream event")
-  }
-
-  return {
-    async waitForKernelStatus(daemonId, status, timeoutMs = 10_000) {
-      const deadline = Date.now() + timeoutMs
-      let lastState = null
-      while (Date.now() < deadline) {
-        const { event, data } = await nextEvent(Math.max(1, deadline - Date.now()))
-        if (event !== "state") continue
-        lastState = data
-        const kernel = Array.isArray(data.kernels)
-          ? data.kernels.find((entry) => entry.daemonId === daemonId || entry.kernelRef === daemonId)
-          : null
-        if (kernel?.status === status) {
-          return { state: data, kernel }
-        }
-      }
-      throw new Error(`timed out waiting for web cli stream kernel ${daemonId} to become ${status}\n${JSON.stringify(lastState, null, 2)}`)
-    },
-    async close() {
-      controller.abort()
-      await reader.cancel().catch(() => {})
-    },
-  }
-}
-
 async function removePersistedCloudSessionToken(configHome) {
   const configPath = path.join(configHome, "arroba", "daemon", "config.json")
   const config = JSON.parse(await readFile(configPath, "utf8"))
@@ -698,7 +613,6 @@ async function main() {
   let cloudServer = null
   let localClient = null
   let remoteClient = null
-  let webCliStream = null
   const profileRef = { current: null }
   const notices = []
   const db = cloudDb.createCloudDatabase({ databaseUrl: DATABASE_URL })
@@ -803,36 +717,32 @@ async function main() {
     assert(onlineTarget.machineId === linkedMachineId, "cloud presence should associate the target with the linked machine", onlineTarget)
 
     if (machineCredentialOnly) {
-      log("web-cli-stream-online")
-      webCliStream = await openWebCliInventoryStream(
-        apiUrl,
-        browserIdentityHeaders(runId),
-      )
-      const initialWebCliKernel = await webCliStream.waitForKernelStatus(daemonId, "ONLINE")
-      assert(initialWebCliKernel.kernel.machineId === linkedMachineId, "web cli stream should expose the online linked kernel", initialWebCliKernel.kernel)
-
       log("cloud-machine-credential-restart")
       await localClient.close().catch(() => {})
       localClient = null
       await terminateChild(daemon, "SIGINT")
       daemon = null
-      log("web-cli-stream-offline")
-      const offlineWebCliKernel = await webCliStream.waitForKernelStatus(daemonId, "OFFLINE")
-      assert(offlineWebCliKernel.kernel.machineId === linkedMachineId, "web cli stream should expose the disconnected kernel", offlineWebCliKernel.kernel)
+      log("cloud-target-offline")
+      const offlineTarget = await waitForCloudRelayTarget(apiUrl, {
+        accountId: profileRef.current.accountId,
+        realmId: profileRef.current.realmId,
+        daemonId,
+        status: "OFFLINE",
+      })
+      assert(offlineTarget.machineId === linkedMachineId, "cloud target status should expose the disconnected linked kernel", offlineTarget)
       const strippedConfigPath = await removePersistedCloudSessionToken(configHome)
       log("cloud-session-token-removed", { configPath: strippedConfigPath })
       daemon = spawnProcess(kernelPath, [], { cwd: repoRoot, env: daemonEnv, name: "kernel" })
       await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace)
       localClient = new LocalIpcClient(kernelUrl)
-      await waitForCloudRelayTarget(apiUrl, {
+      log("cloud-target-reonline")
+      const reonlineTarget = await waitForCloudRelayTarget(apiUrl, {
         accountId: profileRef.current.accountId,
         realmId: profileRef.current.realmId,
         daemonId,
         status: "ONLINE",
       })
-      log("web-cli-stream-reonline")
-      const reonlineWebCliKernel = await webCliStream.waitForKernelStatus(daemonId, "ONLINE")
-      assert(reonlineWebCliKernel.kernel.machineId === linkedMachineId, "web cli stream should expose the reconnected kernel", reonlineWebCliKernel.kernel)
+      assert(reonlineTarget.machineId === linkedMachineId, "cloud target status should expose the reconnected linked kernel", reonlineTarget)
       const restartedRelayStatus = unwrap(
         await localClient.send(requests.relayStatusRequest()),
         "RelayStatus",
@@ -1179,7 +1089,6 @@ async function main() {
   } finally {
     const accountId = profileRef?.current?.accountId
     const realmId = profileRef?.current?.realmId
-    await webCliStream?.close().catch(() => {})
     await remoteClient?.close().catch(() => {})
     await localClient?.close().catch(() => {})
     await terminateChild(daemon, "SIGINT")
