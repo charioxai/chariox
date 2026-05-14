@@ -101,12 +101,8 @@ use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_launch_executor::ProviderLaunchCommandExecutor;
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::runtime::state::KernelRuntimeState;
-use crate::runtime::state::ProviderReloadTrigger;
 use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
-use crate::runtime::user_config_policy::{
-    summarize_provider_reload_outcomes, user_config_path_is_unwired,
-    user_config_path_requires_daemon_restart, UserConfigMutation,
-};
+use crate::runtime::user_config_policy::{user_config_mutation_effects, UserConfigMutation};
 use crate::runtime::waiting_room_public_projection::{
     build_waiting_room_public_snapshot, infer_waiting_room_launch_target,
 };
@@ -3428,61 +3424,8 @@ impl CommandRouter {
             app.config().clone()
         };
         self.config_projection.update(config.clone());
-        let effects = self
-            .apply_user_config_mutation_effects(&changed_path)
-            .await?;
+        let effects = user_config_mutation_effects(&self.runtime_state, &changed_path).await?;
         Ok((config, effects))
-    }
-
-    async fn apply_user_config_mutation_effects(
-        &self,
-        path: &str,
-    ) -> Result<Vec<UserConfigMutationEffect>, DaemonError> {
-        if path == "providers.managed_io" {
-            let outcomes = self
-                .runtime_state
-                .apply_provider_reload_policy(ProviderReloadTrigger::UserConfigChanged {
-                    path: path.to_string(),
-                })
-                .await?;
-            let summary = summarize_provider_reload_outcomes(&outcomes);
-            let message = if summary.reloaded == 0 && summary.deferred == 0 {
-                "managed I/O policy updated; no running provider needed reload".to_string()
-            } else {
-                format!(
-                    "managed I/O policy updated; provider reloads: {} reloaded, {} deferred, {} unaffected",
-                    summary.reloaded, summary.deferred, summary.unaffected
-                )
-            };
-            return Ok(vec![UserConfigMutationEffect {
-                kind: "provider_reload".to_string(),
-                path: path.to_string(),
-                message,
-                provider_reload: Some(summary),
-            }]);
-        }
-
-        if user_config_path_requires_daemon_restart(path) {
-            return Ok(vec![UserConfigMutationEffect {
-                kind: "restart_required".to_string(),
-                path: path.to_string(),
-                message: format!("`{path}` was updated; restart the daemon for it to take effect"),
-                provider_reload: None,
-            }]);
-        }
-
-        if user_config_path_is_unwired(path) {
-            return Ok(vec![UserConfigMutationEffect {
-                kind: "no_runtime_effect".to_string(),
-                path: path.to_string(),
-                message: format!(
-                    "`{path}` was updated, but this key is not currently wired to runtime behavior"
-                ),
-                provider_reload: None,
-            }]);
-        }
-
-        Ok(Vec::new())
     }
 
     async fn execute_set_credential_secret_request(

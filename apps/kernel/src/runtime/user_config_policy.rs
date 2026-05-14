@@ -1,5 +1,6 @@
-use crate::local::UserConfigProviderReloadSummary;
-use crate::runtime::state::ProviderReloadOutcome;
+use crate::error::DaemonError;
+use crate::local::{UserConfigMutationEffect, UserConfigProviderReloadSummary};
+use crate::runtime::state::{KernelRuntimeState, ProviderReloadOutcome, ProviderReloadTrigger};
 
 pub(crate) enum UserConfigMutation {
     Set { path: String, value: String },
@@ -22,6 +23,56 @@ pub(crate) fn summarize_provider_reload_outcomes(
         }
     }
     summary
+}
+
+pub(crate) async fn user_config_mutation_effects(
+    runtime_state: &KernelRuntimeState,
+    path: &str,
+) -> Result<Vec<UserConfigMutationEffect>, DaemonError> {
+    if path == "providers.managed_io" {
+        let outcomes = runtime_state
+            .apply_provider_reload_policy(ProviderReloadTrigger::UserConfigChanged {
+                path: path.to_string(),
+            })
+            .await?;
+        let summary = summarize_provider_reload_outcomes(&outcomes);
+        let message = if summary.reloaded == 0 && summary.deferred == 0 {
+            "managed I/O policy updated; no running provider needed reload".to_string()
+        } else {
+            format!(
+                "managed I/O policy updated; provider reloads: {} reloaded, {} deferred, {} unaffected",
+                summary.reloaded, summary.deferred, summary.unaffected
+            )
+        };
+        return Ok(vec![UserConfigMutationEffect {
+            kind: "provider_reload".to_string(),
+            path: path.to_string(),
+            message,
+            provider_reload: Some(summary),
+        }]);
+    }
+
+    if user_config_path_requires_daemon_restart(path) {
+        return Ok(vec![UserConfigMutationEffect {
+            kind: "restart_required".to_string(),
+            path: path.to_string(),
+            message: format!("`{path}` was updated; restart the daemon for it to take effect"),
+            provider_reload: None,
+        }]);
+    }
+
+    if user_config_path_is_unwired(path) {
+        return Ok(vec![UserConfigMutationEffect {
+            kind: "no_runtime_effect".to_string(),
+            path: path.to_string(),
+            message: format!(
+                "`{path}` was updated, but this key is not currently wired to runtime behavior"
+            ),
+            provider_reload: None,
+        }]);
+    }
+
+    Ok(Vec::new())
 }
 
 pub(crate) fn user_config_path_requires_daemon_restart(path: &str) -> bool {
