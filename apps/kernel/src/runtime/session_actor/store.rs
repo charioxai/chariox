@@ -2,8 +2,7 @@ use crate::error::DaemonError;
 use crate::local::{
     AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest, DeleteSessionRequest,
     DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, LocalDaemonResponse,
-    PollRuntimeNoticesRequest, ResizeTerminalRequest, RespondToInteractionRequest,
-    SendTerminalInputRequest, UpdateSessionConfigRequest,
+    RespondToInteractionRequest, UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
@@ -13,6 +12,7 @@ use super::projection_policy::{
 };
 
 mod agent;
+mod terminal;
 
 #[derive(Clone)]
 pub(crate) struct SessionRuntimeStore {
@@ -145,72 +145,6 @@ impl SessionRuntimeStore {
             .cycle_agent_focus(&request.session_id, &caller_user_id)
             .await
             .map(|agent| LocalDaemonResponse::AgentFocusCycled { agent });
-        self.with_session_projection_action_result(result).await
-    }
-
-    pub(super) async fn resize_terminal(
-        &self,
-        request: ResizeTerminalRequest,
-    ) -> (
-        Result<LocalDaemonResponse, DaemonError>,
-        Option<SessionProjectionAction>,
-    ) {
-        let result = self
-            .state
-            .resize_terminal(&request.session_id, request.cols, request.rows)
-            .await
-            .map(|()| LocalDaemonResponse::TerminalResized {
-                session_id: request.session_id,
-                cols: request.cols,
-                rows: request.rows,
-            });
-        self.with_session_projection_action_result(result).await
-    }
-
-    pub(super) async fn send_terminal_input(
-        &self,
-        request: SendTerminalInputRequest,
-    ) -> (
-        Result<LocalDaemonResponse, DaemonError>,
-        Option<SessionProjectionAction>,
-    ) {
-        let result = self
-            .state
-            .send_terminal_input(
-                &request.session_id,
-                &request.attachment_id,
-                request.provider_run_id.as_deref(),
-                &request.data_base64,
-            )
-            .await
-            .map(|byte_count| LocalDaemonResponse::TerminalInputSent {
-                session_id: request.session_id,
-                attachment_id: request.attachment_id,
-                byte_count,
-            });
-        self.with_session_projection_action_result(result).await
-    }
-
-    pub(super) async fn poll_runtime_notices(
-        &self,
-        request: PollRuntimeNoticesRequest,
-    ) -> (
-        Result<LocalDaemonResponse, DaemonError>,
-        Option<SessionProjectionAction>,
-    ) {
-        let result = match self
-            .state
-            .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
-            .await
-        {
-            Ok(()) => Ok(LocalDaemonResponse::RuntimeNotices {
-                notices: self
-                    .state
-                    .drain_notice_records(&request.session_id, &request.attachment_id)
-                    .await,
-            }),
-            Err(error) => Err(error),
-        };
         self.with_session_projection_action_result(result).await
     }
 
