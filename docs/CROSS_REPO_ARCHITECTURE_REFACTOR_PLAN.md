@@ -161,6 +161,7 @@ Documentation updates for this refactor are progress artifacts. Do not leave dir
 - 2026-05-14: Cloud runtime interaction HTML projection moved into `terminal/runtime-interaction-renderer.ts`; web tests pass with 512 tests and `client.ts` is down to 12,776 lines.
 - 2026-05-14: OSS terminal/client pairing record projection moved into `runtime/terminal_pairings.rs`; kernel lib tests pass with 716 tests and `runtime/router.rs` is down to 11,971 lines.
 - 2026-05-14: Cloud app-sidebar focus/scroll preservation moved into `terminal/app-sidebar-interaction.ts`; web tests pass with 514 tests and `client.ts` is down to 12,500 lines.
+- 2026-05-14: OSS session/focus projection refresh policy moved into `runtime/session_projection_refresh.rs`; kernel lib tests pass with 718 tests and `runtime/router.rs` is down to 11,812 lines.
 
 ## Summary
 
