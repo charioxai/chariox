@@ -9,6 +9,7 @@ use crate::app::StartedProviderLaunch;
 use crate::error::DaemonError;
 use crate::local::{LaunchProviderRunRequest, LocalDaemonResponse};
 use crate::provider::{ProviderProcessService, ProviderRunState};
+use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
 use crate::runtime::state::KernelRuntimeState;
 
@@ -25,6 +26,16 @@ pub(crate) struct ProviderLaunchStore {
 #[derive(Clone, Default)]
 pub(crate) struct ProviderLaunchPendingTracker {
     sessions: Arc<Mutex<HashSet<String>>>,
+}
+
+pub(crate) async fn execute_provider_launch_command(
+    runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
+    request: LaunchProviderRunRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    ProviderLaunchCommandExecutor::new(runtime_state.clone())
+        .execute(request, command_caller_user_id(command))
+        .await
 }
 
 impl ProviderLaunchCommandExecutor {

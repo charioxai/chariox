@@ -23,9 +23,7 @@ use crate::runtime::cloud_relay_executor::{
     ensure_cloud_relay_connection as ensure_cloud_relay_connection_with_executor,
     execute_cloud_relay_request,
 };
-use crate::runtime::command::{
-    command_caller_user_id, KernelCommand, KernelCommandPriority, KernelCommandSource,
-};
+use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
 use crate::runtime::daemon_health_projection::{
     build_daemon_health_projection, execute_daemon_health_request, DaemonHealthProjectionInput,
 };
@@ -48,7 +46,7 @@ use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_auth_control::execute_provider_auth_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_launch_executor::{
-    ProviderLaunchCommandExecutor, ProviderLaunchPendingTracker,
+    execute_provider_launch_command, ProviderLaunchPendingTracker,
 };
 use crate::runtime::provider_process_control::{
     execute_provider_process_request, provider_processes_visible_to_user_from_projection,
@@ -1197,9 +1195,7 @@ impl CommandRouter {
                     .to_string(),
             }),
             LocalDaemonRequest::LaunchProviderRun(request) => {
-                ProviderLaunchCommandExecutor::new(self.runtime_state.clone())
-                    .execute(request, command_caller_user_id(&command))
-                    .await
+                execute_provider_launch_command(&self.runtime_state, &command, request).await
             }
             request @ (LocalDaemonRequest::ListSessions(_)
             | LocalDaemonRequest::ResolveSession(_)
