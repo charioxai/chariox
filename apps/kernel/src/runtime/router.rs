@@ -10,12 +10,11 @@ use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
 use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
 use crate::local::{
-    AgentGrantKind, ConfigureRelayRequest, DeleteKernelRequest,
-    GenerateWorkspaceCommitMessageRequest, GetSessionStateRequest, GrantAgentCapabilityRequest,
-    ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
-    MoveAgentToRemoteRequest, PumpTerminalOutputRequest, RelayStatus, ResolveSessionRequest,
-    RevokeAgentCapabilityRequest, RunAgentUtilityRequest, TeardownProviderProcessesRequest,
-    WaitingRoomPublicSnapshot,
+    AgentGrantKind, DeleteKernelRequest, GenerateWorkspaceCommitMessageRequest,
+    GetSessionStateRequest, GrantAgentCapabilityRequest, ListAgentsRequest, ListSessionsRequest,
+    LocalDaemonRequest, LocalDaemonResponse, MoveAgentToRemoteRequest, PumpTerminalOutputRequest,
+    ResolveSessionRequest, RevokeAgentCapabilityRequest, RunAgentUtilityRequest,
+    TeardownProviderProcessesRequest, WaitingRoomPublicSnapshot,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -89,12 +88,14 @@ use crate::runtime::provider_run_control::{
     execute_get_provider_run_request, execute_logout_provider_and_invalidate_catalog_request,
     execute_update_provider_run_selection_request,
 };
+use crate::runtime::relay_config_control::{
+    execute_configure_relay_request, projected_relay_status_response, projected_relay_status_view,
+};
 use crate::runtime::remote_machine_registry::{
     execute_approve_remote_machine_request, execute_forget_remote_machine_request,
     execute_rename_remote_machine_request,
 };
 use crate::runtime::remote_relay_inventory::{
-    projected_relay_status as projected_remote_relay_status,
     projected_remote_machine_kernels_response as projected_remote_relay_machine_kernels_response,
     projected_remote_machines_response as projected_remote_relay_machines_response,
 };
@@ -1034,7 +1035,11 @@ impl CommandRouter {
         }
         match &request {
             LocalDaemonRequest::RelayStatus(_) => {
-                return self.projected_relay_status_response().await;
+                return projected_relay_status_response(
+                    Arc::clone(&self.relay_state),
+                    self.config_projection.clone(),
+                )
+                .await;
             }
             LocalDaemonRequest::ListRemoteMachines(_) => {
                 return self.projected_remote_machines_response().await;
@@ -1204,7 +1209,14 @@ impl CommandRouter {
         let session_refresh = session_projection_refresh(&request);
         let result = match request {
             LocalDaemonRequest::ConfigureRelay(request) => {
-                self.execute_configure_relay_request(request).await
+                execute_configure_relay_request(
+                    &self.app,
+                    Arc::clone(&self.relay_state),
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::CloudRelayStatus(_) => {
                 execute_cloud_relay_status_request(&self.config_projection).await
@@ -2148,12 +2160,6 @@ impl CommandRouter {
         None
     }
 
-    async fn projected_relay_status_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
-        Ok(LocalDaemonResponse::RelayStatus {
-            status: self.projected_relay_status().await,
-        })
-    }
-
     async fn projected_waiting_room_inventory_response(
         &self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -2185,7 +2191,11 @@ impl CommandRouter {
                 });
             }
         };
-        let relay_status = self.projected_relay_status().await;
+        let relay_status = projected_relay_status_view(
+            Arc::clone(&self.relay_state),
+            self.config_projection.clone(),
+        )
+        .await;
         let terminals = paired_terminal_records();
         build_waiting_room_public_snapshot(
             runtime_sessions,
@@ -2263,14 +2273,6 @@ impl CommandRouter {
         .await
     }
 
-    async fn projected_relay_status(&self) -> RelayStatus {
-        projected_remote_relay_status(
-            Arc::clone(&self.relay_state),
-            self.config_projection.clone(),
-        )
-        .await
-    }
-
     async fn execute_cold_list_sessions_request(
         &self,
         _request: ListSessionsRequest,
@@ -2335,22 +2337,6 @@ impl CommandRouter {
                 operation: "route capability request",
                 message: "capability request was not handled by executor".to_string(),
             })
-        })
-    }
-
-    async fn execute_configure_relay_request(
-        &self,
-        request: ConfigureRelayRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        {
-            let mut app = self.app.lock().await;
-            app.configure_relay(request.relay_url, request.relay_token)?;
-            app.invalidate_provider_catalog_cache();
-            self.config_projection.update(app.config().clone());
-        }
-        self.provider_catalog_projection.invalidate();
-        Ok(LocalDaemonResponse::RelayConfigured {
-            status: self.projected_relay_status().await,
         })
     }
 
@@ -2738,9 +2724,22 @@ impl CommandRouter {
             LocalDaemonRequest::ImportSkills(request) => execute_import_skills_request(request),
             LocalDaemonRequest::GetSkill(request) => execute_get_skill_request(request),
             LocalDaemonRequest::ListSkills(request) => execute_list_skills_request(request),
-            LocalDaemonRequest::RelayStatus(_) => self.projected_relay_status_response().await,
+            LocalDaemonRequest::RelayStatus(_) => {
+                projected_relay_status_response(
+                    Arc::clone(&self.relay_state),
+                    self.config_projection.clone(),
+                )
+                .await
+            }
             LocalDaemonRequest::ConfigureRelay(request) => {
-                self.execute_configure_relay_request(request).await
+                execute_configure_relay_request(
+                    &self.app,
+                    Arc::clone(&self.relay_state),
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::CloudRelayStatus(_) => {
                 execute_cloud_relay_status_request(&self.config_projection).await

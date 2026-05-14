@@ -15,10 +15,10 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 2026-05-14:
 
 - Cloud API boundary split is in place: `server.ts` is route composition; relay-kernel bootstrap delegates to service-layer target selection/token minting; route/helper/contract files are domain-owned.
-- Cloud web has responsibility modules for browser kernel transport, waiting-room projection/state, workflow route state, history, prompt, output, sidebar, workspace, capabilities, terminal records/lifecycle, terminal transport lifecycle, and freeform dialog projection/state. `client.ts` is still the main coordinator and is 11,159 lines.
-- OSS protocol/client split is started; kernel transport frames/events and many router executors are responsibility modules. `runtime/router.rs` is still the main command router and is 9,463 lines.
-- Latest verified slices: OSS provider run get/update/logout cache invalidation moved to `runtime/provider_run_control.rs`; Cloud terminal reattach/retry/resubscribe lifecycle moved to `terminal/terminal-transport-lifecycle.ts`.
-- Latest focused gates passed: `cargo test --manifest-path apps/kernel/Cargo.toml --lib -- --test-threads=1` (729 tests), `pnpm --filter @arroba-cloud/web test` (587 tests), `pnpm -r --if-present lint`, and `git diff --check`.
+- Cloud web has responsibility modules for browser kernel transport, waiting-room projection/state/refresh policy, workflow route state, history, prompt, output, sidebar, workspace, capabilities, terminal records/lifecycle, terminal transport lifecycle, and freeform dialog projection/state. `client.ts` is still the main coordinator and is 11,050 lines.
+- OSS protocol/client split is started; kernel transport frames/events and many router executors are responsibility modules. `runtime/router.rs` is still the main command router and is 9,462 lines.
+- Latest verified slices: OSS relay config/status control moved to `runtime/relay_config_control.rs`; Cloud waiting-room refresh signature/cache/failure/worktree policy moved to `terminal/waiting-room-refresh-state.ts`.
+- Latest focused gates passed: `cargo test --manifest-path apps/kernel/Cargo.toml --lib -- --test-threads=1`, `pnpm --filter @arroba-cloud/web test` (591 tests), `pnpm -r --if-present lint`, and `git diff --check`.
 
 ## Responsibility Rule
 
