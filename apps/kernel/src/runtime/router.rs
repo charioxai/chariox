@@ -477,10 +477,7 @@ impl CommandRouter {
         source: KernelCommandSource,
     ) -> crate::runtime::command::KernelCaller {
         let mut caller = crate::runtime::command::KernelCaller::for_source(&source);
-        let cloud_profile = {
-            let app = self.app.lock().await;
-            app.config().cloud_relay.clone()
-        };
+        let cloud_profile = self.config_projection.snapshot().cloud_relay;
         if let Some(profile) = cloud_profile {
             caller.user_id = Some(profile.user_id);
             caller.client_id = profile.client_id;
