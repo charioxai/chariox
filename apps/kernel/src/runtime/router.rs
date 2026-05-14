@@ -35,9 +35,7 @@ use crate::runtime::history_executor::{
 };
 use crate::runtime::interactive_command_dispatcher::dispatch_interactive_command;
 use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
-use crate::runtime::native_interaction_bridge::{
-    forward_relay_native_interaction, install_provider_native_interaction_bridge,
-};
+use crate::runtime::native_interaction_bridge::install_provider_native_interaction_bridge;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonConfigProjectionStore, DaemonHealthProjection,
@@ -58,7 +56,6 @@ use crate::runtime::provider_run_control::{
     execute_provider_run_request, projected_provider_run_response,
 };
 use crate::runtime::relay_config_control::execute_relay_config_request;
-use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
 use crate::runtime::remote_machine_registry::execute_remote_machine_registry_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
 use crate::runtime::response_redaction::redact_response_for_user;
@@ -88,6 +85,8 @@ use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::session::PromptIdAllocator;
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
+
+mod relay_peer_bridge;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -462,255 +461,6 @@ impl CommandRouter {
         let _: serde_json::Value =
             post_cloud_json(profile.api_url.clone(), "/kernels/presence", body).await?;
         Ok(())
-    }
-
-    pub(crate) fn relay_daemon_id(&self) -> String {
-        self.config_projection.snapshot().daemon_id
-    }
-
-    pub(crate) fn relay_private_key(&self) -> String {
-        self.config_projection.snapshot().relay_private_key
-    }
-
-    pub(crate) async fn relay_registration(&self) -> arroba_relay::protocol::DaemonRegistration {
-        let mut app = self.app.lock().await;
-        app.relay_registration()
-    }
-
-    pub(crate) async fn ensure_relay_subscription_attachment(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<(), DaemonError> {
-        relay_peer_runtime::ensure_relay_subscription_attachment(
-            &self.app,
-            &self.session_projection,
-            session_id,
-            attachment_id,
-        )
-        .await
-    }
-
-    pub(crate) async fn relay_watch_subscription_state(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        tick: u64,
-        previous_snapshot: Option<crate::runtime::projection::SessionSnapshotProjection>,
-        last_workflow_design_sequence: u64,
-    ) -> crate::runtime_transport::WatchResult {
-        relay_peer_runtime::watch_relay_subscription_state(
-            &self.app,
-            session_id,
-            attachment_id,
-            tick,
-            previous_snapshot,
-            last_workflow_design_sequence,
-        )
-        .await
-    }
-
-    pub(crate) async fn relay_create_execution_lease(
-        &self,
-        home_kernel_id: &str,
-        home_session_id: &str,
-        home_agent_id: &str,
-        owner_user_id: &str,
-    ) -> Result<crate::execution_lease::ExecutionLease, DaemonError> {
-        relay_peer_runtime::create_relay_execution_lease(
-            &self.app,
-            home_kernel_id,
-            home_session_id,
-            home_agent_id,
-            owner_user_id,
-        )
-        .await
-    }
-
-    pub(crate) async fn relay_destroy_execution_lease(
-        &self,
-        lease_id: &str,
-    ) -> Result<crate::execution_lease::ExecutionLease, DaemonError> {
-        relay_peer_runtime::destroy_relay_execution_lease(&self.app, lease_id).await
-    }
-
-    pub(crate) async fn relay_create_leased_agent(
-        &self,
-        lease_id: &str,
-        provider: &str,
-        model: Option<String>,
-        effort: Option<String>,
-        execution_mode: Option<crate::provider::AgentExecutionMode>,
-        permission_level: Option<crate::provider::AgentPermissionLevel>,
-        worktree_id: Option<String>,
-        worktree_placement: Option<crate::agent::GitWorktreePlacement>,
-    ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
-        relay_peer_runtime::create_relay_leased_agent(
-            &self.app,
-            lease_id,
-            provider,
-            model,
-            effort,
-            execution_mode,
-            permission_level,
-            worktree_id,
-            worktree_placement,
-        )
-        .await
-    }
-
-    pub(crate) async fn relay_destroy_leased_agent(
-        &self,
-        leased_agent_id: &str,
-    ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
-        relay_peer_runtime::destroy_relay_leased_agent(&self.app, leased_agent_id).await
-    }
-
-    pub(crate) async fn relay_update_leased_agent_config(
-        &self,
-        leased_agent_id: &str,
-        execution_mode: crate::provider::AgentExecutionMode,
-        permission_level: crate::provider::AgentPermissionLevel,
-    ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
-        relay_peer_runtime::update_relay_leased_agent_config(
-            &self.app,
-            leased_agent_id,
-            execution_mode,
-            permission_level,
-        )
-        .await
-    }
-
-    pub(crate) async fn relay_submit_leased_prompt(
-        &self,
-        leased_agent_id: &str,
-        prompt: &str,
-        attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
-        workflow_context: Option<crate::execution_lease::RemoteWorkflowTurnContext>,
-        git_context: Option<crate::transport::relay_peer::RemoteGitTurnContext>,
-        required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
-    ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
-        relay_peer_runtime::submit_relay_leased_prompt(
-            &self.app,
-            leased_agent_id,
-            prompt,
-            attachments,
-            workflow_context,
-            git_context,
-            required_mcps,
-        )
-        .await
-    }
-
-    pub(crate) async fn relay_ensure_remote_skill_packages(
-        &self,
-        context: crate::transport::relay_peer::RemoteSkillSyncContext,
-        packages: Vec<crate::skill::ArrobaSkillPackage>,
-    ) -> Result<Vec<crate::transport::relay_peer::RemoteSkillMaterialization>, DaemonError> {
-        relay_peer_runtime::ensure_relay_remote_skill_packages(&self.app, context, packages).await
-    }
-
-    pub(crate) async fn relay_check_remote_mcp_availability(
-        &self,
-        context: crate::transport::relay_peer::RemoteMcpCheckContext,
-        required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
-    ) -> Result<Vec<crate::transport::relay_peer::RemoteMcpAvailability>, DaemonError> {
-        relay_peer_runtime::check_relay_remote_mcp_availability(&self.app, context, required_mcps)
-            .await
-    }
-
-    pub(crate) async fn relay_complete_leased_prompt(
-        &self,
-        leased_agent_id: &str,
-    ) -> Result<crate::session::PromptCompletion, DaemonError> {
-        relay_peer_runtime::complete_relay_leased_prompt(&self.app, leased_agent_id).await
-    }
-
-    pub(crate) async fn relay_observe_leased_git_after(
-        &self,
-        leased_agent_id: &str,
-        provider_run_id: &str,
-    ) -> Result<Vec<crate::transport::relay_peer::RemoteGitObservation>, DaemonError> {
-        relay_peer_runtime::observe_relay_leased_git_after(
-            &self.app,
-            leased_agent_id,
-            provider_run_id,
-        )
-        .await
-    }
-
-    pub(crate) async fn relay_cancel_leased_prompt(
-        &self,
-        leased_agent_id: &str,
-    ) -> Result<crate::session::PromptCancellation, DaemonError> {
-        relay_peer_runtime::cancel_relay_leased_prompt(&self.app, leased_agent_id).await
-    }
-
-    pub(crate) async fn relay_leased_agent_provider_run_id(
-        &self,
-        leased_agent_id: &str,
-    ) -> Result<Option<String>, DaemonError> {
-        relay_peer_runtime::relay_leased_agent_provider_run_id(&self.app, leased_agent_id).await
-    }
-
-    pub(crate) async fn relay_provider_run_terminal_diagnostic(
-        &self,
-        provider_run_id: &str,
-    ) -> Result<Option<String>, DaemonError> {
-        Ok(relay_peer_runtime::relay_provider_run_terminal_diagnostic(
-            &self.provider_run_projection,
-            provider_run_id,
-        ))
-    }
-
-    pub(crate) async fn relay_pump_leased_runtime_projections(
-        &self,
-    ) -> Result<Vec<(String, crate::transport::relay_peer::RelayPeerEvent)>, DaemonError> {
-        relay_peer_runtime::pump_relay_leased_runtime_projections(&self.app).await
-    }
-
-    pub(crate) async fn relay_drain_leased_runtime_projection(
-        &self,
-        leased_agent_id: &str,
-        provider_run_id: &str,
-        pump_output: bool,
-    ) -> Result<Option<(String, crate::transport::relay_peer::RelayPeerEvent)>, DaemonError> {
-        relay_peer_runtime::drain_relay_leased_runtime_projection(
-            &self.app,
-            leased_agent_id,
-            provider_run_id,
-            pump_output,
-        )
-        .await
-    }
-
-    pub(crate) async fn relay_project_remote_runtime_projection(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        provider_run_id: &str,
-        output_chunks: Vec<crate::transport::relay_peer::RelayProjectedOutputChunk>,
-        notices: Vec<String>,
-        completions: Vec<crate::transport::relay_peer::RelayProjectedCompletion>,
-    ) -> Result<(), DaemonError> {
-        relay_peer_runtime::project_relay_remote_runtime_projection(
-            &self.app,
-            session_id,
-            agent_id,
-            provider_run_id,
-            output_chunks,
-            notices,
-            completions,
-        )
-        .await
-    }
-
-    pub(crate) async fn relay_forward_native_interaction(
-        &self,
-        context: crate::transport::relay_peer::RemoteNativeInteractionContext,
-        interaction: crate::session::RuntimeInteraction,
-    ) -> Result<crate::provider::ProviderNativeInteractionResolution, DaemonError> {
-        forward_relay_native_interaction(&self.runtime_state, context, interaction).await
     }
 
     pub(crate) async fn dispatch_authenticated_runtime_tool_call(
