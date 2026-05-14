@@ -1,6 +1,4 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -70,7 +68,7 @@ use crate::local::{
     WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary, WaitingRoomPublicSessionSummary,
     WaitingRoomPublicSnapshot, WaitingRoomPublicWorkflowEdgeSummary,
     WaitingRoomPublicWorkflowEndpointSummary, WaitingRoomPublicWorkflowNodeSummary,
-    WaitingRoomPublicWorkflowSummary, WorkspaceCommitMessageUtilityInput, WorkspaceWorktreeRecord,
+    WaitingRoomPublicWorkflowSummary, WorkspaceCommitMessageUtilityInput,
 };
 use crate::provider::{
     run_codex_utility_prompt, run_opencode_utility_prompt, ProviderNativeInteractionBridge,
@@ -113,15 +111,14 @@ use crate::runtime::workspace_git_actions::{
 };
 use crate::runtime::workspace_git_changes::workspace_git_diff_text;
 use crate::runtime::workspace_git_common::{
-    detect_git_branch, git_ref_exists, resolve_repo_root, run_git, same_fs_path,
-    workspace_display_label, worktree_display_label,
+    detect_git_branch, workspace_display_label, worktree_display_label,
 };
 use crate::runtime::workspace_git_overview::inspect_workspace_git_overview;
 use crate::runtime::workspace_repo_files::{get_workspace_file_content, list_workspace_repo_files};
-use crate::runtime::workspace_search::{
-    create_workspace_directory, expand_workspace_query_path, search_workspace_directories,
+use crate::runtime::workspace_search::{create_workspace_directory, search_workspace_directories};
+use crate::runtime::workspace_worktrees::{
+    create_waiting_room_worktree, delete_workspace_worktree, list_workspace_worktrees,
 };
-use crate::runtime::workspace_worktrees::{list_workspace_worktrees, parse_git_worktree_list};
 use crate::session::{unix_epoch_ms, PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::{
@@ -2340,30 +2337,19 @@ impl CommandRouter {
         &self,
         request: CreateWorkspaceWorktreeRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let path = create_waiting_room_worktree(
+        let launch_target = infer_waiting_room_launch_target();
+        let worktree = create_waiting_room_worktree(
             &request.workspace_id,
             request.path.as_deref(),
             request.branch.as_deref(),
             request.base_ref.as_deref(),
-        )?;
-        let launch_target = infer_waiting_room_launch_target();
-        let branch = detect_git_branch(&path).ok();
-        let worktree = WorkspaceWorktreeRecord {
-            current: launch_target
+            launch_target
                 .as_ref()
-                .map(|target| target.worktree_id == path)
-                .unwrap_or(false),
-            branch: branch.clone(),
-            label: worktree_display_label(
-                &path,
-                launch_target
-                    .as_ref()
-                    .map(|target| target.workspace_id.as_str())
-                    .unwrap_or(&request.workspace_id),
-                branch.as_deref(),
-            ),
-            path,
-        };
+                .map(|target| target.worktree_id.as_str()),
+            launch_target
+                .as_ref()
+                .map(|target| target.workspace_id.as_str()),
+        )?;
         Ok(LocalDaemonResponse::WorkspaceWorktreeCreated {
             workspace_id: request.workspace_id,
             worktree,
@@ -6547,241 +6533,6 @@ Diff context:\n{diff}",
             diff.as_str()
         },
     ))
-}
-
-fn delete_workspace_worktree(
-    workspace_id: &str,
-    worktree_id: &str,
-    force: bool,
-    sessions: &[crate::session::RuntimeSession],
-) -> Result<String, DaemonError> {
-    let (repo_root, worktree_path) = resolve_deletable_git_worktree(workspace_id, worktree_id)?;
-    let blockers = active_worktree_session_blockers(workspace_id, &worktree_path, sessions);
-    if !blockers.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace worktree delete",
-            message: format!(
-                "worktree is still used by active runtime sessions: {}",
-                blockers.join(", ")
-            ),
-        });
-    }
-    let mut args = vec!["worktree", "remove"];
-    if force {
-        args.push("--force");
-    }
-    args.push(worktree_path.as_str());
-    run_git(&repo_root, &args)?;
-    Ok(worktree_path)
-}
-
-fn resolve_deletable_git_worktree(
-    workspace_id: &str,
-    worktree_id: &str,
-) -> Result<(PathBuf, String), DaemonError> {
-    let target = worktree_id.trim();
-    if target.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace worktree delete",
-            message: "worktree_id is required".to_string(),
-        });
-    }
-    let repo_root = resolve_repo_root(workspace_id)?;
-    let output = std::process::Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(&repo_root)
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "workspace worktree delete",
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace worktree delete",
-            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        });
-    }
-    let worktree_path = parse_git_worktree_list(String::from_utf8_lossy(&output.stdout).as_ref())
-        .into_iter()
-        .map(|(path, _branch)| path)
-        .find(|path| same_fs_path(path, target))
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "workspace worktree delete",
-            message: format!("worktree is not registered: {target}"),
-        })?;
-    if same_fs_path(&worktree_path, repo_root.to_string_lossy().as_ref()) {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace worktree delete",
-            message: "refusing to delete the main workspace worktree".to_string(),
-        });
-    }
-    Ok((repo_root, worktree_path))
-}
-
-fn active_worktree_session_blockers(
-    workspace_id: &str,
-    worktree_id: &str,
-    sessions: &[crate::session::RuntimeSession],
-) -> Vec<String> {
-    let mut blockers = Vec::new();
-    for session in sessions {
-        if session.status() == crate::session::SessionStatus::Ended {
-            continue;
-        }
-        let session_owns_worktree = worktree_ids_match(session.worktree_id(), worktree_id)
-            || session.agents().iter().any(|agent| {
-                let agent_worktree = agent.worktree_id().unwrap_or(session.worktree_id());
-                worktree_ids_match(agent_worktree, worktree_id)
-            });
-        if session_owns_worktree
-            || (workspace_id == session.workspace_id()
-                && worktree_ids_match(session.worktree_id(), worktree_id))
-        {
-            blockers.push(session.id().to_string());
-        }
-    }
-    blockers.sort();
-    blockers.dedup();
-    blockers
-}
-
-fn worktree_ids_match(left: &str, right: &str) -> bool {
-    left == right || same_fs_path(left, right)
-}
-
-fn create_waiting_room_worktree(
-    workspace_path: &str,
-    requested_path: Option<&str>,
-    requested_branch: Option<&str>,
-    requested_base_ref: Option<&str>,
-) -> Result<String, DaemonError> {
-    let repo_root = resolve_repo_root(workspace_path)?;
-    let base_ref = requested_base_ref
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or(resolve_preferred_base_ref(&repo_root)?);
-    let description = std::env::var("ARROBA_WAITING_ROOM_WORKTREE_DESCRIPTION")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            format!(
-                "{}-session",
-                repo_root
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .unwrap_or("workspace")
-            )
-        });
-    let branch_base = format!(
-        "arroba/{}-{}",
-        slugify_segment(&description),
-        timestamp_slug(),
-    );
-    let branch = match requested_branch
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(value) => value.to_string(),
-        None => resolve_available_branch_name(&repo_root, &branch_base)?,
-    };
-    let parent = repo_root.parent().unwrap_or(&repo_root);
-    let directory_base = format!(
-        "{}-{}",
-        repo_root
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or("workspace"),
-        slugify_segment(&branch.replace('/', "-"))
-    );
-    let directory = requested_path
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| resolve_requested_worktree_directory(parent, value))
-        .unwrap_or_else(|| resolve_available_worktree_directory(parent, &directory_base));
-    run_git(
-        &repo_root,
-        &[
-            "worktree",
-            "add",
-            "-b",
-            &branch,
-            directory.to_str().unwrap_or(""),
-            &base_ref,
-        ],
-    )?;
-    Ok(directory.display().to_string())
-}
-
-fn resolve_preferred_base_ref(repo_root: &Path) -> Result<String, DaemonError> {
-    for candidate in ["main", "master"] {
-        if git_ref_exists(repo_root, &format!("refs/heads/{candidate}"))? {
-            return Ok(candidate.to_string());
-        }
-    }
-    let branch = detect_git_branch(repo_root.to_string_lossy().as_ref())?;
-    Ok(if branch == "HEAD" || branch.is_empty() {
-        "HEAD".to_string()
-    } else {
-        branch
-    })
-}
-
-fn resolve_available_branch_name(repo_root: &Path, base_name: &str) -> Result<String, DaemonError> {
-    let mut attempt = base_name.to_string();
-    let mut index = 1;
-    while git_ref_exists(repo_root, &format!("refs/heads/{attempt}"))? {
-        attempt = format!("{base_name}-{index}");
-        index += 1;
-    }
-    Ok(attempt)
-}
-
-fn resolve_available_worktree_directory(parent: &Path, base_name: &str) -> PathBuf {
-    let mut attempt = parent.join(base_name);
-    let mut index = 1;
-    while attempt.exists() {
-        attempt = parent.join(format!("{base_name}-{index}"));
-        index += 1;
-    }
-    attempt
-}
-
-fn resolve_requested_worktree_directory(parent: &Path, value: &str) -> PathBuf {
-    let expanded = expand_workspace_query_path(value);
-    if expanded.is_absolute() {
-        expanded
-    } else {
-        parent.join(expanded)
-    }
-}
-
-fn slugify_segment(value: &str) -> String {
-    let slug = value
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    slug.trim_matches('-')
-        .split('-')
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
-fn timestamp_slug() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    now.to_string()
 }
 
 fn paired_client_record(client: crate::config::PersistedClientPairing) -> PairedClientRecord {
