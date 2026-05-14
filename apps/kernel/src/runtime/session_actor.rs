@@ -21,6 +21,17 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::session::{CreateSessionRequest, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::TerminalStreamStore;
 
+mod lane_resolution;
+mod projection_policy;
+
+use projection_policy::{
+    projected_config_update_absence_response, projected_resize_terminal_response,
+    projected_runtime_notices_response, projected_session_absence_response,
+    projected_terminal_input_absence_response, session_id_for_projection_refresh,
+    session_response_projection_action, update_focus_projection_after_session_command,
+    SessionProjectionAction,
+};
+
 pub(crate) const SESSION_COMMAND_QUEUE_LIMIT: usize = 128;
 pub(crate) const SESSION_CREATE_LANE_ID: &str = "__session_create__";
 
@@ -148,142 +159,8 @@ impl SessionRuntime {
         &self,
         request: &LocalDaemonRequest,
     ) -> Result<String, DaemonError> {
-        match request {
-            LocalDaemonRequest::CreateSession(_) => Ok(SESSION_CREATE_LANE_ID.to_string()),
-            LocalDaemonRequest::AttachToSession(request) => {
-                self.resolve_direct_session_lane_key(&request.session_id)
-            }
-            LocalDaemonRequest::FocusAgent(request) => {
-                self.resolve_direct_session_lane_key(&request.session_id)
-            }
-            LocalDaemonRequest::CycleAgentFocus(request) => {
-                self.resolve_direct_session_lane_key(&request.session_id)
-            }
-            LocalDaemonRequest::ResizeTerminal(request) => {
-                self.resolve_direct_session_lane_key(&request.session_id)
-            }
-            LocalDaemonRequest::SendTerminalInput(request) => self
-                .resolve_attachment_scoped_session_lane_key(
-                    &request.session_id,
-                    &request.attachment_id,
-                ),
-            LocalDaemonRequest::PollRuntimeNotices(request) => self
-                .resolve_attachment_scoped_session_lane_key(
-                    &request.session_id,
-                    &request.attachment_id,
-                ),
-            LocalDaemonRequest::UpdateSessionConfig(request) => self
-                .resolve_attachment_scoped_session_lane_key(
-                    &request.session_id,
-                    &request.attachment_id,
-                ),
-            LocalDaemonRequest::UpdateAgentConfig(request) => {
-                self.resolve_direct_session_lane_key(&request.session_id)
-            }
-            LocalDaemonRequest::UpdateAgentProfile(request) => {
-                self.resolve_direct_session_lane_key(&request.session_id)
-            }
-            LocalDaemonRequest::AliasAgent(request) => {
-                self.resolve_direct_session_lane_key(&request.session_id)
-            }
-            LocalDaemonRequest::UpdateAgentSubstitutes(request) => {
-                self.resolve_direct_session_lane_key(&request.session_id)
-            }
-            LocalDaemonRequest::RespondToInteraction(request) => {
-                self.resolve_direct_session_lane_key(&request.session_id)
-            }
-            LocalDaemonRequest::AliasSession(request) => {
-                self.resolve_direct_session_lane_key(&request.session_id)
-            }
-            LocalDaemonRequest::SpawnAgent(request) => {
-                self.resolve_direct_session_lane_key(&request.session_id)
-            }
-            LocalDaemonRequest::DestroyAgent(request) => {
-                self.resolve_direct_session_lane_key(&request.session_id)
-            }
-            LocalDaemonRequest::EndSession(request) => {
-                self.resolve_direct_session_lane_key(&request.session_id)
-            }
-            LocalDaemonRequest::DeleteSession(request) => {
-                if let Some(session_id) = self
-                    .session_projection
-                    .resolve_session_ref_id(&request.session_ref, request.workspace_id.as_deref())
-                {
-                    return Ok(session_id);
-                }
-                if let Some(result) = self
-                    .session_projection
-                    .resolve_session_ref_id_from_warmed_list(
-                        &request.session_ref,
-                        request.workspace_id.as_deref(),
-                    )
-                {
-                    return result;
-                }
-                self.store
-                    .resolve_session_ref_id(&request.session_ref, request.workspace_id.as_deref())
-                    .await
-            }
-            LocalDaemonRequest::DetachFromSession(request) => {
-                if let Some(session_id) = self
-                    .session_projection
-                    .session_id_for_attachment(&request.attachment_id)
-                {
-                    return Ok(session_id);
-                }
-                if self.session_projection.has_warmed_list() {
-                    return Err(DaemonError::AttachmentNotFound {
-                        attachment_id: request.attachment_id.clone(),
-                    });
-                }
-                self.store
-                    .attachment_session_id(&request.attachment_id)
-                    .await
-            }
-            _ => Err(DaemonError::LocalTransport {
-                operation: "route session kernel command",
-                message: "request is not handled by the session runtime".to_string(),
-            }),
-        }
-    }
-
-    fn resolve_direct_session_lane_key(&self, session_id: &str) -> Result<String, DaemonError> {
-        if self.session_projection.get(session_id).is_some()
-            || !self.session_projection.has_warmed_list()
-        {
-            return Ok(session_id.to_string());
-        }
-        Err(DaemonError::SessionNotFound {
-            session_id: session_id.to_string(),
-        })
-    }
-
-    fn resolve_attachment_scoped_session_lane_key(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<String, DaemonError> {
-        if self
-            .session_projection
-            .get(session_id)
-            .is_some_and(|session| session.has_attachment(attachment_id))
-            || !self.session_projection.has_warmed_list()
-        {
-            return Ok(session_id.to_string());
-        }
-        if self
-            .session_projection
-            .session_id_for_attachment(attachment_id)
-            .is_some()
-        {
-            return Err(DaemonError::AttachmentNotInSession {
-                session_id: session_id.to_string(),
-                attachment_id: attachment_id.to_string(),
-            });
-        }
-        Err(DaemonError::AttachmentNotFound {
-            attachment_id: attachment_id.to_string(),
-        })
+        lane_resolution::resolve_session_lane_key(&self.store, &self.session_projection, request)
+            .await
     }
 
     async fn session_lane(&self, session_id: &str) -> mpsc::Sender<SessionCommandEnvelope> {
@@ -1176,11 +1053,6 @@ impl SessionRuntimeCommandExecutor {
     }
 }
 
-enum SessionProjectionAction {
-    Update(crate::session::RuntimeSession),
-    Remove { session_id: String },
-}
-
 fn command_session_actor_user_id(command: &KernelCommand) -> String {
     match command.caller.caller_kind {
         KernelCallerKind::LocalClient => command
@@ -1195,234 +1067,6 @@ fn command_session_actor_user_id(command: &KernelCommand) -> String {
             .user_id
             .clone()
             .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()),
-    }
-}
-
-async fn update_focus_projection_after_session_command(
-    focus_projection: &FocusedAgentProjection,
-    session_id: &str,
-    result: &Result<LocalDaemonResponse, DaemonError>,
-    focused_agent_id: Option<&str>,
-) {
-    match result {
-        Ok(LocalDaemonResponse::SessionCreated { session, .. }) => {
-            focus_projection
-                .update(
-                    session.id(),
-                    focused_agent_id.or_else(|| session.focused_agent_id()),
-                )
-                .await;
-        }
-        Ok(LocalDaemonResponse::SessionEnded { .. })
-        | Ok(LocalDaemonResponse::SessionDeleted { .. }) => {
-            focus_projection.remove(session_id).await;
-        }
-        Ok(_) => {
-            focus_projection.update(session_id, focused_agent_id).await;
-        }
-        Err(_) => {}
-    }
-}
-
-fn session_response_projection_action(
-    response: &LocalDaemonResponse,
-) -> Option<SessionProjectionAction> {
-    match response {
-        LocalDaemonResponse::SessionCreated { session, .. }
-        | LocalDaemonResponse::AgentAliased { session, .. }
-        | LocalDaemonResponse::AgentConfigUpdated { session, .. }
-        | LocalDaemonResponse::AgentProfileUpdated { session, .. }
-        | LocalDaemonResponse::SessionConfigUpdated { session, .. }
-        | LocalDaemonResponse::SessionEnded { session }
-        | LocalDaemonResponse::SessionAliased { session } => {
-            Some(SessionProjectionAction::Update(session.clone()))
-        }
-        LocalDaemonResponse::SessionDeleted { session } => Some(SessionProjectionAction::Remove {
-            session_id: session.id().to_string(),
-        }),
-        _ => None,
-    }
-}
-
-fn projected_runtime_notices_response(
-    session_projection: &SessionStateProjectionStore,
-    terminal_stream: &TerminalStreamStore,
-    request: &LocalDaemonRequest,
-) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-    let LocalDaemonRequest::PollRuntimeNotices(request) = request else {
-        return None;
-    };
-    if session_projection
-        .get(&request.session_id)
-        .is_some_and(|session| session.has_attachment(&request.attachment_id))
-    {
-        return Some(Ok(LocalDaemonResponse::RuntimeNotices {
-            notices: terminal_stream
-                .drain_notice_records(&request.session_id, &request.attachment_id),
-        }));
-    }
-    if !session_projection.has_warmed_list() {
-        return None;
-    }
-    let result = match session_projection.session_id_for_attachment(&request.attachment_id) {
-        Some(_) => Err(DaemonError::AttachmentNotInSession {
-            session_id: request.session_id.clone(),
-            attachment_id: request.attachment_id.clone(),
-        }),
-        None => Err(DaemonError::AttachmentNotFound {
-            attachment_id: request.attachment_id.clone(),
-        }),
-    };
-    Some(result)
-}
-
-fn projected_resize_terminal_response(
-    session_projection: &SessionStateProjectionStore,
-    request: &LocalDaemonRequest,
-) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-    let LocalDaemonRequest::ResizeTerminal(request) = request else {
-        return None;
-    };
-    if let Some(session) = session_projection.get(&request.session_id) {
-        if session.active_provider_run_id().is_none() {
-            return Some(Err(DaemonError::NoActiveProviderRun {
-                session_id: request.session_id.clone(),
-            }));
-        }
-        return None;
-    }
-    if !session_projection.has_warmed_list() {
-        return None;
-    }
-    Some(Err(DaemonError::SessionNotFound {
-        session_id: request.session_id.clone(),
-    }))
-}
-
-fn projected_terminal_input_absence_response(
-    session_projection: &SessionStateProjectionStore,
-    request: &LocalDaemonRequest,
-) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-    let LocalDaemonRequest::SendTerminalInput(request) = request else {
-        return None;
-    };
-    if let Some(session) = session_projection.get(&request.session_id) {
-        if !session.has_attachment(&request.attachment_id) {
-            return match session_projection.session_id_for_attachment(&request.attachment_id) {
-                Some(_) => Some(Err(DaemonError::AttachmentNotInSession {
-                    session_id: request.session_id.clone(),
-                    attachment_id: request.attachment_id.clone(),
-                })),
-                None => Some(Err(DaemonError::AttachmentNotFound {
-                    attachment_id: request.attachment_id.clone(),
-                })),
-            };
-        }
-        if session.active_provider_run_id().is_none() {
-            return Some(Err(DaemonError::NoActiveProviderRun {
-                session_id: request.session_id.clone(),
-            }));
-        }
-        return None;
-    }
-    if !session_projection.has_warmed_list() {
-        return None;
-    }
-    Some(Err(DaemonError::SessionNotFound {
-        session_id: request.session_id.clone(),
-    }))
-}
-
-fn projected_config_update_absence_response(
-    session_projection: &SessionStateProjectionStore,
-    request: &LocalDaemonRequest,
-) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-    let LocalDaemonRequest::UpdateSessionConfig(request) = request else {
-        return None;
-    };
-    if session_projection
-        .get(&request.session_id)
-        .is_some_and(|session| session.has_attachment(&request.attachment_id))
-    {
-        return None;
-    }
-    if !session_projection.has_warmed_list() {
-        return None;
-    }
-    let result = match session_projection.session_id_for_attachment(&request.attachment_id) {
-        Some(_) => Err(DaemonError::AttachmentNotInSession {
-            session_id: request.session_id.clone(),
-            attachment_id: request.attachment_id.clone(),
-        }),
-        None => Err(DaemonError::AttachmentNotFound {
-            attachment_id: request.attachment_id.clone(),
-        }),
-    };
-    Some(result)
-}
-
-fn projected_session_absence_response(
-    session_projection: &SessionStateProjectionStore,
-    request: &LocalDaemonRequest,
-) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-    let session_id = match request {
-        LocalDaemonRequest::AttachToSession(request) => &request.session_id,
-        LocalDaemonRequest::FocusAgent(request) => &request.session_id,
-        LocalDaemonRequest::CycleAgentFocus(request) => &request.session_id,
-        LocalDaemonRequest::AliasSession(request) => &request.session_id,
-        LocalDaemonRequest::AliasAgent(request) => &request.session_id,
-        LocalDaemonRequest::UpdateAgentProfile(request) => &request.session_id,
-        LocalDaemonRequest::EndSession(request) => &request.session_id,
-        _ => return None,
-    };
-    let Some(session) = session_projection.get(session_id) else {
-        if session_projection.has_warmed_list() {
-            return Some(Err(DaemonError::SessionNotFound {
-                session_id: session_id.clone(),
-            }));
-        }
-        return None;
-    };
-    if let LocalDaemonRequest::FocusAgent(request) = request {
-        if !session
-            .agents()
-            .iter()
-            .any(|agent| agent.id() == request.agent_id)
-        {
-            return Some(Err(DaemonError::AgentNotInSession {
-                session_id: request.session_id.clone(),
-                agent_id: request.agent_id.clone(),
-            }));
-        }
-    }
-    None
-}
-
-fn session_id_for_projection_refresh(
-    result: &Result<LocalDaemonResponse, DaemonError>,
-) -> Option<String> {
-    match result {
-        Ok(LocalDaemonResponse::SessionAttached { attachment })
-        | Ok(LocalDaemonResponse::SessionDetached { attachment }) => {
-            Some(attachment.session_id().to_string())
-        }
-        Ok(LocalDaemonResponse::SessionCreated { session, .. }) => Some(session.id().to_string()),
-        Ok(LocalDaemonResponse::AgentFocused { agent }) => Some(agent.session_id().to_string()),
-        Ok(LocalDaemonResponse::AgentSpawned { agent })
-        | Ok(LocalDaemonResponse::AgentAliased { agent, .. })
-        | Ok(LocalDaemonResponse::AgentConfigUpdated { agent, .. })
-        | Ok(LocalDaemonResponse::AgentProfileUpdated { agent, .. })
-        | Ok(LocalDaemonResponse::AgentDestroyed { agent }) => Some(agent.session_id().to_string()),
-        Ok(LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) }) => {
-            Some(agent.session_id().to_string())
-        }
-        Ok(LocalDaemonResponse::AgentFocusCycled { agent: None }) => None,
-        Ok(LocalDaemonResponse::TerminalResized { session_id, .. }) => Some(session_id.clone()),
-        Ok(LocalDaemonResponse::SessionConfigUpdated { session, .. }) => {
-            Some(session.id().to_string())
-        }
-        Ok(LocalDaemonResponse::SessionAliased { session }) => Some(session.id().to_string()),
-        _ => None,
     }
 }
 
@@ -1479,6 +1123,10 @@ impl SessionActor {
 
 #[cfg(test)]
 mod tests {
+    use super::projection_policy::{
+        projected_config_update_absence_response, session_response_projection_action,
+        SessionProjectionAction,
+    };
     use crate::agent::CreateAgentRequest;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::local::{
@@ -1490,10 +1138,7 @@ mod tests {
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest};
     use crate::runtime::command::KernelCommand;
     use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
-    use crate::runtime::session_actor::{
-        projected_config_update_absence_response, session_response_projection_action,
-        FocusedAgentProjection, SessionProjectionAction, SessionRuntime,
-    };
+    use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
     use crate::runtime::state::KernelRuntimeState;
     use crate::session::{
         CreateSessionRequest, PromptSubmissionOutcome, SessionAgentDefaults, DEFAULT_LOCAL_USER_ID,
