@@ -176,6 +176,7 @@ Documentation updates for this refactor are progress artifacts. Do not leave dir
 - 2026-05-14: Cloud terminal prompt value, draft, and input handling moved into `terminal/prompt-composer-controller.ts`; web tests pass with 545 tests and `client.ts` is down to 11,960 lines.
 - 2026-05-14: OSS provider native-interaction bridge and relay forwarding moved into `runtime/native_interaction_bridge.rs`; kernel lib tests pass with 726 tests and `runtime/router.rs` is down to 11,388 lines.
 - 2026-05-14: Cloud runtime notice parsing, status, entry projection, and failure settlement moved into `terminal/runtime-notice-controller.ts`; web tests pass with 549 tests and `client.ts` is down to 11,923 lines.
+- 2026-05-14: Cloud terminal output cache, tail-follow, image-load, scroll-intent, and turn-toggle anchor handling moved into `terminal/output-scroll-controller.ts`; web tests pass with 553 tests and `client.ts` is down to 11,729 lines.
 
 ## Summary
 
