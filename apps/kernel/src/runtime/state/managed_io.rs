@@ -204,6 +204,8 @@ mod patch_parser;
 pub(super) use patch_parser::*;
 mod file_state;
 pub(super) use file_state::*;
+mod edit_result;
+pub(super) use edit_result::*;
 mod patch;
 pub(super) use patch::*;
 mod whole_file;
