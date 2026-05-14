@@ -16,16 +16,17 @@ use crate::local::{
 };
 use crate::runtime::cloud_api_client::{
     accept_cloud_session_invite, cloud_profile_from_persisted, create_cloud_session_invite,
-    is_stale_cloud_link_error, issue_cloud_runtime_token, list_cloud_collaborators,
-    list_cloud_session_members, normalize_cloud_api_url, post_cloud_json,
-    revoke_cloud_session_invite, show_cloud_session_invite, CloudDevicePollResponse,
-    CloudDeviceStartResponse, CloudPairingTokenResponse,
+    issue_cloud_runtime_token, list_cloud_collaborators, list_cloud_session_members,
+    normalize_cloud_api_url, post_cloud_json, revoke_cloud_session_invite,
+    show_cloud_session_invite, CloudDevicePollResponse, CloudDeviceStartResponse,
+    CloudPairingTokenResponse,
 };
 use crate::runtime::cloud_relay_control::{
     cloud_relay_profile_has_runtime_credentials, cloud_relay_runtime_token_is_fresh,
     cloud_runtime_token_subject, CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
 };
-use crate::runtime::cloud_relay_profile_access::{
+use crate::runtime::cloud_relay_profile_store::{
+    clear_cloud_profile, clear_cloud_profile_if_stale, persist_cloud_profile,
     required_cloud_relay_profile, required_cloud_relay_profile_with_session,
 };
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
@@ -587,17 +588,6 @@ pub(crate) async fn execute_list_cloud_collaborators_request(
     Ok(LocalDaemonResponse::CloudCollaboratorsListed { collaborators })
 }
 
-pub(crate) async fn clear_cloud_profile_if_stale(
-    app: &Arc<Mutex<DaemonApp>>,
-    config_projection: &DaemonConfigProjectionStore,
-    error: &DaemonError,
-) -> Result<(), DaemonError> {
-    if !is_stale_cloud_link_error(error) {
-        return Ok(());
-    }
-    clear_cloud_profile(app, config_projection).await
-}
-
 async fn machine_runtime_profile_payload(
     config_projection: &DaemonConfigProjectionStore,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
@@ -623,29 +613,4 @@ async fn machine_runtime_profile_payload(
         "os": std::env::consts::OS,
         "homeDir": std::env::var("HOME").ok(),
     })
-}
-
-async fn persist_cloud_profile(
-    app: &Arc<Mutex<DaemonApp>>,
-    config_projection: &DaemonConfigProjectionStore,
-    profile: PersistedCloudRelayProfile,
-) -> Result<PersistedCloudRelayProfile, DaemonError> {
-    {
-        let mut app = app.lock().await;
-        app.persist_cloud_relay_profile(Some(profile.clone()))?;
-        config_projection.update(app.config().clone());
-    }
-    Ok(profile)
-}
-
-async fn clear_cloud_profile(
-    app: &Arc<Mutex<DaemonApp>>,
-    config_projection: &DaemonConfigProjectionStore,
-) -> Result<(), DaemonError> {
-    {
-        let mut app = app.lock().await;
-        app.persist_cloud_relay_profile(None)?;
-        config_projection.update(app.config().clone());
-    }
-    Ok(())
 }

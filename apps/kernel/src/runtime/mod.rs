@@ -7,7 +7,7 @@ pub(crate) mod capability_registry;
 pub(crate) mod cloud_api_client;
 pub(crate) mod cloud_relay_control;
 pub(crate) mod cloud_relay_executor;
-pub(crate) mod cloud_relay_profile_access;
+pub(crate) mod cloud_relay_profile_store;
 pub mod command;
 pub(crate) mod command_response_refresh;
 pub(crate) mod daemon_health_projection;
