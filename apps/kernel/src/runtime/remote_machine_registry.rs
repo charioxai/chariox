@@ -9,10 +9,51 @@ use crate::local::provider_requests::{
     resolve_machine_id_for_registry,
 };
 use crate::local::{
-    ApproveRemoteMachineRequest, ForgetRemoteMachineRequest, LocalDaemonResponse,
-    RenameRemoteMachineRequest,
+    ApproveRemoteMachineRequest, ForgetRemoteMachineRequest, LocalDaemonRequest,
+    LocalDaemonResponse, RenameRemoteMachineRequest,
 };
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
+
+pub(crate) async fn execute_remote_machine_registry_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    config_projection: &DaemonConfigProjectionStore,
+    provider_catalog_projection: &ProviderCatalogProjectionStore,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::ApproveRemoteMachine(request) => {
+            execute_approve_remote_machine_request(
+                app,
+                config_projection,
+                provider_catalog_projection,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::ForgetRemoteMachine(request) => {
+            execute_forget_remote_machine_request(
+                app,
+                config_projection,
+                provider_catalog_projection,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::RenameRemoteMachine(request) => {
+            execute_rename_remote_machine_request(
+                app,
+                config_projection,
+                provider_catalog_projection,
+                request,
+            )
+            .await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "remote machine registry request",
+            message: "unsupported remote machine registry request".to_string(),
+        }),
+    }
+}
 
 pub(crate) async fn execute_approve_remote_machine_request(
     app: &Arc<Mutex<DaemonApp>>,

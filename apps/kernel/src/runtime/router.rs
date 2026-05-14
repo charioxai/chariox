@@ -81,10 +81,7 @@ use crate::runtime::relay_config_control::{
     execute_configure_relay_request, projected_relay_status_response,
 };
 use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
-use crate::runtime::remote_machine_registry::{
-    execute_approve_remote_machine_request, execute_forget_remote_machine_request,
-    execute_rename_remote_machine_request,
-};
+use crate::runtime::remote_machine_registry::execute_remote_machine_registry_request;
 use crate::runtime::remote_relay_inventory::{
     execute_list_remote_machine_kernels_request, execute_list_remote_machines_request,
 };
@@ -1112,26 +1109,10 @@ impl CommandRouter {
                 execute_delete_kernel_request(&self.config_projection, &self.runtime_state, request)
                     .await
             }
-            LocalDaemonRequest::ApproveRemoteMachine(request) => {
-                execute_approve_remote_machine_request(
-                    &self.app,
-                    &self.config_projection,
-                    &self.provider_catalog_projection,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::ForgetRemoteMachine(request) => {
-                execute_forget_remote_machine_request(
-                    &self.app,
-                    &self.config_projection,
-                    &self.provider_catalog_projection,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::RenameRemoteMachine(request) => {
-                execute_rename_remote_machine_request(
+            request @ (LocalDaemonRequest::ApproveRemoteMachine(_)
+            | LocalDaemonRequest::ForgetRemoteMachine(_)
+            | LocalDaemonRequest::RenameRemoteMachine(_)) => {
+                execute_remote_machine_registry_request(
                     &self.app,
                     &self.config_projection,
                     &self.provider_catalog_projection,
@@ -1580,26 +1561,10 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::ApproveRemoteMachine(request) => {
-                execute_approve_remote_machine_request(
-                    &self.app,
-                    &self.config_projection,
-                    &self.provider_catalog_projection,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::ForgetRemoteMachine(request) => {
-                execute_forget_remote_machine_request(
-                    &self.app,
-                    &self.config_projection,
-                    &self.provider_catalog_projection,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::RenameRemoteMachine(request) => {
-                execute_rename_remote_machine_request(
+            request @ (LocalDaemonRequest::ApproveRemoteMachine(_)
+            | LocalDaemonRequest::ForgetRemoteMachine(_)
+            | LocalDaemonRequest::RenameRemoteMachine(_)) => {
+                execute_remote_machine_registry_request(
                     &self.app,
                     &self.config_projection,
                     &self.provider_catalog_projection,
