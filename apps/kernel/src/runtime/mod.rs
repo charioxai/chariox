@@ -12,6 +12,7 @@ pub mod projection;
 pub mod prompt_state;
 pub mod provider_launch_executor;
 pub mod router;
+pub(crate) mod semantic_history_utility;
 pub mod session_actor;
 pub(crate) mod session_membership;
 pub(crate) mod session_projection_refresh;
