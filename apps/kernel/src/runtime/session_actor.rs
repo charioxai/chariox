@@ -13,10 +13,12 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::session::DEFAULT_LOCAL_USER_ID;
 use crate::terminal::TerminalStreamStore;
 
+mod focus_projection;
 mod lane_resolution;
 mod projection_policy;
 mod store;
 
+pub(crate) use focus_projection::FocusedAgentProjection;
 use projection_policy::{
     projected_config_update_absence_response, projected_resize_terminal_response,
     projected_runtime_notices_response, projected_session_absence_response,
@@ -27,33 +29,6 @@ use store::SessionRuntimeStore;
 
 pub(crate) const SESSION_COMMAND_QUEUE_LIMIT: usize = 128;
 pub(crate) const SESSION_CREATE_LANE_ID: &str = "__session_create__";
-
-#[derive(Clone, Default)]
-pub(crate) struct FocusedAgentProjection {
-    focused_agents: Arc<Mutex<HashMap<String, String>>>,
-}
-
-impl FocusedAgentProjection {
-    pub(crate) async fn update(&self, session_id: &str, agent_id: Option<&str>) {
-        let mut focused_agents = self.focused_agents.lock().await;
-        match agent_id {
-            Some(agent_id) => {
-                focused_agents.insert(session_id.to_string(), agent_id.to_string());
-            }
-            None => {
-                focused_agents.remove(session_id);
-            }
-        }
-    }
-
-    pub(crate) async fn remove(&self, session_id: &str) {
-        self.focused_agents.lock().await.remove(session_id);
-    }
-
-    pub(crate) async fn focused_agent_id(&self, session_id: &str) -> Option<String> {
-        self.focused_agents.lock().await.get(session_id).cloned()
-    }
-}
 
 #[derive(Debug)]
 struct SessionCommandEnvelope {
