@@ -1,5 +1,6 @@
 import { spawn, execFile } from "node:child_process"
 import net from "node:net"
+import os from "node:os"
 import path from "node:path"
 import { mkdir, readFile, rm } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
@@ -89,6 +90,10 @@ async function waitForFileMatch(file, pattern, timeoutMs = 90_000) {
 
 async function screen(name, args) {
   await execFileAsync("screen", ["-S", name, ...args])
+}
+
+async function screenStuff(name, text) {
+  await screen(name, ["-p", "0", "-X", "stuff", text])
 }
 
 async function screenQuit(name) {
@@ -219,6 +224,15 @@ async function waitForInteraction(socketPath, alias, timeoutMs = 120_000) {
   throw new Error(`timed out waiting for permission interaction for ${alias}; last=${JSON.stringify(last)}`)
 }
 
+async function assertNoPermissionInteraction(socketPath, alias) {
+  const snapshot = await automationRequest(socketPath, { action: "snapshot" })
+  const agent = snapshot.session?.agents?.find((entry) => entry.alias === alias)
+  const interaction = snapshot.interactions?.find((entry) => entry.agentId === agent?.id && entry.kind === "permission")
+  if (interaction) {
+    throw new Error(`unexpected Arroba permission interaction for native-origin Claude prompt: ${JSON.stringify(interaction)}`)
+  }
+}
+
 async function waitForInteractionFocused(socketPath, interactionId, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs
   let last = null
@@ -321,13 +335,25 @@ async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, pr
 }
 
 function permissionPrompt(provider, markerText, filePath, content) {
-  const shellCommand = `echo ${content} > ${filePath}`
+  const shellCommand = `printf %s ${content} > ${filePath}`
   if (provider === "claude") {
-    return `This is an Arroba native TUI validation drill. Please use the Bash tool to create the temporary file ${filePath} containing exactly ${content}. After the file is written, briefly confirm the file path.`
+    return `Please create the file ${filePath} with this content: ${content}. You can use Bash if convenient.`
   }
   return provider === "codex"
     ? `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
     : `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
+}
+
+function claudeInnerScreenLogPath(screenName) {
+  const tempName = screenName.replace(/^arroba-claude-/, "arroba-claude-native-")
+  return path.join(os.tmpdir(), tempName, "screen", "screenlog.0")
+}
+
+async function approveClaudeNativePermission(screenName, logFile, alias, automationSocket) {
+  await waitForFileMatch(logFile, /Bash\(|❯\s*1\.\s*Yes|Yes,\s+and\s+always\s+allow/, 180_000)
+  await assertNoPermissionInteraction(automationSocket, alias)
+  await screenStuff(screenName, "\r")
+  return { surface: "claude-native-tui", screen: screenName }
 }
 
 async function runProvider(provider, options) {
@@ -429,6 +455,10 @@ async function runProvider(provider, options) {
     const providerSessionId = provider === "opencode"
       ? (await waitForFileMatch(logs.native, /opencode sess:\s+([^\s]+)/)).match[1]
       : null
+    const claudeScreen = provider === "claude"
+      ? (await waitForFileMatch(logs.native, /screen:\s+(arroba-claude-[^\s]+)/)).match[1]
+      : null
+    const claudeScreenLog = claudeScreen ? claudeInnerScreenLogPath(claudeScreen) : null
 
     client = new LocalIpcClient(kernelUrl)
     const attachment = unwrap(
@@ -467,7 +497,9 @@ async function runProvider(provider, options) {
       await waitForAgentIdle(automationSocket, alias)
       console.log(JSON.stringify({ provider, direction: "native_tui_to_arroba", interaction: nativeInteraction.title ?? nativeInteraction.message }))
     } else {
-      const nativeInteraction = await answerPermissionFromCli(automationSocket, alias)
+      const nativeInteraction = provider === "claude"
+        ? await approveClaudeNativePermission(claudeScreen, claudeScreenLog, alias, automationSocket)
+        : await answerPermissionFromCli(automationSocket, alias)
       if (provider !== "claude") await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.nativePrompt)
       if (provider !== "claude") await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.nativePrompt)
       if (provider === "claude") await waitForFileContent(files.nativePrompt, `native-${provider}`)

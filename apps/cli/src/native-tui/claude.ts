@@ -87,6 +87,10 @@ type ClaudeTuiController = {
   stop: () => Promise<void>
 }
 
+type ClaudePromptOriginState = {
+  current: "native" | "external" | null
+}
+
 export async function runClaudeNativeTui(args: string[]): Promise<void> {
   const options = parseNativeClaudeArgs(args)
   const inferredTargets = await inferWorkspaceTargetsFromLaunchDirectory(process.cwd())
@@ -117,6 +121,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
   let permissionBridge: { url: string; stop: () => Promise<void> } | null = null
   let pump: { stop: () => void } | null = null
   let tui: ClaudeTuiController | null = null
+  const promptOrigin: ClaudePromptOriginState = { current: null }
 
   try {
     await mkdir(screenLogDir, { recursive: true })
@@ -139,6 +144,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       sessionId: session.id,
       attachmentId: attachment.id,
       agentId: agent.id,
+      promptOrigin,
     })
 
     process.stderr.write([
@@ -179,6 +185,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       attachmentContextDir,
       worktree,
       inlineLocalAttachments: Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
+      promptOrigin,
       submitPrompt: tui.submitPrompt,
     })
     pump = startKernelPumpLoop(client, session.id, attachment.id)
@@ -416,6 +423,7 @@ function startClaudeBridge(options: {
   attachmentContextDir: string
   worktree: string
   inlineLocalAttachments: boolean
+  promptOrigin: ClaudePromptOriginState
   submitPrompt: (prompt: string) => Promise<void>
 }): { stop: () => void } {
   let stopped = false
@@ -451,10 +459,14 @@ function startClaudeBridge(options: {
               if (submittedPrompt) {
                 activePromptId = submittedPrompt
                 nativeSubmittedPromptIds.add(submittedPrompt)
+                options.promptOrigin.current = "native"
               } else {
                 const state = await sessionState(options.client, options.sessionId)
                 activePromptId = promptForAgent(state, options.agentId)?.id ?? activePromptId
-                if (activePromptId) nativeSubmittedPromptIds.add(activePromptId)
+                if (activePromptId) {
+                  nativeSubmittedPromptIds.add(activePromptId)
+                  options.promptOrigin.current = "native"
+                }
               }
             }
           } else if (event.hook_event_name === "Stop") {
@@ -476,6 +488,7 @@ function startClaudeBridge(options: {
             await options.client.send<Record<string, unknown>>(completePromptRequest(options.sessionId))
               .catch(() => ({}))
             activePromptId = null
+            options.promptOrigin.current = null
             await writeFile(options.contextFile, "", "utf8").catch(() => {})
           }
         }
@@ -485,8 +498,13 @@ function startClaudeBridge(options: {
         if (activePrompt && activePrompt.id !== activePromptId && !nativeSubmittedPromptIds.has(activePrompt.id)) {
           activePromptId = activePrompt.id
           injectedPromptIds.add(activePrompt.id)
+          options.promptOrigin.current = "external"
           const hidden = extractHiddenInstructions(activePrompt.prompt)
           const attachmentContext = await formatClaudeAttachmentContext(
+            activePrompt.attachments ?? [],
+            options.attachmentContextDir,
+          )
+          const nativeAttachmentSuffix = await formatClaudeNativeAttachmentPromptSuffix(
             activePrompt.attachments ?? [],
             options.attachmentContextDir,
           )
@@ -498,8 +516,9 @@ function startClaudeBridge(options: {
             })
           }
           const visible = redactHiddenInstructions(activePrompt.prompt).trim()
-          if (visible) {
-            await options.submitPrompt(visible)
+          const prompt = joinClaudeVisiblePrompt(nativeAttachmentSuffix, visible)
+          if (prompt) {
+            await options.submitPrompt(prompt)
           }
         }
       } catch (error) {
@@ -521,6 +540,7 @@ async function startClaudePermissionBridge(options: {
   sessionId: string
   attachmentId: string
   agentId: string
+  promptOrigin: ClaudePromptOriginState
 }): Promise<{ url: string; stop: () => Promise<void> }> {
   const server = createServer((request, response) => {
     void handleClaudePermissionBridgeRequest(options, request, response)
@@ -549,6 +569,7 @@ async function handleClaudePermissionBridgeRequest(
     sessionId: string
     attachmentId: string
     agentId: string
+    promptOrigin: ClaudePromptOriginState
   },
   request: IncomingMessage,
   response: ServerResponse,
@@ -563,11 +584,8 @@ async function handleClaudePermissionBridgeRequest(
       writeJsonResponse(response, 200, { handled: false })
       return
     }
-    if (!await shouldBridgeCurrentClaudePermission(
-      options.client,
-      options.sessionId,
-      options.agentId,
-      options.attachmentId,
+    if (!shouldBridgeCurrentClaudePermission(
+      options.promptOrigin,
     )) {
       writeJsonResponse(response, 200, { handled: false })
       return
@@ -605,15 +623,10 @@ async function handleClaudePermissionBridgeRequest(
   }
 }
 
-async function shouldBridgeCurrentClaudePermission(
-  client: LocalIpcClient,
-  sessionId: string,
-  agentId: string,
-  nativeAttachmentId: string,
-): Promise<boolean> {
-  const session = await sessionState(client, sessionId)
-  const activePrompt = promptForAgent(session, agentId)
-  return Boolean(activePrompt && activePrompt.source_attachment_id !== nativeAttachmentId)
+function shouldBridgeCurrentClaudePermission(
+  promptOrigin: ClaudePromptOriginState,
+): boolean {
+  return promptOrigin.current === "external"
 }
 
 type ClaudePermissionPayload = {
@@ -1020,6 +1033,30 @@ async function formatClaudeAttachmentContext(
     "The user included prompt attachments. Treat them as part of the current user request.",
     ...blocks,
   ].filter(Boolean).join("\n\n")
+}
+
+async function formatClaudeNativeAttachmentPromptSuffix(
+  attachments: PromptAttachmentPart[],
+  attachmentContextDir: string,
+): Promise<string> {
+  if (attachments.length === 0) return ""
+  await mkdir(attachmentContextDir, { recursive: true })
+  const paths: string[] = []
+  for (const [index, attachment] of attachments.entries()) {
+    if (isClaudeTextAttachment(attachment)) continue
+    const attachmentPath = await materializeClaudeAttachmentPath(attachment, index, attachmentContextDir)
+    if (attachmentPath) paths.push(claudeAttachmentMention(attachmentPath))
+  }
+  return paths.join(" ")
+}
+
+function claudeAttachmentMention(filePath: string): string {
+  if (!/[\s"'\\]/.test(filePath)) return `@${filePath}`
+  return `@"${filePath.replace(/(["\\])/g, "\\$1")}"`
+}
+
+function joinClaudeVisiblePrompt(...parts: string[]): string {
+  return parts.map((part) => part.trim()).filter(Boolean).join("\n\n")
 }
 
 async function formatClaudeAttachmentBlock(

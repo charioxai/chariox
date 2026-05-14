@@ -35,12 +35,12 @@ TUI stay in Claude Code's native permission UI, while permissions for prompts
 entered from an Arroba TUI are bridged into Arroba and can be answered there.
 This keeps the initiating CLI in control of the user-facing permission prompt.
 
-2026-05-14 Claude attachment update: local Claude native TUI text/file prompt
-attachments are implemented and covered by `live-native-tui-attachment-drill.mjs
---provider claude`. Native-origin `@file` prompts are captured as kernel prompt
-attachments, and Arroba-origin text attachments are delivered to Claude through
-the hook `additionalContext` path. Claude image attachments remain unvalidated,
-so local Claude attachments are partial until image behavior is proven.
+2026-05-14 Claude attachment update: local Claude native TUI prompt attachments
+are implemented and covered by `live-native-tui-attachment-drill.mjs --provider
+claude`. Native-origin `@file`/`@image` prompts are captured as kernel prompt
+attachments. Arroba-origin text attachments are delivered through Claude hook
+`additionalContext`; Arroba-origin non-text attachments are materialized and
+submitted to Claude's TUI as native `@path` mentions.
 
 ## Goal
 
@@ -95,7 +95,8 @@ Permissions:
 - Local Claude: product behavior is implemented with origin-aware permission
   ownership. Claude-origin prompts defer to Claude Code's native permission UI;
   Arroba-origin prompts bridge the permission interaction into Arroba. Dedicated
-  automated coverage still needs a deterministic native-Claude approval driver.
+  automated coverage is provided by `live-native-tui-permission-drill.mjs
+  --provider claude`.
 - Standard remote and slice: not covered for all three providers in this native
   TUI matrix.
 
@@ -103,7 +104,9 @@ Prompt attachments:
 
 - Local Codex/OpenCode: covered by `live-native-tui-attachment-drill.mjs`.
 - Local Claude: covered by `live-native-tui-attachment-drill.mjs --provider
-  claude` for text/file attachments; image attachments are unvalidated.
+  claude` for native-origin and Arroba-origin image attachments. Text/file
+  attachment delivery is also implemented through the same native capture and
+  hook context paths.
 - Same-host relay Codex/OpenCode: covered by
   `live-remote-native-tui-drill.mjs --providers opencode,codex
   --include-attachments`.
@@ -175,18 +178,18 @@ Provider notes:
    - Codex/OpenCode local native TUI permissions pass in both directions.
    - Claude local permissions are origin-aware: Claude-origin permissions stay
      native; Arroba-origin permissions bridge into Arroba.
-   - Remaining work: add deterministic automated coverage for the Claude
-     native-origin permission path without relying on provider reasoning to
-     choose a tool call.
+   - Claude deterministic live coverage is implemented with a native-TUI
+     approval driver for native-origin prompts and Arroba interaction approval
+     for Arroba-origin prompts.
 
 4. Implement and validate local Claude prompt attachments.
-   - Completed for local text/file attachments.
-   - Native-origin `@file` references are captured and submitted to the kernel
-     as prompt attachments.
+   - Completed for local text/file and image attachments.
+   - Native-origin `@file`/`@image` references are captured and submitted to the
+     kernel as prompt attachments.
    - Arroba-origin text/file attachments are delivered through Claude hook
      `additionalContext`.
-   - Image attachment behavior still needs provider-specific validation before
-     claiming parity.
+   - Arroba-origin images are materialized and injected into Claude Code as
+     native `@path` mentions so the provider TUI handles them normally.
 
 5. Validate standard remote home-worker native TUI.
    - Run the prompt/turn, permission, and prompt-attachment matrix for all three
@@ -218,7 +221,7 @@ Legend:
 | --- | --- | --- | --- | --- | --- |
 | local | Codex | pass | pass | pass | gap |
 | local | OpenCode | pass | pass | pass | gap |
-| local | Claude | pass | partial | partial | gap |
+| local | Claude | pass | pass | pass | gap |
 | standard remote | Codex | gap | gap | gap | gap |
 | standard remote | OpenCode | gap | gap | gap | gap |
 | standard remote | Claude | gap | gap | gap | gap |
