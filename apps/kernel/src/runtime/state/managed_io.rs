@@ -206,6 +206,8 @@ mod file_state;
 pub(super) use file_state::*;
 mod edit_result;
 pub(super) use edit_result::*;
+mod reservation;
+pub(super) use reservation::*;
 mod patch;
 pub(super) use patch::*;
 mod whole_file;
