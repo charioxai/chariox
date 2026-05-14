@@ -13,33 +13,26 @@ use crate::config::PersistedCloudRelayProfile;
 use crate::error::DaemonError;
 use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
-use crate::local::provider_requests::{
-    forgotten_machine_record, record_for_machine_id, resolve_machine_for_registry,
-    resolve_machine_id_for_registry, PROVIDER_CATALOG_CACHE_TTL,
-};
+use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
 use crate::local::{
     AcceptCloudSessionInviteRequest, AgentGrantKind, AgentUtilityInput, AgentUtilityKind,
-    AgentUtilityOutput, AgentUtilityResult, ApproveRemoteMachineRequest,
-    AttachWorkspaceLinkRequest, CloudRelayLoginPoll, CloudRelayLoginPollStatus,
+    AgentUtilityOutput, AgentUtilityResult, CloudRelayLoginPoll, CloudRelayLoginPollStatus,
     CloudRelayLoginStart, CloudRelayRuntimeToken, ConfigureRelayRequest, ConnectCloudRelayRequest,
-    CreateCloudSessionInviteRequest, CreatePairingInviteRequest, CreateSessionInviteRequest,
-    CreateTerminalPairingLinkRequest, CreateWorkspaceLinkRequest, DeleteKernelRequest,
-    DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GenerateWorkspaceCommitMessageRequest,
-    GetPromptInputHistoryRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-    GetSessionStateRequest, GrantAgentCapabilityRequest, IssueCloudRelayClientTokenRequest,
-    JoinPairingInviteRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
-    ListAgentsRequest, ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest,
-    ListSessionMembersRequest, ListSessionsRequest, ListWorkspaceLinksRequest, LocalDaemonRequest,
-    LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
+    CreateCloudSessionInviteRequest, CreatePairingInviteRequest, CreateTerminalPairingLinkRequest,
+    DeleteKernelRequest, GenerateWorkspaceCommitMessageRequest, GetPromptInputHistoryRequest,
+    GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
+    GrantAgentCapabilityRequest, IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest,
+    JoinTerminalPairingLinkRequest, ListAgentsRequest, ListCloudCollaboratorsRequest,
+    ListCloudSessionMembersRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
+    LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
     PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairingInviteIntent,
     PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest, PumpTerminalOutputRequest,
-    RecordPromptInputHistoryRequest, RelayStatus, RenameRemoteMachineRequest,
-    ResolveSessionRequest, RevokeAgentCapabilityRequest, RevokeCloudSessionInviteRequest,
-    RevokeSessionInviteRequest, RunAgentUtilityRequest, SemanticHistoryMatch,
-    SemanticHistorySearchUtilityInput, SemanticSearchHistoryMode, SemanticSearchHistoryRequest,
-    SessionInviteRecord, ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest,
-    StartCloudRelayLoginRequest, TeardownProviderProcessesRequest, TerminalPairingLinkRecord,
-    TerminalType, UpdateProviderRunSelectionRequest, WaitingRoomPublicSnapshot,
+    RecordPromptInputHistoryRequest, RelayStatus, ResolveSessionRequest,
+    RevokeAgentCapabilityRequest, RevokeCloudSessionInviteRequest, RunAgentUtilityRequest,
+    SemanticHistoryMatch, SemanticHistorySearchUtilityInput, SemanticSearchHistoryMode,
+    SemanticSearchHistoryRequest, ShowCloudSessionInviteRequest, StartCloudRelayLoginRequest,
+    TeardownProviderProcessesRequest, TerminalPairingLinkRecord, TerminalType,
+    UpdateProviderRunSelectionRequest, WaitingRoomPublicSnapshot,
     WorkspaceCommitMessageUtilityInput,
 };
 use crate::provider::{
@@ -78,9 +71,8 @@ use crate::runtime::history_requests::{
     semantic_search_request_from_utility_input, semantic_utility_input_from_search_request,
 };
 use crate::runtime::invite_tokens::{
-    decode_pairing_invite_token, decode_session_invite_token, encode_pairing_invite_token,
-    encode_session_invite_token, encode_terminal_pairing_link, PairingInviteToken,
-    SessionInviteToken,
+    decode_pairing_invite_token, encode_pairing_invite_token, encode_terminal_pairing_link,
+    PairingInviteToken,
 };
 use crate::runtime::native_interaction_bridge::{
     forward_relay_native_interaction, install_provider_native_interaction_bridge,
@@ -107,10 +99,21 @@ use crate::runtime::provider_process_control::{
     provider_processes_visible_to_user as filter_provider_processes_visible_to_user,
     teardown_provider_processes,
 };
+use crate::runtime::remote_machine_registry::{
+    execute_approve_remote_machine_request, execute_forget_remote_machine_request,
+    execute_rename_remote_machine_request,
+};
 use crate::runtime::semantic_history_utility::{
     parse_semantic_history_search_utility_output, semantic_history_search_utility_prompt,
 };
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
+use crate::runtime::session_collaboration_executor::{
+    execute_attach_workspace_link_request, execute_create_session_invite_request,
+    execute_create_workspace_link_request, execute_detach_workspace_link_request,
+    execute_join_session_invite_request, execute_list_session_members_request,
+    execute_list_workspace_links_request, execute_revoke_session_invite_request,
+    execute_show_workspace_link_request,
+};
 use crate::runtime::session_membership::{
     command_session_user_id, is_implicit_local_session_caller, request_session_scope,
     SessionMembershipScope,
@@ -1316,44 +1319,87 @@ impl CommandRouter {
                 self.execute_delete_kernel_request(request).await
             }
             LocalDaemonRequest::ApproveRemoteMachine(request) => {
-                self.execute_approve_remote_machine_request(request).await
+                execute_approve_remote_machine_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ForgetRemoteMachine(request) => {
-                self.execute_forget_remote_machine_request(request).await
+                execute_forget_remote_machine_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::RenameRemoteMachine(request) => {
-                self.execute_rename_remote_machine_request(request).await
+                execute_rename_remote_machine_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ListSessionMembers(request) => {
-                self.execute_list_session_members_request(request).await
+                execute_list_session_members_request(&self.app, request).await
             }
             LocalDaemonRequest::CreateSessionInvite(request) => {
-                self.execute_create_session_invite_request(&command, request)
-                    .await
+                execute_create_session_invite_request(
+                    &self.app,
+                    &self.session_projection,
+                    &command,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::JoinSessionInvite(request) => {
-                self.execute_join_session_invite_request(request).await
+                execute_join_session_invite_request(&self.app, &self.session_projection, request)
+                    .await
             }
             LocalDaemonRequest::RevokeSessionInvite(request) => {
-                self.execute_revoke_session_invite_request(request).await
+                execute_revoke_session_invite_request(&self.app, &self.session_projection, request)
+                    .await
             }
             LocalDaemonRequest::CreateWorkspaceLink(request) => {
-                self.execute_create_workspace_link_request(&command, request)
-                    .await
+                execute_create_workspace_link_request(
+                    &self.app,
+                    &self.session_projection,
+                    &command,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ListWorkspaceLinks(request) => {
-                self.execute_list_workspace_links_request(request).await
+                execute_list_workspace_links_request(&self.app, request).await
             }
             LocalDaemonRequest::ShowWorkspaceLink(request) => {
-                self.execute_show_workspace_link_request(request).await
+                execute_show_workspace_link_request(&self.app, request).await
             }
             LocalDaemonRequest::AttachWorkspaceLink(request) => {
-                self.execute_attach_workspace_link_request(&command, request)
-                    .await
+                let config = self.config_projection.snapshot();
+                execute_attach_workspace_link_request(
+                    &self.app,
+                    &self.session_projection,
+                    &command,
+                    config.host_machine_id,
+                    config.daemon_id,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::DetachWorkspaceLink(request) => {
-                self.execute_detach_workspace_link_request(&command, request)
-                    .await
+                execute_detach_workspace_link_request(
+                    &self.app,
+                    &self.session_projection,
+                    &command,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::CreatePairingInvite(request) => {
                 self.execute_create_pairing_invite_request(request).await
@@ -2992,256 +3038,6 @@ impl CommandRouter {
         })
     }
 
-    async fn execute_approve_remote_machine_request(
-        &self,
-        request: ApproveRemoteMachineRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config_projection.snapshot();
-        let live = crate::transport::relay_discovery::list_live_machines(&config)
-            .await
-            .unwrap_or_default();
-        let machine = resolve_machine_for_registry(&request.machine_ref, &live)?;
-        crate::config::DaemonConfig::approve_remote_machine(
-            machine.machine_id.clone(),
-            machine.machine_alias.clone(),
-        )?;
-        self.invalidate_provider_catalog_caches().await;
-        let machine = record_for_machine_id(machine.machine_id, live, &config.host_machine_id)?;
-        Ok(LocalDaemonResponse::RemoteMachineApproved { machine })
-    }
-
-    async fn execute_forget_remote_machine_request(
-        &self,
-        request: ForgetRemoteMachineRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config_projection.snapshot();
-        let live = crate::transport::relay_discovery::list_live_machines(&config)
-            .await
-            .unwrap_or_default();
-        let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
-        let saved = crate::config::DaemonConfig::forget_remote_machine(machine.clone())?;
-        self.invalidate_provider_catalog_caches().await;
-        let machine = forgotten_machine_record(machine, saved.alias, live, &config.host_machine_id);
-        Ok(LocalDaemonResponse::RemoteMachineForgotten { machine })
-    }
-
-    async fn execute_rename_remote_machine_request(
-        &self,
-        request: RenameRemoteMachineRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config_projection.snapshot();
-        let live = crate::transport::relay_discovery::list_live_machines(&config)
-            .await
-            .unwrap_or_default();
-        let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
-        crate::config::DaemonConfig::rename_remote_machine(machine.clone(), request.alias)?;
-        self.invalidate_provider_catalog_caches().await;
-        let machine = record_for_machine_id(machine, live, &config.host_machine_id)?;
-        Ok(LocalDaemonResponse::RemoteMachineRenamed { machine })
-    }
-
-    async fn execute_list_session_members_request(
-        &self,
-        request: ListSessionMembersRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let app = self.app.lock().await;
-        let (members, invites) = app.sessions().list_session_members(&request.session_id)?;
-        Ok(LocalDaemonResponse::SessionMembersListed { members, invites })
-    }
-
-    async fn execute_create_session_invite_request(
-        &self,
-        command: &KernelCommand,
-        request: CreateSessionInviteRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let now_ms = current_unix_ms();
-        let expires_at_ms = request
-            .expires_in_ms
-            .map(|expires_in_ms| now_ms.saturating_add(expires_in_ms));
-        let invite_id = random_hex_id();
-        let created_by_user_id = command_caller_user_id(command);
-        let (session, invite) = {
-            let app = self.app.lock().await;
-            let result = app.sessions_mut().create_session_invite(
-                &request.session_id,
-                invite_id,
-                created_by_user_id,
-                expires_at_ms,
-                request.max_uses.or(Some(1)),
-            )?;
-            result
-        };
-        let invite_token = encode_session_invite_token(&SessionInviteToken {
-            version: 1,
-            session_id: session.id().to_string(),
-            invite_id: invite.invite_id().to_string(),
-            created_by_user_id: invite.created_by_user_id().to_string(),
-            issued_at_ms: invite.created_at_ms(),
-            expires_at_ms: invite.expires_at_ms(),
-            max_uses: invite.max_uses(),
-        })?;
-        self.session_projection.update(session.clone());
-        Ok(LocalDaemonResponse::SessionInviteCreated {
-            invite: SessionInviteRecord {
-                invite,
-                invite_token,
-            },
-            session,
-        })
-    }
-
-    async fn execute_join_session_invite_request(
-        &self,
-        request: JoinSessionInviteRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let token = decode_session_invite_token(&request.invite_token)?;
-        let now_ms = current_unix_ms();
-        if token
-            .expires_at_ms
-            .is_some_and(|expires_at_ms| expires_at_ms <= now_ms)
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "join session invite",
-                message: "session invite is expired".to_string(),
-            });
-        }
-        let (session, member) = {
-            let app = self.app.lock().await;
-            let result = app.sessions_mut().join_session_invite(
-                &token.session_id,
-                &token.invite_id,
-                request.user_id,
-                now_ms,
-            )?;
-            result
-        };
-        self.session_projection.update(session.clone());
-        Ok(LocalDaemonResponse::SessionInviteJoined { member, session })
-    }
-
-    async fn execute_revoke_session_invite_request(
-        &self,
-        request: RevokeSessionInviteRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (session, invite) = {
-            let app = self.app.lock().await;
-            let result = app
-                .sessions_mut()
-                .revoke_session_invite(&request.session_id, &request.invite_ref)?;
-            result
-        };
-        self.session_projection.update(session.clone());
-        Ok(LocalDaemonResponse::SessionInviteRevoked { invite, session })
-    }
-
-    async fn execute_create_workspace_link_request(
-        &self,
-        command: &KernelCommand,
-        request: CreateWorkspaceLinkRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let created_by_user_id = command_caller_user_id(command);
-        let (session, link) = {
-            let app = self.app.lock().await;
-            let result = app.sessions_mut().create_workspace_link(
-                &request.session_id,
-                request.name,
-                created_by_user_id,
-            )?;
-            result
-        };
-        self.session_projection.update(session.clone());
-        Ok(LocalDaemonResponse::WorkspaceLinkCreated { link, session })
-    }
-
-    async fn execute_list_workspace_links_request(
-        &self,
-        request: ListWorkspaceLinksRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let app = self.app.lock().await;
-        let links = app.sessions().list_workspace_links(&request.session_id)?;
-        Ok(LocalDaemonResponse::WorkspaceLinksListed { links })
-    }
-
-    async fn execute_show_workspace_link_request(
-        &self,
-        request: ShowWorkspaceLinkRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let app = self.app.lock().await;
-        let link = app
-            .sessions()
-            .resolve_workspace_link_ref(&request.session_id, &request.link_ref)?;
-        Ok(LocalDaemonResponse::WorkspaceLinkShown { link })
-    }
-
-    async fn execute_attach_workspace_link_request(
-        &self,
-        command: &KernelCommand,
-        request: AttachWorkspaceLinkRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let user_id = command_caller_user_id(command);
-        let config = self.config_projection.snapshot();
-        let machine_id = command
-            .caller
-            .machine_id
-            .clone()
-            .unwrap_or(config.host_machine_id);
-        let kernel_id = config.daemon_id;
-        let repo_root = if let Some(repo_root) = request.repo_root {
-            repo_root
-        } else {
-            let app = self.app.lock().await;
-            app.sessions()
-                .get_session(&request.session_id)?
-                .worktree_id()
-                .to_string()
-        };
-        let (session, link, attachment) = {
-            let app = self.app.lock().await;
-            let result = app.sessions_mut().attach_workspace_link(
-                &request.session_id,
-                &request.link_ref,
-                user_id,
-                machine_id,
-                kernel_id,
-                repo_root,
-                request.branch,
-                request.repo_fingerprint,
-            )?;
-            result
-        };
-        self.session_projection.update(session.clone());
-        Ok(LocalDaemonResponse::WorkspaceLinkAttached {
-            link,
-            attachment,
-            session,
-        })
-    }
-
-    async fn execute_detach_workspace_link_request(
-        &self,
-        command: &KernelCommand,
-        request: DetachWorkspaceLinkRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let user_id = command_caller_user_id(command);
-        let repo_root = request.repo_root.as_deref().map(std::path::Path::new);
-        let (session, link, detached) = {
-            let app = self.app.lock().await;
-            let result = app.sessions_mut().detach_workspace_link(
-                &request.session_id,
-                &request.link_ref,
-                user_id,
-                repo_root,
-            )?;
-            result
-        };
-        self.session_projection.update(session.clone());
-        Ok(LocalDaemonResponse::WorkspaceLinkDetached {
-            link,
-            detached,
-            session,
-        })
-    }
-
     async fn execute_create_pairing_invite_request(
         &self,
         request: CreatePairingInviteRequest,
@@ -4238,44 +4034,87 @@ impl CommandRouter {
                 execute_commit_and_push_workspace_changes_request(request)
             }
             LocalDaemonRequest::ApproveRemoteMachine(request) => {
-                self.execute_approve_remote_machine_request(request).await
+                execute_approve_remote_machine_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ForgetRemoteMachine(request) => {
-                self.execute_forget_remote_machine_request(request).await
+                execute_forget_remote_machine_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::RenameRemoteMachine(request) => {
-                self.execute_rename_remote_machine_request(request).await
+                execute_rename_remote_machine_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ListSessionMembers(request) => {
-                self.execute_list_session_members_request(request).await
+                execute_list_session_members_request(&self.app, request).await
             }
             LocalDaemonRequest::CreateSessionInvite(request) => {
-                self.execute_create_session_invite_request(&command, request)
-                    .await
+                execute_create_session_invite_request(
+                    &self.app,
+                    &self.session_projection,
+                    &command,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::JoinSessionInvite(request) => {
-                self.execute_join_session_invite_request(request).await
+                execute_join_session_invite_request(&self.app, &self.session_projection, request)
+                    .await
             }
             LocalDaemonRequest::RevokeSessionInvite(request) => {
-                self.execute_revoke_session_invite_request(request).await
+                execute_revoke_session_invite_request(&self.app, &self.session_projection, request)
+                    .await
             }
             LocalDaemonRequest::CreateWorkspaceLink(request) => {
-                self.execute_create_workspace_link_request(&command, request)
-                    .await
+                execute_create_workspace_link_request(
+                    &self.app,
+                    &self.session_projection,
+                    &command,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ListWorkspaceLinks(request) => {
-                self.execute_list_workspace_links_request(request).await
+                execute_list_workspace_links_request(&self.app, request).await
             }
             LocalDaemonRequest::ShowWorkspaceLink(request) => {
-                self.execute_show_workspace_link_request(request).await
+                execute_show_workspace_link_request(&self.app, request).await
             }
             LocalDaemonRequest::AttachWorkspaceLink(request) => {
-                self.execute_attach_workspace_link_request(&command, request)
-                    .await
+                let config = self.config_projection.snapshot();
+                execute_attach_workspace_link_request(
+                    &self.app,
+                    &self.session_projection,
+                    &command,
+                    config.host_machine_id,
+                    config.daemon_id,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::DetachWorkspaceLink(request) => {
-                self.execute_detach_workspace_link_request(&command, request)
-                    .await
+                execute_detach_workspace_link_request(
+                    &self.app,
+                    &self.session_projection,
+                    &command,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::CreatePairingInvite(request) => {
                 self.execute_create_pairing_invite_request(request).await
