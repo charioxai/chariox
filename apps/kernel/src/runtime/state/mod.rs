@@ -121,6 +121,7 @@ mod workflow_definition_settings_owned_state;
 mod workflow_dispatch;
 mod workflow_endpoint_owned_state;
 mod workflow_launch_owned_state;
+mod workflow_node_owned_state;
 mod workflow_prompt_dispatches;
 use workflow_prompt_dispatches::*;
 mod workflow_publication_owned_state;
