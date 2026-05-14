@@ -239,6 +239,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateAgentSubstitutes(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::RequestNativeProviderInteraction(request) => {
+            Some(SessionMembershipScope::SessionId(request.session_id.clone()))
+        }
         LocalDaemonRequest::GetSessionState(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

@@ -11,6 +11,7 @@ use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::history_executor::execute_history_request;
 use crate::runtime::interactive_command_dispatcher::dispatch_interactive_command;
 use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
+use crate::runtime::native_interaction_bridge::execute_native_provider_interaction_request;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
 use crate::runtime::provider_auth_control::execute_provider_auth_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
@@ -57,6 +58,9 @@ impl CommandRouter {
                 message: "interaction responses must be dispatched through the session runtime"
                     .to_string(),
             }),
+            LocalDaemonRequest::RequestNativeProviderInteraction(request) => {
+                execute_native_provider_interaction_request(&self.runtime_state, request).await
+            }
             LocalDaemonRequest::LaunchProviderRun(request) => {
                 execute_provider_launch_command(&self.runtime_state, &command, request).await
             }

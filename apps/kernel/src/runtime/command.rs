@@ -328,6 +328,11 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
             LocalRequestMetadata::new("interaction.respond", Interactive)
                 .session(&request.session_id)
         }
+        LocalDaemonRequest::RequestNativeProviderInteraction(request) => {
+            LocalRequestMetadata::new("native_provider.interaction.request", Normal)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::UpdateSessionConfig(request) => {
             LocalRequestMetadata::new("session.config.update", Interactive)
                 .session(&request.session_id)
@@ -537,6 +542,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RecordPromptInputHistory(_) => "prompt_input_history.record",
         LocalDaemonRequest::PollRuntimeNotices(_) => "runtime_notice.poll",
         LocalDaemonRequest::RespondToInteraction(_) => "interaction.respond",
+        LocalDaemonRequest::RequestNativeProviderInteraction(_) => {
+            "native_provider.interaction.request"
+        }
         LocalDaemonRequest::CompletePrompt(_) => "prompt.complete",
         LocalDaemonRequest::UpdateSessionConfig(_) => "session.config.update",
         LocalDaemonRequest::UpdateAgentConfig(_) => "agent.config.update",

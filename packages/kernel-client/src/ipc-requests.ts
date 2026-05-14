@@ -1822,6 +1822,43 @@ export function respondToInteractionRequest(
   }
 }
 
+export function requestNativeProviderInteractionRequest(
+  sessionId: string,
+  agentId: string,
+  interactionId: string,
+  title: string | null,
+  message: string,
+  timeoutSec = 300,
+) {
+  return {
+    RequestNativeProviderInteraction: {
+      session_id: sessionId,
+      agent_id: agentId,
+      interaction_id: interactionId,
+      level: "warning",
+      title,
+      message,
+      choices: [
+        {
+          id: "allow_once",
+          label: "Allow once",
+          reply: "allow",
+          style: "primary",
+        },
+        {
+          id: "deny",
+          label: "Deny",
+          reply: "deny",
+          style: "danger",
+        },
+      ],
+      custom_choice: null,
+      timeout_sec: timeoutSec,
+      default_on_timeout: "deny",
+    },
+  }
+}
+
 export function spawnAgentRequest(
   sessionId: string,
   provider?: string | null,

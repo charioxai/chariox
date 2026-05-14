@@ -36,14 +36,14 @@ function parseArgs(argv) {
     else if (arg === "--providers") options.providers = argv[++index].split(",").map((value) => value.trim()).filter(Boolean)
     else if (arg === "--keep-artifacts-on-failure") options.keepArtifactsOnFailure = true
     else if (arg === "--help" || arg === "-h") {
-      console.log("Usage: node apps/cli/scripts/live-native-tui-permission-drill.mjs [--providers codex,opencode] [--keep-artifacts-on-failure]")
+      console.log("Usage: node apps/cli/scripts/live-native-tui-permission-drill.mjs [--providers codex,opencode,claude] [--keep-artifacts-on-failure]")
       process.exit(0)
     } else {
       throw new Error(`unknown argument: ${arg}`)
     }
   }
   for (const provider of options.providers) {
-    if (provider !== "codex" && provider !== "opencode") throw new Error(`unsupported provider: ${provider}`)
+    if (provider !== "codex" && provider !== "opencode" && provider !== "claude") throw new Error(`unsupported provider: ${provider}`)
   }
   return options
 }
@@ -322,6 +322,9 @@ async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, pr
 
 function permissionPrompt(provider, markerText, filePath, content) {
   const shellCommand = `echo ${content} > ${filePath}`
+  if (provider === "claude") {
+    return `This is an Arroba native TUI validation drill. Please use the Bash tool to create the temporary file ${filePath} containing exactly ${content}. After the file is written, briefly confirm the file path.`
+  }
   return provider === "codex"
     ? `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
     : `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
@@ -333,7 +336,7 @@ async function runProvider(provider, options) {
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot
-  const alias = `${provider === "codex" ? "cdx" : "oc"}-perm`
+  const alias = `${provider === "codex" ? "cdx" : provider === "opencode" ? "oc" : "cc"}-perm`
   const screenNative = `arroba-${provider}-perm-${process.pid}`
   const screenCli = `arroba-${provider}-perm-cli-${process.pid}`
   const logs = {
@@ -400,6 +403,16 @@ async function runProvider(provider, options) {
         "--initial-prompt",
         permissionPrompt(provider, markers.nativePrompt, files.nativePrompt, `native-${provider}`),
       )
+    } else if (provider === "claude") {
+      nativeArgs.push(
+        "--detached-screen",
+        "--model",
+        "sonnet",
+        "--effort",
+        "low",
+        "--initial-prompt",
+        permissionPrompt(provider, markers.nativePrompt, files.nativePrompt, `native-${provider}`),
+      )
     }
     await startScreen(screenNative, logs.nativeDir, "bun", nativeArgs, {
       ...process.env,
@@ -437,9 +450,9 @@ async function runProvider(provider, options) {
       "--provider",
       provider,
       "--model",
-      provider === "codex" ? "gpt-5.4-mini" : "default",
+      provider === "codex" ? "gpt-5.4-mini" : provider === "claude" ? "sonnet" : "default",
       "--effort",
-      "high",
+      provider === "claude" ? "low" : "high",
     ], process.env)
     await waitForAutomation(automationSocket)
 
@@ -455,9 +468,10 @@ async function runProvider(provider, options) {
       console.log(JSON.stringify({ provider, direction: "native_tui_to_arroba", interaction: nativeInteraction.title ?? nativeInteraction.message }))
     } else {
       const nativeInteraction = await answerPermissionFromCli(automationSocket, alias)
-      await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.nativePrompt)
-      await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.nativePrompt)
-      await waitForFileContent(files.nativePrompt, `native-${provider}`, 5_000).catch(() => {})
+      if (provider !== "claude") await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.nativePrompt)
+      if (provider !== "claude") await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.nativePrompt)
+      if (provider === "claude") await waitForFileContent(files.nativePrompt, `native-${provider}`)
+      else await waitForFileContent(files.nativePrompt, `native-${provider}`, 5_000).catch(() => {})
       await waitForAgentIdle(automationSocket, alias)
       console.log(JSON.stringify({ provider, direction: "native_tui_to_arroba", interaction: nativeInteraction.title ?? nativeInteraction.message }))
     }
@@ -467,9 +481,10 @@ async function runProvider(provider, options) {
       command: `prompt ${alias} ${permissionPrompt(provider, markers.arrobaPrompt, files.arrobaPrompt, `arroba-${provider}`)}`,
     })
     const arrobaInteraction = await answerPermissionFromCli(automationSocket, alias)
-    await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.arrobaPrompt)
-    await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.arrobaPrompt)
-    await waitForFileContent(files.arrobaPrompt, `arroba-${provider}`, 5_000).catch(() => {})
+    if (provider !== "claude") await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.arrobaPrompt)
+    if (provider !== "claude") await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.arrobaPrompt)
+    if (provider === "claude") await waitForFileContent(files.arrobaPrompt, `arroba-${provider}`)
+    else await waitForFileContent(files.arrobaPrompt, `arroba-${provider}`, 5_000).catch(() => {})
     console.log(JSON.stringify({ provider, direction: "arroba_cli_to_provider", interaction: arrobaInteraction.title ?? arrobaInteraction.message }))
 
     return { provider, status: "ok", sessionId, alias, markers, logs }

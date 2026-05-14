@@ -6,12 +6,16 @@ use tokio::sync::Mutex;
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::local::{
+    LocalDaemonResponse, NativeProviderInteractionResolution,
+    RequestNativeProviderInteractionRequest,
+};
 use crate::provider::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
     ProviderProcessServiceStore,
 };
 use crate::runtime::state::KernelRuntimeState;
-use crate::session::RuntimeInteraction;
+use crate::session::{RuntimeInteraction, RuntimeInteractionKind};
 use crate::transport::relay_peer::RemoteNativeInteractionContext;
 
 struct RuntimeStateNativeInteractionBridge {
@@ -95,6 +99,50 @@ pub(crate) fn install_provider_native_interaction_bridge(
             RuntimeStateNativeInteractionBridge { handle, app, state },
         ));
     }
+}
+
+pub(crate) async fn execute_native_provider_interaction_request(
+    state: &KernelRuntimeState,
+    request: RequestNativeProviderInteractionRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let timeout = request.timeout_sec.map(Duration::from_secs);
+    let timeout_session_id = request.session_id.clone();
+    let timeout_interaction_id = request.interaction_id.clone();
+    let interaction = RuntimeInteraction::new(
+        request.interaction_id,
+        request.agent_id,
+        RuntimeInteractionKind::Permission,
+        request.level,
+        request.title,
+        request.message,
+        request.choices,
+        request.custom_choice,
+        request.timeout_sec,
+        request.default_on_timeout,
+    );
+    let receiver = state
+        .create_runtime_interaction(&request.session_id, interaction)
+        .await?;
+    if let Some(timeout) = timeout {
+        let state = state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(timeout).await;
+            let _ = state
+                .timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id)
+                .await;
+        });
+    }
+    let resolution = receiver.await.map_err(|error| DaemonError::LocalTransport {
+        operation: "native_provider_interaction_request",
+        message: format!("interaction dropped before resolution: {error}"),
+    })?;
+    Ok(LocalDaemonResponse::NativeProviderInteractionResolved {
+        resolution: NativeProviderInteractionResolution {
+            status: resolution.status.to_string(),
+            choice_id: resolution.choice_id,
+            reply: resolution.reply,
+        },
+    })
 }
 
 pub(crate) async fn forward_relay_native_interaction(

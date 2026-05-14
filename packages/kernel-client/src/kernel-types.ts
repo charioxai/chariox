@@ -241,6 +241,25 @@ export type RuntimeInteractionCustomChoice = {
   max_length?: number | null
 }
 
+export type RequestNativeProviderInteractionRequest = {
+  session_id: string
+  agent_id: string
+  interaction_id: string
+  level: "info" | "warning" | "critical"
+  title?: string | null
+  message: string
+  choices: RuntimeInteractionChoice[]
+  custom_choice?: RuntimeInteractionCustomChoice | null
+  timeout_sec?: number | null
+  default_on_timeout?: string | null
+}
+
+export type NativeProviderInteractionResolution = {
+  status: string
+  choice_id?: string | null
+  reply?: string | null
+}
+
 export type SessionConfigState = {
   version: number
   values: Record<string, string>
@@ -758,7 +777,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 33
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 34
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 
