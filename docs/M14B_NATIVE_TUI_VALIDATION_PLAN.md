@@ -35,11 +35,12 @@ TUI stay in Claude Code's native permission UI, while permissions for prompts
 entered from an Arroba TUI are bridged into Arroba and can be answered there.
 This keeps the initiating CLI in control of the user-facing permission prompt.
 
-2026-05-14 Claude attachment update: local Claude native TUI prompt
+2026-05-14 Claude attachment update: local Claude native TUI text/file prompt
 attachments are implemented and covered by `live-native-tui-attachment-drill.mjs
 --provider claude`. Native-origin `@file` prompts are captured as kernel prompt
 attachments, and Arroba-origin text attachments are delivered to Claude through
-the hook `additionalContext` path.
+the hook `additionalContext` path. Claude image attachments remain unvalidated,
+so local Claude attachments are partial until image behavior is proven.
 
 ## Goal
 
@@ -102,7 +103,7 @@ Prompt attachments:
 
 - Local Codex/OpenCode: covered by `live-native-tui-attachment-drill.mjs`.
 - Local Claude: covered by `live-native-tui-attachment-drill.mjs --provider
-  claude` for text/file attachments.
+  claude` for text/file attachments; image attachments are unvalidated.
 - Same-host relay Codex/OpenCode: covered by
   `live-remote-native-tui-drill.mjs --providers opencode,codex
   --include-attachments`.
@@ -217,7 +218,7 @@ Legend:
 | --- | --- | --- | --- | --- | --- |
 | local | Codex | pass | pass | pass | gap |
 | local | OpenCode | pass | pass | pass | gap |
-| local | Claude | pass | partial | pass | gap |
+| local | Claude | pass | partial | partial | gap |
 | standard remote | Codex | gap | gap | gap | gap |
 | standard remote | OpenCode | gap | gap | gap | gap |
 | standard remote | Claude | gap | gap | gap | gap |
