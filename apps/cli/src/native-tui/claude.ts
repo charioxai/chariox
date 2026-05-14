@@ -128,6 +128,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
     permissionBridge = await startClaudePermissionBridge({
       client,
       sessionId: session.id,
+      attachmentId: attachment.id,
       agentId: agent.id,
     })
 
@@ -484,6 +485,7 @@ function startClaudeBridge(options: {
 async function startClaudePermissionBridge(options: {
   client: LocalIpcClient
   sessionId: string
+  attachmentId: string
   agentId: string
 }): Promise<{ url: string; stop: () => Promise<void> }> {
   const server = createServer((request, response) => {
@@ -511,6 +513,7 @@ async function handleClaudePermissionBridgeRequest(
   options: {
     client: LocalIpcClient
     sessionId: string
+    attachmentId: string
     agentId: string
   },
   request: IncomingMessage,
@@ -523,6 +526,15 @@ async function handleClaudePermissionBridgeRequest(
   try {
     const payload = await readJsonRequest(request)
     if (!shouldBridgeClaudePermission(payload)) {
+      writeJsonResponse(response, 200, { handled: false })
+      return
+    }
+    if (!await shouldBridgeCurrentClaudePermission(
+      options.client,
+      options.sessionId,
+      options.agentId,
+      options.attachmentId,
+    )) {
       writeJsonResponse(response, 200, { handled: false })
       return
     }
@@ -557,6 +569,17 @@ async function handleClaudePermissionBridgeRequest(
       error: error instanceof Error ? error.message : String(error),
     })
   }
+}
+
+async function shouldBridgeCurrentClaudePermission(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+  nativeAttachmentId: string,
+): Promise<boolean> {
+  const session = await sessionState(client, sessionId)
+  const activePrompt = promptForAgent(session, agentId)
+  return Boolean(activePrompt && activePrompt.source_attachment_id !== nativeAttachmentId)
 }
 
 type ClaudePermissionPayload = {
