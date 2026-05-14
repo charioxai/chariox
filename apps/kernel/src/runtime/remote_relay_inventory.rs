@@ -5,7 +5,8 @@ use tokio::sync::{Mutex, RwLock};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
-    ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, LocalDaemonResponse, RelayStatus,
+    ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, LocalDaemonRequest,
+    LocalDaemonResponse, RelayStatus,
 };
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
@@ -96,6 +97,41 @@ pub(crate) async fn execute_list_remote_machine_kernels_request(
         request.machine_ref,
     )
     .await
+}
+
+pub(crate) async fn execute_remote_relay_inventory_request(
+    app: Arc<Mutex<DaemonApp>>,
+    relay_state: Arc<RwLock<RelayClientState>>,
+    config_projection: DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::ListRemoteMachines(request) => {
+            execute_list_remote_machines_request(
+                app,
+                relay_state,
+                config_projection,
+                remote_relay_inventory_projection,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::ListRemoteMachineKernels(request) => {
+            execute_list_remote_machine_kernels_request(
+                app,
+                relay_state,
+                config_projection,
+                remote_relay_inventory_projection,
+                request,
+            )
+            .await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "remote relay inventory request",
+            message: "unsupported remote relay inventory request".to_string(),
+        }),
+    }
 }
 
 pub(crate) async fn projected_relay_status(
