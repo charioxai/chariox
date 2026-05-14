@@ -101,6 +101,7 @@ mod terminal_runtime_state;
 mod tool_dispatch;
 mod workflow;
 mod workflow_admin;
+mod workflow_completion_owned_state;
 mod workflow_dispatch;
 mod workflow_launch_owned_state;
 mod workflow_prompt_dispatches;
