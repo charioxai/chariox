@@ -872,6 +872,18 @@ impl ProviderRunProjectionStore {
             .cloned()
     }
 
+    pub(crate) fn get_by_runtime_mcp_auth_token(
+        &self,
+        auth_token: &str,
+    ) -> Option<RuntimeProviderRun> {
+        self.runs
+            .lock()
+            .expect("provider run projection lock should not be poisoned")
+            .values()
+            .find(|run| run.runtime_mcp_auth_token() == Some(auth_token))
+            .cloned()
+    }
+
     pub(crate) fn get_for_agent(
         &self,
         session_id: &str,
