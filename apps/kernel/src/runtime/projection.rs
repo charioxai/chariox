@@ -1,30 +1,34 @@
-use std::collections::BTreeMap;
-
-use crate::agent::AgentState;
-use crate::app::{ActivePromptState, ActiveTurnState, DaemonApp};
-use crate::error::DaemonError;
-use crate::provider::{ProviderRunState, RuntimeProviderRun};
-use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
-use crate::runtime::workspace_coordinator::WorkspaceOperationClaimSnapshot;
-use crate::session::{unix_epoch_ms, PromptQueueItem, PromptStatus, RuntimeSession};
-use crate::terminal::TerminalStreamHealthSnapshot;
+use crate::session::unix_epoch_ms;
 use serde::{Deserialize, Serialize};
 
 mod agent_runtime_projection;
 mod config_projection;
+mod daemon_health_model;
 mod provider_projection;
 mod remote_relay_inventory_projection;
 mod session_history_projection;
+mod session_snapshot_projection;
 mod session_state_projection;
 mod transport_health;
 
 pub(crate) use agent_runtime_projection::{AgentRuntimeProjection, AgentRuntimeProjectionStore};
 pub(crate) use config_projection::DaemonConfigProjectionStore;
+pub use daemon_health_model::{
+    ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, DaemonHealthProjection,
+    ManagedIoHealthSnapshot, ProjectionInvariantHealthSnapshot, ProjectionInvariantMismatch,
+    ProviderCatalogHealthSnapshot, ProviderRunActorHealthSnapshot, SessionProjectionHealthSnapshot,
+    WorkspaceCoordinationHealthSnapshot, WorktreeClaimSnapshot,
+};
 pub(crate) use provider_projection::{
     ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
 };
 pub(crate) use remote_relay_inventory_projection::RemoteRelayInventoryProjectionStore;
 pub(crate) use session_history_projection::{page_history_entries, SessionHistoryProjectionStore};
+pub(crate) use session_snapshot_projection::agent_activity_for_session_projection;
+pub use session_snapshot_projection::{
+    AgentActiveTurnProjection, AgentPromptRuntimeStatus, AgentRuntimeActivity, AgentRuntimeStatus,
+    SessionSnapshotProjection,
+};
 pub(crate) use session_state_projection::SessionStateProjectionStore;
 pub(crate) use transport_health::{TransportHealthSnapshot, TransportHealthStore};
 
@@ -41,346 +45,6 @@ impl ProjectionMetadata {
             projection_version,
             last_event_id,
             generated_at_ms: unix_epoch_ms(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionSnapshotProjection {
-    pub metadata: ProjectionMetadata,
-    pub session: RuntimeSession,
-    pub provider_run: Option<RuntimeProviderRun>,
-    pub agent_activity: BTreeMap<String, AgentRuntimeActivity>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentRuntimeStatus {
-    Idle,
-    Working,
-    Error,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentPromptRuntimeStatus {
-    None,
-    Queued,
-    Running,
-    Cancelling,
-    Settling,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentRuntimeActivity {
-    pub status: AgentRuntimeStatus,
-    pub prompt_status: AgentPromptRuntimeStatus,
-    pub busy: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_turn: Option<AgentActiveTurnProjection>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentActiveTurnProjection {
-    pub prompt_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_run_id: Option<String>,
-    pub status: AgentPromptRuntimeStatus,
-}
-
-impl SessionSnapshotProjection {
-    pub fn from_daemon_app(
-        app: &mut DaemonApp,
-        session_id: &str,
-        last_event_id: u64,
-    ) -> Result<Self, DaemonError> {
-        let mut session = app.sessions().get_session(session_id)?;
-        let agents = app.agents().get_session_agents(session_id);
-        session.set_agents(agents);
-        app.project_session_runtime_view(&mut session);
-        let provider_run = session
-            .active_provider_run_id()
-            .and_then(|provider_run_id| app.providers().get_run(provider_run_id).ok());
-        let prompt_activity = app.prompt_activity_store();
-        let prompt_activity = prompt_activity.read();
-        let active_turns = app.active_turn_store().snapshot();
-        let agent_activity = agent_activity_for_session_projection(
-            &session,
-            |agent_id| app.providers().get_run_for_agent(session.id(), agent_id),
-            &prompt_activity,
-            &active_turns,
-        );
-        Ok(Self {
-            metadata: ProjectionMetadata::new(2, last_event_id),
-            session,
-            provider_run,
-            agent_activity,
-        })
-    }
-}
-
-pub(crate) fn agent_activity_for_session_projection(
-    session: &RuntimeSession,
-    provider_run_for_agent: impl Fn(&str) -> Option<RuntimeProviderRun>,
-    prompt_activity: &BTreeMap<String, ActivePromptState>,
-    active_turns: &BTreeMap<String, ActiveTurnState>,
-) -> BTreeMap<String, AgentRuntimeActivity> {
-    let mut activity = BTreeMap::new();
-
-    for agent in session.agents() {
-        let prompt_state = session.prompt_states().get(agent.id());
-        let active_prompt = prompt_state.and_then(|state| state.active_prompt());
-        let queued_prompt_count = prompt_state
-            .map(|state| state.queued_prompts().len())
-            .unwrap_or(0);
-        let provider_run = provider_run_for_agent(agent.id());
-        let provider_prompt_activity = provider_run
-            .as_ref()
-            .and_then(|run| prompt_activity.get(run.id()));
-        let provider_turn_activity = provider_run.as_ref().and_then(|run| {
-            active_turns.get(run.id()).filter(|turn| {
-                turn.session_id == session.id()
-                    && turn.agent_id == agent.id()
-                    && turn.provider_run_id == run.id()
-            })
-        });
-        let prompt_status = match active_prompt.map(PromptQueueItem::status) {
-            Some(PromptStatus::Cancelling) => AgentPromptRuntimeStatus::Cancelling,
-            Some(PromptStatus::Running) => {
-                let settlement_requested = provider_turn_activity
-                    .map(|state| state.settlement_requested)
-                    .or_else(|| provider_prompt_activity.map(|state| state.settlement_requested))
-                    .unwrap_or(false);
-                if settlement_requested {
-                    AgentPromptRuntimeStatus::Settling
-                } else {
-                    AgentPromptRuntimeStatus::Running
-                }
-            }
-            Some(PromptStatus::Queued) => AgentPromptRuntimeStatus::Queued,
-            Some(PromptStatus::Completed) | Some(PromptStatus::Cancelled) | None => {
-                if provider_turn_activity.is_some_and(|state| state.settlement_requested) {
-                    AgentPromptRuntimeStatus::Settling
-                } else if provider_turn_activity.is_some() {
-                    AgentPromptRuntimeStatus::Running
-                } else if queued_prompt_count > 0 {
-                    AgentPromptRuntimeStatus::Queued
-                } else {
-                    AgentPromptRuntimeStatus::None
-                }
-            }
-        };
-        let provider_busy = provider_run.as_ref().is_some_and(|run| {
-            matches!(
-                run.state(),
-                ProviderRunState::Starting | ProviderRunState::Running
-            ) && provider_turn_activity.is_some()
-        });
-        let active_turn = active_prompt
-            .map(|prompt| AgentActiveTurnProjection {
-                prompt_id: prompt.id().to_string(),
-                provider_run_id: provider_run.as_ref().map(|run| run.id().to_string()),
-                status: prompt_status.clone(),
-            })
-            .or_else(|| {
-                provider_turn_activity.map(|turn| AgentActiveTurnProjection {
-                    prompt_id: turn.prompt_id.clone(),
-                    provider_run_id: Some(turn.provider_run_id.clone()),
-                    status: prompt_status.clone(),
-                })
-            });
-        let prompt_busy = !matches!(prompt_status, AgentPromptRuntimeStatus::None);
-        let agent_busy =
-            agent.is_processing() || agent.state() == AgentState::Working || provider_busy;
-        let status = if agent.state() == AgentState::Error {
-            AgentRuntimeStatus::Error
-        } else if prompt_busy || agent_busy {
-            AgentRuntimeStatus::Working
-        } else {
-            AgentRuntimeStatus::Idle
-        };
-        activity.insert(
-            agent.id().to_string(),
-            AgentRuntimeActivity {
-                busy: status == AgentRuntimeStatus::Working,
-                status,
-                prompt_status,
-                active_turn,
-            },
-        );
-    }
-
-    activity
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActorQueueSnapshot {
-    pub lane_id: String,
-    pub queue_limit: usize,
-    pub queued_commands: usize,
-}
-
-impl ActorQueueSnapshot {
-    pub fn new(lane_id: impl Into<String>, queue_limit: usize, queued_commands: usize) -> Self {
-        Self {
-            lane_id: lane_id.into(),
-            queue_limit,
-            queued_commands,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionProjectionHealthSnapshot {
-    pub projected_sessions: usize,
-    pub projected_session_list_entries: Option<usize>,
-    pub active_prompts: usize,
-    pub queued_prompts: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentRuntimeProjectionHealthSnapshot {
-    pub projected_agents: usize,
-    pub active_prompts: usize,
-    pub queued_prompts: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct ProjectionInvariantHealthSnapshot {
-    pub checked_sessions: usize,
-    pub checked_agents: usize,
-    pub mismatches: Vec<ProjectionInvariantMismatch>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProjectionInvariantMismatch {
-    pub kind: String,
-    pub session_id: String,
-    pub agent_id: Option<String>,
-    pub details: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct ProviderRunActorHealthSnapshot {
-    pub enqueued_commands: u64,
-    pub enqueue_rejections: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderCatalogHealthSnapshot {
-    pub cached: bool,
-    pub expired: bool,
-    pub age_ms: Option<u64>,
-    pub ttl_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorktreeClaimSnapshot {
-    pub workspace_id: String,
-    pub worktree_id: String,
-    pub session_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct WorkspaceCoordinationHealthSnapshot {
-    pub active_worktree_claims: Vec<WorktreeClaimSnapshot>,
-    pub worktree_collisions: Vec<WorktreeClaimSnapshot>,
-    pub active_operation_claims: Vec<WorkspaceOperationClaimSnapshot>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagedIoHealthSnapshot {
-    pub active_reservations: usize,
-    pub active_reservation_artifacts: usize,
-    pub workspace_identity:
-        crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitorHealthSnapshot,
-    pub external_changes: crate::io::ArtifactExternalChangeHealthSnapshot,
-}
-
-impl Default for ManagedIoHealthSnapshot {
-    fn default() -> Self {
-        Self {
-            active_reservations: 0,
-            active_reservation_artifacts: 0,
-            workspace_identity:
-                crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitorHealthSnapshot {
-                    tracked_provider_runs: 0,
-                    identity_changed_provider_runs: 0,
-                    invalid_provider_runs: 0,
-                    current_generation_total: 0,
-                },
-            external_changes: crate::io::ArtifactExternalChangeHealthSnapshot {
-                tracked_artifacts: 0,
-                externally_changed_artifacts: 0,
-                external_change_events: 0,
-                live_watcher_started: false,
-                live_watcher_scans: 0,
-                live_watcher_scan_errors: 0,
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DaemonHealthProjection {
-    pub metadata: ProjectionMetadata,
-    pub session_command_lanes: Vec<ActorQueueSnapshot>,
-    pub agent_command_lanes: Vec<ActorQueueSnapshot>,
-    pub workflow_command_lanes: Vec<ActorQueueSnapshot>,
-    pub provider_runtime_lanes: Vec<ActorQueueSnapshot>,
-    pub provider_run_actor: ProviderRunActorHealthSnapshot,
-    pub capability_executor: CapabilityExecutorHealthSnapshot,
-    pub session_projection: SessionProjectionHealthSnapshot,
-    pub agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
-    pub provider_catalog: ProviderCatalogHealthSnapshot,
-    pub transport: TransportHealthSnapshot,
-    pub terminal_stream: TerminalStreamHealthSnapshot,
-    pub workspace_coordination: WorkspaceCoordinationHealthSnapshot,
-    pub managed_io: ManagedIoHealthSnapshot,
-    pub projection_invariants: ProjectionInvariantHealthSnapshot,
-}
-
-impl DaemonHealthProjection {
-    pub fn new(
-        last_event_id: u64,
-        session_command_lanes: Vec<ActorQueueSnapshot>,
-        agent_command_lanes: Vec<ActorQueueSnapshot>,
-        workflow_command_lanes: Vec<ActorQueueSnapshot>,
-        provider_runtime_lanes: Vec<ActorQueueSnapshot>,
-        provider_run_actor: ProviderRunActorHealthSnapshot,
-        capability_executor: CapabilityExecutorHealthSnapshot,
-        mut session_projection: SessionProjectionHealthSnapshot,
-        agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
-        provider_catalog: ProviderCatalogHealthSnapshot,
-        transport: TransportHealthSnapshot,
-        terminal_stream: TerminalStreamHealthSnapshot,
-        workspace_coordination: WorkspaceCoordinationHealthSnapshot,
-        managed_io: ManagedIoHealthSnapshot,
-        projection_invariants: ProjectionInvariantHealthSnapshot,
-    ) -> Self {
-        // Compatibility: legacy clients may still read prompt counts from the
-        // session projection object. The agent runtime projection is the
-        // canonical health source for prompt work during the ownership
-        // migration, so mirror its counts here until the old fields can be
-        // retired from the wire shape.
-        session_projection.active_prompts = agent_runtime_projection.active_prompts;
-        session_projection.queued_prompts = agent_runtime_projection.queued_prompts;
-        Self {
-            metadata: ProjectionMetadata::new(1, last_event_id),
-            session_command_lanes,
-            agent_command_lanes,
-            workflow_command_lanes,
-            provider_runtime_lanes,
-            provider_run_actor,
-            capability_executor,
-            session_projection,
-            agent_runtime_projection,
-            provider_catalog,
-            transport,
-            terminal_stream,
-            workspace_coordination,
-            managed_io,
-            projection_invariants,
         }
     }
 }
