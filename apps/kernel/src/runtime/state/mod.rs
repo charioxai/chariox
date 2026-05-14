@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 
 use crate::agent::AgentServiceStore;
 use crate::app::{
-    ActiveTurnState, ActiveTurnStore, DaemonApp, PromptActivityStore, PromptWorkspaceClaimStore,
+    ActiveTurnStore, DaemonApp, PromptActivityStore, PromptWorkspaceClaimStore,
     ProviderProcessTrackingStore,
 };
 use crate::attachment::AttachmentServiceStore;
@@ -83,6 +83,7 @@ mod prompt_dispatch;
 mod provider;
 mod provider_runtime;
 mod runtime_interaction_state;
+mod runtime_state_views;
 mod session;
 mod session_lookup_state;
 mod terminal_runtime_state;
@@ -153,70 +154,6 @@ impl KernelRuntimeState {
                 pending_interactions: PendingInteractionStore::shared(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             },
-        }
-    }
-
-    pub(crate) fn start_active_turn(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        prompt_id: &str,
-        provider_run_id: &str,
-    ) {
-        self.owned.active_turns.start(ActiveTurnState::new(
-            session_id.to_string(),
-            agent_id.to_string(),
-            prompt_id.to_string(),
-            provider_run_id.to_string(),
-        ));
-    }
-
-    pub(crate) fn agent_activity_for_session(
-        &self,
-        session: &crate::session::RuntimeSession,
-    ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
-        let prompt_activity = self.owned.prompt_activity.read();
-        let active_turns = self.owned.active_turns.snapshot();
-        crate::runtime::projection::agent_activity_for_session_projection(
-            session,
-            |agent_id| {
-                self.owned
-                    .provider_run_projection
-                    .get_for_agent(session.id(), agent_id)
-                    .or_else(|| {
-                        self.owned
-                            .provider_store
-                            .get_run_for_agent(session.id(), agent_id)
-                    })
-            },
-            &prompt_activity,
-            &active_turns,
-        )
-    }
-
-    pub(crate) async fn config_snapshot(&self) -> crate::config::DaemonConfig {
-        self.owned.config_projection.snapshot()
-    }
-
-    pub(crate) async fn managed_io_health_snapshot(
-        &self,
-    ) -> crate::runtime::projection::ManagedIoHealthSnapshot {
-        let reservations = self
-            .owned
-            .managed_io_coordinator
-            .lock()
-            .await
-            .active_reservation_snapshots();
-        let active_reservation_artifacts = reservations
-            .iter()
-            .map(|reservation| reservation.artifact_id.clone())
-            .collect::<BTreeSet<_>>()
-            .len();
-        crate::runtime::projection::ManagedIoHealthSnapshot {
-            active_reservations: reservations.len(),
-            active_reservation_artifacts,
-            workspace_identity: self.owned.workspace_identity_monitor.health_snapshot(),
-            external_changes: self.owned.managed_io_external_changes.health_snapshot(),
         }
     }
 
