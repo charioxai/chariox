@@ -335,6 +335,21 @@ pub(crate) async fn execute_capability_request(
     }
 }
 
+pub(crate) async fn execute_required_capability_request(
+    store: &CapabilityRuntimeStore,
+    health: CapabilityExecutorHealthStore,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    execute_capability_request(store, health, request)
+        .await
+        .unwrap_or_else(|| {
+            Err(DaemonError::LocalTransport {
+                operation: "route capability request",
+                message: "capability request was not handled by executor".to_string(),
+            })
+        })
+}
+
 #[derive(Debug, Clone)]
 struct CapabilityContext {
     session_id: String,

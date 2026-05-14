@@ -18,7 +18,7 @@ use crate::runtime::agent_utility_executor::{
     execute_generate_workspace_commit_message_request, execute_run_agent_utility_request,
 };
 use crate::runtime::capability_executor::{
-    execute_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
+    execute_required_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
 };
 use crate::runtime::capability_registry::{
     ensure_mcp_exists, ensure_skill_exists, execute_get_mcp_server_request,
@@ -1549,24 +1549,6 @@ impl CommandRouter {
         .await
     }
 
-    async fn execute_capability_request(
-        &self,
-        request: LocalDaemonRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        execute_capability_request(
-            &self.capability_runtime,
-            self.capability_health.clone(),
-            request,
-        )
-        .await
-        .unwrap_or_else(|| {
-            Err(DaemonError::LocalTransport {
-                operation: "route capability request",
-                message: "capability request was not handled by executor".to_string(),
-            })
-        })
-    }
-
     #[allow(dead_code)]
     pub(crate) async fn daemon_health_projection(
         &self,
@@ -2179,7 +2161,12 @@ impl CommandRouter {
             | LocalDaemonRequest::InspectGit(_)
             | LocalDaemonRequest::CaptureScreenshot(_)
             | LocalDaemonRequest::StoreTransferredFile(_)) => {
-                self.execute_capability_request(request).await
+                execute_required_capability_request(
+                    &self.capability_runtime,
+                    self.capability_health.clone(),
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::SubmitPrompt(request) => {
                 self.agent_runtime
