@@ -13,6 +13,7 @@ use crate::runtime::projection::{
     agent_activity_for_session_projection, AgentRuntimeActivity, ProviderRunProjectionStore,
     SessionStateProjectionStore,
 };
+use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
 use crate::runtime::workflow_projection::{
     projected_resolve_workflow, projected_resolve_workflow_run, projected_workflow_id,
 };
@@ -109,6 +110,52 @@ pub(crate) async fn projected_list_sessions_response(
             .map(|session| session.redacted_for_user(caller_user_id))
             .collect(),
     })
+}
+
+pub(crate) async fn projected_session_read_response(
+    app: &Arc<Mutex<DaemonApp>>,
+    session_projection: &SessionStateProjectionStore,
+    provider_run_projection: &ProviderRunProjectionStore,
+    provider_launch_pending: &ProviderLaunchPendingTracker,
+    prompt_activity: &PromptActivityStore,
+    active_turns: &ActiveTurnStore,
+    request: &LocalDaemonRequest,
+    caller_user_id: &str,
+) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+    if let LocalDaemonRequest::GetSessionState(request) = request {
+        if !provider_launch_pending
+            .has_unsettled_launch(
+                &request.session_id,
+                session_projection,
+                provider_run_projection,
+            )
+            .await
+        {
+            if let Some(response) = projected_session_state_response(
+                session_projection,
+                provider_run_projection,
+                prompt_activity,
+                active_turns,
+                request,
+                caller_user_id,
+            ) {
+                return Some(response);
+            }
+        }
+    }
+    if let LocalDaemonRequest::ResolveSession(request) = request {
+        if let Some(response) =
+            projected_resolve_session_response(session_projection, request, caller_user_id)
+        {
+            return Some(response);
+        }
+    }
+    if matches!(request, LocalDaemonRequest::ListSessions(_)) {
+        return Some(
+            projected_list_sessions_response(app, session_projection, caller_user_id).await,
+        );
+    }
+    None
 }
 
 pub(crate) fn projected_agent_activity(
