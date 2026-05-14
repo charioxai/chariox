@@ -2,6 +2,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+
 use super::*;
 
 static TEMPORARY_PEER_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);

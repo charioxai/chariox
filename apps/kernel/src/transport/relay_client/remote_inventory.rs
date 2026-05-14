@@ -1,5 +1,7 @@
 //! Remote relay inventory projection refresh and liveness probing.
 
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+
 use super::*;
 
 pub(super) fn abort_inventory_refresh_task(task: &mut Option<JoinHandle<()>>) {

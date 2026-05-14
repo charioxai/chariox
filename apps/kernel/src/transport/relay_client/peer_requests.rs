@@ -1,0 +1,434 @@
+//! Inbound relay peer request dispatch for leased runtimes and forwarded tools.
+
+use std::sync::Arc;
+
+use arroba_relay::protocol::{EncryptedRelayPayload, RelayEnvelope};
+use tokio::sync::mpsc;
+
+use crate::runtime::router::CommandRouter;
+use crate::transport::relay_crypto;
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+
+use super::peer_events::emit_leased_projection_event;
+use super::request_errors::{map_relay_error, relay_error};
+use super::RelayRequestOutcome;
+
+pub(super) async fn handle_daemon_peer_request(
+    router: &Arc<CommandRouter>,
+    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    encrypted_request: EncryptedRelayPayload,
+) -> RelayRequestOutcome {
+    let (request, requester_public_key, daemon_private_key, daemon_id) = {
+        let daemon_private_key = router.relay_private_key();
+        let daemon_id = router.relay_daemon_id();
+        let decrypted = match relay_crypto::decrypt_payload_for_private_key(
+            &daemon_private_key,
+            &encrypted_request,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "invalid_request",
+                        &format!("invalid relay peer request payload: {error}"),
+                        false,
+                    )),
+                };
+            }
+        };
+        let request = match serde_json::from_slice::<RelayPeerRequest>(&decrypted.plaintext) {
+            Ok(request) => request,
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "invalid_request",
+                        &format!("invalid relay peer request payload: {error}"),
+                        false,
+                    )),
+                };
+            }
+        };
+        (
+            request,
+            decrypted.sender_public_key,
+            daemon_private_key,
+            daemon_id,
+        )
+    };
+
+    let response = match request {
+        RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong { value, daemon_id },
+        RelayPeerRequest::CreateExecutionLease {
+            home_kernel_id,
+            home_session_id,
+            home_agent_id,
+            owner_user_id,
+        } => {
+            let lease = router
+                .relay_create_execution_lease(
+                    &home_kernel_id,
+                    &home_session_id,
+                    &home_agent_id,
+                    &owner_user_id,
+                )
+                .await;
+            match lease {
+                Ok(lease) => RelayPeerResponse::ExecutionLeaseCreated { lease },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::DestroyExecutionLease { lease_id } => {
+            let destroyed = router.relay_destroy_execution_lease(&lease_id).await;
+            match destroyed {
+                Ok(_) => RelayPeerResponse::ExecutionLeaseDestroyed { lease_id },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::SpawnLeasedAgent {
+            lease_id,
+            provider,
+            model,
+            effort,
+            execution_mode,
+            permission_level,
+            worktree_id,
+            worktree_placement,
+        } => {
+            let leased_agent = router
+                .relay_create_leased_agent(
+                    &lease_id,
+                    &provider,
+                    model,
+                    effort,
+                    execution_mode,
+                    permission_level,
+                    worktree_id,
+                    worktree_placement,
+                )
+                .await;
+            match leased_agent {
+                Ok(leased_agent) => RelayPeerResponse::LeasedAgentSpawned { leased_agent },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::DestroyLeasedAgent { leased_agent_id } => {
+            let destroyed = router.relay_destroy_leased_agent(&leased_agent_id).await;
+            match destroyed {
+                Ok(_) => RelayPeerResponse::LeasedAgentDestroyed { leased_agent_id },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::UpdateLeasedAgentConfig {
+            leased_agent_id,
+            execution_mode,
+            permission_level,
+        } => {
+            let updated = router
+                .relay_update_leased_agent_config(
+                    &leased_agent_id,
+                    execution_mode,
+                    permission_level,
+                )
+                .await;
+            match updated {
+                Ok(leased_agent) => RelayPeerResponse::LeasedAgentConfigUpdated { leased_agent },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::SubmitLeasedPrompt {
+            leased_agent_id,
+            prompt,
+            attachments,
+            workflow_context,
+            git_context,
+            required_mcps,
+        } => {
+            let submitted = router
+                .relay_submit_leased_prompt(
+                    &leased_agent_id,
+                    &prompt,
+                    attachments,
+                    workflow_context,
+                    git_context,
+                    required_mcps,
+                )
+                .await;
+            match submitted {
+                Ok((provider_run_id, outcome)) => {
+                    if let Err(error) = emit_leased_projection_event(
+                        router,
+                        outgoing_tx,
+                        &leased_agent_id,
+                        &provider_run_id,
+                        true,
+                    )
+                    .await
+                    {
+                        crate::logging::warn_with_fields(
+                            "daemon.relay",
+                            "failed to emit leased runtime projection after submit",
+                            serde_json::json!({
+                                "leased_agent_id": leased_agent_id,
+                                "provider_run_id": provider_run_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                    RelayPeerResponse::LeasedPromptSubmitted {
+                        provider_run_id,
+                        outcome,
+                    }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id } => {
+            let completion = router.relay_complete_leased_prompt(&leased_agent_id).await;
+            match completion {
+                Ok(completion) => {
+                    let provider_run_id = router
+                        .relay_leased_agent_provider_run_id(&leased_agent_id)
+                        .await
+                        .ok()
+                        .flatten();
+                    let provider_diagnostic =
+                        if let Some(provider_run_id) = provider_run_id.as_deref() {
+                            router
+                                .relay_provider_run_terminal_diagnostic(provider_run_id)
+                                .await
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        };
+                    let git_observations = if let Some(provider_run_id) = provider_run_id.as_deref()
+                    {
+                        router
+                            .relay_observe_leased_git_after(&leased_agent_id, provider_run_id)
+                            .await
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    RelayPeerResponse::LeasedPromptCompleted {
+                        provider_run_id,
+                        provider_diagnostic,
+                        git_observations,
+                        completion,
+                    }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::CancelLeasedPrompt { leased_agent_id } => {
+            let cancellation = router.relay_cancel_leased_prompt(&leased_agent_id).await;
+            match cancellation {
+                Ok(cancellation) => RelayPeerResponse::LeasedPromptCancelled { cancellation },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::ForwardWorkflowRuntimeTool {
+            context,
+            tool_name,
+            arguments,
+        } => {
+            let handled = router
+                .dispatch_forwarded_workflow_runtime_tool_call(context, tool_name, arguments)
+                .await;
+            match handled {
+                Ok(result) => RelayPeerResponse::WorkflowRuntimeToolHandled { result },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::ForwardWorkflowProviderFailure { context, message } => {
+            let handled = router
+                .dispatch_forwarded_workflow_provider_failure(context, message)
+                .await;
+            match handled {
+                Ok(()) => RelayPeerResponse::WorkflowProviderFailureHandled,
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::ForwardManagedIoRuntimeTool {
+            context,
+            tool_name,
+            arguments,
+            artifact_states,
+        } => {
+            let handled = router
+                .dispatch_forwarded_managed_io_runtime_tool_call(
+                    context,
+                    tool_name,
+                    arguments,
+                    artifact_states,
+                )
+                .await;
+            match handled {
+                Ok((result, final_artifact_states)) => {
+                    RelayPeerResponse::ManagedIoRuntimeToolHandled {
+                        result,
+                        final_artifact_states,
+                    }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::ForwardCapabilityRuntimeTool {
+            context,
+            tool_name,
+            arguments,
+        } => {
+            let handled = router
+                .dispatch_forwarded_capability_runtime_tool_call(context, tool_name, arguments)
+                .await;
+            match handled {
+                Ok((result, skill_package)) => RelayPeerResponse::CapabilityRuntimeToolHandled {
+                    result,
+                    skill_package,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::ForwardNativeInteraction {
+            context,
+            interaction,
+        } => {
+            let handled = router
+                .relay_forward_native_interaction(context, interaction)
+                .await;
+            match handled {
+                Ok(resolution) => RelayPeerResponse::NativeInteractionResolved { resolution },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::EnsureRemoteSkillPackages { context, packages } => {
+            let ensured = router
+                .relay_ensure_remote_skill_packages(context, packages)
+                .await;
+            match ensured {
+                Ok(materialized) => RelayPeerResponse::RemoteSkillPackagesEnsured { materialized },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::CheckRemoteMcpAvailability {
+            context,
+            required_mcps,
+        } => {
+            let checked = router
+                .relay_check_remote_mcp_availability(context, required_mcps)
+                .await;
+            match checked {
+                Ok(results) => RelayPeerResponse::RemoteMcpAvailabilityChecked { results },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+    };
+    let plaintext = match serde_json::to_vec(&response) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return RelayRequestOutcome {
+                encrypted_response: None,
+                error: Some(relay_error(
+                    "relay_request_failed",
+                    &format!("failed to serialize relay peer response: {error}"),
+                    false,
+                )),
+            };
+        }
+    };
+    match relay_crypto::encrypt_payload_for_peer(
+        &daemon_private_key,
+        &requester_public_key,
+        &plaintext,
+    ) {
+        Ok(encrypted_response) => RelayRequestOutcome {
+            encrypted_response: Some(encrypted_response),
+            error: None,
+        },
+        Err(error) => RelayRequestOutcome {
+            encrypted_response: None,
+            error: Some(relay_error(
+                "relay_request_failed",
+                &format!("failed to encrypt relay peer response: {error}"),
+                false,
+            )),
+        },
+    }
+}
