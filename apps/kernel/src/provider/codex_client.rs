@@ -18,11 +18,13 @@ use crate::provider::{
 use super::codex::CODEX_MCP_TOKEN_ENV;
 use super::resolve_codex_executable;
 
+mod catalog;
 mod permission;
 mod runtime_mcp;
 
 mod mcp_config;
 
+use catalog::{codex_catalog_from_models, CodexModelListResponse};
 use mcp_config::{append_codex_mcp_overrides, append_runtime_mcp_overrides};
 use permission::{
     codex_collaboration_mode, codex_permission_policy, managed_io_codex_permission_grant,
@@ -200,31 +202,6 @@ struct CodexLoginStartResponse {
     verification_url: Option<String>,
     #[serde(rename = "userCode", default)]
     user_code: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct CodexModelListResponse {
-    data: Vec<CodexModel>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct CodexModel {
-    id: String,
-    model: String,
-    #[serde(rename = "displayName", default)]
-    display_name: Option<String>,
-    #[serde(default)]
-    hidden: bool,
-    #[serde(rename = "supportedReasoningEfforts", default)]
-    supported_reasoning_efforts: Vec<CodexReasoningEffort>,
-    #[serde(rename = "isDefault", default)]
-    is_default: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct CodexReasoningEffort {
-    #[serde(rename = "reasoningEffort")]
-    reasoning_effort: String,
 }
 
 impl CodexClient {
@@ -1633,54 +1610,6 @@ fn set_socket_timeouts(
             })?;
     }
     Ok(())
-}
-
-fn codex_catalog_from_models(models: Vec<CodexModel>) -> OpenCodeProviderCatalog {
-    let mut catalog_models = BTreeMap::new();
-    let mut default = BTreeMap::new();
-    let mut first_model = None;
-
-    for model in models.into_iter().filter(|model| !model.hidden) {
-        let model_id = model.model.clone();
-        if first_model.is_none() {
-            first_model = Some(model_id.clone());
-        }
-        if model.is_default {
-            default.insert("codex".to_string(), model_id.clone());
-        }
-        let variants = model
-            .supported_reasoning_efforts
-            .into_iter()
-            .map(|entry| (entry.reasoning_effort, Value::Object(Default::default())))
-            .collect::<BTreeMap<_, _>>();
-        catalog_models.insert(
-            model_id.clone(),
-            crate::provider::OpenCodeProviderModel {
-                id: model_id,
-                name: model.display_name.unwrap_or_else(|| model.id.clone()),
-                status: "active".to_string(),
-                limit: None,
-                variants,
-            },
-        );
-    }
-
-    if default.is_empty() {
-        if let Some(model) = first_model {
-            default.insert("codex".to_string(), model);
-        }
-    }
-
-    OpenCodeProviderCatalog {
-        all: vec![crate::provider::OpenCodeProviderInfo {
-            id: "codex".to_string(),
-            name: "Codex".to_string(),
-            remote_machine_aliases: Vec::new(),
-            models: catalog_models,
-        }],
-        default,
-        connected: vec!["codex".to_string()],
-    }
 }
 
 #[cfg(test)]
