@@ -106,6 +106,7 @@ mod workflow_dispatch;
 mod workflow_launch_owned_state;
 mod workflow_prompt_dispatches;
 use workflow_prompt_dispatches::*;
+mod workflow_publication_owned_state;
 mod workflow_request_runtime_state;
 mod workflow_tool;
 
