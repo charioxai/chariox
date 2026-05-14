@@ -29,6 +29,11 @@ use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{RelayPeerEvent, RelayPeerRequest, RelayPeerResponse};
 
+mod connection_config;
+mod request_errors;
+use connection_config::{relay_config_continuity, RelayConfigContinuity};
+use request_errors::{map_relay_error, relay_error, relay_request_kind};
+
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct RelayClientState {
@@ -70,28 +75,6 @@ type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscriptionTask>>
 struct RelaySubscriptionTask {
     relay_subscription_id: String,
     handle: JoinHandle<()>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum RelayConfigContinuity {
-    Continue,
-    TokenRotated(String),
-    Reconnect(&'static str),
-}
-
-fn relay_config_continuity(
-    active_relay_url: &str,
-    active_relay_token: &str,
-    config: &crate::config::DaemonConfig,
-) -> RelayConfigContinuity {
-    if config.relay_url.as_deref() != Some(active_relay_url) || config.relay_token.is_none() {
-        return RelayConfigContinuity::Reconnect("relay url or token missing changed");
-    }
-    match config.relay_token.as_deref() {
-        Some(token) if token == active_relay_token => RelayConfigContinuity::Continue,
-        Some(token) => RelayConfigContinuity::TokenRotated(token.to_string()),
-        None => RelayConfigContinuity::Reconnect("relay token missing"),
-    }
 }
 
 #[derive(Debug)]
@@ -1886,81 +1869,6 @@ async fn dispatch_relay_client_request(
     router.dispatch(command, request).await
 }
 
-fn map_relay_error(error: &DaemonError) -> RelayError {
-    match error {
-        DaemonError::SessionNotFound { .. } => {
-            relay_error("session_not_found", &error.to_string(), false)
-        }
-        DaemonError::AttachmentNotFound { .. } => {
-            relay_error("attachment_not_found", &error.to_string(), false)
-        }
-        DaemonError::AttachmentNotInSession { .. } => {
-            relay_error("attachment_not_in_session", &error.to_string(), false)
-        }
-        DaemonError::NoActiveProviderRun { .. } => {
-            relay_error("no_active_provider_run", &error.to_string(), false)
-        }
-        DaemonError::LocalTransport { .. } => {
-            relay_error("transport_error", &error.to_string(), true)
-        }
-        DaemonError::RemoteLeasesDisabled { .. } => {
-            relay_error("remote_leases_disabled", &error.to_string(), false)
-        }
-        DaemonError::ExecutionLeaseNotFound { .. } => {
-            relay_error("execution_lease_not_found", &error.to_string(), false)
-        }
-        DaemonError::LeasedAgentNotFound { .. } => {
-            relay_error("leased_agent_not_found", &error.to_string(), false)
-        }
-        _ => relay_error("relay_request_failed", &error.to_string(), false),
-    }
-}
-
-fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
-    RelayError {
-        code: code.to_string(),
-        message: message.to_string(),
-        retryable,
-    }
-}
-
-fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
-    match request {
-        LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
-        LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
-        LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
-        LocalDaemonRequest::SearchHistory(_) => "history.search",
-        LocalDaemonRequest::SemanticSearchHistory(_) => "history.semantic_search",
-        LocalDaemonRequest::ListSessions(_) => "session.list",
-        LocalDaemonRequest::CreateSession(_) => "session.create",
-        LocalDaemonRequest::AttachToSession(_) => "session.attach",
-        LocalDaemonRequest::GetSessionState(_) => "session.state.get",
-        LocalDaemonRequest::ListSlices(_) => "slice.list",
-        LocalDaemonRequest::CreateSlice(_) => "slice.create",
-        LocalDaemonRequest::GetSlice(_) => "slice.get",
-        LocalDaemonRequest::StartSlice(_) => "slice.start",
-        LocalDaemonRequest::StopSlice(_) => "slice.stop",
-        LocalDaemonRequest::DeleteSlice(_) => "slice.delete",
-        LocalDaemonRequest::ImportSliceProviderAuth(_) => "slice.auth.import",
-        LocalDaemonRequest::GetSliceDisplayEndpoint(_) => "slice.display_endpoint.get",
-        LocalDaemonRequest::LaunchProviderRun(_) => "provider.run.launch",
-        LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider.run.selection.update",
-        LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",
-        LocalDaemonRequest::CreateWorkspaceWorktree(_) => "workspace.worktree.create",
-        LocalDaemonRequest::GetWorkspaceGitOverview(_) => "workspace.git.overview",
-        LocalDaemonRequest::ListWorkspaceFiles(_) => "workspace.files.list",
-        LocalDaemonRequest::GetWorkspaceFileContent(_) => "workspace.file.content",
-        LocalDaemonRequest::RunAgentUtility(_) => "agent.utility.run",
-        LocalDaemonRequest::GenerateWorkspaceCommitMessage(_) => {
-            "workspace.commit_message.generate"
-        }
-        LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
-        LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
-        LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
-        _ => "other",
-    }
-}
-
 async fn encrypt_json_response(
     router: &Arc<CommandRouter>,
     client_public_key: &str,
@@ -2753,35 +2661,6 @@ mod tests {
             .expect("session should attach")
             .id()
             .to_string()
-    }
-
-    #[test]
-    fn relay_config_continuity_keeps_active_socket_for_token_rotation() {
-        let mut config = DaemonConfig::for_tests();
-        config.relay_url = Some("wss://relay.example/ws".to_string());
-        config.relay_token = Some("new-token".to_string());
-
-        assert_eq!(
-            relay_config_continuity("wss://relay.example/ws", "old-token", &config),
-            RelayConfigContinuity::TokenRotated("new-token".to_string())
-        );
-    }
-
-    #[test]
-    fn relay_config_continuity_reconnects_for_url_changes_or_disabled_relay() {
-        let mut config = DaemonConfig::for_tests();
-        config.relay_url = Some("wss://relay.example/ws".to_string());
-        config.relay_token = Some("token".to_string());
-        assert!(matches!(
-            relay_config_continuity("wss://other.example/ws", "token", &config),
-            RelayConfigContinuity::Reconnect(_)
-        ));
-
-        config.relay_token = None;
-        assert!(matches!(
-            relay_config_continuity("wss://relay.example/ws", "token", &config),
-            RelayConfigContinuity::Reconnect(_)
-        ));
     }
 
     #[tokio::test(flavor = "multi_thread")]
