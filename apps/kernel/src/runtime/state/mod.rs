@@ -101,6 +101,7 @@ mod runtime_state_views;
 mod session;
 mod session_lifecycle_runtime_state;
 mod session_lookup_state;
+mod structured_provider_output_runtime;
 mod terminal_runtime_state;
 mod tool_dispatch;
 mod workflow;
