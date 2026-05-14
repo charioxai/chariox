@@ -4,7 +4,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration, Instant as TokioInstant};
@@ -42,18 +41,17 @@ use crate::local::{
     ListSlicesRequest, ListWorkspaceFilesRequest, ListWorkspaceLinksRequest,
     ListWorkspaceWorktreesRequest, LocalDaemonRequest, LocalDaemonResponse,
     LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
-    PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairedClientRecord,
-    PairingInviteIntent, PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest,
-    PumpTerminalOutputRequest, PushWorkspaceBranchRequest, RecordPairedClientRequest,
-    RecordPromptInputHistoryRequest, RelayStatus, RenameRemoteMachineRequest,
-    ResolveSessionRequest, RevokeAgentCapabilityRequest, RevokeCloudSessionInviteRequest,
-    RevokePairedClientRequest, RevokeSessionInviteRequest, RunAgentUtilityRequest,
+    PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairingInviteIntent,
+    PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest, PumpTerminalOutputRequest,
+    PushWorkspaceBranchRequest, RecordPromptInputHistoryRequest, RelayStatus,
+    RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
+    RevokeCloudSessionInviteRequest, RevokeSessionInviteRequest, RunAgentUtilityRequest,
     SearchWorkspaceDirectoriesRequest, SemanticHistoryMatch, SemanticHistorySearchUtilityInput,
     SemanticSearchHistoryMode, SemanticSearchHistoryRequest, SessionInviteRecord,
     SetCredentialSecretRequest, SetUserConfigValueRequest, ShowCloudSessionInviteRequest,
     ShowWorkspaceLinkRequest, SliceRefRequest, StartCloudRelayLoginRequest,
     StartProviderLoginRequest, TeardownProviderProcessesRequest, TerminalPairingLinkRecord,
-    TerminalRecord, TerminalType, UnsetUserConfigValueRequest, UpdateProviderRunSelectionRequest,
+    TerminalType, UnsetUserConfigValueRequest, UpdateProviderRunSelectionRequest,
     UserConfigMutationEffect, WaitingRoomPublicSnapshot, WorkspaceCommitMessageUtilityInput,
 };
 use crate::provider::{
@@ -116,6 +114,11 @@ use crate::runtime::session_membership::{
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
+use crate::runtime::terminal_pairings::{
+    execute_list_paired_clients_request, execute_list_terminals_request,
+    execute_record_paired_client_request, execute_revoke_paired_client_request,
+    paired_terminal_records, public_key_thumbprint, terminal_record, terminal_type_from_str,
+};
 use crate::runtime::user_config_policy::{user_config_mutation_effects, UserConfigMutation};
 use crate::runtime::waiting_room_public_projection::{
     build_waiting_room_public_snapshot, infer_waiting_room_launch_target,
@@ -1458,15 +1461,13 @@ impl CommandRouter {
                 self.execute_join_terminal_pairing_link_request(request)
                     .await
             }
-            LocalDaemonRequest::ListTerminals(_) => self.execute_list_terminals_request().await,
-            LocalDaemonRequest::ListPairedClients(_) => {
-                self.execute_list_paired_clients_request().await
-            }
+            LocalDaemonRequest::ListTerminals(_) => execute_list_terminals_request(),
+            LocalDaemonRequest::ListPairedClients(_) => execute_list_paired_clients_request(),
             LocalDaemonRequest::RecordPairedClient(request) => {
-                self.execute_record_paired_client_request(request).await
+                execute_record_paired_client_request(request, current_unix_ms)
             }
             LocalDaemonRequest::RevokePairedClient(request) => {
-                self.execute_revoke_paired_client_request(request).await
+                execute_revoke_paired_client_request(request)
             }
             LocalDaemonRequest::GetSessionHistory(request) => {
                 self.execute_session_history_request(request).await
@@ -4312,49 +4313,6 @@ impl CommandRouter {
         })
     }
 
-    async fn execute_list_terminals_request(&self) -> Result<LocalDaemonResponse, DaemonError> {
-        Ok(LocalDaemonResponse::TerminalsListed {
-            terminals: paired_terminal_records(),
-        })
-    }
-
-    async fn execute_list_paired_clients_request(
-        &self,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let clients = crate::config::DaemonConfig::client_pairing_entries()
-            .into_iter()
-            .map(paired_client_record)
-            .collect();
-        Ok(LocalDaemonResponse::PairedClientsListed { clients })
-    }
-
-    async fn execute_record_paired_client_request(
-        &self,
-        request: RecordPairedClientRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let paired_at_ms = request.paired_at_ms.unwrap_or_else(current_unix_ms);
-        let client = crate::config::DaemonConfig::record_paired_terminal(
-            request.client_id,
-            request.public_key_thumbprint,
-            request.alias,
-            paired_at_ms,
-            request.terminal_type.unwrap_or(TerminalType::Cli).as_str(),
-        )?;
-        Ok(LocalDaemonResponse::PairedClientRecorded {
-            client: paired_client_record(client),
-        })
-    }
-
-    async fn execute_revoke_paired_client_request(
-        &self,
-        request: RevokePairedClientRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let client = crate::config::DaemonConfig::revoke_paired_client(request.client_id)?;
-        Ok(LocalDaemonResponse::PairedClientRevoked {
-            client: paired_client_record(client),
-        })
-    }
-
     async fn projected_provider_catalog_response(
         &self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -5127,15 +5085,13 @@ impl CommandRouter {
                 self.execute_join_terminal_pairing_link_request(request)
                     .await
             }
-            LocalDaemonRequest::ListTerminals(_) => self.execute_list_terminals_request().await,
-            LocalDaemonRequest::ListPairedClients(_) => {
-                self.execute_list_paired_clients_request().await
-            }
+            LocalDaemonRequest::ListTerminals(_) => execute_list_terminals_request(),
+            LocalDaemonRequest::ListPairedClients(_) => execute_list_paired_clients_request(),
             LocalDaemonRequest::RecordPairedClient(request) => {
-                self.execute_record_paired_client_request(request).await
+                execute_record_paired_client_request(request, current_unix_ms)
             }
             LocalDaemonRequest::RevokePairedClient(request) => {
-                self.execute_revoke_paired_client_request(request).await
+                execute_revoke_paired_client_request(request)
             }
             LocalDaemonRequest::GetProviderAuthStatus(request) => {
                 Self::execute_get_provider_auth_status_request(request).await
@@ -5756,44 +5712,6 @@ fn semantic_history_candidate_for_prompt(match_: &SemanticHistoryMatch) -> serde
     })
 }
 
-fn paired_client_record(client: crate::config::PersistedClientPairing) -> PairedClientRecord {
-    let terminal_type = terminal_type_from_str(&client.terminal_type);
-    PairedClientRecord {
-        client_id: client.client_id,
-        alias: client.alias,
-        terminal_type: Some(terminal_type),
-        public_key_thumbprint: client.public_key_thumbprint,
-        paired_at_ms: client.paired_at_ms,
-        revoked: client.revoked,
-    }
-}
-
-fn paired_terminal_records() -> Vec<TerminalRecord> {
-    crate::config::DaemonConfig::client_pairing_entries()
-        .into_iter()
-        .map(terminal_record)
-        .collect()
-}
-
-fn terminal_record(client: crate::config::PersistedClientPairing) -> TerminalRecord {
-    TerminalRecord {
-        terminal_id: client.client_id,
-        terminal_type: terminal_type_from_str(&client.terminal_type),
-        alias: client.alias,
-        paired_at_ms: client.paired_at_ms,
-        revoked: client.revoked,
-    }
-}
-
-fn terminal_type_from_str(value: &str) -> TerminalType {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "web" | "web_terminal" | "web-terminal" => TerminalType::Web,
-        "ios" | "ios_terminal" | "ios-terminal" => TerminalType::Ios,
-        "android" | "android_terminal" | "android-terminal" => TerminalType::Android,
-        _ => TerminalType::Cli,
-    }
-}
-
 fn command_caller_user_id(command: &KernelCommand) -> String {
     command
         .caller
@@ -5833,14 +5751,6 @@ fn random_pairing_code() -> String {
         .map(|byte| ALPHABET[(*byte as usize) % ALPHABET.len()] as char)
         .collect();
     format!("{}-{}", &value[..4], &value[4..])
-}
-
-fn public_key_thumbprint(public_key: &str) -> String {
-    let digest = Sha256::digest(public_key.as_bytes());
-    digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()
 }
 
 fn current_unix_ms() -> u64 {

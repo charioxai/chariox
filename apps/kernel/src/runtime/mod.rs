@@ -16,6 +16,7 @@ pub mod session_actor;
 pub(crate) mod session_membership;
 pub(crate) mod state;
 pub mod terminal_output_executor;
+pub(crate) mod terminal_pairings;
 pub(crate) mod user_config_policy;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_public_projection;
