@@ -13,7 +13,7 @@ use crate::local::{
     AgentGrantKind, DeleteKernelRequest, GenerateWorkspaceCommitMessageRequest,
     GrantAgentCapabilityRequest, LocalDaemonRequest, LocalDaemonResponse, MoveAgentToRemoteRequest,
     PumpTerminalOutputRequest, RevokeAgentCapabilityRequest, RunAgentUtilityRequest,
-    TeardownProviderProcessesRequest, WaitingRoomPublicSnapshot,
+    TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
@@ -87,7 +87,7 @@ use crate::runtime::provider_run_control::{
     execute_update_provider_run_selection_request,
 };
 use crate::runtime::relay_config_control::{
-    execute_configure_relay_request, projected_relay_status_response, projected_relay_status_view,
+    execute_configure_relay_request, projected_relay_status_response,
 };
 use crate::runtime::remote_machine_registry::{
     execute_approve_remote_machine_request, execute_forget_remote_machine_request,
@@ -129,14 +129,16 @@ use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
 use crate::runtime::terminal_pairings::{
     execute_list_paired_clients_request, execute_list_terminals_request,
     execute_record_paired_client_request, execute_revoke_paired_client_request,
-    paired_terminal_records,
 };
 use crate::runtime::user_config_executor::{
     execute_delete_credential_secret_request, execute_get_user_config_request,
     execute_get_user_config_schema_request, execute_set_credential_secret_request,
     execute_set_user_config_value_request, execute_unset_user_config_value_request,
 };
-use crate::runtime::waiting_room_public_projection::build_waiting_room_public_snapshot;
+use crate::runtime::waiting_room_control::{
+    execute_waiting_room_inventory_request, execute_waiting_room_public_snapshot_request,
+    waiting_room_inventory_version,
+};
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workflow_projection::{
     projected_resolve_workflow, projected_resolve_workflow_run, projected_workflow_id,
@@ -2128,64 +2130,13 @@ impl CommandRouter {
         None
     }
 
-    async fn projected_waiting_room_inventory_response(
-        &self,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        Ok(LocalDaemonResponse::WaitingRoomInventory {
-            snapshot: self.projected_waiting_room_public_snapshot().await?.into(),
-        })
-    }
-
-    async fn projected_waiting_room_public_snapshot_response(
-        &self,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        Ok(LocalDaemonResponse::WaitingRoomPublicSnapshot {
-            snapshot: self.projected_waiting_room_public_snapshot().await?,
-        })
-    }
-
-    async fn projected_waiting_room_public_snapshot(
-        &self,
-    ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
-        let runtime_sessions =
-            match execute_list_sessions_request(&self.app, crate::local::ListSessionsRequest)
-                .await?
-            {
-                LocalDaemonResponse::SessionsListed { sessions } => sessions,
-                _response => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "build waiting room inventory",
-                        message: format!(
-                            "list sessions produced unexpected response `{}`",
-                            "unknown"
-                        ),
-                    });
-                }
-            };
-        let relay_status = projected_relay_status_view(
+    pub(crate) async fn waiting_room_inventory_version(&self) -> Result<String, DaemonError> {
+        waiting_room_inventory_version(
+            &self.app,
             Arc::clone(&self.relay_state),
             self.config_projection.clone(),
         )
-        .await;
-        let terminals = paired_terminal_records();
-        build_waiting_room_public_snapshot(
-            runtime_sessions,
-            relay_status,
-            terminals,
-            unix_epoch_ms(),
-        )
-    }
-
-    pub(crate) async fn waiting_room_inventory_version(&self) -> Result<String, DaemonError> {
-        match self.projected_waiting_room_inventory_response().await? {
-            LocalDaemonResponse::WaitingRoomInventory { snapshot } => {
-                Ok(snapshot.inventory_version)
-            }
-            _response => Err(DaemonError::LocalTransport {
-                operation: "build waiting room inventory version",
-                message: "waiting room inventory request produced unexpected response".to_string(),
-            }),
-        }
+        .await
     }
 
     async fn projected_remote_machines_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
@@ -2663,10 +2614,20 @@ impl CommandRouter {
                     .await
             }
             LocalDaemonRequest::GetWaitingRoomInventory(_) => {
-                self.projected_waiting_room_inventory_response().await
+                execute_waiting_room_inventory_request(
+                    &self.app,
+                    Arc::clone(&self.relay_state),
+                    self.config_projection.clone(),
+                )
+                .await
             }
             LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => {
-                self.projected_waiting_room_public_snapshot_response().await
+                execute_waiting_room_public_snapshot_request(
+                    &self.app,
+                    Arc::clone(&self.relay_state),
+                    self.config_projection.clone(),
+                )
+                .await
             }
             LocalDaemonRequest::SearchWorkspaceDirectories(request) => {
                 execute_search_workspace_directories_request(request)
