@@ -14,145 +14,15 @@ pub(in crate::runtime::state) fn apply_managed_patch_operations(
     reservation_owner: crate::io::ArtifactReservationOwner,
     external_change_monitor: &crate::io::ArtifactExternalChangeMonitor,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-    let mut before_states: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
-    let mut final_states: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
-    let mut reservation_ranges: BTreeMap<PathBuf, Vec<crate::io::TextRange>> = BTreeMap::new();
-
-    for operation in operations {
-        match operation {
-            ManagedPatchOperation::Add { path, content } => {
-                managed_io_validate_patch_path(&workspace_root, &path)?;
-                let current = managed_patch_state(
-                    &workspace_root,
-                    &path,
-                    &mut before_states,
-                    &mut final_states,
-                )?;
-                if current.is_some() {
-                    return Ok(managed_patch_rejected(
-                        path,
-                        "add file target already exists; reread and retry with an update",
-                    ));
-                }
-                reservation_ranges
-                    .entry(path.clone())
-                    .or_default()
-                    .push(crate::io::TextRange::new(0, usize::MAX));
-                final_states.insert(path, Some(content));
-            }
-            ManagedPatchOperation::Update {
-                path,
-                old_text,
-                new_text,
-            } => {
-                managed_io_validate_patch_path(&workspace_root, &path)?;
-                let current = managed_patch_state(
-                    &workspace_root,
-                    &path,
-                    &mut before_states,
-                    &mut final_states,
-                )?;
-                let Some(current) = current else {
-                    return Ok(managed_patch_rejected(
-                        path,
-                        "update file target does not exist",
-                    ));
-                };
-                let Some((range, updated)) = replace_unique_text(&current, &old_text, &new_text)
-                else {
-                    return Ok(managed_patch_rejected(
-                        path,
-                        "patch old text was not found exactly once in the current artifact",
-                    ));
-                };
-                reservation_ranges
-                    .entry(path.clone())
-                    .or_default()
-                    .push(range);
-                final_states.insert(path, Some(updated));
-            }
-            ManagedPatchOperation::Delete { path } => {
-                managed_io_validate_patch_path(&workspace_root, &path)?;
-                let current = managed_patch_state(
-                    &workspace_root,
-                    &path,
-                    &mut before_states,
-                    &mut final_states,
-                )?;
-                if current.is_none() {
-                    return Ok(managed_patch_rejected(
-                        path,
-                        "delete file target does not exist",
-                    ));
-                }
-                reservation_ranges
-                    .entry(path.clone())
-                    .or_default()
-                    .push(crate::io::TextRange::new(0, usize::MAX));
-                final_states.insert(path, None);
-            }
-            ManagedPatchOperation::Move {
-                from_path,
-                to_path,
-                old_text,
-                new_text,
-            } => {
-                managed_io_validate_patch_path(&workspace_root, &from_path)?;
-                managed_io_validate_patch_path(&workspace_root, &to_path)?;
-                if from_path == to_path {
-                    return Ok(managed_patch_rejected(
-                        from_path,
-                        "move source and target are identical",
-                    ));
-                }
-                let source = managed_patch_state(
-                    &workspace_root,
-                    &from_path,
-                    &mut before_states,
-                    &mut final_states,
-                )?;
-                let Some(mut source) = source else {
-                    return Ok(managed_patch_rejected(
-                        from_path,
-                        "move source does not exist",
-                    ));
-                };
-                let target = managed_patch_state(
-                    &workspace_root,
-                    &to_path,
-                    &mut before_states,
-                    &mut final_states,
-                )?;
-                if target.is_some() {
-                    return Ok(managed_patch_rejected(
-                        to_path,
-                        "move target already exists",
-                    ));
-                }
-                if let (Some(old_text), Some(new_text)) = (old_text, new_text) {
-                    let Some((_range, updated)) =
-                        replace_unique_text(&source, &old_text, &new_text)
-                    else {
-                        return Ok(managed_patch_rejected(
-                            from_path,
-                            "move patch old text was not found exactly once in the current artifact",
-                        ));
-                    };
-                    source = updated;
-                }
-                reservation_ranges
-                    .entry(from_path.clone())
-                    .or_default()
-                    .push(crate::io::TextRange::new(0, usize::MAX));
-                reservation_ranges
-                    .entry(to_path.clone())
-                    .or_default()
-                    .push(crate::io::TextRange::new(0, usize::MAX));
-                final_states.insert(from_path, None);
-                final_states.insert(to_path, Some(source));
-            }
-        }
-    }
+    let plan = match plan_managed_patch_operations(&workspace_root, operations)? {
+        ManagedPatchPlanOutcome::Planned(plan) => plan,
+        ManagedPatchPlanOutcome::Rejected(output) => return Ok(output),
+    };
+    let ManagedPatchPlan {
+        before_states,
+        final_states,
+        reservation_ranges,
+    } = plan;
 
     let mut reservations = Vec::new();
     for (path, ranges) in reservation_ranges {
