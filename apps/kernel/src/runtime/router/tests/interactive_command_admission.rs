@@ -1,0 +1,361 @@
+use super::*;
+
+#[tokio::test]
+async fn pending_provider_launch_cleanup_does_not_wait_for_app_lock_when_projection_is_cold() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    router
+        .provider_launch_pending
+        .insert_for_tests("cold-session")
+        .await;
+
+    let app_guard = app.lock().await;
+    let cleanup_router = router.clone();
+    let cleanup_task = tokio::spawn(async move {
+        cleanup_router
+            .provider_launch_pending
+            .clear_if_settled(
+                &cleanup_router.app,
+                "cold-session",
+                &cleanup_router.session_projection,
+                &cleanup_router.provider_run_projection,
+            )
+            .await;
+    });
+
+    timeout(Duration::from_millis(100), cleanup_task)
+        .await
+        .expect("cold pending launch cleanup should not wait for the app lock")
+        .expect("cleanup task should join");
+    drop(app_guard);
+
+    assert!(
+        router
+            .provider_launch_pending
+            .contains_for_tests("cold-session")
+            .await,
+        "cold cleanup should leave the guard for a later projection-backed refresh"
+    );
+}
+
+#[tokio::test]
+async fn routes_interactive_commands_through_bounded_lane() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let request = LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+        session_id: session_id.clone(),
+        client_id: "cli-1".to_string(),
+        capability_level: ClientCapabilityLevel::FullTerminal,
+    });
+    let command = KernelCommand::from_local_request("cmd-1", None, None, &request);
+
+    let response = router
+        .dispatch(command, request)
+        .await
+        .expect("command should run");
+
+    assert!(matches!(
+        response,
+        crate::local::LocalDaemonResponse::SessionAttached { .. }
+    ));
+}
+
+#[tokio::test]
+async fn rejects_session_commands_when_bounded_lane_is_full() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_and_session_capacity(Arc::clone(&app), 1, 1);
+    let app_guard = app.lock().await;
+
+    let first_request = attach_request(&session_id, "cli-1");
+    let first_result_rx = router
+        .session_runtime
+        .enqueue_for_test(&session_id, "cmd-1", "session.attach", first_request)
+        .await
+        .expect("first command should enter the session lane");
+
+    let mut first_command_is_running = false;
+    for _ in 0..50 {
+        if router
+            .session_runtime
+            .lane_capacity(&session_id)
+            .await
+            .is_some_and(|capacity| capacity == 1)
+        {
+            first_command_is_running = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        first_command_is_running,
+        "first session command should be running before filling the queue"
+    );
+
+    let queued_request = attach_request(&session_id, "queued-cli");
+    let queued_result_rx = router
+        .session_runtime
+        .enqueue_for_test(&session_id, "cmd-queued", "session.attach", queued_request)
+        .await
+        .expect("queued command should fill the session lane");
+
+    let mut session_lane_is_full = false;
+    for _ in 0..50 {
+        if router
+            .session_runtime
+            .lane_capacity(&session_id)
+            .await
+            .is_some_and(|capacity| capacity == 0)
+        {
+            session_lane_is_full = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        session_lane_is_full,
+        "session command queue should be full before overflow dispatch"
+    );
+
+    let third_request = attach_request(&session_id, "cli-overflow");
+    let third_command =
+        KernelCommand::from_local_request("cmd-overflow", None, None, &third_request);
+    let error = router
+        .dispatch(third_command, third_request)
+        .await
+        .expect_err("overflow session command should be rejected while lane is full");
+    assert!(error
+        .to_string()
+        .contains("session command lane overloaded"));
+
+    drop(app_guard);
+    let _ = first_result_rx.await.expect("first result should resolve");
+    let _ = queued_result_rx
+        .await
+        .expect("queued result should resolve");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn prompt_submit_does_not_wait_behind_slow_history_load() {
+    let mut config = DaemonConfig::for_tests();
+    config.session_history_read_delay_ms = 120;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            &session_id,
+            "cli-slow-history",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    app.history_store()
+        .append(
+            &session,
+            &crate::history::SessionHistoryEntry::user_prompt(
+                &session_id,
+                attachment.id(),
+                &agent_id,
+                "slow history entry",
+            ),
+        )
+        .expect("legacy-only history should append");
+    launch_test_provider(
+        &mut app,
+        &session_id,
+        &agent_id,
+        "dev-stub",
+        "claude-code",
+        "sonnet",
+    );
+
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+        session_id: session_id.clone(),
+    });
+    let state_command =
+        KernelCommand::from_local_request("cmd-history-prompt-state", None, None, &state_request);
+    router
+        .dispatch(state_command, state_request)
+        .await
+        .expect("state read should warm session projection");
+
+    let history_request = LocalDaemonRequest::GetSessionHistory(GetSessionHistoryRequest {
+        session_id: session_id.clone(),
+        agent_id: Some(agent_id.clone()),
+        round_count: Some(10),
+        max_chars: None,
+        before_entry_index: None,
+        before_entry_char_offset: None,
+    });
+    let history_command = KernelCommand::from_local_request(
+        "cmd-history-slow-background",
+        None,
+        None,
+        &history_request,
+    );
+    let history_router = router.clone();
+    let history_task = tokio::spawn(async move {
+        history_router
+            .dispatch(history_command, history_request)
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(
+        !history_task.is_finished(),
+        "test setup should keep history loading in the background"
+    );
+
+    let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment.id().to_string(),
+        target_agent_id: Some(agent_id.clone()),
+        prompt: "submit while history is slow".to_string(),
+        attachments: Vec::new(),
+    });
+    let prompt_command =
+        KernelCommand::from_local_request("cmd-prompt-during-history", None, None, &prompt_request);
+    let prompt_response = timeout(
+        Duration::from_millis(75),
+        router.dispatch(prompt_command, prompt_request),
+    )
+    .await
+    .expect("prompt submit should not wait behind slow history")
+    .expect("prompt submit should succeed");
+    assert!(matches!(
+        prompt_response,
+        LocalDaemonResponse::PromptSubmitted { .. }
+    ));
+
+    let _ = history_task
+        .await
+        .expect("history task should join")
+        .expect("history should eventually resolve");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog() {
+    let mut config = DaemonConfig::for_tests();
+    config.provider_catalog_read_delay_ms = 120;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            &session_id,
+            "cli-slow-catalog",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    launch_test_provider(
+        &mut app,
+        &session_id,
+        &agent_id,
+        "dev-stub",
+        "claude-code",
+        "sonnet",
+    );
+
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+    let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment.id().to_string(),
+        target_agent_id: Some(agent_id.clone()),
+        prompt: "prompt to cancel while catalog is slow".to_string(),
+        attachments: Vec::new(),
+    });
+    let prompt_command =
+        KernelCommand::from_local_request("cmd-catalog-prompt", None, None, &prompt_request);
+    router
+        .dispatch(prompt_command, prompt_request)
+        .await
+        .expect("prompt should start before catalog drill");
+
+    let catalog_request = LocalDaemonRequest::GetProviderCatalog(GetProviderCatalogRequest);
+    let catalog_command =
+        KernelCommand::from_local_request("cmd-slow-catalog", None, None, &catalog_request);
+    let catalog_router = router.clone();
+    let catalog_task = tokio::spawn(async move {
+        catalog_router
+            .dispatch(catalog_command, catalog_request)
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(
+        !catalog_task.is_finished(),
+        "test setup should keep provider catalog discovery in the background"
+    );
+
+    let focus_request = focus_request(&session_id, &agent_id);
+    let focus_command =
+        KernelCommand::from_local_request("cmd-focus-during-catalog", None, None, &focus_request);
+    let focus_response = timeout(
+        Duration::from_millis(75),
+        router.dispatch(focus_command, focus_request),
+    )
+    .await
+    .expect("focus should not wait behind slow catalog")
+    .expect("focus should succeed");
+    assert!(matches!(
+        focus_response,
+        LocalDaemonResponse::AgentFocused { .. }
+    ));
+
+    let resize_request = LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
+        session_id: session_id.clone(),
+        cols: 120,
+        rows: 40,
+    });
+    let resize_command =
+        KernelCommand::from_local_request("cmd-resize-during-catalog", None, None, &resize_request);
+    let resize_response = timeout(
+        Duration::from_millis(75),
+        router.dispatch(resize_command, resize_request),
+    )
+    .await
+    .expect("resize should not wait behind slow catalog")
+    .expect("resize should succeed");
+    assert!(matches!(
+        resize_response,
+        LocalDaemonResponse::TerminalResized { .. }
+    ));
+
+    let cancel_request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment.id().to_string(),
+    });
+    let cancel_command =
+        KernelCommand::from_local_request("cmd-cancel-during-catalog", None, None, &cancel_request);
+    let cancel_response = timeout(
+        Duration::from_millis(75),
+        router.dispatch(cancel_command, cancel_request),
+    )
+    .await
+    .expect("cancel should not wait behind slow catalog")
+    .expect("cancel should succeed");
+    assert!(matches!(
+        cancel_response,
+        LocalDaemonResponse::PromptCancelled { .. }
+    ));
+
+    let _ = catalog_task.await.expect("catalog task should join");
+}
