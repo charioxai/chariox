@@ -8,12 +8,13 @@ use crate::error::DaemonError;
 use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
 use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
-use crate::local::{
-    AgentGrantKind, GrantAgentCapabilityRequest, LocalDaemonRequest, LocalDaemonResponse,
-    MoveAgentToRemoteRequest, RevokeAgentCapabilityRequest,
-};
+use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_actor::AgentRuntime;
+use crate::runtime::agent_control_executor::{
+    execute_grant_agent_capability_request, execute_move_agent_to_remote_request,
+    execute_revoke_agent_capability_request,
+};
 use crate::runtime::agent_utility_executor::{
     execute_generate_workspace_commit_message_request, execute_run_agent_utility_request,
 };
@@ -21,10 +22,9 @@ use crate::runtime::capability_executor::{
     execute_required_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
 };
 use crate::runtime::capability_registry::{
-    ensure_mcp_exists, ensure_skill_exists, execute_get_mcp_server_request,
-    execute_get_skill_request, execute_import_mcp_servers_request, execute_import_skills_request,
-    execute_install_mcp_server_request, execute_install_skill_request,
-    execute_list_mcp_servers_request, execute_list_skills_request,
+    execute_get_mcp_server_request, execute_get_skill_request, execute_import_mcp_servers_request,
+    execute_import_skills_request, execute_install_mcp_server_request,
+    execute_install_skill_request, execute_list_mcp_servers_request, execute_list_skills_request,
     execute_uninstall_mcp_server_request, execute_uninstall_skill_request,
     execute_update_mcp_server_request, execute_update_skill_request,
 };
@@ -1594,19 +1594,31 @@ impl CommandRouter {
 
         match request {
             LocalDaemonRequest::GrantAgentCapability(request) => {
-                return self
-                    .execute_grant_agent_capability_request(&command, request)
-                    .await;
+                let caller_user_id = command_caller_user_id(&command);
+                return execute_grant_agent_capability_request(
+                    &self.runtime_state,
+                    &caller_user_id,
+                    request,
+                )
+                .await;
             }
             LocalDaemonRequest::MoveAgentToRemote(request) => {
-                return self
-                    .execute_move_agent_to_remote_request(&command, request)
-                    .await;
+                let caller_user_id = command_caller_user_id(&command);
+                return execute_move_agent_to_remote_request(
+                    &self.runtime_state,
+                    &caller_user_id,
+                    request,
+                )
+                .await;
             }
             LocalDaemonRequest::RevokeAgentCapability(request) => {
-                return self
-                    .execute_revoke_agent_capability_request(&command, request)
-                    .await;
+                let caller_user_id = command_caller_user_id(&command);
+                return execute_revoke_agent_capability_request(
+                    &self.runtime_state,
+                    &caller_user_id,
+                    request,
+                )
+                .await;
             }
             LocalDaemonRequest::SubmitPrompt(request) => {
                 return self
@@ -2259,71 +2271,6 @@ impl CommandRouter {
                 self.dispatch_interactive(command, request).await
             }
         }
-    }
-
-    async fn execute_grant_agent_capability_request(
-        &self,
-        command: &KernelCommand,
-        request: GrantAgentCapabilityRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let caller_user_id = command_caller_user_id(command);
-        match request.kind {
-            AgentGrantKind::Mcp => {
-                ensure_mcp_exists(request.workspace_id.as_deref(), &request.name)?;
-                let agent = self
-                    .runtime_state
-                    .grant_agent_mcp(&request.agent_ref, request.name, &caller_user_id)
-                    .await?;
-                Ok(LocalDaemonResponse::AgentCapabilityGranted { agent })
-            }
-            AgentGrantKind::Skill => {
-                ensure_skill_exists(request.workspace_id.as_deref(), &request.name)?;
-                let agent = self
-                    .runtime_state
-                    .grant_agent_skill(&request.agent_ref, request.name, &caller_user_id)
-                    .await?;
-                Ok(LocalDaemonResponse::AgentCapabilityGranted { agent })
-            }
-        }
-    }
-
-    async fn execute_move_agent_to_remote_request(
-        &self,
-        command: &KernelCommand,
-        request: MoveAgentToRemoteRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let caller_user_id = command_caller_user_id(command);
-        let agent = self
-            .runtime_state
-            .move_agent_to_remote(
-                &request.session_id,
-                &request.agent_ref,
-                &request.machine_ref,
-                &caller_user_id,
-            )
-            .await?;
-        Ok(LocalDaemonResponse::AgentMovedToRemote { agent })
-    }
-
-    async fn execute_revoke_agent_capability_request(
-        &self,
-        command: &KernelCommand,
-        request: RevokeAgentCapabilityRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let caller_user_id = command_caller_user_id(command);
-        let agent = match request.kind {
-            AgentGrantKind::Mcp => {
-                self.runtime_state
-                    .revoke_agent_mcp(&request.agent_ref, &request.name, &caller_user_id)
-                    .await?
-            }
-            AgentGrantKind::Skill => {
-                self.runtime_state
-                    .revoke_agent_skill(&request.agent_ref, &request.name, &caller_user_id)
-                    .await?
-            }
-        };
-        Ok(LocalDaemonResponse::AgentCapabilityRevoked { agent })
     }
 
     async fn apply_focus_projection_refresh(
