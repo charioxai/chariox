@@ -96,6 +96,7 @@ mod provider;
 mod provider_focus_owned_state;
 mod provider_launch_owned_state;
 mod provider_launch_runtime;
+mod provider_liveness_runtime;
 mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;
 #[cfg(test)]
