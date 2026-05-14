@@ -15,10 +15,10 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 2026-05-14:
 
 - Cloud API boundary split is in place: `server.ts` is route composition; relay-kernel bootstrap delegates to service-layer target selection/token minting; route/helper/contract files are domain-owned.
-- Cloud web responsibility modules now cover browser kernel transport, waiting-room state/projection/rendering/cache persistence/connection display/refresh scheduling/refresh controller/kernel-directory refresh, app sidebar/workflow/history/prompt/output/workspace/capabilities, terminal lifecycle/transport/target/launch/provider profile, freeform policy, and session projection fingerprinting. `client.ts` is still the main coordinator and is 10,088 lines.
-- OSS responsibility modules now cover kernel transport, router dispatch groups, relay peer bridge, cloud relay bridge, runtime tool bridge, status projection bridge, shared caller identity, membership authorization, runtime projections, provider/agent/session/workspace/history/capability/waiting-room execution, launch tracking, response refresh, runtime lane cleanup, visibility policy, and response redaction. `runtime/router.rs` is still the main command router and is 7,089 lines.
-- Latest verified batch: OSS daemon health/waiting-room status projection moved under `runtime/router/`; Cloud waiting-room refresh coordination moved to `terminal/waiting-room-refresh-controller.ts`.
-- Latest gates passed: OSS cargo fmt/lib tests/lint/diff check; Cloud web tests/lint/diff check.
+- Cloud web responsibility modules now cover browser kernel transport, waiting-room state/projection/rendering/cache persistence/connection display/refresh scheduling/refresh controller/kernel event policy/kernel-directory refresh, app sidebar/workflow/history/prompt/output/workspace/capabilities, terminal lifecycle/transport/target/launch/provider profile, freeform policy, and session projection fingerprinting. `client.ts` is still the main coordinator and is 10,077 lines.
+- OSS responsibility modules now cover kernel transport, router dispatch groups, relay peer bridge, cloud relay bridge, runtime tool bridge, status projection bridge, caller identity/redaction bridge, membership authorization, runtime projections, provider/agent/session/workspace/history/capability/waiting-room execution, launch tracking, response refresh, runtime lane cleanup, visibility policy, and response redaction. `runtime/router.rs` is still the main command router and is 7,064 lines.
+- Latest verified batch: OSS local caller identity/response redaction moved under `runtime/router/`; Cloud waiting-room kernel event policy moved to `terminal/waiting-room-kernel-events.ts`.
+- Latest gates passed: OSS cargo fmt/lib tests/diff check; Cloud web tests/lint/diff check. OSS workspace lint is blocked by unrelated unstaged native-TUI CLI edits.
 
 ## Responsibility Rule
 

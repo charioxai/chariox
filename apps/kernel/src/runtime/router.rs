@@ -16,7 +16,7 @@ use crate::runtime::capability_executor::{
 };
 use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::cloud_relay_executor::execute_cloud_relay_request;
-use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
+use crate::runtime::command::{KernelCommand, KernelCommandPriority};
 use crate::runtime::command_response_refresh::{
     refresh_command_response_state, CommandResponseRefreshContext,
 };
@@ -49,7 +49,6 @@ use crate::runtime::provider_run_control::{
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_machine_registry::execute_remote_machine_registry_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
-use crate::runtime::response_redaction::redact_response_for_user;
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
 use crate::runtime::session_collaboration_executor::execute_session_collaboration_request;
 use crate::runtime::session_membership::authorize_session_membership;
@@ -74,6 +73,7 @@ use crate::session::PromptIdAllocator;
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
 
+mod caller_identity_bridge;
 mod cloud_relay_bridge;
 mod relay_peer_bridge;
 mod runtime_tool_bridge;
@@ -393,21 +393,6 @@ impl CommandRouter {
             workspace_coordinator,
             provider_launch_pending,
         }
-    }
-
-    pub(crate) async fn local_command_caller(
-        &self,
-        source: KernelCommandSource,
-    ) -> crate::runtime::command::KernelCaller {
-        let mut caller = crate::runtime::command::KernelCaller::for_source(&source);
-        let cloud_profile = self.config_projection.snapshot().cloud_relay;
-        if let Some(profile) = cloud_profile {
-            caller.user_id = Some(profile.user_id);
-            caller.client_id = profile.client_id;
-            caller.machine_id = profile.machine_id;
-            caller.realm_id = Some(profile.realm_id);
-        }
-        caller
     }
 
     pub(crate) async fn dispatch(
@@ -738,16 +723,6 @@ impl CommandRouter {
         )
         .await;
         self.redact_result_for_user(result, &caller_user_id)
-    }
-
-    fn redact_result_for_user(
-        &self,
-        result: Result<LocalDaemonResponse, DaemonError>,
-        caller_user_id: &str,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        result.and_then(|response| {
-            redact_response_for_user(response, caller_user_id, &self.provider_run_projection)
-        })
     }
 
     async fn dispatch_interactive(
