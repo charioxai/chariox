@@ -213,83 +213,6 @@ impl KernelRuntimeState {
         Ok(ProviderReloadOutcome::Reloaded)
     }
 
-    pub(super) async fn activate_next_agent_substitute_after_failure(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        reason: &str,
-    ) -> Result<bool, DaemonError> {
-        let (launch_request, runtime_init_delay_ms, agent) = {
-            let owned = &self.owned;
-            let current = owned.agent_store.get_agent(agent_id)?;
-            if current.remote_execution().is_some() {
-                return Ok(false);
-            }
-            let Some(substitute_index) = next_substitute_index(&current) else {
-                return Ok(false);
-            };
-            let (agent, profile) = owned.agent_store.activate_agent_substitute(
-                agent_id,
-                substitute_index,
-                reason.to_string(),
-            )?;
-            if let Some(kernel_id) = profile.kernel_id.as_deref() {
-                let local_kernel_id = owned.config_projection.snapshot().daemon_id;
-                if kernel_id != local_kernel_id {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "activate agent substitute",
-                        message: format!(
-                            "remote substitute kernel `{kernel_id}` is not supported yet"
-                        ),
-                    });
-                }
-            }
-            let adapter_key = match profile.provider.as_str() {
-                "default" => "opencode",
-                value => value,
-            };
-            let provider = adapter_key;
-            let config = owned.config_projection.snapshot();
-            let mut launch_request = crate::provider::LaunchProviderRequest::new(
-                session_id,
-                adapter_key,
-                provider,
-                "default",
-                profile.model.clone(),
-            )
-            .with_agent_id(agent_id)
-            .with_owner_user_id(agent.owner_user_id().to_string())
-            .with_variant(profile.variant.clone());
-            if let Some(worktree_id) = profile.worktree_id.as_deref() {
-                launch_request =
-                    launch_request.with_working_directory(std::path::PathBuf::from(worktree_id));
-            }
-            if crate::provider::provider_requires_managed_io_by_default(provider, &config) {
-                launch_request = launch_request.with_managed_io_required();
-            }
-            let launch_request =
-                owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;
-            owned.record_notice(
-                session_id,
-                None,
-                owned
-                    .attachment_store
-                    .list_session_attachment_ids(session_id),
-                format!(
-                    "Activating substitute {} for agent `{agent_id}` after {reason}.",
-                    substitute_index
-                ),
-            );
-            let _ = owned.session_snapshot(session_id)?;
-            (launch_request, config.provider_runtime_init_delay_ms, agent)
-        };
-
-        self.append_agent_durable_event("agent.substitute_activated", &agent, None)
-            .await?;
-        self.spawn_provider_relaunch(launch_request, runtime_init_delay_ms, None, 0);
-        Ok(true)
-    }
-
     fn remember_pending_provider_reload(&self, session_id: &str, agent_id: &str, reason: &str) {
         self.owned.pending_provider_reloads.write().insert(
             agent_id.to_string(),
@@ -345,7 +268,7 @@ impl KernelRuntimeState {
         });
     }
 
-    fn spawn_provider_relaunch(
+    pub(super) fn spawn_provider_relaunch(
         &self,
         launch_request: crate::provider::LaunchProviderRequest,
         runtime_init_delay_ms: u64,
@@ -412,14 +335,6 @@ impl KernelRuntimeState {
             }
         });
     }
-}
-
-fn next_substitute_index(agent: &crate::agent::AgentInstance) -> Option<usize> {
-    let next = agent
-        .active_substitute_index()
-        .map(|index| index.saturating_add(1))
-        .unwrap_or(0);
-    (next < agent.substitutes().len()).then_some(next)
 }
 
 fn user_config_path_requires_provider_reload(path: &str) -> bool {
