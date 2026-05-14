@@ -51,9 +51,8 @@ use crate::local::{
     WaitingRoomPublicSnapshot, WorkspaceCommitMessageUtilityInput,
 };
 use crate::provider::{
-    run_codex_utility_prompt, run_opencode_utility_prompt, ProviderNativeInteractionBridge,
-    ProviderNativeInteractionResolution, ProviderRunOperationLanes, ProviderRunState,
-    RuntimeProviderRun,
+    run_codex_utility_prompt, run_opencode_utility_prompt, ProviderRunOperationLanes,
+    ProviderRunState, RuntimeProviderRun,
 };
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::capability_executor::{
@@ -93,6 +92,9 @@ use crate::runtime::invite_tokens::{
     decode_pairing_invite_token, decode_session_invite_token, encode_pairing_invite_token,
     encode_session_invite_token, encode_terminal_pairing_link, PairingInviteToken,
     SessionInviteToken,
+};
+use crate::runtime::native_interaction_bridge::{
+    forward_relay_native_interaction, install_provider_native_interaction_bridge,
 };
 use crate::runtime::projection::{
     agent_activity_for_session_projection, AgentRuntimeProjectionStore,
@@ -166,77 +168,6 @@ use crate::transport::relay_client::{
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
 const AGENT_UTILITY_PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
-
-struct RuntimeStateNativeInteractionBridge {
-    handle: tokio::runtime::Handle,
-    app: Arc<Mutex<DaemonApp>>,
-    state: KernelRuntimeState,
-}
-
-impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
-    fn request_blocking(
-        &self,
-        session_id: &str,
-        interaction: crate::session::RuntimeInteraction,
-    ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
-        let session_id = session_id.to_string();
-        let interaction_agent_id = interaction.agent_id().to_string();
-        let remote_target = self.handle.block_on(async {
-            let mut app = self.app.lock().await;
-            let target = crate::app::RemoteLeaseRuntime::new(&mut app)
-                .native_interaction_context_for_backing_agent(
-                    &session_id,
-                    &interaction_agent_id,
-                    "unknown",
-                );
-            Ok::<_, DaemonError>(
-                target.map(|(daemon_id, context)| (app.config().clone(), daemon_id, context)),
-            )
-        })?;
-        if let Some((config, target_daemon_id, context)) = remote_target {
-            let response = self.handle.block_on(async move {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                    &config,
-                    arroba_relay::protocol::ClientTarget {
-                        daemon_id: Some(target_daemon_id),
-                        daemon_alias: None,
-                    },
-                    crate::transport::relay_peer::RelayPeerRequest::ForwardNativeInteraction {
-                        context,
-                        interaction,
-                    },
-                )
-                .await
-            })?;
-            return match response {
-                crate::transport::relay_peer::RelayPeerResponse::NativeInteractionResolved {
-                    resolution,
-                } => Ok(resolution),
-                other => Err(DaemonError::LocalTransport {
-                    operation: "provider_native_interaction_bridge",
-                    message: format!(
-                        "unexpected relay response for remote native interaction: {other:?}"
-                    ),
-                }),
-            };
-        }
-        let state = self.state.clone();
-        let resolution = self.handle.block_on(async move {
-            let receiver = state
-                .create_runtime_interaction(&session_id, interaction)
-                .await?;
-            receiver.await.map_err(|error| DaemonError::LocalTransport {
-                operation: "provider_native_interaction_bridge",
-                message: format!("interaction dropped before resolution: {error}"),
-            })
-        })?;
-        Ok(ProviderNativeInteractionResolution {
-            status: resolution.status.to_string(),
-            choice_id: resolution.choice_id,
-            reply: resolution.reply,
-        })
-    }
-}
 
 #[derive(Clone)]
 pub(crate) struct CommandRouter {
@@ -344,15 +275,11 @@ impl CommandRouter {
             terminal_stream.clone(),
             workspace_coordinator.clone(),
         );
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            provider_store.set_native_interaction_bridge(Arc::new(
-                RuntimeStateNativeInteractionBridge {
-                    handle,
-                    app: Arc::clone(&app),
-                    state: runtime_state.clone(),
-                },
-            ));
-        }
+        install_provider_native_interaction_bridge(
+            Arc::clone(&app),
+            runtime_state.clone(),
+            &provider_store,
+        );
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
         let agent_runtime = AgentRuntime::new(
@@ -490,15 +417,11 @@ impl CommandRouter {
             terminal_stream.clone(),
             workspace_coordinator.clone(),
         );
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            provider_store.set_native_interaction_bridge(Arc::new(
-                RuntimeStateNativeInteractionBridge {
-                    handle,
-                    app: Arc::clone(&app),
-                    state: runtime_state.clone(),
-                },
-            ));
-        }
+        install_provider_native_interaction_bridge(
+            Arc::clone(&app),
+            runtime_state.clone(),
+            &provider_store,
+        );
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
         let agent_runtime = AgentRuntime::new(
@@ -943,36 +866,7 @@ impl CommandRouter {
         context: crate::transport::relay_peer::RemoteNativeInteractionContext,
         interaction: crate::session::RuntimeInteraction,
     ) -> Result<crate::provider::ProviderNativeInteractionResolution, DaemonError> {
-        let interaction = interaction.with_agent_id(context.home_agent_id.clone());
-        let timeout = interaction
-            .timeout_sec()
-            .map(std::time::Duration::from_secs);
-        let timeout_session_id = context.home_session_id.clone();
-        let timeout_interaction_id = interaction.id().to_string();
-        let receiver = self
-            .runtime_state
-            .create_runtime_interaction(&context.home_session_id, interaction)
-            .await?;
-        if let Some(timeout) = timeout {
-            let state = self.runtime_state.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(timeout).await;
-                let _ = state
-                    .timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id)
-                    .await;
-            });
-        }
-        let resolution = receiver
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "relay_forward_native_interaction",
-                message: format!("interaction dropped before resolution: {error}"),
-            })?;
-        Ok(crate::provider::ProviderNativeInteractionResolution {
-            status: resolution.status.to_string(),
-            choice_id: resolution.choice_id,
-            reply: resolution.reply,
-        })
+        forward_relay_native_interaction(&self.runtime_state, context, interaction).await
     }
 
     pub(crate) async fn dispatch_authenticated_runtime_tool_call(

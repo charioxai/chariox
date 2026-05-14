@@ -8,6 +8,7 @@ pub mod command;
 pub mod event_log;
 pub(crate) mod history_requests;
 pub(crate) mod invite_tokens;
+pub(crate) mod native_interaction_bridge;
 pub mod projection;
 pub mod prompt_state;
 pub(crate) mod provider_auth_control;
