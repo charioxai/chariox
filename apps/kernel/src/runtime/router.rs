@@ -2,10 +2,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine as _;
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
@@ -98,6 +96,11 @@ use crate::runtime::history_requests::{
     execute_record_prompt_input_history_request, execute_session_history_request_from_session,
     history_query_from_request, history_query_from_search_request, knn_semantic_history_search,
     semantic_search_request_from_utility_input, semantic_utility_input_from_search_request,
+};
+use crate::runtime::invite_tokens::{
+    decode_pairing_invite_token, decode_session_invite_token, encode_pairing_invite_token,
+    encode_session_invite_token, encode_terminal_pairing_link, PairingInviteToken,
+    SessionInviteToken,
 };
 use crate::runtime::projection::{
     agent_activity_for_session_projection, AgentRuntimeProjectionStore,
@@ -5811,129 +5814,6 @@ fn ensure_provider_run_visible_to_user(
             operation: "read provider run",
         })
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SessionInviteToken {
-    version: u8,
-    session_id: String,
-    invite_id: String,
-    created_by_user_id: String,
-    issued_at_ms: u64,
-    #[serde(default)]
-    expires_at_ms: Option<u64>,
-    #[serde(default)]
-    max_uses: Option<u32>,
-}
-
-fn encode_session_invite_token(token: &SessionInviteToken) -> Result<String, DaemonError> {
-    let payload = serde_json::to_vec(token).map_err(|error| DaemonError::LocalTransport {
-        operation: "encode session invite",
-        message: error.to_string(),
-    })?;
-    Ok(format!(
-        "arroba-session-invite-v1.{}",
-        URL_SAFE_NO_PAD.encode(payload)
-    ))
-}
-
-fn decode_session_invite_token(token: &str) -> Result<SessionInviteToken, DaemonError> {
-    let payload = token
-        .trim()
-        .strip_prefix("arroba-session-invite-v1.")
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "decode session invite",
-            message: "session invite token has an unsupported format".to_string(),
-        })?;
-    let bytes = URL_SAFE_NO_PAD
-        .decode(payload)
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "decode session invite",
-            message: error.to_string(),
-        })?;
-    let decoded = serde_json::from_slice::<SessionInviteToken>(&bytes).map_err(|error| {
-        DaemonError::LocalTransport {
-            operation: "decode session invite",
-            message: error.to_string(),
-        }
-    })?;
-    if decoded.version != 1 {
-        return Err(DaemonError::LocalTransport {
-            operation: "decode session invite",
-            message: format!("unsupported session invite version {}", decoded.version),
-        });
-    }
-    Ok(decoded)
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PairingInviteToken {
-    version: u8,
-    intent: PairingInviteIntent,
-    invite_id: String,
-    relay_url: String,
-    relay_token: String,
-    target_daemon_id: String,
-    #[serde(default)]
-    target_daemon_alias: Option<String>,
-    issuer_machine_id: String,
-    issued_at_ms: u64,
-    expires_at_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    terminal_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pairing_code: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    terminal_id: Option<String>,
-}
-
-fn encode_pairing_invite_token(token: &PairingInviteToken) -> Result<String, DaemonError> {
-    encode_pairing_invite_token_with_prefix("arroba-invite-v1", token)
-}
-
-fn encode_terminal_pairing_link(token: &PairingInviteToken) -> Result<String, DaemonError> {
-    encode_pairing_invite_token_with_prefix("arroba-terminal-pair-v1", token)
-}
-
-fn encode_pairing_invite_token_with_prefix(
-    prefix: &str,
-    token: &PairingInviteToken,
-) -> Result<String, DaemonError> {
-    let payload = serde_json::to_vec(token).map_err(|error| DaemonError::LocalTransport {
-        operation: "encode pairing invite",
-        message: error.to_string(),
-    })?;
-    Ok(format!("{prefix}.{}", URL_SAFE_NO_PAD.encode(payload)))
-}
-
-fn decode_pairing_invite_token(token: &str) -> Result<PairingInviteToken, DaemonError> {
-    let trimmed = token.trim();
-    let payload = trimmed
-        .strip_prefix("arroba-invite-v1.")
-        .or_else(|| trimmed.strip_prefix("arroba-terminal-pair-v1."))
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "decode pairing invite",
-            message: "pairing invite token has an unsupported format".to_string(),
-        })?;
-    let bytes = URL_SAFE_NO_PAD
-        .decode(payload)
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "decode pairing invite",
-            message: error.to_string(),
-        })?;
-    let decoded = serde_json::from_slice::<PairingInviteToken>(&bytes).map_err(|error| {
-        DaemonError::LocalTransport {
-            operation: "decode pairing invite",
-            message: error.to_string(),
-        }
-    })?;
-    if decoded.version != 1 {
-        return Err(DaemonError::LocalTransport {
-            operation: "decode pairing invite",
-            message: format!("unsupported pairing invite version {}", decoded.version),
-        });
-    }
-    Ok(decoded)
 }
 
 fn random_hex_id() -> String {

@@ -7,6 +7,7 @@ pub(crate) mod cloud_relay_control;
 pub mod command;
 pub mod event_log;
 pub(crate) mod history_requests;
+pub(crate) mod invite_tokens;
 pub mod projection;
 pub mod prompt_state;
 pub mod provider_launch_executor;
