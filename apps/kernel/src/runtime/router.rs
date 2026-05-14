@@ -79,12 +79,12 @@ use crate::runtime::provider_launch_executor::{
     ProviderLaunchCommandExecutor, ProviderLaunchPendingTracker,
 };
 use crate::runtime::provider_process_control::{
-    execute_list_provider_processes_request,
-    provider_processes_visible_to_user as filter_provider_processes_visible_to_user,
+    execute_list_provider_processes_request, provider_processes_visible_to_user_from_projection,
     teardown_provider_processes,
 };
 use crate::runtime::provider_run_control::{
-    execute_get_provider_run_request, execute_logout_provider_and_invalidate_catalog_request,
+    ensure_provider_run_visible_to_user, execute_get_provider_run_request,
+    execute_logout_provider_and_invalidate_catalog_request,
     execute_update_provider_run_selection_request,
 };
 use crate::runtime::relay_config_control::{
@@ -1143,7 +1143,11 @@ impl CommandRouter {
                 .list(request.provider.as_deref())
             {
                 return Ok(LocalDaemonResponse::ProviderProcessesListed {
-                    processes: self.provider_processes_visible_to_user(processes, &caller_user_id),
+                    processes: provider_processes_visible_to_user_from_projection(
+                        processes,
+                        &self.provider_run_projection,
+                        &caller_user_id,
+                    ),
                 });
             }
         }
@@ -1652,12 +1656,20 @@ impl CommandRouter {
             }
             LocalDaemonResponse::ProviderProcessesListed { processes } => {
                 LocalDaemonResponse::ProviderProcessesListed {
-                    processes: self.provider_processes_visible_to_user(processes, caller_user_id),
+                    processes: provider_processes_visible_to_user_from_projection(
+                        processes,
+                        &self.provider_run_projection,
+                        caller_user_id,
+                    ),
                 }
             }
             LocalDaemonResponse::ProviderProcessesTornDown { processes } => {
                 LocalDaemonResponse::ProviderProcessesTornDown {
-                    processes: self.provider_processes_visible_to_user(processes, caller_user_id),
+                    processes: provider_processes_visible_to_user_from_projection(
+                        processes,
+                        &self.provider_run_projection,
+                        caller_user_id,
+                    ),
                 }
             }
             LocalDaemonResponse::WorkflowCreated { workflow, session } => {
@@ -1927,18 +1939,6 @@ impl CommandRouter {
                 }
             }
             other => other,
-        })
-    }
-
-    fn provider_processes_visible_to_user(
-        &self,
-        processes: Vec<crate::provider::ProviderProcessInfo>,
-        caller_user_id: &str,
-    ) -> Vec<crate::provider::ProviderProcessInfo> {
-        filter_provider_processes_visible_to_user(processes, caller_user_id, |run_id, user_id| {
-            self.provider_run_projection
-                .get(run_id)
-                .is_some_and(|run| run.owned_by(user_id))
         })
     }
 
@@ -3190,22 +3190,6 @@ fn command_caller_user_id(command: &KernelCommand) -> String {
         .user_id
         .clone()
         .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
-}
-
-fn ensure_provider_run_visible_to_user(
-    provider_run: &crate::provider::RuntimeProviderRun,
-    caller_user_id: &str,
-) -> Result<(), DaemonError> {
-    if provider_run.owned_by(caller_user_id) {
-        Ok(())
-    } else {
-        Err(DaemonError::OwnershipAccessDenied {
-            user_id: caller_user_id.to_string(),
-            owner_user_id: provider_run.owner_user_id().to_string(),
-            resource: format!("provider run `{}`", provider_run.id()),
-            operation: "read provider run",
-        })
-    }
 }
 
 fn router_projection_stores(

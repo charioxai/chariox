@@ -11,6 +11,7 @@ use crate::local::{
     ListProviderProcessesRequest, LocalDaemonResponse, TeardownProviderProcessesRequest,
 };
 use crate::provider::ProviderProcessInfo;
+use crate::runtime::projection::ProviderRunProjectionStore;
 use crate::session::RuntimeSession;
 
 pub(crate) struct ProviderProcessTeardown {
@@ -32,6 +33,18 @@ pub(crate) fn provider_processes_visible_to_user(
                 .any(|run_id| provider_run_owned_by(run_id, caller_user_id))
         })
         .collect()
+}
+
+pub(crate) fn provider_processes_visible_to_user_from_projection(
+    processes: Vec<ProviderProcessInfo>,
+    provider_run_projection: &ProviderRunProjectionStore,
+    caller_user_id: &str,
+) -> Vec<ProviderProcessInfo> {
+    provider_processes_visible_to_user(processes, caller_user_id, |run_id, user_id| {
+        provider_run_projection
+            .get(run_id)
+            .is_some_and(|run| run.owned_by(user_id))
+    })
 }
 
 pub(crate) async fn execute_list_provider_processes_request(

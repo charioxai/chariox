@@ -46,3 +46,19 @@ pub(crate) async fn invalidate_provider_catalog_caches(
         app.invalidate_provider_catalog_cache();
     }
 }
+
+pub(crate) fn ensure_provider_run_visible_to_user(
+    provider_run: &crate::provider::RuntimeProviderRun,
+    caller_user_id: &str,
+) -> Result<(), DaemonError> {
+    if provider_run.owned_by(caller_user_id) {
+        Ok(())
+    } else {
+        Err(DaemonError::OwnershipAccessDenied {
+            user_id: caller_user_id.to_string(),
+            owner_user_id: provider_run.owner_user_id().to_string(),
+            resource: format!("provider run `{}`", provider_run.id()),
+            operation: "read provider run",
+        })
+    }
+}
