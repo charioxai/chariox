@@ -895,6 +895,16 @@ impl ProviderRunProjectionStore {
             .cloned()
     }
 
+    pub(crate) fn list_for_session(&self, session_id: &str) -> Vec<RuntimeProviderRun> {
+        self.runs
+            .lock()
+            .expect("provider run projection lock should not be poisoned")
+            .values()
+            .filter(|run| run.session_id() == session_id)
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn update(&self, run: RuntimeProviderRun) {
         self.runs
             .lock()

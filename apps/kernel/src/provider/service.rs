@@ -875,7 +875,7 @@ impl ProviderProcessService {
 
     pub(crate) fn run_uses_structured_prompt_io(&self, run: &RuntimeProviderRun) -> bool {
         run.adapter_key() == "codex"
-            || run.adapter_key() == "claude"
+            || (run.adapter_key() == "claude" && run.client_interface().is_arroba())
             || run.adapter_key() == "opencode"
             || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
     }
@@ -1307,8 +1307,8 @@ mod tests {
     use crate::error::DaemonError;
     use crate::provider::opencode_binding::OpenCodeRunSelection;
     use crate::provider::{
-        AgentEndpointMode, ProviderLaunchResult, ProviderPromptSignalBatch, ProviderResumeState,
-        RuntimeProviderRun,
+        AgentEndpointMode, ProviderClientInterface, ProviderLaunchResult,
+        ProviderPromptSignalBatch, ProviderResumeState, RuntimeProviderRun,
     };
     use crate::session::{CreateSessionRequest, SessionService, SessionStatus};
 
@@ -1386,6 +1386,30 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn claude_native_tui_runs_use_pty_output_pumping() {
+        let providers = ProviderProcessService::new();
+        let request = LaunchProviderRequest::new("session-1", "claude", "default", "sonnet", "low")
+            .with_client_interface(ProviderClientInterface::NativeTui);
+        let run = RuntimeProviderRun::new(
+            "provider-run-1",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "claude:native-tui".to_string(),
+                pty_target: None,
+                pty_program: Some("claude".to_string()),
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+
+        assert!(!providers.run_uses_structured_prompt_io(&run));
     }
 
     #[test]

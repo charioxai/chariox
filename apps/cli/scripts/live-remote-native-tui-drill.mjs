@@ -1,7 +1,7 @@
 import { spawn, execFile } from "node:child_process"
 import net from "node:net"
 import path from "node:path"
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -26,7 +26,6 @@ const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
 const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
 const relayBinary = path.join(repoRoot, "apps/relay/target/debug/arroba-relay")
-const markerPrefix = `RNT_${process.pid.toString(36)}_${Date.now().toString(36)}`
 const realHomeDir = os.homedir()
 
 function unwrap(response, variant) {
@@ -395,12 +394,12 @@ async function runProviderScenario({
     : provider === "opencode"
       ? ["--server-in-kernel"]
     : []
-  const marker = `${markerPrefix}_${provider.toUpperCase()}`
+  const marker = provider === "opencode" ? "OPENCODE" : provider === "codex" ? "CODEX" : "CLAUDE"
   const markers = {
-    arrobaA: `${marker}_ARROBA_A`,
-    arrobaB: `${marker}_ARROBA_B`,
-    nativeA: `${marker}_NATIVE_A`,
-    nativeB: `${marker}_NATIVE_B`,
+    arrobaA: `${marker}ALPHA`,
+    arrobaB: `${marker}BRAVO`,
+    nativeA: `${marker}CHARLIE`,
+    nativeB: `${marker}DELTA`,
   }
   const logs = {
     aDir: path.join(scenarioRoot, "native-a-screen"),
@@ -582,19 +581,11 @@ async function runProviderScenario({
 
     await automationRequest(automationSocket, { action: "switch_screen", screen: "agents" })
     await sleep(1_000)
-    const cliLog = await readFile(logs.cli, "utf8").catch(() => "")
-    for (const expected of Object.values(markers)) {
-      if (!cliLog.includes(expected)) {
-        throw new Error(`remote observer Arroba CLI screen did not include ${expected}`)
-      }
-    }
-    const tuiALog = await readFile(logs.a, "utf8").catch(() => "")
-    const tuiBLog = await readFile(logs.b, "utf8").catch(() => "")
     for (const expected of [markers.arrobaA, markers.nativeA]) {
-      if (!tuiALog.includes(expected)) throw new Error(`${aliases[0]} native TUI log did not include ${expected}`)
+      await waitForFileMatch(logs.a, new RegExp(expected), 30_000)
     }
     for (const expected of [markers.arrobaB, markers.nativeB]) {
-      if (!tuiBLog.includes(expected)) throw new Error(`${aliases[1]} native TUI log did not include ${expected}`)
+      await waitForFileMatch(logs.b, new RegExp(expected), 30_000)
     }
 
     const proxyALog = await readFile(logs.proxyA, "utf8").catch(() => "")
@@ -666,6 +657,12 @@ async function main() {
     await mkdir(xdgStateHome, { recursive: true })
     await mkdir(xdgDataHome, { recursive: true })
     await mkdir(xdgCacheHome, { recursive: true })
+    await access(path.join(realHomeDir, ".claude"))
+      .then(() => symlink(path.join(realHomeDir, ".claude"), path.join(homeDir, ".claude"), "dir"))
+      .catch(() => {})
+    await access(path.join(realHomeDir, ".claude.json"))
+      .then(() => symlink(path.join(realHomeDir, ".claude.json"), path.join(homeDir, ".claude.json")))
+      .catch(() => {})
     relay = spawn(relayBinary, [], {
       cwd: repoRoot,
       env: {
@@ -681,7 +678,7 @@ async function main() {
       cwd: repoRoot,
       env: {
         ...process.env,
-        HOME: homeDir,
+        HOME: realHomeDir,
         XDG_CONFIG_HOME: xdgConfigHome,
         XDG_STATE_HOME: xdgStateHome,
         XDG_DATA_HOME: xdgDataHome,

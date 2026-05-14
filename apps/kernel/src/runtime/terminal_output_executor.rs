@@ -65,11 +65,13 @@ impl TerminalOutputExecutor {
                 attachment_id: request.attachment_id,
             });
         }
-        if session
-            .active_provider_run_id()
-            .is_none_or(|provider_run_id| {
-                self.projected_provider_run_is_idle(&request, provider_run_id)
-            })
+        let provider_run_ids = self.provider_run_ids_for_pump(&session);
+        if provider_run_ids.is_empty()
+            && session
+                .active_provider_run_id()
+                .is_none_or(|provider_run_id| {
+                    self.projected_provider_run_is_idle(&request, provider_run_id)
+                })
             && !session.has_any_prompt_work()
         {
             return Ok(LocalDaemonResponse::TerminalOutput {
@@ -79,7 +81,6 @@ impl TerminalOutputExecutor {
             });
         }
 
-        let provider_run_ids = self.provider_run_ids_for_pump(&session);
         let mut permits = Vec::new();
         for provider_run_id in &provider_run_ids {
             permits.push(self.provider_runtime_lanes.acquire(provider_run_id).await);
@@ -132,6 +133,17 @@ impl TerminalOutputExecutor {
                 ) {
                     provider_run_ids.insert(run.id().to_string());
                 }
+            }
+        }
+        for run in self.provider_run_projection.list_for_session(session.id()) {
+            if run.client_interface().is_arroba() {
+                continue;
+            }
+            if matches!(
+                run.state(),
+                ProviderRunState::Starting | ProviderRunState::Running
+            ) {
+                provider_run_ids.insert(run.id().to_string());
             }
         }
         provider_run_ids

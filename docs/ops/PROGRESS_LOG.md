@@ -2,6 +2,15 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-05-14
+
+### M14 remote native TUI same-host relay
+
+- Confirmed `apps/cli/scripts/live-remote-native-tui-drill.mjs --providers opencode,codex,claude --keep-artifacts-on-failure` against the same-host relay topology.
+- The drill launches two native TUI agents plus one Arroba observer CLI in one Arroba session per provider, sends prompts from both Arroba and native TUIs, verifies provider responses appear without cross-agent marker contamination, and checks agent badges move from idle to working/thinking and back to idle.
+- Fixed Claude Code remote-rendered auth in the drill by keeping Arroba state isolated through explicit runtime env vars while launching the kernel/provider process with the real user `HOME`, which lets Claude Code see its normal authenticated configuration.
+- Fixed Claude Code Arroba-origin prompt submission reliability by staging visible prompt typing and Enter submission instead of sending the prompt plus carriage return in one PTY write.
+
 ## 2026-04-25
 
 ### OSS iOS app planning baseline

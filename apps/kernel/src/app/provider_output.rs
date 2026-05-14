@@ -1171,7 +1171,14 @@ impl<'a> ProviderOutputPumpContext<'a> {
         else {
             return Ok(());
         };
-        if claude_native_marker(context_file)
+        let marker = claude_native_marker(context_file);
+        if marker.as_deref() == Some(&format!("typed:{}", prompt.id())) {
+            self.app
+                .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+            write_claude_native_marker(context_file, &format!("injected:{}", prompt.id()));
+            return Ok(());
+        }
+        if marker
             .as_deref()
             .is_some_and(|value| value.ends_with(prompt.id()))
         {
@@ -1185,10 +1192,8 @@ impl<'a> ProviderOutputPumpContext<'a> {
         if !visible.is_empty() {
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, visible.as_bytes())?;
-            self.app
-                .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
         }
-        write_claude_native_marker(context_file, &format!("injected:{}", prompt.id()));
+        write_claude_native_marker(context_file, &format!("typed:{}", prompt.id()));
         Ok(())
     }
 

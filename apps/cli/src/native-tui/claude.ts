@@ -326,9 +326,13 @@ async function runClaudeRemoteRendered(
     restoreStdin = forwardStdinToProviderRun(client, session.id, attachment.id, run.id)
     installResizeForwarder(client, session.id)
     if (options.initialPrompt) {
-      await sleep(1_000)
+      await sleep(2_000)
       await client.send<Record<string, unknown>>(
-        sendTerminalInputRequest(session.id, attachment.id, `${options.initialPrompt}\r`, run.id),
+        sendTerminalInputRequest(session.id, attachment.id, options.initialPrompt, run.id),
+      )
+      await sleep(500)
+      await client.send<Record<string, unknown>>(
+        sendTerminalInputRequest(session.id, attachment.id, "\r", run.id),
       )
     }
     await waitForRemoteRenderedRunExit(client, run.id)

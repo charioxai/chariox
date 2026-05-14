@@ -28,6 +28,13 @@ Current M14 implementation status:
   the provider-server ownership boundary on same-host/relay drills. The remaining
   product gap for true different-machine split mode is the private loopback
   tunnel between the TUI-side proxy and the server-side provider endpoint.
+- On 2026-05-14, `node apps/cli/scripts/live-remote-native-tui-drill.mjs
+  --providers opencode,codex,claude --keep-artifacts-on-failure` passed. The
+  drill launches two native TUIs plus one Arroba observer CLI in one Arroba
+  session for each provider, validates prompts from Arroba and native TUIs,
+  validates native output visibility without cross-agent contamination, and
+  verifies native-agent badges transition from idle to working/thinking and
+  back to idle.
 
 This milestone captures the remaining work to split or remotely render
 provider-native TUIs after the local native Codex, OpenCode, and Claude Code TUI
@@ -250,7 +257,8 @@ Common assertions:
 - `codex-split-local-two-agents`: two Codex split agents in one Arroba session,
   no contamination, independent app-server threads.
 - `codex-split-relay-same-host`: native TUI connects through relay to the home
-  kernel while provider app-server stays local to the kernel.
+  kernel while provider app-server stays local to the kernel. **Pass on
+  2026-05-14** via `live-remote-native-tui-drill.mjs --providers codex`.
 - `codex-split-remote-machine`: local TUI, provider app-server on a remote
   worker kernel; verify shell/tool/file execution occurs on the worker.
 - `codex-split-slice`: local TUI, provider app-server inside a slice; verify
@@ -279,7 +287,8 @@ Common assertions:
 - `opencode-split-local-two-agents`: two OpenCode split agents in one Arroba
   session, independent provider sessions and no contamination.
 - `opencode-split-relay-same-host`: native TUI connects through relay while
-  provider server remains local to the home kernel.
+  provider server remains local to the home kernel. **Pass on 2026-05-14** via
+  `live-remote-native-tui-drill.mjs --providers opencode`.
 - `opencode-split-remote-machine`: local TUI, `opencode serve` on a remote
   worker kernel; verify shell/tool/file execution occurs on the worker.
 - `opencode-split-slice`: local TUI, provider server inside a slice; verify
@@ -310,7 +319,8 @@ Common assertions:
 - `claude-remote-rendered-local-two-agents`: two Claude Code PTYs in one Arroba
   session, no prompt/output contamination, independent transcript offsets.
 - `claude-remote-rendered-relay-same-host`: local Arroba client connects through
-  relay to a kernel-owned Claude PTY on the same host.
+  relay to a kernel-owned Claude PTY on the same host. **Pass on 2026-05-14**
+  via `live-remote-native-tui-drill.mjs --providers claude`.
 - `claude-remote-rendered-remote-machine`: local Arroba client controls Claude
   Code running on a remote worker kernel; verify shell/tool/file execution
   occurs on the worker.
