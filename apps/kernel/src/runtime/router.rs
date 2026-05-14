@@ -76,6 +76,11 @@ use crate::runtime::capability_registry::{
     execute_uninstall_mcp_server_request, execute_uninstall_skill_request,
     execute_update_mcp_server_request, execute_update_skill_request,
 };
+use crate::runtime::cloud_relay_control::{
+    cloud_kernel_presence_body, cloud_relay_profile_has_runtime_credentials,
+    cloud_relay_runtime_token_is_fresh, cloud_relay_token_refresh_due, cloud_runtime_token_subject,
+    CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
+};
 use crate::runtime::command::{
     KernelCallerKind, KernelCommand, KernelCommandPriority, KernelCommandSource,
 };
@@ -125,8 +130,6 @@ use crate::transport::relay_client::{
 };
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
-const CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS: u64 = 300_000;
-const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
 const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
 const AGENT_UTILITY_PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -590,17 +593,7 @@ impl CommandRouter {
 
     pub(crate) fn cloud_relay_token_refresh_due(&self) -> bool {
         let config = self.config_projection.snapshot();
-        let Some(profile) = config.cloud_relay else {
-            return false;
-        };
-        if profile.cloud_session_token.is_none() && profile.machine_credential.is_none() {
-            return false;
-        }
-        config.relay_url.as_deref() != Some(profile.relay_url.as_str())
-            || config.relay_token.is_none()
-            || profile.token_expires_at_ms.is_none_or(|expires_at| {
-                expires_at <= crate::session::unix_epoch_ms() + CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS
-            })
+        cloud_relay_token_refresh_due(&config, crate::session::unix_epoch_ms())
     }
 
     pub(crate) async fn ensure_cloud_relay_connection(&self) -> Result<(), DaemonError> {
@@ -608,32 +601,22 @@ impl CommandRouter {
         let Some(profile) = config.cloud_relay.clone() else {
             return Ok(());
         };
-        if profile.cloud_session_token.is_none() && profile.machine_credential.is_none() {
+        if !cloud_relay_profile_has_runtime_credentials(&profile) {
             return Ok(());
         }
         let now_ms = crate::session::unix_epoch_ms();
-        let token_is_fresh = config.relay_url.as_deref() == Some(profile.relay_url.as_str())
-            && config.relay_token.is_some()
-            && profile.token_expires_at_ms.is_some_and(|expires_at| {
-                expires_at > now_ms + CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS
-            });
-        if token_is_fresh {
+        if cloud_relay_runtime_token_is_fresh(&config, &profile, now_ms) {
             return Ok(());
         }
 
-        let (subject, subject_kind, machine_id) =
-            if let Some(machine_id) = profile.machine_id.clone() {
-                (machine_id.clone(), "machine", Some(machine_id))
-            } else {
-                (config.daemon_id, "kernel", None)
-            };
+        let token_subject = cloud_runtime_token_subject(&config, &profile);
         let issued = match issue_cloud_runtime_token(
             &profile,
-            &subject,
-            subject_kind,
+            &token_subject.subject,
+            token_subject.subject_kind,
             None,
             None,
-            machine_id,
+            token_subject.machine_id,
             None,
         )
         .await
@@ -660,63 +643,14 @@ impl CommandRouter {
         online: bool,
     ) -> Result<(), DaemonError> {
         let config = self.config_projection.snapshot();
-        let Some(profile) = config.cloud_relay else {
+        let Some(profile) = config.cloud_relay.as_ref() else {
             return Ok(());
         };
-        let Some(machine_id) = profile.machine_id.clone() else {
+        let Some(body) = cloud_kernel_presence_body(&config, profile, online) else {
             return Ok(());
         };
-        if profile.cloud_session_token.is_none() && profile.machine_credential.is_none() {
-            return Ok(());
-        }
-        let mut body = serde_json::Map::new();
-        if let Some(machine_credential) = profile.machine_credential.clone() {
-            body.insert(
-                "machineCredential".to_string(),
-                serde_json::Value::String(machine_credential),
-            );
-        } else if let Some(session_token) = profile.cloud_session_token.clone() {
-            body.insert(
-                "sessionToken".to_string(),
-                serde_json::Value::String(session_token),
-            );
-        }
-        body.insert(
-            "accountId".to_string(),
-            serde_json::Value::String(profile.account_id),
-        );
-        body.insert(
-            "realmId".to_string(),
-            serde_json::Value::String(profile.realm_id),
-        );
-        body.insert(
-            "machineId".to_string(),
-            serde_json::Value::String(machine_id),
-        );
-        body.insert(
-            "kernelId".to_string(),
-            serde_json::Value::String(config.daemon_id),
-        );
-        if let Some(alias) = config.daemon_alias {
-            body.insert("kernelAlias".to_string(), serde_json::Value::String(alias));
-        }
-        body.insert(
-            "status".to_string(),
-            serde_json::Value::String(if online { "ONLINE" } else { "OFFLINE" }.to_string()),
-        );
-        body.insert(
-            "metadata".to_string(),
-            serde_json::json!({
-                "host": config.kernel_websocket_host,
-                "port": config.kernel_websocket_port,
-            }),
-        );
-        let _: serde_json::Value = post_cloud_json(
-            profile.api_url,
-            "/kernels/presence",
-            serde_json::Value::Object(body),
-        )
-        .await?;
+        let _: serde_json::Value =
+            post_cloud_json(profile.api_url.clone(), "/kernels/presence", body).await?;
         Ok(())
     }
 
