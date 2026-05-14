@@ -9,8 +9,8 @@ use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
 use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
 use crate::local::{
-    AgentGrantKind, DeleteKernelRequest, GenerateWorkspaceCommitMessageRequest,
-    GrantAgentCapabilityRequest, LocalDaemonRequest, LocalDaemonResponse, MoveAgentToRemoteRequest,
+    AgentGrantKind, GenerateWorkspaceCommitMessageRequest, GrantAgentCapabilityRequest,
+    LocalDaemonRequest, LocalDaemonResponse, MoveAgentToRemoteRequest,
     RevokeAgentCapabilityRequest, RunAgentUtilityRequest, TeardownProviderProcessesRequest,
 };
 use crate::provider::ProviderRunOperationLanes;
@@ -54,6 +54,7 @@ use crate::runtime::history_executor::{
 use crate::runtime::history_requests::{
     history_query_from_request, history_query_from_search_request,
 };
+use crate::runtime::kernel_lifecycle_executor::execute_delete_kernel_request;
 use crate::runtime::native_interaction_bridge::{
     forward_relay_native_interaction, install_provider_native_interaction_bridge,
 };
@@ -1316,7 +1317,8 @@ impl CommandRouter {
                 execute_get_slice_display_endpoint_request(&self.app, request).await
             }
             LocalDaemonRequest::DeleteKernel(request) => {
-                self.execute_delete_kernel_request(request).await
+                execute_delete_kernel_request(&self.config_projection, &self.runtime_state, request)
+                    .await
             }
             LocalDaemonRequest::ApproveRemoteMachine(request) => {
                 execute_approve_remote_machine_request(
@@ -1597,18 +1599,6 @@ impl CommandRouter {
                 operation: "route capability request",
                 message: "capability request was not handled by executor".to_string(),
             })
-        })
-    }
-
-    async fn execute_delete_kernel_request(
-        &self,
-        _request: DeleteKernelRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let kernel_id = self.config_projection.snapshot().daemon_id;
-        let deleted_sessions = self.runtime_state.delete_current_kernel_sessions().await?;
-        Ok(LocalDaemonResponse::KernelDeleted {
-            kernel_id,
-            deleted_sessions,
         })
     }
 
@@ -1949,7 +1939,8 @@ impl CommandRouter {
                 execute_delete_credential_secret_request(&self.config_projection, request).await
             }
             LocalDaemonRequest::DeleteKernel(request) => {
-                self.execute_delete_kernel_request(request).await
+                execute_delete_kernel_request(&self.config_projection, &self.runtime_state, request)
+                    .await
             }
             LocalDaemonRequest::ListRemoteMachines(_) => {
                 self.projected_remote_machines_response().await
