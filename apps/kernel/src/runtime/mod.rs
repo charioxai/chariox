@@ -8,6 +8,7 @@ pub(crate) mod cloud_relay_control;
 pub(crate) mod cloud_relay_executor;
 pub mod command;
 pub mod event_log;
+pub(crate) mod history_executor;
 pub(crate) mod history_requests;
 pub(crate) mod invite_tokens;
 pub(crate) mod native_interaction_bridge;

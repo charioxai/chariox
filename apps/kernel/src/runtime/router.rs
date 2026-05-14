@@ -10,21 +10,18 @@ use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
 use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
 use crate::local::{
-    AgentGrantKind, AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, ConfigureRelayRequest,
-    DeleteKernelRequest, GenerateWorkspaceCommitMessageRequest, GetPromptInputHistoryRequest,
-    GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
+    AgentGrantKind, ConfigureRelayRequest, DeleteKernelRequest,
+    GenerateWorkspaceCommitMessageRequest, GetProviderRunRequest, GetSessionStateRequest,
     GrantAgentCapabilityRequest, ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest,
     LocalDaemonResponse, LogoutProviderRequest, MoveAgentToRemoteRequest,
-    PumpTerminalOutputRequest, RecordPromptInputHistoryRequest, RelayStatus, ResolveSessionRequest,
-    RevokeAgentCapabilityRequest, RunAgentUtilityRequest, SemanticHistoryMatch,
-    SemanticSearchHistoryMode, SemanticSearchHistoryRequest, TeardownProviderProcessesRequest,
-    UpdateProviderRunSelectionRequest, WaitingRoomPublicSnapshot,
+    PumpTerminalOutputRequest, RelayStatus, ResolveSessionRequest, RevokeAgentCapabilityRequest,
+    RunAgentUtilityRequest, TeardownProviderProcessesRequest, UpdateProviderRunSelectionRequest,
+    WaitingRoomPublicSnapshot,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::agent_utility_executor::{
     execute_generate_workspace_commit_message_request, execute_run_agent_utility_request,
-    run_agent_utility,
 };
 use crate::runtime::capability_executor::{
     execute_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
@@ -54,11 +51,13 @@ use crate::runtime::cloud_relay_executor::{
     execute_start_cloud_relay_login_request,
 };
 use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
-use crate::runtime::history_requests::{
+use crate::runtime::history_executor::{
     execute_prompt_input_history_request, execute_query_history_request,
-    execute_record_prompt_input_history_request, execute_session_history_request_from_session,
-    history_query_from_request, history_query_from_search_request, knn_semantic_history_search,
-    semantic_utility_input_from_search_request,
+    execute_record_prompt_input_history_request, execute_semantic_search_history_request,
+    execute_session_history_request, projected_session_history_response,
+};
+use crate::runtime::history_requests::{
+    history_query_from_request, history_query_from_search_request,
 };
 use crate::runtime::native_interaction_bridge::{
     forward_relay_native_interaction, install_provider_native_interaction_bridge,
@@ -1145,7 +1144,15 @@ impl CommandRouter {
             }
         }
         if let LocalDaemonRequest::GetSessionHistory(request) = &request {
-            if let Some(response) = self.projected_session_history_response(request).await {
+            if let Some(response) = projected_session_history_response(
+                self.history_store.clone(),
+                self.operational_history_store.clone(),
+                self.history_projection.clone(),
+                self.projected_session_or_absence(&request.session_id),
+                request,
+            )
+            .await
+            {
                 return response;
             }
         }
@@ -1457,25 +1464,53 @@ impl CommandRouter {
                 execute_revoke_paired_client_request(request)
             }
             LocalDaemonRequest::GetSessionHistory(request) => {
-                self.execute_session_history_request(request).await
+                execute_session_history_request(
+                    &self.app,
+                    self.history_store.clone(),
+                    self.operational_history_store.clone(),
+                    self.history_projection.clone(),
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::GetPromptInputHistory(request) => {
-                self.execute_prompt_input_history_request(request).await
+                execute_prompt_input_history_request(
+                    self.operational_history_store.clone(),
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::RecordPromptInputHistory(request) => {
-                self.execute_record_prompt_input_history_request(request)
-                    .await
+                execute_record_prompt_input_history_request(
+                    self.operational_history_store.clone(),
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::QueryHistory(request) => {
-                self.execute_query_history_request(history_query_from_request(request))
-                    .await
+                execute_query_history_request(
+                    self.operational_history_store.clone(),
+                    &self.config_projection,
+                    history_query_from_request(request),
+                )
+                .await
             }
             LocalDaemonRequest::SearchHistory(request) => {
-                self.execute_query_history_request(history_query_from_search_request(request))
-                    .await
+                execute_query_history_request(
+                    self.operational_history_store.clone(),
+                    &self.config_projection,
+                    history_query_from_search_request(request),
+                )
+                .await
             }
             LocalDaemonRequest::SemanticSearchHistory(request) => {
-                self.execute_semantic_search_history_request(request).await
+                execute_semantic_search_history_request(
+                    &self.app,
+                    &self.runtime_state,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 self.execute_terminal_output_request(request).await
@@ -2490,180 +2525,6 @@ impl CommandRouter {
             .resolve_session_ref(session_ref, workspace_id)
     }
 
-    async fn projected_session_history_response(
-        &self,
-        request: &GetSessionHistoryRequest,
-    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-        if let Some(page) = self.history_projection.page(
-            &request.session_id,
-            request.agent_id.as_deref(),
-            request.round_count,
-            request.max_chars,
-            request.before_entry_index,
-            request.before_entry_char_offset,
-        ) {
-            return Some(Ok(LocalDaemonResponse::SessionHistory {
-                entries: page.entries,
-                next_cursor: page.next_cursor,
-            }));
-        }
-
-        let session = match self.projected_session_or_absence(&request.session_id)? {
-            Ok(session) => session,
-            Err(error) => return Some(Err(error)),
-        };
-        Some(
-            self.execute_session_history_request_from_session(session, request.clone())
-                .await,
-        )
-    }
-
-    async fn execute_session_history_request(
-        &self,
-        request: GetSessionHistoryRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let session = {
-            let app = self.app.lock().await;
-            app.sessions().get_session(&request.session_id)?
-        };
-        self.execute_session_history_request_from_session(session, request)
-            .await
-    }
-
-    async fn execute_prompt_input_history_request(
-        &self,
-        request: GetPromptInputHistoryRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        execute_prompt_input_history_request(self.operational_history_store.clone(), request).await
-    }
-
-    async fn execute_record_prompt_input_history_request(
-        &self,
-        request: RecordPromptInputHistoryRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        execute_record_prompt_input_history_request(self.operational_history_store.clone(), request)
-            .await
-    }
-
-    async fn execute_query_history_request(
-        &self,
-        query: crate::history::HistoryEventQuery,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let archive_config = self
-            .config_projection
-            .snapshot()
-            .user_config
-            .history
-            .archive;
-        execute_query_history_request(
-            self.operational_history_store.clone(),
-            archive_config,
-            query,
-        )
-        .await
-    }
-
-    async fn execute_semantic_search_history_request(
-        &self,
-        request: SemanticSearchHistoryRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        match request.mode.unwrap_or_default() {
-            SemanticSearchHistoryMode::Knn => {
-                self.execute_knn_semantic_search_history_request(request)
-                    .await
-            }
-            SemanticSearchHistoryMode::Agent => {
-                self.execute_agent_semantic_search_history_request(request)
-                    .await
-            }
-        }
-    }
-
-    async fn execute_knn_semantic_search_history_request(
-        &self,
-        request: SemanticSearchHistoryRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let requested_limit = request.limit.unwrap_or(20).clamp(1, 100);
-        let (results, next_cursor, unavailable_reason) = self
-            .knn_semantic_history_search(request, requested_limit)
-            .await?;
-        Ok(LocalDaemonResponse::SemanticHistoryEvents {
-            results,
-            next_cursor,
-            unavailable_reason,
-            answer: None,
-        })
-    }
-
-    async fn execute_agent_semantic_search_history_request(
-        &self,
-        request: SemanticSearchHistoryRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let Some(session_id) = request.session_id.clone() else {
-            return Ok(LocalDaemonResponse::SemanticHistoryEvents {
-                results: Vec::new(),
-                next_cursor: None,
-                unavailable_reason: Some(
-                    "focused-agent semantic history search requires a session".to_string(),
-                ),
-                answer: None,
-            });
-        };
-        let Some(agent_id) = self.runtime_state.focused_agent_id(&session_id).await? else {
-            return Ok(LocalDaemonResponse::SemanticHistoryEvents {
-                results: Vec::new(),
-                next_cursor: None,
-                unavailable_reason: Some(
-                    "focused-agent semantic history search requires a focused agent".to_string(),
-                ),
-                answer: None,
-            });
-        };
-        let result = run_agent_utility(
-            Arc::clone(&self.app),
-            self.config_projection
-                .snapshot()
-                .user_config
-                .history
-                .archive,
-            RunAgentUtilityRequest {
-                session_id,
-                agent_id,
-                kind: AgentUtilityKind::SemanticHistorySearch,
-                input: AgentUtilityInput::SemanticHistorySearch(
-                    semantic_utility_input_from_search_request(request),
-                ),
-            },
-        )
-        .await?;
-        let AgentUtilityOutput::SemanticHistorySearch { answer, matches } = result.output else {
-            return Err(DaemonError::LocalTransport {
-                operation: "semantic history agent search",
-                message: "semantic history utility returned unexpected output".to_string(),
-            });
-        };
-        Ok(LocalDaemonResponse::SemanticHistoryEvents {
-            results: matches,
-            next_cursor: None,
-            unavailable_reason: None,
-            answer: Some(answer),
-        })
-    }
-
-    async fn knn_semantic_history_search(
-        &self,
-        request: SemanticSearchHistoryRequest,
-        requested_limit: usize,
-    ) -> Result<(Vec<SemanticHistoryMatch>, Option<String>, Option<String>), DaemonError> {
-        let archive_config = self
-            .config_projection
-            .snapshot()
-            .user_config
-            .history
-            .archive;
-        knn_semantic_history_search(archive_config, request, requested_limit).await
-    }
-
     async fn execute_terminal_output_request(
         &self,
         request: PumpTerminalOutputRequest,
@@ -2718,21 +2579,6 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::ProviderProcessesTornDown {
             processes: teardown.processes,
         })
-    }
-
-    async fn execute_session_history_request_from_session(
-        &self,
-        session: crate::session::RuntimeSession,
-        request: GetSessionHistoryRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        execute_session_history_request_from_session(
-            self.history_store.clone(),
-            self.operational_history_store.clone(),
-            self.history_projection.clone(),
-            session,
-            request,
-        )
-        .await
     }
 
     #[allow(dead_code)]
@@ -2854,11 +2700,18 @@ impl CommandRouter {
                     .await
             }
             LocalDaemonRequest::GetPromptInputHistory(request) => {
-                self.execute_prompt_input_history_request(request).await
+                execute_prompt_input_history_request(
+                    self.operational_history_store.clone(),
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::RecordPromptInputHistory(request) => {
-                self.execute_record_prompt_input_history_request(request)
-                    .await
+                execute_record_prompt_input_history_request(
+                    self.operational_history_store.clone(),
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ListSlices(request) => {
                 execute_list_slices_request(&self.app, request).await
@@ -3232,18 +3085,39 @@ impl CommandRouter {
                     .await
             }
             LocalDaemonRequest::GetSessionHistory(request) => {
-                self.execute_session_history_request(request).await
+                execute_session_history_request(
+                    &self.app,
+                    self.history_store.clone(),
+                    self.operational_history_store.clone(),
+                    self.history_projection.clone(),
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::QueryHistory(request) => {
-                self.execute_query_history_request(history_query_from_request(request))
-                    .await
+                execute_query_history_request(
+                    self.operational_history_store.clone(),
+                    &self.config_projection,
+                    history_query_from_request(request),
+                )
+                .await
             }
             LocalDaemonRequest::SearchHistory(request) => {
-                self.execute_query_history_request(history_query_from_search_request(request))
-                    .await
+                execute_query_history_request(
+                    self.operational_history_store.clone(),
+                    &self.config_projection,
+                    history_query_from_search_request(request),
+                )
+                .await
             }
             LocalDaemonRequest::SemanticSearchHistory(request) => {
-                self.execute_semantic_search_history_request(request).await
+                execute_semantic_search_history_request(
+                    &self.app,
+                    &self.runtime_state,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 self.execute_terminal_output_request(request).await
