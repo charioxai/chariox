@@ -11,6 +11,7 @@ pub mod session_actor;
 pub(crate) mod state;
 pub mod terminal_output_executor;
 pub(crate) mod user_config_policy;
+pub(crate) mod waiting_room_activity;
 pub mod workflow_actor;
 pub mod workspace_coordinator;
 pub mod workspace_identity_monitor;

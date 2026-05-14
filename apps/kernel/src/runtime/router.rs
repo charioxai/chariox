@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration, Instant as TokioInstant};
 
-use crate::agent::{AgentInstance, AgentState};
+use crate::agent::AgentInstance;
 use crate::app::{DaemonApp, PromptActivityStore};
 use crate::config::PersistedCloudRelayProfile;
 use crate::error::DaemonError;
@@ -68,11 +68,10 @@ use crate::local::{
     TerminalPairingLinkRecord, TerminalRecord, TerminalType, UninstallMcpServerRequest,
     UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest,
     UpdateProviderRunSelectionRequest, UpdateSkillRequest, UserConfigMutationEffect,
-    WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary, WaitingRoomPublicItemActivitySummary,
-    WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
-    WaitingRoomPublicWorkflowEdgeSummary, WaitingRoomPublicWorkflowEndpointSummary,
-    WaitingRoomPublicWorkflowNodeSummary, WaitingRoomPublicWorkflowSummary,
-    WaitingRoomSessionActivitySummary, WorkspaceCommitMessageUtilityInput, WorkspaceFileContent,
+    WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary, WaitingRoomPublicSessionSummary,
+    WaitingRoomPublicSnapshot, WaitingRoomPublicWorkflowEdgeSummary,
+    WaitingRoomPublicWorkflowEndpointSummary, WaitingRoomPublicWorkflowNodeSummary,
+    WaitingRoomPublicWorkflowSummary, WorkspaceCommitMessageUtilityInput, WorkspaceFileContent,
     WorkspaceGitActionResult, WorkspaceGitChangeTotals, WorkspaceGitCompareRef,
     WorkspaceGitFileChange, WorkspaceGitOverview, WorkspacePullRequestRecord,
     WorkspaceRepoFileEntry, WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
@@ -105,6 +104,10 @@ use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
 use crate::runtime::user_config_policy::{
     summarize_provider_reload_outcomes, user_config_path_is_unwired,
     user_config_path_requires_daemon_restart, UserConfigMutation,
+};
+use crate::runtime::waiting_room_activity::{
+    waiting_room_agent_activity_summary, waiting_room_session_activity_summary,
+    waiting_room_workflow_activity_summary,
 };
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
@@ -6214,26 +6217,6 @@ fn waiting_room_public_agent_summaries(
     agents
 }
 
-fn waiting_room_agent_activity_summary(
-    session: &crate::session::RuntimeSession,
-    agent: &crate::agent::AgentInstance,
-) -> WaitingRoomPublicItemActivitySummary {
-    let active_prompt_count = usize::from(session.active_prompt_for_agent(agent.id()).is_some());
-    let queued_prompt_count = session
-        .queued_prompts_for_agent(agent.id())
-        .map(|queued| queued.len())
-        .unwrap_or(0);
-    let error = agent.state() == AgentState::Error;
-    WaitingRoomPublicItemActivitySummary {
-        working: agent.state() == AgentState::Working
-            || agent.is_processing()
-            || active_prompt_count > 0,
-        active_prompt_count,
-        queued_prompt_count,
-        error,
-    }
-}
-
 fn waiting_room_public_workflow_summaries(
     session: &crate::session::RuntimeSession,
 ) -> Vec<WaitingRoomPublicWorkflowSummary> {
@@ -6282,80 +6265,6 @@ fn waiting_room_public_workflow_summaries(
             .then_with(|| left.id.cmp(&right.id))
     });
     workflows
-}
-
-fn waiting_room_workflow_activity_summary(
-    session: &crate::session::RuntimeSession,
-    workflow_id: &str,
-) -> WaitingRoomPublicItemActivitySummary {
-    let working = session.workflow_runs().iter().any(|run| {
-        run.workflow_id() == workflow_id
-            && matches!(
-                run.status(),
-                crate::session::WorkflowRunStatus::Created
-                    | crate::session::WorkflowRunStatus::Running
-                    | crate::session::WorkflowRunStatus::Waiting
-                    | crate::session::WorkflowRunStatus::Completing
-            )
-    });
-    let error = session.workflow_runs().iter().any(|run| {
-        run.workflow_id() == workflow_id
-            && matches!(run.status(), crate::session::WorkflowRunStatus::Failed)
-    });
-    WaitingRoomPublicItemActivitySummary {
-        working,
-        active_prompt_count: 0,
-        queued_prompt_count: 0,
-        error,
-    }
-}
-
-fn waiting_room_session_activity_summary(
-    session: &crate::session::RuntimeSession,
-) -> WaitingRoomSessionActivitySummary {
-    let active_prompt_agent_ids: HashSet<&str> = session
-        .prompt_states()
-        .iter()
-        .filter(|(_, state)| state.active_prompt().is_some())
-        .map(|(agent_id, _)| agent_id.as_str())
-        .collect();
-    let active_prompt_count = if active_prompt_agent_ids.is_empty() && session.has_active_prompt() {
-        1
-    } else {
-        active_prompt_agent_ids.len()
-    };
-    let queued_prompt_count = if session.prompt_states().is_empty() {
-        session.queued_prompts().len()
-    } else {
-        session
-            .prompt_states()
-            .values()
-            .map(|state| state.queued_prompts().len())
-            .sum()
-    };
-    let mut working_agent_count = session
-        .agents()
-        .iter()
-        .filter(|agent| {
-            agent.state() == AgentState::Working
-                || agent.is_processing()
-                || active_prompt_agent_ids.contains(agent.id())
-        })
-        .count();
-    if working_agent_count == 0 && active_prompt_count > 0 {
-        working_agent_count = 1;
-    }
-    WaitingRoomSessionActivitySummary {
-        agent_count: session.agents().len(),
-        working_agent_count,
-        active_prompt_count,
-        queued_prompt_count,
-        error_agent_count: session
-            .agents()
-            .iter()
-            .filter(|agent| agent.state() == AgentState::Error)
-            .count(),
-    }
 }
 
 fn infer_waiting_room_launch_target() -> Option<WaitingRoomLaunchTarget> {
