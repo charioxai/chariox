@@ -15,10 +15,10 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 2026-05-14:
 
 - Cloud API boundary split is in place: `server.ts` is route composition; relay-kernel bootstrap delegates to service-layer target selection/token minting; route/helper/contract files are domain-owned.
-- Cloud web has responsibility modules for browser kernel transport, waiting-room projection/state/refresh policy, workflow route state, history, prompt, output, sidebar, workspace, capabilities, terminal records/lifecycle, terminal transport lifecycle, terminal status state, kernel-directory projection policy, waiting-room session lifecycle/menu policy, freeform dialog projection/state, freeform agent projection, and agent substitute snapshot parsing. `client.ts` is still the main coordinator and is 10,910 lines.
-- OSS protocol/client split is started; kernel transport frames/events, waiting-room control, session read projection, session membership authorization, provider launch pending tracking, provider visibility policy, response redaction, and many router executors are responsibility modules. `runtime/router.rs` is still the main command router and is 8,717 lines.
-- Latest verified slices: OSS response redaction moved to `response_redaction.rs`; Cloud agent substitute snapshot parsing moved to `terminal/agent-substitute-profiles.ts`.
-- Latest focused gates passed: `cargo test --manifest-path apps/kernel/Cargo.toml --lib -- --test-threads=1` (730 tests), `pnpm --filter @arroba-cloud/web test` (603 tests), `pnpm -r --if-present lint`, and `git diff --check`.
+- Cloud web has responsibility modules for browser kernel transport, waiting-room projection/state/refresh policy, workflow route state, history, prompt, output, sidebar, workspace, capabilities, terminal records/lifecycle, terminal transport lifecycle, terminal status state, kernel-directory projection policy, waiting-room session lifecycle/menu policy, freeform dialog projection/state, freeform agent projection, agent substitute snapshot parsing, and session projection fingerprinting. `client.ts` is still the main coordinator and is 10,857 lines.
+- OSS protocol/client split is started; kernel transport frames/events, waiting-room control, session read projection/inspection, session membership authorization, provider launch pending tracking, provider visibility policy, response redaction, and many router executors are responsibility modules. `runtime/router.rs` is still the main command router and is 8,560 lines.
+- Latest verified slices: OSS projected session inspection moved to `session_read_control.rs`; Cloud terminal session projection fingerprinting moved to `terminal/session-projection-fingerprint.ts`.
+- Latest focused gates passed: `cargo test --manifest-path apps/kernel/Cargo.toml --lib -- --test-threads=1` (730 tests), `pnpm --filter @arroba-cloud/web test` (605 tests), `pnpm -r --if-present lint`, and `git diff --check`.
 
 ## Responsibility Rule
 

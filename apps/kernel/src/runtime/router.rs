@@ -116,8 +116,8 @@ use crate::runtime::session_projection_refresh::{
 use crate::runtime::session_read_control::{
     execute_get_session_state_request, execute_list_agents_request, execute_list_sessions_request,
     execute_resolve_session_request, projected_list_sessions_response,
-    projected_resolve_session_response, projected_session_or_absence,
-    projected_session_state_response,
+    projected_resolve_session_response, projected_session_inspection_response,
+    projected_session_or_absence, projected_session_state_response,
 };
 use crate::runtime::slice_command_executor::{
     execute_create_slice_request, execute_delete_slice_request,
@@ -141,9 +141,6 @@ use crate::runtime::waiting_room_control::{
     waiting_room_inventory_version,
 };
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
-use crate::runtime::workflow_projection::{
-    projected_resolve_workflow, projected_resolve_workflow_run, projected_workflow_id,
-};
 use crate::runtime::workspace_command_executor::{
     execute_commit_and_push_workspace_changes_request, execute_commit_workspace_changes_request,
     execute_create_workspace_directory_request, execute_create_workspace_pull_request_request,
@@ -1094,9 +1091,11 @@ impl CommandRouter {
             }
             _ => {}
         }
-        if let Some(response) =
-            self.projected_session_inspection_response(&request, &caller_user_id)
-        {
+        if let Some(response) = projected_session_inspection_response(
+            &self.session_projection,
+            &request,
+            &caller_user_id,
+        ) {
             return response;
         }
         if let LocalDaemonRequest::PumpTerminalOutput(request) = &request {
@@ -1518,162 +1517,6 @@ impl CommandRouter {
         result.and_then(|response| {
             redact_response_for_user(response, caller_user_id, &self.provider_run_projection)
         })
-    }
-
-    fn projected_session_inspection_response(
-        &self,
-        request: &LocalDaemonRequest,
-        caller_user_id: &str,
-    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-        match request {
-            LocalDaemonRequest::ListAgents(request) => {
-                let session = match projected_session_or_absence(
-                    &self.session_projection,
-                    &request.session_id,
-                )? {
-                    Ok(session) => session,
-                    Err(error) => return Some(Err(error)),
-                };
-                Some(Ok(LocalDaemonResponse::AgentsListed {
-                    agents: session
-                        .agents()
-                        .iter()
-                        .filter(|agent| agent.owner_user_id() == caller_user_id)
-                        .cloned()
-                        .collect(),
-                }))
-            }
-            LocalDaemonRequest::ListWorkflows(request) => {
-                let session = match projected_session_or_absence(
-                    &self.session_projection,
-                    &request.session_id,
-                )? {
-                    Ok(session) => session,
-                    Err(error) => return Some(Err(error)),
-                };
-                Some(Ok(LocalDaemonResponse::WorkflowsListed {
-                    workflows: session
-                        .workflows()
-                        .iter()
-                        .cloned()
-                        .map(|workflow| workflow.redacted_for_user(caller_user_id))
-                        .collect(),
-                }))
-            }
-            LocalDaemonRequest::ResolveWorkflow(request) => {
-                let session = match projected_session_or_absence(
-                    &self.session_projection,
-                    &request.session_id,
-                )? {
-                    Ok(session) => session,
-                    Err(error) => return Some(Err(error)),
-                };
-                Some(
-                    projected_resolve_workflow(&session, &request.workflow_ref).map(|workflow| {
-                        LocalDaemonResponse::WorkflowResolved {
-                            workflow: workflow.redacted_for_user(caller_user_id),
-                        }
-                    }),
-                )
-            }
-            LocalDaemonRequest::ListWorkflowRuns(request) => {
-                let session = match projected_session_or_absence(
-                    &self.session_projection,
-                    &request.session_id,
-                )? {
-                    Ok(session) => session,
-                    Err(error) => return Some(Err(error)),
-                };
-                Some(
-                    projected_workflow_id(&session, request.workflow_ref.as_deref()).map(
-                        |workflow_id| {
-                            let workflow_runs = session
-                                .workflow_runs()
-                                .iter()
-                                .filter(|workflow_run| {
-                                    workflow_id
-                                        .as_deref()
-                                        .is_none_or(|id| workflow_run.workflow_id() == id)
-                                })
-                                .cloned()
-                                .map(|workflow_run| {
-                                    let workflow = workflow_id.as_deref().and_then(|id| {
-                                        session
-                                            .workflows()
-                                            .iter()
-                                            .find(|workflow| workflow.id() == id)
-                                    });
-                                    workflow_run.redacted_for_user(workflow, caller_user_id)
-                                })
-                                .collect();
-                            LocalDaemonResponse::WorkflowRunsListed { workflow_runs }
-                        },
-                    ),
-                )
-            }
-            LocalDaemonRequest::GetWorkflowRun(request) => {
-                let session = match projected_session_or_absence(
-                    &self.session_projection,
-                    &request.session_id,
-                )? {
-                    Ok(session) => session,
-                    Err(error) => return Some(Err(error)),
-                };
-                Some(
-                    projected_resolve_workflow_run(&session, &request.workflow_run_ref).map(
-                        |workflow_run| {
-                            let workflow = session
-                                .workflows()
-                                .iter()
-                                .find(|workflow| workflow.id() == workflow_run.workflow_id());
-                            LocalDaemonResponse::WorkflowRun {
-                                workflow_run: workflow_run
-                                    .redacted_for_user(workflow, caller_user_id),
-                            }
-                        },
-                    ),
-                )
-            }
-            LocalDaemonRequest::ListWorkflowWatchdogs(request) => {
-                let session = match projected_session_or_absence(
-                    &self.session_projection,
-                    &request.session_id,
-                )? {
-                    Ok(session) => session,
-                    Err(error) => return Some(Err(error)),
-                };
-                Some(
-                    projected_workflow_id(&session, request.workflow_ref.as_deref()).map(
-                        |workflow_id| {
-                            let watchdogs = session
-                                .workflow_watchdogs()
-                                .iter()
-                                .filter(|watchdog| {
-                                    workflow_id
-                                        .as_deref()
-                                        .is_none_or(|id| watchdog.workflow_id() == id)
-                                })
-                                .cloned()
-                                .collect();
-                            LocalDaemonResponse::WorkflowWatchdogsListed { watchdogs }
-                        },
-                    ),
-                )
-            }
-            LocalDaemonRequest::ListQueuedWorkflowLaunches(request) => {
-                let session = match projected_session_or_absence(
-                    &self.session_projection,
-                    &request.session_id,
-                )? {
-                    Ok(session) => session,
-                    Err(error) => return Some(Err(error)),
-                };
-                Some(Ok(LocalDaemonResponse::QueuedWorkflowLaunchesListed {
-                    queued_launches: session.queued_workflow_launches().iter().cloned().collect(),
-                }))
-            }
-            _ => None,
-        }
     }
 
     fn projected_terminal_output_response(

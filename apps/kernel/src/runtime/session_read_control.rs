@@ -6,12 +6,15 @@ use tokio::sync::Mutex;
 use crate::app::{ActiveTurnStore, DaemonApp, PromptActivityStore};
 use crate::error::DaemonError;
 use crate::local::{
-    GetSessionStateRequest, ListAgentsRequest, ListSessionsRequest, LocalDaemonResponse,
-    ResolveSessionRequest,
+    GetSessionStateRequest, ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest,
+    LocalDaemonResponse, ResolveSessionRequest,
 };
 use crate::runtime::projection::{
     agent_activity_for_session_projection, AgentRuntimeActivity, ProviderRunProjectionStore,
     SessionStateProjectionStore,
+};
+use crate::runtime::workflow_projection::{
+    projected_resolve_workflow, projected_resolve_workflow_run, projected_workflow_id,
 };
 use crate::session::RuntimeSession;
 
@@ -122,6 +125,147 @@ pub(crate) fn projected_agent_activity(
         &prompt_activity,
         &active_turns,
     )
+}
+
+pub(crate) fn projected_session_inspection_response(
+    session_projection: &SessionStateProjectionStore,
+    request: &LocalDaemonRequest,
+    caller_user_id: &str,
+) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+    match request {
+        LocalDaemonRequest::ListAgents(request) => {
+            let session =
+                match projected_session_or_absence(session_projection, &request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
+            Some(Ok(LocalDaemonResponse::AgentsListed {
+                agents: session
+                    .agents()
+                    .iter()
+                    .filter(|agent| agent.owner_user_id() == caller_user_id)
+                    .cloned()
+                    .collect(),
+            }))
+        }
+        LocalDaemonRequest::ListWorkflows(request) => {
+            let session =
+                match projected_session_or_absence(session_projection, &request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
+            Some(Ok(LocalDaemonResponse::WorkflowsListed {
+                workflows: session
+                    .workflows()
+                    .iter()
+                    .cloned()
+                    .map(|workflow| workflow.redacted_for_user(caller_user_id))
+                    .collect(),
+            }))
+        }
+        LocalDaemonRequest::ResolveWorkflow(request) => {
+            let session =
+                match projected_session_or_absence(session_projection, &request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
+            Some(
+                projected_resolve_workflow(&session, &request.workflow_ref).map(|workflow| {
+                    LocalDaemonResponse::WorkflowResolved {
+                        workflow: workflow.redacted_for_user(caller_user_id),
+                    }
+                }),
+            )
+        }
+        LocalDaemonRequest::ListWorkflowRuns(request) => {
+            let session =
+                match projected_session_or_absence(session_projection, &request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
+            Some(
+                projected_workflow_id(&session, request.workflow_ref.as_deref()).map(
+                    |workflow_id| {
+                        let workflow_runs = session
+                            .workflow_runs()
+                            .iter()
+                            .filter(|workflow_run| {
+                                workflow_id
+                                    .as_deref()
+                                    .is_none_or(|id| workflow_run.workflow_id() == id)
+                            })
+                            .cloned()
+                            .map(|workflow_run| {
+                                let workflow = workflow_id.as_deref().and_then(|id| {
+                                    session
+                                        .workflows()
+                                        .iter()
+                                        .find(|workflow| workflow.id() == id)
+                                });
+                                workflow_run.redacted_for_user(workflow, caller_user_id)
+                            })
+                            .collect();
+                        LocalDaemonResponse::WorkflowRunsListed { workflow_runs }
+                    },
+                ),
+            )
+        }
+        LocalDaemonRequest::GetWorkflowRun(request) => {
+            let session =
+                match projected_session_or_absence(session_projection, &request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
+            Some(
+                projected_resolve_workflow_run(&session, &request.workflow_run_ref).map(
+                    |workflow_run| {
+                        let workflow = session
+                            .workflows()
+                            .iter()
+                            .find(|workflow| workflow.id() == workflow_run.workflow_id());
+                        LocalDaemonResponse::WorkflowRun {
+                            workflow_run: workflow_run.redacted_for_user(workflow, caller_user_id),
+                        }
+                    },
+                ),
+            )
+        }
+        LocalDaemonRequest::ListWorkflowWatchdogs(request) => {
+            let session =
+                match projected_session_or_absence(session_projection, &request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
+            Some(
+                projected_workflow_id(&session, request.workflow_ref.as_deref()).map(
+                    |workflow_id| {
+                        let watchdogs = session
+                            .workflow_watchdogs()
+                            .iter()
+                            .filter(|watchdog| {
+                                workflow_id
+                                    .as_deref()
+                                    .is_none_or(|id| watchdog.workflow_id() == id)
+                            })
+                            .cloned()
+                            .collect();
+                        LocalDaemonResponse::WorkflowWatchdogsListed { watchdogs }
+                    },
+                ),
+            )
+        }
+        LocalDaemonRequest::ListQueuedWorkflowLaunches(request) => {
+            let session =
+                match projected_session_or_absence(session_projection, &request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
+            Some(Ok(LocalDaemonResponse::QueuedWorkflowLaunchesListed {
+                queued_launches: session.queued_workflow_launches().iter().cloned().collect(),
+            }))
+        }
+        _ => None,
+    }
 }
 
 pub(crate) async fn execute_list_sessions_request(
