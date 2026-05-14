@@ -132,6 +132,9 @@ use crate::runtime::waiting_room_public_projection::{
     build_waiting_room_public_snapshot, infer_waiting_room_launch_target,
 };
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
+use crate::runtime::workflow_projection::{
+    projected_resolve_workflow, projected_resolve_workflow_run, projected_workflow_id,
+};
 use crate::runtime::workspace_commit_message_utility::workspace_commit_message_utility_prompt;
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::runtime::workspace_git_actions::{
@@ -5607,90 +5610,6 @@ fn current_unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
-}
-
-fn projected_workflow_id(
-    session: &crate::session::RuntimeSession,
-    workflow_ref: Option<&str>,
-) -> Result<Option<String>, DaemonError> {
-    workflow_ref
-        .map(|reference| projected_resolve_workflow(session, reference))
-        .transpose()
-        .map(|workflow| workflow.map(|workflow| workflow.id().to_string()))
-}
-
-fn projected_resolve_workflow(
-    session: &crate::session::RuntimeSession,
-    workflow_ref: &str,
-) -> Result<crate::session::WorkflowDefinition, DaemonError> {
-    let normalized_ref = workflow_ref.trim().to_lowercase();
-    if let Some(workflow) = session
-        .workflows()
-        .iter()
-        .find(|workflow| workflow.id() == normalized_ref)
-    {
-        return Ok(workflow.clone());
-    }
-    if let Some(workflow) = session
-        .workflows()
-        .iter()
-        .find(|workflow| workflow.alias() == Some(normalized_ref.as_str()))
-    {
-        return Ok(workflow.clone());
-    }
-    let id_matches = session
-        .workflows()
-        .iter()
-        .filter(|workflow| workflow.id().starts_with(&normalized_ref))
-        .cloned()
-        .collect::<Vec<_>>();
-    if id_matches.len() == 1 {
-        return Ok(id_matches[0].clone());
-    }
-    let alias_matches = session
-        .workflows()
-        .iter()
-        .filter(|workflow| {
-            workflow
-                .alias()
-                .is_some_and(|alias| alias.starts_with(normalized_ref.as_str()))
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    if alias_matches.len() == 1 {
-        return Ok(alias_matches[0].clone());
-    }
-    Err(DaemonError::WorkflowNotFound {
-        session_id: session.id().to_string(),
-        workflow_id: workflow_ref.to_string(),
-    })
-}
-
-fn projected_resolve_workflow_run(
-    session: &crate::session::RuntimeSession,
-    workflow_run_ref: &str,
-) -> Result<crate::session::WorkflowRun, DaemonError> {
-    let normalized_ref = workflow_run_ref.trim().to_lowercase();
-    if let Some(workflow_run) = session
-        .workflow_runs()
-        .iter()
-        .find(|workflow_run| workflow_run.id() == normalized_ref)
-    {
-        return Ok(workflow_run.clone());
-    }
-    let id_matches = session
-        .workflow_runs()
-        .iter()
-        .filter(|workflow_run| workflow_run.id().starts_with(&normalized_ref))
-        .cloned()
-        .collect::<Vec<_>>();
-    if id_matches.len() == 1 {
-        return Ok(id_matches[0].clone());
-    }
-    Err(DaemonError::WorkflowRunNotFound {
-        session_id: session.id().to_string(),
-        workflow_run_id: workflow_run_ref.to_string(),
-    })
 }
 
 fn router_projection_stores(

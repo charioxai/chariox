@@ -23,6 +23,7 @@ pub(crate) mod user_config_policy;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_public_projection;
 pub mod workflow_actor;
+pub(crate) mod workflow_projection;
 pub(crate) mod workspace_commit_message_utility;
 pub mod workspace_coordinator;
 pub(crate) mod workspace_git_actions;
