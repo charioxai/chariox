@@ -794,11 +794,9 @@ impl CommandRouter {
         &self,
         provider_run_id: &str,
     ) -> Result<Option<String>, DaemonError> {
-        let app = self.app.lock().await;
-        Ok(app
-            .providers()
-            .get_run(provider_run_id)
-            .ok()
+        Ok(self
+            .provider_run_projection
+            .get(provider_run_id)
             .and_then(|run| run.terminal_diagnostic().map(str::to_string))
             .filter(|message| !message.trim().is_empty()))
     }
