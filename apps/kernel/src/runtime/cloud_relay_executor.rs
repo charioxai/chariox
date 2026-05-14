@@ -9,10 +9,10 @@ use crate::local::{
     AcceptCloudSessionInviteRequest, CloudRelayLoginPoll, CloudRelayLoginPollStatus,
     CloudRelayLoginStart, CloudRelayRuntimeToken, ConnectCloudRelayRequest,
     CreateCloudSessionInviteRequest, IssueCloudRelayClientTokenRequest,
-    ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest, LocalDaemonResponse,
-    LogoutCloudRelayRequest, PairCloudRelayClientRequest, PairCloudRelayMachineRequest,
-    PollCloudRelayLoginRequest, RevokeCloudSessionInviteRequest, ShowCloudSessionInviteRequest,
-    StartCloudRelayLoginRequest,
+    ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest, LocalDaemonRequest,
+    LocalDaemonResponse, LogoutCloudRelayRequest, PairCloudRelayClientRequest,
+    PairCloudRelayMachineRequest, PollCloudRelayLoginRequest, RevokeCloudSessionInviteRequest,
+    ShowCloudSessionInviteRequest, StartCloudRelayLoginRequest,
 };
 use crate::runtime::cloud_api_client::{
     accept_cloud_session_invite, cloud_profile_from_persisted, create_cloud_session_invite,
@@ -85,6 +85,76 @@ pub(crate) async fn ensure_cloud_relay_connection(
         config_projection.update(app.config().clone());
     }
     Ok(())
+}
+
+pub(crate) async fn execute_cloud_relay_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    config_projection: &DaemonConfigProjectionStore,
+    provider_catalog_projection: &ProviderCatalogProjectionStore,
+    relay_state: Arc<RwLock<RelayClientState>>,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::CloudRelayStatus(_) => {
+            execute_cloud_relay_status_request(config_projection).await
+        }
+        LocalDaemonRequest::StartCloudRelayLogin(request) => {
+            execute_start_cloud_relay_login_request(request).await
+        }
+        LocalDaemonRequest::PollCloudRelayLogin(request) => {
+            execute_poll_cloud_relay_login_request(app, config_projection, request).await
+        }
+        LocalDaemonRequest::LogoutCloudRelay(request) => {
+            execute_logout_cloud_relay_request(app, config_projection, request).await
+        }
+        LocalDaemonRequest::PairCloudRelayClient(request) => {
+            execute_pair_cloud_relay_client_request(app, config_projection, request).await
+        }
+        LocalDaemonRequest::PairCloudRelayMachine(request) => {
+            execute_pair_cloud_relay_machine_request(
+                app,
+                config_projection,
+                provider_catalog_projection,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::ConnectCloudRelay(request) => {
+            execute_connect_cloud_relay_request(
+                app,
+                config_projection,
+                provider_catalog_projection,
+                relay_state,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::IssueCloudRelayClientToken(request) => {
+            execute_issue_cloud_relay_client_token_request(app, config_projection, request).await
+        }
+        LocalDaemonRequest::CreateCloudSessionInvite(request) => {
+            execute_create_cloud_session_invite_request(app, config_projection, request).await
+        }
+        LocalDaemonRequest::ShowCloudSessionInvite(request) => {
+            execute_show_cloud_session_invite_request(config_projection, request).await
+        }
+        LocalDaemonRequest::AcceptCloudSessionInvite(request) => {
+            execute_accept_cloud_session_invite_request(app, config_projection, request).await
+        }
+        LocalDaemonRequest::RevokeCloudSessionInvite(request) => {
+            execute_revoke_cloud_session_invite_request(app, config_projection, request).await
+        }
+        LocalDaemonRequest::ListCloudSessionMembers(request) => {
+            execute_list_cloud_session_members_request(app, config_projection, request).await
+        }
+        LocalDaemonRequest::ListCloudCollaborators(request) => {
+            execute_list_cloud_collaborators_request(app, config_projection, request).await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "cloud relay request",
+            message: "unsupported cloud relay request".to_string(),
+        }),
+    }
 }
 
 pub(crate) async fn execute_start_cloud_relay_login_request(
