@@ -21,6 +21,13 @@ Prompt attachments are files/images transferred with a prompt. Managed I/O is
 the separate Arroba MCP `read_artifact`/`write_artifact` workspace-coordination
 system and remains covered by the managed-I/O milestones and drills.
 
+2026-05-14 update: Codex/OpenCode prompt attachment byte transfer is
+implemented for relay-attached native TUI clients and Arroba TUI submissions.
+The same-host relay drill and local Docker slice drill now validate
+native-TUI-origin and Arroba-TUI-origin attachments with two provider-native
+TUIs plus one Arroba observer in the same session. Standard home-worker remote
+coverage is still pending.
+
 ## Goal
 
 Validate and complete native TUI parity across the three providers and three
@@ -73,7 +80,12 @@ Prompt attachments:
 
 - Local Codex/OpenCode: covered by `live-native-tui-attachment-drill.mjs`.
 - Local Claude: not covered.
-- Standard remote and slice: not covered.
+- Same-host relay Codex/OpenCode: covered by
+  `live-remote-native-tui-drill.mjs --providers opencode,codex
+  --include-attachments`.
+- Slice Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
+  --slice-local-docker --providers opencode,codex --include-attachments`.
+- Standard remote home-worker: not covered.
 
 MCPs and skills:
 
@@ -177,8 +189,8 @@ Legend:
 | standard remote | Codex | gap | gap | gap | gap |
 | standard remote | OpenCode | gap | gap | gap | gap |
 | standard remote | Claude | gap | gap | gap | gap |
-| slice | Codex | gap | gap | gap | gap |
-| slice | OpenCode | gap | gap | gap | gap |
+| slice | Codex | pass | gap | pass | gap |
+| slice | OpenCode | pass | gap | pass | gap |
 | slice | Claude | gap | gap | gap | gap |
 
 ## Drill Requirements

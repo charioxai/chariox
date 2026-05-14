@@ -30,6 +30,7 @@ const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel
 const relayBinary = path.join(repoRoot, "apps/relay/target/debug/arroba-relay")
 const sliceDockerScript = path.join(repoRoot, "experiments/slice-spike/scripts/provision-linux-docker-slice.sh")
 const realHomeDir = os.homedir()
+const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64")
 
 function unwrap(response, variant) {
   if (!response || !(variant in response)) {
@@ -44,6 +45,7 @@ function parseArgs(argv) {
     keepArtifactsOnFailure: false,
     sliceLocalDocker: false,
     includePermissions: false,
+    includeAttachments: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -57,6 +59,8 @@ function parseArgs(argv) {
       options.sliceLocalDocker = true
     } else if (arg === "--include-permissions") {
       options.includePermissions = true
+    } else if (arg === "--include-attachments") {
+      options.includeAttachments = true
     } else if (arg === "--help" || arg === "-h") {
       options.help = true
     } else {
@@ -84,6 +88,7 @@ function printHelp() {
     "  --providers opencode,codex,claude",
     "  --slice-local-docker          Run against a local Docker slice kernel instead of a host kernel",
     "  --include-permissions         Validate provider-native permissions through the Arroba observer",
+    "  --include-attachments         Validate prompt attachment transfer through native TUI providers",
     "  --keep-artifacts-on-failure",
   ].join("\n"))
 }
@@ -278,6 +283,18 @@ async function waitForFileMatch(file, pattern, timeoutMs = 90_000) {
   throw new Error(`timed out waiting for ${pattern} in ${file}\n${text.slice(-4000)}`)
 }
 
+async function waitForLogOccurrences(logFile, needle, count, timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs
+  let text = ""
+  while (Date.now() < deadline) {
+    text = await readFile(logFile, "utf8").catch(() => "")
+    const occurrences = text.split(needle).length - 1
+    if (occurrences >= count) return text
+    await sleep(250)
+  }
+  throw new Error(`timed out waiting for ${count} occurrences of ${needle} in ${logFile}\n${text.slice(-4000)}`)
+}
+
 async function automationRequest(socketPath, request) {
   return await new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath)
@@ -389,19 +406,21 @@ async function waitForAgentBadgeTone(socketPath, alias, tone, timeoutMs = 90_000
   throw new Error(`timed out waiting for ${alias} badge tone ${tone}; last=${JSON.stringify(last)}`)
 }
 
-async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, prompt, logFile) {
+async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, prompt, logFile, filePath = null) {
   const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
+  const args = [
+    "run",
+    "--attach",
+    proxyUrl,
+    "--session",
+    providerSessionId,
+    "--dir",
+    worktree,
+  ]
+  if (filePath) args.push("--file", filePath, "--")
+  args.push(prompt)
   const output = await new Promise((resolve, reject) => {
-    const child = spawn(executable, [
-      "run",
-      "--attach",
-      proxyUrl,
-      "--session",
-      providerSessionId,
-      "--dir",
-      worktree,
-      prompt,
-    ], {
+    const child = spawn(executable, args, {
       cwd: worktree,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -524,7 +543,7 @@ async function codexRpc(proxyUrl, messages, timeoutMs = 30_000) {
   })
 }
 
-async function runNativeCodexPrompt(proxyUrl, threadId, prompt) {
+async function runNativeCodexPrompt(proxyUrl, threadId, prompt, extraInput = []) {
   const responses = await codexRpc(proxyUrl, [
     { id: 1, method: "initialize", params: { clientInfo: { name: "remote-native-tui-drill", version: "0.0.0" } } },
     {
@@ -532,7 +551,7 @@ async function runNativeCodexPrompt(proxyUrl, threadId, prompt) {
       method: "turn/start",
       params: {
         threadId,
-        input: [{ type: "text", text: prompt, text_elements: [] }],
+        input: [{ type: "text", text: prompt, text_elements: [] }, ...extraInput],
       },
     },
   ])
@@ -645,6 +664,14 @@ function permissionPrompt(markerText, filePath, content) {
   return `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
 }
 
+function attachedFilePrompt(markerText) {
+  return `Read the attached file and reply with exactly ${markerText} and nothing else.`
+}
+
+function attachedImagePrompt(markerText) {
+  return `Reply with exactly ${markerText} and nothing else after receiving the attached image.`
+}
+
 function relayClient(relayUrl, relayToken, targetDaemonAlias) {
   return new LocalIpcClient(relayUrl, {
     relayAuthToken: relayToken,
@@ -690,6 +717,8 @@ async function runProviderScenario({
     nativeB: `${marker}DELTA`,
     nativePermission: `${marker}NATIVEPERMISSION`,
     arrobaPermission: `${marker}ARROBAPERMISSION`,
+    nativeAttachment: `${marker}NATIVEATTACHMENT`,
+    arrobaAttachment: `${marker}ARROBAATTACHMENT`,
   }
   const logs = {
     aDir: path.join(scenarioRoot, "native-a-screen"),
@@ -899,6 +928,65 @@ async function runProviderScenario({
     }
 
     const extendedChecks = {}
+    if (options.includeAttachments && (provider === "codex" || provider === "opencode")) {
+      const nativeAttachmentPath = path.join(
+        scenarioRoot,
+        provider === "codex" ? "native-attachment.png" : "native-attachment.txt",
+      )
+      const arrobaAttachmentPath = path.join(
+        scenarioRoot,
+        provider === "codex" ? "arroba-attachment.png" : "arroba-attachment.txt",
+      )
+      if (provider === "codex") {
+        await writeFile(nativeAttachmentPath, tinyPng)
+        await writeFile(arrobaAttachmentPath, tinyPng)
+        await runNativeCodexPrompt(proxyA, providerSessionA, attachedImagePrompt(markers.nativeAttachment), [
+          { type: "localImage", path: nativeAttachmentPath },
+        ])
+      } else {
+        await writeFile(nativeAttachmentPath, `native ${provider} attachment ${markers.nativeAttachment}\n`)
+        await writeFile(arrobaAttachmentPath, `arroba ${provider} attachment ${markers.arrobaAttachment}\n`)
+        await runNativeOpenCodePrompt(
+          proxyA,
+          providerSessionA,
+          worktree,
+          attachedFilePrompt(markers.nativeAttachment),
+          logs.nativeA,
+          nativeAttachmentPath,
+        )
+      }
+      await waitForLogOccurrences(
+        logs.proxyA,
+        provider === "codex" ? "attachmentCount\":1" : "native_prompt_attachments_observed",
+        1,
+      )
+      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        [aliases[0]]: { prompts: [markers.nativeAttachment], outputs: [markers.nativeAttachment] },
+      })
+      await waitForFileMatch(logs.a, new RegExp(markers.nativeAttachment), 60_000)
+
+      await automationRequest(automationSocket, {
+        action: "workspace_shell_exec",
+        command: `agent focus ${agents[0].id}`,
+      })
+      await automationRequest(automationSocket, {
+        action: "submit_prompt",
+        prompt: provider === "codex"
+          ? attachedImagePrompt(markers.arrobaAttachment)
+          : attachedFilePrompt(markers.arrobaAttachment),
+        attachments: [{
+          url: arrobaAttachmentPath,
+          mime: provider === "codex" ? "image/png" : "text/plain",
+          filename: path.basename(arrobaAttachmentPath),
+        }],
+      })
+      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        [aliases[0]]: { prompts: [markers.arrobaAttachment], outputs: [markers.arrobaAttachment] },
+      })
+      await waitForFileMatch(logs.a, new RegExp(markers.arrobaAttachment), 60_000)
+      extendedChecks.attachments = "validated"
+    }
+
     if (options.includePermissions && (provider === "codex" || provider === "opencode")) {
       await mkdir(path.join(worktree, "outputs"), { recursive: true })
       const nativePermissionFile = path.join(worktree, "outputs", `remote-native-${provider}-${process.pid}-native-permission.txt`)

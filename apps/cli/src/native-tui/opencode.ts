@@ -31,6 +31,10 @@ import {
   submitPromptRequest,
   updateProviderRunSelectionRequest,
 } from "../ipc-requests.js"
+import {
+  preparePromptAttachmentsForSubmit,
+  promptAttachmentTransferIsForced,
+} from "../prompt-attachment-transfer.js"
 import { hiddenInstructionsStart, redactHiddenInstructions } from "./hidden-instructions.js"
 
 const execFileAsync = promisify(execFile)
@@ -129,6 +133,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       sessionId: session.id,
       attachmentId: attachment.id,
       agentId: agent.id,
+      inlineLocalAttachments: Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
     }, proxyState)
     const proxyAddress = proxy.address()
     if (!proxyAddress || typeof proxyAddress === "string") {
@@ -555,6 +560,7 @@ async function startOpenCodeProxy(options: {
   sessionId: string
   attachmentId: string
   agentId: string
+  inlineLocalAttachments: boolean
 }, state: OpenCodeProxyState): Promise<http.Server> {
   const server = http.createServer((request, response) => {
     handleProxyRequest(request, response, options, state).catch((error) => {
@@ -584,6 +590,7 @@ async function handleProxyRequest(
     sessionId: string
     attachmentId: string
     agentId: string
+    inlineLocalAttachments: boolean
   },
   state: OpenCodeProxyState,
 ): Promise<void> {
@@ -605,7 +612,9 @@ async function handleProxyRequest(
     const body = await readRequestJson<OpenCodePromptBody>(request)
     debugNativeMutation(path.includes("/prompt_async") ? "prompt_async" : "message", body)
     const prompt = extractPromptText(body)
-    const attachments = extractPromptAttachments(body)
+    const attachments = await preparePromptAttachmentsForSubmit(extractPromptAttachments(body), {
+      inlineLocalFiles: options.inlineLocalAttachments,
+    })
     if (attachments.length > 0) {
       debugNativeMutation("native_prompt_attachments_observed", {
         path,

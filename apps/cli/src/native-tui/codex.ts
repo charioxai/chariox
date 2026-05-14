@@ -30,6 +30,10 @@ import {
   spawnAgentRequest,
   submitPromptRequest,
 } from "../ipc-requests.js"
+import {
+  preparePromptAttachmentsForSubmit,
+  promptAttachmentTransferIsForced,
+} from "../prompt-attachment-transfer.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
 
 const execFileAsync = promisify(execFile)
@@ -141,6 +145,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       model: options.model,
       effort: options.effort,
       bindState,
+      inlineLocalAttachments: Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
     })
     const proxyAddress = proxy.address()
     if (!proxyAddress || typeof proxyAddress === "string") {
@@ -654,6 +659,7 @@ async function startCodexProxy(options: {
     run: RuntimeProviderRun | null
     structuredEndpoint: string | null
   }
+  inlineLocalAttachments: boolean
 }): Promise<WebSocketServer> {
   const httpServer = http.createServer((request, response) => {
     if (request.url === "/readyz") {
@@ -915,17 +921,20 @@ async function handleNativeTurnStart(
       run: RuntimeProviderRun | null
       structuredEndpoint?: string | null
     }
+    inlineLocalAttachments: boolean
   },
   sendClient: (message: unknown) => void,
 ) {
   try {
-  const bindPromise = await waitForNativeBinding(options.bindState)
-  if (!bindPromise) {
-    throw new Error("Codex thread is not bound to Arroba yet")
-  }
+    const bindPromise = await waitForNativeBinding(options.bindState)
+    if (!bindPromise) {
+      throw new Error("Codex thread is not bound to Arroba yet")
+    }
     await bindPromise
     const prompt = extractCodexPrompt(message.params)
-    const attachments = extractCodexAttachments(message.params)
+    const attachments = await preparePromptAttachmentsForSubmit(extractCodexAttachments(message.params), {
+      inlineLocalFiles: options.inlineLocalAttachments,
+    })
     await options.client.send<Record<string, unknown>>(
       submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
     )

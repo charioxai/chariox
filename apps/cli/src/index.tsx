@@ -214,6 +214,10 @@ import {
   type ParsedPromptAttachment,
   type PromptAttachmentKind,
 } from "./prompt-attachments.js"
+import {
+  preparePromptAttachmentsForSubmit,
+  promptAttachmentTransferIsForced,
+} from "./prompt-attachment-transfer.js"
 import type { PromptMetaPart, PromptMetaTone } from "./prompt-meta.js"
 import {
   backendProviderLabel,
@@ -615,6 +619,7 @@ let transcriptParsersRegistered = false
 type CliAutomationRequest = {
   id?: unknown
   action?: unknown
+  attachments?: unknown
   command?: unknown
   prompt?: unknown
   screen?: unknown
@@ -7720,7 +7725,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
 
     const prompt = trimmed ? (rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`) : ""
-    const attachments = pendingAttachments().map<PromptAttachmentPart>((file) => ({
+    const rawAttachments = pendingAttachments().map<PromptAttachmentPart>((file) => ({
       url: file.url,
       mime: file.mime,
       filename: file.filename,
@@ -7731,7 +7736,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       const targetAgentId = focusedAgentId()
       appLogger?.info("submitting prompt", {
         chars: prompt.length,
-        attachments: attachments.length,
+        attachments: rawAttachments.length,
       })
       activeToolLabels.clear()
       setProviderActivityLabel(null)
@@ -7743,6 +7748,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         syncPromptTextSnapshot()
         return
       }
+      const attachments = await preparePromptAttachmentsForSubmit(rawAttachments, {
+        inlineLocalFiles: Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
+      })
       submissionUi = beginSubmittedPromptUi(rawPrompt)
       appendUserPrompt(renderPromptTranscript(prompt), targetAgentId)
       const response = await submitPromptWithRecovery(
@@ -8381,6 +8389,45 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         const prompt = typeof request.prompt === "string" ? request.prompt : ""
         if (!prompt.trim()) {
           throw new Error("usage: submit_prompt prompt=<text>")
+        }
+        const requestAttachments = Array.isArray(request.attachments)
+          ? request.attachments.map((entry) => {
+            if (!entry || typeof entry !== "object") {
+              throw new Error("submit_prompt attachments must be objects")
+            }
+            const attachment = entry as Record<string, unknown>
+            if (typeof attachment.url !== "string" || typeof attachment.mime !== "string") {
+              throw new Error("submit_prompt attachments require url and mime")
+            }
+            return {
+              url: attachment.url,
+              mime: attachment.mime,
+              filename: typeof attachment.filename === "string" ? attachment.filename : null,
+            } satisfies PromptAttachmentPart
+          })
+          : []
+        if (requestAttachments.length > 0) {
+          if (!isAttached()) {
+            throw new Error("cannot submit prompt attachments without an attached session")
+          }
+          const attachment = attachmentState()
+          if (!attachment) {
+            throw new Error("cannot submit prompt attachments without an attached client")
+          }
+          const attachments = await preparePromptAttachmentsForSubmit(requestAttachments, {
+            inlineLocalFiles: Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
+          })
+          await submitPromptWithRecovery(
+            client,
+            sessionState().id,
+            attachment.id,
+            focusedAgentId(),
+            prompt.endsWith("\n") ? prompt : `${prompt}\n`,
+            attachments,
+            options,
+            appLogger,
+          )
+          return automationSnapshot()
         }
         if (isAttached()) {
           await client.send<Record<string, unknown>>(
