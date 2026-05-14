@@ -79,8 +79,7 @@ use crate::runtime::terminal_output_executor::{
 };
 use crate::runtime::user_config_executor::execute_user_config_request;
 use crate::runtime::waiting_room_control::{
-    execute_waiting_room_inventory_request, execute_waiting_room_public_snapshot_request,
-    waiting_room_inventory_version,
+    execute_waiting_room_request, waiting_room_inventory_version,
 };
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_command_executor::execute_workspace_command_request;
@@ -1367,19 +1366,13 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::GetWaitingRoomInventory(_) => {
-                execute_waiting_room_inventory_request(
+            request @ (LocalDaemonRequest::GetWaitingRoomInventory(_)
+            | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)) => {
+                execute_waiting_room_request(
                     &self.app,
                     Arc::clone(&self.relay_state),
                     self.config_projection.clone(),
-                )
-                .await
-            }
-            LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => {
-                execute_waiting_room_public_snapshot_request(
-                    &self.app,
-                    Arc::clone(&self.relay_state),
-                    self.config_projection.clone(),
+                    request,
                 )
                 .await
             }

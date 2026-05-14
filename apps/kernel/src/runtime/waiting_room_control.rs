@@ -4,7 +4,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::local::{LocalDaemonResponse, WaitingRoomPublicSnapshot};
+use crate::local::{LocalDaemonRequest, LocalDaemonResponse, WaitingRoomPublicSnapshot};
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::relay_config_control::projected_relay_status_view;
 use crate::runtime::session_read_control::execute_list_sessions_request;
@@ -23,6 +23,26 @@ pub(crate) async fn execute_waiting_room_inventory_request(
             .await?
             .into(),
     })
+}
+
+pub(crate) async fn execute_waiting_room_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    relay_state: Arc<RwLock<RelayClientState>>,
+    config_projection: DaemonConfigProjectionStore,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::GetWaitingRoomInventory(_) => {
+            execute_waiting_room_inventory_request(app, relay_state, config_projection).await
+        }
+        LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => {
+            execute_waiting_room_public_snapshot_request(app, relay_state, config_projection).await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "waiting room request",
+            message: "unsupported waiting room request".to_string(),
+        }),
+    }
 }
 
 pub(crate) async fn execute_waiting_room_public_snapshot_request(
