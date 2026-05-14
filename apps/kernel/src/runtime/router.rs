@@ -7,7 +7,6 @@ use crate::app::{DaemonApp, PromptActivityStore};
 use crate::error::DaemonError;
 use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
-use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_actor::AgentRuntime;
@@ -45,6 +44,9 @@ use crate::runtime::cloud_relay_executor::{
     execute_start_cloud_relay_login_request,
 };
 use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
+use crate::runtime::daemon_health_projection::{
+    build_daemon_health_projection, DaemonHealthProjectionInput,
+};
 use crate::runtime::history_executor::{
     execute_prompt_input_history_request, execute_query_history_request,
     execute_record_prompt_input_history_request, execute_semantic_search_history_request,
@@ -1560,30 +1562,22 @@ impl CommandRouter {
         &self,
         last_event_id: u64,
     ) -> DaemonHealthProjection {
-        DaemonHealthProjection::new(
+        build_daemon_health_projection(DaemonHealthProjectionInput {
             last_event_id,
-            self.session_runtime.queue_snapshots().await,
-            self.agent_runtime.queue_snapshots().await,
-            self.workflow_runtime.queue_snapshots().await,
-            self.provider_runtime_lanes.queue_snapshots(),
-            self.provider_runtime_lanes.health_snapshot(),
-            self.capability_health.snapshot(),
-            self.session_projection.health_snapshot(),
-            self.agent_runtime_projection.health_snapshot(),
-            self.provider_catalog_projection
-                .health_snapshot(PROVIDER_CATALOG_CACHE_TTL),
-            self.transport_health.snapshot(
-                crate::runtime_transport::RECENT_EVENT_LIMIT,
-                crate::runtime_transport::COMMAND_RESULT_CACHE_LIMIT,
-                crate::runtime_transport::INBOUND_REQUEST_LIMIT,
-            ),
-            self.terminal_health.snapshot(),
-            self.session_projection
-                .workspace_coordination_snapshot(self.workspace_coordinator.active_claims()),
-            self.runtime_state.managed_io_health_snapshot().await,
-            self.session_projection
-                .invariant_snapshot(&self.agent_runtime_projection),
-        )
+            session_runtime: &self.session_runtime,
+            agent_runtime: &self.agent_runtime,
+            workflow_runtime: &self.workflow_runtime,
+            provider_runtime_lanes: &self.provider_runtime_lanes,
+            capability_health: &self.capability_health,
+            session_projection: &self.session_projection,
+            agent_runtime_projection: &self.agent_runtime_projection,
+            provider_catalog_projection: &self.provider_catalog_projection,
+            transport_health: &self.transport_health,
+            terminal_health: &self.terminal_health,
+            workspace_coordinator: &self.workspace_coordinator,
+            runtime_state: &self.runtime_state,
+        })
+        .await
     }
 
     async fn dispatch_interactive(

@@ -8,6 +8,7 @@ pub(crate) mod cloud_api_client;
 pub(crate) mod cloud_relay_control;
 pub(crate) mod cloud_relay_executor;
 pub mod command;
+pub(crate) mod daemon_health_projection;
 pub mod event_log;
 pub(crate) mod history_executor;
 pub(crate) mod history_requests;
