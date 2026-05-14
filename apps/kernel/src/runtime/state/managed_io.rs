@@ -198,6 +198,8 @@ mod patch_parser;
 pub(super) use patch_parser::*;
 mod patch;
 pub(super) use patch::*;
+mod whole_file;
+pub(super) use whole_file::*;
 
 pub(super) fn managed_io_is_arroba_source_workspace(root: &PathBuf) -> bool {
     root.join("apps/kernel/Cargo.toml").is_file()
