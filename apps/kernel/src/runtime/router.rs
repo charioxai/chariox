@@ -112,11 +112,13 @@ use crate::runtime::waiting_room_activity::{
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::runtime::workspace_git_common::{
-    git_command_output, same_fs_path, workspace_display_label, worktree_display_label,
+    detect_git_branch, git_command_output, same_fs_path, workspace_display_label,
+    worktree_display_label,
 };
 use crate::runtime::workspace_search::{
     create_workspace_directory, expand_workspace_query_path, search_workspace_directories,
 };
+use crate::runtime::workspace_worktrees::{list_workspace_worktrees, parse_git_worktree_list};
 use crate::session::{unix_epoch_ms, PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::{
@@ -6313,100 +6315,6 @@ fn infer_waiting_room_launch_target() -> Option<WaitingRoomLaunchTarget> {
         workspace_id: workspace,
         worktree_id: worktree,
     })
-}
-
-fn list_workspace_worktrees(
-    workspace_id: &str,
-    current_worktree: Option<&str>,
-) -> Result<Vec<WorkspaceWorktreeRecord>, DaemonError> {
-    let workspace_path = PathBuf::from(workspace_id);
-    let output = std::process::Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(&workspace_path)
-        .output();
-    let Ok(output) = output else {
-        return Ok(vec![WorkspaceWorktreeRecord {
-            path: workspace_id.to_string(),
-            branch: None,
-            label: worktree_display_label(workspace_id, workspace_id, None),
-            current: true,
-        }]);
-    };
-    if !output.status.success() {
-        let branch = detect_git_branch(workspace_id).ok();
-        return Ok(vec![WorkspaceWorktreeRecord {
-            path: workspace_id.to_string(),
-            label: worktree_display_label(workspace_id, workspace_id, branch.as_deref()),
-            branch,
-            current: true,
-        }]);
-    }
-    let current_worktree_path = current_worktree.unwrap_or(workspace_id);
-    let mut worktrees = parse_git_worktree_list(String::from_utf8_lossy(&output.stdout).as_ref())
-        .into_iter()
-        .map(|(path, branch)| WorkspaceWorktreeRecord {
-            current: same_fs_path(&path, current_worktree_path),
-            label: worktree_display_label(&path, workspace_id, branch.as_deref()),
-            branch,
-            path,
-        })
-        .collect::<Vec<_>>();
-    if worktrees.is_empty() {
-        let branch = detect_git_branch(workspace_id).ok();
-        worktrees.push(WorkspaceWorktreeRecord {
-            path: workspace_id.to_string(),
-            label: worktree_display_label(workspace_id, workspace_id, branch.as_deref()),
-            branch,
-            current: true,
-        });
-    }
-    Ok(worktrees)
-}
-
-fn parse_git_worktree_list(stdout: &str) -> Vec<(String, Option<String>)> {
-    let mut entries = Vec::new();
-    let mut current_path: Option<String> = None;
-    let mut current_branch: Option<String> = None;
-    for raw_line in stdout.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() {
-            if let Some(path) = current_path.take() {
-                entries.push((path, current_branch.take()));
-            }
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("worktree ") {
-            if let Some(path) = current_path.replace(rest.trim().to_string()) {
-                entries.push((path, current_branch.take()));
-            }
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("branch ") {
-            current_branch = Some(rest.trim().trim_start_matches("refs/heads/").to_string());
-        }
-    }
-    if let Some(path) = current_path.take() {
-        entries.push((path, current_branch.take()));
-    }
-    entries
-}
-
-fn detect_git_branch(path: &str) -> Result<String, DaemonError> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(path)
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "detect git branch",
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Err(DaemonError::LocalTransport {
-            operation: "detect git branch",
-            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        });
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn inspect_workspace_git_overview(

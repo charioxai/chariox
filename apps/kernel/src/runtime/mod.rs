@@ -17,3 +17,4 @@ pub mod workspace_coordinator;
 pub(crate) mod workspace_git_common;
 pub mod workspace_identity_monitor;
 pub(crate) mod workspace_search;
+pub(crate) mod workspace_worktrees;

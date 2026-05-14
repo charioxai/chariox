@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use crate::error::DaemonError;
+
 pub(crate) fn git_command_output(path: &str, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git")
         .args(args)
@@ -48,6 +50,24 @@ pub(crate) fn worktree_display_label(
 pub(crate) fn same_fs_path(left: &str, right: &str) -> bool {
     std::fs::canonicalize(left).ok() == std::fs::canonicalize(right).ok()
         || Path::new(left) == Path::new(right)
+}
+
+pub(crate) fn detect_git_branch(path: &str) -> Result<String, DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "detect git branch",
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation: "detect git branch",
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn repo_label_from_remote_url(url: &str) -> Option<String> {
