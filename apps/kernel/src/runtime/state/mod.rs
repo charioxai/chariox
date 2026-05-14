@@ -87,6 +87,7 @@ mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod prompt;
 mod prompt_activity_owned_state;
+mod prompt_cancellation_owned_state;
 mod prompt_dispatch;
 mod prompt_git_observer_runtime;
 mod prompt_queue_owned_state;
