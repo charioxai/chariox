@@ -82,6 +82,7 @@ use pending_runtime_state::*;
 mod prompt;
 mod prompt_dispatch;
 mod provider;
+mod provider_launch_owned_state;
 mod provider_launch_runtime;
 mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;
