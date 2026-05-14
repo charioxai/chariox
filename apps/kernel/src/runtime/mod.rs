@@ -2,6 +2,7 @@ pub mod agent_actor;
 pub mod agent_prompt_service;
 pub mod capability_executor;
 pub(crate) mod capability_registry;
+pub(crate) mod cloud_api_client;
 pub(crate) mod cloud_relay_control;
 pub mod command;
 pub mod event_log;
