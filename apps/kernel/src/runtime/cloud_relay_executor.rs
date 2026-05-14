@@ -25,6 +25,9 @@ use crate::runtime::cloud_relay_control::{
     cloud_relay_profile_has_runtime_credentials, cloud_relay_runtime_token_is_fresh,
     cloud_runtime_token_subject, CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
 };
+use crate::runtime::cloud_relay_profile_access::{
+    required_cloud_relay_profile, required_cloud_relay_profile_with_session,
+};
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
 use crate::runtime::provider_catalog_control::provider_catalog_json_value;
 use crate::runtime::remote_relay_inventory::projected_relay_status;
@@ -593,36 +596,6 @@ pub(crate) async fn clear_cloud_profile_if_stale(
         return Ok(());
     }
     clear_cloud_profile(app, config_projection).await
-}
-
-fn required_cloud_relay_profile(
-    config_projection: &DaemonConfigProjectionStore,
-) -> Result<PersistedCloudRelayProfile, DaemonError> {
-    config_projection
-        .snapshot()
-        .cloud_relay
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "load cloud relay profile",
-            message: "cloud relay profile missing; run /relay cloud login first".to_string(),
-        })
-}
-
-fn required_cloud_relay_profile_with_session(
-    config_projection: &DaemonConfigProjectionStore,
-) -> Result<PersistedCloudRelayProfile, DaemonError> {
-    let profile = required_cloud_relay_profile(config_projection)?;
-    if profile
-        .cloud_session_token
-        .as_deref()
-        .unwrap_or("")
-        .is_empty()
-    {
-        return Err(DaemonError::LocalTransport {
-            operation: "load cloud relay session",
-            message: "cloud session token missing; run /relay cloud login first".to_string(),
-        });
-    }
-    Ok(profile)
 }
 
 async fn machine_runtime_profile_payload(
