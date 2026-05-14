@@ -6,7 +6,11 @@ use tokio::sync::Mutex;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
-use crate::runtime::projection::{AgentRuntimeActivity, SessionStateProjectionStore};
+use crate::runtime::projection::{
+    AgentRuntimeActivity, AgentRuntimeProjectionStore, ProviderProcessProjectionStore,
+    ProviderRunProjectionStore, SessionHistoryProjectionStore, SessionStateProjectionStore,
+};
+use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
 use crate::runtime::session_actor::FocusedAgentProjection;
 use crate::session::RuntimeSession;
 
@@ -130,6 +134,81 @@ pub(crate) fn session_projection_refresh(request: &LocalDaemonRequest) -> Sessio
             SessionProjectionRefresh::None
         }
         _ => SessionProjectionRefresh::None,
+    }
+}
+
+pub(crate) struct SessionProjectionRefreshContext<'a> {
+    pub(crate) app: &'a Arc<Mutex<DaemonApp>>,
+    pub(crate) session_projection: &'a SessionStateProjectionStore,
+    pub(crate) agent_runtime_projection: &'a AgentRuntimeProjectionStore,
+    pub(crate) history_projection: &'a SessionHistoryProjectionStore,
+    pub(crate) provider_process_projection: &'a ProviderProcessProjectionStore,
+    pub(crate) provider_launch_pending: &'a ProviderLaunchPendingTracker,
+    pub(crate) provider_run_projection: &'a ProviderRunProjectionStore,
+}
+
+pub(crate) async fn apply_session_projection_refresh(
+    context: SessionProjectionRefreshContext<'_>,
+    refresh: SessionProjectionRefresh,
+    result: &Result<LocalDaemonResponse, DaemonError>,
+) {
+    let response = match result {
+        Ok(response) => response,
+        Err(_) => return,
+    };
+
+    let mut refreshed_session_ids = Vec::new();
+    for session in response_sessions(response) {
+        refreshed_session_ids.push(session.id().to_string());
+        if should_update_agent_runtime_projection_from_response(response) {
+            context.agent_runtime_projection.update_session(&session);
+        }
+        context.session_projection.update(session);
+    }
+    if let LocalDaemonResponse::SessionsListed { sessions } = response {
+        for session in sessions {
+            context.agent_runtime_projection.update_session(session);
+        }
+        context.session_projection.update_list(sessions.clone());
+    }
+    for session_id in response_removed_session_ids(response) {
+        context.agent_runtime_projection.remove_session(session_id);
+        context.session_projection.remove(session_id);
+        context.history_projection.remove(session_id);
+        refreshed_session_ids.push(session_id.to_string());
+    }
+
+    let mut snapshot_session_ids = refresh.session_ids(response);
+    snapshot_session_ids.sort();
+    snapshot_session_ids.dedup();
+    match refresh {
+        SessionProjectionRefresh::None => {}
+        SessionProjectionRefresh::SnapshotAgentResponse => {
+            for session_id in snapshot_session_ids {
+                if let Some(session) = context.session_projection.get(&session_id) {
+                    refreshed_session_ids.push(session.id().to_string());
+                    context.agent_runtime_projection.update_session(&session);
+                }
+            }
+        }
+    }
+
+    if !matches!(refresh, SessionProjectionRefresh::None) || !refreshed_session_ids.is_empty() {
+        context.provider_process_projection.invalidate();
+    }
+
+    refreshed_session_ids.sort();
+    refreshed_session_ids.dedup();
+    for session_id in refreshed_session_ids {
+        context
+            .provider_launch_pending
+            .clear_if_settled(
+                context.app,
+                &session_id,
+                context.session_projection,
+                context.provider_run_projection,
+            )
+            .await;
     }
 }
 

@@ -66,9 +66,8 @@ use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
 use crate::runtime::session_collaboration_executor::execute_session_collaboration_request;
 use crate::runtime::session_membership::authorize_session_membership;
 use crate::runtime::session_projection_refresh::{
-    apply_focus_projection_refresh, focus_projection_refresh, response_removed_session_ids,
-    response_sessions, session_projection_refresh,
-    should_update_agent_runtime_projection_from_response, SessionProjectionRefresh,
+    apply_focus_projection_refresh, apply_session_projection_refresh, focus_projection_refresh,
+    session_projection_refresh, SessionProjectionRefreshContext,
 };
 use crate::runtime::session_read_control::{
     execute_session_read_request, projected_session_inspection_response,
@@ -1103,8 +1102,20 @@ impl CommandRouter {
                 }
             },
         };
-        self.apply_session_projection_refresh(session_refresh, &result)
-            .await;
+        apply_session_projection_refresh(
+            SessionProjectionRefreshContext {
+                app: &self.app,
+                session_projection: &self.session_projection,
+                agent_runtime_projection: &self.agent_runtime_projection,
+                history_projection: &self.history_projection,
+                provider_process_projection: &self.provider_process_projection,
+                provider_launch_pending: &self.provider_launch_pending,
+                provider_run_projection: &self.provider_run_projection,
+            },
+            session_refresh,
+            &result,
+        )
+        .await;
         apply_focus_projection_refresh(
             &self.app,
             &self.focus_projection,
@@ -1560,70 +1571,6 @@ impl CommandRouter {
             | LocalDaemonRequest::PollRuntimeNotices(_)) => {
                 self.dispatch_interactive(command, request).await
             }
-        }
-    }
-
-    async fn apply_session_projection_refresh(
-        &self,
-        refresh: SessionProjectionRefresh,
-        result: &Result<LocalDaemonResponse, DaemonError>,
-    ) {
-        let response = match result {
-            Ok(response) => response,
-            Err(_) => return,
-        };
-
-        let mut refreshed_session_ids = Vec::new();
-        for session in response_sessions(response) {
-            refreshed_session_ids.push(session.id().to_string());
-            if should_update_agent_runtime_projection_from_response(response) {
-                self.agent_runtime_projection.update_session(&session);
-            }
-            self.session_projection.update(session);
-        }
-        if let LocalDaemonResponse::SessionsListed { sessions } = response {
-            for session in sessions {
-                self.agent_runtime_projection.update_session(session);
-            }
-            self.session_projection.update_list(sessions.clone());
-        }
-        for session_id in response_removed_session_ids(response) {
-            self.agent_runtime_projection.remove_session(session_id);
-            self.session_projection.remove(session_id);
-            self.history_projection.remove(session_id);
-            refreshed_session_ids.push(session_id.to_string());
-        }
-
-        let mut snapshot_session_ids = refresh.session_ids(response);
-        snapshot_session_ids.sort();
-        snapshot_session_ids.dedup();
-        match refresh {
-            SessionProjectionRefresh::None => {}
-            SessionProjectionRefresh::SnapshotAgentResponse => {
-                for session_id in snapshot_session_ids {
-                    if let Some(session) = self.session_projection.get(&session_id) {
-                        refreshed_session_ids.push(session.id().to_string());
-                        self.agent_runtime_projection.update_session(&session);
-                    }
-                }
-            }
-        }
-
-        if !matches!(refresh, SessionProjectionRefresh::None) || !refreshed_session_ids.is_empty() {
-            self.provider_process_projection.invalidate();
-        }
-
-        refreshed_session_ids.sort();
-        refreshed_session_ids.dedup();
-        for session_id in refreshed_session_ids {
-            self.provider_launch_pending
-                .clear_if_settled(
-                    &self.app,
-                    &session_id,
-                    &self.session_projection,
-                    &self.provider_run_projection,
-                )
-                .await;
         }
     }
 

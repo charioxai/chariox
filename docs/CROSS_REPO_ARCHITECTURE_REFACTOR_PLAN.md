@@ -15,10 +15,10 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 2026-05-14:
 
 - Cloud API boundary split is in place: `server.ts` is route composition; relay-kernel bootstrap delegates to service-layer target selection/token minting; route/helper/contract files are domain-owned.
-- Cloud web responsibility modules now cover browser kernel transport, waiting-room state/projection/rendering/connection display/refresh failures, app sidebar/workflow/history/prompt/output/workspace/capabilities, terminal lifecycle/transport/target/launch/provider profile, freeform policy, and session projection fingerprinting. `client.ts` is still the main coordinator and is 10,241 lines.
-- OSS responsibility modules now cover kernel transport, router dispatch groups, shared caller identity, membership authorization, runtime projections, provider/agent/session/workspace/history/capability/waiting-room execution, launch tracking, provider-run response refresh, runtime lane cleanup, visibility policy, and response redaction. `runtime/router.rs` is still the main command router and is 7,582 lines.
-- Latest verified batch: OSS provider-run response projection refresh moved to `runtime/provider_run_control.rs`; Cloud waiting-room refresh failure state moved under `terminal/`.
-- Latest focused gates passed: `cargo test --manifest-path apps/kernel/Cargo.toml --lib -- --test-threads=1` (730 tests), `pnpm --filter @arroba-cloud/web test -- waiting-room-refresh-failures` (733 tests).
+- Cloud web responsibility modules now cover browser kernel transport, waiting-room state/projection/rendering/connection display/refresh failures/refresh scheduling, app sidebar/workflow/history/prompt/output/workspace/capabilities, terminal lifecycle/transport/target/launch/provider profile, freeform policy, and session projection fingerprinting. `client.ts` is still the main coordinator and is 10,221 lines.
+- OSS responsibility modules now cover kernel transport, router dispatch groups, shared caller identity, membership authorization, runtime projections, provider/agent/session/workspace/history/capability/waiting-room execution, launch tracking, provider-run response refresh, session response refresh, runtime lane cleanup, visibility policy, and response redaction. `runtime/router.rs` is still the main command router and is 7,529 lines.
+- Latest verified batch: OSS session response projection refresh moved to `runtime/session_projection_refresh.rs`; Cloud waiting-room refresh scheduling moved under `terminal/`.
+- Latest focused gates passed: `cargo test --manifest-path apps/kernel/Cargo.toml --lib -- --test-threads=1` (730 tests), `pnpm --filter @arroba-cloud/web test -- waiting-room-refresh-scheduler` (736 tests).
 
 ## Responsibility Rule
 
