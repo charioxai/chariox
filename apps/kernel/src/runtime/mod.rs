@@ -23,6 +23,7 @@ pub(crate) mod provider_run_control;
 pub(crate) mod relay_config_control;
 pub(crate) mod remote_machine_registry;
 pub(crate) mod remote_relay_inventory;
+pub(crate) mod response_redaction;
 pub mod router;
 pub(crate) mod semantic_history_utility;
 pub mod session_actor;
