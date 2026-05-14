@@ -115,8 +115,9 @@ use crate::runtime::workspace_git_changes::{
     workspace_git_diff_text, workspace_git_file_changes, workspace_git_status_by_path,
 };
 use crate::runtime::workspace_git_common::{
-    detect_git_branch, git_command_output, same_fs_path, workspace_display_label,
-    worktree_display_label,
+    detect_git_branch, git_command_output, git_ref_exists, git_reference_resolves,
+    resolve_repo_root, run_git, run_workspace_git_command, same_fs_path,
+    workspace_default_compare_ref, workspace_display_label, worktree_display_label,
 };
 use crate::runtime::workspace_search::{
     create_workspace_directory, expand_workspace_query_path, search_workspace_directories,
@@ -7307,38 +7308,6 @@ fn run_gh_output(
         .to_string())
 }
 
-fn run_workspace_git_command(
-    worktree_path: &str,
-    args: &[&str],
-    operation: &'static str,
-) -> Result<(), DaemonError> {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(worktree_path)
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation,
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let message = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!(
-                "git {} failed with status {}",
-                args.join(" "),
-                output.status
-            )
-        };
-        return Err(DaemonError::LocalTransport { operation, message });
-    }
-    Ok(())
-}
-
 fn workspace_git_compare_refs(
     repo_root: &str,
     branch: Option<&str>,
@@ -7456,31 +7425,6 @@ fn push_workspace_git_compare_ref(
     });
 }
 
-fn workspace_default_compare_ref(repo_root: &str, branch: Option<&str>) -> String {
-    if git_reference_resolves(repo_root, "origin/main") {
-        return "origin/main".to_string();
-    }
-    if git_reference_resolves(repo_root, "main") {
-        return "main".to_string();
-    }
-    if git_reference_resolves(repo_root, "master") {
-        return "master".to_string();
-    }
-    branch
-        .filter(|value| !value.is_empty() && *value != "HEAD")
-        .unwrap_or("HEAD")
-        .to_string()
-}
-
-fn git_reference_resolves(repo_root: &str, reference: &str) -> bool {
-    std::process::Command::new("git")
-        .args(["rev-parse", "--verify", "--quiet", reference])
-        .current_dir(repo_root)
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
 fn create_waiting_room_worktree(
     workspace_path: &str,
     requested_path: Option<&str>,
@@ -7545,26 +7489,6 @@ fn create_waiting_room_worktree(
     Ok(directory.display().to_string())
 }
 
-fn resolve_repo_root(workspace_path: &str) -> Result<PathBuf, DaemonError> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(workspace_path)
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "resolve repo root",
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Err(DaemonError::LocalTransport {
-            operation: "resolve repo root",
-            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        });
-    }
-    Ok(PathBuf::from(
-        String::from_utf8_lossy(&output.stdout).trim(),
-    ))
-}
-
 fn resolve_preferred_base_ref(repo_root: &Path) -> Result<String, DaemonError> {
     for candidate in ["main", "master"] {
         if git_ref_exists(repo_root, &format!("refs/heads/{candidate}"))? {
@@ -7605,37 +7529,6 @@ fn resolve_requested_worktree_directory(parent: &Path, value: &str) -> PathBuf {
         expanded
     } else {
         parent.join(expanded)
-    }
-}
-
-fn git_ref_exists(repo_root: &Path, reference: &str) -> Result<bool, DaemonError> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--verify", "--quiet", reference])
-        .current_dir(repo_root)
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "check git ref",
-            message: error.to_string(),
-        })?;
-    Ok(output.status.success())
-}
-
-fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), DaemonError> {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(repo_root)
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "run git command",
-            message: error.to_string(),
-        })?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(DaemonError::LocalTransport {
-            operation: "run git command",
-            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        })
     }
 }
 

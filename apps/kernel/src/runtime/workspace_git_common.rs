@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
 
@@ -13,6 +13,114 @@ pub(crate) fn git_command_output(path: &str, args: &[&str]) -> Option<String> {
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!value.is_empty()).then_some(value)
+}
+
+pub(crate) fn run_workspace_git_command(
+    worktree_path: &str,
+    args: &[&str],
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let message = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!(
+                "git {} failed with status {}",
+                args.join(" "),
+                output.status
+            )
+        };
+        return Err(DaemonError::LocalTransport { operation, message });
+    }
+    Ok(())
+}
+
+pub(crate) fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_root)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "run git command",
+            message: error.to_string(),
+        })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(DaemonError::LocalTransport {
+            operation: "run git command",
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
+    }
+}
+
+pub(crate) fn resolve_repo_root(workspace_path: &str) -> Result<PathBuf, DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(workspace_path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "resolve repo root",
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation: "resolve repo root",
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(PathBuf::from(
+        String::from_utf8_lossy(&output.stdout).trim(),
+    ))
+}
+
+pub(crate) fn git_ref_exists(repo_root: &Path, reference: &str) -> Result<bool, DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", reference])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "check git ref",
+            message: error.to_string(),
+        })?;
+    Ok(output.status.success())
+}
+
+pub(crate) fn git_reference_resolves(repo_root: &str, reference: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", reference])
+        .current_dir(repo_root)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+pub(crate) fn workspace_default_compare_ref(repo_root: &str, branch: Option<&str>) -> String {
+    if git_reference_resolves(repo_root, "origin/main") {
+        return "origin/main".to_string();
+    }
+    if git_reference_resolves(repo_root, "main") {
+        return "main".to_string();
+    }
+    if git_reference_resolves(repo_root, "master") {
+        return "master".to_string();
+    }
+    branch
+        .filter(|value| !value.is_empty() && *value != "HEAD")
+        .unwrap_or("HEAD")
+        .to_string()
 }
 
 pub(crate) fn workspace_display_label(workspace_path: &str) -> Option<String> {
@@ -102,7 +210,10 @@ fn repo_label_from_remote_url(url: &str) -> Option<String> {
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{repo_label_from_remote_url, same_fs_path, worktree_display_label};
+    use super::{
+        repo_label_from_remote_url, same_fs_path, workspace_default_compare_ref,
+        worktree_display_label,
+    };
 
     #[test]
     fn repo_labels_parse_common_remote_urls() {
@@ -149,5 +260,21 @@ mod tests {
     #[test]
     fn same_fs_path_accepts_literal_matches() {
         assert!(same_fs_path("/repo/main", "/repo/main"));
+    }
+
+    #[test]
+    fn default_compare_ref_falls_back_to_branch_then_head() {
+        assert_eq!(
+            workspace_default_compare_ref("/path/that/does/not/exist", Some("feature/test")),
+            "feature/test"
+        );
+        assert_eq!(
+            workspace_default_compare_ref("/path/that/does/not/exist", Some("HEAD")),
+            "HEAD"
+        );
+        assert_eq!(
+            workspace_default_compare_ref("/path/that/does/not/exist", None),
+            "HEAD"
+        );
     }
 }
