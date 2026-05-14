@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -75,89 +75,9 @@ struct KernelRuntimeOwnedState {
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
 }
 
-#[derive(Debug, Clone)]
-struct PendingMcpContinuation {
-    session_id: String,
-    agent_id: String,
-    source_attachment_id: String,
-    mcp_name: String,
-    previous_prompt: String,
-}
-
-#[derive(Debug, Clone, Default)]
-struct PendingMcpContinuationStore {
-    inner: Arc<StdMutex<BTreeMap<String, PendingMcpContinuation>>>,
-}
-
-#[derive(Debug, Clone)]
-struct PendingProviderReload {
-    session_id: String,
-    agent_id: String,
-    reason: String,
-}
-
-#[derive(Debug, Clone, Default)]
-struct PendingProviderReloadStore {
-    inner: Arc<StdMutex<BTreeMap<String, PendingProviderReload>>>,
-}
-
-#[derive(Debug, Clone)]
-struct PendingInteraction {
-    session_id: String,
-    responder: Arc<StdMutex<Option<oneshot::Sender<PendingInteractionResolution>>>>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct PendingInteractionResolution {
-    pub(crate) status: &'static str,
-    pub(crate) choice_id: Option<String>,
-    pub(crate) reply: Option<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct PendingInteractionStore {
-    inner: Arc<StdMutex<BTreeMap<String, PendingInteraction>>>,
-}
-
-impl PendingMcpContinuationStore {
-    fn shared() -> Self {
-        static STORE: OnceLock<PendingMcpContinuationStore> = OnceLock::new();
-        STORE
-            .get_or_init(PendingMcpContinuationStore::default)
-            .clone()
-    }
-}
-
-impl PendingInteractionStore {
-    fn shared() -> Self {
-        static STORE: OnceLock<PendingInteractionStore> = OnceLock::new();
-        STORE.get_or_init(PendingInteractionStore::default).clone()
-    }
-
-    fn write(&self) -> StdMutexGuard<'_, BTreeMap<String, PendingInteraction>> {
-        self.inner
-            .lock()
-            .expect("pending interaction mutex poisoned")
-    }
-}
-
-impl PendingMcpContinuationStore {
-    fn write(&self) -> StdMutexGuard<'_, BTreeMap<String, PendingMcpContinuation>> {
-        self.inner
-            .lock()
-            .expect("pending MCP continuation mutex poisoned")
-    }
-}
-
-impl PendingProviderReloadStore {
-    fn write(&self) -> StdMutexGuard<'_, BTreeMap<String, PendingProviderReload>> {
-        self.inner
-            .lock()
-            .expect("pending provider reload mutex poisoned")
-    }
-}
-
 mod owned;
+mod pending_runtime_state;
+use pending_runtime_state::*;
 mod prompt;
 mod prompt_dispatch;
 mod provider;
