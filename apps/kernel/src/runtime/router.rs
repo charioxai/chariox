@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
@@ -76,7 +75,9 @@ use crate::runtime::provider_auth_control::{
 use crate::runtime::provider_catalog_control::{
     execute_get_provider_catalog_request, execute_get_provider_command_catalogs_request,
 };
-use crate::runtime::provider_launch_executor::ProviderLaunchCommandExecutor;
+use crate::runtime::provider_launch_executor::{
+    ProviderLaunchCommandExecutor, ProviderLaunchPendingTracker,
+};
 use crate::runtime::provider_process_control::{
     execute_list_provider_processes_request,
     provider_processes_visible_to_user as filter_provider_processes_visible_to_user,
@@ -187,7 +188,7 @@ pub(crate) struct CommandRouter {
     terminal_stream: TerminalStreamStore,
     terminal_output_executor: TerminalOutputExecutor,
     workspace_coordinator: WorkspaceCoordinator,
-    pending_provider_launch_sessions: Arc<Mutex<HashSet<String>>>,
+    provider_launch_pending: ProviderLaunchPendingTracker,
 }
 
 impl CommandRouter {
@@ -269,7 +270,7 @@ impl CommandRouter {
             runtime_state.clone(),
             &provider_store,
         );
-        let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
+        let provider_launch_pending = ProviderLaunchPendingTracker::default();
         let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
         let agent_runtime = AgentRuntime::new(
             runtime_state.clone(),
@@ -329,7 +330,7 @@ impl CommandRouter {
             terminal_stream,
             terminal_output_executor,
             workspace_coordinator,
-            pending_provider_launch_sessions,
+            provider_launch_pending,
         }
     }
 
@@ -411,7 +412,7 @@ impl CommandRouter {
             runtime_state.clone(),
             &provider_store,
         );
-        let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
+        let provider_launch_pending = ProviderLaunchPendingTracker::default();
         let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
         let agent_runtime = AgentRuntime::new(
             runtime_state.clone(),
@@ -471,7 +472,7 @@ impl CommandRouter {
             terminal_stream,
             terminal_output_executor,
             workspace_coordinator,
-            pending_provider_launch_sessions,
+            provider_launch_pending,
         }
     }
 
@@ -949,7 +950,12 @@ impl CommandRouter {
                 .await?;
         if let LocalDaemonRequest::GetSessionState(request) = &request {
             if !self
-                .has_unsettled_pending_provider_launch(&request.session_id)
+                .provider_launch_pending
+                .has_unsettled_launch(
+                    &request.session_id,
+                    &self.session_projection,
+                    &self.provider_run_projection,
+                )
                 .await
             {
                 if let Some(response) = projected_session_state_response(
@@ -3109,7 +3115,13 @@ impl CommandRouter {
         refreshed_session_ids.sort();
         refreshed_session_ids.dedup();
         for session_id in refreshed_session_ids {
-            self.clear_provider_launch_pending_if_settled(&session_id)
+            self.provider_launch_pending
+                .clear_if_settled(
+                    &self.app,
+                    &session_id,
+                    &self.session_projection,
+                    &self.provider_run_projection,
+                )
                 .await;
         }
     }
@@ -3118,12 +3130,7 @@ impl CommandRouter {
         &self,
         result: &Result<LocalDaemonResponse, DaemonError>,
     ) {
-        if let Ok(LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) = result {
-            self.pending_provider_launch_sessions
-                .lock()
-                .await
-                .insert(provider_run.session_id().to_string());
-        }
+        self.provider_launch_pending.track_response(result).await;
     }
 
     async fn apply_provider_run_projection_refresh(
@@ -3174,76 +3181,6 @@ impl CommandRouter {
             }
             _ => {}
         }
-    }
-
-    async fn has_unsettled_pending_provider_launch(&self, session_id: &str) -> bool {
-        if !self
-            .pending_provider_launch_sessions
-            .lock()
-            .await
-            .contains(session_id)
-        {
-            return false;
-        }
-        if let Some(is_starting) =
-            self.provider_launch_is_still_starting_from_projection(session_id)
-        {
-            if !is_starting {
-                self.pending_provider_launch_sessions
-                    .lock()
-                    .await
-                    .remove(session_id);
-            }
-            return is_starting;
-        }
-        true
-    }
-
-    async fn clear_provider_launch_pending_if_settled(&self, session_id: &str) {
-        if !self
-            .pending_provider_launch_sessions
-            .lock()
-            .await
-            .contains(session_id)
-        {
-            return;
-        }
-        if let Some(is_starting) =
-            self.provider_launch_is_still_starting_from_projection(session_id)
-        {
-            if !is_starting {
-                self.pending_provider_launch_sessions
-                    .lock()
-                    .await
-                    .remove(session_id);
-            }
-            return;
-        }
-        let Ok(app) = self.app.try_lock() else {
-            return;
-        };
-        let is_still_starting = app
-            .sessions()
-            .get_session(session_id)
-            .ok()
-            .and_then(|session| session.active_provider_run_id().map(str::to_string))
-            .and_then(|provider_run_id| app.providers().get_run(&provider_run_id).ok())
-            .is_some_and(|run| run.state() == ProviderRunState::Starting);
-        if !is_still_starting {
-            self.pending_provider_launch_sessions
-                .lock()
-                .await
-                .remove(session_id);
-        }
-    }
-
-    fn provider_launch_is_still_starting_from_projection(&self, session_id: &str) -> Option<bool> {
-        let session = self.session_projection.get(session_id)?;
-        let Some(provider_run_id) = session.active_provider_run_id() else {
-            return Some(false);
-        };
-        let run = self.provider_run_projection.get(provider_run_id)?;
-        Some(run.state() == ProviderRunState::Starting)
     }
 }
 
@@ -3565,16 +3502,21 @@ mod tests {
         ));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
         router
-            .pending_provider_launch_sessions
-            .lock()
-            .await
-            .insert("cold-session".to_string());
+            .provider_launch_pending
+            .insert_for_tests("cold-session")
+            .await;
 
         let app_guard = app.lock().await;
         let cleanup_router = router.clone();
         let cleanup_task = tokio::spawn(async move {
             cleanup_router
-                .clear_provider_launch_pending_if_settled("cold-session")
+                .provider_launch_pending
+                .clear_if_settled(
+                    &cleanup_router.app,
+                    "cold-session",
+                    &cleanup_router.session_projection,
+                    &cleanup_router.provider_run_projection,
+                )
                 .await;
         });
 
@@ -3586,10 +3528,9 @@ mod tests {
 
         assert!(
             router
-                .pending_provider_launch_sessions
-                .lock()
-                .await
-                .contains("cold-session"),
+                .provider_launch_pending
+                .contains_for_tests("cold-session")
+                .await,
             "cold cleanup should leave the guard for a later projection-backed refresh"
         );
     }
@@ -6935,10 +6876,9 @@ mod tests {
         router.session_projection.update(session);
         router.provider_run_projection.update(provider_run);
         router
-            .pending_provider_launch_sessions
-            .lock()
-            .await
-            .insert(session_id.clone());
+            .provider_launch_pending
+            .insert_for_tests(session_id.clone())
+            .await;
 
         let app_guard = app.lock().await;
         let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
@@ -6970,10 +6910,9 @@ mod tests {
         }
         assert!(
             !router
-                .pending_provider_launch_sessions
-                .lock()
-                .await
-                .contains(&session_id),
+                .provider_launch_pending
+                .contains_for_tests(&session_id)
+                .await,
             "projection-settled launch should clear pending launch guard"
         );
     }
