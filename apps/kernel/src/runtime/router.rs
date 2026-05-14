@@ -114,11 +114,7 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::terminal_output_executor::{
     execute_append_native_provider_output_request, TerminalOutputExecutor,
 };
-use crate::runtime::user_config_executor::{
-    execute_delete_credential_secret_request, execute_get_user_config_request,
-    execute_get_user_config_schema_request, execute_set_credential_secret_request,
-    execute_set_user_config_value_request, execute_unset_user_config_value_request,
-};
+use crate::runtime::user_config_executor::execute_user_config_request;
 use crate::runtime::waiting_room_control::{
     execute_waiting_room_inventory_request, execute_waiting_room_public_snapshot_request,
     waiting_room_inventory_version,
@@ -1122,35 +1118,19 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::GetUserConfig(request) => {
-                execute_get_user_config_request(&self.config_projection, request).await
-            }
-            LocalDaemonRequest::GetUserConfigSchema(request) => {
-                execute_get_user_config_schema_request(request).await
-            }
-            LocalDaemonRequest::SetUserConfigValue(request) => {
-                execute_set_user_config_value_request(
+            request @ (LocalDaemonRequest::GetUserConfig(_)
+            | LocalDaemonRequest::GetUserConfigSchema(_)
+            | LocalDaemonRequest::SetUserConfigValue(_)
+            | LocalDaemonRequest::UnsetUserConfigValue(_)
+            | LocalDaemonRequest::SetCredentialSecret(_)
+            | LocalDaemonRequest::DeleteCredentialSecret(_)) => {
+                execute_user_config_request(
                     &self.app,
                     &self.config_projection,
                     &self.runtime_state,
                     request,
                 )
                 .await
-            }
-            LocalDaemonRequest::UnsetUserConfigValue(request) => {
-                execute_unset_user_config_value_request(
-                    &self.app,
-                    &self.config_projection,
-                    &self.runtime_state,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::SetCredentialSecret(request) => {
-                execute_set_credential_secret_request(&self.config_projection, request).await
-            }
-            LocalDaemonRequest::DeleteCredentialSecret(request) => {
-                execute_delete_credential_secret_request(&self.config_projection, request).await
             }
             LocalDaemonRequest::ListSlices(request) => {
                 execute_list_slices_request(&self.app, request).await
@@ -1577,35 +1557,19 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::GetUserConfig(request) => {
-                execute_get_user_config_request(&self.config_projection, request).await
-            }
-            LocalDaemonRequest::GetUserConfigSchema(request) => {
-                execute_get_user_config_schema_request(request).await
-            }
-            LocalDaemonRequest::SetUserConfigValue(request) => {
-                execute_set_user_config_value_request(
+            request @ (LocalDaemonRequest::GetUserConfig(_)
+            | LocalDaemonRequest::GetUserConfigSchema(_)
+            | LocalDaemonRequest::SetUserConfigValue(_)
+            | LocalDaemonRequest::UnsetUserConfigValue(_)
+            | LocalDaemonRequest::SetCredentialSecret(_)
+            | LocalDaemonRequest::DeleteCredentialSecret(_)) => {
+                execute_user_config_request(
                     &self.app,
                     &self.config_projection,
                     &self.runtime_state,
                     request,
                 )
                 .await
-            }
-            LocalDaemonRequest::UnsetUserConfigValue(request) => {
-                execute_unset_user_config_value_request(
-                    &self.app,
-                    &self.config_projection,
-                    &self.runtime_state,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::SetCredentialSecret(request) => {
-                execute_set_credential_secret_request(&self.config_projection, request).await
-            }
-            LocalDaemonRequest::DeleteCredentialSecret(request) => {
-                execute_delete_credential_secret_request(&self.config_projection, request).await
             }
             LocalDaemonRequest::DeleteKernel(request) => {
                 execute_delete_kernel_request(&self.config_projection, &self.runtime_state, request)

@@ -6,12 +6,46 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     DeleteCredentialSecretRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
-    LocalDaemonResponse, SetCredentialSecretRequest, SetUserConfigValueRequest,
+    LocalDaemonRequest, LocalDaemonResponse, SetCredentialSecretRequest, SetUserConfigValueRequest,
     UnsetUserConfigValueRequest, UserConfigMutationEffect,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::user_config_policy::{user_config_mutation_effects, UserConfigMutation};
+
+pub(crate) async fn execute_user_config_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::GetUserConfig(request) => {
+            execute_get_user_config_request(config_projection, request).await
+        }
+        LocalDaemonRequest::GetUserConfigSchema(request) => {
+            execute_get_user_config_schema_request(request).await
+        }
+        LocalDaemonRequest::SetUserConfigValue(request) => {
+            execute_set_user_config_value_request(app, config_projection, runtime_state, request)
+                .await
+        }
+        LocalDaemonRequest::UnsetUserConfigValue(request) => {
+            execute_unset_user_config_value_request(app, config_projection, runtime_state, request)
+                .await
+        }
+        LocalDaemonRequest::SetCredentialSecret(request) => {
+            execute_set_credential_secret_request(config_projection, request).await
+        }
+        LocalDaemonRequest::DeleteCredentialSecret(request) => {
+            execute_delete_credential_secret_request(config_projection, request).await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "user config request",
+            message: "unsupported user config request".to_string(),
+        }),
+    }
+}
 
 pub(crate) async fn execute_get_user_config_request(
     config_projection: &DaemonConfigProjectionStore,
