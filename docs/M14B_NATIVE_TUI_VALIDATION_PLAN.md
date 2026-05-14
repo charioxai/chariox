@@ -23,10 +23,10 @@ system and remains covered by the managed-I/O milestones and drills.
 
 2026-05-14 update: Codex/OpenCode prompt attachment byte transfer is
 implemented for relay-attached native TUI clients and Arroba TUI submissions.
-The same-host relay drill and local Docker slice drill now validate
+The same-host relay drill and direct Docker slice-target drill now validate
 native-TUI-origin and Arroba-TUI-origin attachments with two provider-native
-TUIs plus one Arroba observer in the same session. Standard home-worker remote
-coverage is still pending.
+TUIs plus one Arroba observer in the same session. These are not yet the full
+standard home-worker or home-managed slice topologies.
 
 ## Goal
 
@@ -55,6 +55,13 @@ Scenarios:
 - slice: home kernel owns the session and manages a slice/worker execution
   environment
 
+Interim drill target:
+
+- direct slice target: the native TUI and observer connect directly to the
+  slice kernel through relay. This validates cross-filesystem provider
+  execution and attachment materialization, but it is not the final
+  home-managed slice topology.
+
 ## Current Coverage
 
 Prompt/turns:
@@ -64,9 +71,8 @@ Prompt/turns:
 - Same-host relay Codex/OpenCode/Claude: covered by
   `live-remote-native-tui-drill.mjs`.
 - Standard remote home-worker: not covered for native TUI.
-- Slice: partially covered by `live-remote-native-tui-drill.mjs
-  --slice-local-docker`, but this needs to be promoted into the official matrix
-  and separated from same-host relay terminology.
+- Direct slice target Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
+  --slice-local-docker`, but home-managed slice is not covered.
 
 Permissions:
 
@@ -83,9 +89,10 @@ Prompt attachments:
 - Same-host relay Codex/OpenCode: covered by
   `live-remote-native-tui-drill.mjs --providers opencode,codex
   --include-attachments`.
-- Slice Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
+- Direct slice target Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
   --slice-local-docker --providers opencode,codex --include-attachments`.
 - Standard remote home-worker: not covered.
+- Home-managed slice: not covered.
 
 MCPs and skills:
 
@@ -142,8 +149,9 @@ Provider notes:
      native TUI runs.
    - Confirm the kernel materializes those bytes on the provider-execution
      machine and provider-facing paths are local to that machine.
-   - Add live checks for native-TUI-origin and Arroba-TUI-origin attachments in
-     both standard remote and slice scenarios.
+   - Add live checks for native-TUI-origin and Arroba-TUI-origin attachments.
+     Same-host relay and direct slice target are validated for Codex/OpenCode;
+     standard remote and home-managed slice remain to be added.
 
 3. Revisit local permissions for all providers.
    - Rerun Codex/OpenCode local native TUI permissions.
@@ -189,9 +197,11 @@ Legend:
 | standard remote | Codex | gap | gap | gap | gap |
 | standard remote | OpenCode | gap | gap | gap | gap |
 | standard remote | Claude | gap | gap | gap | gap |
-| slice | Codex | pass | gap | pass | gap |
-| slice | OpenCode | pass | gap | pass | gap |
-| slice | Claude | gap | gap | gap | gap |
+| direct slice target | Codex | pass | gap | pass | gap |
+| direct slice target | OpenCode | pass | gap | pass | gap |
+| home-managed slice | Codex | gap | gap | gap | gap |
+| home-managed slice | OpenCode | gap | gap | gap | gap |
+| home-managed slice | Claude | gap | gap | gap | gap |
 
 ## Drill Requirements
 

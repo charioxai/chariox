@@ -155,7 +155,14 @@ async function waitForHistoryMarker(client, sessionId, attachmentId, agentId, ma
   while (Date.now() < deadline) {
     await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
     const page = unwrap(await client.send(getSessionHistoryRequest(sessionId, 200, 100_000, null, agentId)), "SessionHistory")
-    const text = page.entries.map((entry) => entry.entry?.text ?? "").join("\n")
+    const text = page.entries
+      .map((row) => row.entry)
+      .filter((entry) =>
+        entry?.agent_id === agentId
+          && (entry.kind === "provider_output" || entry.kind === "assistant")
+      )
+      .map((entry) => entry.text ?? "")
+      .join("")
     if (text.includes(markerText)) return text
     await sleep(1_000)
   }
@@ -262,6 +269,20 @@ async function answerPermissionFromCli(socketPath, alias) {
   return pending.interaction
 }
 
+async function waitForAgentIdle(socketPath, alias, timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs
+  let last = null
+  while (Date.now() < deadline) {
+    const snapshot = await automationRequest(socketPath, { action: "snapshot" })
+    last = snapshot
+    const agent = snapshot.session?.agents?.find((entry) => entry.alias === alias)
+    const badge = String(agent?.badge?.label ?? "").toLowerCase()
+    if (agent && agent.isProcessing === false && badge === "idle") return snapshot
+    await sleep(250)
+  }
+  throw new Error(`timed out waiting for ${alias} to become idle; last=${JSON.stringify(last)}`)
+}
+
 async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, prompt) {
   const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
   await new Promise((resolve, reject) => {
@@ -300,7 +321,7 @@ async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, pr
 }
 
 function permissionPrompt(provider, markerText, filePath, content) {
-  const shellCommand = `printf '${content}\\n' > ${filePath}`
+  const shellCommand = `echo ${content} > ${filePath}`
   return provider === "codex"
     ? `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
     : `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
@@ -430,12 +451,14 @@ async function runProvider(provider, options) {
       await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.nativePrompt)
       await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.nativePrompt)
       await waitForFileContent(files.nativePrompt, `native-${provider}`, 5_000).catch(() => {})
+      await waitForAgentIdle(automationSocket, alias)
       console.log(JSON.stringify({ provider, direction: "native_tui_to_arroba", interaction: nativeInteraction.title ?? nativeInteraction.message }))
     } else {
       const nativeInteraction = await answerPermissionFromCli(automationSocket, alias)
       await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.nativePrompt)
       await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.nativePrompt)
       await waitForFileContent(files.nativePrompt, `native-${provider}`, 5_000).catch(() => {})
+      await waitForAgentIdle(automationSocket, alias)
       console.log(JSON.stringify({ provider, direction: "native_tui_to_arroba", interaction: nativeInteraction.title ?? nativeInteraction.message }))
     }
 
