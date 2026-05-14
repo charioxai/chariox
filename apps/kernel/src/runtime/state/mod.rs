@@ -75,6 +75,7 @@ struct KernelRuntimeOwnedState {
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
 }
 
+mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod owned;
 mod pending_runtime_state;
