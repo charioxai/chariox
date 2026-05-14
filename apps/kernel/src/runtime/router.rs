@@ -100,6 +100,11 @@ use crate::runtime::remote_machine_registry::{
     execute_approve_remote_machine_request, execute_forget_remote_machine_request,
     execute_rename_remote_machine_request,
 };
+use crate::runtime::remote_relay_inventory::{
+    projected_relay_status as projected_remote_relay_status,
+    projected_remote_machine_kernels_response as projected_remote_relay_machine_kernels_response,
+    projected_remote_machines_response as projected_remote_relay_machines_response,
+};
 use crate::runtime::semantic_history_utility::{
     parse_semantic_history_search_utility_output, semantic_history_search_utility_prompt,
 };
@@ -158,9 +163,7 @@ use crate::runtime::workspace_commit_message_utility::workspace_commit_message_u
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::session::{unix_epoch_ms, PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
-use crate::transport::relay_client::{
-    refresh_remote_inventory_projection_for_app_with_relay_state, RelayClientState,
-};
+use crate::transport::relay_client::RelayClientState;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
@@ -2144,34 +2147,27 @@ impl CommandRouter {
     }
 
     async fn projected_remote_machines_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
-        self.request_remote_relay_inventory_projection_refresh()
-            .await;
-        let (machines, _) = self.remote_relay_inventory_projection.snapshot();
-        Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
+        projected_remote_relay_machines_response(
+            Arc::clone(&self.app),
+            Arc::clone(&self.relay_state),
+            self.config_projection.clone(),
+            self.remote_relay_inventory_projection.clone(),
+        )
+        .await
     }
 
     async fn projected_remote_machine_kernels_response(
         &self,
         machine_ref: String,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.request_remote_relay_inventory_projection_refresh()
-            .await;
-        let machine_ref =
-            crate::local::provider_requests::resolve_registered_or_raw_machine_ref(&machine_ref);
-        let (_, kernels) = self.remote_relay_inventory_projection.snapshot();
-        let kernels = kernels
-            .into_iter()
-            .filter(|kernel| {
-                kernel.machine_id == machine_ref
-                    || kernel.machine_alias.as_deref() == Some(machine_ref.as_str())
-                    || kernel.relay_alias.as_deref() == Some(machine_ref.as_str())
-                    || kernel.kernel_alias.as_deref() == Some(machine_ref.as_str())
-            })
-            .collect();
-        Ok(LocalDaemonResponse::RemoteMachineKernelsListed {
+        projected_remote_relay_machine_kernels_response(
+            Arc::clone(&self.app),
+            Arc::clone(&self.relay_state),
+            self.config_projection.clone(),
+            self.remote_relay_inventory_projection.clone(),
             machine_ref,
-            kernels,
-        })
+        )
+        .await
     }
 
     async fn execute_run_agent_utility_request(
@@ -2351,51 +2347,12 @@ impl CommandRouter {
         })
     }
 
-    async fn request_remote_relay_inventory_projection_refresh(&self) {
-        let connected = self.relay_state.read().await.connected();
-        if !connected {
-            return;
-        }
-        let config = self.config_projection.snapshot();
-        let now_ms = crate::session::unix_epoch_ms();
-        let stale_after_ms = (config.relay_heartbeat_ms.saturating_mul(2)).max(1_000);
-        let cooldown_ms = 1_000;
-        if !self
-            .remote_relay_inventory_projection
-            .should_request_refresh(now_ms, stale_after_ms, cooldown_ms)
-        {
-            return;
-        }
-        let app = Arc::clone(&self.app);
-        tokio::spawn(async move {
-            if let Err(error) =
-                refresh_remote_inventory_projection_for_app_with_relay_state(&app).await
-            {
-                crate::logging::warn_with_fields(
-                    "daemon.router",
-                    "remote relay inventory refresh on demand failed",
-                    serde_json::json!({
-                        "error": error.to_string(),
-                        "stale_after_ms": stale_after_ms,
-                        "cooldown_ms": cooldown_ms,
-                    }),
-                );
-            }
-        });
-    }
-
     async fn projected_relay_status(&self) -> RelayStatus {
-        let config = self.config_projection.snapshot();
-        let connected = self.relay_state.read().await.connected();
-        RelayStatus {
-            configured: config.relay_url.is_some() && config.relay_token.is_some(),
-            connected,
-            relay_url: config.relay_url,
-            relay_token_configured: config.relay_token.is_some(),
-            daemon_id: config.daemon_id,
-            machine_id: config.host_machine_id,
-            machine_alias: config.host_machine_alias,
-        }
+        projected_remote_relay_status(
+            Arc::clone(&self.relay_state),
+            self.config_projection.clone(),
+        )
+        .await
     }
 
     async fn invalidate_provider_catalog_caches(&self) {
