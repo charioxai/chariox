@@ -94,8 +94,7 @@ use crate::runtime::remote_machine_registry::{
     execute_rename_remote_machine_request,
 };
 use crate::runtime::remote_relay_inventory::{
-    projected_remote_machine_kernels_response as projected_remote_relay_machine_kernels_response,
-    projected_remote_machines_response as projected_remote_relay_machines_response,
+    execute_list_remote_machine_kernels_request, execute_list_remote_machines_request,
 };
 use crate::runtime::response_redaction::redact_response_for_user;
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
@@ -990,13 +989,25 @@ impl CommandRouter {
                 )
                 .await;
             }
-            LocalDaemonRequest::ListRemoteMachines(_) => {
-                return self.projected_remote_machines_response().await;
+            LocalDaemonRequest::ListRemoteMachines(request) => {
+                return execute_list_remote_machines_request(
+                    Arc::clone(&self.app),
+                    Arc::clone(&self.relay_state),
+                    self.config_projection.clone(),
+                    self.remote_relay_inventory_projection.clone(),
+                    request.clone(),
+                )
+                .await;
             }
             LocalDaemonRequest::ListRemoteMachineKernels(request) => {
-                return self
-                    .projected_remote_machine_kernels_response(request.machine_ref.clone())
-                    .await;
+                return execute_list_remote_machine_kernels_request(
+                    Arc::clone(&self.app),
+                    Arc::clone(&self.relay_state),
+                    self.config_projection.clone(),
+                    self.remote_relay_inventory_projection.clone(),
+                    request.clone(),
+                )
+                .await;
             }
             LocalDaemonRequest::SearchWorkspaceDirectories(request) => {
                 return execute_search_workspace_directories_request(request.clone());
@@ -1538,30 +1549,6 @@ impl CommandRouter {
         .await
     }
 
-    async fn projected_remote_machines_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
-        projected_remote_relay_machines_response(
-            Arc::clone(&self.app),
-            Arc::clone(&self.relay_state),
-            self.config_projection.clone(),
-            self.remote_relay_inventory_projection.clone(),
-        )
-        .await
-    }
-
-    async fn projected_remote_machine_kernels_response(
-        &self,
-        machine_ref: String,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        projected_remote_relay_machine_kernels_response(
-            Arc::clone(&self.app),
-            Arc::clone(&self.relay_state),
-            self.config_projection.clone(),
-            self.remote_relay_inventory_projection.clone(),
-            machine_ref,
-        )
-        .await
-    }
-
     async fn execute_capability_request(
         &self,
         request: LocalDaemonRequest,
@@ -1906,12 +1893,25 @@ impl CommandRouter {
                 execute_delete_kernel_request(&self.config_projection, &self.runtime_state, request)
                     .await
             }
-            LocalDaemonRequest::ListRemoteMachines(_) => {
-                self.projected_remote_machines_response().await
+            LocalDaemonRequest::ListRemoteMachines(request) => {
+                execute_list_remote_machines_request(
+                    Arc::clone(&self.app),
+                    Arc::clone(&self.relay_state),
+                    self.config_projection.clone(),
+                    self.remote_relay_inventory_projection.clone(),
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ListRemoteMachineKernels(request) => {
-                self.projected_remote_machine_kernels_response(request.machine_ref)
-                    .await
+                execute_list_remote_machine_kernels_request(
+                    Arc::clone(&self.app),
+                    Arc::clone(&self.relay_state),
+                    self.config_projection.clone(),
+                    self.remote_relay_inventory_projection.clone(),
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::GetWaitingRoomInventory(_) => {
                 execute_waiting_room_inventory_request(
