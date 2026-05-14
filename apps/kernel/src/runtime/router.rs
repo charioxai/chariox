@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
-use tokio::time::Duration;
 
 use crate::app::{DaemonApp, PromptActivityStore};
 use crate::error::DaemonError;
@@ -34,7 +33,6 @@ use crate::runtime::projection::{
     RemoteRelayInventoryProjectionStore, SessionHistoryProjectionStore,
     SessionStateProjectionStore, TransportHealthStore,
 };
-use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_auth_control::execute_provider_auth_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_launch_executor::{
@@ -69,15 +67,17 @@ use crate::runtime::waiting_room_control::execute_waiting_room_request;
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_command_executor::execute_workspace_command_request;
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
-use crate::session::PromptIdAllocator;
-use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
+use crate::terminal::TerminalStreamHealthStore;
 use crate::transport::relay_client::RelayClientState;
 
 mod caller_identity_bridge;
 mod cloud_relay_bridge;
+mod composition;
 mod relay_peer_bridge;
 mod runtime_tool_bridge;
 mod status_projection_bridge;
+
+use composition::{router_projection_stores, RouterProjectionStores};
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -134,7 +134,7 @@ impl CommandRouter {
         let _interactive_capacity = interactive_capacity;
         let provider_runtime_lanes = ProviderRunOperationLanes::default();
         let focus_projection = FocusedAgentProjection::default();
-        let (
+        let RouterProjectionStores {
             history_store,
             operational_history_store,
             session_projection,
@@ -162,7 +162,7 @@ impl CommandRouter {
             workspace_coordinator,
             prompt_state_owner,
             prompt_id_allocator,
-        ) = router_projection_stores(&app);
+        } = router_projection_stores(&app);
         let runtime_state = KernelRuntimeState::new_with_owned_state(
             Arc::clone(&app),
             config_projection.clone(),
@@ -275,7 +275,7 @@ impl CommandRouter {
     ) -> Self {
         let _interactive_capacity = interactive_capacity;
         let focus_projection = FocusedAgentProjection::default();
-        let (
+        let RouterProjectionStores {
             history_store,
             operational_history_store,
             session_projection,
@@ -303,7 +303,7 @@ impl CommandRouter {
             workspace_coordinator,
             prompt_state_owner,
             prompt_id_allocator,
-        ) = router_projection_stores(&app);
+        } = router_projection_stores(&app);
         let runtime_state = KernelRuntimeState::new_with_owned_state(
             Arc::clone(&app),
             config_projection.clone(),
@@ -1115,78 +1115,6 @@ impl CommandRouter {
             }
         }
     }
-}
-
-fn router_projection_stores(
-    app: &Arc<Mutex<DaemonApp>>,
-) -> (
-    SessionHistoryStore,
-    OperationalHistoryStore,
-    SessionStateProjectionStore,
-    SessionHistoryProjectionStore,
-    ProviderCatalogProjectionStore,
-    ProviderRunProjectionStore,
-    ProviderProcessProjectionStore,
-    RemoteRelayInventoryProjectionStore,
-    AgentRuntimeProjectionStore,
-    DaemonConfigProjectionStore,
-    crate::session::SessionStateStore,
-    crate::agent::AgentServiceStore,
-    crate::attachment::AttachmentServiceStore,
-    crate::provider::ProviderProcessServiceStore,
-    crate::app::ProviderProcessTrackingStore,
-    crate::slice::SliceStore,
-    crate::app::ActiveTurnStore,
-    crate::app::PromptActivityStore,
-    crate::app::PromptWorkspaceClaimStore,
-    crate::app::provider_output::StructuredOutputRecordStore,
-    crate::durable_state::DurableKernelStateStore,
-    Arc<RwLock<RelayClientState>>,
-    TerminalStreamHealthStore,
-    TerminalStreamStore,
-    WorkspaceCoordinator,
-    PromptStateOwner,
-    PromptIdAllocator,
-) {
-    let started = std::time::Instant::now();
-    let app = loop {
-        if let Ok(app) = app.try_lock() {
-            break app;
-        }
-        if started.elapsed() >= Duration::from_secs(5) {
-            panic!("CommandRouter could not acquire the app lock during bootstrap");
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    };
-    (
-        app.history_store(),
-        app.operational_history_store(),
-        app.session_state_projection_store(),
-        app.session_history_projection_store(),
-        app.provider_catalog_projection_store(),
-        app.provider_run_projection_store(),
-        app.provider_process_projection_store(),
-        app.remote_relay_inventory_projection_store(),
-        app.agent_runtime_projection_store(),
-        app.config_projection_store(),
-        app.session_state_store(),
-        app.agents().clone(),
-        app.attachments().clone(),
-        app.providers().clone(),
-        app.provider_process_tracking_store(),
-        app.slices(),
-        app.active_turn_store(),
-        app.prompt_activity_store(),
-        app.prompt_workspace_claim_store(),
-        app.structured_output_record_store(),
-        app.durable_state_store(),
-        app.relay_client_state(),
-        app.terminal_health_store(),
-        app.terminal_stream_store(),
-        app.workspace_coordinator(),
-        app.prompt_state_owner(),
-        app.prompt_id_allocator(),
-    )
 }
 
 #[cfg(test)]
