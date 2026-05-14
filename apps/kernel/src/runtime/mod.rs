@@ -20,6 +20,7 @@ pub(crate) mod semantic_history_utility;
 pub mod session_actor;
 pub(crate) mod session_membership;
 pub(crate) mod session_projection_refresh;
+pub(crate) mod slice_command_executor;
 pub(crate) mod state;
 pub mod terminal_output_executor;
 pub(crate) mod terminal_pairings;
