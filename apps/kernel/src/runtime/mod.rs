@@ -29,6 +29,7 @@ pub mod session_actor;
 pub(crate) mod session_collaboration_executor;
 pub(crate) mod session_membership;
 pub(crate) mod session_projection_refresh;
+pub(crate) mod session_read_control;
 pub(crate) mod slice_command_executor;
 pub(crate) mod state;
 pub mod terminal_output_executor;

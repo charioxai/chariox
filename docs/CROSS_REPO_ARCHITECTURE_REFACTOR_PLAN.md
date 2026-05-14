@@ -15,10 +15,10 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 2026-05-14:
 
 - Cloud API boundary split is in place: `server.ts` is route composition; relay-kernel bootstrap delegates to service-layer target selection/token minting; route/helper/contract files are domain-owned.
-- Cloud web has responsibility modules for browser kernel transport, waiting-room projection/state/refresh policy, workflow route state, history, prompt, output, sidebar, workspace, capabilities, terminal records/lifecycle, terminal transport lifecycle, and freeform dialog projection/state. `client.ts` is still the main coordinator and is 11,050 lines.
-- OSS protocol/client split is started; kernel transport frames/events and many router executors are responsibility modules. `runtime/router.rs` is still the main command router and is 9,462 lines.
-- Latest verified slices: OSS relay config/status control moved to `runtime/relay_config_control.rs`; Cloud waiting-room refresh signature/cache/failure/worktree policy moved to `terminal/waiting-room-refresh-state.ts`.
-- Latest focused gates passed: `cargo test --manifest-path apps/kernel/Cargo.toml --lib -- --test-threads=1`, `pnpm --filter @arroba-cloud/web test` (591 tests), `pnpm -r --if-present lint`, and `git diff --check`.
+- Cloud web has responsibility modules for browser kernel transport, waiting-room projection/state/refresh policy, workflow route state, history, prompt, output, sidebar, workspace, capabilities, terminal records/lifecycle, terminal transport lifecycle, kernel-directory projection policy, and freeform dialog projection/state. `client.ts` is still the main coordinator and is 11,004 lines.
+- OSS protocol/client split is started; kernel transport frames/events, session read projection, and many router executors are responsibility modules. `runtime/router.rs` is still the main command router and is 9,372 lines.
+- Latest verified slices: OSS session read/cache projection and cold read fallbacks moved to `runtime/session_read_control.rs`; Cloud kernel-directory target filtering, event policy, stale marking, and waiting-room inventory merge moved to `terminal/kernel-directory.ts`.
+- Latest focused gates passed: `cargo test --manifest-path apps/kernel/Cargo.toml --lib -- --test-threads=1` (730 tests), `pnpm --filter @arroba-cloud/web test` (594 tests), `pnpm -r --if-present lint`, and `git diff --check`.
 
 ## Responsibility Rule
 

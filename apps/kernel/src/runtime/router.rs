@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
@@ -11,9 +11,8 @@ use crate::history::SessionHistoryStore;
 use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
 use crate::local::{
     AgentGrantKind, DeleteKernelRequest, GenerateWorkspaceCommitMessageRequest,
-    GetSessionStateRequest, GrantAgentCapabilityRequest, ListAgentsRequest, ListSessionsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, MoveAgentToRemoteRequest, PumpTerminalOutputRequest,
-    ResolveSessionRequest, RevokeAgentCapabilityRequest, RunAgentUtilityRequest,
+    GrantAgentCapabilityRequest, LocalDaemonRequest, LocalDaemonResponse, MoveAgentToRemoteRequest,
+    PumpTerminalOutputRequest, RevokeAgentCapabilityRequest, RunAgentUtilityRequest,
     TeardownProviderProcessesRequest, WaitingRoomPublicSnapshot,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
@@ -65,9 +64,8 @@ use crate::runtime::pairing_invite_executor::{
     execute_join_pairing_invite_request, execute_join_terminal_pairing_link_request,
 };
 use crate::runtime::projection::{
-    agent_activity_for_session_projection, AgentRuntimeProjectionStore,
-    DaemonConfigProjectionStore, DaemonHealthProjection, ProviderCatalogProjectionStore,
-    ProviderProcessProjectionStore, ProviderRunProjectionStore,
+    AgentRuntimeProjectionStore, DaemonConfigProjectionStore, DaemonHealthProjection,
+    ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
     RemoteRelayInventoryProjectionStore, SessionHistoryProjectionStore,
     SessionStateProjectionStore, TransportHealthStore,
 };
@@ -116,6 +114,12 @@ use crate::runtime::session_projection_refresh::{
     response_sessions, session_projection_refresh,
     should_update_agent_runtime_projection_from_response, FocusProjectionRefresh,
     SessionProjectionRefresh,
+};
+use crate::runtime::session_read_control::{
+    execute_get_session_state_request, execute_list_agents_request, execute_list_sessions_request,
+    execute_resolve_session_request, projected_list_sessions_response,
+    projected_resolve_session_response, projected_session_or_absence,
+    projected_session_state_response,
 };
 use crate::runtime::slice_command_executor::{
     execute_create_slice_request, execute_delete_slice_request,
@@ -949,89 +953,34 @@ impl CommandRouter {
                 .has_unsettled_pending_provider_launch(&request.session_id)
                 .await
             {
-                if let Some(session) = self.session_projection.get(&request.session_id) {
-                    if !session.has_member(&caller_user_id) {
-                        return Err(DaemonError::SessionAccessDenied {
-                            session_id: session.id().to_string(),
-                            user_id: caller_user_id.clone(),
-                        });
-                    }
-                    let session = session.redacted_for_user(&caller_user_id);
-                    return Ok(LocalDaemonResponse::SessionState {
-                        agent_activity: self.projected_agent_activity(&session),
-                        session,
-                    });
-                }
-                if self.session_projection.has_warmed_list() {
-                    return Err(DaemonError::SessionNotFound {
-                        session_id: request.session_id.clone(),
-                    });
+                if let Some(response) = projected_session_state_response(
+                    &self.session_projection,
+                    &self.provider_run_projection,
+                    &self.prompt_activity,
+                    &self.active_turns,
+                    request,
+                    &caller_user_id,
+                ) {
+                    return response;
                 }
             }
         }
         if let LocalDaemonRequest::ResolveSession(request) = &request {
-            if let Some(session) = self
-                .session_projection
-                .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())
-            {
-                if !session.has_member(&caller_user_id) {
-                    return Err(DaemonError::SessionAccessDenied {
-                        session_id: session.id().to_string(),
-                        user_id: caller_user_id.clone(),
-                    });
-                }
-                return Ok(LocalDaemonResponse::SessionResolved {
-                    session: session.redacted_for_user(&caller_user_id),
-                });
-            }
-            if let Some(result) = self
-                .session_projection
-                .resolve_session_ref_id_from_warmed_list(
-                    &request.session_ref,
-                    request.workspace_id.as_deref(),
-                )
-            {
-                let session_id = result?;
-                let session = self.session_projection.get(&session_id).ok_or_else(|| {
-                    DaemonError::SessionNotFound {
-                        session_id: session_id.clone(),
-                    }
-                })?;
-                if !session.has_member(&caller_user_id) {
-                    return Err(DaemonError::SessionAccessDenied {
-                        session_id: session.id().to_string(),
-                        user_id: caller_user_id.clone(),
-                    });
-                }
-                return Ok(LocalDaemonResponse::SessionResolved {
-                    session: session.redacted_for_user(&caller_user_id),
-                });
+            if let Some(response) = projected_resolve_session_response(
+                &self.session_projection,
+                request,
+                &caller_user_id,
+            ) {
+                return response;
             }
         }
         if matches!(request, LocalDaemonRequest::ListSessions(_)) {
-            if let Some(sessions) = self.session_projection.list() {
-                let sessions = sessions
-                    .into_iter()
-                    .filter(|session| session.has_member(&caller_user_id))
-                    .map(|session| session.redacted_for_user(&caller_user_id))
-                    .collect();
-                return Ok(LocalDaemonResponse::SessionsListed { sessions });
-            }
-            let sessions: Vec<_> = {
-                let app = self.app.lock().await;
-                app.sessions()
-                    .list_sessions()
-                    .into_iter()
-                    .filter(|session| session.has_member(&caller_user_id))
-                    .collect()
-            };
-            self.session_projection.update_list(sessions.clone());
-            return Ok(LocalDaemonResponse::SessionsListed {
-                sessions: sessions
-                    .into_iter()
-                    .map(|session| session.redacted_for_user(&caller_user_id))
-                    .collect(),
-            });
+            return projected_list_sessions_response(
+                &self.app,
+                &self.session_projection,
+                &caller_user_id,
+            )
+            .await;
         }
         match &request {
             LocalDaemonRequest::RelayStatus(_) => {
@@ -1155,7 +1104,7 @@ impl CommandRouter {
                 self.history_store.clone(),
                 self.operational_history_store.clone(),
                 self.history_projection.clone(),
-                self.projected_session_or_absence(&request.session_id),
+                projected_session_or_absence(&self.session_projection, &request.session_id),
                 request,
             )
             .await
@@ -1995,7 +1944,10 @@ impl CommandRouter {
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
         match request {
             LocalDaemonRequest::ListAgents(request) => {
-                let session = match self.projected_session_or_absence(&request.session_id)? {
+                let session = match projected_session_or_absence(
+                    &self.session_projection,
+                    &request.session_id,
+                )? {
                     Ok(session) => session,
                     Err(error) => return Some(Err(error)),
                 };
@@ -2009,7 +1961,10 @@ impl CommandRouter {
                 }))
             }
             LocalDaemonRequest::ListWorkflows(request) => {
-                let session = match self.projected_session_or_absence(&request.session_id)? {
+                let session = match projected_session_or_absence(
+                    &self.session_projection,
+                    &request.session_id,
+                )? {
                     Ok(session) => session,
                     Err(error) => return Some(Err(error)),
                 };
@@ -2023,7 +1978,10 @@ impl CommandRouter {
                 }))
             }
             LocalDaemonRequest::ResolveWorkflow(request) => {
-                let session = match self.projected_session_or_absence(&request.session_id)? {
+                let session = match projected_session_or_absence(
+                    &self.session_projection,
+                    &request.session_id,
+                )? {
                     Ok(session) => session,
                     Err(error) => return Some(Err(error)),
                 };
@@ -2036,7 +1994,10 @@ impl CommandRouter {
                 )
             }
             LocalDaemonRequest::ListWorkflowRuns(request) => {
-                let session = match self.projected_session_or_absence(&request.session_id)? {
+                let session = match projected_session_or_absence(
+                    &self.session_projection,
+                    &request.session_id,
+                )? {
                     Ok(session) => session,
                     Err(error) => return Some(Err(error)),
                 };
@@ -2068,7 +2029,10 @@ impl CommandRouter {
                 )
             }
             LocalDaemonRequest::GetWorkflowRun(request) => {
-                let session = match self.projected_session_or_absence(&request.session_id)? {
+                let session = match projected_session_or_absence(
+                    &self.session_projection,
+                    &request.session_id,
+                )? {
                     Ok(session) => session,
                     Err(error) => return Some(Err(error)),
                 };
@@ -2088,7 +2052,10 @@ impl CommandRouter {
                 )
             }
             LocalDaemonRequest::ListWorkflowWatchdogs(request) => {
-                let session = match self.projected_session_or_absence(&request.session_id)? {
+                let session = match projected_session_or_absence(
+                    &self.session_projection,
+                    &request.session_id,
+                )? {
                     Ok(session) => session,
                     Err(error) => return Some(Err(error)),
                 };
@@ -2111,7 +2078,10 @@ impl CommandRouter {
                 )
             }
             LocalDaemonRequest::ListQueuedWorkflowLaunches(request) => {
-                let session = match self.projected_session_or_absence(&request.session_id)? {
+                let session = match projected_session_or_absence(
+                    &self.session_projection,
+                    &request.session_id,
+                )? {
                     Ok(session) => session,
                     Err(error) => return Some(Err(error)),
                 };
@@ -2127,10 +2097,11 @@ impl CommandRouter {
         &self,
         request: &PumpTerminalOutputRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-        let session = match self.projected_session_or_absence(&request.session_id)? {
-            Ok(session) => session,
-            Err(error) => return Some(Err(error)),
-        };
+        let session =
+            match projected_session_or_absence(&self.session_projection, &request.session_id)? {
+                Ok(session) => session,
+                Err(error) => return Some(Err(error)),
+            };
         if !session.has_attachment(&request.attachment_id) {
             return Some(Err(DaemonError::AttachmentNotInSession {
                 session_id: request.session_id.clone(),
@@ -2179,18 +2150,21 @@ impl CommandRouter {
     async fn projected_waiting_room_public_snapshot(
         &self,
     ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
-        let runtime_sessions = match self
-            .execute_cold_list_sessions_request(ListSessionsRequest)
-            .await?
-        {
-            LocalDaemonResponse::SessionsListed { sessions } => sessions,
-            _response => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "build waiting room inventory",
-                    message: format!("list sessions produced unexpected response `{}`", "unknown"),
-                });
-            }
-        };
+        let runtime_sessions =
+            match execute_list_sessions_request(&self.app, crate::local::ListSessionsRequest)
+                .await?
+            {
+                LocalDaemonResponse::SessionsListed { sessions } => sessions,
+                _response => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "build waiting room inventory",
+                        message: format!(
+                            "list sessions produced unexpected response `{}`",
+                            "unknown"
+                        ),
+                    });
+                }
+            };
         let relay_status = projected_relay_status_view(
             Arc::clone(&self.relay_state),
             self.config_projection.clone(),
@@ -2273,55 +2247,6 @@ impl CommandRouter {
         .await
     }
 
-    async fn execute_cold_list_sessions_request(
-        &self,
-        _request: ListSessionsRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let app = self.app.lock().await;
-        crate::app::KernelSessionReadService::new(&app).list_sessions_response()
-    }
-
-    async fn execute_cold_resolve_session_request(
-        &self,
-        request: ResolveSessionRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let app = self.app.lock().await;
-        crate::app::KernelSessionReadService::new(&app).resolve_session_response(request)
-    }
-
-    async fn execute_cold_get_session_state_request(
-        &self,
-        request: GetSessionStateRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let app = self.app.lock().await;
-        crate::app::KernelSessionReadService::new(&app).get_session_state_response(request)
-    }
-
-    fn projected_agent_activity(
-        &self,
-        session: &crate::session::RuntimeSession,
-    ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
-        let prompt_activity = self.prompt_activity.read();
-        let active_turns = self.active_turns.snapshot();
-        agent_activity_for_session_projection(
-            session,
-            |agent_id| {
-                self.provider_run_projection
-                    .get_for_agent(session.id(), agent_id)
-            },
-            &prompt_activity,
-            &active_turns,
-        )
-    }
-
-    async fn execute_cold_list_agents_request(
-        &self,
-        request: ListAgentsRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let app = self.app.lock().await;
-        crate::app::KernelSessionReadService::new(&app).list_agents_response(request)
-    }
-
     async fn execute_capability_request(
         &self,
         request: LocalDaemonRequest,
@@ -2350,21 +2275,6 @@ impl CommandRouter {
             kernel_id,
             deleted_sessions,
         })
-    }
-
-    fn projected_session_or_absence(
-        &self,
-        session_id: &str,
-    ) -> Option<Result<crate::session::RuntimeSession, DaemonError>> {
-        if let Some(session) = self.session_projection.get(session_id) {
-            return Some(Ok(session));
-        }
-        if self.session_projection.has_warmed_list() {
-            return Some(Err(DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            }));
-        }
-        None
     }
 
     async fn authorize_session_membership(
@@ -2637,13 +2547,13 @@ impl CommandRouter {
                     .await
             }
             LocalDaemonRequest::ListSessions(request) => {
-                self.execute_cold_list_sessions_request(request).await
+                execute_list_sessions_request(&self.app, request).await
             }
             LocalDaemonRequest::ResolveSession(request) => {
-                self.execute_cold_resolve_session_request(request).await
+                execute_resolve_session_request(&self.app, request).await
             }
             LocalDaemonRequest::GetSessionState(request) => {
-                self.execute_cold_get_session_state_request(request).await
+                execute_get_session_state_request(&self.app, request).await
             }
             LocalDaemonRequest::GetDaemonHealth(_) => Ok(LocalDaemonResponse::DaemonHealth {
                 projection: self.daemon_health_projection(0).await,
@@ -3124,7 +3034,7 @@ impl CommandRouter {
                     .await
             }
             LocalDaemonRequest::ListAgents(request) => {
-                self.execute_cold_list_agents_request(request).await
+                execute_list_agents_request(&self.app, request).await
             }
             request @ (LocalDaemonRequest::CreateWorkflow(_)
             | LocalDaemonRequest::ApplyWorkflowDesignOp(_)
