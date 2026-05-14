@@ -54,9 +54,7 @@ use crate::runtime::provider_process_control::{
 use crate::runtime::provider_run_control::{
     ensure_provider_run_visible_to_user, execute_provider_run_request,
 };
-use crate::runtime::relay_config_control::{
-    execute_configure_relay_request, projected_relay_status_response,
-};
+use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
 use crate::runtime::remote_machine_registry::execute_remote_machine_registry_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
@@ -819,10 +817,13 @@ impl CommandRouter {
             return response;
         }
         match &request {
-            LocalDaemonRequest::RelayStatus(_) => {
-                return projected_relay_status_response(
+            request @ LocalDaemonRequest::RelayStatus(_) => {
+                return execute_relay_config_request(
+                    &self.app,
                     Arc::clone(&self.relay_state),
-                    self.config_projection.clone(),
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    request.clone(),
                 )
                 .await;
             }
@@ -957,8 +958,8 @@ impl CommandRouter {
 
         let session_refresh = session_projection_refresh(&request);
         let result = match request {
-            LocalDaemonRequest::ConfigureRelay(request) => {
-                execute_configure_relay_request(
+            request @ LocalDaemonRequest::ConfigureRelay(_) => {
+                execute_relay_config_request(
                     &self.app,
                     Arc::clone(&self.relay_state),
                     &self.config_projection,
@@ -1281,15 +1282,18 @@ impl CommandRouter {
             | LocalDaemonRequest::ImportSkills(_)
             | LocalDaemonRequest::GetSkill(_)
             | LocalDaemonRequest::ListSkills(_)) => execute_capability_registry_request(request),
-            LocalDaemonRequest::RelayStatus(_) => {
-                projected_relay_status_response(
+            request @ LocalDaemonRequest::RelayStatus(_) => {
+                execute_relay_config_request(
+                    &self.app,
                     Arc::clone(&self.relay_state),
-                    self.config_projection.clone(),
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    request,
                 )
                 .await
             }
-            LocalDaemonRequest::ConfigureRelay(request) => {
-                execute_configure_relay_request(
+            request @ LocalDaemonRequest::ConfigureRelay(_) => {
+                execute_relay_config_request(
                     &self.app,
                     Arc::clone(&self.relay_state),
                     &self.config_projection,
