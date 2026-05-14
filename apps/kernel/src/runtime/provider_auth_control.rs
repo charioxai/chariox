@@ -3,9 +3,26 @@ use crate::local::provider_requests::{
     logout_provider_response, provider_auth_status_response, start_provider_login_response,
 };
 use crate::local::{
-    GetProviderAuthStatusRequest, LocalDaemonResponse, LogoutProviderRequest,
+    GetProviderAuthStatusRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
     StartProviderLoginRequest,
 };
+
+pub(crate) async fn execute_provider_auth_request(
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::GetProviderAuthStatus(request) => {
+            execute_get_provider_auth_status_request(request).await
+        }
+        LocalDaemonRequest::StartProviderLogin(request) => {
+            execute_start_provider_login_request(request).await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "provider auth request",
+            message: "unsupported provider auth request".to_string(),
+        }),
+    }
+}
 
 pub(crate) async fn execute_get_provider_auth_status_request(
     request: GetProviderAuthStatusRequest,

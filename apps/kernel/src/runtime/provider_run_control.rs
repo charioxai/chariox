@@ -5,11 +5,38 @@ use tokio::sync::Mutex;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
-    GetProviderRunRequest, LocalDaemonResponse, LogoutProviderRequest,
+    GetProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
     UpdateProviderRunSelectionRequest,
 };
 use crate::runtime::projection::ProviderCatalogProjectionStore;
 use crate::runtime::provider_auth_control::execute_logout_provider_request as execute_provider_logout;
+
+pub(crate) async fn execute_provider_run_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    provider_catalog_projection: &ProviderCatalogProjectionStore,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::GetProviderRun(request) => {
+            execute_get_provider_run_request(app, request).await
+        }
+        LocalDaemonRequest::UpdateProviderRunSelection(request) => {
+            execute_update_provider_run_selection_request(app, request).await
+        }
+        LocalDaemonRequest::LogoutProvider(request) => {
+            execute_logout_provider_and_invalidate_catalog_request(
+                app,
+                provider_catalog_projection,
+                request,
+            )
+            .await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "provider run request",
+            message: "unsupported provider run request".to_string(),
+        }),
+    }
+}
 
 pub(crate) async fn execute_get_provider_run_request(
     app: &Arc<Mutex<DaemonApp>>,

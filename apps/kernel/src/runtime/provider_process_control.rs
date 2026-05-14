@@ -8,7 +8,8 @@ use tokio::time::sleep;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
-    ListProviderProcessesRequest, LocalDaemonResponse, TeardownProviderProcessesRequest,
+    ListProviderProcessesRequest, LocalDaemonRequest, LocalDaemonResponse,
+    TeardownProviderProcessesRequest,
 };
 use crate::provider::ProviderProcessInfo;
 use crate::runtime::projection::{
@@ -19,6 +20,32 @@ use crate::session::RuntimeSession;
 pub(crate) struct ProviderProcessTeardown {
     pub(crate) processes: Vec<ProviderProcessInfo>,
     pub(crate) sessions: Vec<RuntimeSession>,
+}
+
+pub(crate) async fn execute_provider_process_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    session_projection: &SessionStateProjectionStore,
+    agent_runtime_projection: &AgentRuntimeProjectionStore,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::ListProviderProcesses(request) => {
+            execute_list_provider_processes_request(app, request).await
+        }
+        LocalDaemonRequest::TeardownProviderProcesses(request) => {
+            execute_teardown_provider_processes_request(
+                app,
+                session_projection,
+                agent_runtime_projection,
+                request,
+            )
+            .await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "provider process request",
+            message: "unsupported provider process request".to_string(),
+        }),
+    }
 }
 
 pub(crate) fn provider_processes_visible_to_user(

@@ -48,23 +48,18 @@ use crate::runtime::projection::{
     SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
-use crate::runtime::provider_auth_control::{
-    execute_get_provider_auth_status_request, execute_start_provider_login_request,
-};
+use crate::runtime::provider_auth_control::execute_provider_auth_request;
 use crate::runtime::provider_catalog_control::{
-    execute_get_provider_catalog_request, execute_get_provider_command_catalogs_request,
+    execute_get_provider_catalog_request, execute_provider_catalog_request,
 };
 use crate::runtime::provider_launch_executor::{
     ProviderLaunchCommandExecutor, ProviderLaunchPendingTracker,
 };
 use crate::runtime::provider_process_control::{
-    execute_list_provider_processes_request, execute_teardown_provider_processes_request,
-    provider_processes_visible_to_user_from_projection,
+    execute_provider_process_request, provider_processes_visible_to_user_from_projection,
 };
 use crate::runtime::provider_run_control::{
-    ensure_provider_run_visible_to_user, execute_get_provider_run_request,
-    execute_logout_provider_and_invalidate_catalog_request,
-    execute_update_provider_run_selection_request,
+    ensure_provider_run_visible_to_user, execute_provider_run_request,
 };
 use crate::runtime::relay_config_control::{
     execute_configure_relay_request, projected_relay_status_response,
@@ -923,7 +918,12 @@ impl CommandRouter {
                 .await;
             }
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
-                return execute_get_provider_command_catalogs_request();
+                return execute_provider_catalog_request(
+                    &self.provider_catalog_projection,
+                    &self.config_projection,
+                    request.clone(),
+                )
+                .await;
             }
             request @ (LocalDaemonRequest::InstallMcpServer(_)
             | LocalDaemonRequest::UpdateMcpServer(_)
@@ -1141,8 +1141,8 @@ impl CommandRouter {
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 self.terminal_output_executor.execute(request).await
             }
-            LocalDaemonRequest::TeardownProviderProcesses(request) => {
-                execute_teardown_provider_processes_request(
+            request @ LocalDaemonRequest::TeardownProviderProcesses(_) => {
+                execute_provider_process_request(
                     &self.app,
                     &self.session_projection,
                     &self.agent_runtime_projection,
@@ -1309,11 +1309,10 @@ impl CommandRouter {
             LocalDaemonRequest::GetDaemonHealth(_) => Ok(LocalDaemonResponse::DaemonHealth {
                 projection: self.daemon_health_projection(0).await,
             }),
-            LocalDaemonRequest::GetProviderRun(request) => {
-                execute_get_provider_run_request(&self.app, request).await
-            }
-            LocalDaemonRequest::UpdateProviderRunSelection(request) => {
-                execute_update_provider_run_selection_request(&self.app, request).await
+            request @ (LocalDaemonRequest::GetProviderRun(_)
+            | LocalDaemonRequest::UpdateProviderRunSelection(_)) => {
+                execute_provider_run_request(&self.app, &self.provider_catalog_projection, request)
+                    .await
             }
             request @ (LocalDaemonRequest::GetPromptInputHistory(_)
             | LocalDaemonRequest::RecordPromptInputHistory(_)) => {
@@ -1338,15 +1337,14 @@ impl CommandRouter {
             | LocalDaemonRequest::GetSliceDisplayEndpoint(_)) => {
                 execute_slice_request(&self.app, &self.config_projection, request).await
             }
-            LocalDaemonRequest::GetProviderCatalog(_) => {
-                execute_get_provider_catalog_request(
+            request @ (LocalDaemonRequest::GetProviderCatalog(_)
+            | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => {
+                execute_provider_catalog_request(
                     &self.provider_catalog_projection,
                     &self.config_projection,
+                    request,
                 )
                 .await
-            }
-            LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
-                execute_get_provider_command_catalogs_request()
             }
             request @ (LocalDaemonRequest::InstallMcpServer(_)
             | LocalDaemonRequest::UpdateMcpServer(_)
@@ -1530,25 +1528,17 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::GetProviderAuthStatus(request) => {
-                execute_get_provider_auth_status_request(request).await
+            request @ (LocalDaemonRequest::GetProviderAuthStatus(_)
+            | LocalDaemonRequest::StartProviderLogin(_)) => {
+                execute_provider_auth_request(request).await
             }
-            LocalDaemonRequest::StartProviderLogin(request) => {
-                execute_start_provider_login_request(request).await
+            request @ LocalDaemonRequest::LogoutProvider(_) => {
+                execute_provider_run_request(&self.app, &self.provider_catalog_projection, request)
+                    .await
             }
-            LocalDaemonRequest::LogoutProvider(request) => {
-                execute_logout_provider_and_invalidate_catalog_request(
-                    &self.app,
-                    &self.provider_catalog_projection,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::ListProviderProcesses(request) => {
-                execute_list_provider_processes_request(&self.app, request).await
-            }
-            LocalDaemonRequest::TeardownProviderProcesses(request) => {
-                execute_teardown_provider_processes_request(
+            request @ (LocalDaemonRequest::ListProviderProcesses(_)
+            | LocalDaemonRequest::TeardownProviderProcesses(_)) => {
+                execute_provider_process_request(
                     &self.app,
                     &self.session_projection,
                     &self.agent_runtime_projection,

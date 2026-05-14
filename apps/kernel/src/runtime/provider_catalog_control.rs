@@ -2,8 +2,28 @@ use crate::error::DaemonError;
 use crate::local::provider_requests::{
     load_provider_catalog, provider_command_catalogs_response, PROVIDER_CATALOG_CACHE_TTL,
 };
-use crate::local::LocalDaemonResponse;
+use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
+
+pub(crate) async fn execute_provider_catalog_request(
+    provider_catalog_projection: &ProviderCatalogProjectionStore,
+    config_projection: &DaemonConfigProjectionStore,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::GetProviderCatalog(_) => {
+            execute_get_provider_catalog_request(provider_catalog_projection, config_projection)
+                .await
+        }
+        LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
+            execute_get_provider_command_catalogs_request()
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "provider catalog request",
+            message: "unsupported provider catalog request".to_string(),
+        }),
+    }
+}
 
 pub(crate) async fn execute_get_provider_catalog_request(
     provider_catalog_projection: &ProviderCatalogProjectionStore,
