@@ -16,6 +16,7 @@ pub mod workflow_actor;
 pub mod workspace_coordinator;
 pub(crate) mod workspace_git_changes;
 pub(crate) mod workspace_git_common;
+pub(crate) mod workspace_git_overview;
 pub mod workspace_identity_monitor;
 pub(crate) mod workspace_repo_files;
 pub(crate) mod workspace_search;
