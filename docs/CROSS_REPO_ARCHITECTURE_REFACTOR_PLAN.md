@@ -15,10 +15,10 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 2026-05-14:
 
 - Cloud API boundary split is in place: `server.ts` is route composition; relay-kernel bootstrap delegates to service-layer target selection/token minting; route/helper/contract files are domain-owned.
-- Cloud web has responsibility modules for browser kernel transport, waiting-room projection/state, workflow route state, history, prompt, output, sidebar, workspace, capabilities, and terminal record/state. `client.ts` is still the main coordinator and is 11,343 lines.
-- OSS protocol/client split is started; kernel transport frames/events and many router executors are responsibility modules. `runtime/router.rs` is still the main command router and is 10,250 lines.
-- Latest verified slices: OSS remote relay inventory projection moved to `runtime/remote_relay_inventory.rs`; Cloud sidebar agent config update policy moved to `terminal/sidebar-agent-config-update.ts`.
-- Latest focused gates passed: `cargo test --manifest-path apps/kernel/Cargo.toml --lib -- --test-threads=1` (728 tests) and `pnpm --filter @arroba-cloud/web test` (573 tests).
+- Cloud web has responsibility modules for browser kernel transport, waiting-room projection/state, workflow route state, history, prompt, output, sidebar, workspace, capabilities, terminal records, and freeform dialog projection. `client.ts` is still the main coordinator and is 11,238 lines.
+- OSS protocol/client split is started; kernel transport frames/events and many router executors are responsibility modules. `runtime/router.rs` is still the main command router and is 10,060 lines.
+- Latest verified slices: OSS agent utility execution moved to `runtime/agent_utility_executor.rs`; Cloud freeform spawn/substitute dialog projection moved to `terminal/freeform-agent-dialog-projection.ts`.
+- Latest focused gates passed: `cargo test --manifest-path apps/kernel/Cargo.toml --lib -- --test-threads=1` (729 tests) and `pnpm --filter @arroba-cloud/web test` (578 tests).
 
 ## Responsibility Rule
 
