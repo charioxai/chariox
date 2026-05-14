@@ -28,6 +28,13 @@ native-TUI-origin and Arroba-TUI-origin attachments with two provider-native
 TUIs plus one Arroba observer in the same session. These are not yet the full
 standard home-worker or home-managed slice topologies.
 
+2026-05-14 permissions update: local Codex/OpenCode mixed native TUI
+permission drills pass in both directions. Claude local permissions use an
+origin-aware contract: permissions for prompts entered in Claude Code's native
+TUI stay in Claude Code's native permission UI, while permissions for prompts
+entered from an Arroba TUI are bridged into Arroba and can be answered there.
+This keeps the initiating CLI in control of the user-facing permission prompt.
+
 ## Goal
 
 Validate and complete native TUI parity across the three providers and three
@@ -76,9 +83,12 @@ Prompt/turns:
 
 Permissions:
 
-- Local Codex/OpenCode: covered historically, but must be rerun and treated as
-  untrusted until the current native TUI permission contract is reconfirmed.
-- Local Claude: not covered by a dedicated permission drill.
+- Local Codex/OpenCode: covered by `live-native-tui-permission-drill.mjs` in
+  both native-TUI-origin and Arroba-TUI-origin directions.
+- Local Claude: product behavior is implemented with origin-aware permission
+  ownership. Claude-origin prompts defer to Claude Code's native permission UI;
+  Arroba-origin prompts bridge the permission interaction into Arroba. Dedicated
+  automated coverage still needs a deterministic native-Claude approval driver.
 - Standard remote and slice: not covered for all three providers in this native
   TUI matrix.
 
@@ -154,11 +164,12 @@ Provider notes:
      standard remote and home-managed slice remain to be added.
 
 3. Revisit local permissions for all providers.
-   - Rerun Codex/OpenCode local native TUI permissions.
-   - Fix Codex if approval requests do not surface or resolve correctly through
-     Arroba.
-   - Add Claude local native TUI permission coverage. If Claude permissions can
-     only be answered in the native TUI, document that as the contract.
+   - Codex/OpenCode local native TUI permissions pass in both directions.
+   - Claude local permissions are origin-aware: Claude-origin permissions stay
+     native; Arroba-origin permissions bridge into Arroba.
+   - Remaining work: add deterministic automated coverage for the Claude
+     native-origin permission path without relying on provider reasoning to
+     choose a tool call.
 
 4. Implement and validate local Claude prompt attachments.
    - Validate Arroba-origin attachments into Claude native TUI mode.
@@ -188,12 +199,14 @@ Legend:
 - `pass`: validated in current code
 - `gap`: not validated or not implemented
 - `recheck`: previously passed, but must be rerun after the native TUI cleanup
+- `partial`: implemented or manually confirmed, but missing complete automated
+  live-drill coverage
 
 | Scenario | Provider | Prompt/turns | Permissions | Attachments | MCP/skills |
 | --- | --- | --- | --- | --- | --- |
-| local | Codex | pass | recheck | pass | gap |
-| local | OpenCode | pass | recheck | pass | gap |
-| local | Claude | pass | gap | gap | gap |
+| local | Codex | pass | pass | pass | gap |
+| local | OpenCode | pass | pass | pass | gap |
+| local | Claude | pass | partial | gap | gap |
 | standard remote | Codex | gap | gap | gap | gap |
 | standard remote | OpenCode | gap | gap | gap | gap |
 | standard remote | Claude | gap | gap | gap | gap |
