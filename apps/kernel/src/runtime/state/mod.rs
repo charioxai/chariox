@@ -101,6 +101,7 @@ mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;
 #[cfg(test)]
 mod provider_output_runtime_tests;
+mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod remote_prompt_dispatch_runtime;
 mod remote_prompt_lifecycle_runtime;
