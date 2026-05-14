@@ -2,6 +2,18 @@
 
 use super::super::*;
 
+mod mutation;
+mod read;
+mod text;
+
+pub(super) type ForwardedManagedIoResult = Result<
+    (
+        crate::transport::runtime_tools::RuntimeToolResult,
+        Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>,
+    ),
+    DaemonError,
+>;
+
 impl KernelRuntimeState {
     pub(crate) async fn dispatch_forwarded_managed_io_runtime_tool_call(
         &self,
@@ -9,13 +21,7 @@ impl KernelRuntimeState {
         tool_name: String,
         arguments: serde_json::Value,
         artifact_states: Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>,
-    ) -> Result<
-        (
-            crate::transport::runtime_tools::RuntimeToolResult,
-            Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>,
-        ),
-        DaemonError,
-    > {
+    ) -> ForwardedManagedIoResult {
         let session = self
             .owned
             .session_store
@@ -26,18 +32,7 @@ impl KernelRuntimeState {
             &home_identity,
             &context.worker_workspace_identity,
         ) {
-            let result = crate::transport::runtime_tools::RuntimeToolResult {
-                ok: false,
-                payload: serde_json::json!({
-                    "applied": false,
-                    "reason": {
-                        "kind": "remote_workspace_not_coordinated",
-                        "message": "The remote agent workspace does not match the home session repo/branch, so Arroba will not coordinate this managed I/O operation through the home kernel."
-                    },
-                    "next_action": "Move the remote agent to the same repo and branch as the home session, then retry through Arroba managed I/O.",
-                }),
-            };
-            return Ok((result, Vec::new()));
+            return Ok(remote_workspace_not_coordinated_result());
         }
         let workspace_context = ManagedIoWorkspaceContext {
             root: home_root,
@@ -63,370 +58,100 @@ impl KernelRuntimeState {
         }
         let mut coordinator = self.owned.managed_io_coordinator.lock().await;
         match tool_name.as_str() {
-            crate::transport::runtime_tools::READ_ARTIFACT_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::ManagedReadArtifactArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "forwarded_managed_io_read_artifact",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let domain =
-                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
-                let state =
-                    remote_managed_io_state_for_path(&artifact_states, &PathBuf::from(&args.path))
-                        .ok_or_else(|| DaemonError::LocalTransport {
-                            operation: "forwarded_managed_io_read_artifact",
-                            message: "missing forwarded artifact state".to_string(),
-                        })?;
-                let content = remote_managed_io_content_from_state(state, domain)?;
-                let read = coordinator.read_artifact(crate::io::ArtifactReadRequest {
-                    workspace_identity: context.worker_workspace_identity,
-                    path: PathBuf::from(args.path),
-                    domain,
-                    content,
-                });
-                let mut payload = managed_io_read_payload(read);
-                add_managed_io_workspace_payload(&mut payload, &workspace_context);
-                Ok((
-                    crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload },
-                    Vec::new(),
-                ))
-            }
-            crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::ManagedEditArtifactArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "forwarded_managed_io_edit_artifact",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let domain =
-                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
-                if domain != crate::io::ArtifactDomainKind::TextDocument {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "forwarded_managed_io_edit_artifact",
-                        message: "remote managed edit currently supports only text artifacts"
-                            .to_string(),
-                    });
-                }
-                let operation = managed_io_edit_operation_from_args(args.clone())?;
-                let path = PathBuf::from(args.path.clone());
-                let state =
-                    remote_managed_io_state_for_path(&artifact_states, &path).ok_or_else(|| {
-                        DaemonError::LocalTransport {
-                            operation: "forwarded_managed_io_edit_artifact",
-                            message: "missing forwarded artifact state".to_string(),
-                        }
-                    })?;
-                let before = remote_managed_io_text_snapshot_from_state(state);
-                coordinator.read_artifact(crate::io::ArtifactReadRequest {
-                    workspace_identity: context.worker_workspace_identity.clone(),
-                    path: path.clone(),
-                    domain,
-                    content: remote_managed_io_content_from_state(state, domain)?,
-                });
-                let reservation = match managed_io_try_reserve_ranges(
-                    &mut coordinator,
-                    &context.worker_workspace_identity,
-                    &path,
-                    managed_io_reservation_ranges_for_operation(
-                        &operation,
-                        before.as_ref(),
-                        crate::io::TextRange::new(0, usize::MAX),
-                    ),
-                    crate::io::ArtifactReservationOwner::new(
-                        format!("remote:{}", context.worker_provider_run_id),
-                        Some(context.home_agent_id.clone()),
-                        tool_name.clone(),
-                    ),
-                ) {
-                    Ok(reservation) => reservation,
-                    Err(mut result) => {
-                        add_managed_io_workspace_payload(&mut result.payload, &workspace_context);
-                        return Ok((result, Vec::new()));
-                    }
-                };
-                let result = coordinator.apply_edit(crate::io::ArtifactWriteRequest {
-                    workspace_identity: context.worker_workspace_identity,
-                    intent: crate::io::AgentEditIntent {
-                        path: path.clone(),
-                        snapshot_id: managed_io_snapshot_id_from_arg(args.snapshot_id.clone()),
-                        operation,
-                    },
-                });
-                coordinator.release_reservation(reservation);
-                let after = managed_io_result_applied(&result)
-                    .then(|| {
-                        let artifact_id =
-                            coordinator.resolve_artifact_id(&workspace_context.identity, &path);
-                        coordinator
-                            .current_content(&artifact_id)
-                            .and_then(|content| content.as_text().map(str::to_string))
-                            .map(|text| ManagedIoTextSnapshot {
-                                existed: true,
-                                text,
-                            })
-                    })
-                    .flatten();
-                let final_states = after
-                    .as_ref()
-                    .map(|after| vec![remote_managed_io_state(&path, Some(after.text.clone()))])
-                    .unwrap_or_default();
-                let mut output = managed_io_edit_result(
-                    result,
-                    ManagedIoChangeContext {
-                        path,
-                        before,
-                        after,
-                    },
-                    None,
-                );
-                add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
-                Ok((output, final_states))
-            }
-            crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::ManagedWriteArtifactArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "forwarded_managed_io_write_artifact",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let domain =
-                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
-                let path = PathBuf::from(args.path.clone());
-                let state =
-                    remote_managed_io_state_for_path(&artifact_states, &path).ok_or_else(|| {
-                        DaemonError::LocalTransport {
-                            operation: "forwarded_managed_io_write_artifact",
-                            message: "missing forwarded artifact state".to_string(),
-                        }
-                    })?;
-                let before = remote_managed_io_text_snapshot_from_state(state);
-                coordinator.read_artifact(crate::io::ArtifactReadRequest {
-                    workspace_identity: context.worker_workspace_identity.clone(),
-                    path: path.clone(),
-                    domain,
-                    content: remote_managed_io_content_from_state(state, domain)?,
-                });
-                let reservation = match managed_io_try_reserve_ranges(
-                    &mut coordinator,
-                    &context.worker_workspace_identity,
-                    &path,
-                    vec![crate::io::TextRange::new(0, usize::MAX)],
-                    crate::io::ArtifactReservationOwner::new(
-                        format!("remote:{}", context.worker_provider_run_id),
-                        Some(context.home_agent_id.clone()),
-                        tool_name.clone(),
-                    ),
-                ) {
-                    Ok(reservation) => reservation,
-                    Err(mut result) => {
-                        add_managed_io_workspace_payload(&mut result.payload, &workspace_context);
-                        return Ok((result, Vec::new()));
-                    }
-                };
-                let result = coordinator.apply_edit(crate::io::ArtifactWriteRequest {
-                    workspace_identity: context.worker_workspace_identity,
-                    intent: crate::io::AgentEditIntent {
-                        path: path.clone(),
-                        snapshot_id: managed_io_write_snapshot_id_from_arg(
-                            args.snapshot_id.clone(),
-                            &path,
-                        ),
-                        operation: crate::io::AgentEditOperation::WriteArtifact {
-                            content: managed_io_write_content_from_args(
-                                "forwarded_managed_io_write_artifact",
-                                domain,
-                                &args,
-                            )?,
-                        },
-                    },
-                });
-                coordinator.release_reservation(reservation);
-                let (after, final_states) = if managed_io_result_applied(&result) {
-                    let artifact_id =
-                        coordinator.resolve_artifact_id(&workspace_context.identity, &path);
-                    let content = coordinator.current_content(&artifact_id).cloned();
-                    let after = content.as_ref().and_then(|content| match content {
-                        crate::io::ArtifactContent::Text(text) => Some(ManagedIoTextSnapshot {
-                            existed: true,
-                            text: text.clone(),
-                        }),
-                        crate::io::ArtifactContent::Bytes(_) => None,
-                    });
-                    let final_states = content
-                        .map(|content| {
-                            vec![remote_managed_io_state_from_content_with_domain(
-                                &path,
-                                Some(content),
-                                domain,
-                            )]
-                        })
-                        .unwrap_or_default();
-                    (after, final_states)
-                } else {
-                    (None, Vec::new())
-                };
-                let mut output = managed_io_edit_result(
-                    result,
-                    ManagedIoChangeContext {
-                        path,
-                        before,
-                        after,
-                    },
-                    None,
-                );
-                add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
-                Ok((output, final_states))
-            }
+            crate::transport::runtime_tools::READ_ARTIFACT_TOOL => read::dispatch_forwarded_read(
+                &mut coordinator,
+                &context,
+                arguments,
+                &artifact_states,
+                &workspace_context,
+            ),
+            crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL => text::dispatch_forwarded_edit(
+                &mut coordinator,
+                &context,
+                tool_name.as_str(),
+                arguments,
+                &artifact_states,
+                &workspace_context,
+            ),
+            crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL => text::dispatch_forwarded_write(
+                &mut coordinator,
+                &context,
+                tool_name.as_str(),
+                arguments,
+                &artifact_states,
+                &workspace_context,
+            ),
             crate::transport::runtime_tools::APPLY_PATCH_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::ManagedApplyPatchArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "forwarded_managed_io_apply_patch",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let domain =
-                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
-                if domain != crate::io::ArtifactDomainKind::TextDocument {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "forwarded_managed_io_apply_patch",
-                        message:
-                            "remote managed apply_patch currently supports only text artifacts"
-                                .to_string(),
-                    });
-                }
-                let operations = parse_managed_apply_patch(&args.patch_text)?;
-                apply_remote_managed_patch_operations(
+                mutation::dispatch_forwarded_apply_patch(
                     &mut coordinator,
-                    context.worker_workspace_identity,
-                    domain,
-                    operations,
+                    &context,
+                    tool_name.as_str(),
+                    arguments,
                     artifact_states,
-                    crate::io::ArtifactReservationOwner::new(
-                        format!("remote:{}", context.worker_provider_run_id),
-                        Some(context.home_agent_id),
-                        tool_name,
-                    ),
                     &workspace_context,
                 )
             }
             crate::transport::runtime_tools::DELETE_ARTIFACT_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::ManagedDeleteArtifactArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "forwarded_managed_io_delete_artifact",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let domain =
-                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
-                if domain == crate::io::ArtifactDomainKind::TextDocument {
-                    apply_remote_managed_patch_operations(
-                        &mut coordinator,
-                        context.worker_workspace_identity,
-                        domain,
-                        vec![ManagedPatchOperation::Delete {
-                            path: PathBuf::from(args.path),
-                        }],
-                        artifact_states,
-                        crate::io::ArtifactReservationOwner::new(
-                            format!("remote:{}", context.worker_provider_run_id),
-                            Some(context.home_agent_id),
-                            tool_name,
-                        ),
-                        &workspace_context,
-                    )
-                } else {
-                    apply_remote_managed_whole_file_operations(
-                        &mut coordinator,
-                        context.worker_workspace_identity,
-                        domain,
-                        vec![ManagedWholeFileOperation::Delete {
-                            path: PathBuf::from(args.path),
-                        }],
-                        artifact_states,
-                        crate::io::ArtifactReservationOwner::new(
-                            format!("remote:{}", context.worker_provider_run_id),
-                            Some(context.home_agent_id),
-                            tool_name,
-                        ),
-                        &workspace_context,
-                    )
-                }
+                mutation::dispatch_forwarded_delete(
+                    &mut coordinator,
+                    &context,
+                    tool_name.as_str(),
+                    arguments,
+                    artifact_states,
+                    &workspace_context,
+                )
             }
             crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::ManagedMoveArtifactArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "forwarded_managed_io_move_artifact",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let domain =
-                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
-                let (old_text, new_text) = args.normalized_text_transform_fields();
-                if domain == crate::io::ArtifactDomainKind::TextDocument {
-                    apply_remote_managed_patch_operations(
-                        &mut coordinator,
-                        context.worker_workspace_identity,
-                        domain,
-                        vec![ManagedPatchOperation::Move {
-                            from_path: PathBuf::from(args.from_path),
-                            to_path: PathBuf::from(args.to_path),
-                            old_text,
-                            new_text,
-                        }],
-                        artifact_states,
-                        crate::io::ArtifactReservationOwner::new(
-                            format!("remote:{}", context.worker_provider_run_id),
-                            Some(context.home_agent_id),
-                            tool_name,
-                        ),
-                        &workspace_context,
-                    )
-                } else {
-                    if args.has_non_text_transform_fields() {
-                        return Err(DaemonError::LocalTransport {
-                            operation: "forwarded_managed_io_move_artifact",
-                            message: "non-text managed moves cannot transform content; omit old_text and new_text".to_string(),
-                        });
-                    }
-                    apply_remote_managed_whole_file_operations(
-                        &mut coordinator,
-                        context.worker_workspace_identity,
-                        domain,
-                        vec![ManagedWholeFileOperation::Move {
-                            from_path: PathBuf::from(args.from_path),
-                            to_path: PathBuf::from(args.to_path),
-                        }],
-                        artifact_states,
-                        crate::io::ArtifactReservationOwner::new(
-                            format!("remote:{}", context.worker_provider_run_id),
-                            Some(context.home_agent_id),
-                            tool_name,
-                        ),
-                        &workspace_context,
-                    )
-                }
+                mutation::dispatch_forwarded_move(
+                    &mut coordinator,
+                    &context,
+                    tool_name.as_str(),
+                    arguments,
+                    artifact_states,
+                    &workspace_context,
+                )
             }
-            _ => Ok((
-                crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: false,
-                    payload: serde_json::json!({
-                        "applied": false,
-                        "reason": {
-                            "kind": "unsupported_remote_managed_io_tool",
-                            "message": format!("remote coordinated managed I/O does not yet support `{tool_name}`")
-                        },
-                        "next_action": "Use arroba.read_artifact, arroba.edit_artifact, or arroba.write_artifact for remote coordinated text edits until patch/move/delete remote routing lands.",
-                    }),
-                },
-                Vec::new(),
-            )),
+            _ => Ok(unsupported_remote_managed_io_tool(&tool_name)),
         }
     }
+}
+
+fn remote_workspace_not_coordinated_result() -> (
+    crate::transport::runtime_tools::RuntimeToolResult,
+    Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>,
+) {
+    let result = crate::transport::runtime_tools::RuntimeToolResult {
+        ok: false,
+        payload: serde_json::json!({
+            "applied": false,
+            "reason": {
+                "kind": "remote_workspace_not_coordinated",
+                "message": "The remote agent workspace does not match the home session repo/branch, so Arroba will not coordinate this managed I/O operation through the home kernel."
+            },
+            "next_action": "Move the remote agent to the same repo and branch as the home session, then retry through Arroba managed I/O.",
+        }),
+    };
+    (result, Vec::new())
+}
+
+fn unsupported_remote_managed_io_tool(
+    tool_name: &str,
+) -> (
+    crate::transport::runtime_tools::RuntimeToolResult,
+    Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>,
+) {
+    (
+        crate::transport::runtime_tools::RuntimeToolResult {
+            ok: false,
+            payload: serde_json::json!({
+                "applied": false,
+                "reason": {
+                    "kind": "unsupported_remote_managed_io_tool",
+                    "message": format!("remote coordinated managed I/O does not yet support `{tool_name}`")
+                },
+                "next_action": "Use arroba.read_artifact, arroba.edit_artifact, or arroba.write_artifact for remote coordinated text edits until patch/move/delete remote routing lands.",
+            }),
+        },
+        Vec::new(),
+    )
 }
