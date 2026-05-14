@@ -165,6 +165,7 @@ Documentation updates for this refactor are progress artifacts. Do not leave dir
 - 2026-05-14: Cloud terminal context-meter usage and state projection moved into `terminal-context-usage.ts`; web tests pass with 517 tests and `client.ts` is down to 12,404 lines.
 - 2026-05-14: OSS semantic-history utility prompt/output parsing moved into `runtime/semantic_history_utility.rs`; kernel lib tests pass with 721 tests and `runtime/router.rs` is down to 11,655 lines.
 - 2026-05-14: Cloud kernel response envelope/field parsing moved into `terminal/kernel-response-parsing.ts`; web tests pass with 522 tests and `client.ts` is down to 12,321 lines.
+- 2026-05-14: Cloud freeform provider/model/variant and footer config projection moved into `terminal/freeform-config-projection.ts`; web tests pass with 528 tests and `client.ts` is down to 12,138 lines.
 
 ## Summary
 
