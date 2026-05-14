@@ -115,14 +115,7 @@ use crate::runtime::waiting_room_control::{
     waiting_room_inventory_version,
 };
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
-use crate::runtime::workspace_command_executor::{
-    execute_commit_and_push_workspace_changes_request, execute_commit_workspace_changes_request,
-    execute_create_workspace_directory_request, execute_create_workspace_pull_request_request,
-    execute_create_workspace_worktree_request, execute_delete_workspace_worktree_request,
-    execute_get_workspace_file_content_request, execute_get_workspace_git_overview_request,
-    execute_list_workspace_files_request, execute_list_workspace_worktrees_request,
-    execute_push_workspace_branch_request, execute_search_workspace_directories_request,
-};
+use crate::runtime::workspace_command_executor::execute_workspace_command_request;
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::session::{PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
@@ -908,37 +901,24 @@ impl CommandRouter {
                 )
                 .await;
             }
-            LocalDaemonRequest::SearchWorkspaceDirectories(request) => {
-                return execute_search_workspace_directories_request(request.clone());
-            }
-            LocalDaemonRequest::CreateWorkspaceDirectory(request) => {
-                return execute_create_workspace_directory_request(request.clone());
-            }
-            LocalDaemonRequest::ListWorkspaceWorktrees(request) => {
-                return execute_list_workspace_worktrees_request(request.clone());
-            }
-            LocalDaemonRequest::CreateWorkspaceWorktree(request) => {
-                return execute_create_workspace_worktree_request(request.clone());
-            }
-            LocalDaemonRequest::DeleteWorkspaceWorktree(request) => {
-                return execute_delete_workspace_worktree_request(
-                    request.clone(),
-                    &self.session_projection,
+            request @ (LocalDaemonRequest::SearchWorkspaceDirectories(_)
+            | LocalDaemonRequest::CreateWorkspaceDirectory(_)
+            | LocalDaemonRequest::ListWorkspaceWorktrees(_)
+            | LocalDaemonRequest::CreateWorkspaceWorktree(_)
+            | LocalDaemonRequest::DeleteWorkspaceWorktree(_)
+            | LocalDaemonRequest::CreateWorkspacePullRequest(_)
+            | LocalDaemonRequest::GetWorkspaceGitOverview(_)
+            | LocalDaemonRequest::ListWorkspaceFiles(_)
+            | LocalDaemonRequest::GetWorkspaceFileContent(_)
+            | LocalDaemonRequest::CommitWorkspaceChanges(_)
+            | LocalDaemonRequest::PushWorkspaceBranch(_)
+            | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)) => {
+                return execute_workspace_command_request(
                     &self.app,
+                    &self.session_projection,
+                    request.clone(),
                 )
                 .await;
-            }
-            LocalDaemonRequest::CreateWorkspacePullRequest(request) => {
-                return execute_create_workspace_pull_request_request(request.clone());
-            }
-            LocalDaemonRequest::GetWorkspaceGitOverview(request) => {
-                return execute_get_workspace_git_overview_request(request.clone());
-            }
-            LocalDaemonRequest::ListWorkspaceFiles(request) => {
-                return execute_list_workspace_files_request(request.clone());
-            }
-            LocalDaemonRequest::GetWorkspaceFileContent(request) => {
-                return execute_get_workspace_file_content_request(request.clone());
             }
             LocalDaemonRequest::RunAgentUtility(request) => {
                 return execute_run_agent_utility_request(
@@ -955,15 +935,6 @@ impl CommandRouter {
                     request.clone(),
                 )
                 .await;
-            }
-            LocalDaemonRequest::CommitWorkspaceChanges(request) => {
-                return execute_commit_workspace_changes_request(request.clone());
-            }
-            LocalDaemonRequest::PushWorkspaceBranch(request) => {
-                return execute_push_workspace_branch_request(request.clone());
-            }
-            LocalDaemonRequest::CommitAndPushWorkspaceChanges(request) => {
-                return execute_commit_and_push_workspace_changes_request(request.clone());
             }
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
                 return execute_get_provider_command_catalogs_request();
@@ -1578,37 +1549,20 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::SearchWorkspaceDirectories(request) => {
-                execute_search_workspace_directories_request(request)
-            }
-            LocalDaemonRequest::CreateWorkspaceDirectory(request) => {
-                execute_create_workspace_directory_request(request)
-            }
-            LocalDaemonRequest::ListWorkspaceWorktrees(request) => {
-                execute_list_workspace_worktrees_request(request)
-            }
-            LocalDaemonRequest::CreateWorkspaceWorktree(request) => {
-                execute_create_workspace_worktree_request(request)
-            }
-            LocalDaemonRequest::DeleteWorkspaceWorktree(request) => {
-                execute_delete_workspace_worktree_request(
-                    request,
-                    &self.session_projection,
-                    &self.app,
-                )
-                .await
-            }
-            LocalDaemonRequest::CreateWorkspacePullRequest(request) => {
-                execute_create_workspace_pull_request_request(request)
-            }
-            LocalDaemonRequest::GetWorkspaceGitOverview(request) => {
-                execute_get_workspace_git_overview_request(request)
-            }
-            LocalDaemonRequest::ListWorkspaceFiles(request) => {
-                execute_list_workspace_files_request(request)
-            }
-            LocalDaemonRequest::GetWorkspaceFileContent(request) => {
-                execute_get_workspace_file_content_request(request)
+            request @ (LocalDaemonRequest::SearchWorkspaceDirectories(_)
+            | LocalDaemonRequest::CreateWorkspaceDirectory(_)
+            | LocalDaemonRequest::ListWorkspaceWorktrees(_)
+            | LocalDaemonRequest::CreateWorkspaceWorktree(_)
+            | LocalDaemonRequest::DeleteWorkspaceWorktree(_)
+            | LocalDaemonRequest::CreateWorkspacePullRequest(_)
+            | LocalDaemonRequest::GetWorkspaceGitOverview(_)
+            | LocalDaemonRequest::ListWorkspaceFiles(_)
+            | LocalDaemonRequest::GetWorkspaceFileContent(_)
+            | LocalDaemonRequest::CommitWorkspaceChanges(_)
+            | LocalDaemonRequest::PushWorkspaceBranch(_)
+            | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)) => {
+                execute_workspace_command_request(&self.app, &self.session_projection, request)
+                    .await
             }
             LocalDaemonRequest::RunAgentUtility(request) => {
                 execute_run_agent_utility_request(
@@ -1625,15 +1579,6 @@ impl CommandRouter {
                     request,
                 )
                 .await
-            }
-            LocalDaemonRequest::CommitWorkspaceChanges(request) => {
-                execute_commit_workspace_changes_request(request)
-            }
-            LocalDaemonRequest::PushWorkspaceBranch(request) => {
-                execute_push_workspace_branch_request(request)
-            }
-            LocalDaemonRequest::CommitAndPushWorkspaceChanges(request) => {
-                execute_commit_and_push_workspace_changes_request(request)
             }
             LocalDaemonRequest::ApproveRemoteMachine(request) => {
                 execute_approve_remote_machine_request(

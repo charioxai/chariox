@@ -9,7 +9,8 @@ use crate::local::{
     CreateWorkspaceDirectoryRequest, CreateWorkspacePullRequestRequest,
     CreateWorkspaceWorktreeRequest, DeleteWorkspaceWorktreeRequest, GetWorkspaceFileContentRequest,
     GetWorkspaceGitOverviewRequest, ListWorkspaceFilesRequest, ListWorkspaceWorktreesRequest,
-    LocalDaemonResponse, PushWorkspaceBranchRequest, SearchWorkspaceDirectoriesRequest,
+    LocalDaemonRequest, LocalDaemonResponse, PushWorkspaceBranchRequest,
+    SearchWorkspaceDirectoriesRequest,
 };
 use crate::runtime::projection::SessionStateProjectionStore;
 use crate::runtime::waiting_room_public_projection::infer_waiting_room_launch_target;
@@ -23,6 +24,55 @@ use crate::runtime::workspace_search::{create_workspace_directory, search_worksp
 use crate::runtime::workspace_worktrees::{
     create_waiting_room_worktree, delete_workspace_worktree, list_workspace_worktrees,
 };
+
+pub(crate) async fn execute_workspace_command_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    session_projection: &SessionStateProjectionStore,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::SearchWorkspaceDirectories(request) => {
+            execute_search_workspace_directories_request(request)
+        }
+        LocalDaemonRequest::CreateWorkspaceDirectory(request) => {
+            execute_create_workspace_directory_request(request)
+        }
+        LocalDaemonRequest::ListWorkspaceWorktrees(request) => {
+            execute_list_workspace_worktrees_request(request)
+        }
+        LocalDaemonRequest::CreateWorkspaceWorktree(request) => {
+            execute_create_workspace_worktree_request(request)
+        }
+        LocalDaemonRequest::DeleteWorkspaceWorktree(request) => {
+            execute_delete_workspace_worktree_request(request, session_projection, app).await
+        }
+        LocalDaemonRequest::CreateWorkspacePullRequest(request) => {
+            execute_create_workspace_pull_request_request(request)
+        }
+        LocalDaemonRequest::GetWorkspaceGitOverview(request) => {
+            execute_get_workspace_git_overview_request(request)
+        }
+        LocalDaemonRequest::ListWorkspaceFiles(request) => {
+            execute_list_workspace_files_request(request)
+        }
+        LocalDaemonRequest::GetWorkspaceFileContent(request) => {
+            execute_get_workspace_file_content_request(request)
+        }
+        LocalDaemonRequest::CommitWorkspaceChanges(request) => {
+            execute_commit_workspace_changes_request(request)
+        }
+        LocalDaemonRequest::PushWorkspaceBranch(request) => {
+            execute_push_workspace_branch_request(request)
+        }
+        LocalDaemonRequest::CommitAndPushWorkspaceChanges(request) => {
+            execute_commit_and_push_workspace_changes_request(request)
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "workspace request",
+            message: "unsupported workspace request".to_string(),
+        }),
+    }
+}
 
 pub(crate) fn execute_search_workspace_directories_request(
     request: SearchWorkspaceDirectoriesRequest,
