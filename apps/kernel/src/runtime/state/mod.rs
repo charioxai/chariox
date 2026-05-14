@@ -29,6 +29,8 @@ use arroba_relay::protocol::ClientTarget;
 
 mod managed_io;
 use managed_io::*;
+mod managed_io_workspace_context;
+use managed_io_workspace_context::*;
 mod context_handoff;
 use context_handoff::*;
 mod provider_reload;
@@ -71,19 +73,6 @@ struct KernelRuntimeOwnedState {
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
-}
-
-#[derive(Default)]
-struct WorkflowPromptDispatches {
-    local: Vec<crate::app::KernelPromptDispatch>,
-    remote: Vec<crate::app::KernelRemotePromptDispatch>,
-}
-
-impl WorkflowPromptDispatches {
-    fn extend(&mut self, other: Self) {
-        self.local.extend(other.local);
-        self.remote.extend(other.remote);
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -168,14 +157,6 @@ impl PendingProviderReloadStore {
     }
 }
 
-struct ManagedIoWorkspaceContext {
-    root: PathBuf,
-    identity: crate::io::WorkspaceIdentity,
-    generation: u64,
-    identity_changed: bool,
-    valid: bool,
-}
-
 mod owned;
 mod prompt;
 mod prompt_dispatch;
@@ -186,6 +167,8 @@ mod tool_dispatch;
 mod workflow;
 mod workflow_admin;
 mod workflow_dispatch;
+mod workflow_prompt_dispatches;
+use workflow_prompt_dispatches::*;
 mod workflow_tool;
 
 impl KernelRuntimeState {
