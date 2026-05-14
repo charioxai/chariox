@@ -9,15 +9,66 @@ use crate::error::DaemonError;
 use crate::local::{
     AttachWorkspaceLinkRequest, CreateSessionInviteRequest, CreateWorkspaceLinkRequest,
     DetachWorkspaceLinkRequest, JoinSessionInviteRequest, ListSessionMembersRequest,
-    ListWorkspaceLinksRequest, LocalDaemonResponse, RevokeSessionInviteRequest,
+    ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse, RevokeSessionInviteRequest,
     SessionInviteRecord, ShowWorkspaceLinkRequest,
 };
 use crate::runtime::command::KernelCommand;
 use crate::runtime::invite_tokens::{
     decode_session_invite_token, encode_session_invite_token, SessionInviteToken,
 };
-use crate::runtime::projection::SessionStateProjectionStore;
+use crate::runtime::projection::{DaemonConfigProjectionStore, SessionStateProjectionStore};
 use crate::session::DEFAULT_LOCAL_USER_ID;
+
+pub(crate) async fn execute_session_collaboration_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    session_projection: &SessionStateProjectionStore,
+    config_projection: &DaemonConfigProjectionStore,
+    command: &KernelCommand,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::ListSessionMembers(request) => {
+            execute_list_session_members_request(app, request).await
+        }
+        LocalDaemonRequest::CreateSessionInvite(request) => {
+            execute_create_session_invite_request(app, session_projection, command, request).await
+        }
+        LocalDaemonRequest::JoinSessionInvite(request) => {
+            execute_join_session_invite_request(app, session_projection, request).await
+        }
+        LocalDaemonRequest::RevokeSessionInvite(request) => {
+            execute_revoke_session_invite_request(app, session_projection, request).await
+        }
+        LocalDaemonRequest::CreateWorkspaceLink(request) => {
+            execute_create_workspace_link_request(app, session_projection, command, request).await
+        }
+        LocalDaemonRequest::ListWorkspaceLinks(request) => {
+            execute_list_workspace_links_request(app, request).await
+        }
+        LocalDaemonRequest::ShowWorkspaceLink(request) => {
+            execute_show_workspace_link_request(app, request).await
+        }
+        LocalDaemonRequest::AttachWorkspaceLink(request) => {
+            let config = config_projection.snapshot();
+            execute_attach_workspace_link_request(
+                app,
+                session_projection,
+                command,
+                config.host_machine_id,
+                config.daemon_id,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::DetachWorkspaceLink(request) => {
+            execute_detach_workspace_link_request(app, session_projection, command, request).await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "session collaboration request",
+            message: "unsupported session collaboration request".to_string(),
+        }),
+    }
+}
 
 pub(crate) async fn execute_list_session_members_request(
     app: &Arc<Mutex<DaemonApp>>,

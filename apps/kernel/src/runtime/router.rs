@@ -94,13 +94,7 @@ use crate::runtime::remote_relay_inventory::{
 use crate::runtime::response_redaction::redact_response_for_user;
 use crate::runtime::runtime_mcp_proxy_dispatcher::dispatch_authenticated_mcp_proxy_call as dispatch_runtime_mcp_proxy_call;
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
-use crate::runtime::session_collaboration_executor::{
-    execute_attach_workspace_link_request, execute_create_session_invite_request,
-    execute_create_workspace_link_request, execute_detach_workspace_link_request,
-    execute_join_session_invite_request, execute_list_session_members_request,
-    execute_list_workspace_links_request, execute_revoke_session_invite_request,
-    execute_show_workspace_link_request,
-};
+use crate::runtime::session_collaboration_executor::execute_session_collaboration_request;
 use crate::runtime::session_membership::authorize_session_membership;
 use crate::runtime::session_projection_refresh::{
     apply_focus_projection_refresh, focus_projection_refresh, response_removed_session_ids,
@@ -1220,57 +1214,19 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::ListSessionMembers(request) => {
-                execute_list_session_members_request(&self.app, request).await
-            }
-            LocalDaemonRequest::CreateSessionInvite(request) => {
-                execute_create_session_invite_request(
+            request @ (LocalDaemonRequest::ListSessionMembers(_)
+            | LocalDaemonRequest::CreateSessionInvite(_)
+            | LocalDaemonRequest::JoinSessionInvite(_)
+            | LocalDaemonRequest::RevokeSessionInvite(_)
+            | LocalDaemonRequest::CreateWorkspaceLink(_)
+            | LocalDaemonRequest::ListWorkspaceLinks(_)
+            | LocalDaemonRequest::ShowWorkspaceLink(_)
+            | LocalDaemonRequest::AttachWorkspaceLink(_)
+            | LocalDaemonRequest::DetachWorkspaceLink(_)) => {
+                execute_session_collaboration_request(
                     &self.app,
                     &self.session_projection,
-                    &command,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::JoinSessionInvite(request) => {
-                execute_join_session_invite_request(&self.app, &self.session_projection, request)
-                    .await
-            }
-            LocalDaemonRequest::RevokeSessionInvite(request) => {
-                execute_revoke_session_invite_request(&self.app, &self.session_projection, request)
-                    .await
-            }
-            LocalDaemonRequest::CreateWorkspaceLink(request) => {
-                execute_create_workspace_link_request(
-                    &self.app,
-                    &self.session_projection,
-                    &command,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::ListWorkspaceLinks(request) => {
-                execute_list_workspace_links_request(&self.app, request).await
-            }
-            LocalDaemonRequest::ShowWorkspaceLink(request) => {
-                execute_show_workspace_link_request(&self.app, request).await
-            }
-            LocalDaemonRequest::AttachWorkspaceLink(request) => {
-                let config = self.config_projection.snapshot();
-                execute_attach_workspace_link_request(
-                    &self.app,
-                    &self.session_projection,
-                    &command,
-                    config.host_machine_id,
-                    config.daemon_id,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::DetachWorkspaceLink(request) => {
-                execute_detach_workspace_link_request(
-                    &self.app,
-                    &self.session_projection,
+                    &self.config_projection,
                     &command,
                     request,
                 )
@@ -1797,57 +1753,19 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::ListSessionMembers(request) => {
-                execute_list_session_members_request(&self.app, request).await
-            }
-            LocalDaemonRequest::CreateSessionInvite(request) => {
-                execute_create_session_invite_request(
+            request @ (LocalDaemonRequest::ListSessionMembers(_)
+            | LocalDaemonRequest::CreateSessionInvite(_)
+            | LocalDaemonRequest::JoinSessionInvite(_)
+            | LocalDaemonRequest::RevokeSessionInvite(_)
+            | LocalDaemonRequest::CreateWorkspaceLink(_)
+            | LocalDaemonRequest::ListWorkspaceLinks(_)
+            | LocalDaemonRequest::ShowWorkspaceLink(_)
+            | LocalDaemonRequest::AttachWorkspaceLink(_)
+            | LocalDaemonRequest::DetachWorkspaceLink(_)) => {
+                execute_session_collaboration_request(
                     &self.app,
                     &self.session_projection,
-                    &command,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::JoinSessionInvite(request) => {
-                execute_join_session_invite_request(&self.app, &self.session_projection, request)
-                    .await
-            }
-            LocalDaemonRequest::RevokeSessionInvite(request) => {
-                execute_revoke_session_invite_request(&self.app, &self.session_projection, request)
-                    .await
-            }
-            LocalDaemonRequest::CreateWorkspaceLink(request) => {
-                execute_create_workspace_link_request(
-                    &self.app,
-                    &self.session_projection,
-                    &command,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::ListWorkspaceLinks(request) => {
-                execute_list_workspace_links_request(&self.app, request).await
-            }
-            LocalDaemonRequest::ShowWorkspaceLink(request) => {
-                execute_show_workspace_link_request(&self.app, request).await
-            }
-            LocalDaemonRequest::AttachWorkspaceLink(request) => {
-                let config = self.config_projection.snapshot();
-                execute_attach_workspace_link_request(
-                    &self.app,
-                    &self.session_projection,
-                    &command,
-                    config.host_machine_id,
-                    config.daemon_id,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::DetachWorkspaceLink(request) => {
-                execute_detach_workspace_link_request(
-                    &self.app,
-                    &self.session_projection,
+                    &self.config_projection,
                     &command,
                     request,
                 )
