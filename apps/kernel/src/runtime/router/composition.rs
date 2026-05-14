@@ -5,17 +5,28 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::app::{DaemonApp, PromptActivityStore};
 use crate::history::{OperationalHistoryStore, SessionHistoryStore};
+use crate::provider::ProviderRunOperationLanes;
+use crate::runtime::agent_actor::AgentRuntime;
+use crate::runtime::capability_executor::{CapabilityExecutorHealthStore, CapabilityRuntimeStore};
+use crate::runtime::native_interaction_bridge::install_provider_native_interaction_bridge;
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
     ProviderProcessProjectionStore, ProviderRunProjectionStore,
     RemoteRelayInventoryProjectionStore, SessionHistoryProjectionStore,
-    SessionStateProjectionStore,
+    SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
+use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
+use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
+use crate::runtime::state::KernelRuntimeState;
+use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
+use crate::runtime::workflow_actor::WorkflowRuntime;
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::session::PromptIdAllocator;
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
+
+use super::CommandRouter;
 
 pub(super) struct RouterProjectionStores {
     pub(super) history_store: SessionHistoryStore,
@@ -86,5 +97,132 @@ pub(super) fn router_projection_stores(app: &Arc<Mutex<DaemonApp>>) -> RouterPro
         workspace_coordinator: app.workspace_coordinator(),
         prompt_state_owner: app.prompt_state_owner(),
         prompt_id_allocator: app.prompt_id_allocator(),
+    }
+}
+
+pub(super) fn compose_command_router(
+    app: Arc<Mutex<DaemonApp>>,
+    provider_runtime_lanes: ProviderRunOperationLanes,
+    session_capacity: usize,
+    transport_health: TransportHealthStore,
+) -> CommandRouter {
+    let focus_projection = FocusedAgentProjection::default();
+    let RouterProjectionStores {
+        history_store,
+        operational_history_store,
+        session_projection,
+        history_projection,
+        provider_catalog_projection,
+        provider_run_projection,
+        provider_process_projection,
+        remote_relay_inventory_projection,
+        agent_runtime_projection,
+        config_projection,
+        session_store,
+        agent_store,
+        attachment_store,
+        provider_store,
+        provider_process_tracking,
+        slice_store,
+        active_turns,
+        prompt_activity,
+        prompt_workspace_claims,
+        structured_output_records,
+        durable_state_store,
+        relay_state,
+        terminal_health,
+        terminal_stream,
+        workspace_coordinator,
+        prompt_state_owner,
+        prompt_id_allocator,
+    } = router_projection_stores(&app);
+    let runtime_state = KernelRuntimeState::new_with_owned_state(
+        Arc::clone(&app),
+        config_projection.clone(),
+        session_store.clone(),
+        agent_store.clone(),
+        attachment_store.clone(),
+        provider_store.clone(),
+        provider_process_tracking.clone(),
+        slice_store.clone(),
+        session_projection.clone(),
+        provider_run_projection.clone(),
+        history_store.clone(),
+        operational_history_store.clone(),
+        durable_state_store.clone(),
+        history_projection.clone(),
+        prompt_state_owner.clone(),
+        active_turns.clone(),
+        prompt_activity.clone(),
+        prompt_workspace_claims.clone(),
+        structured_output_records.clone(),
+        terminal_stream.clone(),
+        workspace_coordinator.clone(),
+    );
+    install_provider_native_interaction_bridge(
+        Arc::clone(&app),
+        runtime_state.clone(),
+        &provider_store,
+    );
+    let provider_launch_pending = ProviderLaunchPendingTracker::default();
+    let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
+    let agent_runtime = AgentRuntime::new(
+        runtime_state.clone(),
+        provider_runtime_lanes.clone(),
+        focus_projection.clone(),
+        session_projection.clone(),
+        agent_runtime_projection.clone(),
+        prompt_state_owner.clone(),
+        prompt_id_allocator.clone(),
+    );
+    let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        runtime_state.clone(),
+        session_capacity,
+        focus_projection.clone(),
+        session_projection.clone(),
+        agent_runtime_projection.clone(),
+        terminal_stream.clone(),
+    );
+    let workflow_runtime = WorkflowRuntime::new(
+        runtime_state.clone(),
+        session_projection.clone(),
+        agent_runtime_projection.clone(),
+    );
+    let terminal_output_executor = TerminalOutputExecutor::new(
+        runtime_state.clone(),
+        provider_runtime_lanes.clone(),
+        session_projection.clone(),
+        agent_runtime_projection.clone(),
+        provider_run_projection.clone(),
+        terminal_stream.clone(),
+    );
+    CommandRouter {
+        app,
+        runtime_state,
+        agent_runtime,
+        session_runtime,
+        workflow_runtime,
+        provider_runtime_lanes,
+        focus_projection,
+        session_projection,
+        agent_runtime_projection,
+        history_store,
+        operational_history_store,
+        history_projection,
+        provider_catalog_projection,
+        provider_run_projection,
+        provider_process_projection,
+        active_turns,
+        prompt_activity,
+        remote_relay_inventory_projection,
+        config_projection,
+        relay_state,
+        capability_health: CapabilityExecutorHealthStore::default(),
+        capability_runtime,
+        transport_health,
+        terminal_health,
+        terminal_output_executor,
+        workspace_coordinator,
+        provider_launch_pending,
     }
 }

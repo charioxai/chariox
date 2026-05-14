@@ -25,7 +25,6 @@ use crate::runtime::history_executor::{
 };
 use crate::runtime::interactive_command_dispatcher::dispatch_interactive_command;
 use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
-use crate::runtime::native_interaction_bridge::install_provider_native_interaction_bridge;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
@@ -77,7 +76,7 @@ mod relay_peer_bridge;
 mod runtime_tool_bridge;
 mod status_projection_bridge;
 
-use composition::{router_projection_stores, RouterProjectionStores};
+use composition::compose_command_router;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -132,126 +131,12 @@ impl CommandRouter {
         session_capacity: usize,
     ) -> Self {
         let _interactive_capacity = interactive_capacity;
-        let provider_runtime_lanes = ProviderRunOperationLanes::default();
-        let focus_projection = FocusedAgentProjection::default();
-        let RouterProjectionStores {
-            history_store,
-            operational_history_store,
-            session_projection,
-            history_projection,
-            provider_catalog_projection,
-            provider_run_projection,
-            provider_process_projection,
-            remote_relay_inventory_projection,
-            agent_runtime_projection,
-            config_projection,
-            session_store,
-            agent_store,
-            attachment_store,
-            provider_store,
-            provider_process_tracking,
-            slice_store,
-            active_turns,
-            prompt_activity,
-            prompt_workspace_claims,
-            structured_output_records,
-            durable_state_store,
-            relay_state,
-            terminal_health,
-            terminal_stream,
-            workspace_coordinator,
-            prompt_state_owner,
-            prompt_id_allocator,
-        } = router_projection_stores(&app);
-        let runtime_state = KernelRuntimeState::new_with_owned_state(
-            Arc::clone(&app),
-            config_projection.clone(),
-            session_store.clone(),
-            agent_store.clone(),
-            attachment_store.clone(),
-            provider_store.clone(),
-            provider_process_tracking.clone(),
-            slice_store.clone(),
-            session_projection.clone(),
-            provider_run_projection.clone(),
-            history_store.clone(),
-            operational_history_store.clone(),
-            durable_state_store.clone(),
-            history_projection.clone(),
-            prompt_state_owner.clone(),
-            active_turns.clone(),
-            prompt_activity.clone(),
-            prompt_workspace_claims.clone(),
-            structured_output_records.clone(),
-            terminal_stream.clone(),
-            workspace_coordinator.clone(),
-        );
-        install_provider_native_interaction_bridge(
-            Arc::clone(&app),
-            runtime_state.clone(),
-            &provider_store,
-        );
-        let provider_launch_pending = ProviderLaunchPendingTracker::default();
-        let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
-        let agent_runtime = AgentRuntime::new(
-            runtime_state.clone(),
-            provider_runtime_lanes.clone(),
-            focus_projection.clone(),
-            session_projection.clone(),
-            agent_runtime_projection.clone(),
-            prompt_state_owner.clone(),
-            prompt_id_allocator.clone(),
-        );
-        let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
-            runtime_state.clone(),
-            session_capacity,
-            focus_projection.clone(),
-            session_projection.clone(),
-            agent_runtime_projection.clone(),
-            terminal_stream.clone(),
-        );
-        let workflow_runtime = WorkflowRuntime::new(
-            runtime_state.clone(),
-            session_projection.clone(),
-            agent_runtime_projection.clone(),
-        );
-        let terminal_output_executor = TerminalOutputExecutor::new(
-            runtime_state.clone(),
-            provider_runtime_lanes.clone(),
-            session_projection.clone(),
-            agent_runtime_projection.clone(),
-            provider_run_projection.clone(),
-            terminal_stream.clone(),
-        );
-        Self {
+        compose_command_router(
             app,
-            runtime_state,
-            agent_runtime,
-            session_runtime,
-            workflow_runtime,
-            provider_runtime_lanes,
-            focus_projection,
-            session_projection,
-            agent_runtime_projection,
-            history_store,
-            operational_history_store,
-            history_projection,
-            provider_catalog_projection,
-            provider_run_projection,
-            provider_process_projection,
-            active_turns,
-            prompt_activity,
-            remote_relay_inventory_projection,
-            config_projection,
-            relay_state,
-            capability_health: CapabilityExecutorHealthStore::default(),
-            capability_runtime,
-            transport_health: TransportHealthStore::default(),
-            terminal_health,
-            terminal_output_executor,
-            workspace_coordinator,
-            provider_launch_pending,
-        }
+            ProviderRunOperationLanes::default(),
+            session_capacity,
+            TransportHealthStore::default(),
+        )
     }
 
     pub(crate) fn with_interactive_capacity_and_provider_lanes(
@@ -274,125 +159,12 @@ impl CommandRouter {
         transport_health: TransportHealthStore,
     ) -> Self {
         let _interactive_capacity = interactive_capacity;
-        let focus_projection = FocusedAgentProjection::default();
-        let RouterProjectionStores {
-            history_store,
-            operational_history_store,
-            session_projection,
-            history_projection,
-            provider_catalog_projection,
-            provider_run_projection,
-            provider_process_projection,
-            remote_relay_inventory_projection,
-            agent_runtime_projection,
-            config_projection,
-            session_store,
-            agent_store,
-            attachment_store,
-            provider_store,
-            provider_process_tracking,
-            slice_store,
-            active_turns,
-            prompt_activity,
-            prompt_workspace_claims,
-            structured_output_records,
-            durable_state_store,
-            relay_state,
-            terminal_health,
-            terminal_stream,
-            workspace_coordinator,
-            prompt_state_owner,
-            prompt_id_allocator,
-        } = router_projection_stores(&app);
-        let runtime_state = KernelRuntimeState::new_with_owned_state(
-            Arc::clone(&app),
-            config_projection.clone(),
-            session_store.clone(),
-            agent_store.clone(),
-            attachment_store.clone(),
-            provider_store.clone(),
-            provider_process_tracking.clone(),
-            slice_store.clone(),
-            session_projection.clone(),
-            provider_run_projection.clone(),
-            history_store.clone(),
-            operational_history_store.clone(),
-            durable_state_store.clone(),
-            history_projection.clone(),
-            prompt_state_owner.clone(),
-            active_turns.clone(),
-            prompt_activity.clone(),
-            prompt_workspace_claims.clone(),
-            structured_output_records.clone(),
-            terminal_stream.clone(),
-            workspace_coordinator.clone(),
-        );
-        install_provider_native_interaction_bridge(
-            Arc::clone(&app),
-            runtime_state.clone(),
-            &provider_store,
-        );
-        let provider_launch_pending = ProviderLaunchPendingTracker::default();
-        let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
-        let agent_runtime = AgentRuntime::new(
-            runtime_state.clone(),
-            provider_runtime_lanes.clone(),
-            focus_projection.clone(),
-            session_projection.clone(),
-            agent_runtime_projection.clone(),
-            prompt_state_owner.clone(),
-            prompt_id_allocator.clone(),
-        );
-        let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
-            runtime_state.clone(),
-            crate::runtime::session_actor::SESSION_COMMAND_QUEUE_LIMIT,
-            focus_projection.clone(),
-            session_projection.clone(),
-            agent_runtime_projection.clone(),
-            terminal_stream.clone(),
-        );
-        let workflow_runtime = WorkflowRuntime::new(
-            runtime_state.clone(),
-            session_projection.clone(),
-            agent_runtime_projection.clone(),
-        );
-        let terminal_output_executor = TerminalOutputExecutor::new(
-            runtime_state.clone(),
-            provider_runtime_lanes.clone(),
-            session_projection.clone(),
-            agent_runtime_projection.clone(),
-            provider_run_projection.clone(),
-            terminal_stream.clone(),
-        );
-        Self {
+        compose_command_router(
             app,
-            runtime_state,
-            agent_runtime,
-            session_runtime,
-            workflow_runtime,
             provider_runtime_lanes,
-            focus_projection,
-            session_projection,
-            agent_runtime_projection,
-            history_store,
-            operational_history_store,
-            history_projection,
-            provider_catalog_projection,
-            provider_run_projection,
-            provider_process_projection,
-            active_turns,
-            prompt_activity,
-            remote_relay_inventory_projection,
-            config_projection,
-            relay_state,
-            capability_health: CapabilityExecutorHealthStore::default(),
-            capability_runtime,
+            crate::runtime::session_actor::SESSION_COMMAND_QUEUE_LIMIT,
             transport_health,
-            terminal_health,
-            terminal_output_executor,
-            workspace_coordinator,
-            provider_launch_pending,
-        }
+        )
     }
 
     pub(crate) async fn dispatch(
@@ -1120,8 +892,6 @@ impl CommandRouter {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::fs;
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     use tokio::sync::Mutex;
@@ -1158,122 +928,6 @@ mod tests {
         RuntimeInteractionLevel, SessionStatus, DEFAULT_LOCAL_USER_ID,
     };
     use crate::{DaemonApp, DaemonConfig, DaemonError};
-
-    #[test]
-    fn workspace_directory_completion_keeps_sibling_prefix_matches_for_existing_path() {
-        let root = unique_test_dir("workspace-directory-completion-siblings");
-        create_test_dir(root.join("arroba"));
-        create_test_dir(root.join("arroba-cloud"));
-        create_test_dir(root.join("arroba-feature"));
-        create_test_dir(root.join(".arroba"));
-        create_test_dir(root.join("bar-arroba"));
-
-        let results = crate::runtime::workspace_search::search_workspace_directories(
-            &root.join("arroba").display().to_string(),
-            20,
-            None,
-        )
-        .expect("workspace directory search should succeed");
-        remove_test_dir(&root);
-
-        let exact = root.join("arroba").display().to_string();
-        let cloud = root.join("arroba-cloud").display().to_string();
-        let feature = root.join("arroba-feature").display().to_string();
-        let hidden = root.join(".arroba").display().to_string();
-        let contains = root.join("bar-arroba").display().to_string();
-
-        assert!(results.contains(&exact), "missing exact match: {results:?}");
-        assert!(
-            results.contains(&cloud),
-            "missing prefix sibling: {results:?}"
-        );
-        assert!(
-            results.contains(&feature),
-            "missing prefix sibling: {results:?}"
-        );
-        assert!(
-            results.contains(&hidden),
-            "missing hidden contains match: {results:?}"
-        );
-        assert!(
-            results.contains(&contains),
-            "missing contains match: {results:?}"
-        );
-
-        let exact_index = result_index(&results, &exact);
-        assert!(exact_index < result_index(&results, &cloud));
-        assert!(exact_index < result_index(&results, &feature));
-        assert!(result_index(&results, &cloud) < result_index(&results, &hidden));
-        assert!(result_index(&results, &feature) < result_index(&results, &hidden));
-        assert!(result_index(&results, &contains) < result_index(&results, &hidden));
-    }
-
-    #[test]
-    fn workspace_directory_completion_lists_children_only_after_trailing_separator() {
-        let root = unique_test_dir("workspace-directory-completion-children");
-        create_test_dir(root.join("arroba").join("child"));
-        create_test_dir(root.join("arroba-cloud"));
-
-        let query = format!("{}/", root.join("arroba").display());
-        let results =
-            crate::runtime::workspace_search::search_workspace_directories(&query, 20, None)
-                .expect("workspace directory search should succeed");
-        remove_test_dir(&root);
-
-        assert!(
-            results.contains(&root.join("arroba").join("child").display().to_string()),
-            "missing child directory: {results:?}",
-        );
-        assert!(
-            !results.contains(&root.join("arroba-cloud").display().to_string()),
-            "trailing slash should not include siblings: {results:?}",
-        );
-    }
-
-    #[test]
-    fn workspace_directory_completion_prioritizes_hidden_dirs_when_query_starts_hidden() {
-        let root = unique_test_dir("workspace-directory-completion-hidden");
-        create_test_dir(root.join(".arroba"));
-        create_test_dir(root.join(".arroba-cache"));
-        create_test_dir(root.join("my-.arroba"));
-
-        let results = crate::runtime::workspace_search::search_workspace_directories(
-            &root.join(".arroba").display().to_string(),
-            20,
-            None,
-        )
-        .expect("workspace directory search should succeed");
-        remove_test_dir(&root);
-
-        let exact = root.join(".arroba").display().to_string();
-        let hidden_prefix = root.join(".arroba-cache").display().to_string();
-        let contains = root.join("my-.arroba").display().to_string();
-        assert!(result_index(&results, &exact) < result_index(&results, &hidden_prefix));
-        assert!(result_index(&results, &hidden_prefix) < result_index(&results, &contains));
-    }
-
-    fn unique_test_dir(label: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time should be after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("arroba-{label}-{}-{nanos}", std::process::id()))
-    }
-
-    fn create_test_dir(path: PathBuf) {
-        fs::create_dir_all(path).expect("test directory should be created");
-    }
-
-    fn remove_test_dir(path: &PathBuf) {
-        let _ = fs::remove_dir_all(path);
-    }
-
-    fn result_index(results: &[String], value: &str) -> usize {
-        results
-            .iter()
-            .position(|result| result == value)
-            .unwrap_or_else(|| panic!("missing {value} in {results:?}"))
-    }
 
     fn spawn_test_agent(
         app: &mut DaemonApp,

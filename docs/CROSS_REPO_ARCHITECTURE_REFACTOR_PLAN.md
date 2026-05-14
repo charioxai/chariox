@@ -16,9 +16,9 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 - Cloud API boundary split is in place: `server.ts` is route composition; relay-kernel bootstrap delegates to service-layer target selection/token minting; route/helper/contract files are domain-owned.
 - Cloud web responsibility modules now cover browser kernel transport, waiting-room state/projection/rendering/cache persistence/connection display/refresh scheduling/refresh controller/kernel event policy/kernel-directory refresh, app sidebar/context/resize/workflow/history/prompt/output/workspace/capabilities, terminal lifecycle/transport/target/launch/provider profile, freeform policy, and session projection fingerprinting. `client.ts` is still the main coordinator and is 10,005 lines.
-- OSS responsibility modules now cover kernel transport, router composition, router dispatch groups, relay peer bridge, cloud relay bridge, runtime tool bridge, status projection bridge, caller identity/redaction bridge, membership authorization, runtime projections, provider/agent/session/workspace/history/capability/waiting-room execution, launch tracking, response refresh, runtime lane cleanup, visibility policy, and response redaction. `runtime/router.rs` is still the main command router and is 6,992 lines.
-- Latest verified batch: OSS router store wiring moved to named `runtime/router/composition.rs` bootstrap state.
-- Latest gates passed: OSS cargo fmt/lib tests/diff check. OSS workspace lint is blocked by unstaged native-TUI CLI edits outside this refactor.
+- OSS responsibility modules now cover kernel transport, router runtime composition/store+actor wiring, router dispatch groups, relay/cloud/runtime/status bridges, caller identity/redaction, membership authorization, runtime projections, provider/agent/session/workspace/history/capability/waiting-room execution, launch tracking, response refresh, runtime lane cleanup, visibility policy, and response redaction. `runtime/router.rs` is still the main command router and is 6,646 lines.
+- Latest verified batch: OSS router constructors delegate runtime composition to `runtime/router/composition.rs`; workspace search tests moved out of router tests.
+- Latest gates passed: OSS cargo fmt check/lib tests/diff check. Cloud has active sidebar input-focus edits owned by another agent and was not touched in this batch.
 
 ## Responsibility Rule
 
