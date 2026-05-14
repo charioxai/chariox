@@ -15,9 +15,9 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 2026-05-14:
 
 - Cloud API boundary split is in place: `server.ts` is route composition; relay-kernel bootstrap delegates to service-layer target selection/token minting; route/helper/contract files are domain-owned.
-- Cloud web responsibility modules now cover browser kernel transport, waiting-room state/projection/rendering/cache persistence/connection display/refresh scheduling/refresh controller/kernel event policy/kernel-directory refresh, app sidebar/resize/workflow/history/prompt/output/workspace/capabilities, terminal lifecycle/transport/target/launch/provider profile, freeform policy, and session projection fingerprinting. `client.ts` is still the main coordinator and is 10,059 lines.
+- Cloud web responsibility modules now cover browser kernel transport, waiting-room state/projection/rendering/cache persistence/connection display/refresh scheduling/refresh controller/kernel event policy/kernel-directory refresh, app sidebar/resize/workflow/history/prompt/output/workspace/capabilities, terminal lifecycle/transport/target/launch/provider profile, freeform policy, and session projection fingerprinting. `client.ts` is still the main coordinator and is 10,013 lines.
 - OSS responsibility modules now cover kernel transport, router dispatch groups, relay peer bridge, cloud relay bridge, runtime tool bridge, status projection bridge, caller identity/redaction bridge, membership authorization, runtime projections, provider/agent/session/workspace/history/capability/waiting-room execution, launch tracking, response refresh, runtime lane cleanup, visibility policy, and response redaction. `runtime/router.rs` is still the main command router and is 7,064 lines.
-- Latest verified batch: Cloud app-sidebar resize interaction moved to `terminal/app-sidebar-resize-controller.ts`.
+- Latest verified batch: Cloud app-sidebar context, width, resize, and route sync moved to dedicated app-sidebar controllers.
 - Latest gates passed: Cloud web tests/lint/diff check. OSS workspace lint is blocked by unstaged native-TUI CLI edits outside this refactor.
 
 ## Responsibility Rule
