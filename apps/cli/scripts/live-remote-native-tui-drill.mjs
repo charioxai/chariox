@@ -7,6 +7,8 @@ import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
 import os from "node:os"
 
+import WebSocket from "ws"
+
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
   attachToSessionRequest,
@@ -41,6 +43,8 @@ function parseArgs(argv) {
     providers: ["opencode", "codex", "claude"],
     keepArtifactsOnFailure: false,
     sliceLocalDocker: false,
+    includePermissions: false,
+    includeArtifacts: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -52,6 +56,10 @@ function parseArgs(argv) {
       options.keepArtifactsOnFailure = true
     } else if (arg === "--slice-local-docker") {
       options.sliceLocalDocker = true
+    } else if (arg === "--include-permissions") {
+      options.includePermissions = true
+    } else if (arg === "--include-artifacts") {
+      options.includeArtifacts = true
     } else if (arg === "--help" || arg === "-h") {
       options.help = true
     } else {
@@ -78,6 +86,8 @@ function printHelp() {
     "",
     "  --providers opencode,codex,claude",
     "  --slice-local-docker          Run against a local Docker slice kernel instead of a host kernel",
+    "  --include-permissions         Validate provider-native permissions through the Arroba observer",
+    "  --include-artifacts           Validate Arroba MCP artifact read/write through native TUI providers",
     "  --keep-artifacts-on-failure",
   ].join("\n"))
 }
@@ -428,6 +438,250 @@ async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, pr
   await writeFile(logFile, output)
 }
 
+async function runNativeOpenCodePromptDetached(proxyUrl, providerSessionId, worktree, prompt) {
+  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
+  const child = spawn(executable, [
+    "run",
+    "--attach",
+    proxyUrl,
+    "--session",
+    providerSessionId,
+    "--dir",
+    worktree,
+    prompt,
+  ], {
+    cwd: worktree,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  let stdout = ""
+  let stderr = ""
+  let exitResult = null
+  let exitError = null
+  child.stdout?.on("data", (chunk) => { stdout += chunk.toString("utf8") })
+  child.stderr?.on("data", (chunk) => { stderr += chunk.toString("utf8") })
+  child.once("error", (error) => {
+    exitError = error
+  })
+  child.once("exit", (code, signal) => {
+    exitResult = { code, signal }
+  })
+  return {
+    wait: async (timeoutMs = 240_000) => await new Promise((resolve, reject) => {
+      if (exitError) {
+        reject(exitError)
+        return
+      }
+      if (exitResult) {
+        if (exitResult.code === 0) resolve(`${stdout}\n${stderr}`)
+        else reject(new Error(`opencode run --attach exited with ${exitResult.signal ?? exitResult.code}\n${stdout}\n${stderr}`))
+        return
+      }
+      const timer = setTimeout(() => {
+        child.kill("SIGTERM")
+        reject(new Error(`opencode run --attach timed out for ${providerSessionId}\n${stdout}\n${stderr}`))
+      }, timeoutMs)
+      child.once("error", (error) => {
+        clearTimeout(timer)
+        reject(error)
+      })
+      child.once("exit", (code, signal) => {
+        clearTimeout(timer)
+        if (code === 0) resolve(`${stdout}\n${stderr}`)
+        else reject(new Error(`opencode run --attach exited with ${signal ?? code}\n${stdout}\n${stderr}`))
+      })
+    }),
+  }
+}
+
+async function codexRpc(proxyUrl, messages, timeoutMs = 30_000) {
+  return await new Promise((resolve, reject) => {
+    const ws = new WebSocket(proxyUrl)
+    const responses = []
+    const timer = setTimeout(() => {
+      ws.close()
+      reject(new Error(`codex rpc timed out; responses=${JSON.stringify(responses)}`))
+    }, timeoutMs)
+    ws.once("open", () => {
+      for (const message of messages) ws.send(JSON.stringify(message))
+    })
+    ws.on("message", (raw) => {
+      let message = null
+      try {
+        message = JSON.parse(raw.toString())
+      } catch {
+        return
+      }
+      responses.push(message)
+      const wanted = new Set(messages.filter((entry) => entry.id !== undefined).map((entry) => entry.id))
+      const received = new Set(responses.filter((entry) => entry.id !== undefined).map((entry) => entry.id))
+      if ([...wanted].every((id) => received.has(id))) {
+        clearTimeout(timer)
+        ws.close()
+        resolve(responses)
+      }
+    })
+    ws.once("error", (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+  })
+}
+
+async function runNativeCodexPrompt(proxyUrl, threadId, prompt) {
+  const responses = await codexRpc(proxyUrl, [
+    { id: 1, method: "initialize", params: { clientInfo: { name: "remote-native-tui-drill", version: "0.0.0" } } },
+    {
+      id: 2,
+      method: "turn/start",
+      params: {
+        threadId,
+        input: [{ type: "text", text: prompt, text_elements: [] }],
+      },
+    },
+  ])
+  const turnResponse = responses.find((response) => response.id === 2)
+  if (!turnResponse || turnResponse.error) {
+    throw new Error(`codex native turn failed: ${JSON.stringify(turnResponse)}`)
+  }
+}
+
+async function waitForInteraction(socketPath, alias, timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs
+  let last = null
+  while (Date.now() < deadline) {
+    const snapshot = await automationRequest(socketPath, { action: "snapshot" })
+    last = snapshot
+    const agent = snapshot.session?.agents?.find((entry) => entry.alias === alias)
+    const interaction = snapshot.interactions?.find((entry) => entry.agentId === agent?.id && entry.kind === "permission")
+    if (agent && interaction) return { snapshot, agent, interaction }
+    await sleep(250)
+  }
+  throw new Error(`timed out waiting for permission interaction for ${alias}; last=${JSON.stringify(last)}`)
+}
+
+async function waitForInteractionFocused(socketPath, interactionId, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs
+  let last = null
+  while (Date.now() < deadline) {
+    const snapshot = await automationRequest(socketPath, { action: "snapshot" })
+    last = snapshot
+    const interaction = snapshot.interactions?.find((entry) => entry.id === interactionId)
+    if (interaction?.focused) return snapshot
+    await sleep(250)
+  }
+  throw new Error(`timed out waiting for focused interaction ${interactionId}; last=${JSON.stringify(last)}`)
+}
+
+async function waitForInteractionCleared(socketPath, interactionId, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs
+  let last = null
+  while (Date.now() < deadline) {
+    const snapshot = await automationRequest(socketPath, { action: "snapshot" })
+    last = snapshot
+    const interaction = snapshot.interactions?.find((entry) => entry.id === interactionId)
+    if (!interaction) return snapshot
+    await sleep(250)
+  }
+  throw new Error(`timed out waiting for interaction ${interactionId} to clear; last=${JSON.stringify(last)}`)
+}
+
+async function answerPermissionFromCli(socketPath, alias) {
+  const pending = await waitForInteraction(socketPath, alias)
+  await automationRequest(socketPath, {
+    action: "workspace_shell_exec",
+    command: `agent focus ${pending.agent.id}`,
+  })
+  await waitForInteractionFocused(socketPath, pending.interaction.id)
+  const allowIndex = pending.interaction.choices.findIndex((choice) =>
+    choice.id === "allow_once"
+      || choice.id === "allow"
+      || /allow|yes|proceed/i.test(choice.label ?? "")
+  )
+  const response = await automationRequest(socketPath, {
+    action: "interaction_submit",
+    choiceIndex: allowIndex >= 0 ? allowIndex : 0,
+  })
+  const stillPending = response.interactions?.some((entry) => entry.id === pending.interaction.id)
+  if (stillPending) {
+    throw new Error(`permission interaction did not clear after submit: ${JSON.stringify(response.interactions)}`)
+  }
+  await waitForInteractionCleared(socketPath, pending.interaction.id)
+  return pending.interaction
+}
+
+async function waitForProviderToolCompletion(client, sessionId, attachmentId, agentId, matcher, timeoutMs = 240_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastMatch = null
+  while (Date.now() < deadline) {
+    await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
+    const page = unwrap(await client.send(getSessionHistoryRequest(sessionId, 300, 100_000, null, agentId)), "SessionHistory")
+    for (const row of page.entries) {
+      const entry = row.entry
+      if (!entry || entry.kind !== "provider_tool" || entry.agent_id !== agentId || typeof entry.text !== "string") continue
+      let update = null
+      try {
+        update = JSON.parse(entry.text)
+      } catch {
+        continue
+      }
+      if (!matcher(update, entry.text)) continue
+      lastMatch = update
+      if (update.status === "completed") return update
+    }
+    await sleep(1_000)
+  }
+  throw new Error(`timed out waiting for provider tool completion; last=${JSON.stringify(lastMatch)}`)
+}
+
+async function waitForFileContent(filePath, expected, timeoutMs = 240_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const content = await readFile(filePath, "utf8").catch(() => "")
+    if (content === expected) return content
+    await sleep(500)
+  }
+  throw new Error(`timed out waiting for ${filePath} to contain ${JSON.stringify(expected)}`)
+}
+
+function permissionPrompt(markerText, filePath, content) {
+  const shellCommand = `printf '${content}\\n' > ${filePath}`
+  return `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
+}
+
+function managedIoToolNames(provider) {
+  if (provider === "opencode") {
+    return {
+      read: "arroba_read_artifact",
+      write: "arroba_write_artifact",
+    }
+  }
+  return {
+    read: "mcp__arroba__read_artifact",
+    write: "mcp__arroba__write_artifact",
+  }
+}
+
+function artifactPrompt(provider, markerText, artifactPath, content) {
+  const tools = managedIoToolNames(provider)
+  return [
+    "Use only Arroba MCP/runtime tools for artifact I/O. Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.",
+    `Step 1: call \`${tools.write}\` exactly once with JSON arguments {"path":${JSON.stringify(artifactPath)},"content_text":${JSON.stringify(content)},"domain":"text"}.`,
+    `Step 2: call \`${tools.read}\` exactly once with JSON arguments {"path":${JSON.stringify(artifactPath)},"domain":"text"} and verify the returned text is ${JSON.stringify(content)}.`,
+    `Only after both managed artifact tool calls succeed and the artifact exists, reply exactly ${markerText} and nothing else.`,
+    `If any managed artifact tool reports applied:false or an error, reply exactly ${markerText}_FAILED and stop.`,
+  ].join("\n")
+}
+
+function artifactToolMatcher(pathFragment, toolSuffix) {
+  return (update, raw) => {
+    const tool = String(update.tool ?? update.name ?? update.title ?? "")
+    const inputPath = String(update.input?.path ?? update.input?.artifact_path ?? "")
+    return (tool.endsWith(toolSuffix) || raw.includes(toolSuffix))
+      && (inputPath === pathFragment || raw.includes(pathFragment))
+  }
+}
+
 function relayClient(relayUrl, relayToken, targetDaemonAlias) {
   return new LocalIpcClient(relayUrl, {
     relayAuthToken: relayToken,
@@ -446,6 +700,7 @@ async function runProviderScenario({
   workspace,
   worktree,
   nativeEnv = {},
+  options,
 }) {
   const scenarioRoot = path.join(root, provider)
   const screenA = `arroba-rnt-${provider}-a-${process.pid}`
@@ -461,12 +716,19 @@ async function runProviderScenario({
     : provider === "opencode"
       ? ["--server-in-kernel"]
     : []
+  if (options.includePermissions && (provider === "codex" || provider === "opencode")) {
+    providerArgs.push("--permissions", "required")
+  }
   const marker = provider === "opencode" ? "OPENCODE" : provider === "codex" ? "CODEX" : "CLAUDE"
   const markers = {
     arrobaA: `${marker}ALPHA`,
     arrobaB: `${marker}BRAVO`,
     nativeA: `${marker}CHARLIE`,
     nativeB: `${marker}DELTA`,
+    nativePermission: `${marker}NATIVEPERMISSION`,
+    arrobaPermission: `${marker}ARROBAPERMISSION`,
+    nativeArtifact: `${marker}NATIVEARTIFACT`,
+    arrobaArtifact: `${marker}ARROBAARTIFACT`,
   }
   const logs = {
     aDir: path.join(scenarioRoot, "native-a-screen"),
@@ -555,6 +817,11 @@ async function runProviderScenario({
       proxyB = (await waitForFileMatch(logs.b, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
       providerSessionA = (await waitForFileMatch(logs.a, /opencode sess:\s+([^\s]+)/)).match[1]
       providerSessionB = (await waitForFileMatch(logs.b, /opencode sess:\s+([^\s]+)/)).match[1]
+    } else if (provider === "codex") {
+      proxyA = (await waitForFileMatch(logs.a, /proxy:\s+(ws:\/\/127\.0\.0\.1:\d+)/)).match[1]
+      proxyB = (await waitForFileMatch(logs.b, /proxy:\s+(ws:\/\/127\.0\.0\.1:\d+)/)).match[1]
+      providerSessionA = (await waitForFileMatch(logs.proxyA, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
+      providerSessionB = (await waitForFileMatch(logs.proxyB, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
     }
 
     client = relayClient(relayUrl, relayToken, targetDaemonAlias)
@@ -670,6 +937,92 @@ async function runProviderScenario({
       throw new Error("native OpenCode prompts did not pass through both remote native proxies")
     }
 
+    const extendedChecks = {}
+    if (options.includePermissions && (provider === "codex" || provider === "opencode")) {
+      await mkdir(path.join(worktree, "outputs"), { recursive: true })
+      const nativePermissionFile = path.join(worktree, "outputs", `remote-native-${provider}-${process.pid}-native-permission.txt`)
+      const arrobaPermissionFile = path.join(worktree, "outputs", `remote-native-${provider}-${process.pid}-arroba-permission.txt`)
+      await rm(nativePermissionFile, { force: true }).catch(() => {})
+      await rm(arrobaPermissionFile, { force: true }).catch(() => {})
+
+      const nativePrompt = permissionPrompt(markers.nativePermission, nativePermissionFile, `native-${provider}`)
+      if (provider === "opencode") {
+        const nativeRun = await runNativeOpenCodePromptDetached(proxyA, providerSessionA, worktree, nativePrompt)
+        const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
+        await nativeRun.wait()
+        extendedChecks.nativePermissionInteraction = interaction.title ?? interaction.message
+      } else {
+        await runNativeCodexPrompt(proxyA, providerSessionA, nativePrompt)
+        const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
+        extendedChecks.nativePermissionInteraction = interaction.title ?? interaction.message
+      }
+      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        [aliases[0]]: { prompts: [markers.nativePermission], outputs: [markers.nativePermission] },
+      })
+      await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
+        raw.includes(nativePermissionFile))
+      await waitForFileContent(nativePermissionFile, `native-${provider}\n`, 10_000)
+
+      await fireAutomationRequest(automationSocket, {
+        action: "workspace_shell_exec",
+        command: `prompt ${aliases[0]} ${permissionPrompt(markers.arrobaPermission, arrobaPermissionFile, `arroba-${provider}`)}`,
+      })
+      const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
+      extendedChecks.arrobaPermissionInteraction = interaction.title ?? interaction.message
+      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        [aliases[0]]: { prompts: [markers.arrobaPermission], outputs: [markers.arrobaPermission] },
+      })
+      await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
+        raw.includes(arrobaPermissionFile))
+      await waitForFileContent(arrobaPermissionFile, `arroba-${provider}\n`, 10_000)
+      await rm(nativePermissionFile, { force: true }).catch(() => {})
+      await rm(arrobaPermissionFile, { force: true }).catch(() => {})
+      extendedChecks.permissions = "validated"
+    }
+
+    if (options.includeArtifacts && (provider === "codex" || provider === "opencode")) {
+      await mkdir(path.join(worktree, "outputs"), { recursive: true })
+      const nativeArtifactPath = `outputs/remote-native-${provider}-${process.pid}-native-artifact.txt`
+      const arrobaArtifactPath = `outputs/remote-native-${provider}-${process.pid}-arroba-artifact.txt`
+      const nativeArtifactFile = path.join(worktree, nativeArtifactPath)
+      const arrobaArtifactFile = path.join(worktree, arrobaArtifactPath)
+      const nativeContent = `native-artifact-${provider}\n`
+      const arrobaContent = `arroba-artifact-${provider}\n`
+      await rm(nativeArtifactFile, { force: true }).catch(() => {})
+      await rm(arrobaArtifactFile, { force: true }).catch(() => {})
+
+      const nativePrompt = artifactPrompt(provider, markers.nativeArtifact, nativeArtifactPath, nativeContent)
+      if (provider === "opencode") {
+        const nativeRun = await runNativeOpenCodePromptDetached(proxyA, providerSessionA, worktree, nativePrompt)
+        await answerPermissionFromCli(automationSocket, aliases[0])
+        await nativeRun.wait()
+      } else {
+        await runNativeCodexPrompt(proxyA, providerSessionA, nativePrompt)
+        await answerPermissionFromCli(automationSocket, aliases[0])
+      }
+      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        [aliases[0]]: { prompts: [markers.nativeArtifact], outputs: [markers.nativeArtifact] },
+      })
+      await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, artifactToolMatcher(nativeArtifactPath, "write_artifact"))
+      await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, artifactToolMatcher(nativeArtifactPath, "read_artifact"))
+      await waitForFileContent(nativeArtifactFile, nativeContent)
+
+      await fireAutomationRequest(automationSocket, {
+        action: "workspace_shell_exec",
+        command: `prompt ${aliases[0]} ${artifactPrompt(provider, markers.arrobaArtifact, arrobaArtifactPath, arrobaContent)}`,
+      })
+      await answerPermissionFromCli(automationSocket, aliases[0])
+      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        [aliases[0]]: { prompts: [markers.arrobaArtifact], outputs: [markers.arrobaArtifact] },
+      })
+      await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, artifactToolMatcher(arrobaArtifactPath, "write_artifact"))
+      await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, artifactToolMatcher(arrobaArtifactPath, "read_artifact"))
+      await waitForFileContent(arrobaArtifactFile, arrobaContent)
+      await rm(nativeArtifactFile, { force: true }).catch(() => {})
+      await rm(arrobaArtifactFile, { force: true }).catch(() => {})
+      extendedChecks.artifacts = "validated"
+    }
+
     return {
       provider,
       sessionId,
@@ -679,10 +1032,11 @@ async function runProviderScenario({
       agentAliases: aliases,
       observerSawAgents: snapshot.session.agentCount,
       badgeTransitions,
-      providerSessions: provider === "opencode" ? {
+      providerSessions: provider === "opencode" || provider === "codex" ? {
         [aliases[0]]: providerSessionA,
         [aliases[1]]: providerSessionB,
       } : null,
+      extendedChecks,
       logs,
       note: provider === "claude"
         ? "remote-rendered Claude TUI validated through kernel-owned PTY"
@@ -748,6 +1102,7 @@ async function runSliceDockerScenarios({ options, root, ports }) {
         targetDaemonAlias,
         workspace: repoRoot,
         worktree: repoRoot,
+        options,
         nativeEnv: {
           ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE: env.ARROBA_SLICE_CODEX_PORT_RANGE,
           ARROBA_CODEX_KERNEL_SERVER_BIND_HOST: "0.0.0.0",
@@ -869,6 +1224,7 @@ async function main() {
         targetDaemonAlias,
         workspace,
         worktree,
+        options,
       }))
     }
 
