@@ -27,21 +27,19 @@ use crate::runtime::capability_registry::{
     execute_uninstall_mcp_server_request, execute_uninstall_skill_request,
     execute_update_mcp_server_request, execute_update_skill_request,
 };
-use crate::runtime::cloud_api_client::{issue_cloud_runtime_token, post_cloud_json};
+use crate::runtime::cloud_api_client::post_cloud_json;
 use crate::runtime::cloud_relay_control::{
-    cloud_kernel_presence_body, cloud_relay_profile_has_runtime_credentials,
-    cloud_relay_runtime_token_is_fresh, cloud_relay_token_refresh_due, cloud_runtime_token_subject,
-    CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
+    cloud_kernel_presence_body, cloud_relay_token_refresh_due,
 };
 use crate::runtime::cloud_relay_executor::{
-    clear_cloud_profile_if_stale, execute_accept_cloud_session_invite_request,
-    execute_cloud_relay_status_request, execute_connect_cloud_relay_request,
-    execute_create_cloud_session_invite_request, execute_issue_cloud_relay_client_token_request,
-    execute_list_cloud_collaborators_request, execute_list_cloud_session_members_request,
-    execute_logout_cloud_relay_request, execute_pair_cloud_relay_client_request,
-    execute_pair_cloud_relay_machine_request, execute_poll_cloud_relay_login_request,
-    execute_revoke_cloud_session_invite_request, execute_show_cloud_session_invite_request,
-    execute_start_cloud_relay_login_request,
+    ensure_cloud_relay_connection as ensure_cloud_relay_connection_with_executor,
+    execute_accept_cloud_session_invite_request, execute_cloud_relay_status_request,
+    execute_connect_cloud_relay_request, execute_create_cloud_session_invite_request,
+    execute_issue_cloud_relay_client_token_request, execute_list_cloud_collaborators_request,
+    execute_list_cloud_session_members_request, execute_logout_cloud_relay_request,
+    execute_pair_cloud_relay_client_request, execute_pair_cloud_relay_machine_request,
+    execute_poll_cloud_relay_login_request, execute_revoke_cloud_session_invite_request,
+    execute_show_cloud_session_invite_request, execute_start_cloud_relay_login_request,
 };
 use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
 use crate::runtime::daemon_health_projection::{
@@ -513,45 +511,7 @@ impl CommandRouter {
     }
 
     pub(crate) async fn ensure_cloud_relay_connection(&self) -> Result<(), DaemonError> {
-        let config = self.config_projection.snapshot();
-        let Some(profile) = config.cloud_relay.clone() else {
-            return Ok(());
-        };
-        if !cloud_relay_profile_has_runtime_credentials(&profile) {
-            return Ok(());
-        }
-        let now_ms = crate::session::unix_epoch_ms();
-        if cloud_relay_runtime_token_is_fresh(&config, &profile, now_ms) {
-            return Ok(());
-        }
-
-        let token_subject = cloud_runtime_token_subject(&config, &profile);
-        let issued = match issue_cloud_runtime_token(
-            &profile,
-            &token_subject.subject,
-            token_subject.subject_kind,
-            None,
-            None,
-            token_subject.machine_id,
-            None,
-        )
-        .await
-        {
-            Ok(issued) => issued,
-            Err(error) => {
-                clear_cloud_profile_if_stale(&self.app, &self.config_projection, &error).await?;
-                return Err(error);
-            }
-        };
-        let mut updated_profile = profile.clone();
-        updated_profile.token_expires_at_ms = Some(now_ms + CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS);
-        {
-            let mut app = self.app.lock().await;
-            app.configure_relay(Some(profile.relay_url), Some(issued.token))?;
-            app.persist_cloud_relay_profile(Some(updated_profile))?;
-            self.config_projection.update(app.config().clone());
-        }
-        Ok(())
+        ensure_cloud_relay_connection_with_executor(&self.app, &self.config_projection).await
     }
 
     pub(crate) async fn publish_cloud_kernel_presence(

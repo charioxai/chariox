@@ -21,7 +21,10 @@ use crate::runtime::cloud_api_client::{
     revoke_cloud_session_invite, show_cloud_session_invite, CloudDevicePollResponse,
     CloudDeviceStartResponse, CloudPairingTokenResponse,
 };
-use crate::runtime::cloud_relay_control::CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS;
+use crate::runtime::cloud_relay_control::{
+    cloud_relay_profile_has_runtime_credentials, cloud_relay_runtime_token_is_fresh,
+    cloud_runtime_token_subject, CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
+};
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
 use crate::runtime::provider_catalog_control::provider_catalog_json_value;
 use crate::runtime::remote_relay_inventory::projected_relay_status;
@@ -37,6 +40,51 @@ pub(crate) async fn execute_cloud_relay_status_request(
         .as_ref()
         .map(cloud_profile_from_persisted);
     Ok(LocalDaemonResponse::CloudRelayStatus { profile })
+}
+
+pub(crate) async fn ensure_cloud_relay_connection(
+    app: &Arc<Mutex<DaemonApp>>,
+    config_projection: &DaemonConfigProjectionStore,
+) -> Result<(), DaemonError> {
+    let config = config_projection.snapshot();
+    let Some(profile) = config.cloud_relay.clone() else {
+        return Ok(());
+    };
+    if !cloud_relay_profile_has_runtime_credentials(&profile) {
+        return Ok(());
+    }
+    let now_ms = crate::session::unix_epoch_ms();
+    if cloud_relay_runtime_token_is_fresh(&config, &profile, now_ms) {
+        return Ok(());
+    }
+
+    let token_subject = cloud_runtime_token_subject(&config, &profile);
+    let issued = match issue_cloud_runtime_token(
+        &profile,
+        &token_subject.subject,
+        token_subject.subject_kind,
+        None,
+        None,
+        token_subject.machine_id,
+        None,
+    )
+    .await
+    {
+        Ok(issued) => issued,
+        Err(error) => {
+            clear_cloud_profile_if_stale(app, config_projection, &error).await?;
+            return Err(error);
+        }
+    };
+    let mut updated_profile = profile.clone();
+    updated_profile.token_expires_at_ms = Some(now_ms + CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS);
+    {
+        let mut app = app.lock().await;
+        app.configure_relay(Some(profile.relay_url), Some(issued.token))?;
+        app.persist_cloud_relay_profile(Some(updated_profile))?;
+        config_projection.update(app.config().clone());
+    }
+    Ok(())
 }
 
 pub(crate) async fn execute_start_cloud_relay_login_request(
