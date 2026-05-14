@@ -168,6 +168,7 @@ Documentation updates for this refactor are progress artifacts. Do not leave dir
 - 2026-05-14: Cloud freeform provider/model/variant and footer config projection moved into `terminal/freeform-config-projection.ts`; web tests pass with 528 tests and `client.ts` is down to 12,138 lines.
 - 2026-05-14: OSS workflow reference/run projection moved into `runtime/workflow_projection.rs`; kernel lib tests pass with 725 tests and `runtime/router.rs` is down to 11,574 lines.
 - 2026-05-14: Cloud terminal startup placeholder/defer/timing state moved into `terminal/startup-state.ts`; web tests pass with 531 tests and `client.ts` is down to 12,113 lines.
+- 2026-05-14: Cloud terminal prompt-control target/block/send-state policy moved into `terminal/prompt-controls.ts`; web tests pass with 536 tests and `client.ts` is at 12,117 lines.
 
 ## Summary
 
