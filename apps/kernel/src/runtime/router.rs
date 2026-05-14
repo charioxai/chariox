@@ -105,10 +105,7 @@ use crate::runtime::session_collaboration_executor::{
     execute_list_workspace_links_request, execute_revoke_session_invite_request,
     execute_show_workspace_link_request,
 };
-use crate::runtime::session_membership::{
-    command_session_user_id, is_implicit_local_session_caller, request_session_scope,
-    SessionMembershipScope,
-};
+use crate::runtime::session_membership::authorize_session_membership;
 use crate::runtime::session_projection_refresh::{
     focus_projection_refresh, redact_agent_activity_for_session, response_removed_session_ids,
     response_sessions, session_projection_refresh,
@@ -945,9 +942,9 @@ impl CommandRouter {
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let focus_refresh = focus_projection_refresh(&request);
-        let caller_user_id = self
-            .authorize_session_membership(&command, &request)
-            .await?;
+        let caller_user_id =
+            authorize_session_membership(&self.app, &self.session_projection, &command, &request)
+                .await?;
         if let LocalDaemonRequest::GetSessionState(request) = &request {
             if !self
                 .has_unsettled_pending_provider_launch(&request.session_id)
@@ -2275,120 +2272,6 @@ impl CommandRouter {
             kernel_id,
             deleted_sessions,
         })
-    }
-
-    async fn authorize_session_membership(
-        &self,
-        command: &KernelCommand,
-        request: &LocalDaemonRequest,
-    ) -> Result<String, DaemonError> {
-        if is_implicit_local_session_caller(command) {
-            return Ok(DEFAULT_LOCAL_USER_ID.to_string());
-        }
-        if matches!(
-            request,
-            LocalDaemonRequest::CreateSession(_) | LocalDaemonRequest::JoinSessionInvite(_)
-        ) {
-            return Ok(command_session_user_id(command)
-                .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()));
-        }
-
-        let Some(scope) = request_session_scope(request) else {
-            return Ok(command_session_user_id(command)
-                .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()));
-        };
-        let user_id = command_session_user_id(command).ok_or_else(|| {
-            DaemonError::MissingSessionCallerIdentity {
-                operation: command.command_type.clone(),
-            }
-        })?;
-
-        match scope {
-            SessionMembershipScope::AllSessions => Ok(user_id),
-            SessionMembershipScope::SessionId(session_id) => {
-                self.ensure_session_member(&session_id, &user_id).await?;
-                Ok(user_id)
-            }
-            SessionMembershipScope::SessionRef {
-                session_ref,
-                workspace_id,
-            } => {
-                let session = self
-                    .resolve_session_for_membership(&session_ref, workspace_id.as_deref())
-                    .await?;
-                if !session.has_member(&user_id) {
-                    return Err(DaemonError::SessionAccessDenied {
-                        session_id: session.id().to_string(),
-                        user_id,
-                    });
-                }
-                Ok(user_id)
-            }
-            SessionMembershipScope::AttachmentId(attachment_id) => {
-                let session_id = if let Some(session_id) = self
-                    .session_projection
-                    .session_id_for_attachment(&attachment_id)
-                {
-                    session_id
-                } else {
-                    let app = self.app.lock().await;
-                    app.sessions()
-                        .list_sessions()
-                        .into_iter()
-                        .find(|session| session.has_attachment(&attachment_id))
-                        .map(|session| session.id().to_string())
-                        .ok_or_else(|| DaemonError::AttachmentNotFound {
-                            attachment_id: attachment_id.clone(),
-                        })?
-                };
-                self.ensure_session_member(&session_id, &user_id).await?;
-                Ok(user_id)
-            }
-        }
-    }
-
-    async fn ensure_session_member(
-        &self,
-        session_id: &str,
-        user_id: &str,
-    ) -> Result<(), DaemonError> {
-        if let Some(session) = self.session_projection.get(session_id) {
-            if session.has_member(user_id) {
-                return Ok(());
-            }
-            return Err(DaemonError::SessionAccessDenied {
-                session_id: session.id().to_string(),
-                user_id: user_id.to_string(),
-            });
-        }
-        let session = {
-            let app = self.app.lock().await;
-            app.sessions().get_session(session_id)?
-        };
-        if session.has_member(user_id) {
-            Ok(())
-        } else {
-            Err(DaemonError::SessionAccessDenied {
-                session_id: session.id().to_string(),
-                user_id: user_id.to_string(),
-            })
-        }
-    }
-
-    async fn resolve_session_for_membership(
-        &self,
-        session_ref: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        if let Some(session) = self
-            .session_projection
-            .resolve_session_ref(session_ref, workspace_id)
-        {
-            return Ok(session);
-        }
-        let app = self.app.lock().await;
-        app.sessions()
-            .resolve_session_ref(session_ref, workspace_id)
     }
 
     async fn execute_terminal_output_request(

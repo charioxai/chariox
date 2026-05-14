@@ -1,5 +1,12 @@
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
+
+use crate::app::DaemonApp;
+use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, QueryHistoryRequest};
 use crate::runtime::command::{KernelCallerKind, KernelCommand};
+use crate::runtime::projection::SessionStateProjectionStore;
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +36,125 @@ pub(crate) fn command_session_user_id(command: &KernelCommand) -> Option<String>
 pub(crate) fn is_implicit_local_session_caller(command: &KernelCommand) -> bool {
     matches!(command.caller.caller_kind, KernelCallerKind::LocalClient)
         && command.caller.user_id.is_none()
+}
+
+pub(crate) async fn authorize_session_membership(
+    app: &Arc<Mutex<DaemonApp>>,
+    session_projection: &SessionStateProjectionStore,
+    command: &KernelCommand,
+    request: &LocalDaemonRequest,
+) -> Result<String, DaemonError> {
+    if is_implicit_local_session_caller(command) {
+        return Ok(DEFAULT_LOCAL_USER_ID.to_string());
+    }
+    if matches!(
+        request,
+        LocalDaemonRequest::CreateSession(_) | LocalDaemonRequest::JoinSessionInvite(_)
+    ) {
+        return Ok(
+            command_session_user_id(command).unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
+        );
+    }
+
+    let Some(scope) = request_session_scope(request) else {
+        return Ok(
+            command_session_user_id(command).unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
+        );
+    };
+    let user_id = command_session_user_id(command).ok_or_else(|| {
+        DaemonError::MissingSessionCallerIdentity {
+            operation: command.command_type.clone(),
+        }
+    })?;
+
+    match scope {
+        SessionMembershipScope::AllSessions => Ok(user_id),
+        SessionMembershipScope::SessionId(session_id) => {
+            ensure_session_member(app, session_projection, &session_id, &user_id).await?;
+            Ok(user_id)
+        }
+        SessionMembershipScope::SessionRef {
+            session_ref,
+            workspace_id,
+        } => {
+            let session = resolve_session_for_membership(
+                app,
+                session_projection,
+                &session_ref,
+                workspace_id.as_deref(),
+            )
+            .await?;
+            if !session.has_member(&user_id) {
+                return Err(DaemonError::SessionAccessDenied {
+                    session_id: session.id().to_string(),
+                    user_id,
+                });
+            }
+            Ok(user_id)
+        }
+        SessionMembershipScope::AttachmentId(attachment_id) => {
+            let session_id = if let Some(session_id) =
+                session_projection.session_id_for_attachment(&attachment_id)
+            {
+                session_id
+            } else {
+                let app = app.lock().await;
+                app.sessions()
+                    .list_sessions()
+                    .into_iter()
+                    .find(|session| session.has_attachment(&attachment_id))
+                    .map(|session| session.id().to_string())
+                    .ok_or_else(|| DaemonError::AttachmentNotFound {
+                        attachment_id: attachment_id.clone(),
+                    })?
+            };
+            ensure_session_member(app, session_projection, &session_id, &user_id).await?;
+            Ok(user_id)
+        }
+    }
+}
+
+async fn ensure_session_member(
+    app: &Arc<Mutex<DaemonApp>>,
+    session_projection: &SessionStateProjectionStore,
+    session_id: &str,
+    user_id: &str,
+) -> Result<(), DaemonError> {
+    if let Some(session) = session_projection.get(session_id) {
+        if session.has_member(user_id) {
+            return Ok(());
+        }
+        return Err(DaemonError::SessionAccessDenied {
+            session_id: session.id().to_string(),
+            user_id: user_id.to_string(),
+        });
+    }
+    let session = {
+        let app = app.lock().await;
+        app.sessions().get_session(session_id)?
+    };
+    if session.has_member(user_id) {
+        Ok(())
+    } else {
+        Err(DaemonError::SessionAccessDenied {
+            session_id: session.id().to_string(),
+            user_id: user_id.to_string(),
+        })
+    }
+}
+
+async fn resolve_session_for_membership(
+    app: &Arc<Mutex<DaemonApp>>,
+    session_projection: &SessionStateProjectionStore,
+    session_ref: &str,
+    workspace_id: Option<&str>,
+) -> Result<crate::session::RuntimeSession, DaemonError> {
+    if let Some(session) = session_projection.resolve_session_ref(session_ref, workspace_id) {
+        return Ok(session);
+    }
+    let app = app.lock().await;
+    app.sessions()
+        .resolve_session_ref(session_ref, workspace_id)
 }
 
 pub(crate) fn request_session_scope(
