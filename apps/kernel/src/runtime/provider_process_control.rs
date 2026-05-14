@@ -11,7 +11,9 @@ use crate::local::{
     ListProviderProcessesRequest, LocalDaemonResponse, TeardownProviderProcessesRequest,
 };
 use crate::provider::ProviderProcessInfo;
-use crate::runtime::projection::ProviderRunProjectionStore;
+use crate::runtime::projection::{
+    AgentRuntimeProjectionStore, ProviderRunProjectionStore, SessionStateProjectionStore,
+};
 use crate::session::RuntimeSession;
 
 pub(crate) struct ProviderProcessTeardown {
@@ -86,6 +88,22 @@ pub(crate) async fn teardown_provider_processes(
     Ok(ProviderProcessTeardown {
         processes,
         sessions,
+    })
+}
+
+pub(crate) async fn execute_teardown_provider_processes_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    session_projection: &SessionStateProjectionStore,
+    agent_runtime_projection: &AgentRuntimeProjectionStore,
+    request: TeardownProviderProcessesRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let teardown = teardown_provider_processes(app, request).await?;
+    for session in &teardown.sessions {
+        agent_runtime_projection.update_session(session);
+        session_projection.update(session.clone());
+    }
+    Ok(LocalDaemonResponse::ProviderProcessesTornDown {
+        processes: teardown.processes,
     })
 }
 

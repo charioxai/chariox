@@ -11,7 +11,7 @@ use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
 use crate::local::{
     AgentGrantKind, GenerateWorkspaceCommitMessageRequest, GrantAgentCapabilityRequest,
     LocalDaemonRequest, LocalDaemonResponse, MoveAgentToRemoteRequest,
-    RevokeAgentCapabilityRequest, RunAgentUtilityRequest, TeardownProviderProcessesRequest,
+    RevokeAgentCapabilityRequest, RunAgentUtilityRequest,
 };
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_actor::AgentRuntime;
@@ -79,8 +79,8 @@ use crate::runtime::provider_launch_executor::{
     ProviderLaunchCommandExecutor, ProviderLaunchPendingTracker,
 };
 use crate::runtime::provider_process_control::{
-    execute_list_provider_processes_request, provider_processes_visible_to_user_from_projection,
-    teardown_provider_processes,
+    execute_list_provider_processes_request, execute_teardown_provider_processes_request,
+    provider_processes_visible_to_user_from_projection,
 };
 use crate::runtime::provider_run_control::{
     ensure_provider_run_visible_to_user, execute_get_provider_run_request,
@@ -1487,8 +1487,13 @@ impl CommandRouter {
                 self.terminal_output_executor.execute(request).await
             }
             LocalDaemonRequest::TeardownProviderProcesses(request) => {
-                self.execute_teardown_provider_processes_request(request)
-                    .await
+                execute_teardown_provider_processes_request(
+                    &self.app,
+                    &self.session_projection,
+                    &self.agent_runtime_projection,
+                    request,
+                )
+                .await
             }
             request => match command.priority {
                 KernelCommandPriority::Interactive => {
@@ -1599,20 +1604,6 @@ impl CommandRouter {
                 operation: "route capability request",
                 message: "capability request was not handled by executor".to_string(),
             })
-        })
-    }
-
-    async fn execute_teardown_provider_processes_request(
-        &self,
-        request: TeardownProviderProcessesRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let teardown = teardown_provider_processes(&self.app, request).await?;
-        for session in &teardown.sessions {
-            self.agent_runtime_projection.update_session(session);
-            self.session_projection.update(session.clone());
-        }
-        Ok(LocalDaemonResponse::ProviderProcessesTornDown {
-            processes: teardown.processes,
         })
     }
 
@@ -2144,8 +2135,13 @@ impl CommandRouter {
                 execute_list_provider_processes_request(&self.app, request).await
             }
             LocalDaemonRequest::TeardownProviderProcesses(request) => {
-                self.execute_teardown_provider_processes_request(request)
-                    .await
+                execute_teardown_provider_processes_request(
+                    &self.app,
+                    &self.session_projection,
+                    &self.agent_runtime_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::GetSessionHistory(request) => {
                 execute_session_history_request(
