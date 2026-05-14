@@ -14,9 +14,8 @@ use crate::error::DaemonError;
 use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
 use crate::local::provider_requests::{
-    forgotten_machine_record, load_provider_catalog, logout_provider_response,
-    provider_auth_status_response, provider_command_catalogs_response, record_for_machine_id,
-    resolve_machine_for_registry, resolve_machine_id_for_registry, start_provider_login_response,
+    forgotten_machine_record, load_provider_catalog, provider_command_catalogs_response,
+    record_for_machine_id, resolve_machine_for_registry, resolve_machine_id_for_registry,
     PROVIDER_CATALOG_CACHE_TTL,
 };
 use crate::local::{
@@ -30,15 +29,15 @@ use crate::local::{
     CreateWorkspaceLinkRequest, CreateWorkspacePullRequestRequest, CreateWorkspaceWorktreeRequest,
     DeleteCredentialSecretRequest, DeleteKernelRequest, DeleteWorkspaceWorktreeRequest,
     DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GenerateWorkspaceCommitMessageRequest,
-    GetPromptInputHistoryRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
-    GetSessionHistoryRequest, GetSessionStateRequest, GetUserConfigRequest,
-    GetUserConfigSchemaRequest, GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest,
-    GrantAgentCapabilityRequest, ImportSliceProviderAuthRequest, IssueCloudRelayClientTokenRequest,
-    JoinPairingInviteRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
-    ListAgentsRequest, ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest,
-    ListSessionMembersRequest, ListSessionsRequest, ListSlicesRequest, ListWorkspaceFilesRequest,
-    ListWorkspaceLinksRequest, ListWorkspaceWorktreesRequest, LocalDaemonRequest,
-    LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
+    GetPromptInputHistoryRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+    GetSessionStateRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
+    GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest, GrantAgentCapabilityRequest,
+    ImportSliceProviderAuthRequest, IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest,
+    JoinSessionInviteRequest, JoinTerminalPairingLinkRequest, ListAgentsRequest,
+    ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest, ListSessionMembersRequest,
+    ListSessionsRequest, ListSlicesRequest, ListWorkspaceFilesRequest, ListWorkspaceLinksRequest,
+    ListWorkspaceWorktreesRequest, LocalDaemonRequest, LocalDaemonResponse,
+    LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
     PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairingInviteIntent,
     PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest, PumpTerminalOutputRequest,
     PushWorkspaceBranchRequest, RecordPromptInputHistoryRequest, RelayStatus,
@@ -48,9 +47,9 @@ use crate::local::{
     SemanticSearchHistoryMode, SemanticSearchHistoryRequest, SessionInviteRecord,
     SetCredentialSecretRequest, SetUserConfigValueRequest, ShowCloudSessionInviteRequest,
     ShowWorkspaceLinkRequest, SliceRefRequest, StartCloudRelayLoginRequest,
-    StartProviderLoginRequest, TeardownProviderProcessesRequest, TerminalPairingLinkRecord,
-    TerminalType, UnsetUserConfigValueRequest, UpdateProviderRunSelectionRequest,
-    UserConfigMutationEffect, WaitingRoomPublicSnapshot, WorkspaceCommitMessageUtilityInput,
+    TeardownProviderProcessesRequest, TerminalPairingLinkRecord, TerminalType,
+    UnsetUserConfigValueRequest, UpdateProviderRunSelectionRequest, UserConfigMutationEffect,
+    WaitingRoomPublicSnapshot, WorkspaceCommitMessageUtilityInput,
 };
 use crate::provider::{
     run_codex_utility_prompt, run_opencode_utility_prompt, ProviderNativeInteractionBridge,
@@ -104,6 +103,10 @@ use crate::runtime::projection::{
     SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
+use crate::runtime::provider_auth_control::{
+    execute_get_provider_auth_status_request, execute_logout_provider_request,
+    execute_start_provider_login_request,
+};
 use crate::runtime::provider_launch_executor::ProviderLaunchCommandExecutor;
 use crate::runtime::provider_process_control::{
     execute_list_provider_processes_request,
@@ -2698,38 +2701,11 @@ impl CommandRouter {
         crate::local::provider_requests::update_provider_run_selection_response(&mut app, request)
     }
 
-    async fn execute_get_provider_auth_status_request(
-        request: GetProviderAuthStatusRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        tokio::task::spawn_blocking(move || provider_auth_status_response(request))
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "get provider auth status",
-                message: error.to_string(),
-            })?
-    }
-
-    async fn execute_start_provider_login_request(
-        request: StartProviderLoginRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        tokio::task::spawn_blocking(move || start_provider_login_response(request))
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "start provider login",
-                message: error.to_string(),
-            })?
-    }
-
     async fn execute_logout_provider_request(
         &self,
         request: LogoutProviderRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let response = tokio::task::spawn_blocking(move || logout_provider_response(request))
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "logout provider",
-                message: error.to_string(),
-            })??;
+        let response = execute_logout_provider_request(request).await?;
         self.invalidate_provider_catalog_caches().await;
         Ok(response)
     }
@@ -5088,10 +5064,10 @@ impl CommandRouter {
                 execute_revoke_paired_client_request(request)
             }
             LocalDaemonRequest::GetProviderAuthStatus(request) => {
-                Self::execute_get_provider_auth_status_request(request).await
+                execute_get_provider_auth_status_request(request).await
             }
             LocalDaemonRequest::StartProviderLogin(request) => {
-                Self::execute_start_provider_login_request(request).await
+                execute_start_provider_login_request(request).await
             }
             LocalDaemonRequest::LogoutProvider(request) => {
                 self.execute_logout_provider_request(request).await
