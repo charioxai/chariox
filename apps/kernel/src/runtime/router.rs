@@ -36,10 +36,9 @@ use crate::local::{
     GrantAgentCapabilityRequest, ImportSliceProviderAuthRequest, IssueCloudRelayClientTokenRequest,
     JoinPairingInviteRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
     ListAgentsRequest, ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest,
-    ListProviderProcessesRequest, ListSessionMembersRequest, ListSessionsRequest,
-    ListSlicesRequest, ListWorkspaceFilesRequest, ListWorkspaceLinksRequest,
-    ListWorkspaceWorktreesRequest, LocalDaemonRequest, LocalDaemonResponse,
-    LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
+    ListSessionMembersRequest, ListSessionsRequest, ListSlicesRequest, ListWorkspaceFilesRequest,
+    ListWorkspaceLinksRequest, ListWorkspaceWorktreesRequest, LocalDaemonRequest,
+    LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
     PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairingInviteIntent,
     PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest, PumpTerminalOutputRequest,
     PushWorkspaceBranchRequest, RecordPromptInputHistoryRequest, RelayStatus,
@@ -106,6 +105,11 @@ use crate::runtime::projection::{
 };
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_launch_executor::ProviderLaunchCommandExecutor;
+use crate::runtime::provider_process_control::{
+    execute_list_provider_processes_request,
+    provider_processes_visible_to_user as filter_provider_processes_visible_to_user,
+    teardown_provider_processes,
+};
 use crate::runtime::semantic_history_utility::{
     parse_semantic_history_search_utility_output, semantic_history_search_utility_prompt,
 };
@@ -1956,16 +1960,11 @@ impl CommandRouter {
         processes: Vec<crate::provider::ProviderProcessInfo>,
         caller_user_id: &str,
     ) -> Vec<crate::provider::ProviderProcessInfo> {
-        processes
-            .into_iter()
-            .filter(|process| {
-                process.owner_provider_run_ids.iter().any(|run_id| {
-                    self.provider_run_projection
-                        .get(run_id)
-                        .is_some_and(|run| run.owned_by(caller_user_id))
-                })
-            })
-            .collect()
+        filter_provider_processes_visible_to_user(processes, caller_user_id, |run_id, user_id| {
+            self.provider_run_projection
+                .get(run_id)
+                .is_some_and(|run| run.owned_by(user_id))
+        })
     }
 
     fn projected_session_inspection_response(
@@ -4687,30 +4686,14 @@ impl CommandRouter {
         &self,
         request: TeardownProviderProcessesRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (processes, sessions) = {
-            let mut app = self.app.lock().await;
-            let processes =
-                app.teardown_provider_processes(request.provider.as_deref(), request.force)?;
-            let session_ids = processes
-                .iter()
-                .flat_map(|process| process.owner_session_ids.iter())
-                .cloned()
-                .collect::<HashSet<_>>();
-            let sessions = session_ids
-                .into_iter()
-                .filter_map(|session_id| {
-                    crate::app::KernelSessionReadService::new(&app)
-                        .session_snapshot(&session_id)
-                        .ok()
-                })
-                .collect::<Vec<_>>();
-            (processes, sessions)
-        };
-        for session in &sessions {
+        let teardown = teardown_provider_processes(&self.app, request).await?;
+        for session in &teardown.sessions {
             self.agent_runtime_projection.update_session(session);
             self.session_projection.update(session.clone());
         }
-        Ok(LocalDaemonResponse::ProviderProcessesTornDown { processes })
+        Ok(LocalDaemonResponse::ProviderProcessesTornDown {
+            processes: teardown.processes,
+        })
     }
 
     async fn execute_session_history_request_from_session(
@@ -5682,23 +5665,6 @@ fn router_projection_stores(
         app.prompt_state_owner(),
         app.prompt_id_allocator(),
     )
-}
-
-async fn execute_list_provider_processes_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    request: ListProviderProcessesRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let (processes, delay_ms) = {
-        let app = app.lock().await;
-        (
-            app.list_provider_processes(request.provider.as_deref())?,
-            app.config().provider_process_list_delay_ms,
-        )
-    };
-    if delay_ms > 0 {
-        sleep(Duration::from_millis(delay_ms)).await;
-    }
-    Ok(LocalDaemonResponse::ProviderProcessesListed { processes })
 }
 
 #[cfg(test)]

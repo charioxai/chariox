@@ -11,6 +11,7 @@ pub(crate) mod invite_tokens;
 pub mod projection;
 pub mod prompt_state;
 pub mod provider_launch_executor;
+pub(crate) mod provider_process_control;
 pub mod router;
 pub(crate) mod semantic_history_utility;
 pub mod session_actor;
