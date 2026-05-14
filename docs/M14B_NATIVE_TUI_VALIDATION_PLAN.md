@@ -42,6 +42,15 @@ attachments. Arroba-origin text attachments are delivered through Claude hook
 `additionalContext`; Arroba-origin non-text attachments are materialized and
 submitted to Claude's TUI as native `@path` mentions.
 
+2026-05-14 standard remote update: standard home-worker native TUI validation
+cannot pass with the current native TUI launch contract. The launchers create or
+attach Arroba agents through the home kernel, but they can only launch native
+provider runs with `LaunchProviderRun` on that same kernel. The kernel correctly
+rejects `LaunchProviderRun` for remote-backed agents because provider execution
+must happen on the worker. Standard home-worker native TUI requires a new
+remote-backed native provider-run path before the prompt/turn, permission, and
+attachment matrix can be validated.
+
 ## Goal
 
 Validate and complete native TUI parity across the three providers and three
@@ -192,6 +201,19 @@ Provider notes:
      native `@path` mentions so the provider TUI handles them normally.
 
 5. Validate standard remote home-worker native TUI.
+   - Blocked until native TUI launches can create remote-backed Arroba agents
+     and bind their provider-native protocol stream to a worker-owned provider
+     run.
+   - Required product work:
+     - add native TUI `--machine`/`--kernel-ref` placement arguments for Codex,
+       OpenCode, and Claude;
+     - add a kernel-owned remote native provider-run launch path that asks the
+       selected worker kernel to launch/bind the provider-native runtime for the
+       leased agent;
+     - mirror native prompt/turn output, permission interactions, status, and
+       prompt attachments back to the home session without making the relay a
+       runtime authority;
+     - add the standard home-worker live drill only after that contract exists.
    - Run the prompt/turn, permission, and prompt-attachment matrix for all three
      providers.
    - Home kernel owns the session; worker kernel owns provider execution.
