@@ -53,6 +53,7 @@ use crate::runtime::provider_process_control::{
 };
 use crate::runtime::provider_run_control::{
     execute_provider_run_request, projected_provider_run_response,
+    refresh_provider_run_projection_from_response,
 };
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
@@ -1112,7 +1113,11 @@ impl CommandRouter {
             &result,
         )
         .await;
-        self.apply_provider_run_projection_refresh(&result).await;
+        refresh_provider_run_projection_from_response(
+            &self.provider_run_projection,
+            &self.provider_process_projection,
+            &result,
+        );
         self.apply_provider_launch_projection_state(&result).await;
         cleanup_runtime_lanes_after_response(&self.agent_runtime, &self.workflow_runtime, &result)
             .await;
@@ -1627,21 +1632,6 @@ impl CommandRouter {
         result: &Result<LocalDaemonResponse, DaemonError>,
     ) {
         self.provider_launch_pending.track_response(result).await;
-    }
-
-    async fn apply_provider_run_projection_refresh(
-        &self,
-        result: &Result<LocalDaemonResponse, DaemonError>,
-    ) {
-        match result {
-            Ok(LocalDaemonResponse::ProviderRun { provider_run })
-            | Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run })
-            | Ok(LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) => {
-                self.provider_run_projection.update(provider_run.clone());
-                self.provider_process_projection.invalidate();
-            }
-            _ => {}
-        }
     }
 }
 

@@ -8,7 +8,9 @@ use crate::local::{
     GetProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
     UpdateProviderRunSelectionRequest,
 };
-use crate::runtime::projection::{ProviderCatalogProjectionStore, ProviderRunProjectionStore};
+use crate::runtime::projection::{
+    ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
+};
 use crate::runtime::provider_auth_control::execute_logout_provider_request as execute_provider_logout;
 
 pub(crate) async fn execute_provider_run_request(
@@ -67,6 +69,22 @@ pub(crate) fn projected_provider_run_response(
         return Ok(None);
     }
     Ok(Some(LocalDaemonResponse::ProviderRun { provider_run }))
+}
+
+pub(crate) fn refresh_provider_run_projection_from_response(
+    provider_run_projection: &ProviderRunProjectionStore,
+    provider_process_projection: &ProviderProcessProjectionStore,
+    result: &Result<LocalDaemonResponse, DaemonError>,
+) {
+    match result {
+        Ok(LocalDaemonResponse::ProviderRun { provider_run })
+        | Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run })
+        | Ok(LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) => {
+            provider_run_projection.update(provider_run.clone());
+            provider_process_projection.invalidate();
+        }
+        _ => {}
+    }
 }
 
 pub(crate) async fn execute_logout_provider_and_invalidate_catalog_request(
