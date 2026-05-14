@@ -111,6 +111,9 @@ use crate::runtime::waiting_room_activity::{
 };
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
+use crate::runtime::workspace_git_common::{
+    git_command_output, same_fs_path, workspace_display_label, worktree_display_label,
+};
 use crate::runtime::workspace_search::{
     create_workspace_directory, expand_workspace_query_path, search_workspace_directories,
 };
@@ -6406,79 +6409,6 @@ fn detect_git_branch(path: &str) -> Result<String, DaemonError> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn workspace_display_label(workspace_path: &str) -> Option<String> {
-    git_command_output(workspace_path, &["remote", "get-url", "origin"])
-        .as_deref()
-        .and_then(repo_label_from_remote_url)
-        .or_else(|| {
-            Path::new(workspace_path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(str::to_string)
-        })
-}
-
-fn repo_label_from_remote_url(url: &str) -> Option<String> {
-    let trimmed = url.trim().trim_end_matches(".git");
-    let candidate = if let Some(rest) = trimmed.strip_prefix("git@") {
-        rest.split_once(':').map(|(_, path)| path.to_string())
-    } else if let Some((_, path)) = trimmed.split_once("://") {
-        let mut parts = path.split('/').collect::<Vec<_>>();
-        if parts.len() >= 3 {
-            Some(parts.split_off(parts.len() - 2).join("/"))
-        } else {
-            None
-        }
-    } else {
-        None
-    }?;
-    let parts = candidate
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    if parts.len() < 2 {
-        return None;
-    }
-    Some(format!(
-        "{}/{}",
-        parts[parts.len() - 2],
-        parts[parts.len() - 1]
-    ))
-}
-
-fn worktree_display_label(
-    path: &str,
-    workspace_path: &str,
-    branch: Option<&str>,
-) -> Option<String> {
-    let branch = branch
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .filter(|value| *value != "HEAD")
-        .unwrap_or("detached");
-    if same_fs_path(path, workspace_path) {
-        return Some(branch.to_string());
-    }
-    let name = Path::new(path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|value| !value.is_empty())?;
-    Some(format!("{name} / {branch}"))
-}
-
-fn git_command_output(path: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(path)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!value.is_empty()).then_some(value)
-}
-
 fn inspect_workspace_git_overview(
     workspace_id: &str,
     worktree_id: &str,
@@ -8006,11 +7936,6 @@ fn timestamp_slug() -> String {
         .unwrap_or_default()
         .as_secs();
     now.to_string()
-}
-
-fn same_fs_path(left: &str, right: &str) -> bool {
-    std::fs::canonicalize(left).ok() == std::fs::canonicalize(right).ok()
-        || Path::new(left) == Path::new(right)
 }
 
 fn paired_client_record(client: crate::config::PersistedClientPairing) -> PairedClientRecord {

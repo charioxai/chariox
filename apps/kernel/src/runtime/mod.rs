@@ -14,5 +14,6 @@ pub(crate) mod user_config_policy;
 pub(crate) mod waiting_room_activity;
 pub mod workflow_actor;
 pub mod workspace_coordinator;
+pub(crate) mod workspace_git_common;
 pub mod workspace_identity_monitor;
 pub(crate) mod workspace_search;
