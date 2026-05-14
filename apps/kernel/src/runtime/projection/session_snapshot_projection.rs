@@ -176,3 +176,170 @@ pub(crate) fn agent_activity_for_session_projection(
 
     activity
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::{AgentPromptRuntimeStatus, AgentRuntimeStatus, SessionSnapshotProjection};
+    use crate::runtime::projection::test_support::{
+        attach_cli, launch_dev_stub_provider, submit_prompt,
+    };
+    use crate::session::CreateSessionRequest;
+    use crate::{DaemonApp, DaemonConfig};
+
+    #[test]
+    fn session_snapshot_projection_includes_metadata_and_agents() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+
+        assert_eq!(projection.metadata.projection_version, 2);
+        assert_eq!(projection.metadata.last_event_id, 42);
+        assert_eq!(projection.session.id(), session.id());
+        assert_eq!(projection.session.agents().len(), 1);
+    }
+
+    #[test]
+    fn session_snapshot_projection_marks_settling_prompt_as_working() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        let attachment_id = attach_cli(&mut app, session.id(), "cli-settling");
+        submit_prompt(
+            &mut app,
+            session.id(),
+            &attachment_id,
+            agent.id(),
+            "status check",
+        );
+        app.prompt_activity_store().write().insert(
+            provider_run.id().to_string(),
+            crate::app::ActivePromptState {
+                last_output_at: None,
+                saw_response_content: true,
+                completion_recorded: true,
+                settlement_requested: true,
+            },
+        );
+        let active_turns = app.active_turn_store();
+        active_turns.start(crate::app::ActiveTurnState::new(
+            session.id().to_string(),
+            agent.id().to_string(),
+            "prompt-settling".to_string(),
+            provider_run.id().to_string(),
+        ));
+        active_turns.mark_settling(provider_run.id());
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+
+        assert_eq!(activity.status, AgentRuntimeStatus::Working);
+        assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::Settling);
+        assert!(activity.busy);
+    }
+
+    #[test]
+    fn session_snapshot_projection_keeps_active_turn_working_without_active_prompt_activity() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        app.active_turn_store()
+            .start(crate::app::ActiveTurnState::new(
+                session.id().to_string(),
+                agent.id().to_string(),
+                "prompt-restored".to_string(),
+                provider_run.id().to_string(),
+            ));
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+
+        assert_eq!(activity.status, AgentRuntimeStatus::Working);
+        assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::Running);
+        assert!(activity.busy);
+        assert_eq!(
+            activity
+                .active_turn
+                .as_ref()
+                .map(|turn| turn.prompt_id.as_str()),
+            Some("prompt-restored")
+        );
+    }
+
+    #[test]
+    fn session_snapshot_projection_ignores_prompt_activity_without_active_turn() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        app.prompt_activity_store().write().insert(
+            provider_run.id().to_string(),
+            crate::app::ActivePromptState {
+                last_output_at: Some(Instant::now()),
+                saw_response_content: true,
+                completion_recorded: false,
+                settlement_requested: true,
+            },
+        );
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+
+        assert_eq!(activity.status, AgentRuntimeStatus::Idle);
+        assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::None);
+        assert!(!activity.busy);
+        assert!(activity.active_turn.is_none());
+    }
+
+    #[test]
+    fn session_snapshot_projection_marks_completed_prompt_as_idle() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        let attachment_id = attach_cli(&mut app, session.id(), "cli-idle");
+        submit_prompt(
+            &mut app,
+            session.id(),
+            &attachment_id,
+            agent.id(),
+            "status check",
+        );
+        app.complete_active_prompt(session.id(), agent.id(), Some(provider_run.id()))
+            .expect("prompt should complete");
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+
+        assert_eq!(activity.status, AgentRuntimeStatus::Idle);
+        assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::None);
+        assert!(!activity.busy);
+    }
+}

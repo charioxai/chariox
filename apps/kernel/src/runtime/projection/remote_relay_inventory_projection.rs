@@ -76,3 +76,22 @@ impl RemoteRelayInventoryProjectionStore {
         state.refresh_requested_at_ms = 0;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::RemoteRelayInventoryProjectionStore;
+
+    #[test]
+    fn remote_relay_inventory_projection_requests_refresh_when_empty_or_stale() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        assert!(projection.should_request_refresh(10_000, 5_000, 1_000));
+        assert!(
+            !projection.should_request_refresh(10_500, 5_000, 1_000),
+            "refresh should respect the cooldown while the projection remains empty"
+        );
+        assert!(
+            projection.should_request_refresh(16_000, 5_000, 1_000),
+            "stale empty projection should request another refresh after the cooldown"
+        );
+    }
+}

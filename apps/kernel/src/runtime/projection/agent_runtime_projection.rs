@@ -180,3 +180,141 @@ fn agent_runtime_projection_from_session(
             .unwrap_or(0),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::agent::CreateAgentRequest;
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::runtime::projection::test_support::{launch_dev_stub_provider, submit_prompt};
+    use crate::runtime::projection::AgentRuntimeProjectionStore;
+    use crate::session::CreateSessionRequest;
+    use crate::{DaemonApp, DaemonConfig};
+
+    #[test]
+    fn agent_runtime_projection_reads_agent_prompt_state() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                &session_id,
+                "cli-agent-runtime-projection",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attach should succeed");
+        launch_dev_stub_provider(&mut app, &session_id, &agent_id);
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &agent_id,
+            "first prompt",
+        );
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &agent_id,
+            "queued prompt",
+        );
+
+        let session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
+            .expect("session snapshot should load");
+        let store = AgentRuntimeProjectionStore::default();
+        store.update_session(&session);
+
+        let projection = store
+            .get(&agent_id)
+            .expect("agent projection should be available");
+        assert_eq!(projection.session_id, session_id);
+        assert_eq!(projection.agent_id, agent_id);
+        assert!(projection.active_prompt.is_some());
+        assert_eq!(
+            projection
+                .next_queued_prompt
+                .as_ref()
+                .map(|prompt| prompt.prompt()),
+            Some("queued prompt")
+        );
+        assert_eq!(projection.queued_prompt_count, 1);
+        assert_eq!(
+            store
+                .next_queued_prompt(&projection.session_id, &projection.agent_id)
+                .as_ref()
+                .map(|prompt| prompt.prompt()),
+            Some("queued prompt")
+        );
+        assert_eq!(
+            store.list_for_session(&projection.session_id),
+            vec![projection]
+        );
+        assert_eq!(store.health_snapshot().active_prompts, 1);
+        assert_eq!(store.health_snapshot().queued_prompts, 1);
+    }
+
+    #[test]
+    fn agent_runtime_projection_can_refresh_one_agent_without_stomping_peers() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let first_agent_id = first_agent.id().to_string();
+        let second_agent_id = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(&session_id, "claude-code").with_alias("peer"))
+            .expect("second agent should spawn")
+            .id()
+            .to_string();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                &session_id,
+                "cli-agent-runtime-one-agent-refresh",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attach should succeed");
+        for agent_id in [&first_agent_id, &second_agent_id] {
+            launch_dev_stub_provider(&mut app, &session_id, agent_id);
+        }
+
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &first_agent_id,
+            "first active",
+        );
+        let first_only_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
+            .expect("first snapshot should load");
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &second_agent_id,
+            "second active",
+        );
+        let both_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
+            .expect("second snapshot should load");
+
+        let store = AgentRuntimeProjectionStore::default();
+        store.update_session(&both_snapshot);
+        assert!(store
+            .get(&second_agent_id)
+            .and_then(|projection| projection.active_prompt)
+            .is_some());
+
+        store.update_agent_from_session(&first_only_snapshot, &first_agent_id);
+        assert!(
+            store
+                .get(&second_agent_id)
+                .and_then(|projection| projection.active_prompt)
+                .is_some(),
+            "single-agent refresh should not erase newer peer prompt state"
+        );
+    }
+}

@@ -176,3 +176,171 @@ impl DaemonHealthProjection {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, DaemonHealthProjection,
+        ManagedIoHealthSnapshot, ProjectionInvariantHealthSnapshot, ProviderCatalogHealthSnapshot,
+        ProviderRunActorHealthSnapshot, SessionProjectionHealthSnapshot,
+        WorkspaceCoordinationHealthSnapshot, WorktreeClaimSnapshot,
+    };
+    use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
+    use crate::runtime::projection::TransportHealthSnapshot;
+    use crate::terminal::TerminalStreamHealthSnapshot;
+
+    #[test]
+    fn daemon_health_projection_records_actor_queue_snapshots() {
+        let projection = DaemonHealthProjection::new(
+            7,
+            vec![ActorQueueSnapshot::new("session-1", 128, 2)],
+            vec![ActorQueueSnapshot::new("agent-1", 128, 1)],
+            vec![ActorQueueSnapshot::new("workflow-session-1", 128, 3)],
+            vec![ActorQueueSnapshot::new("provider-run-1", 1, 1)],
+            ProviderRunActorHealthSnapshot {
+                enqueued_commands: 5,
+                enqueue_rejections: 1,
+            },
+            CapabilityExecutorHealthSnapshot {
+                max_concurrent_jobs: 64,
+                available_permits: 63,
+                submitted_jobs: 8,
+                running_jobs: 1,
+                completed_jobs: 6,
+                failed_jobs: 1,
+                rejected_jobs: 0,
+                join_errors: 0,
+            },
+            SessionProjectionHealthSnapshot {
+                projected_sessions: 3,
+                projected_session_list_entries: Some(3),
+                active_prompts: 99,
+                queued_prompts: 98,
+            },
+            AgentRuntimeProjectionHealthSnapshot {
+                projected_agents: 3,
+                active_prompts: 1,
+                queued_prompts: 2,
+            },
+            ProviderCatalogHealthSnapshot {
+                cached: true,
+                expired: false,
+                age_ms: Some(10),
+                ttl_ms: 5_000,
+            },
+            TransportHealthSnapshot {
+                active_connections: 2,
+                active_subscriptions: 1,
+                retained_event_limit: 256,
+                command_result_cache_limit: 512,
+                inbound_request_limit: 8,
+                incoming_requests: 9,
+                emitted_events: 4,
+                replay_gaps: 1,
+                inbound_overload_rejections: 1,
+                duplicate_command_conflicts: 1,
+                outgoing_queue_overflows: 1,
+                slow_consumer_closes: 1,
+            },
+            TerminalStreamHealthSnapshot {
+                pending_output_records: 4,
+                pending_notice_records: 3,
+                pending_completion_records: 2,
+                pending_output_record_limit_per_attachment: 4096,
+                trimmed_pending_output_recipients: 1,
+            },
+            WorkspaceCoordinationHealthSnapshot {
+                active_worktree_claims: vec![WorktreeClaimSnapshot {
+                    workspace_id: "workspace-1".to_string(),
+                    worktree_id: "worktree-1".to_string(),
+                    session_ids: vec!["session-1".to_string(), "session-2".to_string()],
+                }],
+                worktree_collisions: vec![WorktreeClaimSnapshot {
+                    workspace_id: "workspace-1".to_string(),
+                    worktree_id: "worktree-1".to_string(),
+                    session_ids: vec!["session-1".to_string(), "session-2".to_string()],
+                }],
+                active_operation_claims: Vec::new(),
+            },
+            ManagedIoHealthSnapshot {
+                active_reservations: 2,
+                active_reservation_artifacts: 1,
+                workspace_identity:
+                    crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitorHealthSnapshot {
+                        tracked_provider_runs: 3,
+                        identity_changed_provider_runs: 1,
+                        invalid_provider_runs: 1,
+                        current_generation_total: 2,
+                    },
+                external_changes: crate::io::ArtifactExternalChangeHealthSnapshot {
+                    tracked_artifacts: 4,
+                    externally_changed_artifacts: 2,
+                    external_change_events: 5,
+                    live_watcher_started: true,
+                    live_watcher_scans: 7,
+                    live_watcher_scan_errors: 0,
+                },
+            },
+            ProjectionInvariantHealthSnapshot {
+                checked_sessions: 1,
+                checked_agents: 3,
+                mismatches: Vec::new(),
+            },
+        );
+
+        assert_eq!(projection.metadata.last_event_id, 7);
+        assert_eq!(projection.session_command_lanes[0].lane_id, "session-1");
+        assert_eq!(projection.session_command_lanes[0].queued_commands, 2);
+        assert_eq!(projection.agent_command_lanes[0].lane_id, "agent-1");
+        assert_eq!(projection.agent_command_lanes[0].queued_commands, 1);
+        assert_eq!(
+            projection.workflow_command_lanes[0].lane_id,
+            "workflow-session-1"
+        );
+        assert_eq!(projection.workflow_command_lanes[0].queued_commands, 3);
+        assert_eq!(
+            projection.provider_runtime_lanes[0].lane_id,
+            "provider-run-1"
+        );
+        assert_eq!(projection.provider_run_actor.enqueued_commands, 5);
+        assert_eq!(projection.provider_run_actor.enqueue_rejections, 1);
+        assert_eq!(projection.capability_executor.submitted_jobs, 8);
+        assert_eq!(projection.capability_executor.running_jobs, 1);
+        assert_eq!(projection.session_projection.active_prompts, 1);
+        assert_eq!(projection.session_projection.queued_prompts, 2);
+        assert_eq!(projection.agent_runtime_projection.projected_agents, 3);
+        assert_eq!(projection.agent_runtime_projection.active_prompts, 1);
+        assert!(projection.provider_catalog.cached);
+        assert_eq!(projection.transport.active_connections, 2);
+        assert_eq!(projection.transport.slow_consumer_closes, 1);
+        assert_eq!(projection.terminal_stream.pending_output_records, 4);
+        assert_eq!(
+            projection.terminal_stream.trimmed_pending_output_recipients,
+            1
+        );
+        assert_eq!(
+            projection.workspace_coordination.worktree_collisions.len(),
+            1
+        );
+        assert_eq!(projection.managed_io.active_reservations, 2);
+        assert_eq!(projection.managed_io.active_reservation_artifacts, 1);
+        assert_eq!(
+            projection
+                .managed_io
+                .workspace_identity
+                .invalid_provider_runs,
+            1
+        );
+        assert_eq!(projection.managed_io.external_changes.tracked_artifacts, 4);
+        assert_eq!(
+            projection
+                .managed_io
+                .external_changes
+                .external_change_events,
+            5
+        );
+        assert!(projection.managed_io.external_changes.live_watcher_started);
+        assert_eq!(projection.projection_invariants.checked_agents, 3);
+        assert!(projection.projection_invariants.mismatches.is_empty());
+    }
+}

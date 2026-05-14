@@ -478,3 +478,103 @@ fn workspace_coordination_snapshot(
         active_operation_claims,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::runtime::projection::test_support::{launch_dev_stub_provider, submit_prompt};
+    use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
+    use crate::session::CreateSessionRequest;
+    use crate::{DaemonApp, DaemonConfig};
+
+    #[test]
+    fn projection_invariant_health_reports_agent_runtime_drift() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                &session_id,
+                "cli-projection-invariant",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        launch_dev_stub_provider(&mut app, &session_id, &agent_id);
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &agent_id,
+            "active prompt",
+        );
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &agent_id,
+            "queued prompt",
+        );
+
+        let session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
+            .expect("session snapshot should load");
+        let session_store = SessionStateProjectionStore::default();
+        let agent_store = AgentRuntimeProjectionStore::default();
+        session_store.update(session.clone());
+        agent_store.update_session(&session);
+        let clean_snapshot = session_store.invariant_snapshot(&agent_store);
+        assert_eq!(clean_snapshot.checked_sessions, 1);
+        assert_eq!(clean_snapshot.checked_agents, 1);
+        assert!(clean_snapshot.mismatches.is_empty());
+
+        let projection = agent_store
+            .get(&agent_id)
+            .expect("agent projection should exist before drift injection");
+        agent_store.update_agent_prompt_state(
+            &session_id,
+            &agent_id,
+            projection.active_prompt,
+            None,
+            0,
+        );
+
+        let drift_snapshot = session_store.invariant_snapshot(&agent_store);
+        assert!(drift_snapshot
+            .mismatches
+            .iter()
+            .any(|mismatch| mismatch.kind == "queue_front_mismatch"));
+        assert!(drift_snapshot
+            .mismatches
+            .iter()
+            .any(|mismatch| mismatch.kind == "queued_prompt_count_mismatch"));
+    }
+
+    #[test]
+    fn workspace_coordination_snapshot_reports_worktree_collisions() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (first, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "shared-worktree"))
+            .expect("first session should be created");
+        let (second, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "shared-worktree"))
+            .expect("second session should be created");
+        let (other_workspace, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-2", "shared-worktree"))
+            .expect("other workspace session should be created");
+
+        let store = SessionStateProjectionStore::default();
+        store.update_list(vec![first.clone(), second.clone(), other_workspace]);
+
+        let snapshot = store.workspace_coordination_snapshot(Vec::new());
+        assert_eq!(snapshot.active_worktree_claims.len(), 2);
+        assert_eq!(snapshot.worktree_collisions.len(), 1);
+        assert!(snapshot.active_operation_claims.is_empty());
+        assert_eq!(
+            snapshot.worktree_collisions[0].session_ids,
+            vec![first.id().to_string(), second.id().to_string()]
+        );
+    }
+}
