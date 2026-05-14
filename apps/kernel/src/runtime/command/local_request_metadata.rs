@@ -1,0 +1,434 @@
+use crate::local::LocalDaemonRequest;
+
+use super::KernelCommandPriority;
+
+#[derive(Debug)]
+pub(super) struct LocalRequestMetadata {
+    pub(super) command_type: &'static str,
+    pub(super) priority: KernelCommandPriority,
+    pub(super) session_id: Option<String>,
+    pub(super) attachment_id: Option<String>,
+    pub(super) agent_id: Option<String>,
+    pub(super) provider_run_id: Option<String>,
+    pub(super) workflow_run_id: Option<String>,
+    pub(super) node_run_id: Option<String>,
+}
+
+impl LocalRequestMetadata {
+    fn new(command_type: &'static str, priority: KernelCommandPriority) -> Self {
+        Self {
+            command_type,
+            priority,
+            session_id: None,
+            attachment_id: None,
+            agent_id: None,
+            provider_run_id: None,
+            workflow_run_id: None,
+            node_run_id: None,
+        }
+    }
+
+    fn session(mut self, session_id: &str) -> Self {
+        self.session_id = Some(session_id.to_string());
+        self
+    }
+
+    fn attachment(mut self, attachment_id: &str) -> Self {
+        self.attachment_id = Some(attachment_id.to_string());
+        self
+    }
+
+    fn agent(mut self, agent_id: &str) -> Self {
+        self.agent_id = Some(agent_id.to_string());
+        self
+    }
+
+    fn provider_run(mut self, provider_run_id: &str) -> Self {
+        self.provider_run_id = Some(provider_run_id.to_string());
+        self
+    }
+
+    fn workflow_run(mut self, workflow_run_id: &str) -> Self {
+        self.workflow_run_id = Some(workflow_run_id.to_string());
+        self
+    }
+}
+
+pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata {
+    use KernelCommandPriority::{Background, Interactive, Normal};
+
+    match request {
+        LocalDaemonRequest::CreateSession(_) => {
+            LocalRequestMetadata::new("session.create", Interactive)
+        }
+        LocalDaemonRequest::AttachToSession(request) => {
+            LocalRequestMetadata::new("session.attach", Interactive).session(&request.session_id)
+        }
+        LocalDaemonRequest::DetachFromSession(request) => {
+            LocalRequestMetadata::new("session.detach", Interactive)
+                .attachment(&request.attachment_id)
+        }
+        LocalDaemonRequest::CreateWorkspaceLink(request) => {
+            LocalRequestMetadata::new("workspace_link.create", Normal).session(&request.session_id)
+        }
+        LocalDaemonRequest::ListWorkspaceLinks(request) => {
+            LocalRequestMetadata::new("workspace_link.list", Normal).session(&request.session_id)
+        }
+        LocalDaemonRequest::ShowWorkspaceLink(request) => {
+            LocalRequestMetadata::new("workspace_link.show", Normal).session(&request.session_id)
+        }
+        LocalDaemonRequest::AttachWorkspaceLink(request) => {
+            LocalRequestMetadata::new("workspace_link.attach", Normal).session(&request.session_id)
+        }
+        LocalDaemonRequest::DetachWorkspaceLink(request) => {
+            LocalRequestMetadata::new("workspace_link.detach", Normal).session(&request.session_id)
+        }
+        LocalDaemonRequest::SubmitPrompt(request) => {
+            let mut metadata = LocalRequestMetadata::new("prompt.submit", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id);
+            if let Some(agent_id) = request.target_agent_id.as_deref() {
+                metadata = metadata.agent(agent_id);
+            }
+            metadata
+        }
+        LocalDaemonRequest::CancelActivePrompt(request) => {
+            LocalRequestMetadata::new("prompt.cancel", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
+        LocalDaemonRequest::ResizeTerminal(request) => {
+            LocalRequestMetadata::new("terminal.resize", Interactive).session(&request.session_id)
+        }
+        LocalDaemonRequest::SendTerminalInput(request) => {
+            LocalRequestMetadata::new("terminal.input.send", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
+        LocalDaemonRequest::PollRuntimeNotices(request) => {
+            LocalRequestMetadata::new("runtime_notice.poll", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
+        LocalDaemonRequest::RespondToInteraction(request) => {
+            LocalRequestMetadata::new("interaction.respond", Interactive)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::RequestNativeProviderInteraction(request) => {
+            LocalRequestMetadata::new("native_provider.interaction.request", Normal)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::UpdateSessionConfig(request) => {
+            LocalRequestMetadata::new("session.config.update", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
+        LocalDaemonRequest::UpdateAgentConfig(request) => {
+            LocalRequestMetadata::new("agent.config.update", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::UpdateAgentProfile(request) => {
+            LocalRequestMetadata::new("agent.profile.update", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::AliasAgent(request) => {
+            LocalRequestMetadata::new("agent.alias", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::UpdateAgentSubstitutes(request) => {
+            LocalRequestMetadata::new("agent.substitutes.update", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::AliasSession(request) => {
+            LocalRequestMetadata::new("session.alias", Interactive).session(&request.session_id)
+        }
+        LocalDaemonRequest::FocusAgent(request) => {
+            LocalRequestMetadata::new("agent.focus", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::CycleAgentFocus(request) => {
+            LocalRequestMetadata::new("agent.cycle_focus", Interactive).session(&request.session_id)
+        }
+        LocalDaemonRequest::GrantAgentCapability(request) => {
+            LocalRequestMetadata::new("agent.capability.grant", Interactive)
+                .agent(&request.agent_ref)
+        }
+        LocalDaemonRequest::RevokeAgentCapability(request) => {
+            LocalRequestMetadata::new("agent.capability.revoke", Interactive)
+                .agent(&request.agent_ref)
+        }
+        LocalDaemonRequest::EndSession(request) => {
+            LocalRequestMetadata::new("session.end", Interactive).session(&request.session_id)
+        }
+        LocalDaemonRequest::DeleteSession(request) => {
+            LocalRequestMetadata::new("session.delete", Interactive).session(&request.session_ref)
+        }
+        LocalDaemonRequest::DeleteKernel(_) => LocalRequestMetadata::new("kernel.delete", Normal),
+        LocalDaemonRequest::SpawnAgent(request) => {
+            LocalRequestMetadata::new("agent.spawn", Interactive).session(&request.session_id)
+        }
+        LocalDaemonRequest::DestroyAgent(request) => {
+            LocalRequestMetadata::new("agent.destroy", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::GetSessionHistory(request) => {
+            let mut metadata = LocalRequestMetadata::new("session.history.get", Background)
+                .session(&request.session_id);
+            if let Some(agent_id) = request.agent_id.as_deref() {
+                metadata = metadata.agent(agent_id);
+            }
+            metadata
+        }
+        LocalDaemonRequest::GetPromptInputHistory(request) => {
+            LocalRequestMetadata::new("prompt_input_history.get", Background)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::RecordPromptInputHistory(request) => {
+            let mut metadata = LocalRequestMetadata::new("prompt_input_history.record", Normal)
+                .session(&request.session_id);
+            if let Some(attachment_id) = request.attachment_id.as_deref() {
+                metadata = metadata.attachment(attachment_id);
+            }
+            metadata
+        }
+        LocalDaemonRequest::GetDaemonHealth(_) => {
+            LocalRequestMetadata::new("daemon.health.get", Normal)
+        }
+        LocalDaemonRequest::GetProviderRun(request) => {
+            LocalRequestMetadata::new("provider_run.get", Normal)
+                .provider_run(&request.provider_run_id)
+        }
+        LocalDaemonRequest::UpdateProviderRunSelection(request) => {
+            LocalRequestMetadata::new("provider_run.selection.update", Normal)
+                .session(&request.session_id)
+                .provider_run(&request.provider_run_id)
+        }
+        LocalDaemonRequest::CancelWorkflowRun(request) => {
+            LocalRequestMetadata::new("workflow_run.cancel", Normal)
+                .session(&request.session_id)
+                .workflow_run(&request.workflow_run_ref)
+        }
+        LocalDaemonRequest::ResumeWorkflowRun(request) => {
+            LocalRequestMetadata::new("workflow_run.resume", Normal)
+                .session(&request.session_id)
+                .workflow_run(&request.workflow_run_ref)
+        }
+        _ => LocalRequestMetadata::new(local_request_command_type(request), Normal),
+    }
+}
+
+fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
+    match request {
+        LocalDaemonRequest::CreateSession(_) => "session.create",
+        LocalDaemonRequest::LaunchProviderRun(_) => "provider_run.launch",
+        LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider_run.selection.update",
+        LocalDaemonRequest::ListSessionMembers(_) => "session.members.list",
+        LocalDaemonRequest::CreateSessionInvite(_) => "session.invite.create",
+        LocalDaemonRequest::JoinSessionInvite(_) => "session.invite.join",
+        LocalDaemonRequest::RevokeSessionInvite(_) => "session.invite.revoke",
+        LocalDaemonRequest::CreateWorkspaceLink(_) => "workspace_link.create",
+        LocalDaemonRequest::ListWorkspaceLinks(_) => "workspace_link.list",
+        LocalDaemonRequest::ShowWorkspaceLink(_) => "workspace_link.show",
+        LocalDaemonRequest::AttachWorkspaceLink(_) => "workspace_link.attach",
+        LocalDaemonRequest::DetachWorkspaceLink(_) => "workspace_link.detach",
+        LocalDaemonRequest::ListSessions(_) => "session.list",
+        LocalDaemonRequest::ResolveSession(_) => "session.resolve",
+        LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
+        LocalDaemonRequest::GetProviderCommandCatalogs(_) => "provider.command_catalogs.get",
+        LocalDaemonRequest::InstallMcpServer(_) => "mcp.install",
+        LocalDaemonRequest::UpdateMcpServer(_) => "mcp.update",
+        LocalDaemonRequest::UninstallMcpServer(_) => "mcp.uninstall",
+        LocalDaemonRequest::ImportMcpServers(_) => "mcp.import",
+        LocalDaemonRequest::GetMcpServer(_) => "mcp.get",
+        LocalDaemonRequest::ListMcpServers(_) => "mcp.list",
+        LocalDaemonRequest::InstallSkill(_) => "skill.install",
+        LocalDaemonRequest::UpdateSkill(_) => "skill.update",
+        LocalDaemonRequest::UninstallSkill(_) => "skill.uninstall",
+        LocalDaemonRequest::ImportSkills(_) => "skill.import",
+        LocalDaemonRequest::GetSkill(_) => "skill.get",
+        LocalDaemonRequest::ListSkills(_) => "skill.list",
+        LocalDaemonRequest::RelayStatus(_) => "relay.status",
+        LocalDaemonRequest::ConfigureRelay(_) => "relay.configure",
+        LocalDaemonRequest::CloudRelayStatus(_) => "cloud_relay.status",
+        LocalDaemonRequest::StartCloudRelayLogin(_) => "cloud_relay.login.start",
+        LocalDaemonRequest::PollCloudRelayLogin(_) => "cloud_relay.login.poll",
+        LocalDaemonRequest::LogoutCloudRelay(_) => "cloud_relay.logout",
+        LocalDaemonRequest::PairCloudRelayClient(_) => "cloud_relay.client.pair",
+        LocalDaemonRequest::PairCloudRelayMachine(_) => "cloud_relay.machine.pair",
+        LocalDaemonRequest::ConnectCloudRelay(_) => "cloud_relay.connect",
+        LocalDaemonRequest::IssueCloudRelayClientToken(_) => "cloud_relay.client_token.issue",
+        LocalDaemonRequest::CreateCloudSessionInvite(_) => "cloud_session.invite.create",
+        LocalDaemonRequest::ShowCloudSessionInvite(_) => "cloud_session.invite.show",
+        LocalDaemonRequest::AcceptCloudSessionInvite(_) => "cloud_session.invite.accept",
+        LocalDaemonRequest::RevokeCloudSessionInvite(_) => "cloud_session.invite.revoke",
+        LocalDaemonRequest::ListCloudSessionMembers(_) => "cloud_session.members.list",
+        LocalDaemonRequest::ListCloudCollaborators(_) => "cloud_session.collaborators.list",
+        LocalDaemonRequest::GetUserConfig(_) => "config.get",
+        LocalDaemonRequest::GetUserConfigSchema(_) => "config.schema",
+        LocalDaemonRequest::SetUserConfigValue(_) => "config.set",
+        LocalDaemonRequest::UnsetUserConfigValue(_) => "config.unset",
+        LocalDaemonRequest::SetCredentialSecret(_) => "credential.secret.set",
+        LocalDaemonRequest::DeleteCredentialSecret(_) => "credential.secret.delete",
+        LocalDaemonRequest::ListSlices(_) => "slice.list",
+        LocalDaemonRequest::CreateSlice(_) => "slice.create",
+        LocalDaemonRequest::GetSlice(_) => "slice.get",
+        LocalDaemonRequest::StartSlice(_) => "slice.start",
+        LocalDaemonRequest::StopSlice(_) => "slice.stop",
+        LocalDaemonRequest::DeleteSlice(_) => "slice.delete",
+        LocalDaemonRequest::ImportSliceProviderAuth(_) => "slice.auth.import",
+        LocalDaemonRequest::GetSliceDisplayEndpoint(_) => "slice.display_endpoint.get",
+        LocalDaemonRequest::ListRemoteMachines(_) => "remote_machine.list",
+        LocalDaemonRequest::ListRemoteMachineKernels(_) => "remote_machine.kernel.list",
+        LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
+        LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
+        LocalDaemonRequest::SearchWorkspaceDirectories(_) => "workspace.directory.search",
+        LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",
+        LocalDaemonRequest::ListWorkspaceWorktrees(_) => "workspace.worktree.list",
+        LocalDaemonRequest::CreateWorkspaceWorktree(_) => "workspace.worktree.create",
+        LocalDaemonRequest::DeleteWorkspaceWorktree(_) => "workspace.worktree.delete",
+        LocalDaemonRequest::CreateWorkspacePullRequest(_) => "workspace.pull_request.create",
+        LocalDaemonRequest::GetWorkspaceGitOverview(_) => "workspace.git.overview",
+        LocalDaemonRequest::ListWorkspaceFiles(_) => "workspace.files.list",
+        LocalDaemonRequest::GetWorkspaceFileContent(_) => "workspace.file.content",
+        LocalDaemonRequest::RunAgentUtility(_) => "agent.utility.run",
+        LocalDaemonRequest::GenerateWorkspaceCommitMessage(_) => {
+            "workspace.commit_message.generate"
+        }
+        LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
+        LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
+        LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
+        LocalDaemonRequest::ApproveRemoteMachine(_) => "remote_machine.approve",
+        LocalDaemonRequest::ForgetRemoteMachine(_) => "remote_machine.forget",
+        LocalDaemonRequest::RenameRemoteMachine(_) => "remote_machine.rename",
+        LocalDaemonRequest::CreatePairingInvite(_) => "pairing_invite.create",
+        LocalDaemonRequest::JoinPairingInvite(_) => "pairing_invite.join",
+        LocalDaemonRequest::CreateTerminalPairingLink(_) => "terminal_pairing_link.create",
+        LocalDaemonRequest::JoinTerminalPairingLink(_) => "terminal_pairing_link.join",
+        LocalDaemonRequest::ListTerminals(_) => "terminal.list",
+        LocalDaemonRequest::ListPairedClients(_) => "paired_client.list",
+        LocalDaemonRequest::RecordPairedClient(_) => "paired_client.record",
+        LocalDaemonRequest::RevokePairedClient(_) => "paired_client.revoke",
+        LocalDaemonRequest::GetProviderAuthStatus(_) => "provider.auth_status.get",
+        LocalDaemonRequest::StartProviderLogin(_) => "provider.login.start",
+        LocalDaemonRequest::LogoutProvider(_) => "provider.logout",
+        LocalDaemonRequest::ListProviderProcesses(_) => "provider_process.list",
+        LocalDaemonRequest::TeardownProviderProcesses(_) => "provider_process.teardown",
+        LocalDaemonRequest::QueryHistory(_) => "history.query",
+        LocalDaemonRequest::SearchHistory(_) => "history.search",
+        LocalDaemonRequest::SemanticSearchHistory(_) => "history.semantic_search",
+        LocalDaemonRequest::GetPromptInputHistory(_) => "prompt_input_history.get",
+        LocalDaemonRequest::RecordPromptInputHistory(_) => "prompt_input_history.record",
+        LocalDaemonRequest::PollRuntimeNotices(_) => "runtime_notice.poll",
+        LocalDaemonRequest::RespondToInteraction(_) => "interaction.respond",
+        LocalDaemonRequest::RequestNativeProviderInteraction(_) => {
+            "native_provider.interaction.request"
+        }
+        LocalDaemonRequest::CompletePrompt(_) => "prompt.complete",
+        LocalDaemonRequest::UpdateSessionConfig(_) => "session.config.update",
+        LocalDaemonRequest::UpdateAgentConfig(_) => "agent.config.update",
+        LocalDaemonRequest::UpdateAgentSubstitutes(_) => "agent.substitutes.update",
+        LocalDaemonRequest::PumpTerminalOutput(_) => "terminal.output.poll",
+        LocalDaemonRequest::AppendNativeProviderOutput(_) => "terminal.output.append_native",
+        LocalDaemonRequest::RunShellCommand(_) => "capability.shell.run",
+        LocalDaemonRequest::ReadDirectoryTree(_) => "capability.dir.tree",
+        LocalDaemonRequest::ReadFile(_) => "capability.file.read",
+        LocalDaemonRequest::EditFile(_) => "capability.file.edit",
+        LocalDaemonRequest::InspectGit(_) => "capability.git.inspect",
+        LocalDaemonRequest::CaptureScreenshot(_) => "capability.screenshot.capture",
+        LocalDaemonRequest::StoreTransferredFile(_) => "capability.file.store_transferred",
+        LocalDaemonRequest::AliasSession(_) => "session.alias",
+        LocalDaemonRequest::AliasAgent(_) => "agent.alias",
+        LocalDaemonRequest::UpdateAgentProfile(_) => "agent.profile.update",
+        LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",
+        LocalDaemonRequest::MoveAgentToRemote(_) => "agent.move_remote",
+        LocalDaemonRequest::DestroyAgent(_) => "agent.destroy",
+        LocalDaemonRequest::GrantAgentCapability(_) => "agent.capability.grant",
+        LocalDaemonRequest::RevokeAgentCapability(_) => "agent.capability.revoke",
+        LocalDaemonRequest::ListAgents(_) => "agent.list",
+        LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
+        LocalDaemonRequest::ApplyWorkflowDesignOp(_) => "workflow_design.apply_op",
+        LocalDaemonRequest::AliasWorkflow(_) => "workflow.alias",
+        LocalDaemonRequest::ListWorkflows(_) => "workflow.list",
+        LocalDaemonRequest::ResolveWorkflow(_) => "workflow.resolve",
+        LocalDaemonRequest::CreateWorkflowPublication(_) => "workflow_publication.create",
+        LocalDaemonRequest::ListWorkflowPublications(_) => "workflow_publication.list",
+        LocalDaemonRequest::GetWorkflowPublication(_) => "workflow_publication.get",
+        LocalDaemonRequest::DisableWorkflowPublication(_) => "workflow_publication.disable",
+        LocalDaemonRequest::CreateWorkflowPublicationPairCode(_) => {
+            "workflow_publication.pair_code.create"
+        }
+        LocalDaemonRequest::RedeemWorkflowPublicationPairCode(_) => {
+            "workflow_publication.pair_code.redeem"
+        }
+        LocalDaemonRequest::ListWorkflowPublicationSenders(_) => "workflow_publication.sender.list",
+        LocalDaemonRequest::RevokeWorkflowPublicationSender(_) => {
+            "workflow_publication.sender.revoke"
+        }
+        LocalDaemonRequest::AuthenticateWorkflowPublicationSender(_) => {
+            "workflow_publication.sender.authenticate"
+        }
+        LocalDaemonRequest::CreateWorkflowEndpoint(_) => "workflow_endpoint.create",
+        LocalDaemonRequest::AliasWorkflowEndpoint(_) => "workflow_endpoint.alias",
+        LocalDaemonRequest::BindWorkflowEndpoint(_) => "workflow_endpoint.bind",
+        LocalDaemonRequest::AddWorkflowNode(_) => "workflow_node.add",
+        LocalDaemonRequest::RemoveWorkflowNode(_) => "workflow_node.remove",
+        LocalDaemonRequest::UpdateWorkflowNodeInstructions(_) => {
+            "workflow_node.instructions.update"
+        }
+        LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(_) => {
+            "workflow_node.can_complete_run.set"
+        }
+        LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(_) => {
+            "workflow_node.can_emit_intermediate_output.set"
+        }
+        LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(_) => {
+            "workflow_node.intermediate_output_schema.set"
+        }
+        LocalDaemonRequest::SetWorkflowNodeMaxTurns(_) => "workflow_node.max_turns.set",
+        LocalDaemonRequest::AddWorkflowEdge(_) => "workflow_edge.add",
+        LocalDaemonRequest::RemoveWorkflowEdge(_) => "workflow_edge.remove",
+        LocalDaemonRequest::UpdateWorkflowCanvasLayout(_) => "workflow_canvas.layout.update",
+        LocalDaemonRequest::SetWorkflowRunOutputSchema(_) => "workflow.run_output_schema.set",
+        LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(_) => {
+            "workflow.intermediate_output_schema.set"
+        }
+        LocalDaemonRequest::SetWorkflowFlushContext(_) => "workflow.flush_context.set",
+        LocalDaemonRequest::SetWorkflowLaunchPolicy(_) => "workflow.launch_policy.set",
+        LocalDaemonRequest::InvokeWorkflowEndpoint(_) => "workflow_endpoint.invoke",
+        LocalDaemonRequest::ListWorkflowRuns(_) => "workflow_run.list",
+        LocalDaemonRequest::GetWorkflowRun(_) => "workflow_run.get",
+        LocalDaemonRequest::AckWorkflowTurn(_) => "workflow_turn.ack",
+        LocalDaemonRequest::ValidateWorkflowOutput(_) => "workflow_output.validate",
+        LocalDaemonRequest::CancelWorkflowRun(_) => "workflow_run.cancel",
+        LocalDaemonRequest::ResumeWorkflowRun(_) => "workflow_run.resume",
+        LocalDaemonRequest::ClearQueuedWorkflowLaunches(_) => "workflow_launch_queue.clear",
+        LocalDaemonRequest::RemoveQueuedWorkflowLaunch(_) => "workflow_launch_queue.remove",
+        LocalDaemonRequest::ListQueuedWorkflowLaunches(_) => "workflow_launch_queue.list",
+        LocalDaemonRequest::CreateWorkflowWatchdog(_) => "workflow_watchdog.create",
+        LocalDaemonRequest::RemoveWorkflowWatchdog(_) => "workflow_watchdog.remove",
+        LocalDaemonRequest::SetWorkflowWatchdogEnabled(_) => "workflow_watchdog.enabled.set",
+        LocalDaemonRequest::ListWorkflowWatchdogs(_) => "workflow_watchdog.list",
+        LocalDaemonRequest::AttachToSession(_)
+        | LocalDaemonRequest::DetachFromSession(_)
+        | LocalDaemonRequest::SubmitPrompt(_)
+        | LocalDaemonRequest::CancelActivePrompt(_)
+        | LocalDaemonRequest::ResizeTerminal(_)
+        | LocalDaemonRequest::SendTerminalInput(_)
+        | LocalDaemonRequest::FocusAgent(_)
+        | LocalDaemonRequest::CycleAgentFocus(_)
+        | LocalDaemonRequest::EndSession(_)
+        | LocalDaemonRequest::DeleteSession(_)
+        | LocalDaemonRequest::DeleteKernel(_)
+        | LocalDaemonRequest::GetDaemonHealth(_)
+        | LocalDaemonRequest::GetSessionHistory(_)
+        | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),
+    }
+}
