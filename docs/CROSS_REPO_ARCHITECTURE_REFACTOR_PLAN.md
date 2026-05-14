@@ -157,6 +157,7 @@ Documentation updates for this refactor are progress artifacts. Do not leave dir
 - 2026-05-14: OSS Cloud HTTP DTOs, token issuance, profile projection, URL encoding, and stale-link error parsing moved into `runtime/cloud_api_client.rs`; kernel lib tests pass with 705 tests and `runtime/router.rs` is down to 12,502 lines.
 - 2026-05-14: OSS session invite and pairing token encoding/decoding moved into `runtime/invite_tokens.rs`; kernel lib tests pass with 708 tests and `runtime/router.rs` is down to 12,382 lines.
 - 2026-05-14: Cloud freeform transcript rendering moved into `terminal/freeform-transcript-renderer.ts`; web tests pass with 509 tests and `client.ts` is down to 12,888 lines.
+- 2026-05-14: OSS session membership/caller-scope policy moved into `runtime/session_membership.rs`; kernel lib tests pass with 712 tests and `runtime/router.rs` is down to 12,061 lines.
 
 ## Summary
 
