@@ -185,6 +185,7 @@ Documentation updates for this refactor are progress artifacts. Do not leave dir
 - 2026-05-14: OSS user-config reads/mutations and credential-secret writes moved into `runtime/user_config_executor.rs`; kernel lib tests pass with 727 tests and `runtime/router.rs` is down to 10,752 lines.
 - 2026-05-14: OSS session-collaboration and remote-machine registry request execution moved into `runtime/session_collaboration_executor.rs` and `runtime/remote_machine_registry.rs`; kernel lib tests pass with 727 tests and `runtime/router.rs` is down to 10,591 lines.
 - 2026-05-14: Cloud sidebar agent option projection moved into `terminal/sidebar-agent-options.ts`; web tests pass with 563 tests and `client.ts` is down to 11,451 lines.
+- 2026-05-14: OSS pairing invite and terminal pairing link execution moved into `runtime/pairing_invite_executor.rs`; kernel lib tests pass with 727 tests and `runtime/router.rs` is down to 10,293 lines.
 
 ## Summary
 
