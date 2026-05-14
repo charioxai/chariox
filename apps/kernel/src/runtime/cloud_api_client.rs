@@ -10,6 +10,12 @@ use crate::local::{
 };
 use crate::runtime::cloud_relay_control::CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS;
 
+mod http;
+pub(crate) use http::{
+    cloud_url_component, get_cloud_json, is_stale_cloud_link_error, normalize_cloud_api_url,
+    post_cloud_json, post_cloud_json_dynamic,
+};
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CloudDeviceStartResponse {
@@ -420,116 +426,6 @@ pub(crate) fn cloud_profile_from_persisted(
     }
 }
 
-pub(crate) fn normalize_cloud_api_url(api_url: &str) -> Result<String, DaemonError> {
-    let normalized = api_url.trim().trim_end_matches('/').to_string();
-    if normalized.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "normalize cloud relay api url",
-            message: "api_url must not be empty".to_string(),
-        });
-    }
-    Ok(normalized)
-}
-
-pub(crate) async fn post_cloud_json<T>(
-    api_url: String,
-    path: &'static str,
-    body: serde_json::Value,
-) -> Result<T, DaemonError>
-where
-    T: serde::de::DeserializeOwned + Send + 'static,
-{
-    tokio::task::spawn_blocking(move || post_cloud_json_blocking(api_url, path, body))
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "post cloud relay json",
-            message: error.to_string(),
-        })?
-}
-
-pub(crate) async fn post_cloud_json_dynamic<T>(
-    api_url: String,
-    path: String,
-    body: serde_json::Value,
-) -> Result<T, DaemonError>
-where
-    T: serde::de::DeserializeOwned + Send + 'static,
-{
-    tokio::task::spawn_blocking(move || post_cloud_json_blocking(api_url, &path, body))
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "post cloud relay json",
-            message: error.to_string(),
-        })?
-}
-
-pub(crate) async fn get_cloud_json<T>(api_url: String, path: String) -> Result<T, DaemonError>
-where
-    T: serde::de::DeserializeOwned + Send + 'static,
-{
-    tokio::task::spawn_blocking(move || get_cloud_json_blocking(api_url, &path))
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "get cloud relay json",
-            message: error.to_string(),
-        })?
-}
-
-fn post_cloud_json_blocking<T>(
-    api_url: String,
-    path: &str,
-    body: serde_json::Value,
-) -> Result<T, DaemonError>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let url = format!("{api_url}{path}");
-    let response = ureq::post(&url)
-        .set("content-type", "application/json")
-        .send_string(&body.to_string())
-        .map_err(cloud_transport_error)?;
-    let payload = response
-        .into_string()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "read cloud relay response",
-            message: error.to_string(),
-        })?;
-    serde_json::from_str::<T>(&payload).map_err(|error| DaemonError::LocalTransport {
-        operation: "decode cloud relay response",
-        message: error.to_string(),
-    })
-}
-
-fn get_cloud_json_blocking<T>(api_url: String, path: &str) -> Result<T, DaemonError>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let url = format!("{api_url}{path}");
-    let response = ureq::get(&url).call().map_err(cloud_transport_error)?;
-    let payload = response
-        .into_string()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "read cloud relay response",
-            message: error.to_string(),
-        })?;
-    serde_json::from_str::<T>(&payload).map_err(|error| DaemonError::LocalTransport {
-        operation: "decode cloud relay response",
-        message: error.to_string(),
-    })
-}
-
-pub(crate) fn cloud_url_component(value: &str) -> String {
-    value
-        .bytes()
-        .flat_map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                vec![byte as char]
-            }
-            _ => format!("%{byte:02X}").chars().collect(),
-        })
-        .collect()
-}
-
 fn cloud_session_members_path(profile: &PersistedCloudRelayProfile, session_id: &str) -> String {
     format!(
         "/sessions/members?sessionToken={}&accountId={}&sessionId={}",
@@ -545,62 +441,6 @@ fn cloud_collaborators_path(profile: &PersistedCloudRelayProfile) -> String {
         cloud_url_component(profile.cloud_session_token.as_deref().unwrap_or_default()),
         cloud_url_component(&profile.account_id),
     )
-}
-
-fn cloud_transport_error(error: ureq::Error) -> DaemonError {
-    let message = match error {
-        ureq::Error::Status(status, response) => {
-            let body = response.into_string().unwrap_or_default();
-            if body.is_empty() {
-                format!("cloud relay request failed with {status}")
-            } else if let Some(code) = cloud_api_error_code(&body) {
-                format!("cloud relay request failed with {status}: cloud_api_code={code}: {body}")
-            } else {
-                format!("cloud relay request failed with {status}: {body}")
-            }
-        }
-        ureq::Error::Transport(error) => error.to_string(),
-    };
-    DaemonError::LocalTransport {
-        operation: "cloud relay request",
-        message,
-    }
-}
-
-fn cloud_api_error_code(body: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|payload| {
-            payload
-                .get("error")
-                .and_then(|error| error.get("code"))
-                .and_then(|code| code.as_str())
-                .map(str::to_string)
-        })
-}
-
-pub(crate) fn is_stale_cloud_link_error(error: &DaemonError) -> bool {
-    let message = match error {
-        DaemonError::LocalTransport { message, .. } => message.as_str(),
-        _ => return false,
-    };
-    [
-        "cloud_api_code=session_invalid",
-        "cloud_api_code=identity_revoked",
-        "cloud_api_code=realm_not_found",
-        "cloud_api_code=account_deleted",
-        "cloud_api_code=user_deleted",
-        "\"code\":\"session_invalid\"",
-        "\"code\":\"identity_revoked\"",
-        "\"code\":\"realm_not_found\"",
-        "\"code\":\"account_deleted\"",
-        "\"code\":\"user_deleted\"",
-        "invalid_session",
-        "cloud relay request failed with 401",
-        "cloud relay request failed with 403",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
 }
 
 #[cfg(test)]
@@ -629,15 +469,6 @@ mod tests {
     }
 
     #[test]
-    fn cloud_url_component_percent_encodes_query_values() {
-        assert_eq!(
-            cloud_url_component("token/a+b?x=1"),
-            "token%2Fa%2Bb%3Fx%3D1"
-        );
-        assert_eq!(cloud_url_component("abc-_.~XYZ"), "abc-_.~XYZ");
-    }
-
-    #[test]
     fn cloud_session_collaboration_paths_encode_query_values() {
         let profile = cloud_profile();
 
@@ -649,30 +480,5 @@ mod tests {
             cloud_collaborators_path(&profile),
             "/collaborators/recent?sessionToken=session%20token&accountId=account%2F1"
         );
-    }
-
-    #[test]
-    fn cloud_api_error_code_reads_cloud_error_payloads() {
-        assert_eq!(
-            cloud_api_error_code(r#"{"error":{"code":"session_invalid"}}"#),
-            Some("session_invalid".to_string())
-        );
-        assert_eq!(cloud_api_error_code(r#"{"error":{}}"#), None);
-    }
-
-    #[test]
-    fn stale_cloud_link_errors_include_cloud_codes_and_auth_failures() {
-        assert!(is_stale_cloud_link_error(&DaemonError::LocalTransport {
-            operation: "cloud relay request",
-            message: "cloud_api_code=identity_revoked".to_string(),
-        }));
-        assert!(is_stale_cloud_link_error(&DaemonError::LocalTransport {
-            operation: "cloud relay request",
-            message: "cloud relay request failed with 401".to_string(),
-        }));
-        assert!(!is_stale_cloud_link_error(&DaemonError::LocalTransport {
-            operation: "cloud relay request",
-            message: "network timeout".to_string(),
-        }));
     }
 }
