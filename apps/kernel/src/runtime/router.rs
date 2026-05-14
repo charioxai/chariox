@@ -104,12 +104,12 @@ use crate::runtime::waiting_room_activity::{
     waiting_room_workflow_activity_summary,
 };
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
+use crate::runtime::workspace_commit_message_utility::workspace_commit_message_utility_prompt;
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::runtime::workspace_git_actions::{
     commit_and_push_workspace_changes, commit_workspace_changes, create_workspace_pull_request,
     push_workspace_branch,
 };
-use crate::runtime::workspace_git_changes::workspace_git_diff_text;
 use crate::runtime::workspace_git_common::{
     detect_git_branch, workspace_display_label, worktree_display_label,
 };
@@ -6480,59 +6480,6 @@ fn semantic_history_candidate_for_prompt(match_: &SemanticHistoryMatch) -> serde
         "content": match_.chunk_text.as_ref().or(match_.event.content.as_ref()),
         "metadata": match_.event.metadata,
     })
-}
-
-fn workspace_commit_message_utility_prompt(
-    input: &WorkspaceCommitMessageUtilityInput,
-) -> Result<String, DaemonError> {
-    let overview = inspect_workspace_git_overview(
-        &input.workspace_id,
-        &input.worktree_id,
-        input.compare_ref.as_deref(),
-    )?;
-    if overview.files.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "run workspace commit message utility",
-            message: "no workspace changes to summarize".to_string(),
-        });
-    }
-    let files = overview
-        .files
-        .iter()
-        .map(|file| {
-            format!(
-                "- {} {} +{} -{}",
-                file.status, file.path, file.additions, file.deletions
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let diff = workspace_git_diff_text(&input.worktree_id, &overview.compare_ref, 60_000)?;
-    Ok(format!(
-        "Generate a git commit subject for the workspace changes below.\n\
-Rules:\n\
-- Output exactly one concise imperative subject line.\n\
-- Do not include markdown, quotes, bullets, explanation, prefixes, or trailing punctuation.\n\
-- Keep it under 72 characters.\n\n\
-Workspace: {workspace}\n\
-Worktree: {worktree}\n\
-Compare ref: {compare_ref}\n\
-Totals: {files_count} files, +{additions} -{deletions}\n\n\
-Changed files:\n{files}\n\n\
-Diff context:\n{diff}",
-        workspace = overview.workspace_id,
-        worktree = overview.worktree_id,
-        compare_ref = overview.compare_ref,
-        files_count = overview.totals.files,
-        additions = overview.totals.additions,
-        deletions = overview.totals.deletions,
-        files = files,
-        diff = if diff.is_empty() {
-            "<no textual diff available>"
-        } else {
-            diff.as_str()
-        },
-    ))
 }
 
 fn paired_client_record(client: crate::config::PersistedClientPairing) -> PairedClientRecord {
