@@ -107,9 +107,9 @@ use crate::runtime::session_collaboration_executor::{
 };
 use crate::runtime::session_membership::authorize_session_membership;
 use crate::runtime::session_projection_refresh::{
-    focus_projection_refresh, response_removed_session_ids, response_sessions,
-    session_projection_refresh, should_update_agent_runtime_projection_from_response,
-    FocusProjectionRefresh, SessionProjectionRefresh,
+    apply_focus_projection_refresh, focus_projection_refresh, response_removed_session_ids,
+    response_sessions, session_projection_refresh,
+    should_update_agent_runtime_projection_from_response, SessionProjectionRefresh,
 };
 use crate::runtime::session_read_control::{
     execute_get_session_state_request, execute_list_agents_request, execute_list_sessions_request,
@@ -1522,8 +1522,14 @@ impl CommandRouter {
         };
         self.apply_session_projection_refresh(session_refresh, &result)
             .await;
-        self.apply_focus_projection_refresh(focus_refresh, &result)
-            .await;
+        apply_focus_projection_refresh(
+            &self.app,
+            &self.focus_projection,
+            &self.session_projection,
+            focus_refresh,
+            &result,
+        )
+        .await;
         self.apply_provider_run_projection_refresh(&result).await;
         self.apply_provider_launch_projection_state(&result).await;
         self.apply_agent_lane_cleanup(&result).await;
@@ -2269,42 +2275,6 @@ impl CommandRouter {
             | LocalDaemonRequest::RevokeAgentCapability(_)
             | LocalDaemonRequest::PollRuntimeNotices(_)) => {
                 self.dispatch_interactive(command, request).await
-            }
-        }
-    }
-
-    async fn apply_focus_projection_refresh(
-        &self,
-        refresh: FocusProjectionRefresh,
-        result: &Result<LocalDaemonResponse, DaemonError>,
-    ) {
-        if result.is_err() {
-            return;
-        }
-        match refresh {
-            FocusProjectionRefresh::None => {}
-            FocusProjectionRefresh::AgentSpawn => {
-                if let Ok(LocalDaemonResponse::AgentSpawned { agent }) = result {
-                    self.focus_projection
-                        .update(agent.session_id(), Some(agent.id()))
-                        .await;
-                }
-            }
-            FocusProjectionRefresh::SnapshotSession { session_id } => {
-                let focused_agent_id =
-                    if let Some(session) = self.session_projection.get(&session_id) {
-                        session.focused_agent_id().map(str::to_string)
-                    } else if let Ok(app) = self.app.try_lock() {
-                        app.sessions()
-                            .get_session(&session_id)
-                            .ok()
-                            .and_then(|session| session.focused_agent_id().map(str::to_string))
-                    } else {
-                        return;
-                    };
-                self.focus_projection
-                    .update(&session_id, focused_agent_id.as_deref())
-                    .await;
             }
         }
     }

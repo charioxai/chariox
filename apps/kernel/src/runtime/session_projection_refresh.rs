@@ -1,7 +1,13 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use tokio::sync::Mutex;
+
+use crate::app::DaemonApp;
+use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
-use crate::runtime::projection::AgentRuntimeActivity;
+use crate::runtime::projection::{AgentRuntimeActivity, SessionStateProjectionStore};
+use crate::runtime::session_actor::FocusedAgentProjection;
 use crate::session::RuntimeSession;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +40,43 @@ pub(crate) fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusPro
             session_id: request.session_id.clone(),
         },
         _ => FocusProjectionRefresh::None,
+    }
+}
+
+pub(crate) async fn apply_focus_projection_refresh(
+    app: &Arc<Mutex<DaemonApp>>,
+    focus_projection: &FocusedAgentProjection,
+    session_projection: &SessionStateProjectionStore,
+    refresh: FocusProjectionRefresh,
+    result: &Result<LocalDaemonResponse, DaemonError>,
+) {
+    if result.is_err() {
+        return;
+    }
+    match refresh {
+        FocusProjectionRefresh::None => {}
+        FocusProjectionRefresh::AgentSpawn => {
+            if let Ok(LocalDaemonResponse::AgentSpawned { agent }) = result {
+                focus_projection
+                    .update(agent.session_id(), Some(agent.id()))
+                    .await;
+            }
+        }
+        FocusProjectionRefresh::SnapshotSession { session_id } => {
+            let focused_agent_id = if let Some(session) = session_projection.get(&session_id) {
+                session.focused_agent_id().map(str::to_string)
+            } else if let Ok(app) = app.try_lock() {
+                app.sessions()
+                    .get_session(&session_id)
+                    .ok()
+                    .and_then(|session| session.focused_agent_id().map(str::to_string))
+            } else {
+                return;
+            };
+            focus_projection
+                .update(&session_id, focused_agent_id.as_deref())
+                .await;
+        }
     }
 }
 
