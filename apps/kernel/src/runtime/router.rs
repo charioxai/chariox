@@ -38,16 +38,14 @@ use crate::local::{
     CreateWorkspaceDirectoryRequest, CreateWorkspaceLinkRequest, CreateWorkspacePullRequestRequest,
     CreateWorkspaceWorktreeRequest, DeleteCredentialSecretRequest, DeleteKernelRequest,
     DeleteWorkspaceWorktreeRequest, DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest,
-    GenerateWorkspaceCommitMessageRequest, GetMcpServerRequest, GetPromptInputHistoryRequest,
+    GenerateWorkspaceCommitMessageRequest, GetPromptInputHistoryRequest,
     GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-    GetSessionStateRequest, GetSkillRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
+    GetSessionStateRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
     GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest, GrantAgentCapabilityRequest,
-    ImportMcpServersRequest, ImportSkillsRequest, ImportSliceProviderAuthRequest,
-    InstallMcpServerRequest, InstallSkillRequest, IssueCloudRelayClientTokenRequest,
-    JoinPairingInviteRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
-    ListAgentsRequest, ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest,
-    ListMcpServersRequest, ListProviderProcessesRequest, ListSessionMembersRequest,
-    ListSessionsRequest, ListSkillsRequest, ListSlicesRequest, ListWorkspaceFilesRequest,
+    ImportSliceProviderAuthRequest, IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest,
+    JoinSessionInviteRequest, JoinTerminalPairingLinkRequest, ListAgentsRequest,
+    ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest, ListProviderProcessesRequest,
+    ListSessionMembersRequest, ListSessionsRequest, ListSlicesRequest, ListWorkspaceFilesRequest,
     ListWorkspaceLinksRequest, ListWorkspaceWorktreesRequest, LocalDaemonRequest,
     LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
     PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairedClientRecord,
@@ -62,10 +60,9 @@ use crate::local::{
     SessionInviteRecord, SetCredentialSecretRequest, SetUserConfigValueRequest,
     ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest, SliceRefRequest,
     StartCloudRelayLoginRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
-    TerminalPairingLinkRecord, TerminalRecord, TerminalType, UninstallMcpServerRequest,
-    UninstallSkillRequest, UnsetUserConfigValueRequest, UpdateMcpServerRequest,
-    UpdateProviderRunSelectionRequest, UpdateSkillRequest, UserConfigMutationEffect,
-    WaitingRoomPublicSnapshot, WorkspaceCommitMessageUtilityInput,
+    TerminalPairingLinkRecord, TerminalRecord, TerminalType, UnsetUserConfigValueRequest,
+    UpdateProviderRunSelectionRequest, UserConfigMutationEffect, WaitingRoomPublicSnapshot,
+    WorkspaceCommitMessageUtilityInput,
 };
 use crate::provider::{
     run_codex_utility_prompt, run_opencode_utility_prompt, ProviderNativeInteractionBridge,
@@ -75,6 +72,14 @@ use crate::provider::{
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::capability_executor::{
     execute_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
+};
+use crate::runtime::capability_registry::{
+    ensure_mcp_exists, ensure_skill_exists, execute_get_mcp_server_request,
+    execute_get_skill_request, execute_import_mcp_servers_request, execute_import_skills_request,
+    execute_install_mcp_server_request, execute_install_skill_request,
+    execute_list_mcp_servers_request, execute_list_skills_request,
+    execute_uninstall_mcp_server_request, execute_uninstall_skill_request,
+    execute_update_mcp_server_request, execute_update_skill_request,
 };
 use crate::runtime::command::{
     KernelCallerKind, KernelCommand, KernelCommandPriority, KernelCommandSource,
@@ -1265,48 +1270,40 @@ impl CommandRouter {
                 return provider_command_catalogs_response();
             }
             LocalDaemonRequest::InstallMcpServer(request) => {
-                return self
-                    .execute_install_mcp_server_request(request.clone())
-                    .await;
+                return execute_install_mcp_server_request(request.clone());
             }
             LocalDaemonRequest::UpdateMcpServer(request) => {
-                return self
-                    .execute_update_mcp_server_request(request.clone())
-                    .await;
+                return execute_update_mcp_server_request(request.clone());
             }
             LocalDaemonRequest::UninstallMcpServer(request) => {
-                return self
-                    .execute_uninstall_mcp_server_request(request.clone())
-                    .await;
+                return execute_uninstall_mcp_server_request(request.clone());
             }
             LocalDaemonRequest::ImportMcpServers(request) => {
-                return self
-                    .execute_import_mcp_servers_request(request.clone())
-                    .await;
+                return execute_import_mcp_servers_request(request.clone());
             }
             LocalDaemonRequest::GetMcpServer(request) => {
-                return self.execute_get_mcp_server_request(request.clone()).await;
+                return execute_get_mcp_server_request(request.clone());
             }
             LocalDaemonRequest::ListMcpServers(request) => {
-                return self.execute_list_mcp_servers_request(request.clone()).await;
+                return execute_list_mcp_servers_request(request.clone());
             }
             LocalDaemonRequest::InstallSkill(request) => {
-                return self.execute_install_skill_request(request.clone()).await;
+                return execute_install_skill_request(request.clone());
             }
             LocalDaemonRequest::UpdateSkill(request) => {
-                return self.execute_update_skill_request(request.clone()).await;
+                return execute_update_skill_request(request.clone());
             }
             LocalDaemonRequest::UninstallSkill(request) => {
-                return self.execute_uninstall_skill_request(request.clone()).await;
+                return execute_uninstall_skill_request(request.clone());
             }
             LocalDaemonRequest::ImportSkills(request) => {
-                return self.execute_import_skills_request(request.clone()).await;
+                return execute_import_skills_request(request.clone());
             }
             LocalDaemonRequest::GetSkill(request) => {
-                return self.execute_get_skill_request(request.clone()).await;
+                return execute_get_skill_request(request.clone());
             }
             LocalDaemonRequest::ListSkills(request) => {
-                return self.execute_list_skills_request(request.clone()).await;
+                return execute_list_skills_request(request.clone());
             }
             _ => {}
         }
@@ -5182,39 +5179,27 @@ impl CommandRouter {
                 provider_command_catalogs_response()
             }
             LocalDaemonRequest::InstallMcpServer(request) => {
-                self.execute_install_mcp_server_request(request).await
+                execute_install_mcp_server_request(request)
             }
             LocalDaemonRequest::UpdateMcpServer(request) => {
-                self.execute_update_mcp_server_request(request).await
+                execute_update_mcp_server_request(request)
             }
             LocalDaemonRequest::UninstallMcpServer(request) => {
-                self.execute_uninstall_mcp_server_request(request).await
+                execute_uninstall_mcp_server_request(request)
             }
             LocalDaemonRequest::ImportMcpServers(request) => {
-                self.execute_import_mcp_servers_request(request).await
+                execute_import_mcp_servers_request(request)
             }
-            LocalDaemonRequest::GetMcpServer(request) => {
-                self.execute_get_mcp_server_request(request).await
-            }
+            LocalDaemonRequest::GetMcpServer(request) => execute_get_mcp_server_request(request),
             LocalDaemonRequest::ListMcpServers(request) => {
-                self.execute_list_mcp_servers_request(request).await
+                execute_list_mcp_servers_request(request)
             }
-            LocalDaemonRequest::InstallSkill(request) => {
-                self.execute_install_skill_request(request).await
-            }
-            LocalDaemonRequest::UpdateSkill(request) => {
-                self.execute_update_skill_request(request).await
-            }
-            LocalDaemonRequest::UninstallSkill(request) => {
-                self.execute_uninstall_skill_request(request).await
-            }
-            LocalDaemonRequest::ImportSkills(request) => {
-                self.execute_import_skills_request(request).await
-            }
-            LocalDaemonRequest::GetSkill(request) => self.execute_get_skill_request(request).await,
-            LocalDaemonRequest::ListSkills(request) => {
-                self.execute_list_skills_request(request).await
-            }
+            LocalDaemonRequest::InstallSkill(request) => execute_install_skill_request(request),
+            LocalDaemonRequest::UpdateSkill(request) => execute_update_skill_request(request),
+            LocalDaemonRequest::UninstallSkill(request) => execute_uninstall_skill_request(request),
+            LocalDaemonRequest::ImportSkills(request) => execute_import_skills_request(request),
+            LocalDaemonRequest::GetSkill(request) => execute_get_skill_request(request),
+            LocalDaemonRequest::ListSkills(request) => execute_list_skills_request(request),
             LocalDaemonRequest::RelayStatus(_) => self.projected_relay_status_response().await,
             LocalDaemonRequest::ConfigureRelay(request) => {
                 self.execute_configure_relay_request(request).await
@@ -5555,175 +5540,6 @@ impl CommandRouter {
         }
     }
 
-    async fn execute_install_mcp_server_request(
-        &self,
-        request: InstallMcpServerRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(
-            request.workspace_id.as_deref(),
-        )?);
-        let path = registry.install(&request.config)?;
-        Ok(LocalDaemonResponse::McpServerInstalled {
-            mcp: request.config,
-            path,
-        })
-    }
-
-    async fn execute_update_mcp_server_request(
-        &self,
-        request: UpdateMcpServerRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(
-            request.workspace_id.as_deref(),
-        )?);
-        let path = registry.update(&request.config)?;
-        Ok(LocalDaemonResponse::McpServerUpdated {
-            mcp: request.config,
-            path,
-        })
-    }
-
-    async fn execute_uninstall_mcp_server_request(
-        &self,
-        request: UninstallMcpServerRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(
-            request.workspace_id.as_deref(),
-        )?);
-        let path = registry.uninstall(&request.name)?;
-        Ok(LocalDaemonResponse::McpServerUninstalled {
-            name: request.name,
-            path,
-        })
-    }
-
-    async fn execute_import_mcp_servers_request(
-        &self,
-        request: ImportMcpServersRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(
-            request.workspace_id.as_deref(),
-        )?);
-        let outcome = match request.provider.as_str() {
-            "codex" => crate::mcp::import_codex_mcp_servers(&registry, request.name.as_deref())?,
-            "opencode" => {
-                let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
-                crate::mcp::import_opencode_mcp_servers(
-                    &registry,
-                    &workspace,
-                    request.name.as_deref(),
-                )?
-            }
-            _ => {
-                return Err(DaemonError::InvalidConfig {
-                    field: "provider",
-                    message: "only Codex and OpenCode MCP import are supported",
-                });
-            }
-        };
-        Ok(LocalDaemonResponse::McpServersImported { outcome })
-    }
-
-    async fn execute_get_mcp_server_request(
-        &self,
-        request: GetMcpServerRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(
-            request.workspace_id.as_deref(),
-        )?);
-        let Some(mcp) = registry.get(&request.name)? else {
-            return Err(DaemonError::LocalTransport {
-                operation: "mcp.get",
-                message: format!("MCP `{}` was not found", request.name),
-            });
-        };
-        Ok(LocalDaemonResponse::McpServer { mcp })
-    }
-
-    async fn execute_list_mcp_servers_request(
-        &self,
-        request: ListMcpServersRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(
-            request.workspace_id.as_deref(),
-        )?);
-        Ok(LocalDaemonResponse::McpServersListed {
-            mcps: registry.list()?,
-        })
-    }
-
-    async fn execute_install_skill_request(
-        &self,
-        request: InstallSkillRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
-        let source_path = if request.source_path.is_absolute() {
-            request.source_path
-        } else {
-            workspace.join(request.source_path)
-        };
-        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
-            request.workspace_id.as_deref(),
-        )?);
-        let (skill, path) = registry.install_from_path(&source_path)?;
-        Ok(LocalDaemonResponse::SkillInstalled { skill, path })
-    }
-
-    async fn execute_update_skill_request(
-        &self,
-        request: UpdateSkillRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
-        let source_path = if request.source_path.is_absolute() {
-            request.source_path
-        } else {
-            workspace.join(request.source_path)
-        };
-        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
-            request.workspace_id.as_deref(),
-        )?);
-        let (skill, path) = registry.update_from_path(&source_path)?;
-        Ok(LocalDaemonResponse::SkillUpdated { skill, path })
-    }
-
-    async fn execute_uninstall_skill_request(
-        &self,
-        request: UninstallSkillRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
-            request.workspace_id.as_deref(),
-        )?);
-        let (skill, path) = registry.uninstall(&request.name)?;
-        Ok(LocalDaemonResponse::SkillUninstalled { skill, path })
-    }
-
-    async fn execute_import_skills_request(
-        &self,
-        request: ImportSkillsRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
-        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
-            request.workspace_id.as_deref(),
-        )?);
-        let outcome = match request.provider.as_str() {
-            "codex" => {
-                crate::skill::import_codex_skills(&registry, &workspace, request.name.as_deref())?
-            }
-            "opencode" => crate::skill::import_opencode_skills(
-                &registry,
-                &workspace,
-                request.name.as_deref(),
-            )?,
-            _ => {
-                return Err(DaemonError::InvalidConfig {
-                    field: "provider",
-                    message: "only Codex and OpenCode skill import are supported",
-                });
-            }
-        };
-        Ok(LocalDaemonResponse::SkillsImported { outcome })
-    }
-
     async fn execute_grant_agent_capability_request(
         &self,
         command: &KernelCommand,
@@ -5732,7 +5548,7 @@ impl CommandRouter {
         let caller_user_id = command_caller_user_id(command);
         match request.kind {
             AgentGrantKind::Mcp => {
-                self.ensure_mcp_exists(request.workspace_id.as_deref(), &request.name)?;
+                ensure_mcp_exists(request.workspace_id.as_deref(), &request.name)?;
                 let agent = self
                     .runtime_state
                     .grant_agent_mcp(&request.agent_ref, request.name, &caller_user_id)
@@ -5740,7 +5556,7 @@ impl CommandRouter {
                 Ok(LocalDaemonResponse::AgentCapabilityGranted { agent })
             }
             AgentGrantKind::Skill => {
-                self.ensure_skill_exists(request.workspace_id.as_deref(), &request.name)?;
+                ensure_skill_exists(request.workspace_id.as_deref(), &request.name)?;
                 let agent = self
                     .runtime_state
                     .grant_agent_skill(&request.agent_ref, request.name, &caller_user_id)
@@ -5787,60 +5603,6 @@ impl CommandRouter {
             }
         };
         Ok(LocalDaemonResponse::AgentCapabilityRevoked { agent })
-    }
-
-    fn ensure_mcp_exists(&self, workspace_id: Option<&str>, name: &str) -> Result<(), DaemonError> {
-        let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(workspace_id)?);
-        if registry.get(name)?.is_none() {
-            return Err(DaemonError::LocalTransport {
-                operation: "agent.capability.grant",
-                message: format!("MCP `{name}` is not installed"),
-            });
-        }
-        Ok(())
-    }
-
-    fn ensure_skill_exists(
-        &self,
-        workspace_id: Option<&str>,
-        name: &str,
-    ) -> Result<(), DaemonError> {
-        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(workspace_id)?);
-        if registry.get(name)?.is_none() {
-            return Err(DaemonError::LocalTransport {
-                operation: "agent.capability.grant",
-                message: format!("skill `{name}` is not installed"),
-            });
-        }
-        Ok(())
-    }
-
-    async fn execute_get_skill_request(
-        &self,
-        request: GetSkillRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
-            request.workspace_id.as_deref(),
-        )?);
-        let Some(skill) = registry.get(&request.name)? else {
-            return Err(DaemonError::LocalTransport {
-                operation: "skill.get",
-                message: format!("skill `{}` was not found", request.name),
-            });
-        };
-        Ok(LocalDaemonResponse::Skill { skill })
-    }
-
-    async fn execute_list_skills_request(
-        &self,
-        request: ListSkillsRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
-            request.workspace_id.as_deref(),
-        )?);
-        Ok(LocalDaemonResponse::SkillsListed {
-            skills: registry.list()?,
-        })
     }
 
     async fn apply_focus_projection_refresh(
@@ -6636,36 +6398,6 @@ enum FocusProjectionRefresh {
     None,
     AgentSpawn,
     SnapshotSession { session_id: String },
-}
-
-fn mcp_registry_roots(workspace_id: Option<&str>) -> Result<Vec<std::path::PathBuf>, DaemonError> {
-    let workspace = registry_workspace_root(workspace_id)?;
-    let mut roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(&workspace)];
-    if let Some(root) = crate::mcp::ArrobaMcpRegistry::user_root() {
-        roots.push(root);
-    }
-    Ok(roots)
-}
-
-fn skill_registry_roots(
-    workspace_id: Option<&str>,
-) -> Result<Vec<std::path::PathBuf>, DaemonError> {
-    let workspace = registry_workspace_root(workspace_id)?;
-    let mut roots = vec![crate::skill::ArrobaSkillRegistry::project_root(&workspace)];
-    if let Some(root) = crate::skill::ArrobaSkillRegistry::user_root() {
-        roots.push(root);
-    }
-    Ok(roots)
-}
-
-fn registry_workspace_root(workspace_id: Option<&str>) -> Result<std::path::PathBuf, DaemonError> {
-    match workspace_id {
-        Some(value) if !value.trim().is_empty() => Ok(std::path::PathBuf::from(value)),
-        _ => std::env::current_dir().map_err(|error| DaemonError::LocalTransport {
-            operation: "registry.roots",
-            message: format!("failed to resolve current directory: {error}"),
-        }),
-    }
 }
 
 #[derive(Debug, Clone)]
