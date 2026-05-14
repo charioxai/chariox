@@ -15,14 +15,7 @@ use crate::runtime::capability_executor::{
     execute_required_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
 };
 use crate::runtime::capability_registry::execute_capability_registry_request;
-use crate::runtime::cloud_api_client::post_cloud_json;
-use crate::runtime::cloud_relay_control::{
-    cloud_kernel_presence_body, cloud_relay_token_refresh_due,
-};
-use crate::runtime::cloud_relay_executor::{
-    ensure_cloud_relay_connection as ensure_cloud_relay_connection_with_executor,
-    execute_cloud_relay_request,
-};
+use crate::runtime::cloud_relay_executor::execute_cloud_relay_request;
 use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
 use crate::runtime::command_response_refresh::{
     refresh_command_response_state, CommandResponseRefreshContext,
@@ -59,7 +52,6 @@ use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_machine_registry::execute_remote_machine_registry_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
 use crate::runtime::response_redaction::redact_response_for_user;
-use crate::runtime::runtime_mcp_proxy_dispatcher::dispatch_authenticated_mcp_proxy_call as dispatch_runtime_mcp_proxy_call;
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
 use crate::runtime::session_collaboration_executor::execute_session_collaboration_request;
 use crate::runtime::session_membership::authorize_session_membership;
@@ -86,7 +78,9 @@ use crate::session::PromptIdAllocator;
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
 
+mod cloud_relay_bridge;
 mod relay_peer_bridge;
+mod runtime_tool_bridge;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -417,130 +411,6 @@ impl CommandRouter {
             caller.realm_id = Some(profile.realm_id);
         }
         caller
-    }
-
-    pub(crate) fn runtime_mcp_bind_address(&self) -> (String, u16) {
-        let config = self.config_projection.snapshot();
-        (config.runtime_mcp_host, config.runtime_mcp_port)
-    }
-
-    pub(crate) async fn dispatch_authenticated_mcp_proxy_call(
-        &self,
-        auth_token: &str,
-        name: &str,
-        payload: serde_json::Value,
-    ) -> Result<serde_json::Value, DaemonError> {
-        dispatch_runtime_mcp_proxy_call(&self.provider_run_projection, auth_token, name, payload)
-            .await
-    }
-
-    pub(crate) fn relay_config_snapshot(&self) -> crate::config::DaemonConfig {
-        self.config_projection.snapshot()
-    }
-
-    pub(crate) fn cloud_relay_token_refresh_due(&self) -> bool {
-        let config = self.config_projection.snapshot();
-        cloud_relay_token_refresh_due(&config, crate::session::unix_epoch_ms())
-    }
-
-    pub(crate) async fn ensure_cloud_relay_connection(&self) -> Result<(), DaemonError> {
-        ensure_cloud_relay_connection_with_executor(&self.app, &self.config_projection).await
-    }
-
-    pub(crate) async fn publish_cloud_kernel_presence(
-        &self,
-        online: bool,
-    ) -> Result<(), DaemonError> {
-        let config = self.config_projection.snapshot();
-        let Some(profile) = config.cloud_relay.as_ref() else {
-            return Ok(());
-        };
-        let Some(body) = cloud_kernel_presence_body(&config, profile, online) else {
-            return Ok(());
-        };
-        let _: serde_json::Value =
-            post_cloud_json(profile.api_url.clone(), "/kernels/presence", body).await?;
-        Ok(())
-    }
-
-    pub(crate) async fn dispatch_authenticated_runtime_tool_call(
-        &self,
-        auth_token: &str,
-        tool_name: &str,
-        arguments: serde_json::Value,
-    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        self.runtime_state
-            .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
-            .await
-    }
-
-    pub(crate) fn runtime_tool_specs_for_auth_token(
-        &self,
-        auth_token: &str,
-    ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
-        self.runtime_state
-            .runtime_tool_specs_for_auth_token(auth_token)
-    }
-
-    pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call(
-        &self,
-        context: crate::execution_lease::RemoteWorkflowTurnContext,
-        tool_name: String,
-        arguments: serde_json::Value,
-    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        self.runtime_state
-            .dispatch_forwarded_workflow_runtime_tool_call(context, tool_name, arguments)
-            .await
-    }
-
-    pub(crate) async fn dispatch_forwarded_workflow_provider_failure(
-        &self,
-        context: crate::execution_lease::RemoteWorkflowTurnContext,
-        message: String,
-    ) -> Result<(), DaemonError> {
-        self.runtime_state
-            .dispatch_forwarded_workflow_provider_failure(context, message)
-            .await
-    }
-
-    pub(crate) async fn dispatch_forwarded_managed_io_runtime_tool_call(
-        &self,
-        context: crate::transport::relay_peer::RemoteManagedIoContext,
-        tool_name: String,
-        arguments: serde_json::Value,
-        artifact_states: Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>,
-    ) -> Result<
-        (
-            crate::transport::runtime_tools::RuntimeToolResult,
-            Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>,
-        ),
-        DaemonError,
-    > {
-        self.runtime_state
-            .dispatch_forwarded_managed_io_runtime_tool_call(
-                context,
-                tool_name,
-                arguments,
-                artifact_states,
-            )
-            .await
-    }
-
-    pub(crate) async fn dispatch_forwarded_capability_runtime_tool_call(
-        &self,
-        context: crate::transport::relay_peer::RemoteManagedIoContext,
-        tool_name: String,
-        arguments: serde_json::Value,
-    ) -> Result<
-        (
-            crate::transport::runtime_tools::RuntimeToolResult,
-            Option<crate::skill::ArrobaSkillPackage>,
-        ),
-        DaemonError,
-    > {
-        self.runtime_state
-            .dispatch_forwarded_capability_runtime_tool_call(context, tool_name, arguments)
-            .await
     }
 
     pub(crate) async fn dispatch(
