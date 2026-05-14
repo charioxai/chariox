@@ -8,8 +8,8 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     CreatePairingInviteRequest, CreateTerminalPairingLinkRequest, JoinPairingInviteRequest,
-    JoinTerminalPairingLinkRequest, LocalDaemonResponse, PairingInviteIntent, PairingInviteRecord,
-    PairingJoinRecord, TerminalPairingLinkRecord, TerminalType,
+    JoinTerminalPairingLinkRequest, LocalDaemonRequest, LocalDaemonResponse, PairingInviteIntent,
+    PairingInviteRecord, PairingJoinRecord, TerminalPairingLinkRecord, TerminalType,
 };
 use crate::runtime::cloud_api_client::{
     is_stale_cloud_link_error, issue_cloud_runtime_token, post_cloud_json,
@@ -21,8 +21,51 @@ use crate::runtime::invite_tokens::{
 };
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
 use crate::runtime::terminal_pairings::{
+    execute_list_paired_clients_request, execute_list_terminals_request,
+    execute_record_paired_client_request, execute_revoke_paired_client_request,
     public_key_thumbprint, terminal_record, terminal_type_from_str,
 };
+use crate::session::unix_epoch_ms;
+
+pub(crate) async fn execute_pairing_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    config_projection: &DaemonConfigProjectionStore,
+    provider_catalog_projection: &ProviderCatalogProjectionStore,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::CreatePairingInvite(request) => {
+            execute_create_pairing_invite_request(config_projection, request).await
+        }
+        LocalDaemonRequest::JoinPairingInvite(request) => {
+            execute_join_pairing_invite_request(
+                app,
+                config_projection,
+                provider_catalog_projection,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::CreateTerminalPairingLink(request) => {
+            execute_create_terminal_pairing_link_request(app, config_projection, request).await
+        }
+        LocalDaemonRequest::JoinTerminalPairingLink(request) => {
+            execute_join_terminal_pairing_link_request(config_projection, request).await
+        }
+        LocalDaemonRequest::ListTerminals(_) => execute_list_terminals_request(),
+        LocalDaemonRequest::ListPairedClients(_) => execute_list_paired_clients_request(),
+        LocalDaemonRequest::RecordPairedClient(request) => {
+            execute_record_paired_client_request(request, unix_epoch_ms)
+        }
+        LocalDaemonRequest::RevokePairedClient(request) => {
+            execute_revoke_paired_client_request(request)
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "pairing request",
+            message: "unsupported pairing request".to_string(),
+        }),
+    }
+}
 
 pub(crate) async fn execute_create_pairing_invite_request(
     config_projection: &DaemonConfigProjectionStore,

@@ -51,10 +51,7 @@ use crate::runtime::kernel_lifecycle_executor::execute_delete_kernel_request;
 use crate::runtime::native_interaction_bridge::{
     forward_relay_native_interaction, install_provider_native_interaction_bridge,
 };
-use crate::runtime::pairing_invite_executor::{
-    execute_create_pairing_invite_request, execute_create_terminal_pairing_link_request,
-    execute_join_pairing_invite_request, execute_join_terminal_pairing_link_request,
-};
+use crate::runtime::pairing_invite_executor::execute_pairing_request;
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonConfigProjectionStore, DaemonHealthProjection,
     ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
@@ -117,10 +114,6 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::terminal_output_executor::{
     execute_append_native_provider_output_request, TerminalOutputExecutor,
 };
-use crate::runtime::terminal_pairings::{
-    execute_list_paired_clients_request, execute_list_terminals_request,
-    execute_record_paired_client_request, execute_revoke_paired_client_request,
-};
 use crate::runtime::user_config_executor::{
     execute_delete_credential_secret_request, execute_get_user_config_request,
     execute_get_user_config_schema_request, execute_set_credential_secret_request,
@@ -140,7 +133,7 @@ use crate::runtime::workspace_command_executor::{
     execute_push_workspace_branch_request, execute_search_workspace_directories_request,
 };
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
-use crate::session::{unix_epoch_ms, PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
+use crate::session::{PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
 
@@ -1232,36 +1225,21 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::CreatePairingInvite(request) => {
-                execute_create_pairing_invite_request(&self.config_projection, request).await
-            }
-            LocalDaemonRequest::JoinPairingInvite(request) => {
-                execute_join_pairing_invite_request(
+            request @ (LocalDaemonRequest::CreatePairingInvite(_)
+            | LocalDaemonRequest::JoinPairingInvite(_)
+            | LocalDaemonRequest::CreateTerminalPairingLink(_)
+            | LocalDaemonRequest::JoinTerminalPairingLink(_)
+            | LocalDaemonRequest::ListTerminals(_)
+            | LocalDaemonRequest::ListPairedClients(_)
+            | LocalDaemonRequest::RecordPairedClient(_)
+            | LocalDaemonRequest::RevokePairedClient(_)) => {
+                execute_pairing_request(
                     &self.app,
                     &self.config_projection,
                     &self.provider_catalog_projection,
                     request,
                 )
                 .await
-            }
-            LocalDaemonRequest::CreateTerminalPairingLink(request) => {
-                execute_create_terminal_pairing_link_request(
-                    &self.app,
-                    &self.config_projection,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::JoinTerminalPairingLink(request) => {
-                execute_join_terminal_pairing_link_request(&self.config_projection, request).await
-            }
-            LocalDaemonRequest::ListTerminals(_) => execute_list_terminals_request(),
-            LocalDaemonRequest::ListPairedClients(_) => execute_list_paired_clients_request(),
-            LocalDaemonRequest::RecordPairedClient(request) => {
-                execute_record_paired_client_request(request, unix_epoch_ms)
-            }
-            LocalDaemonRequest::RevokePairedClient(request) => {
-                execute_revoke_paired_client_request(request)
             }
             LocalDaemonRequest::GetSessionHistory(request) => {
                 execute_session_history_request(
@@ -1771,36 +1749,21 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::CreatePairingInvite(request) => {
-                execute_create_pairing_invite_request(&self.config_projection, request).await
-            }
-            LocalDaemonRequest::JoinPairingInvite(request) => {
-                execute_join_pairing_invite_request(
+            request @ (LocalDaemonRequest::CreatePairingInvite(_)
+            | LocalDaemonRequest::JoinPairingInvite(_)
+            | LocalDaemonRequest::CreateTerminalPairingLink(_)
+            | LocalDaemonRequest::JoinTerminalPairingLink(_)
+            | LocalDaemonRequest::ListTerminals(_)
+            | LocalDaemonRequest::ListPairedClients(_)
+            | LocalDaemonRequest::RecordPairedClient(_)
+            | LocalDaemonRequest::RevokePairedClient(_)) => {
+                execute_pairing_request(
                     &self.app,
                     &self.config_projection,
                     &self.provider_catalog_projection,
                     request,
                 )
                 .await
-            }
-            LocalDaemonRequest::CreateTerminalPairingLink(request) => {
-                execute_create_terminal_pairing_link_request(
-                    &self.app,
-                    &self.config_projection,
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::JoinTerminalPairingLink(request) => {
-                execute_join_terminal_pairing_link_request(&self.config_projection, request).await
-            }
-            LocalDaemonRequest::ListTerminals(_) => execute_list_terminals_request(),
-            LocalDaemonRequest::ListPairedClients(_) => execute_list_paired_clients_request(),
-            LocalDaemonRequest::RecordPairedClient(request) => {
-                execute_record_paired_client_request(request, unix_epoch_ms)
-            }
-            LocalDaemonRequest::RevokePairedClient(request) => {
-                execute_revoke_paired_client_request(request)
             }
             LocalDaemonRequest::GetProviderAuthStatus(request) => {
                 execute_get_provider_auth_status_request(request).await
