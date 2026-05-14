@@ -24,6 +24,9 @@ use crate::runtime::cloud_relay_executor::{
     execute_cloud_relay_request,
 };
 use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
+use crate::runtime::command_response_refresh::{
+    refresh_command_response_state, CommandResponseRefreshContext,
+};
 use crate::runtime::daemon_health_projection::{
     build_daemon_health_projection, execute_daemon_health_request, DaemonHealthProjectionInput,
 };
@@ -53,21 +56,18 @@ use crate::runtime::provider_process_control::{
 };
 use crate::runtime::provider_run_control::{
     execute_provider_run_request, projected_provider_run_response,
-    refresh_provider_run_projection_from_response,
 };
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
 use crate::runtime::remote_machine_registry::execute_remote_machine_registry_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
 use crate::runtime::response_redaction::redact_response_for_user;
-use crate::runtime::runtime_lane_cleanup::cleanup_runtime_lanes_after_response;
 use crate::runtime::runtime_mcp_proxy_dispatcher::dispatch_authenticated_mcp_proxy_call as dispatch_runtime_mcp_proxy_call;
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
 use crate::runtime::session_collaboration_executor::execute_session_collaboration_request;
 use crate::runtime::session_membership::authorize_session_membership;
 use crate::runtime::session_projection_refresh::{
-    apply_focus_projection_refresh, apply_session_projection_refresh, focus_projection_refresh,
-    session_projection_refresh, SessionProjectionRefreshContext,
+    focus_projection_refresh, session_projection_refresh,
 };
 use crate::runtime::session_read_control::{
     execute_session_read_request, projected_session_inspection_response,
@@ -1102,36 +1102,24 @@ impl CommandRouter {
                 }
             },
         };
-        apply_session_projection_refresh(
-            SessionProjectionRefreshContext {
+        refresh_command_response_state(
+            CommandResponseRefreshContext {
                 app: &self.app,
                 session_projection: &self.session_projection,
                 agent_runtime_projection: &self.agent_runtime_projection,
                 history_projection: &self.history_projection,
+                focus_projection: &self.focus_projection,
                 provider_process_projection: &self.provider_process_projection,
                 provider_launch_pending: &self.provider_launch_pending,
                 provider_run_projection: &self.provider_run_projection,
+                agent_runtime: &self.agent_runtime,
+                workflow_runtime: &self.workflow_runtime,
             },
             session_refresh,
-            &result,
-        )
-        .await;
-        apply_focus_projection_refresh(
-            &self.app,
-            &self.focus_projection,
-            &self.session_projection,
             focus_refresh,
             &result,
         )
         .await;
-        refresh_provider_run_projection_from_response(
-            &self.provider_run_projection,
-            &self.provider_process_projection,
-            &result,
-        );
-        self.apply_provider_launch_projection_state(&result).await;
-        cleanup_runtime_lanes_after_response(&self.agent_runtime, &self.workflow_runtime, &result)
-            .await;
         self.redact_result_for_user(result, &caller_user_id)
     }
 
@@ -1572,13 +1560,6 @@ impl CommandRouter {
                 self.dispatch_interactive(command, request).await
             }
         }
-    }
-
-    async fn apply_provider_launch_projection_state(
-        &self,
-        result: &Result<LocalDaemonResponse, DaemonError>,
-    ) {
-        self.provider_launch_pending.track_response(result).await;
     }
 }
 
