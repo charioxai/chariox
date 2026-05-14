@@ -5,26 +5,19 @@ use tokio::sync::RwLock;
 use tokio::time::Duration;
 
 use crate::app::{DaemonApp, PromptActivityStore};
-use crate::config::PersistedCloudRelayProfile;
 use crate::error::DaemonError;
 use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
 use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
 use crate::local::{
-    AcceptCloudSessionInviteRequest, AgentGrantKind, AgentUtilityInput, AgentUtilityKind,
-    AgentUtilityOutput, CloudRelayLoginPoll, CloudRelayLoginPollStatus, CloudRelayLoginStart,
-    CloudRelayRuntimeToken, ConfigureRelayRequest, ConnectCloudRelayRequest,
-    CreateCloudSessionInviteRequest, DeleteKernelRequest, GenerateWorkspaceCommitMessageRequest,
-    GetPromptInputHistoryRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-    GetSessionStateRequest, GrantAgentCapabilityRequest, IssueCloudRelayClientTokenRequest,
-    ListAgentsRequest, ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest,
-    ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutCloudRelayRequest,
-    LogoutProviderRequest, MoveAgentToRemoteRequest, PairCloudRelayClientRequest,
-    PairCloudRelayMachineRequest, PollCloudRelayLoginRequest, PumpTerminalOutputRequest,
-    RecordPromptInputHistoryRequest, RelayStatus, ResolveSessionRequest,
-    RevokeAgentCapabilityRequest, RevokeCloudSessionInviteRequest, RunAgentUtilityRequest,
-    SemanticHistoryMatch, SemanticSearchHistoryMode, SemanticSearchHistoryRequest,
-    ShowCloudSessionInviteRequest, StartCloudRelayLoginRequest, TeardownProviderProcessesRequest,
+    AgentGrantKind, AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, ConfigureRelayRequest,
+    DeleteKernelRequest, GenerateWorkspaceCommitMessageRequest, GetPromptInputHistoryRequest,
+    GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
+    GrantAgentCapabilityRequest, ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest,
+    LocalDaemonResponse, LogoutProviderRequest, MoveAgentToRemoteRequest,
+    PumpTerminalOutputRequest, RecordPromptInputHistoryRequest, RelayStatus, ResolveSessionRequest,
+    RevokeAgentCapabilityRequest, RunAgentUtilityRequest, SemanticHistoryMatch,
+    SemanticSearchHistoryMode, SemanticSearchHistoryRequest, TeardownProviderProcessesRequest,
     UpdateProviderRunSelectionRequest, WaitingRoomPublicSnapshot,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
@@ -44,17 +37,21 @@ use crate::runtime::capability_registry::{
     execute_uninstall_mcp_server_request, execute_uninstall_skill_request,
     execute_update_mcp_server_request, execute_update_skill_request,
 };
-use crate::runtime::cloud_api_client::{
-    accept_cloud_session_invite, cloud_profile_from_persisted, create_cloud_session_invite,
-    is_stale_cloud_link_error, issue_cloud_runtime_token, list_cloud_collaborators,
-    list_cloud_session_members, normalize_cloud_api_url, post_cloud_json,
-    revoke_cloud_session_invite, show_cloud_session_invite, CloudDevicePollResponse,
-    CloudDeviceStartResponse, CloudPairingTokenResponse,
-};
+use crate::runtime::cloud_api_client::{issue_cloud_runtime_token, post_cloud_json};
 use crate::runtime::cloud_relay_control::{
     cloud_kernel_presence_body, cloud_relay_profile_has_runtime_credentials,
     cloud_relay_runtime_token_is_fresh, cloud_relay_token_refresh_due, cloud_runtime_token_subject,
     CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
+};
+use crate::runtime::cloud_relay_executor::{
+    clear_cloud_profile_if_stale, execute_accept_cloud_session_invite_request,
+    execute_cloud_relay_status_request, execute_connect_cloud_relay_request,
+    execute_create_cloud_session_invite_request, execute_issue_cloud_relay_client_token_request,
+    execute_list_cloud_collaborators_request, execute_list_cloud_session_members_request,
+    execute_logout_cloud_relay_request, execute_pair_cloud_relay_client_request,
+    execute_pair_cloud_relay_machine_request, execute_poll_cloud_relay_login_request,
+    execute_revoke_cloud_session_invite_request, execute_show_cloud_session_invite_request,
+    execute_start_cloud_relay_login_request,
 };
 use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
 use crate::runtime::history_requests::{
@@ -84,7 +81,6 @@ use crate::runtime::provider_auth_control::{
 };
 use crate::runtime::provider_catalog_control::{
     execute_get_provider_catalog_request, execute_get_provider_command_catalogs_request,
-    provider_catalog_json_value,
 };
 use crate::runtime::provider_launch_executor::ProviderLaunchCommandExecutor;
 use crate::runtime::provider_process_control::{
@@ -137,9 +133,7 @@ use crate::runtime::user_config_executor::{
     execute_get_user_config_schema_request, execute_set_credential_secret_request,
     execute_set_user_config_value_request, execute_unset_user_config_value_request,
 };
-use crate::runtime::waiting_room_public_projection::{
-    build_waiting_room_public_snapshot, infer_waiting_room_launch_target,
-};
+use crate::runtime::waiting_room_public_projection::build_waiting_room_public_snapshot;
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workflow_projection::{
     projected_resolve_workflow, projected_resolve_workflow_run, projected_workflow_id,
@@ -570,7 +564,7 @@ impl CommandRouter {
         {
             Ok(issued) => issued,
             Err(error) => {
-                self.clear_cloud_profile_if_stale(&error).await?;
+                clear_cloud_profile_if_stale(&self.app, &self.config_projection, &error).await?;
                 return Err(error);
             }
         };
@@ -1204,52 +1198,92 @@ impl CommandRouter {
                 self.execute_configure_relay_request(request).await
             }
             LocalDaemonRequest::CloudRelayStatus(_) => {
-                self.execute_cloud_relay_status_request().await
+                execute_cloud_relay_status_request(&self.config_projection).await
             }
             LocalDaemonRequest::StartCloudRelayLogin(request) => {
-                self.execute_start_cloud_relay_login_request(request).await
+                execute_start_cloud_relay_login_request(request).await
             }
             LocalDaemonRequest::PollCloudRelayLogin(request) => {
-                self.execute_poll_cloud_relay_login_request(request).await
+                execute_poll_cloud_relay_login_request(&self.app, &self.config_projection, request)
+                    .await
             }
             LocalDaemonRequest::LogoutCloudRelay(request) => {
-                self.execute_logout_cloud_relay_request(request).await
+                execute_logout_cloud_relay_request(&self.app, &self.config_projection, request)
+                    .await
             }
             LocalDaemonRequest::PairCloudRelayClient(request) => {
-                self.execute_pair_cloud_relay_client_request(request).await
+                execute_pair_cloud_relay_client_request(&self.app, &self.config_projection, request)
+                    .await
             }
             LocalDaemonRequest::PairCloudRelayMachine(request) => {
-                self.execute_pair_cloud_relay_machine_request(request).await
+                execute_pair_cloud_relay_machine_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ConnectCloudRelay(request) => {
-                self.execute_connect_cloud_relay_request(request).await
+                execute_connect_cloud_relay_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    self.relay_state.clone(),
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::IssueCloudRelayClientToken(request) => {
-                self.execute_issue_cloud_relay_client_token_request(request)
-                    .await
+                execute_issue_cloud_relay_client_token_request(
+                    &self.app,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::CreateCloudSessionInvite(request) => {
-                self.execute_create_cloud_session_invite_request(request)
-                    .await
+                execute_create_cloud_session_invite_request(
+                    &self.app,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ShowCloudSessionInvite(request) => {
-                self.execute_show_cloud_session_invite_request(request)
-                    .await
+                execute_show_cloud_session_invite_request(&self.config_projection, request).await
             }
             LocalDaemonRequest::AcceptCloudSessionInvite(request) => {
-                self.execute_accept_cloud_session_invite_request(request)
-                    .await
+                execute_accept_cloud_session_invite_request(
+                    &self.app,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::RevokeCloudSessionInvite(request) => {
-                self.execute_revoke_cloud_session_invite_request(request)
-                    .await
+                execute_revoke_cloud_session_invite_request(
+                    &self.app,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ListCloudSessionMembers(request) => {
-                self.execute_list_cloud_session_members_request(request)
-                    .await
+                execute_list_cloud_session_members_request(
+                    &self.app,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ListCloudCollaborators(request) => {
-                self.execute_list_cloud_collaborators_request(request).await
+                execute_list_cloud_collaborators_request(
+                    &self.app,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::GetUserConfig(request) => {
                 execute_get_user_config_request(&self.config_projection, request).await
@@ -2315,525 +2349,6 @@ impl CommandRouter {
         })
     }
 
-    async fn execute_cloud_relay_status_request(&self) -> Result<LocalDaemonResponse, DaemonError> {
-        let profile = self
-            .config_projection
-            .snapshot()
-            .cloud_relay
-            .as_ref()
-            .map(cloud_profile_from_persisted);
-        Ok(LocalDaemonResponse::CloudRelayStatus { profile })
-    }
-
-    async fn execute_start_cloud_relay_login_request(
-        &self,
-        request: StartCloudRelayLoginRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let api_url = normalize_cloud_api_url(&request.api_url)?;
-        let response: CloudDeviceStartResponse = post_cloud_json(
-            api_url.clone(),
-            "/auth/device/start",
-            serde_json::json!({
-                "clientId": request.client_id,
-                "clientAlias": request.client_alias,
-                "machineId": request.machine_id,
-                "machineAlias": request.machine_alias,
-            }),
-        )
-        .await?;
-        Ok(LocalDaemonResponse::CloudRelayLoginStarted {
-            login: CloudRelayLoginStart {
-                api_url,
-                device_code: response.device_code,
-                user_code: response.user_code,
-                verification_url: response.verification_url,
-                expires_at: response.expires_at,
-                interval_seconds: response.interval_seconds,
-            },
-        })
-    }
-
-    async fn execute_poll_cloud_relay_login_request(
-        &self,
-        request: PollCloudRelayLoginRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let api_url = normalize_cloud_api_url(&request.api_url)?;
-        let response: CloudDevicePollResponse = post_cloud_json(
-            api_url.clone(),
-            "/auth/device/poll",
-            serde_json::json!({ "deviceCode": request.device_code }),
-        )
-        .await?;
-        let result = match response.status.as_str() {
-            "authorization_pending" => CloudRelayLoginPoll {
-                status: CloudRelayLoginPollStatus::AuthorizationPending,
-                interval_seconds: response.interval_seconds,
-                expires_at: response.expires_at,
-                profile: None,
-            },
-            "expired_token" => CloudRelayLoginPoll {
-                status: CloudRelayLoginPollStatus::ExpiredToken,
-                interval_seconds: None,
-                expires_at: None,
-                profile: None,
-            },
-            "approved" => {
-                let profile = response
-                    .profile
-                    .ok_or_else(|| DaemonError::LocalTransport {
-                        operation: "poll cloud relay login",
-                        message: "cloud approval response did not include a profile".to_string(),
-                    })?;
-                let session_token =
-                    response
-                        .cloud_session_token
-                        .ok_or_else(|| DaemonError::LocalTransport {
-                            operation: "poll cloud relay login",
-                            message: "cloud approval response did not include a session token"
-                                .to_string(),
-                        })?;
-                let persisted = PersistedCloudRelayProfile {
-                    api_url,
-                    email: profile.email,
-                    account_id: profile.account_id,
-                    user_id: profile.user_id,
-                    account_slug: profile.account_slug,
-                    realm_id: profile.realm_id,
-                    relay_url: profile.relay_url,
-                    issuer_id: profile.issuer_id,
-                    client_id: profile.client_id,
-                    client_alias: profile.client_alias,
-                    machine_id: profile.machine_id,
-                    machine_alias: profile.machine_alias,
-                    machine_credential: response.machine_credential,
-                    cloud_session_token: Some(session_token),
-                    cloud_session_expires_at_ms: None,
-                    token_expires_at_ms: None,
-                };
-                {
-                    let mut app = self.app.lock().await;
-                    app.persist_cloud_relay_profile(Some(persisted.clone()))?;
-                }
-                self.config_projection.update({
-                    let app = self.app.lock().await;
-                    app.config().clone()
-                });
-                CloudRelayLoginPoll {
-                    status: CloudRelayLoginPollStatus::Approved,
-                    interval_seconds: None,
-                    expires_at: response.cloud_session_expires_at,
-                    profile: Some(cloud_profile_from_persisted(&persisted)),
-                }
-            }
-            other => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "poll cloud relay login",
-                    message: format!("cloud returned unknown device login status `{other}`"),
-                });
-            }
-        };
-        Ok(LocalDaemonResponse::CloudRelayLoginPolled { result })
-    }
-
-    async fn execute_logout_cloud_relay_request(
-        &self,
-        request: LogoutCloudRelayRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let profile = self.config_projection.snapshot().cloud_relay;
-        if let Some(profile) = profile.as_ref() {
-            let _ = post_cloud_json::<serde_json::Value>(
-                profile.api_url.clone(),
-                "/auth/logout",
-                serde_json::json!({
-                    "sessionToken": profile.cloud_session_token,
-                    "accountId": profile.account_id,
-                    "clientId": profile.client_id,
-                    "machineId": profile.machine_id,
-                    "revokeClient": request.revoke_client,
-                    "revokeMachine": request.revoke_machine,
-                }),
-            )
-            .await;
-        }
-        {
-            let mut app = self.app.lock().await;
-            app.persist_cloud_relay_profile(None)?;
-        }
-        self.config_projection.update({
-            let app = self.app.lock().await;
-            app.config().clone()
-        });
-        Ok(LocalDaemonResponse::CloudRelayLoggedOut)
-    }
-
-    async fn execute_pair_cloud_relay_client_request(
-        &self,
-        request: PairCloudRelayClientRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut profile = self.required_cloud_relay_profile()?;
-        let pairing: CloudPairingTokenResponse = post_cloud_json(
-            profile.api_url.clone(),
-            "/pairing-tokens",
-            serde_json::json!({
-                "accountId": profile.account_id,
-                "createdByUserId": profile.user_id,
-                "subjectKind": "client",
-            }),
-        )
-        .await?;
-        post_cloud_json::<serde_json::Value>(
-            profile.api_url.clone(),
-            "/clients/pair",
-            serde_json::json!({
-                "accountId": profile.account_id,
-                "token": pairing.token,
-                "clientId": request.client_id,
-                "userId": profile.user_id,
-                "alias": request.alias,
-            }),
-        )
-        .await?;
-        profile.client_id = Some(request.client_id);
-        if request.alias.is_some() {
-            profile.client_alias = request.alias;
-        }
-        let saved = self.persist_cloud_profile(profile).await?;
-        Ok(LocalDaemonResponse::CloudRelayClientPaired {
-            profile: cloud_profile_from_persisted(&saved),
-        })
-    }
-
-    async fn execute_pair_cloud_relay_machine_request(
-        &self,
-        request: PairCloudRelayMachineRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut profile = self.required_cloud_relay_profile()?;
-        let pairing: CloudPairingTokenResponse = post_cloud_json(
-            profile.api_url.clone(),
-            "/pairing-tokens",
-            serde_json::json!({
-                "accountId": profile.account_id,
-                "createdByUserId": profile.user_id,
-                "subjectKind": "machine",
-            }),
-        )
-        .await?;
-        post_cloud_json::<serde_json::Value>(
-            profile.api_url.clone(),
-            "/machines/pair",
-            serde_json::json!({
-                "accountId": profile.account_id,
-                "token": pairing.token,
-                "machineId": request.machine_id,
-                "userId": profile.user_id,
-                "alias": request.alias,
-                "runtimeProfile": self.machine_runtime_profile_payload().await,
-            }),
-        )
-        .await?;
-        profile.machine_id = Some(request.machine_id);
-        if request.alias.is_some() {
-            profile.machine_alias = request.alias;
-        }
-        let saved = self.persist_cloud_profile(profile).await?;
-        Ok(LocalDaemonResponse::CloudRelayMachinePaired {
-            profile: cloud_profile_from_persisted(&saved),
-        })
-    }
-
-    async fn execute_connect_cloud_relay_request(
-        &self,
-        _request: ConnectCloudRelayRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut profile = self.required_cloud_relay_profile()?;
-        let daemon_id = self.config_projection.snapshot().daemon_id;
-        let (subject, subject_kind, machine_id) =
-            if let Some(machine_id) = profile.machine_id.clone() {
-                (machine_id.clone(), "machine", Some(machine_id))
-            } else {
-                (daemon_id, "kernel", None)
-            };
-        let issued = issue_cloud_runtime_token(
-            &profile,
-            &subject,
-            subject_kind,
-            None,
-            None,
-            machine_id,
-            None,
-        )
-        .await?;
-        profile.token_expires_at_ms =
-            Some(crate::session::unix_epoch_ms() + CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS);
-        let saved = self.persist_cloud_profile(profile.clone()).await?;
-        {
-            let mut app = self.app.lock().await;
-            app.configure_relay(Some(profile.relay_url.clone()), Some(issued.token.clone()))?;
-            app.invalidate_provider_catalog_cache();
-            self.config_projection.update(app.config().clone());
-        }
-        self.provider_catalog_projection.invalidate();
-        let token = CloudRelayRuntimeToken {
-            relay_url: profile.relay_url,
-            relay_token: issued.token,
-            token_expires_at: issued.expires_at,
-        };
-        Ok(LocalDaemonResponse::CloudRelayConnected {
-            status: self.projected_relay_status().await,
-            profile: cloud_profile_from_persisted(&saved),
-            token,
-        })
-    }
-
-    async fn execute_issue_cloud_relay_client_token_request(
-        &self,
-        request: IssueCloudRelayClientTokenRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut profile = self.required_cloud_relay_profile()?;
-        if profile.client_id.is_none() {
-            let pairing: CloudPairingTokenResponse = match post_cloud_json(
-                profile.api_url.clone(),
-                "/pairing-tokens",
-                serde_json::json!({
-                    "accountId": profile.account_id,
-                    "createdByUserId": profile.user_id,
-                    "subjectKind": "client",
-                }),
-            )
-            .await
-            {
-                Ok(pairing) => pairing,
-                Err(error) => {
-                    self.clear_cloud_profile_if_stale(&error).await?;
-                    return Err(error);
-                }
-            };
-            if let Err(error) = post_cloud_json::<serde_json::Value>(
-                profile.api_url.clone(),
-                "/clients/pair",
-                serde_json::json!({
-                    "accountId": profile.account_id,
-                    "token": pairing.token,
-                    "clientId": request.client_id,
-                    "userId": profile.user_id,
-                }),
-            )
-            .await
-            {
-                self.clear_cloud_profile_if_stale(&error).await?;
-                return Err(error);
-            }
-            profile.client_id = Some(request.client_id.clone());
-            profile = self.persist_cloud_profile(profile).await?;
-        }
-        let client_id = profile
-            .client_id
-            .clone()
-            .unwrap_or_else(|| request.client_id.clone());
-        let issued = match issue_cloud_runtime_token(
-            &profile,
-            &client_id,
-            "client",
-            Some(vec![request.target_daemon_alias]),
-            Some(client_id.clone()),
-            profile
-                .machine_credential
-                .as_ref()
-                .and(profile.machine_id.clone()),
-            request.session_id,
-        )
-        .await
-        {
-            Ok(issued) => issued,
-            Err(error) => {
-                self.clear_cloud_profile_if_stale(&error).await?;
-                return Err(error);
-            }
-        };
-        let token = CloudRelayRuntimeToken {
-            relay_url: profile.relay_url.clone(),
-            relay_token: issued.token,
-            token_expires_at: issued.expires_at,
-        };
-        Ok(LocalDaemonResponse::CloudRelayClientTokenIssued {
-            profile: cloud_profile_from_persisted(&profile),
-            token,
-        })
-    }
-
-    async fn execute_create_cloud_session_invite_request(
-        &self,
-        request: CreateCloudSessionInviteRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let profile = self.required_cloud_relay_profile_with_session()?;
-        let invite = match create_cloud_session_invite(&profile, request).await {
-            Ok(invite) => invite,
-            Err(error) => {
-                self.clear_cloud_profile_if_stale(&error).await?;
-                return Err(error);
-            }
-        };
-        Ok(LocalDaemonResponse::CloudSessionInviteCreated { invite })
-    }
-
-    async fn execute_show_cloud_session_invite_request(
-        &self,
-        request: ShowCloudSessionInviteRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let profile = self.required_cloud_relay_profile()?;
-        let invite = show_cloud_session_invite(&profile, request).await?;
-        Ok(LocalDaemonResponse::CloudSessionInviteShown { invite })
-    }
-
-    async fn execute_accept_cloud_session_invite_request(
-        &self,
-        request: AcceptCloudSessionInviteRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let profile = self.required_cloud_relay_profile_with_session()?;
-        let acceptance = match accept_cloud_session_invite(&profile, request).await {
-            Ok(acceptance) => acceptance,
-            Err(error) => {
-                self.clear_cloud_profile_if_stale(&error).await?;
-                return Err(error);
-            }
-        };
-        Ok(LocalDaemonResponse::CloudSessionInviteAccepted { acceptance })
-    }
-
-    async fn execute_revoke_cloud_session_invite_request(
-        &self,
-        request: RevokeCloudSessionInviteRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let profile = self.required_cloud_relay_profile_with_session()?;
-        let revoked = match revoke_cloud_session_invite(&profile, request).await {
-            Ok(revoked) => revoked,
-            Err(error) => {
-                self.clear_cloud_profile_if_stale(&error).await?;
-                return Err(error);
-            }
-        };
-        Ok(LocalDaemonResponse::CloudSessionInviteRevoked {
-            invite_id: revoked.invite_id,
-            status: revoked.status,
-        })
-    }
-
-    async fn execute_list_cloud_session_members_request(
-        &self,
-        request: ListCloudSessionMembersRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let profile = self.required_cloud_relay_profile_with_session()?;
-        let listed = match list_cloud_session_members(&profile, request).await {
-            Ok(listed) => listed,
-            Err(error) => {
-                self.clear_cloud_profile_if_stale(&error).await?;
-                return Err(error);
-            }
-        };
-        Ok(LocalDaemonResponse::CloudSessionMembersListed {
-            session_id: listed.session_id,
-            members: listed.members,
-        })
-    }
-
-    async fn execute_list_cloud_collaborators_request(
-        &self,
-        _request: ListCloudCollaboratorsRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let profile = self.required_cloud_relay_profile_with_session()?;
-        let collaborators = match list_cloud_collaborators(&profile).await {
-            Ok(collaborators) => collaborators,
-            Err(error) => {
-                self.clear_cloud_profile_if_stale(&error).await?;
-                return Err(error);
-            }
-        };
-        Ok(LocalDaemonResponse::CloudCollaboratorsListed { collaborators })
-    }
-
-    fn required_cloud_relay_profile(&self) -> Result<PersistedCloudRelayProfile, DaemonError> {
-        self.config_projection
-            .snapshot()
-            .cloud_relay
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "load cloud relay profile",
-                message: "cloud relay profile missing; run /relay cloud login first".to_string(),
-            })
-    }
-
-    fn required_cloud_relay_profile_with_session(
-        &self,
-    ) -> Result<PersistedCloudRelayProfile, DaemonError> {
-        let profile = self.required_cloud_relay_profile()?;
-        if profile
-            .cloud_session_token
-            .as_deref()
-            .unwrap_or("")
-            .is_empty()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "load cloud relay session",
-                message: "cloud session token missing; run /relay cloud login first".to_string(),
-            });
-        }
-        Ok(profile)
-    }
-
-    async fn machine_runtime_profile_payload(&self) -> serde_json::Value {
-        let config = self.config_projection.snapshot();
-        let user_config = config.user_config.clone();
-        let provider_catalog =
-            provider_catalog_json_value(&self.provider_catalog_projection, &self.config_projection)
-                .await;
-        let launch_target = infer_waiting_room_launch_target();
-        serde_json::json!({
-            "profileVersion": 1,
-            "providerCatalog": provider_catalog,
-            "userConfig": {
-                "providers": user_config.providers,
-                "ui": user_config.ui,
-            },
-            "defaultWorkspaceId": launch_target.as_ref().map(|target| target.workspace_id.clone()),
-            "defaultWorktreeId": launch_target.as_ref().map(|target| target.worktree_id.clone()),
-            "workspaces": launch_target.as_ref().map(|target| serde_json::json!([{
-                "workspaceId": target.workspace_id,
-                "worktreeId": target.worktree_id,
-            }])),
-            "os": std::env::consts::OS,
-            "homeDir": std::env::var("HOME").ok(),
-        })
-    }
-
-    async fn persist_cloud_profile(
-        &self,
-        profile: PersistedCloudRelayProfile,
-    ) -> Result<PersistedCloudRelayProfile, DaemonError> {
-        {
-            let mut app = self.app.lock().await;
-            app.persist_cloud_relay_profile(Some(profile.clone()))?;
-        }
-        self.config_projection.update({
-            let app = self.app.lock().await;
-            app.config().clone()
-        });
-        Ok(profile)
-    }
-
-    async fn clear_cloud_profile_if_stale(&self, error: &DaemonError) -> Result<(), DaemonError> {
-        if !is_stale_cloud_link_error(error) {
-            return Ok(());
-        }
-        {
-            let mut app = self.app.lock().await;
-            app.persist_cloud_relay_profile(None)?;
-        }
-        self.config_projection.update({
-            let app = self.app.lock().await;
-            app.config().clone()
-        });
-        Ok(())
-    }
-
     async fn execute_delete_kernel_request(
         &self,
         _request: DeleteKernelRequest,
@@ -3406,52 +2921,92 @@ impl CommandRouter {
                 self.execute_configure_relay_request(request).await
             }
             LocalDaemonRequest::CloudRelayStatus(_) => {
-                self.execute_cloud_relay_status_request().await
+                execute_cloud_relay_status_request(&self.config_projection).await
             }
             LocalDaemonRequest::StartCloudRelayLogin(request) => {
-                self.execute_start_cloud_relay_login_request(request).await
+                execute_start_cloud_relay_login_request(request).await
             }
             LocalDaemonRequest::PollCloudRelayLogin(request) => {
-                self.execute_poll_cloud_relay_login_request(request).await
+                execute_poll_cloud_relay_login_request(&self.app, &self.config_projection, request)
+                    .await
             }
             LocalDaemonRequest::LogoutCloudRelay(request) => {
-                self.execute_logout_cloud_relay_request(request).await
+                execute_logout_cloud_relay_request(&self.app, &self.config_projection, request)
+                    .await
             }
             LocalDaemonRequest::PairCloudRelayClient(request) => {
-                self.execute_pair_cloud_relay_client_request(request).await
+                execute_pair_cloud_relay_client_request(&self.app, &self.config_projection, request)
+                    .await
             }
             LocalDaemonRequest::PairCloudRelayMachine(request) => {
-                self.execute_pair_cloud_relay_machine_request(request).await
+                execute_pair_cloud_relay_machine_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ConnectCloudRelay(request) => {
-                self.execute_connect_cloud_relay_request(request).await
+                execute_connect_cloud_relay_request(
+                    &self.app,
+                    &self.config_projection,
+                    &self.provider_catalog_projection,
+                    self.relay_state.clone(),
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::IssueCloudRelayClientToken(request) => {
-                self.execute_issue_cloud_relay_client_token_request(request)
-                    .await
+                execute_issue_cloud_relay_client_token_request(
+                    &self.app,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::CreateCloudSessionInvite(request) => {
-                self.execute_create_cloud_session_invite_request(request)
-                    .await
+                execute_create_cloud_session_invite_request(
+                    &self.app,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ShowCloudSessionInvite(request) => {
-                self.execute_show_cloud_session_invite_request(request)
-                    .await
+                execute_show_cloud_session_invite_request(&self.config_projection, request).await
             }
             LocalDaemonRequest::AcceptCloudSessionInvite(request) => {
-                self.execute_accept_cloud_session_invite_request(request)
-                    .await
+                execute_accept_cloud_session_invite_request(
+                    &self.app,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::RevokeCloudSessionInvite(request) => {
-                self.execute_revoke_cloud_session_invite_request(request)
-                    .await
+                execute_revoke_cloud_session_invite_request(
+                    &self.app,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ListCloudSessionMembers(request) => {
-                self.execute_list_cloud_session_members_request(request)
-                    .await
+                execute_list_cloud_session_members_request(
+                    &self.app,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ListCloudCollaborators(request) => {
-                self.execute_list_cloud_collaborators_request(request).await
+                execute_list_cloud_collaborators_request(
+                    &self.app,
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::GetUserConfig(request) => {
                 execute_get_user_config_request(&self.config_projection, request).await
