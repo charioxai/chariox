@@ -1024,11 +1024,12 @@ impl CommandRouter {
                 return execute_create_workspace_worktree_request(request.clone());
             }
             LocalDaemonRequest::DeleteWorkspaceWorktree(request) => {
-                let sessions = {
-                    let app = self.app.lock().await;
-                    app.sessions().list_sessions()
-                };
-                return execute_delete_workspace_worktree_request(request.clone(), &sessions);
+                return execute_delete_workspace_worktree_request(
+                    request.clone(),
+                    &self.session_projection,
+                    &self.app,
+                )
+                .await;
             }
             LocalDaemonRequest::CreateWorkspacePullRequest(request) => {
                 return execute_create_workspace_pull_request_request(request.clone());
@@ -1936,11 +1937,12 @@ impl CommandRouter {
                 execute_create_workspace_worktree_request(request)
             }
             LocalDaemonRequest::DeleteWorkspaceWorktree(request) => {
-                let sessions = {
-                    let app = self.app.lock().await;
-                    app.sessions().list_sessions()
-                };
-                execute_delete_workspace_worktree_request(request, &sessions)
+                execute_delete_workspace_worktree_request(
+                    request,
+                    &self.session_projection,
+                    &self.app,
+                )
+                .await
             }
             LocalDaemonRequest::CreateWorkspacePullRequest(request) => {
                 execute_create_workspace_pull_request_request(request)

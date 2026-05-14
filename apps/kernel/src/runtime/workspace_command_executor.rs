@@ -1,3 +1,8 @@
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
+
+use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     CommitAndPushWorkspaceChangesRequest, CommitWorkspaceChangesRequest,
@@ -6,6 +11,7 @@ use crate::local::{
     GetWorkspaceGitOverviewRequest, ListWorkspaceFilesRequest, ListWorkspaceWorktreesRequest,
     LocalDaemonResponse, PushWorkspaceBranchRequest, SearchWorkspaceDirectoriesRequest,
 };
+use crate::runtime::projection::SessionStateProjectionStore;
 use crate::runtime::waiting_room_public_projection::infer_waiting_room_launch_target;
 use crate::runtime::workspace_git_actions::{
     commit_and_push_workspace_changes, commit_workspace_changes, create_workspace_pull_request,
@@ -17,7 +23,6 @@ use crate::runtime::workspace_search::{create_workspace_directory, search_worksp
 use crate::runtime::workspace_worktrees::{
     create_waiting_room_worktree, delete_workspace_worktree, list_workspace_worktrees,
 };
-use crate::session::RuntimeSession;
 
 pub(crate) fn execute_search_workspace_directories_request(
     request: SearchWorkspaceDirectoriesRequest,
@@ -73,15 +78,22 @@ pub(crate) fn execute_create_workspace_worktree_request(
     })
 }
 
-pub(crate) fn execute_delete_workspace_worktree_request(
+pub(crate) async fn execute_delete_workspace_worktree_request(
     request: DeleteWorkspaceWorktreeRequest,
-    sessions: &[RuntimeSession],
+    session_projection: &SessionStateProjectionStore,
+    app: &Arc<Mutex<DaemonApp>>,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let sessions = if let Some(sessions) = session_projection.list() {
+        sessions
+    } else {
+        let app = app.lock().await;
+        app.sessions().list_sessions()
+    };
     let path = delete_workspace_worktree(
         &request.workspace_id,
         &request.worktree_id,
         request.force,
-        sessions,
+        &sessions,
     )?;
     Ok(LocalDaemonResponse::WorkspaceWorktreeDeleted {
         workspace_id: request.workspace_id,
