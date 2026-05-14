@@ -31,7 +31,7 @@ use crate::runtime::daemon_health_projection::{
 use crate::runtime::history_executor::{
     execute_history_request, projected_session_history_response,
 };
-use crate::runtime::kernel_lifecycle_executor::execute_delete_kernel_request;
+use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
 use crate::runtime::native_interaction_bridge::{
     forward_relay_native_interaction, install_provider_native_interaction_bridge,
 };
@@ -1015,9 +1015,13 @@ impl CommandRouter {
             | LocalDaemonRequest::GetSliceDisplayEndpoint(_)) => {
                 execute_slice_request(&self.app, &self.config_projection, request).await
             }
-            LocalDaemonRequest::DeleteKernel(request) => {
-                execute_delete_kernel_request(&self.config_projection, &self.runtime_state, request)
-                    .await
+            request @ LocalDaemonRequest::DeleteKernel(_) => {
+                execute_kernel_lifecycle_request(
+                    &self.config_projection,
+                    &self.runtime_state,
+                    request,
+                )
+                .await
             }
             request @ (LocalDaemonRequest::ApproveRemoteMachine(_)
             | LocalDaemonRequest::ForgetRemoteMachine(_)
@@ -1339,9 +1343,13 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::DeleteKernel(request) => {
-                execute_delete_kernel_request(&self.config_projection, &self.runtime_state, request)
-                    .await
+            request @ LocalDaemonRequest::DeleteKernel(_) => {
+                execute_kernel_lifecycle_request(
+                    &self.config_projection,
+                    &self.runtime_state,
+                    request,
+                )
+                .await
             }
             request @ (LocalDaemonRequest::ListRemoteMachines(_)
             | LocalDaemonRequest::ListRemoteMachineKernels(_)) => {
