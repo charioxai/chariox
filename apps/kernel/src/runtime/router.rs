@@ -77,8 +77,7 @@ use crate::runtime::session_projection_refresh::{
     should_update_agent_runtime_projection_from_response, SessionProjectionRefresh,
 };
 use crate::runtime::session_read_control::{
-    execute_get_session_state_request, execute_list_agents_request, execute_list_sessions_request,
-    execute_resolve_session_request, projected_list_sessions_response,
+    execute_session_read_request, projected_list_sessions_response,
     projected_resolve_session_response, projected_session_inspection_response,
     projected_session_or_absence, projected_session_state_response,
 };
@@ -1278,14 +1277,11 @@ impl CommandRouter {
                     .execute(request, command_caller_user_id(&command))
                     .await
             }
-            LocalDaemonRequest::ListSessions(request) => {
-                execute_list_sessions_request(&self.app, request).await
-            }
-            LocalDaemonRequest::ResolveSession(request) => {
-                execute_resolve_session_request(&self.app, request).await
-            }
-            LocalDaemonRequest::GetSessionState(request) => {
-                execute_get_session_state_request(&self.app, request).await
+            request @ (LocalDaemonRequest::ListSessions(_)
+            | LocalDaemonRequest::ResolveSession(_)
+            | LocalDaemonRequest::GetSessionState(_)
+            | LocalDaemonRequest::ListAgents(_)) => {
+                execute_session_read_request(&self.app, request).await
             }
             LocalDaemonRequest::GetDaemonHealth(_) => Ok(LocalDaemonResponse::DaemonHealth {
                 projection: self.daemon_health_projection(0).await,
@@ -1582,9 +1578,6 @@ impl CommandRouter {
                 self.agent_runtime
                     .dispatch_prompt_cancel(&command, request)
                     .await
-            }
-            LocalDaemonRequest::ListAgents(request) => {
-                execute_list_agents_request(&self.app, request).await
             }
             request @ (LocalDaemonRequest::CreateWorkflow(_)
             | LocalDaemonRequest::ApplyWorkflowDesignOp(_)

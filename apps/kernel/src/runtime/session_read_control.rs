@@ -300,6 +300,28 @@ pub(crate) async fn execute_list_agents_request(
     crate::app::KernelSessionReadService::new(&app).list_agents_response(request)
 }
 
+pub(crate) async fn execute_session_read_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::ListSessions(request) => {
+            execute_list_sessions_request(app, request).await
+        }
+        LocalDaemonRequest::ResolveSession(request) => {
+            execute_resolve_session_request(app, request).await
+        }
+        LocalDaemonRequest::GetSessionState(request) => {
+            execute_get_session_state_request(app, request).await
+        }
+        LocalDaemonRequest::ListAgents(request) => execute_list_agents_request(app, request).await,
+        _ => Err(DaemonError::LocalTransport {
+            operation: "session read request",
+            message: "unsupported session read request".to_string(),
+        }),
+    }
+}
+
 pub(crate) fn projected_session_or_absence(
     session_projection: &SessionStateProjectionStore,
     session_id: &str,
