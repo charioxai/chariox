@@ -6,10 +6,41 @@ use tokio::time::{sleep, Duration};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
-    CreateSliceRequest, ImportSliceProviderAuthRequest, ListSlicesRequest, LocalDaemonResponse,
-    SliceRefRequest,
+    CreateSliceRequest, ImportSliceProviderAuthRequest, ListSlicesRequest, LocalDaemonRequest,
+    LocalDaemonResponse, SliceRefRequest,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
+
+pub(crate) async fn execute_slice_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    config_projection: &DaemonConfigProjectionStore,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::ListSlices(request) => execute_list_slices_request(app, request).await,
+        LocalDaemonRequest::CreateSlice(request) => {
+            execute_create_slice_request(app, request).await
+        }
+        LocalDaemonRequest::GetSlice(request) => execute_get_slice_request(app, request).await,
+        LocalDaemonRequest::StartSlice(request) => {
+            execute_start_slice_request(app, config_projection, request).await
+        }
+        LocalDaemonRequest::StopSlice(request) => execute_stop_slice_request(app, request).await,
+        LocalDaemonRequest::DeleteSlice(request) => {
+            execute_delete_slice_request(app, request).await
+        }
+        LocalDaemonRequest::ImportSliceProviderAuth(request) => {
+            execute_import_slice_provider_auth_request(app, request).await
+        }
+        LocalDaemonRequest::GetSliceDisplayEndpoint(request) => {
+            execute_get_slice_display_endpoint_request(app, request).await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "slice request",
+            message: "unsupported slice request".to_string(),
+        }),
+    }
+}
 
 pub(crate) async fn execute_list_slices_request(
     app: &Arc<Mutex<DaemonApp>>,

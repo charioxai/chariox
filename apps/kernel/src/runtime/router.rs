@@ -104,12 +104,7 @@ use crate::runtime::session_read_control::{
     projected_resolve_session_response, projected_session_inspection_response,
     projected_session_or_absence, projected_session_state_response,
 };
-use crate::runtime::slice_command_executor::{
-    execute_create_slice_request, execute_delete_slice_request,
-    execute_get_slice_display_endpoint_request, execute_get_slice_request,
-    execute_import_slice_provider_auth_request, execute_list_slices_request,
-    execute_start_slice_request, execute_stop_slice_request,
-};
+use crate::runtime::slice_command_executor::execute_slice_request;
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::terminal_output_executor::{
     execute_append_native_provider_output_request, TerminalOutputExecutor,
@@ -1132,29 +1127,15 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::ListSlices(request) => {
-                execute_list_slices_request(&self.app, request).await
-            }
-            LocalDaemonRequest::CreateSlice(request) => {
-                execute_create_slice_request(&self.app, request).await
-            }
-            LocalDaemonRequest::GetSlice(request) => {
-                execute_get_slice_request(&self.app, request).await
-            }
-            LocalDaemonRequest::StartSlice(request) => {
-                execute_start_slice_request(&self.app, &self.config_projection, request).await
-            }
-            LocalDaemonRequest::StopSlice(request) => {
-                execute_stop_slice_request(&self.app, request).await
-            }
-            LocalDaemonRequest::DeleteSlice(request) => {
-                execute_delete_slice_request(&self.app, request).await
-            }
-            LocalDaemonRequest::ImportSliceProviderAuth(request) => {
-                execute_import_slice_provider_auth_request(&self.app, request).await
-            }
-            LocalDaemonRequest::GetSliceDisplayEndpoint(request) => {
-                execute_get_slice_display_endpoint_request(&self.app, request).await
+            request @ (LocalDaemonRequest::ListSlices(_)
+            | LocalDaemonRequest::CreateSlice(_)
+            | LocalDaemonRequest::GetSlice(_)
+            | LocalDaemonRequest::StartSlice(_)
+            | LocalDaemonRequest::StopSlice(_)
+            | LocalDaemonRequest::DeleteSlice(_)
+            | LocalDaemonRequest::ImportSliceProviderAuth(_)
+            | LocalDaemonRequest::GetSliceDisplayEndpoint(_)) => {
+                execute_slice_request(&self.app, &self.config_projection, request).await
             }
             LocalDaemonRequest::DeleteKernel(request) => {
                 execute_delete_kernel_request(&self.config_projection, &self.runtime_state, request)
@@ -1461,29 +1442,15 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::ListSlices(request) => {
-                execute_list_slices_request(&self.app, request).await
-            }
-            LocalDaemonRequest::CreateSlice(request) => {
-                execute_create_slice_request(&self.app, request).await
-            }
-            LocalDaemonRequest::GetSlice(request) => {
-                execute_get_slice_request(&self.app, request).await
-            }
-            LocalDaemonRequest::StartSlice(request) => {
-                execute_start_slice_request(&self.app, &self.config_projection, request).await
-            }
-            LocalDaemonRequest::StopSlice(request) => {
-                execute_stop_slice_request(&self.app, request).await
-            }
-            LocalDaemonRequest::DeleteSlice(request) => {
-                execute_delete_slice_request(&self.app, request).await
-            }
-            LocalDaemonRequest::ImportSliceProviderAuth(request) => {
-                execute_import_slice_provider_auth_request(&self.app, request).await
-            }
-            LocalDaemonRequest::GetSliceDisplayEndpoint(request) => {
-                execute_get_slice_display_endpoint_request(&self.app, request).await
+            request @ (LocalDaemonRequest::ListSlices(_)
+            | LocalDaemonRequest::CreateSlice(_)
+            | LocalDaemonRequest::GetSlice(_)
+            | LocalDaemonRequest::StartSlice(_)
+            | LocalDaemonRequest::StopSlice(_)
+            | LocalDaemonRequest::DeleteSlice(_)
+            | LocalDaemonRequest::ImportSliceProviderAuth(_)
+            | LocalDaemonRequest::GetSliceDisplayEndpoint(_)) => {
+                execute_slice_request(&self.app, &self.config_projection, request).await
             }
             LocalDaemonRequest::GetProviderCatalog(_) => {
                 execute_get_provider_catalog_request(
