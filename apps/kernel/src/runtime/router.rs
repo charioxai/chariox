@@ -26,7 +26,7 @@ use crate::runtime::cloud_relay_executor::{
 };
 use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
 use crate::runtime::daemon_health_projection::{
-    build_daemon_health_projection, DaemonHealthProjectionInput,
+    build_daemon_health_projection, execute_daemon_health_request, DaemonHealthProjectionInput,
 };
 use crate::runtime::history_executor::{
     execute_history_request, projected_session_history_response,
@@ -950,10 +950,9 @@ impl CommandRouter {
                 });
             }
         }
-        if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
-            return Ok(LocalDaemonResponse::DaemonHealth {
-                projection: self.daemon_health_projection(0).await,
-            });
+        if matches!(&request, LocalDaemonRequest::GetDaemonHealth(_)) {
+            return execute_daemon_health_request(self.daemon_health_projection_input(0), request)
+                .await;
         }
 
         let session_refresh = session_projection_refresh(&request);
@@ -1146,7 +1145,14 @@ impl CommandRouter {
         &self,
         last_event_id: u64,
     ) -> DaemonHealthProjection {
-        build_daemon_health_projection(DaemonHealthProjectionInput {
+        build_daemon_health_projection(self.daemon_health_projection_input(last_event_id)).await
+    }
+
+    fn daemon_health_projection_input(
+        &self,
+        last_event_id: u64,
+    ) -> DaemonHealthProjectionInput<'_> {
+        DaemonHealthProjectionInput {
             last_event_id,
             session_runtime: &self.session_runtime,
             agent_runtime: &self.agent_runtime,
@@ -1160,8 +1166,7 @@ impl CommandRouter {
             terminal_health: &self.terminal_health,
             workspace_coordinator: &self.workspace_coordinator,
             runtime_state: &self.runtime_state,
-        })
-        .await
+        }
     }
 
     async fn dispatch_interactive(
@@ -1234,9 +1239,9 @@ impl CommandRouter {
             | LocalDaemonRequest::ListAgents(_)) => {
                 execute_session_read_request(&self.app, request).await
             }
-            LocalDaemonRequest::GetDaemonHealth(_) => Ok(LocalDaemonResponse::DaemonHealth {
-                projection: self.daemon_health_projection(0).await,
-            }),
+            request @ LocalDaemonRequest::GetDaemonHealth(_) => {
+                execute_daemon_health_request(self.daemon_health_projection_input(0), request).await
+            }
             request @ (LocalDaemonRequest::GetProviderRun(_)
             | LocalDaemonRequest::UpdateProviderRunSelection(_)) => {
                 execute_provider_run_request(&self.app, &self.provider_catalog_projection, request)

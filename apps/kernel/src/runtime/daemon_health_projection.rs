@@ -1,4 +1,6 @@
+use crate::error::DaemonError;
 use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
+use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::capability_executor::CapabilityExecutorHealthStore;
@@ -58,4 +60,19 @@ pub(crate) async fn build_daemon_health_projection(
             .session_projection
             .invariant_snapshot(input.agent_runtime_projection),
     )
+}
+
+pub(crate) async fn execute_daemon_health_request(
+    input: DaemonHealthProjectionInput<'_>,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::GetDaemonHealth(_) => Ok(LocalDaemonResponse::DaemonHealth {
+            projection: build_daemon_health_projection(input).await,
+        }),
+        _ => Err(DaemonError::LocalTransport {
+            operation: "daemon health request",
+            message: "unsupported daemon health request".to_string(),
+        }),
+    }
 }
