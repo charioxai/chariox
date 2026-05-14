@@ -44,9 +44,7 @@ use crate::runtime::projection::{
 };
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_auth_control::execute_provider_auth_request;
-use crate::runtime::provider_catalog_control::{
-    execute_get_provider_catalog_request, execute_provider_catalog_request,
-};
+use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_launch_executor::{
     ProviderLaunchCommandExecutor, ProviderLaunchPendingTracker,
 };
@@ -867,7 +865,8 @@ impl CommandRouter {
                 )
                 .await;
             }
-            LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
+            request @ (LocalDaemonRequest::GetProviderCatalog(_)
+            | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => {
                 return execute_provider_catalog_request(
                     &self.provider_catalog_projection,
                     &self.config_projection,
@@ -949,13 +948,6 @@ impl CommandRouter {
                     ),
                 });
             }
-        }
-        if matches!(request, LocalDaemonRequest::GetProviderCatalog(_)) {
-            return execute_get_provider_catalog_request(
-                &self.provider_catalog_projection,
-                &self.config_projection,
-            )
-            .await;
         }
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
             return Ok(LocalDaemonResponse::DaemonHealth {
