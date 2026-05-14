@@ -35,6 +35,8 @@ mod context_handoff;
 use context_handoff::*;
 mod provider_reload;
 pub(crate) use provider_reload::*;
+mod provider_relaunch_runtime;
+mod provider_reload_pending_runtime;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
