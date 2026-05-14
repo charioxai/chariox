@@ -1,0 +1,251 @@
+use std::collections::BTreeMap;
+
+use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+use crate::runtime::projection::AgentRuntimeActivity;
+use crate::session::RuntimeSession;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FocusProjectionRefresh {
+    None,
+    AgentSpawn,
+    SnapshotSession { session_id: String },
+}
+
+pub(crate) fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusProjectionRefresh {
+    match request {
+        LocalDaemonRequest::SpawnAgent(_) => FocusProjectionRefresh::AgentSpawn,
+        LocalDaemonRequest::AliasAgent(request) => FocusProjectionRefresh::SnapshotSession {
+            session_id: request.session_id.clone(),
+        },
+        LocalDaemonRequest::UpdateAgentConfig(request) => FocusProjectionRefresh::SnapshotSession {
+            session_id: request.session_id.clone(),
+        },
+        LocalDaemonRequest::UpdateAgentProfile(request) => {
+            FocusProjectionRefresh::SnapshotSession {
+                session_id: request.session_id.clone(),
+            }
+        }
+        LocalDaemonRequest::UpdateAgentSubstitutes(request) => {
+            FocusProjectionRefresh::SnapshotSession {
+                session_id: request.session_id.clone(),
+            }
+        }
+        LocalDaemonRequest::DestroyAgent(request) => FocusProjectionRefresh::SnapshotSession {
+            session_id: request.session_id.clone(),
+        },
+        _ => FocusProjectionRefresh::None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SessionProjectionRefresh {
+    None,
+    SnapshotAgentResponse,
+}
+
+impl SessionProjectionRefresh {
+    pub(crate) fn session_ids(&self, response: &LocalDaemonResponse) -> Vec<String> {
+        match self {
+            SessionProjectionRefresh::None => Vec::new(),
+            SessionProjectionRefresh::SnapshotAgentResponse => match response {
+                LocalDaemonResponse::AgentSpawned { agent }
+                | LocalDaemonResponse::AgentAliased { agent, .. }
+                | LocalDaemonResponse::AgentConfigUpdated { agent, .. }
+                | LocalDaemonResponse::AgentProfileUpdated { agent, .. }
+                | LocalDaemonResponse::AgentDestroyed { agent }
+                | LocalDaemonResponse::AgentFocused { agent } => {
+                    vec![agent.session_id().to_string()]
+                }
+                LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) } => {
+                    vec![agent.session_id().to_string()]
+                }
+                _ => Vec::new(),
+            },
+        }
+    }
+}
+
+pub(crate) fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjectionRefresh {
+    match request {
+        LocalDaemonRequest::AttachToSession(_)
+        | LocalDaemonRequest::DetachFromSession(_)
+        | LocalDaemonRequest::FocusAgent(_)
+        | LocalDaemonRequest::CycleAgentFocus(_) => SessionProjectionRefresh::None,
+        LocalDaemonRequest::SpawnAgent(_)
+        | LocalDaemonRequest::AliasAgent(_)
+        | LocalDaemonRequest::UpdateAgentConfig(_)
+        | LocalDaemonRequest::UpdateAgentProfile(_)
+        | LocalDaemonRequest::UpdateAgentSubstitutes(_)
+        | LocalDaemonRequest::DestroyAgent(_) => SessionProjectionRefresh::SnapshotAgentResponse,
+        LocalDaemonRequest::CompletePrompt(_) | LocalDaemonRequest::CancelActivePrompt(_) => {
+            SessionProjectionRefresh::None
+        }
+        LocalDaemonRequest::PumpTerminalOutput(_)
+        | LocalDaemonRequest::SendTerminalInput(_)
+        | LocalDaemonRequest::AppendNativeProviderOutput(_) => SessionProjectionRefresh::None,
+        LocalDaemonRequest::PollRuntimeNotices(_) | LocalDaemonRequest::ResizeTerminal(_) => {
+            SessionProjectionRefresh::None
+        }
+        _ => SessionProjectionRefresh::None,
+    }
+}
+
+pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSession> {
+    match response {
+        LocalDaemonResponse::SessionCreated { session, .. }
+        | LocalDaemonResponse::SessionResolved { session }
+        | LocalDaemonResponse::SessionState { session, .. }
+        | LocalDaemonResponse::InteractionResponded { session, .. }
+        | LocalDaemonResponse::SessionConfigUpdated { session, .. }
+        | LocalDaemonResponse::AgentAliased { session, .. }
+        | LocalDaemonResponse::AgentConfigUpdated { session, .. }
+        | LocalDaemonResponse::AgentProfileUpdated { session, .. }
+        | LocalDaemonResponse::SessionEnded { session }
+        | LocalDaemonResponse::SessionAliased { session }
+        | LocalDaemonResponse::WorkspaceLinkCreated { session, .. }
+        | LocalDaemonResponse::WorkspaceLinkAttached { session, .. }
+        | LocalDaemonResponse::WorkspaceLinkDetached { session, .. }
+        | LocalDaemonResponse::WorkflowCreated { session, .. }
+        | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
+        | LocalDaemonResponse::WorkflowAliased { session, .. }
+        | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
+        | LocalDaemonResponse::WorkflowEndpointAliased { session, .. }
+        | LocalDaemonResponse::WorkflowEndpointBound { session, .. }
+        | LocalDaemonResponse::WorkflowNodeAdded { session, .. }
+        | LocalDaemonResponse::WorkflowNodeRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowNodeInstructionsUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowEdgeAdded { session, .. }
+        | LocalDaemonResponse::WorkflowEdgeRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowCanvasLayoutUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowRunInvoked { session, .. }
+        | LocalDaemonResponse::WorkflowRunQueued { session, .. }
+        | LocalDaemonResponse::WorkflowRunCancelled { session, .. }
+        | LocalDaemonResponse::WorkflowRunResumed { session, .. }
+        | LocalDaemonResponse::WorkflowWatchdogCreated { session, .. }
+        | LocalDaemonResponse::WorkflowWatchdogUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowWatchdogRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowFlushContextUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session, .. }
+        | LocalDaemonResponse::QueuedWorkflowLaunchRemoved { session, .. }
+        | LocalDaemonResponse::QueuedWorkflowLaunchesCleared { session, .. }
+        | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => vec![session.clone()],
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) fn redact_agent_activity_for_session(
+    mut agent_activity: BTreeMap<String, AgentRuntimeActivity>,
+    session: &RuntimeSession,
+) -> BTreeMap<String, AgentRuntimeActivity> {
+    agent_activity.retain(|agent_id, _| {
+        session
+            .agents()
+            .iter()
+            .any(|agent| agent.id() == agent_id.as_str())
+    });
+    agent_activity
+}
+
+pub(crate) fn should_update_agent_runtime_projection_from_response(
+    response: &LocalDaemonResponse,
+) -> bool {
+    !matches!(response, LocalDaemonResponse::PromptSubmitted { .. })
+}
+
+pub(crate) fn response_removed_session_ids(response: &LocalDaemonResponse) -> Vec<&str> {
+    match response {
+        LocalDaemonResponse::SessionDeleted { session } => vec![session.id()],
+        LocalDaemonResponse::KernelDeleted {
+            deleted_sessions, ..
+        } => deleted_sessions
+            .iter()
+            .map(|session| session.id())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::{
+        AliasAgentRequest, CompletePromptRequest, DestroyAgentRequest, SendTerminalInputRequest,
+        SpawnAgentRequest,
+    };
+
+    #[test]
+    fn focus_projection_refresh_tracks_agent_identity_changes() {
+        assert_eq!(
+            focus_projection_refresh(&LocalDaemonRequest::SpawnAgent(spawn_request())),
+            FocusProjectionRefresh::AgentSpawn,
+        );
+        assert_eq!(
+            focus_projection_refresh(&LocalDaemonRequest::AliasAgent(AliasAgentRequest {
+                session_id: "session-1".to_string(),
+                agent_id: "agent-1".to_string(),
+                alias: "Main".to_string(),
+            })),
+            FocusProjectionRefresh::SnapshotSession {
+                session_id: "session-1".to_string(),
+            },
+        );
+        assert_eq!(
+            focus_projection_refresh(&LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+                session_id: "session-2".to_string(),
+                agent_id: "agent-1".to_string(),
+            })),
+            FocusProjectionRefresh::SnapshotSession {
+                session_id: "session-2".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn session_projection_refresh_snapshots_agent_mutations_only() {
+        assert_eq!(
+            session_projection_refresh(&LocalDaemonRequest::SpawnAgent(spawn_request())),
+            SessionProjectionRefresh::SnapshotAgentResponse,
+        );
+        assert_eq!(
+            session_projection_refresh(&LocalDaemonRequest::CompletePrompt(
+                CompletePromptRequest {
+                    session_id: "session-1".to_string(),
+                },
+            )),
+            SessionProjectionRefresh::None,
+        );
+        assert_eq!(
+            session_projection_refresh(&LocalDaemonRequest::SendTerminalInput(
+                SendTerminalInputRequest {
+                    session_id: "session-1".to_string(),
+                    attachment_id: "attachment-1".to_string(),
+                    provider_run_id: None,
+                    data_base64: "aGVsbG8=".to_string(),
+                },
+            )),
+            SessionProjectionRefresh::None,
+        );
+    }
+
+    fn spawn_request() -> SpawnAgentRequest {
+        SpawnAgentRequest {
+            session_id: "session-1".to_string(),
+            alias: None,
+            provider: None,
+            model: None,
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+        }
+    }
+}

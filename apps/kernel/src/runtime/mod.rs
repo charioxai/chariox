@@ -14,6 +14,7 @@ pub mod provider_launch_executor;
 pub mod router;
 pub mod session_actor;
 pub(crate) mod session_membership;
+pub(crate) mod session_projection_refresh;
 pub(crate) mod state;
 pub mod terminal_output_executor;
 pub(crate) mod terminal_pairings;
