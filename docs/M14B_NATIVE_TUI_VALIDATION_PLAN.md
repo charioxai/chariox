@@ -35,6 +35,12 @@ TUI stay in Claude Code's native permission UI, while permissions for prompts
 entered from an Arroba TUI are bridged into Arroba and can be answered there.
 This keeps the initiating CLI in control of the user-facing permission prompt.
 
+2026-05-14 Claude attachment update: local Claude native TUI prompt
+attachments are implemented and covered by `live-native-tui-attachment-drill.mjs
+--provider claude`. Native-origin `@file` prompts are captured as kernel prompt
+attachments, and Arroba-origin text attachments are delivered to Claude through
+the hook `additionalContext` path.
+
 ## Goal
 
 Validate and complete native TUI parity across the three providers and three
@@ -95,7 +101,8 @@ Permissions:
 Prompt attachments:
 
 - Local Codex/OpenCode: covered by `live-native-tui-attachment-drill.mjs`.
-- Local Claude: not covered.
+- Local Claude: covered by `live-native-tui-attachment-drill.mjs --provider
+  claude` for text/file attachments.
 - Same-host relay Codex/OpenCode: covered by
   `live-remote-native-tui-drill.mjs --providers opencode,codex
   --include-attachments`.
@@ -172,9 +179,13 @@ Provider notes:
      choose a tool call.
 
 4. Implement and validate local Claude prompt attachments.
-   - Validate Arroba-origin attachments into Claude native TUI mode.
-   - Investigate whether Claude hook/transcript payloads expose native-origin
-     file/image attachments. If not, fail with a clear unsupported state.
+   - Completed for local text/file attachments.
+   - Native-origin `@file` references are captured and submitted to the kernel
+     as prompt attachments.
+   - Arroba-origin text/file attachments are delivered through Claude hook
+     `additionalContext`.
+   - Image attachment behavior still needs provider-specific validation before
+     claiming parity.
 
 5. Validate standard remote home-worker native TUI.
    - Run the prompt/turn, permission, and prompt-attachment matrix for all three
@@ -206,7 +217,7 @@ Legend:
 | --- | --- | --- | --- | --- | --- |
 | local | Codex | pass | pass | pass | gap |
 | local | OpenCode | pass | pass | pass | gap |
-| local | Claude | pass | partial | gap | gap |
+| local | Claude | pass | partial | pass | gap |
 | standard remote | Codex | gap | gap | gap | gap |
 | standard remote | OpenCode | gap | gap | gap | gap |
 | standard remote | Claude | gap | gap | gap | gap |
