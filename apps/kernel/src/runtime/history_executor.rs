@@ -7,16 +7,17 @@ use crate::error::DaemonError;
 use crate::history::{HistoryEventQuery, OperationalHistoryStore, SessionHistoryStore};
 use crate::local::{
     AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, GetPromptInputHistoryRequest,
-    GetSessionHistoryRequest, LocalDaemonResponse, RecordPromptInputHistoryRequest,
-    RunAgentUtilityRequest, SemanticHistoryMatch, SemanticSearchHistoryMode,
-    SemanticSearchHistoryRequest,
+    GetSessionHistoryRequest, LocalDaemonRequest, LocalDaemonResponse,
+    RecordPromptInputHistoryRequest, RunAgentUtilityRequest, SemanticHistoryMatch,
+    SemanticSearchHistoryMode, SemanticSearchHistoryRequest,
 };
 use crate::runtime::agent_utility_executor::run_agent_utility;
 use crate::runtime::history_requests::{
     execute_prompt_input_history_request as execute_prompt_input_history,
     execute_query_history_request as execute_query_history,
     execute_record_prompt_input_history_request as execute_record_prompt_input_history,
-    execute_session_history_request_from_session, knn_semantic_history_search,
+    execute_session_history_request_from_session, history_query_from_request,
+    history_query_from_search_request, knn_semantic_history_search,
     semantic_utility_input_from_search_request,
 };
 use crate::runtime::projection::{DaemonConfigProjectionStore, SessionHistoryProjectionStore};
@@ -58,6 +59,59 @@ pub(crate) async fn projected_session_history_response(
         )
         .await,
     )
+}
+
+pub(crate) async fn execute_history_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    history_store: SessionHistoryStore,
+    operational_history_store: OperationalHistoryStore,
+    history_projection: SessionHistoryProjectionStore,
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::GetSessionHistory(request) => {
+            execute_session_history_request(
+                app,
+                history_store,
+                operational_history_store,
+                history_projection,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::GetPromptInputHistory(request) => {
+            execute_prompt_input_history_request(operational_history_store, request).await
+        }
+        LocalDaemonRequest::RecordPromptInputHistory(request) => {
+            execute_record_prompt_input_history_request(operational_history_store, request).await
+        }
+        LocalDaemonRequest::QueryHistory(request) => {
+            execute_query_history_request(
+                operational_history_store,
+                config_projection,
+                history_query_from_request(request),
+            )
+            .await
+        }
+        LocalDaemonRequest::SearchHistory(request) => {
+            execute_query_history_request(
+                operational_history_store,
+                config_projection,
+                history_query_from_search_request(request),
+            )
+            .await
+        }
+        LocalDaemonRequest::SemanticSearchHistory(request) => {
+            execute_semantic_search_history_request(app, runtime_state, config_projection, request)
+                .await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "history request",
+            message: "unsupported history request".to_string(),
+        }),
+    }
 }
 
 pub(crate) async fn execute_session_history_request(

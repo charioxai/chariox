@@ -34,12 +34,7 @@ use crate::runtime::daemon_health_projection::{
     build_daemon_health_projection, DaemonHealthProjectionInput,
 };
 use crate::runtime::history_executor::{
-    execute_prompt_input_history_request, execute_query_history_request,
-    execute_record_prompt_input_history_request, execute_semantic_search_history_request,
-    execute_session_history_request, projected_session_history_response,
-};
-use crate::runtime::history_requests::{
-    history_query_from_request, history_query_from_search_request,
+    execute_history_request, projected_session_history_response,
 };
 use crate::runtime::kernel_lifecycle_executor::execute_delete_kernel_request;
 use crate::runtime::native_interaction_bridge::{
@@ -1126,49 +1121,17 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::GetSessionHistory(request) => {
-                execute_session_history_request(
+            request @ (LocalDaemonRequest::GetSessionHistory(_)
+            | LocalDaemonRequest::GetPromptInputHistory(_)
+            | LocalDaemonRequest::RecordPromptInputHistory(_)
+            | LocalDaemonRequest::QueryHistory(_)
+            | LocalDaemonRequest::SearchHistory(_)
+            | LocalDaemonRequest::SemanticSearchHistory(_)) => {
+                execute_history_request(
                     &self.app,
                     self.history_store.clone(),
                     self.operational_history_store.clone(),
                     self.history_projection.clone(),
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::GetPromptInputHistory(request) => {
-                execute_prompt_input_history_request(
-                    self.operational_history_store.clone(),
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::RecordPromptInputHistory(request) => {
-                execute_record_prompt_input_history_request(
-                    self.operational_history_store.clone(),
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::QueryHistory(request) => {
-                execute_query_history_request(
-                    self.operational_history_store.clone(),
-                    &self.config_projection,
-                    history_query_from_request(request),
-                )
-                .await
-            }
-            LocalDaemonRequest::SearchHistory(request) => {
-                execute_query_history_request(
-                    self.operational_history_store.clone(),
-                    &self.config_projection,
-                    history_query_from_search_request(request),
-                )
-                .await
-            }
-            LocalDaemonRequest::SemanticSearchHistory(request) => {
-                execute_semantic_search_history_request(
-                    &self.app,
                     &self.runtime_state,
                     &self.config_projection,
                     request,
@@ -1352,16 +1315,15 @@ impl CommandRouter {
             LocalDaemonRequest::UpdateProviderRunSelection(request) => {
                 execute_update_provider_run_selection_request(&self.app, request).await
             }
-            LocalDaemonRequest::GetPromptInputHistory(request) => {
-                execute_prompt_input_history_request(
+            request @ (LocalDaemonRequest::GetPromptInputHistory(_)
+            | LocalDaemonRequest::RecordPromptInputHistory(_)) => {
+                execute_history_request(
+                    &self.app,
+                    self.history_store.clone(),
                     self.operational_history_store.clone(),
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::RecordPromptInputHistory(request) => {
-                execute_record_prompt_input_history_request(
-                    self.operational_history_store.clone(),
+                    self.history_projection.clone(),
+                    &self.runtime_state,
+                    &self.config_projection,
                     request,
                 )
                 .await
@@ -1594,35 +1556,15 @@ impl CommandRouter {
                 )
                 .await
             }
-            LocalDaemonRequest::GetSessionHistory(request) => {
-                execute_session_history_request(
+            request @ (LocalDaemonRequest::GetSessionHistory(_)
+            | LocalDaemonRequest::QueryHistory(_)
+            | LocalDaemonRequest::SearchHistory(_)
+            | LocalDaemonRequest::SemanticSearchHistory(_)) => {
+                execute_history_request(
                     &self.app,
                     self.history_store.clone(),
                     self.operational_history_store.clone(),
                     self.history_projection.clone(),
-                    request,
-                )
-                .await
-            }
-            LocalDaemonRequest::QueryHistory(request) => {
-                execute_query_history_request(
-                    self.operational_history_store.clone(),
-                    &self.config_projection,
-                    history_query_from_request(request),
-                )
-                .await
-            }
-            LocalDaemonRequest::SearchHistory(request) => {
-                execute_query_history_request(
-                    self.operational_history_store.clone(),
-                    &self.config_projection,
-                    history_query_from_search_request(request),
-                )
-                .await
-            }
-            LocalDaemonRequest::SemanticSearchHistory(request) => {
-                execute_semantic_search_history_request(
-                    &self.app,
                     &self.runtime_state,
                     &self.config_projection,
                     request,
