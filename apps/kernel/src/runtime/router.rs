@@ -9,9 +9,8 @@ use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
 use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
 use crate::local::{
-    AgentGrantKind, GenerateWorkspaceCommitMessageRequest, GrantAgentCapabilityRequest,
-    LocalDaemonRequest, LocalDaemonResponse, MoveAgentToRemoteRequest,
-    RevokeAgentCapabilityRequest, RunAgentUtilityRequest,
+    AgentGrantKind, GrantAgentCapabilityRequest, LocalDaemonRequest, LocalDaemonResponse,
+    MoveAgentToRemoteRequest, RevokeAgentCapabilityRequest,
 };
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_actor::AgentRuntime;
@@ -1031,14 +1030,20 @@ impl CommandRouter {
                 return execute_get_workspace_file_content_request(request.clone());
             }
             LocalDaemonRequest::RunAgentUtility(request) => {
-                return self
-                    .execute_run_agent_utility_request(request.clone())
-                    .await;
+                return execute_run_agent_utility_request(
+                    Arc::clone(&self.app),
+                    &self.config_projection,
+                    request.clone(),
+                )
+                .await;
             }
             LocalDaemonRequest::GenerateWorkspaceCommitMessage(request) => {
-                return self
-                    .execute_generate_workspace_commit_message_request(request.clone())
-                    .await;
+                return execute_generate_workspace_commit_message_request(
+                    Arc::clone(&self.app),
+                    &self.config_projection,
+                    request.clone(),
+                )
+                .await;
             }
             LocalDaemonRequest::CommitWorkspaceChanges(request) => {
                 return execute_commit_workspace_changes_request(request.clone());
@@ -1557,38 +1562,6 @@ impl CommandRouter {
         .await
     }
 
-    async fn execute_run_agent_utility_request(
-        &self,
-        request: RunAgentUtilityRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        execute_run_agent_utility_request(
-            Arc::clone(&self.app),
-            self.config_projection
-                .snapshot()
-                .user_config
-                .history
-                .archive,
-            request,
-        )
-        .await
-    }
-
-    async fn execute_generate_workspace_commit_message_request(
-        &self,
-        request: GenerateWorkspaceCommitMessageRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        execute_generate_workspace_commit_message_request(
-            Arc::clone(&self.app),
-            self.config_projection
-                .snapshot()
-                .user_config
-                .history
-                .archive,
-            request,
-        )
-        .await
-    }
-
     async fn execute_capability_request(
         &self,
         request: LocalDaemonRequest,
@@ -1988,11 +1961,20 @@ impl CommandRouter {
                 execute_get_workspace_file_content_request(request)
             }
             LocalDaemonRequest::RunAgentUtility(request) => {
-                self.execute_run_agent_utility_request(request).await
+                execute_run_agent_utility_request(
+                    Arc::clone(&self.app),
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::GenerateWorkspaceCommitMessage(request) => {
-                self.execute_generate_workspace_commit_message_request(request)
-                    .await
+                execute_generate_workspace_commit_message_request(
+                    Arc::clone(&self.app),
+                    &self.config_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::CommitWorkspaceChanges(request) => {
                 execute_commit_workspace_changes_request(request)

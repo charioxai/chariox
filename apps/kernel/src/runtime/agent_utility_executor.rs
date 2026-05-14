@@ -20,6 +20,7 @@ use crate::provider::{
 use crate::runtime::history_requests::{
     knn_semantic_history_search, semantic_search_request_from_utility_input,
 };
+use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::semantic_history_utility::{
     parse_semantic_history_search_utility_output, semantic_history_search_utility_prompt,
 };
@@ -30,21 +31,21 @@ const AGENT_UTILITY_PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) async fn execute_run_agent_utility_request(
     app: Arc<Mutex<DaemonApp>>,
-    archive_config: UserArchiveHistoryConfig,
+    config_projection: &DaemonConfigProjectionStore,
     request: RunAgentUtilityRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let result = run_agent_utility(app, archive_config, request).await?;
+    let result = run_agent_utility(app, archive_config(config_projection), request).await?;
     Ok(LocalDaemonResponse::AgentUtilityCompleted { result })
 }
 
 pub(crate) async fn execute_generate_workspace_commit_message_request(
     app: Arc<Mutex<DaemonApp>>,
-    archive_config: UserArchiveHistoryConfig,
+    config_projection: &DaemonConfigProjectionStore,
     request: GenerateWorkspaceCommitMessageRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let result = run_agent_utility(
         app,
-        archive_config,
+        archive_config(config_projection),
         RunAgentUtilityRequest {
             session_id: request.session_id,
             agent_id: request.agent_id,
@@ -64,6 +65,10 @@ pub(crate) async fn execute_generate_workspace_commit_message_request(
         });
     };
     Ok(LocalDaemonResponse::WorkspaceCommitMessageGenerated { message })
+}
+
+fn archive_config(config_projection: &DaemonConfigProjectionStore) -> UserArchiveHistoryConfig {
+    config_projection.snapshot().user_config.history.archive
 }
 
 pub(crate) async fn run_agent_utility(
