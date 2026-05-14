@@ -11,11 +11,10 @@ use crate::history::SessionHistoryStore;
 use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
 use crate::local::{
     AgentGrantKind, ConfigureRelayRequest, DeleteKernelRequest,
-    GenerateWorkspaceCommitMessageRequest, GetProviderRunRequest, GetSessionStateRequest,
-    GrantAgentCapabilityRequest, ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest,
-    LocalDaemonResponse, LogoutProviderRequest, MoveAgentToRemoteRequest,
-    PumpTerminalOutputRequest, RelayStatus, ResolveSessionRequest, RevokeAgentCapabilityRequest,
-    RunAgentUtilityRequest, TeardownProviderProcessesRequest, UpdateProviderRunSelectionRequest,
+    GenerateWorkspaceCommitMessageRequest, GetSessionStateRequest, GrantAgentCapabilityRequest,
+    ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
+    MoveAgentToRemoteRequest, PumpTerminalOutputRequest, RelayStatus, ResolveSessionRequest,
+    RevokeAgentCapabilityRequest, RunAgentUtilityRequest, TeardownProviderProcessesRequest,
     WaitingRoomPublicSnapshot,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
@@ -75,8 +74,7 @@ use crate::runtime::projection::{
 };
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_auth_control::{
-    execute_get_provider_auth_status_request, execute_logout_provider_request,
-    execute_start_provider_login_request,
+    execute_get_provider_auth_status_request, execute_start_provider_login_request,
 };
 use crate::runtime::provider_catalog_control::{
     execute_get_provider_catalog_request, execute_get_provider_command_catalogs_request,
@@ -86,6 +84,10 @@ use crate::runtime::provider_process_control::{
     execute_list_provider_processes_request,
     provider_processes_visible_to_user as filter_provider_processes_visible_to_user,
     teardown_provider_processes,
+};
+use crate::runtime::provider_run_control::{
+    execute_get_provider_run_request, execute_logout_provider_and_invalidate_catalog_request,
+    execute_update_provider_run_selection_request,
 };
 use crate::runtime::remote_machine_registry::{
     execute_approve_remote_machine_request, execute_forget_remote_machine_request,
@@ -2269,13 +2271,6 @@ impl CommandRouter {
         .await
     }
 
-    async fn invalidate_provider_catalog_caches(&self) {
-        self.provider_catalog_projection.invalidate();
-        if let Ok(mut app) = self.app.try_lock() {
-            app.invalidate_provider_catalog_cache();
-        }
-    }
-
     async fn execute_cold_list_sessions_request(
         &self,
         _request: ListSessionsRequest,
@@ -2323,31 +2318,6 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let app = self.app.lock().await;
         crate::app::KernelSessionReadService::new(&app).list_agents_response(request)
-    }
-
-    async fn execute_get_provider_run_request(
-        &self,
-        request: GetProviderRunRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut app = self.app.lock().await;
-        crate::local::provider_requests::get_provider_run_response(&mut app, request)
-    }
-
-    async fn execute_update_provider_run_selection_request(
-        &self,
-        request: UpdateProviderRunSelectionRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut app = self.app.lock().await;
-        crate::local::provider_requests::update_provider_run_selection_response(&mut app, request)
-    }
-
-    async fn execute_logout_provider_request(
-        &self,
-        request: LogoutProviderRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let response = execute_logout_provider_request(request).await?;
-        self.invalidate_provider_catalog_caches().await;
-        Ok(response)
     }
 
     async fn execute_capability_request(
@@ -2693,11 +2663,10 @@ impl CommandRouter {
                 projection: self.daemon_health_projection(0).await,
             }),
             LocalDaemonRequest::GetProviderRun(request) => {
-                self.execute_get_provider_run_request(request).await
+                execute_get_provider_run_request(&self.app, request).await
             }
             LocalDaemonRequest::UpdateProviderRunSelection(request) => {
-                self.execute_update_provider_run_selection_request(request)
-                    .await
+                execute_update_provider_run_selection_request(&self.app, request).await
             }
             LocalDaemonRequest::GetPromptInputHistory(request) => {
                 execute_prompt_input_history_request(
@@ -3075,7 +3044,12 @@ impl CommandRouter {
                 execute_start_provider_login_request(request).await
             }
             LocalDaemonRequest::LogoutProvider(request) => {
-                self.execute_logout_provider_request(request).await
+                execute_logout_provider_and_invalidate_catalog_request(
+                    &self.app,
+                    &self.provider_catalog_projection,
+                    request,
+                )
+                .await
             }
             LocalDaemonRequest::ListProviderProcesses(request) => {
                 execute_list_provider_processes_request(&self.app, request).await

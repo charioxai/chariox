@@ -19,6 +19,7 @@ pub(crate) mod provider_auth_control;
 pub(crate) mod provider_catalog_control;
 pub mod provider_launch_executor;
 pub(crate) mod provider_process_control;
+pub(crate) mod provider_run_control;
 pub(crate) mod remote_machine_registry;
 pub(crate) mod remote_relay_inventory;
 pub mod router;
