@@ -14,9 +14,8 @@ use crate::error::DaemonError;
 use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
 use crate::local::provider_requests::{
-    forgotten_machine_record, load_provider_catalog, provider_command_catalogs_response,
-    record_for_machine_id, resolve_machine_for_registry, resolve_machine_id_for_registry,
-    PROVIDER_CATALOG_CACHE_TTL,
+    forgotten_machine_record, record_for_machine_id, resolve_machine_for_registry,
+    resolve_machine_id_for_registry, PROVIDER_CATALOG_CACHE_TTL,
 };
 use crate::local::{
     AcceptCloudSessionInviteRequest, AgentGrantKind, AgentUtilityInput, AgentUtilityKind,
@@ -106,6 +105,10 @@ use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_auth_control::{
     execute_get_provider_auth_status_request, execute_logout_provider_request,
     execute_start_provider_login_request,
+};
+use crate::runtime::provider_catalog_control::{
+    execute_get_provider_catalog_request, execute_get_provider_command_catalogs_request,
+    provider_catalog_json_value,
 };
 use crate::runtime::provider_launch_executor::ProviderLaunchCommandExecutor;
 use crate::runtime::provider_process_control::{
@@ -1233,7 +1236,7 @@ impl CommandRouter {
                     .await;
             }
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
-                return provider_command_catalogs_response();
+                return execute_get_provider_command_catalogs_request();
             }
             LocalDaemonRequest::InstallMcpServer(request) => {
                 return execute_install_mcp_server_request(request.clone());
@@ -1319,7 +1322,11 @@ impl CommandRouter {
             }
         }
         if matches!(request, LocalDaemonRequest::GetProviderCatalog(_)) {
-            return self.projected_provider_catalog_response().await;
+            return execute_get_provider_catalog_request(
+                &self.provider_catalog_projection,
+                &self.config_projection,
+            )
+            .await;
         }
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
             return Ok(LocalDaemonResponse::DaemonHealth {
@@ -3288,21 +3295,9 @@ impl CommandRouter {
     async fn machine_runtime_profile_payload(&self) -> serde_json::Value {
         let config = self.config_projection.snapshot();
         let user_config = config.user_config.clone();
-        let provider_catalog = if let Some(catalog) = self
-            .provider_catalog_projection
-            .get(PROVIDER_CATALOG_CACHE_TTL)
-        {
-            serde_json::to_value(catalog).ok()
-        } else {
-            tokio::task::spawn_blocking({
-                let config = config.clone();
-                move || load_provider_catalog(config)
-            })
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .and_then(|catalog| serde_json::to_value(catalog).ok())
-        };
+        let provider_catalog =
+            provider_catalog_json_value(&self.provider_catalog_projection, &self.config_projection)
+                .await;
         let launch_target = infer_waiting_room_launch_target();
         serde_json::json!({
             "profileVersion": 1,
@@ -4299,27 +4294,6 @@ impl CommandRouter {
         })
     }
 
-    async fn projected_provider_catalog_response(
-        &self,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        if let Some(catalog) = self
-            .provider_catalog_projection
-            .get(PROVIDER_CATALOG_CACHE_TTL)
-        {
-            return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
-        }
-
-        let config = self.config_projection.snapshot();
-        let catalog = tokio::task::spawn_blocking(move || load_provider_catalog(config))
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "load provider catalog",
-                message: error.to_string(),
-            })??;
-        self.provider_catalog_projection.update(catalog.clone());
-        Ok(LocalDaemonResponse::ProviderCatalog { catalog })
-    }
-
     fn projected_session_or_absence(
         &self,
         session_id: &str,
@@ -4837,10 +4811,14 @@ impl CommandRouter {
                     .await
             }
             LocalDaemonRequest::GetProviderCatalog(_) => {
-                self.projected_provider_catalog_response().await
+                execute_get_provider_catalog_request(
+                    &self.provider_catalog_projection,
+                    &self.config_projection,
+                )
+                .await
             }
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
-                provider_command_catalogs_response()
+                execute_get_provider_command_catalogs_request()
             }
             LocalDaemonRequest::InstallMcpServer(request) => {
                 execute_install_mcp_server_request(request)

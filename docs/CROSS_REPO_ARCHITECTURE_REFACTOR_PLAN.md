@@ -172,6 +172,7 @@ Documentation updates for this refactor are progress artifacts. Do not leave dir
 - 2026-05-14: Cloud terminal command-center state, selection, keyboard, and pointer behavior moved into `terminal/command-center-controller.ts`; web tests pass with 540 tests and `client.ts` is down to 12,005 lines.
 - 2026-05-14: OSS provider-process list/teardown lock work and user-visible filtering moved into `runtime/provider_process_control.rs`; kernel lib tests pass with 726 tests and `runtime/router.rs` is down to 11,540 lines.
 - 2026-05-14: OSS provider auth/status/login/logout blocking wrappers moved into `runtime/provider_auth_control.rs`; kernel lib tests pass with 726 tests and `runtime/router.rs` is down to 11,516 lines.
+- 2026-05-14: OSS provider catalog and command-catalog projection/loading moved into `runtime/provider_catalog_control.rs`; kernel lib tests pass with 726 tests and `runtime/router.rs` is down to 11,494 lines.
 
 ## Summary
 
