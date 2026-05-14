@@ -1,15 +1,19 @@
 import { execFile, spawn } from "node:child_process"
+import { appendFileSync } from "node:fs"
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { homedir } from "node:os"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import os from "node:os"
 import path from "node:path"
 import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
+import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import {
   normalizeRuntimeSession,
   type AgentInstance,
+  type PromptAttachmentPart,
   type PromptQueueItem,
   type RuntimeAttachment,
   type RuntimeProviderRun,
@@ -33,7 +37,11 @@ import {
   spawnAgentRequest,
   submitPromptRequest,
 } from "../ipc-requests.js"
+import { localAttachmentPath, preparePromptAttachmentsForSubmit, promptAttachmentTransferIsForced } from "../prompt-attachment-transfer.js"
+import { classifyPromptAttachment } from "../prompt-attachments.js"
 import { hiddenInstructionsEnd, hiddenInstructionsStart, redactHiddenInstructions } from "./hidden-instructions.js"
+
+const CLAUDE_ATTACHMENT_CONTEXT_BYTES = 200_000
 
 const execFileAsync = promisify(execFile)
 
@@ -100,6 +108,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
   const tempRoot = path.join(os.tmpdir(), `arroba-claude-native-${process.pid}-${Date.now()}`)
   const eventsFile = path.join(tempRoot, "events.jsonl")
   const contextFile = path.join(tempRoot, "hidden-context.txt")
+  const attachmentContextDir = path.join(tempRoot, "attachments")
   const settingsPath = path.join(tempRoot, "settings.json")
   const hookHandlerPath = path.join(tempRoot, "hook-handler.mjs")
   const screenName = `arroba-claude-${process.pid}-${Date.now()}`
@@ -167,6 +176,9 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       providerRunId: run.id,
       eventsFile,
       contextFile,
+      attachmentContextDir,
+      worktree,
+      inlineLocalAttachments: Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
       submitPrompt: tui.submitPrompt,
     })
     pump = startKernelPumpLoop(client, session.id, attachment.id)
@@ -401,6 +413,9 @@ function startClaudeBridge(options: {
   providerRunId: string
   eventsFile: string
   contextFile: string
+  attachmentContextDir: string
+  worktree: string
+  inlineLocalAttachments: boolean
   submitPrompt: (prompt: string) => Promise<void>
 }): { stop: () => void } {
   let stopped = false
@@ -420,8 +435,17 @@ function startClaudeBridge(options: {
             const prompt = event.prompt.trim()
             const isInjected = activePromptId && injectedPromptIds.has(activePromptId)
             if (!isInjected) {
+              const attachments = await preparePromptAttachmentsForSubmit(
+                extractClaudeNativePromptAttachments(prompt, options.worktree),
+                { inlineLocalFiles: options.inlineLocalAttachments },
+              )
+              if (attachments.length > 0) {
+                debugNativeClaude("native_prompt_attachments_observed", {
+                  attachmentCount: attachments.length,
+                })
+              }
               const response = await options.client.send<Record<string, unknown>>(
-                submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, []),
+                submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
               )
               const submittedPrompt = extractSubmittedPromptId(response, options.agentId)
               if (submittedPrompt) {
@@ -462,7 +486,17 @@ function startClaudeBridge(options: {
           activePromptId = activePrompt.id
           injectedPromptIds.add(activePrompt.id)
           const hidden = extractHiddenInstructions(activePrompt.prompt)
-          await writeFile(options.contextFile, hidden, "utf8")
+          const attachmentContext = await formatClaudeAttachmentContext(
+            activePrompt.attachments ?? [],
+            options.attachmentContextDir,
+          )
+          await writeFile(options.contextFile, joinClaudeAdditionalContext(hidden, attachmentContext), "utf8")
+          if ((activePrompt.attachments?.length ?? 0) > 0) {
+            debugNativeClaude("attachments_forwarded", {
+              promptId: activePrompt.id,
+              attachmentCount: activePrompt.attachments?.length ?? 0,
+            })
+          }
           const visible = redactHiddenInstructions(activePrompt.prompt).trim()
           if (visible) {
             await options.submitPrompt(visible)
@@ -945,6 +979,129 @@ function collectTextValues(value: unknown): string[] {
   return text.concat(Object.values(record).flatMap((entry) => collectTextValues(entry)))
 }
 
+function extractClaudeNativePromptAttachments(prompt: string, cwd: string): PromptAttachmentPart[] {
+  const candidates = new Set<string>()
+  for (const match of prompt.matchAll(/(?:^|\s)@(?:"([^"]+)"|'([^']+)'|([^\s]+))/g)) {
+    const raw = match[1] ?? match[2] ?? match[3] ?? ""
+    const candidate = trimAttachmentToken(raw)
+    if (candidate) candidates.add(candidate)
+  }
+  return Array.from(candidates).flatMap((candidate) => {
+    const classified = classifyPromptAttachment(resolveClaudeAttachmentPath(candidate, cwd))
+    if (!classified) return []
+    return [{
+      url: classified.path,
+      mime: classified.mime,
+      filename: classified.filename,
+    }]
+  })
+}
+
+function trimAttachmentToken(value: string): string {
+  return value.trim().replace(/[),.;:!?]+$/g, "")
+}
+
+function resolveClaudeAttachmentPath(value: string, cwd: string): string {
+  if (value.startsWith("file://")) return fileURLToPath(value)
+  if (value.startsWith("~/")) return path.join(homedir(), value.slice(2))
+  return path.resolve(cwd, value)
+}
+
+async function formatClaudeAttachmentContext(
+  attachments: PromptAttachmentPart[],
+  attachmentContextDir: string,
+): Promise<string> {
+  if (attachments.length === 0) return ""
+  await mkdir(attachmentContextDir, { recursive: true })
+  const blocks = await Promise.all(attachments.map((attachment, index) =>
+    formatClaudeAttachmentBlock(attachment, index, attachmentContextDir),
+  ))
+  return [
+    "The user included prompt attachments. Treat them as part of the current user request.",
+    ...blocks,
+  ].filter(Boolean).join("\n\n")
+}
+
+async function formatClaudeAttachmentBlock(
+  attachment: PromptAttachmentPart,
+  index: number,
+  attachmentContextDir: string,
+): Promise<string> {
+  const displayName = attachment.filename || `attachment-${index + 1}`
+  const attachmentPath = await materializeClaudeAttachmentPath(attachment, index, attachmentContextDir)
+  const pieces = [
+    `Attachment ${index + 1}: ${displayName}`,
+    `MIME: ${attachment.mime}`,
+    ...(attachmentPath ? [`Path: ${attachmentPath}`] : []),
+  ]
+  const text = await readClaudeTextAttachment(attachment, attachmentPath)
+  if (text) {
+    pieces.push("", "Content:", "```", text, "```")
+  } else if (attachmentPath) {
+    pieces.push("", "The attachment is available on disk at the path above.")
+  } else {
+    pieces.push("", "The attachment content is not available to the Claude native bridge.")
+  }
+  return pieces.join("\n")
+}
+
+async function materializeClaudeAttachmentPath(
+  attachment: PromptAttachmentPart,
+  index: number,
+  attachmentContextDir: string,
+): Promise<string | null> {
+  const localPath = localAttachmentPath(attachment.url)
+  if (localPath) return localPath
+  if (!attachment.contents_base64) return null
+  const filename = safeAttachmentFilename(attachment.filename, attachment.mime, index)
+  const materialized = path.join(attachmentContextDir, filename)
+  await writeFile(materialized, Buffer.from(attachment.contents_base64, "base64"))
+  return materialized
+}
+
+async function readClaudeTextAttachment(
+  attachment: PromptAttachmentPart,
+  attachmentPath: string | null,
+): Promise<string | null> {
+  const bytes = attachment.contents_base64
+    ? Buffer.from(attachment.contents_base64, "base64")
+    : attachmentPath && isClaudeTextAttachment(attachment)
+      ? await readFile(attachmentPath).catch(() => null)
+      : null
+  if (!bytes || bytes.length > CLAUDE_ATTACHMENT_CONTEXT_BYTES || !isClaudeTextAttachment(attachment)) {
+    return null
+  }
+  return bytes.toString("utf8")
+}
+
+function isClaudeTextAttachment(attachment: PromptAttachmentPart): boolean {
+  if (attachment.mime.startsWith("text/")) return true
+  if (attachment.mime === "application/json" || attachment.mime.endsWith("+json")) return true
+  const filename = attachment.filename?.toLowerCase() ?? ""
+  return /\.(md|txt|json|jsonl|csv|ts|tsx|js|jsx|mjs|py|rs|go|java|rb|sh|zsh|yaml|yml|toml|xml|html|css|scss|sql|log)$/.test(filename)
+}
+
+function safeAttachmentFilename(filename: string | null | undefined, mime: string, index: number): string {
+  const fallback = `attachment-${index + 1}${extensionForMime(mime)}`
+  const base = path.basename(filename || fallback).replace(/[^A-Za-z0-9._-]/g, "_")
+  return `${index + 1}-${base || fallback}`
+}
+
+function extensionForMime(mime: string): string {
+  if (mime === "image/png") return ".png"
+  if (mime === "image/jpeg") return ".jpg"
+  if (mime === "image/gif") return ".gif"
+  if (mime === "image/webp") return ".webp"
+  if (mime === "application/pdf") return ".pdf"
+  if (mime === "application/json") return ".json"
+  if (mime.startsWith("text/")) return ".txt"
+  return ".bin"
+}
+
+function joinClaudeAdditionalContext(...parts: string[]): string {
+  return parts.map((part) => part.trim()).filter(Boolean).join("\n\n")
+}
+
 function extractHiddenInstructions(prompt: string): string {
   const start = prompt.indexOf(hiddenInstructionsStart)
   if (start < 0) return ""
@@ -1178,6 +1335,17 @@ function parseKernelPort(value: string, flag: string): string {
 
 function defaultKernelEndpoint(port?: string): string {
   return `ws://127.0.0.1:${port ?? "43119"}/kernel`
+}
+
+function debugNativeClaude(label: string, payload: unknown) {
+  if (!process.env.ARROBA_CLAUDE_NATIVE_DEBUG) return
+  const line = `[arroba claude native-tui] ${label}: ${JSON.stringify(payload)}\n`
+  const debugFile = process.env.ARROBA_CLAUDE_NATIVE_DEBUG_FILE
+  if (debugFile) {
+    appendFileSync(debugFile, line)
+    return
+  }
+  process.stderr.write(line)
 }
 
 async function inferWorkspaceTargetsFromLaunchDirectory(cwd: string): Promise<{ workspace: string; worktree: string }> {

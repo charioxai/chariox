@@ -40,14 +40,14 @@ function parseArgs(argv) {
     else if (arg === "--providers") options.providers = argv[++index].split(",").map((value) => value.trim()).filter(Boolean)
     else if (arg === "--keep-artifacts-on-failure") options.keepArtifactsOnFailure = true
     else if (arg === "--help" || arg === "-h") {
-      console.log("Usage: node apps/cli/scripts/live-native-tui-attachment-drill.mjs [--providers codex,opencode] [--keep-artifacts-on-failure]")
+      console.log("Usage: node apps/cli/scripts/live-native-tui-attachment-drill.mjs [--providers codex,opencode,claude] [--keep-artifacts-on-failure]")
       process.exit(0)
     } else {
       throw new Error(`unknown argument: ${arg}`)
     }
   }
   for (const provider of options.providers) {
-    if (provider !== "codex" && provider !== "opencode") throw new Error(`unsupported provider: ${provider}`)
+    if (provider !== "codex" && provider !== "opencode" && provider !== "claude") throw new Error(`unsupported provider: ${provider}`)
   }
   return options
 }
@@ -93,6 +93,10 @@ async function waitForFileMatch(file, pattern, timeoutMs = 90_000) {
 
 async function screen(name, args) {
   await execFileAsync("screen", ["-S", name, ...args])
+}
+
+async function screenStuff(name, text) {
+  await screen(name, ["-p", "0", "-X", "stuff", text])
 }
 
 async function screenQuit(name) {
@@ -225,7 +229,7 @@ async function runProvider(provider, options) {
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot
-  const alias = `${provider === "codex" ? "cdx" : "oc"}-attachment`
+  const alias = `${provider === "codex" ? "cdx" : provider === "opencode" ? "oc" : "cc"}-attachment`
   const screenNative = `arroba-${provider}-attachment-${process.pid}`
   const logs = {
     nativeDir: path.join(root, "native-screen"),
@@ -241,7 +245,7 @@ async function runProvider(provider, options) {
   try {
     await mkdir(logs.nativeDir, { recursive: true })
     await writeFile(imagePath, tinyPng)
-    await writeFile(textPath, `attachment drill ${provider}\n`)
+    await writeFile(textPath, `${nativeMarker}\n`)
     daemon = spawn(kernelBinary, [], {
       cwd: repoRoot,
       env: {
@@ -272,24 +276,32 @@ async function runProvider(provider, options) {
       "--worktree",
       worktree,
       "--permissions",
-      "yolo",
+      provider === "claude" ? "required" : "yolo",
       ...(provider === "codex" ? ["--model", "gpt-5.4-mini", "--effort", "high"] : []),
+      ...(provider === "claude" ? ["--detached-screen"] : []),
     ], {
       ...process.env,
       ARROBA_CODEX_NATIVE_DEBUG: provider === "codex" ? "1" : undefined,
       ARROBA_CODEX_NATIVE_DEBUG_FILE: provider === "codex" ? logs.proxy : undefined,
       ARROBA_OPENCODE_NATIVE_DEBUG: provider === "opencode" ? "1" : undefined,
       ARROBA_OPENCODE_NATIVE_DEBUG_FILE: provider === "opencode" ? logs.proxy : undefined,
+      ARROBA_CLAUDE_NATIVE_DEBUG: provider === "claude" ? "1" : undefined,
+      ARROBA_CLAUDE_NATIVE_DEBUG_FILE: provider === "claude" ? logs.proxy : undefined,
     })
     const sessionId = (await waitForFileMatch(logs.native, /arroba session:\s+([^\s(]+)/)).match[1]
     const proxyUrl = provider === "codex"
       ? (await waitForFileMatch(logs.native, /proxy:\s+(ws:\/\/127\.0\.0\.1:\d+)/)).match[1]
-      : (await waitForFileMatch(logs.native, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
+      : provider === "opencode"
+        ? (await waitForFileMatch(logs.native, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
+        : null
     const providerSessionId = provider === "opencode"
       ? (await waitForFileMatch(logs.native, /opencode sess:\s+([^\s]+)/)).match[1]
       : null
     const threadId = provider === "codex"
       ? (await waitForFileMatch(logs.proxy, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
+      : null
+    const claudeScreen = provider === "claude"
+      ? (await waitForFileMatch(logs.native, /screen:\s+(arroba-claude-[^\s]+)/)).match[1]
       : null
 
     client = new LocalIpcClient(kernelUrl)
@@ -316,7 +328,7 @@ async function runProvider(provider, options) {
       ])
       const turnResponse = responses.find((response) => response.id === 2)
       if (!turnResponse || turnResponse.error) throw new Error(`codex native attachment turn failed: ${JSON.stringify(turnResponse)}`)
-    } else {
+    } else if (provider === "opencode") {
       await runNativeOpenCodePromptWithFile(
         proxyUrl,
         providerSessionId,
@@ -324,17 +336,29 @@ async function runProvider(provider, options) {
         textPath,
         `Reply with exactly ${nativeMarker} and nothing else.`,
       )
+    } else if (provider === "claude") {
+      await screenStuff(claudeScreen, `@${textPath} Read the attached file and reply with exactly the marker it contains and nothing else.`)
+      await sleep(250)
+      await screenStuff(claudeScreen, "\r")
     }
     await waitForLogOccurrences(logs.proxy, provider === "codex" ? "attachmentCount\":1" : "native_prompt_attachments_observed", 1)
     await waitForHistoryOutput(client, sessionId, attachment.id, agent.id, nativeMarker)
-    await waitForLogOccurrences(logs.proxy, "attachments_forwarded", 1)
+    if (provider !== "claude") {
+      await waitForLogOccurrences(logs.proxy, "attachments_forwarded", 1)
+    }
 
-    await client.send(submitPromptRequest(sessionId, attachment.id, agent.id, `Reply with exactly ${arrobaMarker} and nothing else.`, [
+    const arrobaAttachmentPath = path.join(root, `${provider}-arroba-note.txt`)
+    await writeFile(arrobaAttachmentPath, `${arrobaMarker}\n`)
+    const arrobaPrompt = provider === "claude"
+      ? "Read the attached text content and reply with exactly the marker it contains and nothing else."
+      : `Reply with exactly ${arrobaMarker} and nothing else.`
+    await client.send(submitPromptRequest(sessionId, attachment.id, agent.id, arrobaPrompt, [
       provider === "codex"
         ? { url: imagePath, mime: "image/png", filename: path.basename(imagePath) }
-        : { url: `file://${textPath}`, mime: "text/plain", filename: path.basename(textPath) },
+        : { url: `file://${arrobaAttachmentPath}`, mime: "text/plain", filename: path.basename(arrobaAttachmentPath) },
     ]))
-    await waitForLogOccurrences(logs.proxy, "attachments_forwarded", 2)
+    await waitForLogOccurrences(logs.proxy, "attachments_forwarded", provider === "claude" ? 1 : 2)
+    await waitForHistoryOutput(client, sessionId, attachment.id, agent.id, arrobaMarker)
 
     return { provider, status: "ok", sessionId, alias, nativeMarker, arrobaMarker, logs }
   } finally {

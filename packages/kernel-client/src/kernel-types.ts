@@ -405,6 +405,7 @@ export type PromptQueueItem = {
   source_attachment_id: string
   target_agent_id?: string | null
   prompt: string
+  attachments?: PromptAttachmentPart[]
   status: string
 }
 
