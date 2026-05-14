@@ -70,8 +70,7 @@ use crate::local::{
     WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary, WaitingRoomPublicSessionSummary,
     WaitingRoomPublicSnapshot, WaitingRoomPublicWorkflowEdgeSummary,
     WaitingRoomPublicWorkflowEndpointSummary, WaitingRoomPublicWorkflowNodeSummary,
-    WaitingRoomPublicWorkflowSummary, WorkspaceCommitMessageUtilityInput, WorkspaceGitActionResult,
-    WorkspacePullRequestRecord, WorkspaceWorktreeRecord,
+    WaitingRoomPublicWorkflowSummary, WorkspaceCommitMessageUtilityInput, WorkspaceWorktreeRecord,
 };
 use crate::provider::{
     run_codex_utility_prompt, run_opencode_utility_prompt, ProviderNativeInteractionBridge,
@@ -108,12 +107,13 @@ use crate::runtime::waiting_room_activity::{
 };
 use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
-use crate::runtime::workspace_git_changes::{
-    workspace_git_diff_text, workspace_git_status_by_path,
+use crate::runtime::workspace_git_actions::{
+    commit_and_push_workspace_changes, commit_workspace_changes, create_workspace_pull_request,
+    push_workspace_branch,
 };
+use crate::runtime::workspace_git_changes::workspace_git_diff_text;
 use crate::runtime::workspace_git_common::{
-    detect_git_branch, git_command_output, git_ref_exists, resolve_repo_root, run_git,
-    run_workspace_git_command, same_fs_path, workspace_default_compare_ref,
+    detect_git_branch, git_ref_exists, resolve_repo_root, run_git, same_fs_path,
     workspace_display_label, worktree_display_label,
 };
 use crate::runtime::workspace_git_overview::inspect_workspace_git_overview;
@@ -2549,24 +2549,12 @@ impl CommandRouter {
         &self,
         request: CommitAndPushWorkspaceChangesRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let commit_result = commit_workspace_changes(
+        let result = commit_and_push_workspace_changes(
             &request.workspace_id,
             &request.worktree_id,
             &request.message,
         )?;
-        let push_result =
-            push_workspace_branch(&request.workspace_id, &request.worktree_id, false)?;
-        Ok(LocalDaemonResponse::WorkspaceGitActionCompleted {
-            result: WorkspaceGitActionResult {
-                action: "commit_and_push".to_string(),
-                message: format!("{}; {}", commit_result.message, push_result.message),
-                commit_sha: commit_result.commit_sha,
-                branch: push_result.branch.or(commit_result.branch),
-                workspace_id: request.workspace_id,
-                worktree_id: request.worktree_id,
-                generated_at_ms: current_unix_ms(),
-            },
-        })
+        Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })
     }
 
     async fn assert_agent_utility_can_run(
@@ -6561,96 +6549,6 @@ Diff context:\n{diff}",
     ))
 }
 
-fn commit_workspace_changes(
-    workspace_id: &str,
-    worktree_id: &str,
-    message: &str,
-) -> Result<WorkspaceGitActionResult, DaemonError> {
-    let message = message.trim();
-    if message.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace git commit",
-            message: "commit message is required".to_string(),
-        });
-    }
-    let worktree_path = worktree_id.trim();
-    if worktree_path.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace git commit",
-            message: "worktree_id is required".to_string(),
-        });
-    }
-    let _repo_root = resolve_repo_root(worktree_path)?;
-    let changes = workspace_git_status_by_path(worktree_path)?;
-    if changes.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace git commit",
-            message: "no workspace changes to commit".to_string(),
-        });
-    }
-    run_workspace_git_command(worktree_path, &["add", "-A"], "workspace git add")?;
-    run_workspace_git_command(
-        worktree_path,
-        &["commit", "-m", message],
-        "workspace git commit",
-    )?;
-    let commit_sha = git_command_output(worktree_path, &["rev-parse", "--verify", "HEAD"]);
-    Ok(WorkspaceGitActionResult {
-        workspace_id: workspace_id.to_string(),
-        worktree_id: worktree_id.to_string(),
-        action: "commit".to_string(),
-        message: "committed workspace changes".to_string(),
-        commit_sha,
-        branch: detect_git_branch(worktree_path).ok(),
-        generated_at_ms: current_unix_ms(),
-    })
-}
-
-fn push_workspace_branch(
-    workspace_id: &str,
-    worktree_id: &str,
-    force_with_lease: bool,
-) -> Result<WorkspaceGitActionResult, DaemonError> {
-    let worktree_path = worktree_id.trim();
-    if worktree_path.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace git push",
-            message: "worktree_id is required".to_string(),
-        });
-    }
-    let _repo_root = resolve_repo_root(worktree_path)?;
-    let branch = detect_git_branch(worktree_path).ok();
-    let upstream = git_command_output(
-        worktree_path,
-        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-    );
-    if upstream.is_none() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace git push",
-            message: "current branch has no upstream; push target is ambiguous".to_string(),
-        });
-    }
-    let args = if force_with_lease {
-        vec!["push", "--force-with-lease"]
-    } else {
-        vec!["push"]
-    };
-    run_workspace_git_command(worktree_path, &args, "workspace git push")?;
-    Ok(WorkspaceGitActionResult {
-        workspace_id: workspace_id.to_string(),
-        worktree_id: worktree_id.to_string(),
-        action: if force_with_lease {
-            "force_push".to_string()
-        } else {
-            "push".to_string()
-        },
-        message: "pushed workspace branch".to_string(),
-        commit_sha: git_command_output(worktree_path, &["rev-parse", "--verify", "HEAD"]),
-        branch,
-        generated_at_ms: current_unix_ms(),
-    })
-}
-
 fn delete_workspace_worktree(
     workspace_id: &str,
     worktree_id: &str,
@@ -6749,160 +6647,6 @@ fn active_worktree_session_blockers(
 
 fn worktree_ids_match(left: &str, right: &str) -> bool {
     left == right || same_fs_path(left, right)
-}
-
-fn create_workspace_pull_request(
-    workspace_id: &str,
-    worktree_id: &str,
-    title: Option<&str>,
-    body: Option<&str>,
-    base_ref: Option<&str>,
-    draft: bool,
-) -> Result<WorkspacePullRequestRecord, DaemonError> {
-    let worktree_path = worktree_id.trim();
-    if worktree_path.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace pull request create",
-            message: "worktree_id is required".to_string(),
-        });
-    }
-    let repo_root = resolve_repo_root(worktree_path)?;
-    let branch = detect_git_branch(worktree_path)?;
-    if branch == "HEAD" || branch.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace pull request create",
-            message: "cannot create a pull request from a detached HEAD".to_string(),
-        });
-    }
-    ensure_workspace_branch_pushed(worktree_path, &branch)?;
-    let base_ref = base_ref
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(normalize_pull_request_base_ref)
-        .unwrap_or_else(|| {
-            normalize_pull_request_base_ref(&workspace_default_compare_ref(
-                repo_root.to_string_lossy().as_ref(),
-                Some(&branch),
-            ))
-        });
-    let title = title
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| pull_request_title_from_branch(&branch));
-    let mut args = vec![
-        "pr".to_string(),
-        "create".to_string(),
-        "--head".to_string(),
-        branch.clone(),
-        "--base".to_string(),
-        base_ref.clone(),
-        "--title".to_string(),
-        title.clone(),
-    ];
-    if let Some(body) = body.map(str::trim).filter(|value| !value.is_empty()) {
-        args.push("--body".to_string());
-        args.push(body.to_string());
-    } else {
-        args.push("--fill".to_string());
-    }
-    if draft {
-        args.push("--draft".to_string());
-    }
-    let url = run_gh_output(worktree_path, &args, "workspace pull request create")?;
-    Ok(WorkspacePullRequestRecord {
-        workspace_id: workspace_id.to_string(),
-        worktree_id: worktree_id.to_string(),
-        branch,
-        base_ref,
-        url,
-        title: Some(title),
-        draft,
-        generated_at_ms: current_unix_ms(),
-    })
-}
-
-fn ensure_workspace_branch_pushed(worktree_path: &str, branch: &str) -> Result<(), DaemonError> {
-    let upstream = git_command_output(
-        worktree_path,
-        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-    );
-    if upstream.is_some() {
-        return Ok(());
-    }
-    run_workspace_git_command(
-        worktree_path,
-        &["push", "-u", "origin", branch],
-        "workspace pull request push",
-    )
-}
-
-fn normalize_pull_request_base_ref(reference: &str) -> String {
-    let mut normalized = reference.trim();
-    if let Some(stripped) = normalized.strip_prefix("refs/remotes/origin/") {
-        normalized = stripped;
-    }
-    if let Some(stripped) = normalized.strip_prefix("refs/heads/") {
-        normalized = stripped;
-    }
-    if let Some(stripped) = normalized.strip_prefix("origin/") {
-        normalized = stripped;
-    }
-    normalized.to_string()
-}
-
-fn pull_request_title_from_branch(branch: &str) -> String {
-    let title = branch
-        .rsplit('/')
-        .next()
-        .unwrap_or(branch)
-        .replace(['-', '_'], " ");
-    let title = title.trim();
-    if title.is_empty() {
-        branch.to_string()
-    } else {
-        title.to_string()
-    }
-}
-
-fn run_gh_output(
-    worktree_path: &str,
-    args: &[String],
-    operation: &'static str,
-) -> Result<String, DaemonError> {
-    let output = std::process::Command::new("gh")
-        .args(args)
-        .current_dir(worktree_path)
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation,
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let message = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("gh {} failed with status {}", args.join(" "), output.status)
-        };
-        return Err(DaemonError::LocalTransport { operation, message });
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation,
-            message: "gh did not return a pull request URL".to_string(),
-        });
-    }
-    Ok(stdout
-        .lines()
-        .last()
-        .unwrap_or(stdout.as_str())
-        .trim()
-        .to_string())
 }
 
 fn create_waiting_room_worktree(
