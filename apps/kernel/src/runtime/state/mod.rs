@@ -116,6 +116,7 @@ mod terminal_runtime_state;
 mod tool_dispatch;
 mod workflow;
 mod workflow_admin;
+mod workflow_blocked_claim_retry;
 mod workflow_completion_owned_state;
 mod workflow_definition_owned_state;
 mod workflow_definition_settings_owned_state;
