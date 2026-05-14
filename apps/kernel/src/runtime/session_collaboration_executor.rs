@@ -12,12 +12,11 @@ use crate::local::{
     ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse, RevokeSessionInviteRequest,
     SessionInviteRecord, ShowWorkspaceLinkRequest,
 };
-use crate::runtime::command::KernelCommand;
+use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::invite_tokens::{
     decode_session_invite_token, encode_session_invite_token, SessionInviteToken,
 };
 use crate::runtime::projection::{DaemonConfigProjectionStore, SessionStateProjectionStore};
-use crate::session::DEFAULT_LOCAL_USER_ID;
 
 pub(crate) async fn execute_session_collaboration_request(
     app: &Arc<Mutex<DaemonApp>>,
@@ -272,14 +271,6 @@ pub(crate) async fn execute_detach_workspace_link_request(
         detached,
         session,
     })
-}
-
-fn command_caller_user_id(command: &KernelCommand) -> String {
-    command
-        .caller
-        .user_id
-        .clone()
-        .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
 }
 
 fn random_hex_id() -> String {
