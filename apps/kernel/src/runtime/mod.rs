@@ -15,3 +15,4 @@ pub(crate) mod waiting_room_activity;
 pub mod workflow_actor;
 pub mod workspace_coordinator;
 pub mod workspace_identity_monitor;
+pub(crate) mod workspace_search;
