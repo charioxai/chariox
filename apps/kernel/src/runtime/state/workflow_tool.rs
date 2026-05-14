@@ -57,244 +57,27 @@ impl KernelRuntimeOwnedState {
                 })
             }
             crate::transport::runtime_tools::VALIDATE_WORKFLOW_OUTPUT_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::ValidateWorkflowOutputArgs,
-                >(arguments.clone())
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_validate_workflow_output",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                if !context.allowed_output_schema_refs.is_empty()
-                    && !context
-                        .allowed_output_schema_refs
-                        .iter()
-                        .any(|schema_ref| schema_ref == &args.output_schema_ref)
-                {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "runtime_tool_validate_workflow_output",
-                        message: format!(
-                            "schema ref `{}` is not allowed for workflow node run `{}`",
-                            args.output_schema_ref, context.workflow_node_run_id
-                        ),
-                    });
-                }
-                let warning = crate::transport::runtime_tools::validate_workflow_output_schema(
-                    &args.output_schema_ref,
-                    &args.output_json,
-                )
-                .err();
-                Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "valid": warning.is_none(),
-                        "warning": warning,
-                        "next_action": if warning.is_none() {
-                            "Validation passed. Now finish this same workflow turn by emitting exactly one final fenced json block and then stop."
-                        } else {
-                            "Validation failed or warned. Revise the output and call validate_workflow_output again before finalizing."
-                        },
-                    }),
-                })
+                self.workflow_validate_output_tool_result(&arguments, &context)
             }
             crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL
             | crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL =>
             {
                 let is_final = canonical_tool_name
                     == crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL;
-                if is_final && !context.can_complete_workflow_run {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "runtime_tool_validate_and_submit_workflow_run_output",
-                        message:
-                            "current workflow node run is not allowed to complete the workflow run"
-                                .to_string(),
-                    });
-                }
-                if !is_final && !context.can_emit_intermediate_workflow_run_output {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "runtime_tool_validate_and_submit_intermediate_workflow_run_output",
-                        message:
-                            "current workflow node run is not allowed to emit intermediate workflow run output"
-                                .to_string(),
-                    });
-                }
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::ValidateAndSubmitWorkflowRunOutputArgs,
-                >(arguments.clone())
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: if is_final {
-                        "runtime_tool_validate_and_submit_workflow_run_output"
-                    } else {
-                        "runtime_tool_validate_and_submit_intermediate_workflow_run_output"
-                    },
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let workflow_run_id = self
-                    .session_store
-                    .read()
-                    .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?
-                    .id()
-                    .to_string();
-                let schema_ref = if is_final {
-                    context.workflow_run_output_schema_ref.as_deref()
-                } else {
-                    context.workflow_intermediate_output_schema_ref.as_deref()
-                };
-                let warning = schema_ref.and_then(|schema_ref| {
-                    crate::transport::runtime_tools::validate_workflow_output_schema(
-                        schema_ref,
-                        &args.workflow_output_json,
-                    )
-                    .err()
-                });
-                let output = crate::session::WorkflowOutputPayload::new(
-                    args.workflow_output_json,
-                    Vec::<crate::session::WorkflowArtifactRef>::new(),
-                );
-                let workflow_run = if is_final {
-                    self.session_store.write().submit_workflow_run_final_output(
-                        &context.session_id,
-                        &workflow_run_id,
-                        &context.workflow_node_run_id,
-                        output,
-                        warning.is_none(),
-                        warning.clone(),
-                    )?
-                } else {
-                    self.session_store.write().submit_workflow_run_intermediate_output(
-                        &context.session_id,
-                        &workflow_run_id,
-                        &context.workflow_node_run_id,
-                        output,
-                        warning.is_none(),
-                        warning.clone(),
-                    )?
-                };
-                if !is_final && warning.is_none() {
-                    let update = self
-                        .session_store
-                        .write()
-                        .release_workflow_intermediate_output_downstream(
-                            &context.session_id,
-                            &workflow_run_id,
-                            &context.workflow_node_run_id,
-                        )?;
-                    for warning in &update.validation_warnings {
-                        self.workflow_record_failure(
-                            &context.session_id,
-                            &workflow_run_id,
-                            &crate::session::WorkflowFailureEvent::new(
-                                crate::session::WorkflowFailureKind::OutputValidationFailed,
-                                &context.workflow_node_run_id,
-                                vec![warning.edge_id.clone()],
-                                warning.message.clone(),
-                            ),
-                        );
-                        self.record_notice(
-                            &context.session_id,
-                            None,
-                            self.attachment_store
-                                .list_session_attachment_ids(&context.session_id),
-                            format!(
-                                "Workflow output validation warning on edge `{}`: {}",
-                                warning.edge_id, warning.message
-                            ),
-                        );
-                    }
-                    dispatches.extend(self.workflow_prepare_dispatches(
-                        &context.session_id,
-                        &workflow_run_id,
-                        &update.dispatches,
-                    ));
-                    let _ = self.session_snapshot(&context.session_id);
-                }
-                Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "submitted": true,
-                        "valid": warning.is_none(),
-                        "warning": warning,
-                        "workflow_run_id": workflow_run.id(),
-                        "workflow_node_run_id": context.workflow_node_run_id,
-                        "next_action": if is_final {
-                            "Final workflow run output was submitted. If it is valid with no warning, finish this same workflow turn now."
-                        } else {
-                            "Intermediate workflow run output was submitted. Continue this same workflow turn and emit the required final fenced json block before stopping."
-                        },
-                    }),
-                })
+                self.workflow_submit_output_tool_result(&arguments, &context, is_final)
+                    .map(|(result, next_dispatches)| {
+                        dispatches.extend(next_dispatches);
+                        result
+                    })
             }
             crate::transport::runtime_tools::WORKFLOW_CONSOLE_READ_TOOL => {
-                let workflow_run = self
-                    .session_store
-                    .read()
-                    .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?;
-                let console = self
-                    .session_store
-                    .read()
-                    .read_workflow_console(&context.session_id, workflow_run.workflow_id())?;
-                Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "workflow_id": console.workflow_id(),
-                        "entries": console.entries().iter().map(|entry| serde_json::json!({
-                            "timestamp_ms": entry.timestamp_ms(),
-                            "source_node_run_id": entry.source_node_run_id(),
-                            "source_agent_id": entry.source_agent_id(),
-                            "text": entry.text(),
-                        })).collect::<Vec<_>>(),
-                    }),
-                })
+                self.workflow_console_read_tool_result(&context)
             }
             crate::transport::runtime_tools::WORKFLOW_CONSOLE_WRITE_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::WorkflowConsoleWriteArgs,
-                >(arguments.clone())
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_workflow_console_write",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let workflow_run = self
-                    .session_store
-                    .read()
-                    .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?;
-                let source_agent_id = self.workflow_node_agent_id(
-                    &context.session_id,
-                    &context.workflow_run_ref,
-                    &context.workflow_node_run_id,
-                );
-                let entry = self.session_store.write().append_workflow_console_entry(
-                    &context.session_id,
-                    workflow_run.workflow_id(),
-                    Some(context.workflow_node_run_id.clone()),
-                    source_agent_id,
-                    &args.text,
-                )?;
-                Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "timestamp_ms": entry.timestamp_ms(),
-                        "source_node_run_id": entry.source_node_run_id(),
-                        "source_agent_id": entry.source_agent_id(),
-                        "text": entry.text(),
-                    }),
-                })
+                self.workflow_console_write_tool_result(&arguments, &context)
             }
             crate::transport::runtime_tools::WORKFLOW_CONSOLE_CLEAR_TOOL => {
-                let workflow_run = self
-                    .session_store
-                    .read()
-                    .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?;
-                let console = self
-                    .session_store
-                    .write()
-                    .clear_workflow_console(&context.session_id, workflow_run.workflow_id())?;
-                Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "cleared": true,
-                        "workflow_id": console.workflow_id(),
-                    }),
-                })
+                self.workflow_console_clear_tool_result(&context)
             }
             other => Err(DaemonError::LocalTransport {
                 operation: "dispatch_runtime_tool_call",
@@ -324,25 +107,6 @@ impl KernelRuntimeOwnedState {
             );
         let _ = self.session_snapshot(&context.session_id);
         result.map(|result| (result, dispatches))
-    }
-
-    pub(super) fn workflow_node_agent_id(
-        &self,
-        session_id: &str,
-        workflow_run_ref: &str,
-        workflow_node_run_id: &str,
-    ) -> Option<String> {
-        self.session_store
-            .read()
-            .resolve_workflow_run_ref(session_id, workflow_run_ref)
-            .ok()
-            .and_then(|workflow_run| {
-                workflow_run
-                    .node_runs()
-                    .iter()
-                    .find(|node_run| node_run.id() == workflow_node_run_id)
-                    .map(|node_run| node_run.agent_id().to_string())
-            })
     }
 
     pub(super) fn workflow_tool_context(
