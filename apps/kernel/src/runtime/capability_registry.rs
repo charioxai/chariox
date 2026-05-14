@@ -4,9 +4,38 @@ use crate::error::DaemonError;
 use crate::local::{
     GetMcpServerRequest, GetSkillRequest, ImportMcpServersRequest, ImportSkillsRequest,
     InstallMcpServerRequest, InstallSkillRequest, ListMcpServersRequest, ListSkillsRequest,
-    LocalDaemonResponse, UninstallMcpServerRequest, UninstallSkillRequest, UpdateMcpServerRequest,
-    UpdateSkillRequest,
+    LocalDaemonRequest, LocalDaemonResponse, UninstallMcpServerRequest, UninstallSkillRequest,
+    UpdateMcpServerRequest, UpdateSkillRequest,
 };
+
+pub(crate) fn execute_capability_registry_request(
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::InstallMcpServer(request) => {
+            execute_install_mcp_server_request(request)
+        }
+        LocalDaemonRequest::UpdateMcpServer(request) => execute_update_mcp_server_request(request),
+        LocalDaemonRequest::UninstallMcpServer(request) => {
+            execute_uninstall_mcp_server_request(request)
+        }
+        LocalDaemonRequest::ImportMcpServers(request) => {
+            execute_import_mcp_servers_request(request)
+        }
+        LocalDaemonRequest::GetMcpServer(request) => execute_get_mcp_server_request(request),
+        LocalDaemonRequest::ListMcpServers(request) => execute_list_mcp_servers_request(request),
+        LocalDaemonRequest::InstallSkill(request) => execute_install_skill_request(request),
+        LocalDaemonRequest::UpdateSkill(request) => execute_update_skill_request(request),
+        LocalDaemonRequest::UninstallSkill(request) => execute_uninstall_skill_request(request),
+        LocalDaemonRequest::ImportSkills(request) => execute_import_skills_request(request),
+        LocalDaemonRequest::GetSkill(request) => execute_get_skill_request(request),
+        LocalDaemonRequest::ListSkills(request) => execute_list_skills_request(request),
+        _ => Err(DaemonError::LocalTransport {
+            operation: "capability registry request",
+            message: "unsupported capability registry request".to_string(),
+        }),
+    }
+}
 
 pub(crate) fn execute_install_mcp_server_request(
     request: InstallMcpServerRequest,

@@ -20,13 +20,7 @@ use crate::runtime::agent_utility_executor::{
 use crate::runtime::capability_executor::{
     execute_required_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
 };
-use crate::runtime::capability_registry::{
-    execute_get_mcp_server_request, execute_get_skill_request, execute_import_mcp_servers_request,
-    execute_import_skills_request, execute_install_mcp_server_request,
-    execute_install_skill_request, execute_list_mcp_servers_request, execute_list_skills_request,
-    execute_uninstall_mcp_server_request, execute_uninstall_skill_request,
-    execute_update_mcp_server_request, execute_update_skill_request,
-};
+use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::cloud_api_client::post_cloud_json;
 use crate::runtime::cloud_relay_control::{
     cloud_kernel_presence_body, cloud_relay_token_refresh_due,
@@ -936,41 +930,19 @@ impl CommandRouter {
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
                 return execute_get_provider_command_catalogs_request();
             }
-            LocalDaemonRequest::InstallMcpServer(request) => {
-                return execute_install_mcp_server_request(request.clone());
-            }
-            LocalDaemonRequest::UpdateMcpServer(request) => {
-                return execute_update_mcp_server_request(request.clone());
-            }
-            LocalDaemonRequest::UninstallMcpServer(request) => {
-                return execute_uninstall_mcp_server_request(request.clone());
-            }
-            LocalDaemonRequest::ImportMcpServers(request) => {
-                return execute_import_mcp_servers_request(request.clone());
-            }
-            LocalDaemonRequest::GetMcpServer(request) => {
-                return execute_get_mcp_server_request(request.clone());
-            }
-            LocalDaemonRequest::ListMcpServers(request) => {
-                return execute_list_mcp_servers_request(request.clone());
-            }
-            LocalDaemonRequest::InstallSkill(request) => {
-                return execute_install_skill_request(request.clone());
-            }
-            LocalDaemonRequest::UpdateSkill(request) => {
-                return execute_update_skill_request(request.clone());
-            }
-            LocalDaemonRequest::UninstallSkill(request) => {
-                return execute_uninstall_skill_request(request.clone());
-            }
-            LocalDaemonRequest::ImportSkills(request) => {
-                return execute_import_skills_request(request.clone());
-            }
-            LocalDaemonRequest::GetSkill(request) => {
-                return execute_get_skill_request(request.clone());
-            }
-            LocalDaemonRequest::ListSkills(request) => {
-                return execute_list_skills_request(request.clone());
+            request @ (LocalDaemonRequest::InstallMcpServer(_)
+            | LocalDaemonRequest::UpdateMcpServer(_)
+            | LocalDaemonRequest::UninstallMcpServer(_)
+            | LocalDaemonRequest::ImportMcpServers(_)
+            | LocalDaemonRequest::GetMcpServer(_)
+            | LocalDaemonRequest::ListMcpServers(_)
+            | LocalDaemonRequest::InstallSkill(_)
+            | LocalDaemonRequest::UpdateSkill(_)
+            | LocalDaemonRequest::UninstallSkill(_)
+            | LocalDaemonRequest::ImportSkills(_)
+            | LocalDaemonRequest::GetSkill(_)
+            | LocalDaemonRequest::ListSkills(_)) => {
+                return execute_capability_registry_request(request.clone());
             }
             _ => {}
         }
@@ -1414,28 +1386,18 @@ impl CommandRouter {
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
                 execute_get_provider_command_catalogs_request()
             }
-            LocalDaemonRequest::InstallMcpServer(request) => {
-                execute_install_mcp_server_request(request)
-            }
-            LocalDaemonRequest::UpdateMcpServer(request) => {
-                execute_update_mcp_server_request(request)
-            }
-            LocalDaemonRequest::UninstallMcpServer(request) => {
-                execute_uninstall_mcp_server_request(request)
-            }
-            LocalDaemonRequest::ImportMcpServers(request) => {
-                execute_import_mcp_servers_request(request)
-            }
-            LocalDaemonRequest::GetMcpServer(request) => execute_get_mcp_server_request(request),
-            LocalDaemonRequest::ListMcpServers(request) => {
-                execute_list_mcp_servers_request(request)
-            }
-            LocalDaemonRequest::InstallSkill(request) => execute_install_skill_request(request),
-            LocalDaemonRequest::UpdateSkill(request) => execute_update_skill_request(request),
-            LocalDaemonRequest::UninstallSkill(request) => execute_uninstall_skill_request(request),
-            LocalDaemonRequest::ImportSkills(request) => execute_import_skills_request(request),
-            LocalDaemonRequest::GetSkill(request) => execute_get_skill_request(request),
-            LocalDaemonRequest::ListSkills(request) => execute_list_skills_request(request),
+            request @ (LocalDaemonRequest::InstallMcpServer(_)
+            | LocalDaemonRequest::UpdateMcpServer(_)
+            | LocalDaemonRequest::UninstallMcpServer(_)
+            | LocalDaemonRequest::ImportMcpServers(_)
+            | LocalDaemonRequest::GetMcpServer(_)
+            | LocalDaemonRequest::ListMcpServers(_)
+            | LocalDaemonRequest::InstallSkill(_)
+            | LocalDaemonRequest::UpdateSkill(_)
+            | LocalDaemonRequest::UninstallSkill(_)
+            | LocalDaemonRequest::ImportSkills(_)
+            | LocalDaemonRequest::GetSkill(_)
+            | LocalDaemonRequest::ListSkills(_)) => execute_capability_registry_request(request),
             LocalDaemonRequest::RelayStatus(_) => {
                 projected_relay_status_response(
                     Arc::clone(&self.relay_state),
