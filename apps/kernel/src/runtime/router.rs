@@ -34,8 +34,6 @@ mod relay_peer_bridge;
 mod runtime_tool_bridge;
 mod status_projection_bridge;
 
-use composition::compose_command_router;
-
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
 #[derive(Clone)]
@@ -67,63 +65,6 @@ pub(crate) struct CommandRouter {
     terminal_output_executor: TerminalOutputExecutor,
     workspace_coordinator: WorkspaceCoordinator,
     provider_launch_pending: ProviderLaunchPendingTracker,
-}
-
-impl CommandRouter {
-    #[cfg(test)]
-    pub(crate) fn with_interactive_capacity(
-        app: Arc<Mutex<DaemonApp>>,
-        interactive_capacity: usize,
-    ) -> Self {
-        Self::with_interactive_capacity_and_provider_lanes(
-            app,
-            interactive_capacity,
-            ProviderRunOperationLanes::default(),
-        )
-    }
-
-    #[cfg(test)]
-    fn with_interactive_and_session_capacity(
-        app: Arc<Mutex<DaemonApp>>,
-        interactive_capacity: usize,
-        session_capacity: usize,
-    ) -> Self {
-        let _interactive_capacity = interactive_capacity;
-        compose_command_router(
-            app,
-            ProviderRunOperationLanes::default(),
-            session_capacity,
-            TransportHealthStore::default(),
-        )
-    }
-
-    pub(crate) fn with_interactive_capacity_and_provider_lanes(
-        app: Arc<Mutex<DaemonApp>>,
-        interactive_capacity: usize,
-        provider_runtime_lanes: ProviderRunOperationLanes,
-    ) -> Self {
-        Self::with_interactive_capacity_provider_lanes_and_transport_health(
-            app,
-            interactive_capacity,
-            provider_runtime_lanes,
-            TransportHealthStore::default(),
-        )
-    }
-
-    pub(crate) fn with_interactive_capacity_provider_lanes_and_transport_health(
-        app: Arc<Mutex<DaemonApp>>,
-        interactive_capacity: usize,
-        provider_runtime_lanes: ProviderRunOperationLanes,
-        transport_health: TransportHealthStore,
-    ) -> Self {
-        let _interactive_capacity = interactive_capacity;
-        compose_command_router(
-            app,
-            provider_runtime_lanes,
-            crate::runtime::session_actor::SESSION_COMMAND_QUEUE_LIMIT,
-            transport_health,
-        )
-    }
 }
 
 #[cfg(test)]
