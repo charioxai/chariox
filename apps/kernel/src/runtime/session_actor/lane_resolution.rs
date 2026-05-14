@@ -1,7 +1,9 @@
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
 use crate::runtime::projection::SessionStateProjectionStore;
-use crate::runtime::session_actor::{SessionRuntimeStore, SESSION_CREATE_LANE_ID};
+use crate::runtime::session_actor::SESSION_CREATE_LANE_ID;
+
+use super::store::SessionRuntimeStore;
 
 pub(super) async fn resolve_session_lane_key(
     store: &SessionRuntimeStore,
