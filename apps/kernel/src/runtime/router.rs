@@ -21,34 +21,30 @@ use crate::local::{
     AcceptCloudSessionInviteRequest, AgentGrantKind, AgentUtilityInput, AgentUtilityKind,
     AgentUtilityOutput, AgentUtilityResult, ApproveRemoteMachineRequest,
     AttachWorkspaceLinkRequest, CloudRelayLoginPoll, CloudRelayLoginPollStatus,
-    CloudRelayLoginStart, CloudRelayRuntimeToken, CommitAndPushWorkspaceChangesRequest,
-    CommitWorkspaceChangesRequest, ConfigureRelayRequest, ConnectCloudRelayRequest,
+    CloudRelayLoginStart, CloudRelayRuntimeToken, ConfigureRelayRequest, ConnectCloudRelayRequest,
     CreateCloudSessionInviteRequest, CreatePairingInviteRequest, CreateSessionInviteRequest,
-    CreateSliceRequest, CreateTerminalPairingLinkRequest, CreateWorkspaceDirectoryRequest,
-    CreateWorkspaceLinkRequest, CreateWorkspacePullRequestRequest, CreateWorkspaceWorktreeRequest,
-    DeleteCredentialSecretRequest, DeleteKernelRequest, DeleteWorkspaceWorktreeRequest,
-    DetachWorkspaceLinkRequest, ForgetRemoteMachineRequest, GenerateWorkspaceCommitMessageRequest,
+    CreateSliceRequest, CreateTerminalPairingLinkRequest, CreateWorkspaceLinkRequest,
+    DeleteCredentialSecretRequest, DeleteKernelRequest, DetachWorkspaceLinkRequest,
+    ForgetRemoteMachineRequest, GenerateWorkspaceCommitMessageRequest,
     GetPromptInputHistoryRequest, GetProviderRunRequest, GetSessionHistoryRequest,
     GetSessionStateRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
-    GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest, GrantAgentCapabilityRequest,
-    ImportSliceProviderAuthRequest, IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest,
-    JoinSessionInviteRequest, JoinTerminalPairingLinkRequest, ListAgentsRequest,
-    ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest, ListSessionMembersRequest,
-    ListSessionsRequest, ListSlicesRequest, ListWorkspaceFilesRequest, ListWorkspaceLinksRequest,
-    ListWorkspaceWorktreesRequest, LocalDaemonRequest, LocalDaemonResponse,
-    LogoutCloudRelayRequest, LogoutProviderRequest, MoveAgentToRemoteRequest,
-    PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairingInviteIntent,
-    PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest, PumpTerminalOutputRequest,
-    PushWorkspaceBranchRequest, RecordPromptInputHistoryRequest, RelayStatus,
+    GrantAgentCapabilityRequest, ImportSliceProviderAuthRequest, IssueCloudRelayClientTokenRequest,
+    JoinPairingInviteRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
+    ListAgentsRequest, ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest,
+    ListSessionMembersRequest, ListSessionsRequest, ListSlicesRequest, ListWorkspaceLinksRequest,
+    LocalDaemonRequest, LocalDaemonResponse, LogoutCloudRelayRequest, LogoutProviderRequest,
+    MoveAgentToRemoteRequest, PairCloudRelayClientRequest, PairCloudRelayMachineRequest,
+    PairingInviteIntent, PairingInviteRecord, PairingJoinRecord, PollCloudRelayLoginRequest,
+    PumpTerminalOutputRequest, RecordPromptInputHistoryRequest, RelayStatus,
     RenameRemoteMachineRequest, ResolveSessionRequest, RevokeAgentCapabilityRequest,
     RevokeCloudSessionInviteRequest, RevokeSessionInviteRequest, RunAgentUtilityRequest,
-    SearchWorkspaceDirectoriesRequest, SemanticHistoryMatch, SemanticHistorySearchUtilityInput,
-    SemanticSearchHistoryMode, SemanticSearchHistoryRequest, SessionInviteRecord,
-    SetCredentialSecretRequest, SetUserConfigValueRequest, ShowCloudSessionInviteRequest,
-    ShowWorkspaceLinkRequest, SliceRefRequest, StartCloudRelayLoginRequest,
-    TeardownProviderProcessesRequest, TerminalPairingLinkRecord, TerminalType,
-    UnsetUserConfigValueRequest, UpdateProviderRunSelectionRequest, UserConfigMutationEffect,
-    WaitingRoomPublicSnapshot, WorkspaceCommitMessageUtilityInput,
+    SemanticHistoryMatch, SemanticHistorySearchUtilityInput, SemanticSearchHistoryMode,
+    SemanticSearchHistoryRequest, SessionInviteRecord, SetCredentialSecretRequest,
+    SetUserConfigValueRequest, ShowCloudSessionInviteRequest, ShowWorkspaceLinkRequest,
+    SliceRefRequest, StartCloudRelayLoginRequest, TeardownProviderProcessesRequest,
+    TerminalPairingLinkRecord, TerminalType, UnsetUserConfigValueRequest,
+    UpdateProviderRunSelectionRequest, UserConfigMutationEffect, WaitingRoomPublicSnapshot,
+    WorkspaceCommitMessageUtilityInput,
 };
 use crate::provider::{
     run_codex_utility_prompt, run_opencode_utility_prompt, ProviderRunOperationLanes,
@@ -147,18 +143,16 @@ use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::runtime::workflow_projection::{
     projected_resolve_workflow, projected_resolve_workflow_run, projected_workflow_id,
 };
+use crate::runtime::workspace_command_executor::{
+    execute_commit_and_push_workspace_changes_request, execute_commit_workspace_changes_request,
+    execute_create_workspace_directory_request, execute_create_workspace_pull_request_request,
+    execute_create_workspace_worktree_request, execute_delete_workspace_worktree_request,
+    execute_get_workspace_file_content_request, execute_get_workspace_git_overview_request,
+    execute_list_workspace_files_request, execute_list_workspace_worktrees_request,
+    execute_push_workspace_branch_request, execute_search_workspace_directories_request,
+};
 use crate::runtime::workspace_commit_message_utility::workspace_commit_message_utility_prompt;
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
-use crate::runtime::workspace_git_actions::{
-    commit_and_push_workspace_changes, commit_workspace_changes, create_workspace_pull_request,
-    push_workspace_branch,
-};
-use crate::runtime::workspace_git_overview::inspect_workspace_git_overview;
-use crate::runtime::workspace_repo_files::{get_workspace_file_content, list_workspace_repo_files};
-use crate::runtime::workspace_search::{create_workspace_directory, search_workspace_directories};
-use crate::runtime::workspace_worktrees::{
-    create_waiting_room_worktree, delete_workspace_worktree, list_workspace_worktrees,
-};
 use crate::session::{unix_epoch_ms, PromptIdAllocator, DEFAULT_LOCAL_USER_ID};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::{
@@ -1060,49 +1054,35 @@ impl CommandRouter {
                     .await;
             }
             LocalDaemonRequest::SearchWorkspaceDirectories(request) => {
-                return self
-                    .execute_search_workspace_directories_request(request.clone())
-                    .await;
+                return execute_search_workspace_directories_request(request.clone());
             }
             LocalDaemonRequest::CreateWorkspaceDirectory(request) => {
-                return self
-                    .execute_create_workspace_directory_request(request.clone())
-                    .await;
+                return execute_create_workspace_directory_request(request.clone());
             }
             LocalDaemonRequest::ListWorkspaceWorktrees(request) => {
-                return self
-                    .execute_list_workspace_worktrees_request(request.clone())
-                    .await;
+                return execute_list_workspace_worktrees_request(request.clone());
             }
             LocalDaemonRequest::CreateWorkspaceWorktree(request) => {
-                return self
-                    .execute_create_workspace_worktree_request(request.clone())
-                    .await;
+                return execute_create_workspace_worktree_request(request.clone());
             }
             LocalDaemonRequest::DeleteWorkspaceWorktree(request) => {
-                return self
-                    .execute_delete_workspace_worktree_request(request.clone())
-                    .await;
+                let sessions = {
+                    let app = self.app.lock().await;
+                    app.sessions().list_sessions()
+                };
+                return execute_delete_workspace_worktree_request(request.clone(), &sessions);
             }
             LocalDaemonRequest::CreateWorkspacePullRequest(request) => {
-                return self
-                    .execute_create_workspace_pull_request_request(request.clone())
-                    .await;
+                return execute_create_workspace_pull_request_request(request.clone());
             }
             LocalDaemonRequest::GetWorkspaceGitOverview(request) => {
-                return self
-                    .execute_get_workspace_git_overview_request(request.clone())
-                    .await;
+                return execute_get_workspace_git_overview_request(request.clone());
             }
             LocalDaemonRequest::ListWorkspaceFiles(request) => {
-                return self
-                    .execute_list_workspace_files_request(request.clone())
-                    .await;
+                return execute_list_workspace_files_request(request.clone());
             }
             LocalDaemonRequest::GetWorkspaceFileContent(request) => {
-                return self
-                    .execute_get_workspace_file_content_request(request.clone())
-                    .await;
+                return execute_get_workspace_file_content_request(request.clone());
             }
             LocalDaemonRequest::RunAgentUtility(request) => {
                 return self
@@ -1115,19 +1095,13 @@ impl CommandRouter {
                     .await;
             }
             LocalDaemonRequest::CommitWorkspaceChanges(request) => {
-                return self
-                    .execute_commit_workspace_changes_request(request.clone())
-                    .await;
+                return execute_commit_workspace_changes_request(request.clone());
             }
             LocalDaemonRequest::PushWorkspaceBranch(request) => {
-                return self
-                    .execute_push_workspace_branch_request(request.clone())
-                    .await;
+                return execute_push_workspace_branch_request(request.clone());
             }
             LocalDaemonRequest::CommitAndPushWorkspaceChanges(request) => {
-                return self
-                    .execute_commit_and_push_workspace_changes_request(request.clone())
-                    .await;
+                return execute_commit_and_push_workspace_changes_request(request.clone());
             }
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
                 return execute_get_provider_command_catalogs_request();
@@ -2133,143 +2107,6 @@ impl CommandRouter {
         })
     }
 
-    async fn execute_search_workspace_directories_request(
-        &self,
-        request: SearchWorkspaceDirectoriesRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let limit = request.limit.unwrap_or(12).clamp(1, 50);
-        let directories = search_workspace_directories(
-            &request.query,
-            limit,
-            infer_waiting_room_launch_target(),
-        )?;
-        Ok(LocalDaemonResponse::WorkspaceDirectoriesSearched { directories })
-    }
-
-    async fn execute_create_workspace_directory_request(
-        &self,
-        request: CreateWorkspaceDirectoryRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let directory = create_workspace_directory(&request.path)?;
-        Ok(LocalDaemonResponse::WorkspaceDirectoryCreated { directory })
-    }
-
-    async fn execute_list_workspace_worktrees_request(
-        &self,
-        request: ListWorkspaceWorktreesRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let launch_target = infer_waiting_room_launch_target();
-        let worktrees = list_workspace_worktrees(
-            &request.workspace_id,
-            launch_target
-                .as_ref()
-                .map(|target| target.worktree_id.as_str()),
-        )?;
-        Ok(LocalDaemonResponse::WorkspaceWorktreesListed {
-            workspace_id: request.workspace_id,
-            worktrees,
-        })
-    }
-
-    async fn execute_create_workspace_worktree_request(
-        &self,
-        request: CreateWorkspaceWorktreeRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let launch_target = infer_waiting_room_launch_target();
-        let worktree = create_waiting_room_worktree(
-            &request.workspace_id,
-            request.path.as_deref(),
-            request.branch.as_deref(),
-            request.base_ref.as_deref(),
-            launch_target
-                .as_ref()
-                .map(|target| target.worktree_id.as_str()),
-            launch_target
-                .as_ref()
-                .map(|target| target.workspace_id.as_str()),
-        )?;
-        Ok(LocalDaemonResponse::WorkspaceWorktreeCreated {
-            workspace_id: request.workspace_id,
-            worktree,
-        })
-    }
-
-    async fn execute_delete_workspace_worktree_request(
-        &self,
-        request: DeleteWorkspaceWorktreeRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let sessions = {
-            let app = self.app.lock().await;
-            app.sessions().list_sessions()
-        };
-        let path = delete_workspace_worktree(
-            &request.workspace_id,
-            &request.worktree_id,
-            request.force,
-            &sessions,
-        )?;
-        Ok(LocalDaemonResponse::WorkspaceWorktreeDeleted {
-            workspace_id: request.workspace_id,
-            worktree_id: request.worktree_id,
-            path,
-        })
-    }
-
-    async fn execute_create_workspace_pull_request_request(
-        &self,
-        request: CreateWorkspacePullRequestRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let pull_request = create_workspace_pull_request(
-            &request.workspace_id,
-            &request.worktree_id,
-            request.title.as_deref(),
-            request.body.as_deref(),
-            request.base_ref.as_deref(),
-            request.draft,
-        )?;
-        Ok(LocalDaemonResponse::WorkspacePullRequestCreated { pull_request })
-    }
-
-    async fn execute_get_workspace_git_overview_request(
-        &self,
-        request: GetWorkspaceGitOverviewRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let overview = inspect_workspace_git_overview(
-            &request.workspace_id,
-            &request.worktree_id,
-            request.compare_ref.as_deref(),
-        )?;
-        Ok(LocalDaemonResponse::WorkspaceGitOverview { overview })
-    }
-
-    async fn execute_list_workspace_files_request(
-        &self,
-        request: ListWorkspaceFilesRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let listing = list_workspace_repo_files(
-            &request.workspace_id,
-            &request.worktree_id,
-            request.path_prefix.as_deref(),
-            request.compare_ref.as_deref(),
-            request.limit,
-        )?;
-        Ok(LocalDaemonResponse::WorkspaceFilesListed { listing })
-    }
-
-    async fn execute_get_workspace_file_content_request(
-        &self,
-        request: GetWorkspaceFileContentRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        get_workspace_file_content(
-            &request.workspace_id,
-            &request.worktree_id,
-            &request.path,
-            request.compare_ref.as_deref(),
-            request.known_fingerprint.as_deref(),
-            request.max_bytes,
-        )
-    }
-
     async fn execute_run_agent_utility_request(
         &self,
         request: RunAgentUtilityRequest,
@@ -2343,42 +2180,6 @@ impl CommandRouter {
             output,
             generated_at_ms: current_unix_ms(),
         })
-    }
-
-    async fn execute_commit_workspace_changes_request(
-        &self,
-        request: CommitWorkspaceChangesRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let result = commit_workspace_changes(
-            &request.workspace_id,
-            &request.worktree_id,
-            &request.message,
-        )?;
-        Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })
-    }
-
-    async fn execute_push_workspace_branch_request(
-        &self,
-        request: PushWorkspaceBranchRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let result = push_workspace_branch(
-            &request.workspace_id,
-            &request.worktree_id,
-            request.force_with_lease,
-        )?;
-        Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })
-    }
-
-    async fn execute_commit_and_push_workspace_changes_request(
-        &self,
-        request: CommitAndPushWorkspaceChangesRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let result = commit_and_push_workspace_changes(
-            &request.workspace_id,
-            &request.worktree_id,
-            &request.message,
-        )?;
-        Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })
     }
 
     async fn assert_agent_utility_can_run(
@@ -4823,38 +4624,35 @@ impl CommandRouter {
                 self.projected_waiting_room_public_snapshot_response().await
             }
             LocalDaemonRequest::SearchWorkspaceDirectories(request) => {
-                self.execute_search_workspace_directories_request(request)
-                    .await
+                execute_search_workspace_directories_request(request)
             }
             LocalDaemonRequest::CreateWorkspaceDirectory(request) => {
-                self.execute_create_workspace_directory_request(request)
-                    .await
+                execute_create_workspace_directory_request(request)
             }
             LocalDaemonRequest::ListWorkspaceWorktrees(request) => {
-                self.execute_list_workspace_worktrees_request(request).await
+                execute_list_workspace_worktrees_request(request)
             }
             LocalDaemonRequest::CreateWorkspaceWorktree(request) => {
-                self.execute_create_workspace_worktree_request(request)
-                    .await
+                execute_create_workspace_worktree_request(request)
             }
             LocalDaemonRequest::DeleteWorkspaceWorktree(request) => {
-                self.execute_delete_workspace_worktree_request(request)
-                    .await
+                let sessions = {
+                    let app = self.app.lock().await;
+                    app.sessions().list_sessions()
+                };
+                execute_delete_workspace_worktree_request(request, &sessions)
             }
             LocalDaemonRequest::CreateWorkspacePullRequest(request) => {
-                self.execute_create_workspace_pull_request_request(request)
-                    .await
+                execute_create_workspace_pull_request_request(request)
             }
             LocalDaemonRequest::GetWorkspaceGitOverview(request) => {
-                self.execute_get_workspace_git_overview_request(request)
-                    .await
+                execute_get_workspace_git_overview_request(request)
             }
             LocalDaemonRequest::ListWorkspaceFiles(request) => {
-                self.execute_list_workspace_files_request(request).await
+                execute_list_workspace_files_request(request)
             }
             LocalDaemonRequest::GetWorkspaceFileContent(request) => {
-                self.execute_get_workspace_file_content_request(request)
-                    .await
+                execute_get_workspace_file_content_request(request)
             }
             LocalDaemonRequest::RunAgentUtility(request) => {
                 self.execute_run_agent_utility_request(request).await
@@ -4864,14 +4662,13 @@ impl CommandRouter {
                     .await
             }
             LocalDaemonRequest::CommitWorkspaceChanges(request) => {
-                self.execute_commit_workspace_changes_request(request).await
+                execute_commit_workspace_changes_request(request)
             }
             LocalDaemonRequest::PushWorkspaceBranch(request) => {
-                self.execute_push_workspace_branch_request(request).await
+                execute_push_workspace_branch_request(request)
             }
             LocalDaemonRequest::CommitAndPushWorkspaceChanges(request) => {
-                self.execute_commit_and_push_workspace_changes_request(request)
-                    .await
+                execute_commit_and_push_workspace_changes_request(request)
             }
             LocalDaemonRequest::ApproveRemoteMachine(request) => {
                 self.execute_approve_remote_machine_request(request).await
