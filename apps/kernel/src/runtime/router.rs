@@ -20,9 +20,7 @@ use crate::runtime::command_response_refresh::{
     refresh_command_response_state, CommandResponseRefreshContext,
 };
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
-use crate::runtime::history_executor::{
-    execute_history_request, projected_session_history_response,
-};
+use crate::runtime::history_executor::execute_history_request;
 use crate::runtime::interactive_command_dispatcher::dispatch_interactive_command;
 use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
@@ -37,12 +35,8 @@ use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_launch_executor::{
     execute_provider_launch_command, ProviderLaunchPendingTracker,
 };
-use crate::runtime::provider_process_control::{
-    execute_provider_process_request, projected_provider_processes_response,
-};
-use crate::runtime::provider_run_control::{
-    execute_provider_run_request, projected_provider_run_response,
-};
+use crate::runtime::provider_process_control::execute_provider_process_request;
+use crate::runtime::provider_run_control::execute_provider_run_request;
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_machine_registry::execute_remote_machine_registry_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
@@ -52,10 +46,7 @@ use crate::runtime::session_membership::authorize_session_membership;
 use crate::runtime::session_projection_refresh::{
     focus_projection_refresh, session_projection_refresh,
 };
-use crate::runtime::session_read_control::{
-    execute_session_read_request, projected_session_inspection_response,
-    projected_session_or_absence, projected_session_read_response,
-};
+use crate::runtime::session_read_control::execute_session_read_request;
 use crate::runtime::slice_command_executor::execute_slice_request;
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::terminal_output_executor::{
@@ -63,7 +54,7 @@ use crate::runtime::terminal_output_executor::{
 };
 use crate::runtime::user_config_executor::execute_user_config_request;
 use crate::runtime::waiting_room_control::execute_waiting_room_request;
-use crate::runtime::workflow_actor::{is_workflow_command, WorkflowRuntime};
+use crate::runtime::workflow_actor::WorkflowRuntime;
 use crate::runtime::workspace_command_executor::execute_workspace_command_request;
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::terminal::TerminalStreamHealthStore;
@@ -72,6 +63,7 @@ use crate::transport::relay_client::RelayClientState;
 mod caller_identity_bridge;
 mod cloud_relay_bridge;
 mod composition;
+mod pre_lane_dispatch;
 mod relay_peer_bridge;
 mod runtime_tool_bridge;
 mod status_projection_bridge;
@@ -176,154 +168,11 @@ impl CommandRouter {
         let caller_user_id =
             authorize_session_membership(&self.app, &self.session_projection, &command, &request)
                 .await?;
-        if let Some(response) = projected_session_read_response(
-            &self.app,
-            &self.session_projection,
-            &self.provider_run_projection,
-            &self.provider_launch_pending,
-            &self.prompt_activity,
-            &self.active_turns,
-            &request,
-            &caller_user_id,
-        )
-        .await
+        if let Some(response) = self
+            .dispatch_pre_lane(&command, &request, &caller_user_id)
+            .await?
         {
-            return response;
-        }
-        match &request {
-            request @ LocalDaemonRequest::RelayStatus(_) => {
-                return execute_relay_config_request(
-                    &self.app,
-                    Arc::clone(&self.relay_state),
-                    &self.config_projection,
-                    &self.provider_catalog_projection,
-                    request.clone(),
-                )
-                .await;
-            }
-            request @ (LocalDaemonRequest::ListRemoteMachines(_)
-            | LocalDaemonRequest::ListRemoteMachineKernels(_)) => {
-                return execute_remote_relay_inventory_request(
-                    Arc::clone(&self.app),
-                    Arc::clone(&self.relay_state),
-                    self.config_projection.clone(),
-                    self.remote_relay_inventory_projection.clone(),
-                    request.clone(),
-                )
-                .await;
-            }
-            request @ (LocalDaemonRequest::SearchWorkspaceDirectories(_)
-            | LocalDaemonRequest::CreateWorkspaceDirectory(_)
-            | LocalDaemonRequest::ListWorkspaceWorktrees(_)
-            | LocalDaemonRequest::CreateWorkspaceWorktree(_)
-            | LocalDaemonRequest::DeleteWorkspaceWorktree(_)
-            | LocalDaemonRequest::CreateWorkspacePullRequest(_)
-            | LocalDaemonRequest::GetWorkspaceGitOverview(_)
-            | LocalDaemonRequest::ListWorkspaceFiles(_)
-            | LocalDaemonRequest::GetWorkspaceFileContent(_)
-            | LocalDaemonRequest::CommitWorkspaceChanges(_)
-            | LocalDaemonRequest::PushWorkspaceBranch(_)
-            | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)) => {
-                return execute_workspace_command_request(
-                    &self.app,
-                    &self.session_projection,
-                    request.clone(),
-                )
-                .await;
-            }
-            request @ (LocalDaemonRequest::RunAgentUtility(_)
-            | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)) => {
-                return execute_agent_utility_request(
-                    Arc::clone(&self.app),
-                    &self.config_projection,
-                    request.clone(),
-                )
-                .await;
-            }
-            request @ (LocalDaemonRequest::GetProviderCatalog(_)
-            | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => {
-                return execute_provider_catalog_request(
-                    &self.provider_catalog_projection,
-                    &self.config_projection,
-                    request.clone(),
-                )
-                .await;
-            }
-            request @ (LocalDaemonRequest::InstallMcpServer(_)
-            | LocalDaemonRequest::UpdateMcpServer(_)
-            | LocalDaemonRequest::UninstallMcpServer(_)
-            | LocalDaemonRequest::ImportMcpServers(_)
-            | LocalDaemonRequest::GetMcpServer(_)
-            | LocalDaemonRequest::ListMcpServers(_)
-            | LocalDaemonRequest::InstallSkill(_)
-            | LocalDaemonRequest::UpdateSkill(_)
-            | LocalDaemonRequest::UninstallSkill(_)
-            | LocalDaemonRequest::ImportSkills(_)
-            | LocalDaemonRequest::GetSkill(_)
-            | LocalDaemonRequest::ListSkills(_)) => {
-                return execute_capability_registry_request(request.clone());
-            }
-            _ => {}
-        }
-        if let Some(response) = projected_session_inspection_response(
-            &self.session_projection,
-            &request,
-            &caller_user_id,
-        ) {
-            return response;
-        }
-        if let LocalDaemonRequest::PumpTerminalOutput(request) = &request {
-            if let Some(response) = self.terminal_output_executor.projected_response(request) {
-                return response;
-            }
-        }
-        if let LocalDaemonRequest::GetSessionHistory(request) = &request {
-            if let Some(response) = projected_session_history_response(
-                self.history_store.clone(),
-                self.operational_history_store.clone(),
-                self.history_projection.clone(),
-                projected_session_or_absence(&self.session_projection, &request.session_id),
-                request,
-            )
-            .await
-            {
-                return response;
-            }
-        }
-        if let LocalDaemonRequest::CompletePrompt(request) = &request {
-            return self
-                .agent_runtime
-                .dispatch_prompt_complete(&command, request.clone())
-                .await;
-        }
-        if is_workflow_command(&request) {
-            return self
-                .workflow_runtime
-                .dispatch_workflow_command(command, request)
-                .await;
-        }
-        if let LocalDaemonRequest::GetProviderRun(request) = &request {
-            if let Some(response) = projected_provider_run_response(
-                &self.provider_run_projection,
-                request,
-                &caller_user_id,
-            )? {
-                return Ok(response);
-            }
-        }
-        if let LocalDaemonRequest::ListProviderProcesses(request) = &request {
-            if let Some(response) = projected_provider_processes_response(
-                &self.provider_process_projection,
-                &self.provider_run_projection,
-                request,
-                &caller_user_id,
-            ) {
-                return Ok(response);
-            }
-        }
-        if matches!(&request, LocalDaemonRequest::GetDaemonHealth(_)) {
-            return execute_daemon_health_request(self.daemon_health_projection_input(0), request)
-                .await;
+            return Ok(response);
         }
 
         let session_refresh = session_projection_refresh(&request);
