@@ -78,6 +78,7 @@ struct KernelRuntimeOwnedState {
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
+mod agent_profile_owned_state;
 mod attachment_owned_state;
 mod capability_owned_state;
 mod owned;

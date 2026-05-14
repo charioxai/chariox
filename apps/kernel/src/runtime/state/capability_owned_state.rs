@@ -1,6 +1,54 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn grant_agent_mcp(
+        &self,
+        agent_ref: &str,
+        name: String,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.ensure_agent_ref_owner(agent_ref, caller_user_id, "grant agent capability")?;
+        let agent = self.agent_store.grant_mcp(agent_ref, name)?;
+        let _ = self.session_snapshot(agent.session_id())?;
+        Ok(agent)
+    }
+
+    pub(super) fn revoke_agent_mcp(
+        &self,
+        agent_ref: &str,
+        name: &str,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.ensure_agent_ref_owner(agent_ref, caller_user_id, "revoke agent capability")?;
+        let agent = self.agent_store.revoke_mcp(agent_ref, name)?;
+        let _ = self.session_snapshot(agent.session_id())?;
+        Ok(agent)
+    }
+
+    pub(super) fn grant_agent_skill(
+        &self,
+        agent_ref: &str,
+        name: String,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.ensure_agent_ref_owner(agent_ref, caller_user_id, "grant agent capability")?;
+        let agent = self.agent_store.grant_skill(agent_ref, name)?;
+        let _ = self.session_snapshot(agent.session_id())?;
+        Ok(agent)
+    }
+
+    pub(super) fn revoke_agent_skill(
+        &self,
+        agent_ref: &str,
+        name: &str,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.ensure_agent_ref_owner(agent_ref, caller_user_id, "revoke agent capability")?;
+        let agent = self.agent_store.revoke_skill(agent_ref, name)?;
+        let _ = self.session_snapshot(agent.session_id())?;
+        Ok(agent)
+    }
+
     pub(super) fn capability_context(
         &self,
         session_id: &str,
