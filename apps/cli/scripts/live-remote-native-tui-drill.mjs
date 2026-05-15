@@ -850,7 +850,9 @@ async function runProviderScenario({
       "SessionAttached",
     ).attachment
     const agents = await waitForNamedAgents(client, sessionId, aliases)
-    await waitForActiveProviderRun(client, sessionId)
+    if (!machineRef) {
+      await waitForActiveProviderRun(client, sessionId)
+    }
 
     await startScreen(screenCli, logs.cliDir, "bun", [
       cliPath,

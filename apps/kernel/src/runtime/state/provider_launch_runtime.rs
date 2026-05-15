@@ -1,6 +1,83 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) async fn launch_remote_native_provider_run(
+        &self,
+        request: &crate::local::LaunchProviderRunRequest,
+        caller_user_id: &str,
+    ) -> Result<Option<crate::local::LocalDaemonResponse>, DaemonError> {
+        if !request.native_tui {
+            return Ok(None);
+        }
+        let session = self.owned.session_store.get_session(&request.session_id)?;
+        let agent_id = request
+            .agent_id
+            .clone()
+            .or_else(|| session.focused_agent_id().map(str::to_string))
+            .or_else(|| {
+                self.owned
+                    .agent_store
+                    .get_focused_agent(&request.session_id)
+                    .map(|agent| agent.id().to_string())
+            });
+        let Some(agent_id) = agent_id else {
+            return Ok(None);
+        };
+        let agent = self.owned.agent_store.get_agent(&agent_id)?;
+        if agent.owner_user_id() != caller_user_id {
+            return Err(DaemonError::OwnershipAccessDenied {
+                user_id: caller_user_id.to_string(),
+                owner_user_id: agent.owner_user_id().to_string(),
+                resource: format!("provider run for agent `{agent_id}`"),
+                operation: "launch provider run",
+            });
+        }
+        let Some(remote_execution) = agent.remote_execution().cloned() else {
+            return Ok(None);
+        };
+        let mut relay_config = self.owned.config_projection.snapshot();
+        if let (Some(relay_url), Some(relay_token)) = (
+            remote_execution.relay_url.clone(),
+            remote_execution.relay_token.clone(),
+        ) {
+            relay_config.relay_url = Some(relay_url);
+            relay_config.relay_token = Some(relay_token);
+            relay_config.cloud_relay = None;
+        }
+        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
+            &relay_config,
+            ClientTarget {
+                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::LaunchLeasedNativeProviderRun {
+                leased_agent_id: remote_execution.leased_agent_id,
+                adapter_key: request.adapter_key.clone(),
+                provider: request.provider.clone(),
+                account_profile: request.account_profile.clone(),
+                model: request.model.clone(),
+                variant: request.variant.clone(),
+                structured_endpoint: request.structured_endpoint.clone(),
+                provider_session_id: request.provider_session_id.clone(),
+            },
+        )
+        .await?;
+        match response {
+            RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run } => {
+                self.owned
+                    .provider_run_projection
+                    .update(provider_run.clone());
+                Ok(Some(
+                    crate::local::LocalDaemonResponse::ProviderRunLaunched { provider_run },
+                ))
+            }
+            other => Err(DaemonError::LocalTransport {
+                operation: "launch remote native provider run",
+                message: format!("unexpected remote native provider launch response: {other:?}"),
+            }),
+        }
+    }
+
     pub(crate) async fn start_provider_launch(
         &self,
         request: crate::local::LaunchProviderRunRequest,

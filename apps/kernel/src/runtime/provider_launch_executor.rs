@@ -50,6 +50,13 @@ impl ProviderLaunchCommandExecutor {
         request: LaunchProviderRunRequest,
         caller_user_id: String,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if let Some(response) = self
+            .store
+            .launch_remote_native_provider_run(&request, &caller_user_id)
+            .await?
+        {
+            return Ok(response);
+        }
         let (started, runtime_init_delay_ms) =
             self.store.start_launch(request, caller_user_id).await?;
         let accepted = started.run.clone();
@@ -95,6 +102,16 @@ impl ProviderLaunchStore {
     ) -> Result<(StartedProviderLaunch, u64), DaemonError> {
         self.state
             .start_provider_launch(request, caller_user_id)
+            .await
+    }
+
+    async fn launch_remote_native_provider_run(
+        &self,
+        request: &LaunchProviderRunRequest,
+        caller_user_id: &str,
+    ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        self.state
+            .launch_remote_native_provider_run(request, caller_user_id)
             .await
     }
 
