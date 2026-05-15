@@ -6,6 +6,10 @@ import {
 import type { LocalIpcClient } from "./ipc.js"
 import {
   aliasAgentRequest,
+  cycleAgentFocusRequest,
+  destroyAgentRequest,
+  focusAgentRequest,
+  spawnAgentRequest,
   updateAgentConfigRequest,
   updateAgentProfileRequest,
   updateAgentSubstitutesRequest,
@@ -26,6 +30,17 @@ export type UpdateAgentProfileOptions = {
   clearEffort?: boolean
 }
 
+export type SpawnAgentOptions = {
+  provider?: string | null | undefined
+  alias?: string | undefined
+  model?: string | null | undefined
+  effort?: string | null | undefined
+  worktreeId?: string | undefined
+  kernelRef?: string | undefined
+  worktreePlacement?: Record<string, unknown> | undefined
+  sliceRef?: string | undefined
+}
+
 export async function aliasAgent(
   client: LocalIpcClient,
   sessionId: string,
@@ -38,6 +53,57 @@ export async function aliasAgent(
     ...payload,
     session: normalizeRuntimeSession(payload.session),
   }
+}
+
+export async function cycleAgentFocus(
+  client: LocalIpcClient,
+  sessionId: string,
+): Promise<AgentInstance | null> {
+  const response = await client.send<Record<string, unknown>>(cycleAgentFocusRequest(sessionId))
+  const payload = expectVariant<{ agent: AgentInstance | null }>(response, "AgentFocusCycled")
+  return payload.agent
+}
+
+export async function spawnAgent(
+  client: LocalIpcClient,
+  sessionId: string,
+  options: SpawnAgentOptions,
+): Promise<AgentInstance> {
+  const response = await client.send<Record<string, unknown>>(
+    spawnAgentRequest(
+      sessionId,
+      options.provider,
+      options.alias,
+      options.model,
+      options.worktreeId,
+      options.effort,
+      undefined,
+      undefined,
+      options.kernelRef,
+      options.worktreePlacement,
+      options.sliceRef,
+    ),
+  )
+  const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned")
+  return payload.agent
+}
+
+export async function destroyAgent(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+): Promise<void> {
+  await client.send<Record<string, unknown>>(destroyAgentRequest(sessionId, agentId))
+}
+
+export async function focusAgent(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+): Promise<AgentInstance> {
+  const response = await client.send<Record<string, unknown>>(focusAgentRequest(sessionId, agentId))
+  const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentFocused")
+  return payload.agent
 }
 
 export async function updateAgentConfig(

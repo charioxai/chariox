@@ -79,11 +79,8 @@ import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
 import {
   cancelActivePromptRequest,
   captureScreenshotRequest,
-  cycleAgentFocusRequest,
-  destroyAgentRequest,
   detachFromSessionRequest,
   endSessionRequest,
-  focusAgentRequest,
   getPromptInputHistoryRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
@@ -93,7 +90,6 @@ import {
   recordPromptInputHistoryRequest,
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
-  spawnAgentRequest,
   storeTransferredFileRequest,
   submitPromptRequest,
 } from "./ipc-requests.js"
@@ -114,6 +110,10 @@ import {
 } from "./cloud-session-api.js"
 import {
   aliasAgent,
+  cycleAgentFocus as cycleAgentFocusApi,
+  destroyAgent as destroyAgentApi,
+  focusAgent as focusAgentApi,
+  spawnAgent as spawnAgentApi,
   updateAgentConfig,
   updateAgentProfile,
   updateAgentSubstitutes,
@@ -6791,10 +6791,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
     cycleAgentFocus: async () => {
       return trackAgentFocusTransition(async () => {
-        const response = await client.send<Record<string, unknown>>(
-          cycleAgentFocusRequest(sessionState().id),
-        )
-        const payload = expectVariant<{ agent: AgentInstance | null }>(response, "AgentFocusCycled")
+        const agent = await cycleAgentFocusApi(client, sessionState().id)
         const session = await getSessionState(client, sessionState().id)
         if (session.active_provider_run_id) {
           setProviderRunState(await getProviderRun(client, session.active_provider_run_id))
@@ -6802,7 +6799,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           setProviderRunState(null)
         }
         return {
-          agent: payload.agent,
+          agent,
           session,
         }
       })
@@ -6820,39 +6817,32 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setProviderRunState,
     refreshSessionState: (sessionId) => getSessionState(client, sessionId),
     spawnAgent: async (provider, alias, model, effort, worktreeId, machineRef, worktreePlacement, sliceRef) => {
-      const response = await client.send<Record<string, unknown>>(
-        spawnAgentRequest(
-          sessionState().id,
+      const agent = await spawnAgentApi(
+        client,
+        sessionState().id,
+        {
           provider,
           alias,
           model,
-          worktreeId,
           effort,
-          undefined,
-          undefined,
-          machineRef,
+          worktreeId,
+          kernelRef: machineRef,
           worktreePlacement,
           sliceRef,
-        ),
+        },
       )
-      const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned")
       return {
-        agent: payload.agent,
+        agent,
         session: await getSessionState(client, sessionState().id),
       }
     },
     destroyAgent: async (agentId) => {
-      await client.send<Record<string, unknown>>(
-        destroyAgentRequest(sessionState().id, agentId),
-      )
+      await destroyAgentApi(client, sessionState().id, agentId)
       return getSessionState(client, sessionState().id)
     },
     focusAgent: async (agentId) => {
       return trackAgentFocusTransition(async () => {
-        const response = await client.send<Record<string, unknown>>(
-          focusAgentRequest(sessionState().id, agentId),
-        )
-        const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentFocused")
+        const agent = await focusAgentApi(client, sessionState().id, agentId)
         const session = await getSessionState(client, sessionState().id)
         if (session.active_provider_run_id) {
           setProviderRunState(await getProviderRun(client, session.active_provider_run_id))
@@ -6860,7 +6850,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           setProviderRunState(null)
         }
         return {
-          agent: payload.agent,
+          agent,
           session,
         }
       })
