@@ -4,7 +4,6 @@ use super::super::prompt_lifecycle::{
 };
 use super::{select_next_queued_prompt_candidate, KernelAgentService};
 use crate::agent::RemoteAgentBinding;
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::ProviderRunState;
 use crate::session::{
@@ -15,6 +14,8 @@ use crate::transport::flow_control;
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use arroba_relay::protocol::ClientTarget;
+
+mod remote;
 
 enum KernelPromptCompletionAdmission {
     Remote {
@@ -29,53 +30,6 @@ enum KernelPromptCompletionAdmission {
         provider_run_id: Option<String>,
         next_queued_prompt: Option<PromptQueueItem>,
     },
-}
-
-fn remote_git_turn_context(
-    dispatch: &KernelRemotePromptDispatch,
-) -> crate::transport::relay_peer::RemoteGitTurnContext {
-    crate::transport::relay_peer::RemoteGitTurnContext {
-        home_session_id: dispatch.session_id.clone(),
-        home_agent_id: dispatch.agent_id.clone(),
-        home_prompt_id: dispatch.prompt_id.clone(),
-        home_turn_id: dispatch.prompt_id.clone(),
-        prompt_summary: crate::prompt_transcript::render_prompt_transcript(
-            &dispatch.prompt,
-            &dispatch.attachments,
-        ),
-    }
-}
-
-fn remote_dispatch_relay_config(
-    app: &DaemonApp,
-    dispatch: &KernelRemotePromptDispatch,
-) -> crate::config::DaemonConfig {
-    let mut config = app.config().clone();
-    if let (Some(relay_url), Some(relay_token)) =
-        (dispatch.relay_url.clone(), dispatch.relay_token.clone())
-    {
-        config.relay_url = Some(relay_url);
-        config.relay_token = Some(relay_token);
-        config.cloud_relay = None;
-    }
-    config
-}
-
-fn remote_git_turn_context_for_prompt(
-    session_id: &str,
-    agent_id: &str,
-    prompt: &PromptQueueItem,
-) -> crate::transport::relay_peer::RemoteGitTurnContext {
-    crate::transport::relay_peer::RemoteGitTurnContext {
-        home_session_id: session_id.to_string(),
-        home_agent_id: agent_id.to_string(),
-        home_prompt_id: prompt.id().to_string(),
-        home_turn_id: prompt.id().to_string(),
-        prompt_summary: crate::prompt_transcript::render_prompt_transcript(
-            prompt.prompt(),
-            prompt.attachments(),
-        ),
-    }
 }
 
 struct KernelPromptOwnerCompletion {
@@ -206,48 +160,6 @@ impl<'a> KernelAgentService<'a> {
             self.app.fail_kernel_prompt_dispatch(dispatch, error)?;
         }
         Ok(())
-    }
-
-    fn finish_compat_remote_prompt_dispatch(
-        &mut self,
-        dispatch: Option<KernelRemotePromptDispatch>,
-    ) -> Result<(), DaemonError> {
-        let Some(dispatch) = dispatch else {
-            return Ok(());
-        };
-        let attachments = self
-            .app
-            .serialize_remote_prompt_attachments(&dispatch.attachments)?;
-        let relay_config = remote_dispatch_relay_config(self.app, &dispatch);
-        let result =
-            match self
-                .app
-                .block_on_relay_future(send_peer_request_via_temporary_connection(
-                    &relay_config,
-                    ClientTarget {
-                        daemon_id: Some(dispatch.worker_kernel_id.clone()),
-                        daemon_alias: None,
-                    },
-                    RelayPeerRequest::SubmitLeasedPrompt {
-                        leased_agent_id: dispatch.leased_agent_id.clone(),
-                        prompt: dispatch.prompt.clone(),
-                        attachments,
-                        workflow_context: dispatch.workflow_context.clone(),
-                        git_context: Some(remote_git_turn_context(&dispatch)),
-                        required_mcps: Vec::new(),
-                    },
-                )) {
-                Ok(RelayPeerResponse::LeasedPromptSubmitted {
-                    provider_run_id, ..
-                }) => Ok(provider_run_id),
-                Ok(other) => Err(DaemonError::LocalTransport {
-                    operation: "submit remote prepared prompt",
-                    message: format!("unexpected remote prompt response: {other:?}"),
-                }),
-                Err(error) => Err(error),
-            };
-        self.app
-            .finish_kernel_remote_prompt_dispatch(dispatch, result)
     }
 
     fn prepare_prompt_admission(
@@ -505,126 +417,6 @@ impl<'a> KernelAgentService<'a> {
             agent_id: agent_id.to_string(),
             provider_run_id: provider_run_id.map(str::to_string),
             next_queued_prompt,
-        })
-    }
-
-    fn complete_remote_prompt_from_admission(
-        &mut self,
-        admission: KernelPromptCompletionAdmission,
-    ) -> Result<KernelPromptOwnerCompletion, DaemonError> {
-        let KernelPromptCompletionAdmission::Remote {
-            session_id,
-            agent_id,
-            remote_execution,
-            next_queued_prompt,
-        } = admission
-        else {
-            return Err(DaemonError::LocalTransport {
-                operation: "complete prompt admission",
-                message: "expected remote prompt completion admission".to_string(),
-            });
-        };
-
-        let relay_config = self
-            .app
-            .relay_config_for_remote_execution(&remote_execution);
-        let remote_provider_run_id =
-            match self
-                .app
-                .block_on_relay_future(send_peer_request_via_temporary_connection(
-                    &relay_config,
-                    ClientTarget {
-                        daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                        daemon_alias: None,
-                    },
-                    RelayPeerRequest::CompleteLeasedPrompt {
-                        leased_agent_id: remote_execution.leased_agent_id.clone(),
-                    },
-                ))? {
-                RelayPeerResponse::LeasedPromptCompleted {
-                    provider_run_id,
-                    git_observations,
-                    ..
-                } => {
-                    let _ = crate::git_observer::append_observations(
-                        &self.app.operational_history_store(),
-                        git_observations,
-                    )?;
-                    provider_run_id
-                }
-                other => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "complete remote prompt",
-                        message: format!("unexpected remote prompt completion response: {other:?}"),
-                    });
-                }
-            };
-        let completed = self
-            .app
-            .prompt_owner_complete_active_prompt_only(&session_id, &agent_id)?;
-        Ok(KernelPromptOwnerCompletion {
-            session_id,
-            agent_id,
-            completed,
-            provider_run_id: None,
-            remote_execution: Some(remote_execution),
-            remote_provider_run_id,
-            next_queued_prompt,
-        })
-    }
-
-    fn finish_remote_prompt_completion(
-        &mut self,
-        completion: KernelPromptOwnerCompletion,
-    ) -> Result<PromptCompletion, DaemonError> {
-        let remote_provider_run_id = completion
-            .remote_provider_run_id
-            .as_deref()
-            .unwrap_or("remote-provider-run-completed");
-        let recipient_attachment_ids = self
-            .app
-            .attachments
-            .list_session_attachment_ids(&completion.session_id);
-        self.record_assistant_message_completion(
-            &completion.session_id,
-            remote_provider_run_id,
-            recipient_attachment_ids,
-            &format!("prompt-complete:{}", completion.completed.id()),
-            crate::session::unix_epoch_ms(),
-        );
-        let started_next = if self
-            .app
-            .prompt_owner_active_prompt_for_agent(&completion.session_id, &completion.agent_id)?
-            .is_none()
-        {
-            let remote_execution = completion.remote_execution.as_ref().ok_or_else(|| {
-                DaemonError::LocalTransport {
-                    operation: "complete remote prompt",
-                    message: "missing remote execution binding".to_string(),
-                }
-            })?;
-            self.advance_next_queued_prompt_remote(
-                &completion.session_id,
-                &completion.agent_id,
-                &remote_execution.worker_kernel_id,
-                &remote_execution.leased_agent_id,
-                remote_execution.relay_url.as_deref(),
-                remote_execution.relay_token.as_deref(),
-                completion.next_queued_prompt.as_ref(),
-            )?
-        } else {
-            None
-        };
-        if started_next.is_none() {
-            self.app
-                .sync_focused_provider_run_if_idle(&completion.session_id)?;
-        }
-        crate::app::KernelSessionReadService::new(self.app)
-            .session_snapshot(&completion.session_id)?;
-
-        Ok(PromptCompletion {
-            completed: completion.completed,
-            started_next,
         })
     }
 
@@ -933,124 +725,6 @@ impl<'a> KernelAgentService<'a> {
                 self.app, session_id, &active,
             )?;
             flow_control::note_prompt_started(self.app, &provider_run_id);
-            crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
-            return Ok(Some(active));
-        }
-    }
-
-    pub(crate) fn advance_next_queued_prompt_remote(
-        &mut self,
-        session_id: &str,
-        agent_id: &str,
-        worker_kernel_id: &str,
-        leased_agent_id: &str,
-        relay_url: Option<&str>,
-        relay_token: Option<&str>,
-        expected_next: Option<&PromptQueueItem>,
-    ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        let mut relay_config = self.app.config().clone();
-        if let (Some(relay_url), Some(relay_token)) = (relay_url, relay_token) {
-            relay_config.relay_url = Some(relay_url.to_string());
-            relay_config.relay_token = Some(relay_token.to_string());
-            relay_config.cloud_relay = None;
-        }
-        loop {
-            let next_candidate =
-                self.next_queued_prompt_candidate(session_id, agent_id, expected_next)?;
-            let Some(peeked) = next_candidate else {
-                return Ok(None);
-            };
-            let is_workflow_prompt = crate::app::workflow_runtime::is_workflow_prompt_source(
-                peeked.source_attachment_id(),
-            );
-            if let Err(error) = crate::app::KernelSessionReadService::new(self.app)
-                .ensure_attachment_in_session(session_id, peeked.source_attachment_id())
-            {
-                if !is_workflow_prompt {
-                    self.app.record_notice(
-                        session_id,
-                        None,
-                        self.app.attachments.list_session_attachment_ids(session_id),
-                        format!(
-                            "Skipped queued prompt `{}` because its source attachment is no longer active: {}",
-                            peeked.id(),
-                            error
-                        ),
-                    );
-                    let _ = self.activate_next_queued_prompt_for_mirror(
-                        session_id,
-                        agent_id,
-                        expected_next,
-                    )?;
-                    continue;
-                }
-            }
-            let response =
-                self.app
-                    .block_on_relay_future(send_peer_request_via_temporary_connection(
-                        &relay_config,
-                        ClientTarget {
-                            daemon_id: Some(worker_kernel_id.to_string()),
-                            daemon_alias: None,
-                        },
-                        RelayPeerRequest::SubmitLeasedPrompt {
-                            leased_agent_id: leased_agent_id.to_string(),
-                            prompt: peeked.prompt().to_string(),
-                            attachments: self
-                                .app
-                                .serialize_remote_prompt_attachments(peeked.attachments())?,
-                            workflow_context: if is_workflow_prompt {
-                                Some(
-                                    crate::app::RemoteWorkflowTurnContextResolver::new(self.app)
-                                        .remote_workflow_turn_context_for_prompt(
-                                            session_id, agent_id, &peeked,
-                                        )?,
-                                )
-                            } else {
-                                None
-                            },
-                            git_context: Some(remote_git_turn_context_for_prompt(
-                                session_id, agent_id, &peeked,
-                            )),
-                            required_mcps: Vec::new(),
-                        },
-                    ));
-            let remote_provider_run_id = match response {
-                Ok(RelayPeerResponse::LeasedPromptSubmitted {
-                    provider_run_id, ..
-                }) => provider_run_id,
-                Ok(other) => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "advance remote queued prompt",
-                        message: format!("unexpected remote prompt response: {other:?}"),
-                    });
-                }
-                Err(error) => return Err(error),
-            };
-            let (_session, next_candidate) =
-                self.activate_next_queued_prompt_for_mirror(session_id, agent_id, expected_next)?;
-            let Some(active) = next_candidate else {
-                continue;
-            };
-            self.app.echo_prompt_to_other_attachments(
-                session_id,
-                &remote_provider_run_id,
-                active.source_attachment_id(),
-                active.prompt(),
-                active.attachments(),
-            );
-            if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
-                (active.workflow_run_id(), active.workflow_node_run_id())
-            {
-                self.app.sessions_mut().mark_workflow_turn_dispatched(
-                    session_id,
-                    workflow_run_id,
-                    workflow_node_run_id,
-                )?;
-            }
-            crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
-                self.app, session_id, &active,
-            )?;
             crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
             return Ok(Some(active));
         }
