@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::app::{DaemonApp, PromptActivityStore};
 use crate::error::DaemonError;
@@ -10,14 +10,12 @@ use crate::provider::{
 use crate::provider::{AgentEndpointMode, ProviderProcessServiceStore, ProviderRunState};
 use crate::pty::PtyOutputChunk;
 use crate::runtime::projection::AgentRuntimeProjectionStore;
-use crate::session::{PromptQueueItem, PromptStatus};
 use crate::terminal::{TerminalOutputKind, TerminalOutputRecord};
 
 use super::provider_output_claude_native::ProviderOutputClaudeNativeBridge;
 use super::provider_output_fanout::ProviderOutputFanout;
+use super::provider_output_prompt_settlement::ProviderOutputPromptSettlement;
 use super::provider_output_trace::ProviderOutputTrace;
-
-const PTY_PROMPT_SETTLE_QUIET_FOR: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Default)]
 pub(crate) struct StructuredOutputRecordStore {
@@ -776,45 +774,12 @@ impl<'a> ProviderOutputPumpContext<'a> {
         prompt_completed: bool,
         saw_settlement_blocking_activity: bool,
     ) -> Result<(), DaemonError> {
-        let Some(active_prompt_status) = self
-            .active_prompt_for_settlement(session_id, provider_run_id)?
-            .map(|prompt| prompt.status())
-        else {
-            return Ok(());
-        };
-        let completion_recorded =
-            crate::transport::flow_control::prompt_completion_recorded(self.app, provider_run_id);
-        let settlement_pending =
-            crate::transport::flow_control::prompt_completion_settlement_pending(
-                self.app,
-                provider_run_id,
-            );
-        if completion_recorded && saw_settlement_blocking_activity {
-            self.note_prompt_settlement_requested(provider_run_id);
-            let _ =
-                crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
-            return Ok(());
-        }
-        if active_prompt_status == PromptStatus::Cancelling {
-            if (prompt_completed || settlement_pending) && !saw_settlement_blocking_activity {
-                let agent_id = self.provider_run_agent_id(provider_run_id)?;
-                let _ = self.app.finalize_active_prompt_cancellation(
-                    session_id,
-                    &agent_id,
-                    Some(provider_run_id),
-                )?;
-                self.clear_active_turn(provider_run_id);
-            }
-        } else if prompt_completed || settlement_pending {
-            if self.workflow_prompt_is_waiting_for_completion_output(session_id, provider_run_id)? {
-                self.note_prompt_settlement_requested(provider_run_id);
-                let _ = crate::app::KernelSessionReadService::new(self.app)
-                    .session_snapshot(session_id);
-                return Ok(());
-            }
-            self.settle_prompt_by_status(session_id, provider_run_id)?;
-        }
-        Ok(())
+        self.prompt_settlement().settle_structured_completion(
+            session_id,
+            provider_run_id,
+            prompt_completed,
+            saw_settlement_blocking_activity,
+        )
     }
 
     fn settle_pty_prompt_if_quiet(
@@ -822,87 +787,8 @@ impl<'a> ProviderOutputPumpContext<'a> {
         session_id: &str,
         provider_run_id: &str,
     ) -> Result<(), DaemonError> {
-        if !crate::transport::flow_control::prompt_output_quiet_after_response(
-            self.app,
-            provider_run_id,
-            PTY_PROMPT_SETTLE_QUIET_FOR,
-        ) {
-            return Ok(());
-        }
-        let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
-            return Ok(());
-        };
-        if prompt.status() != PromptStatus::Cancelling
-            && self.workflow_prompt_is_waiting_for_completion_output(session_id, provider_run_id)?
-        {
-            return Ok(());
-        }
-        self.settle_prompt_by_status(session_id, provider_run_id)
-    }
-
-    fn workflow_prompt_is_waiting_for_completion_output(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-    ) -> Result<bool, DaemonError> {
-        let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
-            return Ok(false);
-        };
-        if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
-            return Ok(false);
-        }
-        Ok(
-            !crate::app::workflow_runtime::workflow_prompt_has_completion_output_from_runtime(
-                self.app,
-                session_id,
-                &prompt,
-                Some(provider_run_id),
-            ),
-        )
-    }
-
-    fn note_prompt_settlement_requested(&self, provider_run_id: &str) {
-        self.active_turns.mark_settling(provider_run_id);
-        self.prompt_activity
-            .write()
-            .entry(provider_run_id.to_string())
-            .and_modify(|state| {
-                state.last_output_at = Some(Instant::now());
-                state.saw_response_content = true;
-                state.settlement_requested = true;
-            })
-            .or_insert(crate::app::ActivePromptState {
-                last_output_at: Some(Instant::now()),
-                saw_response_content: true,
-                completion_recorded: false,
-                settlement_requested: true,
-            });
-    }
-
-    fn settle_prompt_by_status(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-    ) -> Result<(), DaemonError> {
-        let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
-            self.clear_prompt_activity(provider_run_id);
-            self.clear_active_turn(provider_run_id);
-            return Ok(());
-        };
-        let agent_id = self.provider_run_agent_id(provider_run_id)?;
-        if prompt.status() == PromptStatus::Cancelling {
-            let _ = self.app.finalize_active_prompt_cancellation(
-                session_id,
-                &agent_id,
-                Some(provider_run_id),
-            )?;
-        } else {
-            let _ =
-                self.app
-                    .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
-        }
-        self.clear_active_turn(provider_run_id);
-        Ok(())
+        self.prompt_settlement()
+            .settle_pty_if_quiet(session_id, provider_run_id)
     }
 
     fn fail_prompt_for_terminal_failure(
@@ -911,88 +797,18 @@ impl<'a> ProviderOutputPumpContext<'a> {
         provider_run_id: &str,
         message: &str,
     ) -> Result<(), DaemonError> {
-        let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
-            self.clear_prompt_activity(provider_run_id);
-            self.clear_active_turn(provider_run_id);
-            return Ok(());
-        };
-        let agent_id = self.provider_run_agent_id(provider_run_id)?;
-        if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
-            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
-        {
-            let failure = crate::session::WorkflowFailureEvent::new(
-                crate::session::WorkflowFailureKind::ProviderFailure,
-                workflow_node_run_id,
-                Vec::new(),
-                message,
-            );
-            let _ = self.app.sessions_mut().record_workflow_failure_event(
-                session_id,
-                workflow_run_id,
-                failure,
-            );
-            let workflow_run = self.app.sessions_mut().fail_workflow_node_run(
-                session_id,
-                workflow_run_id,
-                workflow_node_run_id,
-            )?;
-            self.app.record_notice(
-                session_id,
-                Some(provider_run_id),
-                self.app.attachments.list_session_attachment_ids(session_id),
-                format!(
-                    "Workflow run `{}` failed after provider turn failure: {}",
-                    workflow_run.id(),
-                    message
-                ),
-            );
-            let _ =
-                crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
-        }
-        let _ = self
-            .app
-            .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
-        self.clear_active_turn(provider_run_id);
-        Ok(())
+        self.prompt_settlement()
+            .fail_for_terminal_failure(session_id, provider_run_id, message)
     }
 
-    fn active_prompt_for_settlement(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-    ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        let agent_id = self.provider_run_agent_id(provider_run_id)?;
-        if let Some(prompt) = self
-            .agent_runtime_projection
-            .get(&agent_id)
-            .filter(|projection| projection.session_id == session_id)
-            .and_then(|projection| projection.active_prompt)
-        {
-            return Ok(Some(prompt));
-        }
-        self.app
-            .prompt_owner_active_prompt_for_agent(session_id, &agent_id)
-    }
-
-    fn provider_run_agent_id(&self, provider_run_id: &str) -> Result<String, DaemonError> {
-        self.provider_store
-            .get_run(provider_run_id)?
-            .agent_instance_id()
-            .map(str::to_string)
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: "provider run has no agent".to_string(),
-            })
-    }
-
-    fn clear_prompt_activity(&mut self, provider_run_id: &str) {
-        self.prompt_activity.write().remove(provider_run_id);
-        if self.app.release_prompt_workspace_claim(provider_run_id) {
-            crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(self.app);
-        }
-    }
-
-    fn clear_active_turn(&self, provider_run_id: &str) {
-        self.active_turns.clear(provider_run_id);
+    fn prompt_settlement(&mut self) -> ProviderOutputPromptSettlement<'_> {
+        ProviderOutputPromptSettlement::new(
+            self.app,
+            self.provider_store.clone(),
+            self.active_turns.clone(),
+            self.prompt_activity.clone(),
+            self.agent_runtime_projection.clone(),
+        )
     }
 
     fn fan_out_provider_output(
