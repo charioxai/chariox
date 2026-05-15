@@ -129,6 +129,14 @@ export function extractPromptInputHistoryEntries(
   return prompts
 }
 
+export function maxPromptInputHistorySequence(entries: readonly PromptInputHistoryEntry[]) {
+  return entries.reduce((max, entry) => Math.max(max, entry.sequence), 0)
+}
+
+export function promptHistoryEntryListsEqual(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length && left.every((entry, index) => entry === right[index])
+}
+
 function mergeAdjacentPromptHistoryEntries(historyEntries: SessionHistoryPageEntry[]) {
   const merged: SessionHistoryPageEntry[] = []
 

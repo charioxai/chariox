@@ -33,7 +33,6 @@ import type {
   RuntimeSession,
   SessionHistoryCursor,
   SessionHistoryEntry,
-  SessionHistoryPage,
   SessionHistoryPageEntry,
   SliceRecord,
   StoredTransferArtifact,
@@ -81,13 +80,10 @@ import {
   captureScreenshotRequest,
   detachFromSessionRequest,
   endSessionRequest,
-  getPromptInputHistoryRequest,
-  getSessionHistoryRequest,
   getSessionStateRequest,
   getWaitingRoomPublicSnapshotRequest,
   pollRuntimeNoticesRequest,
   respondToInteractionRequest,
-  recordPromptInputHistoryRequest,
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
   storeTransferredFileRequest,
@@ -170,6 +166,11 @@ import {
   preparePromptAttachmentsForSubmit,
   promptAttachmentTransferIsForced,
 } from "./prompt-attachment-transfer.js"
+import {
+  getPromptInputHistory,
+  getSessionHistory,
+  recordPromptInputHistory,
+} from "./session-history-api.js"
 import type { PromptMetaPart, PromptMetaTone } from "./prompt-meta.js"
 import {
   backendProviderLabel,
@@ -215,7 +216,9 @@ import {
   extractPromptHistoryEntries,
   extractPromptInputHistoryEntries,
   isProgrammaticPromptContentEcho,
+  maxPromptInputHistorySequence,
   navigatePromptHistory,
+  promptHistoryEntryListsEqual,
   promptHistoryDirectionForKey,
   pushPromptHistoryEntry,
 } from "./prompt-history.js"
@@ -430,8 +433,6 @@ const PROMPT_KEYBINDINGS = [
   { name: "return", meta: true, action: "newline" },
 ] satisfies KeyBinding[]
 
-const BOOTSTRAP_HISTORY_MAX_CHARS = 100_000
-const HISTORY_PAGE_ROUND_COUNT = 1
 const LIVE_TRANSCRIPT_LIMIT = 400
 const LIVE_TRANSCRIPT_MAX_CHARS = 250_000
 const WAITING_ROOM_SESSION_ACTION_CONFIRM_MS = 4_000
@@ -2942,17 +2943,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
     const attachmentId = attachmentState()?.id ?? null
     if (rawPrompt.trimStart().startsWith("/")) {
-      void client.send<Record<string, unknown>>(recordPromptInputHistoryRequest(
+      void recordPromptInputHistory(
+        client,
         sessionId,
         attachmentId,
         "command",
         rawPrompt.trimEnd(),
-      )).then((response) => {
-        const payload = expectVariant<{ entry: PromptInputHistoryPage["entries"][number] }>(
-          response,
-          "PromptInputHistoryRecorded",
-        )
-        appendSharedPromptInputHistory(sessionId, [payload.entry])
+      ).then((entry) => {
+        appendSharedPromptInputHistory(sessionId, [entry])
       }).catch((error) => {
         appLogger?.warn("failed to record shared prompt input history", {
           session_id: sessionId,
@@ -9628,38 +9626,6 @@ async function getWaitingRoomInventory(client: LocalIpcClient): Promise<{
     terminals: payload.terminals ?? [],
     slices,
   }
-}
-
-async function getSessionHistory(
-  client: LocalIpcClient,
-  sessionId: string,
-  cursor?: SessionHistoryCursor | null,
-  agentId?: string | null,
-): Promise<SessionHistoryPage> {
-  const response = await client.send<Record<string, unknown>>(
-    getSessionHistoryRequest(sessionId, HISTORY_PAGE_ROUND_COUNT, BOOTSTRAP_HISTORY_MAX_CHARS, cursor, agentId),
-  )
-  return expectVariant<SessionHistoryPage>(response, "SessionHistory")
-}
-
-async function getPromptInputHistory(
-  client: LocalIpcClient,
-  sessionId: string,
-  afterSequence: number | null = null,
-  limit = 5000,
-): Promise<PromptInputHistoryPage> {
-  const response = await client.send<Record<string, unknown>>(
-    getPromptInputHistoryRequest(sessionId, afterSequence, limit),
-  )
-  return expectVariant<PromptInputHistoryPage>(response, "PromptInputHistory")
-}
-
-function maxPromptInputHistorySequence(entries: readonly PromptInputHistoryPage["entries"][number][]) {
-  return entries.reduce((max, entry) => Math.max(max, entry.sequence), 0)
-}
-
-function promptHistoryEntryListsEqual(left: readonly string[], right: readonly string[]) {
-  return left.length === right.length && left.every((entry, index) => entry === right[index])
 }
 
 async function catchUpAttachedSession(
