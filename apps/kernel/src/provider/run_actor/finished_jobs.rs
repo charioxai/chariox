@@ -1,0 +1,117 @@
+use std::sync::{Arc, Mutex};
+
+use crate::error::DaemonError;
+use crate::provider::opencode_binding::OpenCodeRunSelection;
+use crate::provider::ProviderPromptSignalBatch;
+
+pub(crate) struct FinishedProviderPromptSubmitJob {
+    pub(crate) session_id: String,
+    pub(crate) provider_run_id: String,
+    pub(crate) agent_id: String,
+    pub(crate) result: Result<(), DaemonError>,
+}
+
+pub(crate) struct FinishedProviderPromptAbortJob {
+    pub(crate) session_id: String,
+    pub(crate) provider_run_id: String,
+    pub(crate) result: Result<(), DaemonError>,
+}
+
+pub(crate) struct FinishedProviderRunSelectionSyncJob {
+    pub(crate) provider_run_id: String,
+    pub(crate) result: Result<OpenCodeRunSelection, DaemonError>,
+}
+
+pub(crate) struct FinishedProviderOutputPollJob {
+    pub(crate) provider_run_id: String,
+    pub(crate) result: Result<Option<ProviderPromptSignalBatch>, DaemonError>,
+}
+
+pub(super) fn push_finished_submit(
+    finished_submits: &Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
+    finished: FinishedProviderPromptSubmitJob,
+) {
+    match finished_submits.lock() {
+        Ok(mut jobs) => jobs.push(finished),
+        Err(error) => {
+            crate::logging::error_with_fields(
+                "daemon.provider_run_actor",
+                "structured prompt submit completion queue poisoned",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+}
+
+pub(super) fn push_finished_abort(
+    finished_aborts: &Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
+    finished: FinishedProviderPromptAbortJob,
+) {
+    match finished_aborts.lock() {
+        Ok(mut jobs) => jobs.push(finished),
+        Err(error) => {
+            crate::logging::error_with_fields(
+                "daemon.provider_run_actor",
+                "structured prompt abort completion queue poisoned",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+}
+
+pub(super) fn push_finished_selection_sync(
+    finished_selection_syncs: &Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
+    finished: FinishedProviderRunSelectionSyncJob,
+) {
+    match finished_selection_syncs.lock() {
+        Ok(mut jobs) => jobs.push(finished),
+        Err(error) => {
+            crate::logging::error_with_fields(
+                "daemon.provider_run_actor",
+                "provider run selection sync completion queue poisoned",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+}
+
+pub(super) fn push_finished_output_poll(
+    finished_output_polls: &Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
+    finished: FinishedProviderOutputPollJob,
+) {
+    crate::logging::debug_with_fields(
+        "daemon.provider_run_actor",
+        "finished output poll pushed",
+        serde_json::json!({
+            "provider_run_id": finished.provider_run_id,
+            "result_kind": match &finished.result {
+                Ok(Some(batch)) => serde_json::json!({
+                    "type": "batch",
+                    "chunks": batch.chunks.len(),
+                    "completions": batch.completions.len(),
+                    "prompt_completed": batch.prompt_completed,
+                }),
+                Ok(None) => serde_json::json!({ "type": "none" }),
+                Err(error) => serde_json::json!({ "type": "error", "error": error.to_string() }),
+            },
+        }),
+    );
+    match finished_output_polls.lock() {
+        Ok(mut jobs) => jobs.push(finished),
+        Err(error) => {
+            crate::logging::error_with_fields(
+                "daemon.provider_run_actor",
+                "provider run output poll completion queue poisoned",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+}
