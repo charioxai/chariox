@@ -7,6 +7,7 @@ use crate::provider::{
     LaunchProviderRequest, ProviderClientInterface, ProviderResumeState, ProviderRunState,
     RuntimeProviderRun,
 };
+use crate::transport::relay_peer::RequiredRemoteMcp;
 
 use super::RemoteLeaseRuntime;
 
@@ -22,6 +23,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         variant: Option<String>,
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
+        required_mcps: Vec<RequiredRemoteMcp>,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let leased_agent = self
             .app
@@ -31,6 +33,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
+        self.ensure_required_remote_mcps_available(&leased_agent, &required_mcps)?;
         let lease = self
             .app
             .execution_leases
@@ -54,6 +57,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
         .with_owner_user_id(lease.owner_user_id)
         .with_working_directory(PathBuf::from(backing_session.worktree_id()))
         .with_client_interface(ProviderClientInterface::NativeTui)
+        .with_mcp_servers(
+            required_mcps
+                .iter()
+                .map(|required| required.config.clone())
+                .collect(),
+        )
         .with_variant(variant);
         if let Some(execution_mode) = leased_agent.execution_mode {
             request = request.with_execution_mode(execution_mode);
@@ -133,5 +142,77 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &bytes,
         )?;
         Ok(byte_count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::{DaemonApp, RemoteLeaseRuntime};
+    use crate::config::DaemonConfig;
+    use crate::mcp::ArrobaMcpServerConfig;
+    use crate::transport::relay_peer::RequiredRemoteMcp;
+
+    #[test]
+    fn leased_native_provider_launch_preserves_required_mcp_set() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let worktree = std::env::temp_dir().join(format!(
+            "arroba-native-provider-mcp-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&worktree).expect("worktree should create");
+        let mut runtime = RemoteLeaseRuntime::new(&mut app);
+        let lease = runtime
+            .create_execution_lease("home-kernel", "home-session", "home-agent", "local-user")
+            .expect("lease should create");
+        let leased_agent = runtime
+            .create_leased_agent(
+                &lease.id,
+                "dev-stub",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                Some(worktree.display().to_string()),
+                None,
+            )
+            .expect("leased agent should create");
+        let mcp = ArrobaMcpServerConfig::stdio(
+            "browser",
+            std::env::current_exe()
+                .expect("current test executable should resolve")
+                .display()
+                .to_string(),
+            Vec::new(),
+        );
+        crate::mcp::ArrobaMcpRegistry::new(vec![crate::mcp::ArrobaMcpRegistry::project_root(
+            &worktree,
+        )])
+        .install(&mcp)
+        .expect("worker MCP definition should install");
+        let required = RequiredRemoteMcp {
+            definition_hash: mcp.definition_hash().expect("hash should compute"),
+            config: mcp,
+        };
+
+        let run = runtime
+            .launch_leased_native_provider_run(
+                &leased_agent.id,
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+                None,
+                None,
+                None,
+                vec![required],
+            )
+            .expect("native run should launch");
+
+        assert_eq!(run.mcp_servers().len(), 1);
+        assert_eq!(run.mcp_servers()[0].name, "browser");
+        assert!(!run.client_interface().is_arroba());
+        let _ = std::fs::remove_dir_all(&worktree);
     }
 }

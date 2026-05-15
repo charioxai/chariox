@@ -195,6 +195,15 @@ Remote native TUI composition:
 - the relay remains transport-only and must not inspect or transform provider-native prompts, outputs, attachments, permissions, or history
 - slice-backed native TUI mode follows the same contract: provider TUIs and Arroba TUIs attach to the home kernel session, `slice_ref` selects a home-managed worker execution environment, and the slice worker uses the same worker-owned provider adapter/server path as remote leased agents
 
+Native TUI MCP and skill placement:
+
+- local native TUI provider runs use the same agent-scoped grant filtering as ordinary local provider runs, so only MCPs and skills granted to that agent are injected or rendered for that run
+- standard home-worker native TUI does not install, copy, or otherwise coordinate MCPs/skills between the home and worker machines; the worker must already have matching MCP definitions, commands, environment, provider credentials, and any provider/Arroba skill material needed for the run
+- when the home kernel can compute grant-derived remote MCP requirements, it MAY pass those requirements to the worker launch/prompt path so the worker can fail fast on missing or mismatched local worker definitions before provider execution
+- slice-backed native TUI may synchronize Arroba skill packages from the home kernel to the child worker because the slice is home-managed; this is not a general remote-machine install mechanism
+- slice-backed native TUI still executes MCP commands on the worker side, so MCP commands, environment, and credentials must be available in the slice image or injected slice environment
+- capability grants remain agent-scoped in all modes; native TUI launch must not expose ungranted local/user MCPs or skills just because the provider CLI can see them natively
+
 Provider-specific transport:
 
 - Codex uses a native WebSocket proxy in front of a Codex app-server endpoint and binds the observed Codex thread to the Arroba provider run.

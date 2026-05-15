@@ -212,8 +212,21 @@ MCPs and skills:
 
 - Covered for normal Arroba provider runs by existing local and remote
   MCP/skill drills.
-- Not covered for native TUI provider runs across the local, standard remote,
-  and slice matrix.
+- Local native TUI provider launch now follows the same agent-scoped grant
+  rendering path as ordinary local provider launch.
+- Standard home-worker native TUI intentionally does not install/copy MCPs or
+  skills across home/worker machines. The worker must already have the matching
+  MCP definitions, commands, environment, provider credentials, and any
+  provider/Arroba skill material required for the run. Home may send
+  grant-derived MCP requirements for fail-fast validation and provider-run
+  rendering, but it must not become a remote package installer in this mode.
+- Home-managed slice native TUI may transfer Arroba skill packages from home to
+  the child worker before provider execution because the slice is managed by the
+  home kernel. MCP commands/env still execute on the worker side and must be
+  present in the slice image or injected slice environment.
+- Focused unit coverage has landed for native remote provider-run MCP
+  propagation. Live MCP/skill drills for native TUI remain the next validation
+  step.
 
 ## Attachment Transfer Contract
 
@@ -321,6 +334,18 @@ Provider notes:
 7. Validate MCPs and skills for native TUI runs.
    - Adapt existing MCP/skill drills to launch native-TUI provider runs.
    - Cover local, standard remote, and slice scenarios for all providers.
+   - Local: verify agent-scoped MCP grants are rendered into native provider
+     launch config and granted skills are injected only into prompts for the
+     target native-TUI agent.
+   - Standard remote home-worker: do not copy/install MCPs or skills. Validate
+     that missing/mismatched worker MCP definitions fail fast, matching worker
+     MCP definitions are rendered into the worker-owned provider run, and any
+     provider/Arroba skill material required by the drill is preinstalled on the
+     worker by the test setup.
+   - Home-managed slice: transfer granted Arroba skill packages to the
+     home-managed child worker before provider execution, validate worker-local
+     materialized skill paths in prompt context, and validate MCP execution
+     against MCP commands/env available in the slice.
    - Keep managed-I/O marker writes out of native-TUI MCP/skill validation
      unless the drill is explicitly a managed-I/O drill.
 
@@ -336,17 +361,17 @@ Legend:
 
 | Scenario | Provider | Prompt/turns | Permissions | Attachments | MCP/skills |
 | --- | --- | --- | --- | --- | --- |
-| local | Codex | pass | pass | pass | gap |
-| local | OpenCode | pass | pass | pass | gap |
-| local | Claude | pass | pass | pass | gap |
-| standard remote | Codex | pass | pass | pass | gap |
-| standard remote | OpenCode | pass | pass | pass | gap |
-| standard remote | Claude | pass | pass | pass | gap |
+| local | Codex | pass | pass | pass | partial |
+| local | OpenCode | pass | pass | pass | partial |
+| local | Claude | pass | pass | pass | partial |
+| standard remote | Codex | pass | pass | pass | partial |
+| standard remote | OpenCode | pass | pass | pass | partial |
+| standard remote | Claude | pass | pass | pass | partial |
 | direct slice target | Codex | pass | gap | pass | gap |
 | direct slice target | OpenCode | pass | gap | pass | gap |
-| home-managed slice | Codex | pass | pass | pass | gap |
-| home-managed slice | OpenCode | pass | pass | pass | gap |
-| home-managed slice | Claude | pass | pass | pass | gap |
+| home-managed slice | Codex | pass | pass | pass | partial |
+| home-managed slice | OpenCode | pass | pass | pass | partial |
+| home-managed slice | Claude | pass | pass | pass | partial |
 
 ## Drill Requirements
 
@@ -388,8 +413,11 @@ MCP/skill drills must validate:
 
 - pre-granted MCPs and skills are visible to native-TUI provider runs
 - same-turn skill requests work when supported
-- remote/slice provider execution sees worker-local MCP definitions and
-  materialized skill files
+- standard remote provider execution sees worker-local MCP definitions and
+  preinstalled worker-local skill material without home-to-worker package
+  transfer
+- slice provider execution sees worker-local MCP definitions and home-managed,
+  hash-verified materialized Arroba skill files
 - provider-native MCP calls execute on the provider execution machine
 
 ## Cleanup Rules

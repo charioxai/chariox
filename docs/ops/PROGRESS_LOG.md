@@ -1129,3 +1129,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Local Docker slices now reuse the home relay when available, start only the worker runtime, bind provider endpoints for worker access, import provider auth on demand, install Claude Code, copy Claude credentials from file or macOS Keychain, and trust `/workspace` for Claude Code.
 - Fixed slice worker kernel ref resolution so shared-relay home-managed slices keep the recorded home relay endpoint/token instead of being rewritten to the old slice-private Docker relay.
 - Extended `live-remote-native-tui-drill.mjs` with `--home-managed-slice-local-docker` and validated Codex, OpenCode, and Claude with two provider-native TUIs plus one Arroba observer in one home session, provider execution on the slice worker, prompt/turns, provider permissions, prompt attachments, cross-agent separation, and badge transitions back to idle.
+
+### M14B native TUI MCP/skills contract update
+
+- Documented the native TUI MCP/skills placement contract: local native TUI reuses agent-scoped grants, standard home-worker remote does not copy/install capabilities across machines, and home-managed slices may receive home skill packages because the home kernel owns the child worker.
+- Started native remote MCP propagation for provider-native runs by forwarding grant-derived MCP requirements through `LaunchLeasedNativeProviderRun`, validating worker availability before remote native launch, and rendering the required MCP set into the worker-owned provider run.
+- Extended Claude native TUI launch planning so granted MCPs and the Arroba runtime MCP are passed through `--mcp-config`/`--strict-mcp-config`, matching the structured Claude launch path.

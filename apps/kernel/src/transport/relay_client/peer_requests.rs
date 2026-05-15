@@ -171,6 +171,7 @@ pub(super) async fn handle_daemon_peer_request(
             variant,
             structured_endpoint,
             provider_session_id,
+            required_mcps,
         } => {
             let launched = router
                 .relay_launch_leased_native_provider_run(
@@ -182,6 +183,7 @@ pub(super) async fn handle_daemon_peer_request(
                     variant,
                     structured_endpoint,
                     provider_session_id,
+                    required_mcps,
                 )
                 .await;
             match launched {

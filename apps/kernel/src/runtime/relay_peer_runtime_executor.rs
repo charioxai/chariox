@@ -140,6 +140,7 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
     variant: Option<String>,
     structured_endpoint: Option<String>,
     provider_session_id: Option<String>,
+    required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
 ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
     let mut app = app.lock().await;
     RemoteLeaseRuntime::new(&mut app).launch_leased_native_provider_run(
@@ -151,6 +152,7 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
         variant,
         structured_endpoint,
         provider_session_id,
+        required_mcps,
     )
 }
 

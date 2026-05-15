@@ -295,6 +295,8 @@ fn remote_native_provider_run_response(
     let Some(remote_execution) = agent.remote_execution().cloned() else {
         return Ok(None);
     };
+    let required_mcps =
+        required_remote_mcps_for_native_provider_launch(app, &request.session_id, &agent)?;
     let relay_config = app.relay_config_for_remote_execution(&remote_execution);
     let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
         &relay_config,
@@ -311,6 +313,7 @@ fn remote_native_provider_run_response(
             variant: request.variant.clone(),
             structured_endpoint: request.structured_endpoint.clone(),
             provider_session_id: request.provider_session_id.clone(),
+            required_mcps,
         },
     ))?;
     match response {
@@ -352,6 +355,39 @@ fn remote_native_provider_run_response(
             message: format!("unexpected remote native provider launch response: {other:?}"),
         }),
     }
+}
+
+fn required_remote_mcps_for_native_provider_launch(
+    app: &DaemonApp,
+    session_id: &str,
+    agent: &crate::agent::AgentInstance,
+) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
+    if agent.mcp_grants().is_empty() {
+        return Ok(Vec::new());
+    }
+    let session = app.sessions().get_session(session_id)?;
+    let workspace = std::path::PathBuf::from(session.workspace_id());
+    let mut roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(&workspace)];
+    if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
+        roots.push(user_root);
+    }
+    let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
+    agent
+        .mcp_grants()
+        .iter()
+        .map(|grant| {
+            let config = registry
+                .get(grant)?
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "launch remote native provider run",
+                    message: format!("MCP `{grant}` is granted but is not installed"),
+                })?;
+            Ok(crate::transport::relay_peer::RequiredRemoteMcp {
+                definition_hash: config.definition_hash()?,
+                config,
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn launch_provider_request_from_local(

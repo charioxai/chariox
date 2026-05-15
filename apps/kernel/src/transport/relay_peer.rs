@@ -172,6 +172,8 @@ pub enum RelayPeerRequest {
         structured_endpoint: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        required_mcps: Vec<RequiredRemoteMcp>,
     },
     SendLeasedNativeProviderInput {
         leased_agent_id: String,

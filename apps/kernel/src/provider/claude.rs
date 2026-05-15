@@ -100,7 +100,7 @@ fn plan_claude_launch_unlocked(
             process_label: "claude:native-tui".to_string(),
             pty_target: None,
             pty_program: Some(executable.display().to_string()),
-            pty_args: claude_native_tui_args(request, &native.settings_file),
+            pty_args: claude_native_tui_args(request, &native.settings_file)?,
             pty_env,
             pty_env_remove: claude_provider_env_remove(Some(request)),
             working_directory: request.working_directory.clone(),
@@ -229,7 +229,10 @@ if (eventName === "UserPromptSubmit") {
 "#
 }
 
-fn claude_native_tui_args(request: &LaunchProviderRequest, settings_file: &Path) -> Vec<String> {
+fn claude_native_tui_args(
+    request: &LaunchProviderRequest,
+    settings_file: &Path,
+) -> Result<Vec<String>, DaemonError> {
     let mut args = vec![
         "--settings".to_string(),
         settings_file.display().to_string(),
@@ -260,7 +263,21 @@ fn claude_native_tui_args(request: &LaunchProviderRequest, settings_file: &Path)
     if request.permission_level.unwrap_or_default() == AgentPermissionLevel::Yolo {
         args.push("--allow-dangerously-skip-permissions".to_string());
     }
-    args
+    if let Some(config) = claude_mcp_config(
+        &request.mcp_servers,
+        request
+            .runtime_mcp_binding
+            .as_ref()
+            .map(|binding| binding.server_url.as_str()),
+        request
+            .runtime_mcp_binding
+            .as_ref()
+            .map(|binding| binding.auth_token.as_str()),
+    )? {
+        args.extend(["--mcp-config".to_string(), config]);
+        args.push("--strict-mcp-config".to_string());
+    }
+    Ok(args)
 }
 
 pub(crate) fn claude_launch_args_for_run(
@@ -656,9 +673,10 @@ fn is_executable_file(path: &Path) -> bool {
 mod tests {
     use std::fs;
 
+    use crate::mcp::ArrobaMcpServerConfig;
     use crate::provider::{
         AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest,
-        RuntimeMcpBinding,
+        ProviderClientInterface, RuntimeMcpBinding,
     };
 
     use super::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
@@ -836,6 +854,52 @@ mod tests {
             config.pointer("/mcpServers/arroba/headers/Authorization"),
             Some(&serde_json::json!("Bearer token-123"))
         );
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "--strict-mcp-config"));
+    }
+
+    #[test]
+    fn injects_mcp_config_into_native_tui_launch_args() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-claude-resolve-test-{}-native-mcp",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+
+        let request =
+            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
+                .with_client_interface(ProviderClientInterface::NativeTui)
+                .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+                    "http://127.0.0.1:43120/mcp",
+                    "token-123",
+                ))
+                .with_mcp_servers(vec![ArrobaMcpServerConfig::stdio(
+                    "browser",
+                    "npx",
+                    vec!["@playwright/mcp@latest".to_string()],
+                )]);
+        let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
+
+        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
+        let config_arg = launch
+            .pty_args
+            .windows(2)
+            .find_map(|pair| (pair[0] == "--mcp-config").then(|| pair[1].as_str()))
+            .expect("mcp config should be passed");
+        let config: serde_json::Value =
+            serde_json::from_str(config_arg).expect("mcp config should be JSON");
+        assert_eq!(
+            config.pointer("/mcpServers/arroba/url"),
+            Some(&serde_json::json!("http://127.0.0.1:43120/mcp"))
+        );
+        assert!(config.pointer("/mcpServers/browser").is_some());
         assert!(launch
             .pty_args
             .iter()

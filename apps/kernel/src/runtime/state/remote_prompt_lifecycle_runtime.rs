@@ -169,6 +169,7 @@ impl KernelRuntimeState {
                 started_next.prompt(),
                 &materialized,
             )?;
+            let required_mcps = self.required_remote_mcps_for_agent(&agent)?;
             let attachments = self
                 .with_app_side_effect(|app| {
                     app.serialize_remote_prompt_attachments(started_next.attachments())
@@ -211,7 +212,7 @@ impl KernelRuntimeState {
                                     target_agent_id,
                                     started_next,
                                 )),
-                                required_mcps: Vec::new(),
+                                required_mcps,
                             },
                         ),
                     )
