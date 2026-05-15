@@ -6,7 +6,6 @@ import type {
   ArrobaSkillMetadata,
   ArrobaUserConfigSchemaPayload,
   ArrobaUserConfigPayload,
-  UserConfigSchemaEntry,
   McpImportOutcome,
   ProviderAuthStatus,
   ProviderLoginStart,
@@ -169,6 +168,11 @@ import {
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
+  formatAgentListSummary,
+  formatAgentRef,
+  formatAgentSubstituteSummary,
+} from "./shell-agent-format.js"
+import {
   formatAgentCapabilityGrants,
   formatMcpImportOutcome,
   formatMcpList,
@@ -182,6 +186,10 @@ import {
   formatPromptSummary,
   formatSemanticHistoryMatches,
 } from "./shell-history-format.js"
+import {
+  configMutationMessage,
+  formatConfigSchemaKeys,
+} from "./shell-config-format.js"
 import {
   formatPairedClientLabel,
   formatPairedClients,
@@ -200,6 +208,11 @@ import {
   formatSessionMembers,
 } from "./shell-session-format.js"
 import {
+  formatProviderAuthStatus,
+  formatProviderLoginStart,
+  formatProviderProcesses,
+} from "./shell-provider-format.js"
+import {
   parsePlacementOptions,
   resolveShellPlacement,
   type LocalGitWorktreeOptions,
@@ -217,6 +230,10 @@ import {
   formatWorkflowRunList,
   formatWorkflowWatchdogs,
 } from "./shell-workflow-format.js"
+import {
+  formatWorkspaceLinkDetails,
+  formatWorkspaceLinks,
+} from "./shell-workspace-format.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -1637,30 +1654,6 @@ async function executeConfigCommand(
   return { ok: false, message: "usage: config show|path|keys|schema|set|unset|managed-io" }
 }
 
-function formatConfigSchemaKeys(entries: UserConfigSchemaEntry[]): string {
-  if (entries.length === 0) {
-    return "(no config keys)"
-  }
-  return entries
-    .filter((entry) => entry.settable)
-    .map((entry) => {
-      const values = entry.allowed_values && entry.allowed_values.length > 0
-        ? ` values=${entry.allowed_values.join("|")}`
-        : ""
-      const unset = entry.unsettable ? " unset" : ""
-      return `${entry.path} (${entry.value_type}; ${entry.status}; ${entry.effect}${unset}${values})`
-    })
-    .join("\n")
-}
-
-function configMutationMessage(prefix: string, payload: ArrobaUserConfigPayload): string {
-  const effects = payload.effects ?? []
-  if (effects.length === 0) {
-    return prefix
-  }
-  return [prefix, ...effects.map((effect) => effect.message)].join("\n")
-}
-
 async function executeCredentialCommand(
   parsed: ParsedShellCommand,
   deps: ShellExecutorDeps,
@@ -2871,10 +2864,6 @@ function expectSessionState(response: Record<string, unknown>): RuntimeSession {
   return expectVariant<{ session: RuntimeSession }>(response, "SessionStateLoaded").session
 }
 
-function formatAgentRef(agent: AgentInstance): string {
-  return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -2918,87 +2907,11 @@ async function focusedAgentSliceRef(context: ShellContext, deps: ShellExecutorDe
   return match.id
 }
 
-function formatProviderAuthStatus(status: ProviderAuthStatus): string {
-  return [
-    status.account_profile ? `${status.provider}: ${status.auth_state} as ${status.account_profile}` : `${status.provider}: ${status.auth_state}`,
-    status.detected_version ? `version ${status.detected_version}` : null,
-    status.login_hint ?? null,
-  ].filter(Boolean).join(" • ")
-}
-
-function formatProviderLoginStart(login: ProviderLoginStart, verb: "login" | "reauth"): string {
-  return [
-    `${login.provider} ${verb} started`,
-    login.user_code ? `code ${login.user_code}` : null,
-    login.verification_url ?? login.auth_url ?? null,
-  ].filter(Boolean).join(" • ")
-}
-
-function formatProviderProcesses(processes: ProviderProcessInfo[]): string {
-  if (processes.length === 0) {
-    return "no daemon-tracked provider processes"
-  }
-  return processes.map((process) => {
-    const blockers = process.teardown_blockers.length > 0 ? ` blockers=${process.teardown_blockers.join(",")}` : ""
-    return `${process.process_id} ${process.provider} ${process.process_label} status=${process.status} safe=${String(process.teardown_safe)} sessions=${process.owner_session_ids.join(",") || "-"}${blockers}`
-  }).join("\n")
-}
-
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
   if (!(variant in response)) {
     throw new Error(`unexpected response variant: expected ${variant}`)
   }
   return response[variant] as T
-}
-
-function formatWorkspaceLinks(links: WorkspaceLinkDefinition[]): string {
-  if (links.length === 0) {
-    return "no workspace links in session"
-  }
-  return links.map((link) => (
-    `${link.name} (${link.link_id}) attachments=${link.attachments?.length ?? 0}`
-  )).join("\n")
-}
-
-function formatWorkspaceLinkDetails(link: WorkspaceLinkDefinition): string {
-  const lines = [
-    `workspace link ${link.name} (${link.link_id})`,
-    `created_by=${link.created_by_user_id}`,
-    `attachments=${link.attachments?.length ?? 0}`,
-  ]
-  for (const attachment of link.attachments ?? []) {
-    const branch = attachment.branch ? ` branch=${attachment.branch}` : ""
-    lines.push(`- ${attachment.user_id} ${attachment.repo_root}${branch}`)
-  }
-  return lines.join("\n")
-}
-
-function formatAgentListSummary(agents: AgentInstance[]): string {
-  if (agents.length === 0) {
-    return "no agents in session"
-  }
-  const agentList = agents
-    .map((agent) => {
-      const mode = agent.execution_mode_override ? ` mode=${agent.execution_mode_override}` : ""
-      const permissions = agent.permission_level_override ? ` permissions=${agent.permission_level_override}` : ""
-      return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${agent.state}]${mode}${permissions}`
-    })
-    .join(", ")
-  return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
-}
-
-function formatAgentSubstituteSummary(agent: AgentInstance): string {
-  const substitutes = agent.substitutes ?? []
-  if (substitutes.length === 0) {
-    return `${formatAgentRef(agent)} has no substitutes`
-  }
-  const lines = substitutes.map((substitute, index) => {
-    const marker = agent.active_substitute_index === index ? "*" : "-"
-    const variant = substitute.variant ? `/${substitute.variant}` : ""
-    return `${marker} ${index}: ${substitute.provider}/${substitute.model}${variant}`
-  })
-  const timeout = agent.substitution_timeout_ms == null ? "default" : `${agent.substitution_timeout_ms}ms`
-  return `${formatAgentRef(agent)} substitutes (${substitutes.length}, timeout ${timeout}):\n${lines.join("\n")}`
 }
 
 function parseExecutionMode(value: string | null | undefined): "build" | "plan" | null {
