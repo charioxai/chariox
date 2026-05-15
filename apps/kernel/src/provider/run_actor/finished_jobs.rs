@@ -115,3 +115,55 @@ pub(super) fn push_finished_output_poll(
         }
     }
 }
+
+pub(super) fn drain_finished_submits(
+    finished_submits: &Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
+) -> Vec<FinishedProviderPromptSubmitJob> {
+    drain_finished_jobs(
+        finished_submits,
+        "structured prompt submit completion queue poisoned",
+    )
+}
+
+pub(super) fn drain_finished_aborts(
+    finished_aborts: &Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
+) -> Vec<FinishedProviderPromptAbortJob> {
+    drain_finished_jobs(
+        finished_aborts,
+        "structured prompt abort completion queue poisoned",
+    )
+}
+
+pub(super) fn drain_finished_selection_syncs(
+    finished_selection_syncs: &Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
+) -> Vec<FinishedProviderRunSelectionSyncJob> {
+    drain_finished_jobs(
+        finished_selection_syncs,
+        "provider run selection sync completion queue poisoned",
+    )
+}
+
+pub(super) fn drain_finished_output_polls(
+    finished_output_polls: &Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
+) -> Vec<FinishedProviderOutputPollJob> {
+    drain_finished_jobs(
+        finished_output_polls,
+        "provider run output poll completion queue poisoned",
+    )
+}
+
+fn drain_finished_jobs<T>(jobs: &Arc<Mutex<Vec<T>>>, poison_message: &'static str) -> Vec<T> {
+    match jobs.lock() {
+        Ok(mut jobs) => std::mem::take(&mut *jobs),
+        Err(error) => {
+            crate::logging::error_with_fields(
+                "daemon.provider_run_actor",
+                poison_message,
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+            Vec::new()
+        }
+    }
+}

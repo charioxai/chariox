@@ -5,15 +5,20 @@ use std::time::Duration;
 
 mod command_execution;
 mod finished_jobs;
+mod in_flight;
 mod native_interaction;
 mod operation_lanes;
 mod runtime_slots;
 mod worker;
-use finished_jobs::push_finished_output_poll;
+use finished_jobs::{
+    drain_finished_aborts, drain_finished_output_polls, drain_finished_selection_syncs,
+    drain_finished_submits, push_finished_output_poll,
+};
 pub(crate) use finished_jobs::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
     FinishedProviderRunSelectionSyncJob,
 };
+use in_flight::ProviderRunInFlightState;
 pub(crate) use native_interaction::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionBridgeStore,
     ProviderNativeInteractionResolution,
@@ -43,8 +48,7 @@ pub(crate) struct ProviderRunActorMailbox {
     codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: Arc<Mutex<BTreeSet<String>>>,
-    structured_prompt_submissions: Arc<Mutex<BTreeSet<String>>>,
-    structured_output_polls: Arc<Mutex<BTreeSet<String>>>,
+    in_flight: ProviderRunInFlightState,
     finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
     finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
     finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
@@ -98,10 +102,7 @@ impl ProviderRunActorMailbox {
     }
 
     pub(crate) fn structured_prompt_io_in_flight(&self, run_id: &str) -> bool {
-        self.structured_prompt_submissions
-            .lock()
-            .expect("structured prompt submission set poisoned")
-            .contains(run_id)
+        self.in_flight.prompt_io_in_flight(run_id)
     }
 
     pub(crate) fn structured_runtime_state_bound(&self, run_id: &str) -> bool {
@@ -135,17 +136,11 @@ impl ProviderRunActorMailbox {
     }
 
     pub(crate) fn mark_structured_prompt_io_in_flight(&self, run_id: String) {
-        self.structured_prompt_submissions
-            .lock()
-            .expect("structured prompt submission set poisoned")
-            .insert(run_id);
+        self.in_flight.mark_prompt_io_in_flight(run_id);
     }
 
     pub(crate) fn clear_structured_prompt_io_in_flight(&self, run_id: &str) {
-        self.structured_prompt_submissions
-            .lock()
-            .expect("structured prompt submission set poisoned")
-            .remove(run_id);
+        self.in_flight.clear_prompt_io_in_flight(run_id);
     }
 
     pub(crate) fn clear_runtime(&self, run_id: &str) {
@@ -182,17 +177,15 @@ impl ProviderRunActorMailbox {
     }
 
     fn mark_structured_output_poll_in_flight(&self, run_id: String) -> bool {
-        self.structured_output_polls
-            .lock()
-            .expect("structured output poll set poisoned")
-            .insert(run_id)
+        self.in_flight.mark_output_poll_in_flight(run_id)
     }
 
     fn clear_structured_output_poll_in_flight(&self, run_id: &str) {
-        self.structured_output_polls
-            .lock()
-            .expect("structured output poll set poisoned")
-            .remove(run_id);
+        self.in_flight.clear_output_poll_in_flight(run_id);
+    }
+
+    fn structured_output_poll_in_flight(&self, run_id: &str) -> bool {
+        self.in_flight.output_poll_in_flight(run_id)
     }
 
     pub(crate) fn spawn_submit(
@@ -413,69 +406,21 @@ impl ProviderRunActorMailbox {
     }
 
     pub(crate) fn drain_finished_submits(&self) -> Vec<FinishedProviderPromptSubmitJob> {
-        match self.finished_submits.lock() {
-            Ok(mut jobs) => std::mem::take(&mut *jobs),
-            Err(error) => {
-                crate::logging::error_with_fields(
-                    "daemon.provider_run_actor",
-                    "structured prompt submit completion queue poisoned",
-                    serde_json::json!({
-                        "error": error.to_string(),
-                    }),
-                );
-                Vec::new()
-            }
-        }
+        drain_finished_submits(&self.finished_submits)
     }
 
     pub(crate) fn drain_finished_aborts(&self) -> Vec<FinishedProviderPromptAbortJob> {
-        match self.finished_aborts.lock() {
-            Ok(mut jobs) => std::mem::take(&mut *jobs),
-            Err(error) => {
-                crate::logging::error_with_fields(
-                    "daemon.provider_run_actor",
-                    "structured prompt abort completion queue poisoned",
-                    serde_json::json!({
-                        "error": error.to_string(),
-                    }),
-                );
-                Vec::new()
-            }
-        }
+        drain_finished_aborts(&self.finished_aborts)
     }
 
     pub(crate) fn drain_finished_selection_syncs(
         &self,
     ) -> Vec<FinishedProviderRunSelectionSyncJob> {
-        match self.finished_selection_syncs.lock() {
-            Ok(mut jobs) => std::mem::take(&mut *jobs),
-            Err(error) => {
-                crate::logging::error_with_fields(
-                    "daemon.provider_run_actor",
-                    "provider run selection sync completion queue poisoned",
-                    serde_json::json!({
-                        "error": error.to_string(),
-                    }),
-                );
-                Vec::new()
-            }
-        }
+        drain_finished_selection_syncs(&self.finished_selection_syncs)
     }
 
     pub(crate) fn drain_finished_output_polls(&self) -> Vec<FinishedProviderOutputPollJob> {
-        match self.finished_output_polls.lock() {
-            Ok(mut jobs) => std::mem::take(&mut *jobs),
-            Err(error) => {
-                crate::logging::error_with_fields(
-                    "daemon.provider_run_actor",
-                    "provider run output poll completion queue poisoned",
-                    serde_json::json!({
-                        "error": error.to_string(),
-                    }),
-                );
-                Vec::new()
-            }
-        }
+        drain_finished_output_polls(&self.finished_output_polls)
     }
 
     #[cfg(test)]
@@ -504,8 +449,7 @@ impl ProviderRunActorMailbox {
             codex_runs: Arc::clone(&self.codex_runs),
             opencode_runs: Arc::clone(&self.opencode_runs),
             cleared_runs: Arc::clone(&self.cleared_runs),
-            structured_prompt_submissions: Arc::clone(&self.structured_prompt_submissions),
-            structured_output_polls: Arc::clone(&self.structured_output_polls),
+            in_flight: self.in_flight.clone(),
             finished_submits: Arc::clone(&self.finished_submits),
             finished_aborts: Arc::clone(&self.finished_aborts),
             finished_selection_syncs: Arc::clone(&self.finished_selection_syncs),
@@ -566,11 +510,7 @@ mod tests {
             0
         );
         assert!(!mailbox.structured_prompt_io_in_flight("run-1"));
-        assert!(mailbox
-            .structured_output_polls
-            .lock()
-            .expect("structured output poll set should not be poisoned")
-            .is_empty());
+        assert!(!mailbox.structured_output_poll_in_flight("run-1"));
         assert_eq!(
             mailbox.operation_lanes.health_snapshot().enqueued_commands,
             1
@@ -669,11 +609,7 @@ mod tests {
             .spawn_output_poll("run-1".to_string(), runtime_run("run-1"))
             .expect_err("full provider actor queue should reject output poll");
 
-        assert!(mailbox
-            .structured_output_polls
-            .lock()
-            .expect("structured output poll set should not be poisoned")
-            .is_empty());
+        assert!(!mailbox.structured_output_poll_in_flight("run-1"));
         assert_eq!(
             mailbox.operation_lanes.health_snapshot().enqueue_rejections,
             1

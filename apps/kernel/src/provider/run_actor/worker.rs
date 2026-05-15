@@ -15,6 +15,7 @@ use super::finished_jobs::{
     push_finished_submit, FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob,
     FinishedProviderPromptSubmitJob, FinishedProviderRunSelectionSyncJob,
 };
+use super::in_flight::ProviderRunInFlightState;
 use super::native_interaction::ProviderNativeInteractionBridgeStore;
 use super::runtime_slots::{
     clear_runtime_state, ClaudeRuntimeSlot, CodexRuntimeSlot, OpenCodeRuntimeSlot,
@@ -58,8 +59,7 @@ pub(super) struct ProviderRunWorkerDeps {
     pub(super) codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     pub(super) opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     pub(super) cleared_runs: Arc<Mutex<BTreeSet<String>>>,
-    pub(super) structured_prompt_submissions: Arc<Mutex<BTreeSet<String>>>,
-    pub(super) structured_output_polls: Arc<Mutex<BTreeSet<String>>>,
+    pub(super) in_flight: ProviderRunInFlightState,
     pub(super) finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
     pub(super) finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
     pub(super) finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
@@ -93,10 +93,7 @@ impl ProviderRunWorkerDeps {
                             prompt,
                             attachments,
                         );
-                        clear_structured_prompt_io_in_flight(
-                            &self.structured_prompt_submissions,
-                            &provider_run_id,
-                        );
+                        self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
                         let finished = FinishedProviderPromptSubmitJob {
                             session_id,
                             provider_run_id,
@@ -117,10 +114,7 @@ impl ProviderRunWorkerDeps {
                             &self.cleared_runs,
                             run,
                         );
-                        clear_structured_prompt_io_in_flight(
-                            &self.structured_prompt_submissions,
-                            &provider_run_id,
-                        );
+                        self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
                         let finished = FinishedProviderPromptAbortJob {
                             session_id,
                             provider_run_id,
@@ -148,10 +142,7 @@ impl ProviderRunWorkerDeps {
                                 }),
                             );
                         }
-                        clear_structured_prompt_io_in_flight(
-                            &self.structured_prompt_submissions,
-                            &provider_run_id,
-                        );
+                        self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
                         self.output_poll_delays
                             .lock()
                             .expect("provider output poll delay map poisoned")
@@ -194,10 +185,7 @@ impl ProviderRunWorkerDeps {
                             &run,
                             output_poll_delay,
                         );
-                        clear_structured_output_poll_in_flight(
-                            &self.structured_output_polls,
-                            &provider_run_id,
-                        );
+                        self.in_flight.clear_output_poll_in_flight(&provider_run_id);
                         let finished = FinishedProviderOutputPollJob {
                             provider_run_id,
                             result,
@@ -217,24 +205,4 @@ impl ProviderRunWorkerDeps {
         });
         tx
     }
-}
-
-fn clear_structured_prompt_io_in_flight(
-    structured_prompt_submissions: &Arc<Mutex<BTreeSet<String>>>,
-    run_id: &str,
-) {
-    structured_prompt_submissions
-        .lock()
-        .expect("structured prompt submission set poisoned")
-        .remove(run_id);
-}
-
-fn clear_structured_output_poll_in_flight(
-    structured_output_polls: &Arc<Mutex<BTreeSet<String>>>,
-    run_id: &str,
-) {
-    structured_output_polls
-        .lock()
-        .expect("structured output poll set poisoned")
-        .remove(run_id);
 }
