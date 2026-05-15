@@ -27,10 +27,12 @@ Chronological notes to preserve execution context between contributors/agents.
 - Confirmed the Claude standard home-worker prompt/turn drill with two Claude
   native TUIs plus one Arroba observer CLI in one Arroba session, separated
   agents, no marker contamination, and badge transitions returning to idle.
-- Confirmed Claude standard home-worker text prompt attachments in both
-  directions. Claude-origin attachments are captured from native `@path`
-  prompts; Arroba-origin text attachments are delivered through Claude native
-  context on the worker.
+- Confirmed Claude standard home-worker image prompt attachments in both
+  directions. Claude-origin local `@path` image prompts are intercepted by the
+  remote-rendered wrapper, transmitted as inline prompt attachments, materialized
+  on the worker, and injected into Claude Code as worker-local native `@path`
+  mentions; Arroba-origin image attachments use the same worker materialization
+  path.
 - Confirmed Claude standard home-worker permissions in both directions. Native-
   origin and Arroba-origin prompts both surface permission approval in the
   remote-rendered Claude TUI, and the approval is sent back through kernel-owned

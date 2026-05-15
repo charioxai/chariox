@@ -850,6 +850,8 @@ async function runProviderScenario({
       ARROBA_CODEX_NATIVE_DEBUG_FILE: logs.proxyA,
       ARROBA_OPENCODE_NATIVE_DEBUG: "1",
       ARROBA_OPENCODE_NATIVE_DEBUG_FILE: logs.proxyA,
+      ARROBA_CLAUDE_NATIVE_DEBUG: "1",
+      ARROBA_CLAUDE_NATIVE_DEBUG_FILE: logs.proxyA,
     })
     sessionId = (await waitForFileMatch(logs.a, /arroba session:\s+([^\s(]+)/)).match[1]
 
@@ -880,6 +882,8 @@ async function runProviderScenario({
       ARROBA_CODEX_NATIVE_DEBUG_FILE: logs.proxyB,
       ARROBA_OPENCODE_NATIVE_DEBUG: "1",
       ARROBA_OPENCODE_NATIVE_DEBUG_FILE: logs.proxyB,
+      ARROBA_CLAUDE_NATIVE_DEBUG: "1",
+      ARROBA_CLAUDE_NATIVE_DEBUG_FILE: logs.proxyB,
     })
 
     let proxyA = null
@@ -1026,11 +1030,11 @@ async function runProviderScenario({
     if (options.includeAttachments) {
       const nativeAttachmentPath = path.join(
         scenarioRoot,
-        provider === "codex" ? "native-attachment.png" : "native-attachment.txt",
+        provider === "opencode" ? "native-attachment.txt" : "native-attachment.png",
       )
       const arrobaAttachmentPath = path.join(
         scenarioRoot,
-        provider === "codex" ? "arroba-attachment.png" : "arroba-attachment.txt",
+        provider === "opencode" ? "arroba-attachment.txt" : "arroba-attachment.png",
       )
       if (provider === "codex") {
         await writeFile(nativeAttachmentPath, tinyPng)
@@ -1039,9 +1043,9 @@ async function runProviderScenario({
           { type: "localImage", path: nativeAttachmentPath },
         ])
       } else if (provider === "claude") {
-        await writeFile(nativeAttachmentPath, `native ${provider} attachment ${markers.nativeAttachment}\n`)
-        await writeFile(arrobaAttachmentPath, `arroba ${provider} attachment ${markers.arrobaAttachment}\n`)
-        await screenStuff(screenA, `@${nativeAttachmentPath} ${attachedFilePrompt(markers.nativeAttachment)}`)
+        await writeFile(nativeAttachmentPath, tinyPng)
+        await writeFile(arrobaAttachmentPath, tinyPng)
+        await screenStuff(screenA, `@${nativeAttachmentPath} ${attachedImagePrompt(markers.nativeAttachment)}`)
         await sleep(250)
         await screenStuff(screenA, "\r")
       } else {
@@ -1062,11 +1066,16 @@ async function runProviderScenario({
           provider === "codex" ? "attachmentCount\":1" : "native_prompt_attachments_observed",
           1,
         )
+      } else {
+        await waitForLogOccurrences(logs.proxyA, "remote_rendered_attachments_intercepted", 1)
       }
       await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
         [aliases[0]]: { prompts: [markers.nativeAttachment], outputs: [markers.nativeAttachment] },
       })
       await waitForFileMatch(logs.a, new RegExp(markers.nativeAttachment), 60_000)
+      if (provider === "claude") {
+        await waitForFileMatch(logs.a, /native-attachment\.png/, 60_000)
+      }
 
       await automationRequest(automationSocket, {
         action: "workspace_shell_exec",
@@ -1077,11 +1086,11 @@ async function runProviderScenario({
         prompt: provider === "opencode"
           ? attachedFilePrompt(markers.arrobaAttachment)
           : provider === "claude"
-            ? attachedFilePrompt(markers.arrobaAttachment)
+            ? attachedImagePrompt(markers.arrobaAttachment)
             : attachedImagePrompt(markers.arrobaAttachment),
         attachments: [{
           url: arrobaAttachmentPath,
-          mime: provider === "codex" ? "image/png" : "text/plain",
+          mime: provider === "opencode" ? "text/plain" : "image/png",
           filename: path.basename(arrobaAttachmentPath),
         }],
       })
@@ -1089,6 +1098,9 @@ async function runProviderScenario({
         [aliases[0]]: { prompts: [markers.arrobaAttachment], outputs: [markers.arrobaAttachment] },
       })
       await waitForFileMatch(logs.a, new RegExp(markers.arrobaAttachment), 60_000)
+      if (provider === "claude") {
+        await waitForFileMatch(logs.a, /arroba-attachment\.png/, 60_000)
+      }
       extendedChecks.attachments = "validated"
     }
 

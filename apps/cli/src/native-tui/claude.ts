@@ -370,7 +370,15 @@ async function runClaudeRemoteRendered(
     })
     await client.subscribeToKernelEvents(session.id, attachment.id)
     pump = startRemoteRenderedPumpLoop(client, session.id, attachment.id, run.id)
-    restoreStdin = forwardStdinToProviderRun(client, session.id, attachment.id, run.id)
+    restoreStdin = forwardStdinToProviderRun(
+      client,
+      session.id,
+      attachment.id,
+      agent.id,
+      run.id,
+      worktree,
+      Boolean(options.relayUrl) || Boolean(options.machineRef) || promptAttachmentTransferIsForced(),
+    )
     installResizeForwarder(client, session.id)
     if (options.initialPrompt) {
       await sleep(2_000)
@@ -396,13 +404,28 @@ function forwardStdinToProviderRun(
   client: LocalIpcClient,
   sessionId: string,
   attachmentId: string,
+  agentId: string,
   providerRunId: string,
+  worktree: string,
+  inlineLocalAttachments: boolean,
 ): () => void {
   const wasRaw = Boolean(process.stdin.isTTY && process.stdin.isRaw)
+  const composer: RemoteRenderedComposerState = { text: "", escapeState: "none", swallowNextLf: false }
+  let pending = Promise.resolve()
   const onData = (chunk: Buffer) => {
-    void client.send<Record<string, unknown>>(
-      sendTerminalInputRequest(sessionId, attachmentId, chunk, providerRunId),
-    ).catch(() => {})
+    pending = pending
+      .then(() => forwardRemoteRenderedInputChunk({
+        client,
+        sessionId,
+        attachmentId,
+        agentId,
+        providerRunId,
+        worktree,
+        inlineLocalAttachments,
+        composer,
+        chunk,
+      }))
+      .catch(() => {})
   }
   if (process.stdin.isTTY) process.stdin.setRawMode?.(true)
   process.stdin.resume()
@@ -411,6 +434,121 @@ function forwardStdinToProviderRun(
     process.stdin.off("data", onData)
     if (process.stdin.isTTY) process.stdin.setRawMode?.(wasRaw)
   }
+}
+
+type RemoteRenderedComposerState = {
+  text: string
+  escapeState: "none" | "esc" | "csi"
+  swallowNextLf: boolean
+}
+
+async function forwardRemoteRenderedInputChunk(options: {
+  client: LocalIpcClient
+  sessionId: string
+  attachmentId: string
+  agentId: string
+  providerRunId: string
+  worktree: string
+  inlineLocalAttachments: boolean
+  composer: RemoteRenderedComposerState
+  chunk: Buffer
+}) {
+  const text = options.chunk.toString("utf8")
+  for (const char of text) {
+    if (options.composer.swallowNextLf) {
+      options.composer.swallowNextLf = false
+      if (char === "\n") continue
+    }
+    if (char === "\r" || char === "\n") {
+      if (char === "\r") options.composer.swallowNextLf = true
+      await submitOrForwardRemoteRenderedEnter(options)
+      continue
+    }
+    if (char === "\u007f" || char === "\b") {
+      options.composer.text = options.composer.text.slice(0, -1)
+      await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, char)
+      continue
+    }
+    if (char === "\u0015" || char === "\u0003") {
+      options.composer.text = ""
+      await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, char)
+      continue
+    }
+    if (char === "\u001b") {
+      options.composer.escapeState = "esc"
+      await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, char)
+      continue
+    }
+    if (options.composer.escapeState === "esc") {
+      options.composer.escapeState = char === "[" ? "csi" : "none"
+      await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, char)
+      continue
+    }
+    if (options.composer.escapeState === "csi") {
+      if (/[@-~]/.test(char)) options.composer.escapeState = "none"
+      await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, char)
+      continue
+    }
+    if (char >= " ") {
+      options.composer.text += char
+    }
+    await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, char)
+  }
+}
+
+async function submitOrForwardRemoteRenderedEnter(options: {
+  client: LocalIpcClient
+  sessionId: string
+  attachmentId: string
+  agentId: string
+  providerRunId: string
+  worktree: string
+  inlineLocalAttachments: boolean
+  composer: RemoteRenderedComposerState
+}) {
+  const prompt = options.composer.text.trim()
+  options.composer.text = ""
+  const references = extractClaudeNativePromptAttachmentReferences(prompt, options.worktree)
+  if (references.length === 0) {
+    await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, "\r")
+    return
+  }
+  const attachments = await preparePromptAttachmentsForSubmit(
+    uniqueClaudeAttachmentReferences(references).map((reference) => reference.attachment),
+    { inlineLocalFiles: options.inlineLocalAttachments },
+  )
+  if (attachments.length === 0) {
+    await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, "\r")
+    return
+  }
+  await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, "\u0015")
+  const visiblePrompt = stripClaudeAttachmentMentions(prompt, references)
+  debugNativeClaude("remote_rendered_attachments_intercepted", {
+    attachmentCount: attachments.length,
+    mimeTypes: attachments.map((attachment) => attachment.mime),
+    inlinedCount: attachments.filter((attachment) => attachment.contents_base64).length,
+  })
+  await options.client.send<Record<string, unknown>>(
+    submitPromptRequest(
+      options.sessionId,
+      options.attachmentId,
+      options.agentId,
+      visiblePrompt || "Please use the attached file.",
+      attachments,
+    ),
+  )
+}
+
+async function sendRemoteRenderedInput(
+  client: LocalIpcClient,
+  sessionId: string,
+  attachmentId: string,
+  providerRunId: string,
+  data: Buffer | string,
+) {
+  await client.send<Record<string, unknown>>(
+    sendTerminalInputRequest(sessionId, attachmentId, data, providerRunId),
+  )
 }
 
 function installResizeForwarder(client: LocalIpcClient, sessionId: string) {
@@ -1004,22 +1142,64 @@ function collectTextValues(value: unknown): string[] {
   return text.concat(Object.values(record).flatMap((entry) => collectTextValues(entry)))
 }
 
+type ClaudeNativePromptAttachmentReference = {
+  start: number
+  end: number
+  attachment: PromptAttachmentPart
+}
+
 function extractClaudeNativePromptAttachments(prompt: string, cwd: string): PromptAttachmentPart[] {
-  const candidates = new Set<string>()
+  return uniqueClaudeAttachmentReferences(
+    extractClaudeNativePromptAttachmentReferences(prompt, cwd),
+  ).map((reference) => reference.attachment)
+}
+
+function extractClaudeNativePromptAttachmentReferences(prompt: string, cwd: string): ClaudeNativePromptAttachmentReference[] {
+  const references: ClaudeNativePromptAttachmentReference[] = []
   for (const match of prompt.matchAll(/(?:^|\s)@(?:"([^"]+)"|'([^']+)'|([^\s]+))/g)) {
     const raw = match[1] ?? match[2] ?? match[3] ?? ""
     const candidate = trimAttachmentToken(raw)
-    if (candidate) candidates.add(candidate)
-  }
-  return Array.from(candidates).flatMap((candidate) => {
+    if (!candidate) continue
     const classified = classifyPromptAttachment(resolveClaudeAttachmentPath(candidate, cwd))
-    if (!classified) return []
-    return [{
-      url: classified.path,
-      mime: classified.mime,
-      filename: classified.filename,
-    }]
-  })
+    if (!classified) continue
+    const matched = match[0] ?? ""
+    const leadingWhitespace = matched.startsWith("@") ? 0 : 1
+    const start = (match.index ?? 0) + leadingWhitespace
+    references.push({
+      start,
+      end: (match.index ?? 0) + matched.length,
+      attachment: {
+        url: classified.path,
+        mime: classified.mime,
+        filename: classified.filename,
+      },
+    })
+  }
+  return references
+}
+
+function uniqueClaudeAttachmentReferences(
+  references: ClaudeNativePromptAttachmentReference[],
+): ClaudeNativePromptAttachmentReference[] {
+  const byUrl = new Map<string, ClaudeNativePromptAttachmentReference>()
+  for (const reference of references) {
+    if (!byUrl.has(reference.attachment.url)) byUrl.set(reference.attachment.url, reference)
+  }
+  return Array.from(byUrl.values())
+}
+
+function stripClaudeAttachmentMentions(
+  prompt: string,
+  references: ClaudeNativePromptAttachmentReference[],
+): string {
+  let cursor = 0
+  let output = ""
+  for (const reference of [...references].sort((left, right) => left.start - right.start)) {
+    output += prompt.slice(cursor, reference.start)
+    cursor = Math.max(cursor, reference.end)
+  }
+  output += prompt.slice(cursor)
+  return output.replace(/\s{2,}/g, " ").trim()
 }
 
 function trimAttachmentToken(value: string): string {

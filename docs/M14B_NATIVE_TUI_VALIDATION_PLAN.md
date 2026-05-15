@@ -73,10 +73,14 @@ prompt queue and worker-owned provider execution.
 remote-rendered PTY path for worker-owned execution. Prompt/turn observation
 passes with two Claude native TUIs plus one Arroba observer in the same Arroba
 session, with no cross-agent marker contamination and badge transitions back to
-idle. Text prompt attachments pass in both directions in same-host
-home-worker mode. Permissions pass in both native-origin and Arroba-origin
-directions: permission prompts surface in the remote-rendered Claude native TUI
-and approval is sent through kernel-owned PTY input to the worker provider run.
+idle. Image prompt attachments pass in both directions in same-host home-worker
+mode: local Claude `@path` image prompts are intercepted by the remote-rendered
+wrapper, transmitted as inline prompt attachments, materialized on the worker,
+and injected into the worker-owned Claude TUI; Arroba-origin image attachments
+follow the same worker materialization path. Permissions pass in both
+native-origin and Arroba-origin directions: permission prompts surface in the
+remote-rendered Claude native TUI and approval is sent through kernel-owned PTY
+input to the worker provider run.
 
 ## Goal
 
@@ -163,7 +167,7 @@ Prompt attachments:
   codex,opencode --include-attachments`.
 - Direct slice target Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
   --slice-local-docker --providers opencode,codex --include-attachments`.
-- Standard remote home-worker Claude: covered for text prompt attachments in
+- Standard remote home-worker Claude: covered for image prompt attachments in
   both native-origin and Arroba-origin directions by
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers claude
   --include-attachments`.
@@ -251,7 +255,7 @@ Provider notes:
    - Current provider status:
      - Codex/OpenCode: prompt/turn, permission, and prompt-attachment drills pass
        in same-host home-worker relay mode.
-     - Claude: prompt/turn, text prompt-attachment, and permission drills pass
+     - Claude: prompt/turn, image prompt-attachment, and permission drills pass
        in same-host home-worker relay mode through the remote-rendered PTY path.
    - Required product work:
      - validate native TUI `--machine`/`--kernel-ref` placement arguments for
