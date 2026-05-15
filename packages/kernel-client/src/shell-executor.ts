@@ -1,10 +1,3 @@
-import type {
-  RuntimeSession,
-} from "./kernel-types.js"
-import {
-  cancelActivePromptRequest,
-  deleteKernelRequest,
-} from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import { executeShellLocalCommand } from "./shell-local-command.js"
 import { executeAgentCommand } from "./shell-agent-command.js"
@@ -27,8 +20,9 @@ import { executeSessionCommand } from "./shell-session-command.js"
 import { executeCloudCommand } from "./shell-cloud-command.js"
 import { executeSliceCommand } from "./shell-slice-command.js"
 import { executePromptCommand } from "./shell-prompt-command.js"
-import { resolveShellAttachmentId } from "./shell-session-attachment.js"
 import { executeProviderCommand } from "./shell-provider-command.js"
+import { executeKernelCommand } from "./shell-kernel-command.js"
+import { executeStopCommand } from "./shell-stop-command.js"
 import {
   type LocalGitWorktreeOptions,
   type ShellPlacementDeps,
@@ -110,55 +104,4 @@ export async function executeShellCommand(
         message: `${parsed.command ?? "command"} is not implemented in arroba-shell yet`,
       }
   }
-}
-
-async function executeKernelCommand(
-  parsed: ParsedShellCommand,
-  context: ShellContext,
-  deps: ShellExecutorDeps,
-): Promise<ShellCommandResult> {
-  const [action, ...args] = parsed.args
-  if (action !== "delete" || args.length > 0) {
-    return { ok: false, message: "usage: kernel delete" }
-  }
-  const response = await deps.client.send(deleteKernelRequest())
-  const payload = expectVariant<{ kernel_id: string; deleted_sessions: RuntimeSession[] }>(response, "KernelDeleted")
-  const deletedCurrentSession = context.sessionId
-    ? payload.deleted_sessions.some((session) => session.id === context.sessionId)
-    : false
-  return {
-    ok: true,
-    message: `deleted kernel ${payload.kernel_id} (${payload.deleted_sessions.length} session${payload.deleted_sessions.length === 1 ? "" : "s"})`,
-    contextUpdates: deletedCurrentSession
-      ? { sessionId: undefined, attachmentId: undefined, agentId: undefined }
-      : undefined,
-    data: payload,
-  }
-}
-
-async function executeStopCommand(
-  parsed: ParsedShellCommand,
-  context: ShellContext,
-  deps: ShellExecutorDeps,
-): Promise<ShellCommandResult> {
-  if (parsed.args.length > 0) {
-    return { ok: false, message: "usage: stop" }
-  }
-  if (!context.sessionId) {
-    return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
-  }
-  const attachmentId = await resolveShellAttachmentId(context, deps)
-  if (!attachmentId.ok) {
-    return { ok: false, message: attachmentId.message }
-  }
-  const response = await deps.client.send(cancelActivePromptRequest(context.sessionId, attachmentId.attachmentId))
-  const payload = expectVariant<{ cancellation: { prompt?: { id?: string | null } | null } }>(response, "PromptCancelled")
-  return { ok: true, message: `cancellation requested${payload.cancellation.prompt?.id ? ` for prompt ${payload.cancellation.prompt.id}` : ""}`, data: payload }
-}
-
-function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
-  if (!(variant in response)) {
-    throw new Error(`unexpected response variant: expected ${variant}`)
-  }
-  return response[variant] as T
 }
