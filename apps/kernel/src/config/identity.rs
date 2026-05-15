@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::transport::relay_crypto;
 
-use super::{default_config_dir, DaemonConfig};
+use super::{paths::default_config_dir, DaemonConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct RuntimeIdentity {

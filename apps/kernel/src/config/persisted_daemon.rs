@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::{default_config_dir, default_state_dir};
+use super::paths::{default_config_dir, default_state_dir};
 use crate::error::DaemonError;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
