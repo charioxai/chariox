@@ -15,6 +15,7 @@ mod provider_launch_policy;
 mod provider_launch_request;
 mod provider_liveness;
 pub(crate) mod provider_output;
+mod provider_output_claude_native;
 mod provider_output_fanout;
 mod provider_processes;
 mod provider_prompt_launch;
