@@ -2,8 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
-
 use crate::app::{DaemonApp, PromptActivityStore};
 use crate::error::DaemonError;
 use crate::provider::{
@@ -17,6 +15,7 @@ use crate::terminal::{TerminalOutputKind, TerminalOutputRecord};
 
 use super::provider_output_claude_native::ProviderOutputClaudeNativeBridge;
 use super::provider_output_fanout::ProviderOutputFanout;
+use super::provider_output_trace::ProviderOutputTrace;
 
 const PTY_PROMPT_SETTLE_QUIET_FOR: Duration = Duration::from_millis(50);
 
@@ -698,39 +697,8 @@ impl<'a> ProviderOutputPumpContext<'a> {
         source: &str,
         poll_result: &ProviderPromptSignalBatch,
     ) {
-        if poll_result.chunks.is_empty()
-            && poll_result.completions.is_empty()
-            && poll_result.notices.is_empty()
-            && !poll_result.prompt_completed
-            && poll_result.terminal_failure.is_none()
-            && poll_result.resolved_model.is_none()
-            && poll_result.resolved_variant.is_none()
-            && poll_result.resolved_usage_tokens_total.is_none()
-            && poll_result.resolved_usage.is_none()
-            && poll_result.resolved_resume_state.is_none()
-        {
-            return;
-        }
-        crate::debug_trace::record_terminal_turn(
-            session_id,
-            source,
-            json!({
-                "provider_run_id": provider_run_id,
-                "prompt_completed": poll_result.prompt_completed,
-                "terminal_failure": poll_result.terminal_failure.as_deref(),
-                "completion_count": poll_result.completions.len(),
-                "notice_count": poll_result.notices.len(),
-                "chunk_count": poll_result.chunks.len(),
-                "chunks": poll_result.chunks.iter().map(|chunk| {
-                    json!({
-                        "kind": &chunk.kind,
-                        "merge_key": &chunk.merge_key,
-                        "byte_len": chunk.bytes.len(),
-                    })
-                }).collect::<Vec<_>>(),
-                "state": self.prompt_state_trace(session_id, provider_run_id),
-            }),
-        );
+        self.trace()
+            .structured_poll_batch(session_id, provider_run_id, source, poll_result);
     }
 
     fn trace_terminal_records(
@@ -740,80 +708,22 @@ impl<'a> ProviderOutputPumpContext<'a> {
         source: &str,
         records: &[TerminalOutputRecord],
     ) {
-        crate::debug_trace::record_terminal_turn(
-            session_id,
-            source,
-            json!({
-                "provider_run_id": provider_run_id,
-                "record_count": records.len(),
-                "records": records.iter().map(|record| {
-                    json!({
-                        "kind": &record.kind,
-                        "agent_id": &record.agent_id,
-                        "merge_key": &record.merge_key,
-                        "byte_len": record.bytes.len(),
-                        "pending_recipient_count": record.pending_recipient_attachment_ids.len(),
-                    })
-                }).collect::<Vec<_>>(),
-                "state": self.prompt_state_trace(session_id, provider_run_id),
-            }),
-        );
+        self.trace()
+            .terminal_records(session_id, provider_run_id, source, records);
     }
 
     fn trace_prompt_state(&self, session_id: &str, provider_run_id: &str, source: &str) {
-        crate::debug_trace::record_terminal_turn(
-            session_id,
-            source,
-            json!({
-                "provider_run_id": provider_run_id,
-                "state": self.prompt_state_trace(session_id, provider_run_id),
-            }),
-        );
+        self.trace()
+            .prompt_state_turn(session_id, provider_run_id, source);
     }
 
-    fn prompt_state_trace(&self, session_id: &str, provider_run_id: &str) -> Value {
-        let provider_run = self.provider_store.get_run(provider_run_id).ok();
-        let agent_id = provider_run
-            .as_ref()
-            .and_then(|run| run.agent_instance_id())
-            .map(str::to_string);
-        let session = self.app.sessions.get_session(session_id).ok();
-        let active_prompt = match (session.as_ref(), agent_id.as_deref()) {
-            (Some(session), Some(agent_id)) => session.active_prompt_for_agent(agent_id),
-            _ => None,
-        };
-        let active_turn = self.active_turns.snapshot().remove(provider_run_id);
-        let prompt_activity = self.prompt_activity.read().get(provider_run_id).cloned();
-        json!({
-            "agent_id": agent_id,
-            "provider_run_state": provider_run.as_ref().map(|run| format!("{:?}", run.state())),
-            "session_active_provider_run_id": session.as_ref().and_then(|session| session.active_provider_run_id()).map(str::to_string),
-            "active_prompt": active_prompt.map(|prompt| {
-                json!({
-                    "id": prompt.id().to_string(),
-                    "status": prompt.status(),
-                    "target_agent_id": prompt.target_agent_id().to_string(),
-                    "workflow_run_id": prompt.workflow_run_id().map(str::to_string),
-                    "workflow_node_run_id": prompt.workflow_node_run_id().map(str::to_string),
-                })
-            }),
-            "active_turn": active_turn.map(|turn| {
-                json!({
-                    "agent_id": turn.agent_id,
-                    "prompt_id": turn.prompt_id,
-                    "provider_run_id": turn.provider_run_id,
-                    "settlement_requested": turn.settlement_requested,
-                })
-            }),
-            "prompt_activity": prompt_activity.map(|activity| {
-                json!({
-                    "last_output_seen": activity.last_output_at.is_some(),
-                    "saw_response_content": activity.saw_response_content,
-                    "completion_recorded": activity.completion_recorded,
-                    "settlement_requested": activity.settlement_requested,
-                })
-            }),
-        })
+    fn trace(&self) -> ProviderOutputTrace {
+        ProviderOutputTrace::new(
+            self.app,
+            self.provider_store.clone(),
+            self.active_turns.clone(),
+            self.prompt_activity.clone(),
+        )
     }
 
     fn drain_pty_output(
