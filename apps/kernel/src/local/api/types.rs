@@ -15,6 +15,7 @@ mod config_capabilities;
 mod history;
 mod provider_control;
 mod remote_access;
+mod slice;
 mod terminal_interaction;
 mod workspace;
 
@@ -25,6 +26,7 @@ pub use config_capabilities::*;
 pub use history::*;
 pub use provider_control::*;
 pub use remote_access::*;
+pub use slice::*;
 pub use terminal_interaction::*;
 pub use workspace::*;
 
@@ -209,39 +211,6 @@ pub struct SpawnAgentRequest {
     pub slice_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_placement: Option<crate::agent::GitWorktreePlacement>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ListSlicesRequest;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateSliceRequest {
-    pub name: String,
-    #[serde(default)]
-    pub backend: SliceBackendKind,
-    #[serde(default = "default_slice_os")]
-    pub os: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_mount: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worker_kernel_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_url: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SliceRefRequest {
-    pub slice_ref: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImportSliceProviderAuthRequest {
-    pub slice_ref: String,
-    pub provider: String,
-}
-
-fn default_slice_os() -> String {
-    "linux".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
