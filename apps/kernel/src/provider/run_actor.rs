@@ -1,16 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+mod native_interaction;
+mod operation_lanes;
+pub(crate) use native_interaction::{
+    ProviderNativeInteractionBridge, ProviderNativeInteractionBridgeStore,
+    ProviderNativeInteractionResolution,
+};
+pub(crate) use operation_lanes::ProviderRunOperationLanes;
 
 use crate::error::DaemonError;
-use crate::runtime::projection::{ActorQueueSnapshot, ProviderRunActorHealthSnapshot};
 use crate::session::PromptAttachment;
-use crate::session::RuntimeInteraction;
 
 use super::{
     claude_runtime::{abort_claude_turn, drain_claude_events, submit_claude_prompt},
@@ -29,42 +32,6 @@ type CodexRuntimeSlot = Arc<Mutex<Option<CodexRuntimeState>>>;
 type OpenCodeRuntimeSlot = Arc<Mutex<Option<OpenCodeRuntimeState>>>;
 const PROVIDER_RUN_COMMAND_QUEUE_LIMIT: usize = 64;
 
-pub(crate) trait ProviderNativeInteractionBridge: Send + Sync {
-    fn request_blocking(
-        &self,
-        session_id: &str,
-        interaction: RuntimeInteraction,
-    ) -> Result<ProviderNativeInteractionResolution, DaemonError>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ProviderNativeInteractionResolution {
-    pub(crate) status: String,
-    pub(crate) choice_id: Option<String>,
-    pub(crate) reply: Option<String>,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct ProviderNativeInteractionBridgeStore {
-    inner: Arc<Mutex<Option<Arc<dyn ProviderNativeInteractionBridge>>>>,
-}
-
-impl ProviderNativeInteractionBridgeStore {
-    fn read(&self) -> Option<Arc<dyn ProviderNativeInteractionBridge>> {
-        self.inner
-            .lock()
-            .expect("provider native interaction bridge mutex poisoned")
-            .clone()
-    }
-
-    pub(crate) fn set(&self, bridge: Arc<dyn ProviderNativeInteractionBridge>) {
-        *self
-            .inner
-            .lock()
-            .expect("provider native interaction bridge mutex poisoned") = Some(bridge);
-    }
-}
-
 #[derive(Clone, Default)]
 pub(crate) struct ProviderRunActorMailbox {
     operation_lanes: ProviderRunOperationLanes,
@@ -81,18 +48,6 @@ pub(crate) struct ProviderRunActorMailbox {
     finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
     finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
     output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct ProviderRunOperationLanes {
-    lanes: Arc<Mutex<BTreeMap<String, Arc<Semaphore>>>>,
-    health: Arc<ProviderRunActorHealthCounters>,
-}
-
-#[derive(Debug, Default)]
-struct ProviderRunActorHealthCounters {
-    enqueued_commands: AtomicU64,
-    enqueue_rejections: AtomicU64,
 }
 
 pub(crate) struct FinishedProviderPromptSubmitJob {
@@ -146,72 +101,6 @@ enum ProviderRunActorCommand {
         output_poll_delay: Duration,
     },
     Stop,
-}
-
-impl ProviderRunOperationLanes {
-    pub(crate) async fn acquire(&self, provider_run_id: &str) -> OwnedSemaphorePermit {
-        let semaphore = {
-            let mut lanes = self
-                .lanes
-                .lock()
-                .expect("provider run operation lane map poisoned");
-            Arc::clone(
-                lanes
-                    .entry(provider_run_id.to_string())
-                    .or_insert_with(|| Arc::new(Semaphore::new(1))),
-            )
-        };
-        semaphore
-            .acquire_owned()
-            .await
-            .expect("provider run operation lane semaphore closed")
-    }
-
-    fn forget(&self, provider_run_id: &str) {
-        let mut lanes = self
-            .lanes
-            .lock()
-            .expect("provider run operation lane map poisoned");
-        lanes.remove(provider_run_id);
-    }
-
-    pub(crate) fn queue_snapshots(&self) -> Vec<ActorQueueSnapshot> {
-        let lanes = self
-            .lanes
-            .lock()
-            .expect("provider run operation lane map poisoned");
-        let mut snapshots = lanes
-            .iter()
-            .map(|(provider_run_id, semaphore)| {
-                ActorQueueSnapshot::new(
-                    provider_run_id.clone(),
-                    1,
-                    usize::from(semaphore.available_permits() == 0),
-                )
-            })
-            .collect::<Vec<_>>();
-        snapshots.sort_by(|left, right| left.lane_id.cmp(&right.lane_id));
-        snapshots
-    }
-
-    pub(crate) fn health_snapshot(&self) -> ProviderRunActorHealthSnapshot {
-        ProviderRunActorHealthSnapshot {
-            enqueued_commands: self.health.enqueued_commands.load(Ordering::Relaxed),
-            enqueue_rejections: self.health.enqueue_rejections.load(Ordering::Relaxed),
-        }
-    }
-
-    fn record_command_enqueued(&self) {
-        self.health
-            .enqueued_commands
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn record_enqueue_rejection(&self) {
-        self.health
-            .enqueue_rejections
-            .fetch_add(1, Ordering::Relaxed);
-    }
 }
 
 impl ProviderRunActorMailbox {
