@@ -42,7 +42,6 @@ import type {
   WaitingRoomPublicSessionSummary,
   WaitingRoomPublicSnapshot,
   WorkflowDefinition,
-  WorkspaceLinkDefinition,
 } from "./cli-types.js"
 import {
   createCommandActionHandlers,
@@ -78,33 +77,22 @@ import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
 import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
 import {
-  attachWorkspaceLinkRequest,
   cancelActivePromptRequest,
   captureScreenshotRequest,
-  createWorkspaceLinkRequest,
   cycleAgentFocusRequest,
   destroyAgentRequest,
   detachFromSessionRequest,
-  detachWorkspaceLinkRequest,
   endSessionRequest,
   focusAgentRequest,
   getPromptInputHistoryRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
   getWaitingRoomPublicSnapshotRequest,
-  listWorkspaceLinksRequest,
-  acceptCloudSessionInviteRequest,
-  createCloudSessionInviteRequest,
-  createSessionInviteRequest,
-  joinSessionInviteRequest,
-  listCloudCollaboratorsRequest,
-  listCloudSessionMembersRequest,
   pollRuntimeNoticesRequest,
   respondToInteractionRequest,
   recordPromptInputHistoryRequest,
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
-  showWorkspaceLinkRequest,
   spawnAgentRequest,
   storeTransferredFileRequest,
   submitPromptRequest,
@@ -116,6 +104,14 @@ import {
   setUserConfigValue,
   unsetUserConfigValue,
 } from "./config-api.js"
+import {
+  acceptCloudSessionInvite,
+  createCloudSessionInvite,
+  createSessionInvite,
+  joinSessionInvite,
+  listCloudCollaborators,
+  listCloudSessionMembers,
+} from "./cloud-session-api.js"
 import {
   aliasAgent,
   updateAgentConfig,
@@ -302,6 +298,13 @@ import {
   listSessions,
   resolveSession,
 } from "./session-api.js"
+import {
+  attachWorkspaceLink,
+  createWorkspaceLink,
+  detachWorkspaceLink,
+  listWorkspaceLinks,
+  showWorkspaceLink,
+} from "./workspace-link-api.js"
 import {
   agentPaneStatusBadge,
   formatSplitPaneFooterParts,
@@ -6628,24 +6631,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     appendCloudNotice,
     formatError,
     createSession: (workspace, worktree, alias, agentDefaults) => createSession(client, workspace, worktree, alias, agentDefaults),
-    createSessionInvite: async (sessionId, expiresInMs, maxUses) => {
-      const response = await client.send<Record<string, unknown>>(
-        createSessionInviteRequest(sessionId, expiresInMs, maxUses),
-      )
-      return expectVariant<{
-        invite: { invite_token: string; invite: { invite_id: string } }
-        session: RuntimeSession
-      }>(response, "SessionInviteCreated")
-    },
-    joinSessionInvite: async (inviteToken, userId) => {
-      const response = await client.send<Record<string, unknown>>(
-        joinSessionInviteRequest(inviteToken, userId),
-      )
-      return expectVariant<{ member: { user_id: string }; session: RuntimeSession }>(
-        response,
-        "SessionInviteJoined",
-      )
-    },
+    createSessionInvite: (sessionId, expiresInMs, maxUses) =>
+      createSessionInvite(client, sessionId, expiresInMs, maxUses),
+    joinSessionInvite: (inviteToken, userId) => joinSessionInvite(client, inviteToken, userId),
     attachBinding: (session, createdSession) => attachBinding(session, createdSession),
     resolveSession: (reference, workspace) => resolveSession(client, reference, workspace),
     listSessions: () => listSessions(client),
@@ -6692,31 +6680,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         options.clientId ?? "arroba-cli",
         tokenOptions?.sessionId ?? null,
       ),
-    createCloudSessionInvite: async (sessionId, inviteOptions) => {
-      const response = await client.send<Record<string, unknown>>(
-        createCloudSessionInviteRequest(sessionId, inviteOptions),
-      )
-      return expectVariant<Record<string, unknown>>(response, "CloudSessionInviteCreated")
-    },
-    acceptCloudSessionInvite: async (inviteToken) => {
-      const response = await client.send<Record<string, unknown>>(
-        acceptCloudSessionInviteRequest(inviteToken),
-      )
-      return expectVariant<Record<string, unknown>>(response, "CloudSessionInviteAccepted")
-    },
-    listCloudSessionMembers: async (sessionId) => {
-      const response = await client.send<Record<string, unknown>>(
-        listCloudSessionMembersRequest(sessionId),
-      )
-      return expectVariant<Record<string, unknown>>(response, "CloudSessionMembersListed")
-    },
-    listCloudCollaborators: async () => {
-      const response = await client.send<Record<string, unknown>>(listCloudCollaboratorsRequest())
-      return expectVariant<{ collaborators: Record<string, unknown>[] }>(
-        response,
-        "CloudCollaboratorsListed",
-      ).collaborators
-    },
+    createCloudSessionInvite: (sessionId, inviteOptions) =>
+      createCloudSessionInvite(client, sessionId, inviteOptions),
+    acceptCloudSessionInvite: (inviteToken) => acceptCloudSessionInvite(client, inviteToken),
+    listCloudSessionMembers: (sessionId) => listCloudSessionMembers(client, sessionId),
+    listCloudCollaborators: () => listCloudCollaborators(client),
     getUserConfig: () => getUserConfig(client),
     getUserConfigSchema: () => getUserConfigSchema(client),
     setUserConfigValue: (path, value) => setUserConfigValue(client, path, value),
@@ -6795,36 +6763,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       updateAgentSubstitutes(client, sessionId, agentId, action),
     applySessionState,
     refreshAgentPanes,
-    createWorkspaceLink: async (name) => {
-      const response = await client.send<Record<string, unknown>>(
-        createWorkspaceLinkRequest(sessionState().id, name),
-      )
-      return expectVariant(response, "WorkspaceLinkCreated")
-    },
-    listWorkspaceLinks: async () => {
-      const response = await client.send<Record<string, unknown>>(
-        listWorkspaceLinksRequest(sessionState().id),
-      )
-      return expectVariant<{ links: WorkspaceLinkDefinition[] }>(response, "WorkspaceLinksListed").links
-    },
-    showWorkspaceLink: async (linkRef) => {
-      const response = await client.send<Record<string, unknown>>(
-        showWorkspaceLinkRequest(sessionState().id, linkRef),
-      )
-      return expectVariant<{ link: WorkspaceLinkDefinition }>(response, "WorkspaceLinkShown").link
-    },
-    attachWorkspaceLink: async (linkRef, repoRoot) => {
-      const response = await client.send<Record<string, unknown>>(
-        attachWorkspaceLinkRequest(sessionState().id, linkRef, repoRoot ?? null),
-      )
-      return expectVariant(response, "WorkspaceLinkAttached")
-    },
-    detachWorkspaceLink: async (linkRef, repoRoot) => {
-      const response = await client.send<Record<string, unknown>>(
-        detachWorkspaceLinkRequest(sessionState().id, linkRef, repoRoot ?? null),
-      )
-      return expectVariant(response, "WorkspaceLinkDetached")
-    },
+    createWorkspaceLink: (name) => createWorkspaceLink(client, sessionState().id, name),
+    listWorkspaceLinks: () => listWorkspaceLinks(client, sessionState().id),
+    showWorkspaceLink: (linkRef) => showWorkspaceLink(client, sessionState().id, linkRef),
+    attachWorkspaceLink: (linkRef, repoRoot) => attachWorkspaceLink(client, sessionState().id, linkRef, repoRoot),
+    detachWorkspaceLink: (linkRef, repoRoot) => detachWorkspaceLink(client, sessionState().id, linkRef, repoRoot),
     openWorkflowNodeInstructionsEditor,
     closeWorkflowNodeInstructionsEditor,
     getWorkflowNodeInstructionsDraft,
