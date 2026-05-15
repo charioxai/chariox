@@ -10,6 +10,7 @@ mod prompt_activity;
 mod prompt_lifecycle;
 mod prompt_state_owner;
 pub(crate) mod provider_output;
+mod provider_processes;
 mod provider_runtime;
 mod provider_tracking;
 mod remote_kernel_selection;
