@@ -28,7 +28,9 @@ use crate::transport::relay_peer::RelayPeerEvent;
 
 mod connection_config;
 mod daemon_requests;
+mod envelope_io;
 mod events;
+mod incoming_envelopes;
 mod peer_client;
 mod peer_events;
 mod peer_requests;
@@ -37,7 +39,9 @@ mod request_errors;
 mod subscriptions;
 use connection_config::{relay_config_continuity, RelayConfigContinuity};
 use daemon_requests::handle_daemon_request;
+use envelope_io::{encrypt_json_response, encrypt_peer_payload, send_outgoing_envelope};
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
+use incoming_envelopes::handle_incoming_envelope;
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
 pub use peer_client::send_peer_request_via_temporary_connection;
@@ -488,192 +492,6 @@ pub async fn run_daemon_relay_connector(
             }
         }
     }
-}
-
-async fn handle_incoming_envelope(
-    router: &Arc<CommandRouter>,
-    app: &Arc<Mutex<DaemonApp>>,
-    command_sequence: &Arc<AtomicU64>,
-    state: &Arc<RwLock<RelayClientState>>,
-    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
-    subscription_tasks: &RelaySubscriptionTasks,
-    event_runtime: &Arc<RelayEventRuntime>,
-    payload: &str,
-) -> Result<(), DaemonError> {
-    let envelope = serde_json::from_str::<RelayEnvelope>(payload).map_err(|error| {
-        DaemonError::LocalTransport {
-            operation: "parse relay envelope",
-            message: error.to_string(),
-        }
-    })?;
-    match envelope {
-        RelayEnvelope::DaemonRequest {
-            relay_request_id,
-            caller_identity,
-            encrypted_request,
-        } => {
-            let relay_response =
-                handle_daemon_request(router, command_sequence, caller_identity, encrypted_request)
-                    .await;
-            send_outgoing_envelope(
-                outgoing_tx,
-                RelayEnvelope::DaemonResponse {
-                    relay_request_id,
-                    encrypted_response: relay_response.encrypted_response,
-                    error: relay_response.error,
-                },
-            )?;
-        }
-        RelayEnvelope::DaemonIncomingPeerRequest {
-            relay_request_id,
-            from_daemon_id: _,
-            caller_identity: _,
-            encrypted_request,
-        } => {
-            let router = Arc::clone(router);
-            let outgoing_tx = outgoing_tx.clone();
-            tokio::spawn(async move {
-                let relay_response =
-                    handle_daemon_peer_request(&router, &outgoing_tx, encrypted_request).await;
-                if let Err(error) = send_outgoing_envelope(
-                    &outgoing_tx,
-                    RelayEnvelope::DaemonIncomingPeerResponse {
-                        relay_request_id,
-                        encrypted_response: relay_response.encrypted_response,
-                        error: relay_response.error,
-                    },
-                ) {
-                    crate::logging::warn_with_fields(
-                        "daemon.relay_client",
-                        "failed to send async daemon peer response",
-                        serde_json::json!({
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
-            });
-        }
-        RelayEnvelope::DaemonPeerResponse {
-            request_id,
-            from_daemon_id,
-            encrypted_response,
-            error,
-        } => {
-            resolve_pending_peer_response(
-                state,
-                request_id,
-                RelayPeerResponseEnvelope {
-                    from_daemon_id,
-                    encrypted_response,
-                    error,
-                },
-            )
-            .await;
-        }
-        RelayEnvelope::DaemonIncomingPeerEvent {
-            from_daemon_id: _,
-            caller_identity: _,
-            encrypted_event,
-        } => {
-            if let Err(error) = handle_daemon_peer_event(router, encrypted_event).await {
-                crate::logging::warn_with_fields(
-                    "daemon.relay_client",
-                    "failed to handle relay peer event",
-                    serde_json::json!({
-                        "error": error.to_string(),
-                    }),
-                );
-            }
-        }
-        RelayEnvelope::DaemonSubscribe {
-            relay_request_id,
-            relay_subscription_id,
-            caller_identity: _,
-            session_id,
-            attachment_id,
-            client_public_key,
-            subscription_scope,
-            resume_from_event_id,
-        } => {
-            handle_relay_subscribe(
-                router,
-                app,
-                outgoing_tx,
-                subscription_tasks,
-                event_runtime,
-                relay_request_id,
-                relay_subscription_id,
-                session_id,
-                attachment_id,
-                client_public_key,
-                subscription_scope,
-                resume_from_event_id,
-            )
-            .await?;
-        }
-        RelayEnvelope::DaemonUnsubscribe {
-            relay_request_id,
-            relay_subscription_id,
-            caller_identity: _,
-            client_public_key,
-        } => {
-            handle_relay_unsubscribe(
-                router,
-                outgoing_tx,
-                subscription_tasks,
-                relay_request_id,
-                relay_subscription_id,
-                client_public_key,
-            )
-            .await?;
-        }
-        RelayEnvelope::ClientMetadataResponse { .. } => {}
-        RelayEnvelope::Close { reason } => {
-            return Err(DaemonError::LocalTransport {
-                operation: "relay closed connection",
-                message: reason,
-            });
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-async fn encrypt_json_response(
-    router: &Arc<CommandRouter>,
-    client_public_key: &str,
-    value: serde_json::Value,
-) -> Result<EncryptedRelayPayload, DaemonError> {
-    let daemon_private_key = router.relay_private_key();
-    let plaintext = serde_json::to_vec(&value).map_err(|error| DaemonError::LocalTransport {
-        operation: "serialize relay response",
-        message: error.to_string(),
-    })?;
-    relay_crypto::encrypt_payload_for_peer(&daemon_private_key, client_public_key, &plaintext)
-}
-
-fn encrypt_peer_payload<T: serde::Serialize>(
-    sender_private_key: &str,
-    peer_public_key: &str,
-    value: &T,
-) -> Result<EncryptedRelayPayload, DaemonError> {
-    let plaintext = serde_json::to_vec(value).map_err(|error| DaemonError::LocalTransport {
-        operation: "serialize relay peer payload",
-        message: error.to_string(),
-    })?;
-    relay_crypto::encrypt_payload_for_peer(sender_private_key, peer_public_key, &plaintext)
-}
-
-fn send_outgoing_envelope(
-    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
-    envelope: RelayEnvelope,
-) -> Result<(), DaemonError> {
-    outgoing_tx
-        .send(envelope)
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "send relay envelope",
-            message: error.to_string(),
-        })
 }
 
 async fn set_connected(
