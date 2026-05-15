@@ -14,8 +14,7 @@ use crate::provider::{
 };
 use crate::session::CreateSessionRequest;
 use crate::transport::relay_peer::{
-    RelayPromptAttachment, RemoteGitTurnContext, RemoteManagedIoContext,
-    RemoteNativeInteractionContext, RequiredRemoteMcp,
+    RelayPromptAttachment, RemoteGitTurnContext, RequiredRemoteMcp,
 };
 
 mod git_observation;
@@ -23,6 +22,7 @@ mod git_worktree;
 mod mcp_availability;
 mod projection;
 mod prompt_attachments;
+mod relay_context;
 mod skill_sync;
 
 use git_worktree::prepare_remote_git_worktree;
@@ -402,37 +402,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.app.launch_provider(request)
     }
 
-    pub(crate) fn native_interaction_context_for_backing_agent(
-        &mut self,
-        backing_session_id: &str,
-        backing_agent_id: &str,
-        worker_provider_run_id: &str,
-    ) -> Option<(String, RemoteNativeInteractionContext)> {
-        let leased_agent = self
-            .app
-            .leased_agents
-            .values()
-            .find(|agent| {
-                agent.backing_session_id == backing_session_id
-                    && agent.backing_agent_id == backing_agent_id
-            })?
-            .clone();
-        let lease = self
-            .app
-            .execution_leases
-            .get(&leased_agent.lease_id)?
-            .clone();
-        Some((
-            lease.home_kernel_id,
-            RemoteNativeInteractionContext {
-                home_session_id: lease.home_session_id,
-                home_agent_id: lease.home_agent_id,
-                leased_agent_id: leased_agent.id,
-                worker_provider_run_id: worker_provider_run_id.to_string(),
-            },
-        ))
-    }
-
     #[cfg(test)]
     pub(crate) fn submit_leased_prompt(
         &mut self,
@@ -658,70 +627,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .leased_workflow_turns
             .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
         Ok(cancellation)
-    }
-
-    pub(crate) fn leased_agent_provider_run_id(
-        &self,
-        leased_agent_id: &str,
-    ) -> Result<Option<String>, DaemonError> {
-        let leased_agent = self
-            .app
-            .leased_agents
-            .get(leased_agent_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
-                leased_agent_id: leased_agent_id.to_string(),
-            })?;
-        Ok(self
-            .app
-            .providers
-            .get_run_for_agent(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-            )
-            .or_else(|| {
-                self.app.providers.get_latest_run_for_agent(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.backing_agent_id,
-                )
-            })
-            .map(|run| run.id().to_string()))
-    }
-
-    pub(crate) fn leased_workflow_turn_context_for_provider_run(
-        &self,
-        provider_run_id: &str,
-    ) -> Option<RemoteWorkflowTurnContext> {
-        self.app
-            .leased_workflow_turns
-            .get(provider_run_id)
-            .map(|binding| binding.context.clone())
-    }
-
-    pub(crate) fn leased_managed_io_context_for_provider_run(
-        &self,
-        provider_run_id: &str,
-        worker_workspace_identity: crate::io::WorkspaceIdentity,
-    ) -> Option<RemoteManagedIoContext> {
-        let leased_agent = self.app.leased_agents.values().find(|leased_agent| {
-            self.app
-                .providers
-                .get_run_for_agent(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.backing_agent_id,
-                )
-                .map(|run| run.id() == provider_run_id)
-                .unwrap_or(false)
-        })?;
-        let lease = self.app.execution_leases.get(&leased_agent.lease_id)?;
-        Some(RemoteManagedIoContext {
-            home_kernel_id: lease.home_kernel_id.clone(),
-            home_session_id: lease.home_session_id.clone(),
-            home_agent_id: lease.home_agent_id.clone(),
-            leased_agent_id: leased_agent.id.clone(),
-            worker_provider_run_id: provider_run_id.to_string(),
-            worker_workspace_identity,
-        })
     }
 
     pub(crate) fn complete_leased_workflow_prompt_for_provider_run(
