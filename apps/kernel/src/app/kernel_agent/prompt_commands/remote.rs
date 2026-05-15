@@ -7,7 +7,7 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use arroba_relay::protocol::ClientTarget;
 
 use super::super::KernelAgentService;
-use super::{KernelPromptCompletionAdmission, KernelPromptOwnerCompletion};
+use super::completion::{KernelPromptCompletionAdmission, KernelPromptOwnerCompletion};
 
 fn remote_git_turn_context(
     dispatch: &KernelRemotePromptDispatch,
