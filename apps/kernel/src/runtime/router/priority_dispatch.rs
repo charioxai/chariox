@@ -9,7 +9,9 @@ use crate::runtime::cloud_relay_executor::execute_cloud_relay_request;
 use crate::runtime::command::KernelCommand;
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::history_executor::execute_history_request;
-use crate::runtime::interactive_command_dispatcher::dispatch_interactive_command;
+use crate::runtime::interactive_command_dispatcher::{
+    dispatch_interactive_command, is_interactive_command,
+};
 use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
 use crate::runtime::native_interaction_bridge::execute_native_provider_interaction_request;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
@@ -357,37 +359,10 @@ impl CommandRouter {
                     self.workflow_runtime
                         .dispatch_workflow_command(command, request)
                         .await
+                } else if is_interactive_command(&request) {
+                    self.dispatch_interactive(command, request).await
                 } else {
-                    match request {
-                        request @ (LocalDaemonRequest::CreateSession(_)
-                        | LocalDaemonRequest::AttachToSession(_)
-                        | LocalDaemonRequest::DetachFromSession(_)
-                        | LocalDaemonRequest::UpdateSessionConfig(_)
-                        | LocalDaemonRequest::AliasAgent(_)
-                        | LocalDaemonRequest::UpdateAgentConfig(_)
-                        | LocalDaemonRequest::UpdateAgentProfile(_)
-                        | LocalDaemonRequest::UpdateAgentSubstitutes(_)
-                        | LocalDaemonRequest::ResizeTerminal(_)
-                        | LocalDaemonRequest::SendTerminalInput(_)
-                        | LocalDaemonRequest::EndSession(_)
-                        | LocalDaemonRequest::DeleteSession(_)
-                        | LocalDaemonRequest::AliasSession(_)
-                        | LocalDaemonRequest::SpawnAgent(_)
-                        | LocalDaemonRequest::MoveAgentToRemote(_)
-                        | LocalDaemonRequest::DestroyAgent(_)
-                        | LocalDaemonRequest::FocusAgent(_)
-                        | LocalDaemonRequest::CycleAgentFocus(_)
-                        | LocalDaemonRequest::GrantAgentCapability(_)
-                        | LocalDaemonRequest::RevokeAgentCapability(_)
-                        | LocalDaemonRequest::PollRuntimeNotices(_)) => {
-                            self.dispatch_interactive(command, request).await
-                        }
-                        _ => {
-                            unreachable!(
-                                "normal/background request should be handled before fallback"
-                            )
-                        }
-                    }
+                    unreachable!("normal/background request should be handled before fallback")
                 }
             }
         }

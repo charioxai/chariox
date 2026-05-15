@@ -2,9 +2,21 @@ use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::agent_control_executor::execute_agent_control_request;
-use crate::runtime::command::{command_caller_user_id, KernelCommand};
+use crate::runtime::command::{KernelCommand, command_caller_user_id};
 use crate::runtime::session_actor::{SessionActor, SessionRuntime};
 use crate::runtime::state::KernelRuntimeState;
+
+pub(crate) fn is_interactive_command(request: &LocalDaemonRequest) -> bool {
+    SessionActor::is_session_interactive_command(request)
+        || matches!(
+            request,
+            LocalDaemonRequest::GrantAgentCapability(_)
+                | LocalDaemonRequest::MoveAgentToRemote(_)
+                | LocalDaemonRequest::RevokeAgentCapability(_)
+                | LocalDaemonRequest::SubmitPrompt(_)
+                | LocalDaemonRequest::CancelActivePrompt(_)
+        )
+}
 
 pub(crate) async fn dispatch_interactive_command(
     session_runtime: &SessionRuntime,
