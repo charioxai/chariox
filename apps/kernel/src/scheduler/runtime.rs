@@ -7,8 +7,7 @@ use crate::provider::{ControlOperation, LaunchProviderRequest, RuntimeProviderRu
 use crate::session::{
     PromptQueueItem, PromptSubmissionOutcome, WorkflowCompletionUpdate, WorkflowConsole,
     WorkflowConsoleEntry, WorkflowDefinition, WorkflowDispatch, WorkflowFailureEvent,
-    WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode, WorkflowMessage,
-    WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
+    WorkflowFailureKind, WorkflowMessage, WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
 };
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
@@ -19,13 +18,12 @@ const WORKFLOW_MAX_TURNS_CONFIG_KEY: &str = "workflow.max_turns";
 
 mod completion;
 mod control_mailbox;
+mod failures;
 
 use completion::build_workflow_completion_snapshot;
 pub(crate) use completion::build_workflow_completion_snapshot_from_history;
-use control_mailbox::{
-    clear_workflow_control_mailbox, workflow_node_control_contents,
-    write_workflow_control_mailbox_entry,
-};
+use control_mailbox::{clear_workflow_control_mailbox, workflow_node_control_contents};
+use failures::{provider_run_terminal_diagnostic, record_and_route_workflow_failure};
 
 pub fn schedule_workflow_run_entry_node(
     app: &mut DaemonApp,
@@ -1141,90 +1139,6 @@ pub fn clear_workflow_console(
 ) -> Result<WorkflowConsole, DaemonError> {
     app.sessions_mut()
         .clear_workflow_console(session_id, workflow_id)
-}
-
-fn workflow_failure_policy() -> WorkflowFailurePolicy {
-    WorkflowFailurePolicy::default()
-}
-
-fn provider_run_terminal_diagnostic(app: &DaemonApp, provider_run_id: &str) -> Option<String> {
-    app.providers()
-        .get_run(provider_run_id)
-        .ok()
-        .and_then(|run| run.terminal_diagnostic().map(str::to_string))
-        .filter(|message| !message.trim().is_empty())
-}
-
-fn record_and_route_workflow_failure(
-    app: &mut DaemonApp,
-    session_id: &str,
-    workflow_run_id: &str,
-    failure: &WorkflowFailureEvent,
-) {
-    let _ = app.sessions_mut().record_workflow_failure_event(
-        session_id,
-        workflow_run_id,
-        failure.clone(),
-    );
-    let policy = workflow_failure_policy();
-    if policy.mode() != WorkflowFailurePolicyMode::Notify {
-        return;
-    }
-    route_workflow_failure_mailboxes(app, session_id, workflow_run_id, failure, &policy);
-}
-
-fn route_workflow_failure_mailboxes(
-    app: &DaemonApp,
-    session_id: &str,
-    workflow_run_id: &str,
-    failure: &WorkflowFailureEvent,
-    policy: &WorkflowFailurePolicy,
-) {
-    let workflow_run = match app
-        .sessions()
-        .resolve_workflow_run_ref(session_id, workflow_run_id)
-    {
-        Ok(run) => run,
-        Err(_) => return,
-    };
-    let workflow = match app
-        .sessions()
-        .resolve_workflow_ref(session_id, workflow_run.workflow_id())
-    {
-        Ok(workflow) => workflow,
-        Err(_) => return,
-    };
-    let Some(source_node_run) = workflow_run
-        .node_runs()
-        .iter()
-        .find(|node_run| node_run.id() == failure.source_node_run_id())
-    else {
-        return;
-    };
-    if policy.notify_source_node() {
-        write_workflow_control_mailbox_entry(
-            app,
-            session_id,
-            workflow_run_id,
-            source_node_run.node_id(),
-            failure,
-        );
-    }
-    if !policy.notify_sink_nodes() {
-        return;
-    }
-    for edge_id in failure.edge_ids() {
-        let Some(edge) = workflow.edge(edge_id) else {
-            continue;
-        };
-        write_workflow_control_mailbox_entry(
-            app,
-            session_id,
-            workflow_run_id,
-            edge.to_node_id(),
-            failure,
-        );
-    }
 }
 
 fn prepare_workflow_turn_prompt(
