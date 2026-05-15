@@ -742,6 +742,10 @@ impl DaemonApp {
         let projected_run_id = projected_agent_id.as_deref().and_then(|agent_id| {
             self.providers
                 .get_run_for_agent(session.id(), agent_id)
+                .or_else(|| {
+                    self.provider_run_projection
+                        .get_for_agent(session.id(), agent_id)
+                })
                 .and_then(|run| match run.state() {
                     ProviderRunState::Running | ProviderRunState::Starting => {
                         Some(run.id().to_string())
@@ -760,6 +764,10 @@ impl DaemonApp {
         let projected_run_id = self
             .providers
             .get_run_for_agent(session_id, agent_id)
+            .or_else(|| {
+                self.provider_run_projection
+                    .get_for_agent(session_id, agent_id)
+            })
             .and_then(|run| match run.state() {
                 ProviderRunState::Running | ProviderRunState::Starting => {
                     Some(run.id().to_string())
@@ -1215,9 +1223,19 @@ impl DaemonApp {
             .map(str::to_string);
 
         if let Some(current_active_run_id) = current_active_run_id.as_deref() {
-            let active_run = self.providers.get_run(current_active_run_id)?;
+            let active_run = self
+                .providers
+                .get_run(current_active_run_id)
+                .or_else(|_| {
+                    self.provider_run_projection
+                        .get(current_active_run_id)
+                        .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                            provider_run_id: current_active_run_id.to_string(),
+                        })
+                })?;
             if active_run.agent_instance_id() != Some(agent_id)
                 && active_run.state() == ProviderRunState::Running
+                && active_run.client_interface().is_arroba()
                 && !self.provider_run_has_active_prompt(session_id, &active_run)?
             {
                 let outcome = self
@@ -1232,18 +1250,29 @@ impl DaemonApp {
             }
         }
 
-        if let Some(agent_run) = self.providers.get_run_for_agent(session_id, agent_id) {
+        if let Some(agent_run) = self
+            .providers
+            .get_run_for_agent(session_id, agent_id)
+            .or_else(|| {
+                self.provider_run_projection
+                    .get_for_agent(session_id, agent_id)
+            })
+        {
             match agent_run.state() {
                 ProviderRunState::Running => {
                     self.sessions
                         .set_active_provider_run(session_id, Some(agent_run.id().to_string()))?;
                 }
                 ProviderRunState::Parked => {
-                    ProviderRunActivationState::resume_provider_run_for_session(
-                        self,
-                        session_id,
-                        agent_run.id(),
-                    )?;
+                    if self.providers.get_run(agent_run.id()).is_ok() {
+                        ProviderRunActivationState::resume_provider_run_for_session(
+                            self,
+                            session_id,
+                            agent_run.id(),
+                        )?;
+                    } else {
+                        self.sessions.set_active_provider_run(session_id, None)?;
+                    }
                 }
                 ProviderRunState::Starting => {
                     self.sessions
@@ -1270,7 +1299,16 @@ impl DaemonApp {
         else {
             return Ok(false);
         };
-        let active_run = self.providers.get_run(&active_provider_run_id)?;
+        let active_run = self
+            .providers
+            .get_run(&active_provider_run_id)
+            .or_else(|_| {
+                self.provider_run_projection
+                    .get(&active_provider_run_id)
+                    .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                        provider_run_id: active_provider_run_id.clone(),
+                    })
+            })?;
         if active_run.agent_instance_id() == Some(target_agent_id)
             || active_run.state() != ProviderRunState::Running
         {

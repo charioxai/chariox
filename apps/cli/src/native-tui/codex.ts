@@ -132,6 +132,10 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       }
       bindState.promise = Promise.resolve(run)
       bindState.run = run
+      if (run.provider_session_id) {
+        providerSessionId = run.provider_session_id
+        debugNativeCodex("thread_observed", { threadId: run.provider_session_id })
+      }
       upstreamEndpoint = run.structured_endpoint
       bindProviderEndpoint = ""
     } else if (options.serverInKernel) {
@@ -915,10 +919,10 @@ function bindObservedThread(
   },
   threadId: string,
 ) {
+  debugNativeCodex("thread_observed", { threadId })
   if (options.bindState.promise) return
   const structuredEndpoint = options.bindState.structuredEndpoint
   if (!structuredEndpoint) throw new Error("Codex proxy endpoint was not initialized before thread binding")
-  debugNativeCodex("thread_observed", { threadId })
   options.bindState.promise = launchNativeProviderRun({
     client: options.client,
     sessionId: options.sessionId,

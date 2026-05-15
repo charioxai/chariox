@@ -840,8 +840,10 @@ async function runProviderScenario({
     } else if (provider === "codex") {
       proxyA = (await waitForFileMatch(logs.a, /proxy:\s+(ws:\/\/127\.0\.0\.1:\d+)/)).match[1]
       proxyB = (await waitForFileMatch(logs.b, /proxy:\s+(ws:\/\/127\.0\.0\.1:\d+)/)).match[1]
-      providerSessionA = (await waitForFileMatch(logs.proxyA, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
-      providerSessionB = (await waitForFileMatch(logs.proxyB, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
+      if (!machineRef) {
+        providerSessionA = (await waitForFileMatch(logs.proxyA, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
+        providerSessionB = (await waitForFileMatch(logs.proxyB, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
+      }
     }
 
     client = relayClient(relayUrl, relayToken, targetDaemonAlias)
@@ -951,6 +953,8 @@ async function runProviderScenario({
     if (provider === "codex") {
       const expectedProxySignal = nativeEnv.ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE
         ? "provider_run_bound"
+        : machineRef
+          ? "native_prompt_submitted"
         : "kernel_connected"
       if (!proxyALog.includes(expectedProxySignal) || !proxyBLog.includes(expectedProxySignal)) {
         throw new Error(`remote Codex native proxies did not record ${expectedProxySignal}`)
