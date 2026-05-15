@@ -1,0 +1,250 @@
+use crate::app::DaemonApp;
+use crate::error::DaemonError;
+use crate::provider::{ProviderRunState, RuntimeProviderRun};
+use crate::session::RuntimeSession;
+
+use super::provider_activation::ProviderRunActivationState;
+use super::provider_liveness::clear_active_provider_run_session_pointer;
+
+impl DaemonApp {
+    pub(crate) fn project_session_runtime_view(&self, session: &mut RuntimeSession) {
+        if let Some(active_provider_run_id) = session.active_provider_run_id() {
+            if let Ok(active_run) = self.providers.get_run(active_provider_run_id) {
+                let active_run_agent_id = active_run.agent_instance_id();
+                let active_prompt_is_running = active_run_agent_id
+                    .and_then(|agent_id| {
+                        self.prompt_state_owner
+                            .active_prompt_for_agent_snapshot(session, agent_id)
+                    })
+                    .is_some();
+                if active_run.state() == ProviderRunState::Running && active_prompt_is_running {
+                    return;
+                }
+            }
+        }
+
+        let projected_agent_id = self
+            .prompt_state_owner
+            .active_prompt_agent_id(session)
+            .or_else(|| session.focused_agent_id().map(str::to_string));
+        let projected_run_id = projected_agent_id.as_deref().and_then(|agent_id| {
+            self.providers
+                .get_run_for_agent(session.id(), agent_id)
+                .or_else(|| {
+                    self.provider_run_projection
+                        .get_for_agent(session.id(), agent_id)
+                })
+                .and_then(|run| match run.state() {
+                    ProviderRunState::Running | ProviderRunState::Starting => {
+                        Some(run.id().to_string())
+                    }
+                    ProviderRunState::Parked | ProviderRunState::Ended => None,
+                })
+        });
+        session.set_active_provider_run(projected_run_id);
+    }
+
+    pub(crate) fn project_active_provider_run_for_agent(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let projected_run_id = self
+            .providers
+            .get_run_for_agent(session_id, agent_id)
+            .or_else(|| {
+                self.provider_run_projection
+                    .get_for_agent(session_id, agent_id)
+            })
+            .and_then(|run| match run.state() {
+                ProviderRunState::Running | ProviderRunState::Starting => {
+                    Some(run.id().to_string())
+                }
+                ProviderRunState::Parked | ProviderRunState::Ended => None,
+            });
+        let _ = self
+            .sessions
+            .set_active_provider_run(session_id, projected_run_id)?;
+        Ok(())
+    }
+
+    pub(crate) fn sync_active_provider_run_for_agent(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let current_active_run_id = self
+            .sessions
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .map(str::to_string);
+
+        if let Some(current_active_run_id) = current_active_run_id.as_deref() {
+            let active_run = self.providers.get_run(current_active_run_id).or_else(|_| {
+                self.provider_run_projection
+                    .get(current_active_run_id)
+                    .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                        provider_run_id: current_active_run_id.to_string(),
+                    })
+            })?;
+            if active_run.agent_instance_id() != Some(agent_id)
+                && active_run.state() == ProviderRunState::Running
+                && active_run.client_interface().is_arroba()
+                && !self.provider_run_has_active_prompt(session_id, &active_run)?
+            {
+                let outcome = self
+                    .providers
+                    .park_run_provider_only(session_id, current_active_run_id)?;
+                clear_active_provider_run_session_pointer(self, session_id, outcome.run().id())?;
+                self.update_provider_run_projection(outcome.into_run());
+            }
+        }
+
+        if let Some(agent_run) = self
+            .providers
+            .get_run_for_agent(session_id, agent_id)
+            .or_else(|| {
+                self.provider_run_projection
+                    .get_for_agent(session_id, agent_id)
+            })
+        {
+            match agent_run.state() {
+                ProviderRunState::Running => {
+                    self.sessions
+                        .set_active_provider_run(session_id, Some(agent_run.id().to_string()))?;
+                }
+                ProviderRunState::Parked => {
+                    if self.providers.get_run(agent_run.id()).is_ok() {
+                        ProviderRunActivationState::resume_provider_run_for_session(
+                            self,
+                            session_id,
+                            agent_run.id(),
+                        )?;
+                    } else {
+                        self.sessions.set_active_provider_run(session_id, None)?;
+                    }
+                }
+                ProviderRunState::Starting => {
+                    self.sessions
+                        .set_active_provider_run(session_id, Some(agent_run.id().to_string()))?;
+                }
+                ProviderRunState::Ended => {
+                    self.sessions.set_active_provider_run(session_id, None)?;
+                }
+            }
+        } else {
+            self.sessions.set_active_provider_run(session_id, None)?;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn should_defer_provider_run_sync_for_focus_change(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        let Some(active_provider_run_id) = session.active_provider_run_id().map(str::to_string)
+        else {
+            return Ok(false);
+        };
+        let active_run = self
+            .providers
+            .get_run(&active_provider_run_id)
+            .or_else(|_| {
+                self.provider_run_projection
+                    .get(&active_provider_run_id)
+                    .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                        provider_run_id: active_provider_run_id.clone(),
+                    })
+            })?;
+        if active_run.agent_instance_id() == Some(target_agent_id)
+            || active_run.state() != ProviderRunState::Running
+        {
+            return Ok(false);
+        }
+
+        Ok(self.prompt_state_owner.has_any_active_prompt(&session)
+            || session.agents().iter().any(|agent| agent.is_processing()))
+    }
+
+    pub(crate) fn sync_focused_provider_run_if_idle(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        if session.agents().len() > 1 {
+            let focused_agent_id = session.focused_agent_id().map(str::to_string);
+            if let Some(focused_agent_id) = focused_agent_id {
+                let active_prompt_agent_id =
+                    self.prompt_state_owner.active_prompt_agent_id(&session);
+                let has_active_prompt = self.prompt_state_owner.has_any_active_prompt(&session);
+                let has_processing_agent =
+                    session.agents().iter().any(|agent| agent.is_processing());
+                if !has_active_prompt {
+                    let current_active_run_id =
+                        session.active_provider_run_id().map(str::to_string);
+                    if let Some(current_active_run_id) = current_active_run_id.as_deref() {
+                        let active_run = self.providers.get_run(current_active_run_id)?;
+                        if active_run.agent_instance_id() != Some(focused_agent_id.as_str())
+                            && active_run.state() == ProviderRunState::Running
+                            && !self.provider_run_has_active_prompt(session_id, &active_run)?
+                        {
+                            let outcome = self
+                                .providers
+                                .park_run_provider_only(session_id, current_active_run_id)?;
+                            clear_active_provider_run_session_pointer(
+                                self,
+                                session_id,
+                                outcome.run().id(),
+                            )?;
+                            self.update_provider_run_projection(outcome.into_run());
+                        }
+                    }
+                }
+                if has_active_prompt {
+                    if let Some(projected_agent_id) = active_prompt_agent_id.as_deref() {
+                        self.project_active_provider_run_for_agent(session_id, projected_agent_id)?;
+                    }
+                } else if has_processing_agent {
+                    self.project_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+                } else {
+                    self.sync_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+                }
+            } else {
+                self.sessions.set_active_provider_run(session_id, None)?;
+            }
+            return Ok(());
+        }
+        if self.prompt_state_owner.has_any_active_prompt(&session)
+            || session.agents().iter().any(|agent| agent.is_processing())
+        {
+            return Ok(());
+        }
+
+        let focused_agent_id = session.focused_agent_id().map(str::to_string);
+        if let Some(focused_agent_id) = focused_agent_id {
+            self.sync_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+        } else {
+            self.sessions.set_active_provider_run(session_id, None)?;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn provider_run_has_active_prompt(
+        &self,
+        session_id: &str,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<bool, DaemonError> {
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(false);
+        };
+        let session = self.sessions.get_session(session_id)?;
+        Ok(self
+            .prompt_state_owner
+            .active_prompt_for_agent_snapshot(&session, agent_id)
+            .is_some())
+    }
+}
