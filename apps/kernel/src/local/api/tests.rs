@@ -40,15 +40,16 @@ use super::{
     ListWorkspaceFilesRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
     PollRuntimeNoticesRequest, PushWorkspaceBranchRequest, QueryHistoryRequest,
     ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
-    RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
-    RequestNativeProviderInteractionRequest, ResumeWorkflowRunRequest, RevokeSessionInviteRequest,
+    RemoveWorkflowNodeRequest, RequestNativeProviderInteractionRequest, ResolveSessionRequest,
+    ResolveWorkflowRequest, ResumeWorkflowRunRequest, RevokeSessionInviteRequest,
     RunShellCapabilityRequest, SemanticHistoryMatch, SemanticSearchHistoryRequest,
     SendTerminalInputRequest, ShowWorkspaceLinkRequest, SpawnAgentRequest,
     StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
     UpdateAgentConfigRequest, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
-    UpdateProviderRunSelectionRequest, UpdateSessionConfigRequest, UpdateWorkflowCanvasLayoutRequest,
-    UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent, WorkspacePullRequestRecord,
-    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
+    UpdateProviderRunSelectionRequest, UpdateSessionConfigRequest,
+    UpdateWorkflowCanvasLayoutRequest, UpdateWorkflowNodeInstructionsRequest, WorkspaceFileContent,
+    WorkspacePullRequestRecord, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
+    LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 #[test]
@@ -2912,7 +2913,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
         );
     });
     let workflow_transfer_root =
-        DaemonApp::attachment_artifact_root(session.id(), &workflow_attachment_id, "transfers");
+        crate::app::attachment_artifact_root(session.id(), &workflow_attachment_id, "transfers");
     std::fs::create_dir_all(&workflow_transfer_root).expect("workflow transfer root should exist");
     let workflow_artifact_path = workflow_transfer_root.join("generated-plan.md");
     std::fs::write(&workflow_artifact_path, "# generated plan\n")

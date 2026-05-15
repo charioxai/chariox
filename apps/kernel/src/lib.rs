@@ -1493,7 +1493,7 @@ mod tests {
             .capture(crate::capability::CaptureScreenshotRequest::new(
                 session.id(),
                 attachment.id(),
-                DaemonApp::attachment_artifact_root(session.id(), attachment.id(), "screenshots"),
+                crate::app::attachment_artifact_root(session.id(), attachment.id(), "screenshots"),
             ))
             .expect("screenshot request should return structured result");
         std::env::remove_var("ARROBA_SCREENSHOT_DISABLE");
@@ -1544,7 +1544,7 @@ mod tests {
                 session.id(),
                 attachment.id(),
                 std::path::PathBuf::from(session.worktree_id()),
-                DaemonApp::attachment_artifact_root(session.id(), attachment.id(), "transfers"),
+                crate::app::attachment_artifact_root(session.id(), attachment.id(), "transfers"),
                 source,
                 None,
             ))

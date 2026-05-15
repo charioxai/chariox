@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::app::DaemonApp;
+use crate::app::attachment_artifact_root;
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 
@@ -21,7 +21,7 @@ pub(super) struct CapabilityContext {
 
 impl CapabilityContext {
     pub(super) fn artifact_root(&self, category: &str) -> PathBuf {
-        DaemonApp::attachment_artifact_root(&self.session_id, &self.attachment_id, category)
+        attachment_artifact_root(&self.session_id, &self.attachment_id, category)
     }
 }
 

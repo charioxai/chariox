@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::runtime::{Handle, Runtime};
 
+pub(crate) mod attachment_artifacts;
 mod daemon_lifecycle;
 mod durable_runtime_state;
 mod kernel_agent;
@@ -35,6 +35,7 @@ pub(crate) mod terminal_input;
 mod workflow_design_events;
 pub(crate) mod workflow_runtime;
 
+pub(crate) use attachment_artifacts::{attachment_artifact_root, attachment_artifact_roots};
 pub(crate) use prompt_activity::{
     ActivePromptState, ActiveTurnState, ActiveTurnStore, PromptActivityStore,
     PromptWorkspaceClaimStore,
@@ -128,36 +129,6 @@ pub struct DaemonApp {
 }
 
 impl DaemonApp {
-    pub(crate) fn artifact_attachment_segment(attachment_id: &str) -> String {
-        attachment_id
-            .chars()
-            .map(|ch| match ch {
-                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-                ch if ch.is_control() => '_',
-                ch => ch,
-            })
-            .collect()
-    }
-
-    pub(crate) fn attachment_artifact_root(
-        session_id: &str,
-        attachment_id: &str,
-        category: &str,
-    ) -> PathBuf {
-        std::env::temp_dir()
-            .join("arroba-session-artifacts")
-            .join(session_id)
-            .join(category)
-            .join(Self::artifact_attachment_segment(attachment_id))
-    }
-
-    pub(crate) fn attachment_artifact_roots(session_id: &str, attachment_id: &str) -> [PathBuf; 2] {
-        [
-            Self::attachment_artifact_root(session_id, attachment_id, "screenshots"),
-            Self::attachment_artifact_root(session_id, attachment_id, "transfers"),
-        ]
-    }
-
     pub fn bootstrap(config: DaemonConfig) -> Result<Self, DaemonError> {
         config.validate()?;
 

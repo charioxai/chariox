@@ -5,7 +5,7 @@ use std::time::UNIX_EPOCH;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::app::DaemonApp;
+use crate::app::{attachment_artifact_roots, DaemonApp};
 use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
 use crate::session::{
     RuntimeSession, WorkflowArtifactRef, WorkflowCompletionSnapshot, WorkflowOutputPayload,
@@ -275,7 +275,7 @@ fn collect_workflow_artifact_refs(
 ) -> Vec<WorkflowArtifactRef> {
     let attachment_id = super::workflow_prompt_source_attachment_id(workflow_run_id);
     let mut artifacts = Vec::new();
-    for root in DaemonApp::attachment_artifact_roots(session_id, &attachment_id) {
+    for root in attachment_artifact_roots(session_id, &attachment_id) {
         let kind = root
             .parent()
             .and_then(|parent| parent.file_name())
