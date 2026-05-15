@@ -6,11 +6,21 @@ use std::time::Duration;
 
 mod native_interaction;
 mod operation_lanes;
+mod runtime_slots;
 pub(crate) use native_interaction::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionBridgeStore,
     ProviderNativeInteractionResolution,
 };
 pub(crate) use operation_lanes::ProviderRunOperationLanes;
+#[cfg(test)]
+use runtime_slots::runtime_should_restore;
+use runtime_slots::{
+    clear_runtime_state, opencode_slot, restore_claude_runtime_if_live,
+    restore_codex_runtime_if_live, restore_opencode_runtime_if_live,
+    runtime_slot_missing_or_empty_claude, runtime_slot_missing_or_empty_codex,
+    runtime_slot_missing_or_empty_opencode, take_claude_runtime, take_codex_runtime,
+    take_opencode_runtime, ClaudeRuntimeSlot, CodexRuntimeSlot, OpenCodeRuntimeSlot,
+};
 
 use crate::error::DaemonError;
 use crate::session::PromptAttachment;
@@ -27,9 +37,6 @@ use super::{
     ProviderPromptSignalBatch, RuntimeProviderRun,
 };
 
-type ClaudeRuntimeSlot = Arc<Mutex<Option<ClaudeRuntimeState>>>;
-type CodexRuntimeSlot = Arc<Mutex<Option<CodexRuntimeState>>>;
-type OpenCodeRuntimeSlot = Arc<Mutex<Option<OpenCodeRuntimeState>>>;
 const PROVIDER_RUN_COMMAND_QUEUE_LIMIT: usize = 64;
 
 #[derive(Clone, Default)]
@@ -1299,195 +1306,6 @@ fn execute_output_poll_command(
     }))
 }
 
-fn claude_slot(
-    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
-    run_id: &str,
-) -> Result<ClaudeRuntimeSlot, DaemonError> {
-    claude_runs
-        .lock()
-        .expect("claude runtime map poisoned")
-        .get(run_id)
-        .cloned()
-        .ok_or_else(|| DaemonError::ProviderProtocol {
-            provider_run_id: run_id.to_string(),
-            operation: "claude_session_missing",
-            message: "no Claude Code session is bound to this provider run".to_string(),
-        })
-}
-
-fn codex_slot(
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
-    run_id: &str,
-) -> Result<CodexRuntimeSlot, DaemonError> {
-    codex_runs
-        .lock()
-        .expect("codex runtime map poisoned")
-        .get(run_id)
-        .cloned()
-        .ok_or_else(|| DaemonError::ProviderProtocol {
-            provider_run_id: run_id.to_string(),
-            operation: "codex_thread_missing",
-            message: "no Codex thread is bound to this provider run".to_string(),
-        })
-}
-
-fn opencode_slot(
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
-    run_id: &str,
-) -> Result<OpenCodeRuntimeSlot, DaemonError> {
-    opencode_runs
-        .lock()
-        .expect("opencode runtime map poisoned")
-        .get(run_id)
-        .cloned()
-        .ok_or_else(|| DaemonError::ProviderProtocol {
-            provider_run_id: run_id.to_string(),
-            operation: "opencode_session_missing",
-            message: "no OpenCode session is bound to this provider run".to_string(),
-        })
-}
-
-fn take_claude_runtime(
-    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
-    run_id: &str,
-) -> Result<(ClaudeRuntimeSlot, ClaudeRuntimeState), DaemonError> {
-    let slot = claude_slot(claude_runs, run_id)?;
-    let state = slot
-        .lock()
-        .expect("claude runtime slot poisoned")
-        .take()
-        .ok_or_else(|| DaemonError::ProviderProtocol {
-            provider_run_id: run_id.to_string(),
-            operation: "claude_session_missing",
-            message: "no Claude Code session is bound to this provider run".to_string(),
-        })?;
-    Ok((slot, state))
-}
-
-fn take_codex_runtime(
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
-    run_id: &str,
-) -> Result<(CodexRuntimeSlot, CodexRuntimeState), DaemonError> {
-    let slot = codex_slot(codex_runs, run_id)?;
-    let state = slot
-        .lock()
-        .expect("codex runtime slot poisoned")
-        .take()
-        .ok_or_else(|| DaemonError::ProviderProtocol {
-            provider_run_id: run_id.to_string(),
-            operation: "codex_thread_missing",
-            message: "no Codex thread is bound to this provider run".to_string(),
-        })?;
-    Ok((slot, state))
-}
-
-fn take_opencode_runtime(
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
-    run_id: &str,
-) -> Result<(OpenCodeRuntimeSlot, OpenCodeRuntimeState), DaemonError> {
-    let slot = opencode_slot(opencode_runs, run_id)?;
-    let state = slot
-        .lock()
-        .expect("opencode runtime slot poisoned")
-        .take()
-        .ok_or_else(|| DaemonError::ProviderProtocol {
-            provider_run_id: run_id.to_string(),
-            operation: "opencode_session_missing",
-            message: "no OpenCode session is bound to this provider run".to_string(),
-        })?;
-    Ok((slot, state))
-}
-
-fn runtime_slot_missing_or_empty_claude(
-    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
-    run_id: &str,
-) -> bool {
-    match claude_slot(claude_runs, run_id) {
-        Ok(slot) => slot.lock().expect("claude runtime slot poisoned").is_none(),
-        Err(_) => true,
-    }
-}
-
-fn runtime_slot_missing_or_empty_codex(
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
-    run_id: &str,
-) -> bool {
-    match codex_slot(codex_runs, run_id) {
-        Ok(slot) => slot.lock().expect("codex runtime slot poisoned").is_none(),
-        Err(_) => true,
-    }
-}
-
-fn runtime_slot_missing_or_empty_opencode(
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
-    run_id: &str,
-) -> bool {
-    match opencode_slot(opencode_runs, run_id) {
-        Ok(slot) => slot
-            .lock()
-            .expect("opencode runtime slot poisoned")
-            .is_none(),
-        Err(_) => true,
-    }
-}
-
-fn restore_claude_runtime_if_live(
-    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
-    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
-    run_id: &str,
-    slot: &ClaudeRuntimeSlot,
-    state: ClaudeRuntimeState,
-) {
-    if runtime_should_restore(cleared_runs, claude_runs, run_id, slot) {
-        *slot.lock().expect("claude runtime slot poisoned") = Some(state);
-    }
-}
-
-fn restore_codex_runtime_if_live(
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
-    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
-    run_id: &str,
-    slot: &CodexRuntimeSlot,
-    state: CodexRuntimeState,
-) {
-    if runtime_should_restore(cleared_runs, codex_runs, run_id, slot) {
-        *slot.lock().expect("codex runtime slot poisoned") = Some(state);
-    }
-}
-
-fn restore_opencode_runtime_if_live(
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
-    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
-    run_id: &str,
-    slot: &OpenCodeRuntimeSlot,
-    state: OpenCodeRuntimeState,
-) {
-    if runtime_should_restore(cleared_runs, opencode_runs, run_id, slot) {
-        *slot.lock().expect("opencode runtime slot poisoned") = Some(state);
-    } else {
-        state.stop();
-    }
-}
-
-fn runtime_should_restore<T>(
-    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
-    runs: &Arc<Mutex<BTreeMap<String, Arc<Mutex<Option<T>>>>>>,
-    run_id: &str,
-    slot: &Arc<Mutex<Option<T>>>,
-) -> bool {
-    if cleared_runs
-        .lock()
-        .expect("cleared provider run set poisoned")
-        .contains(run_id)
-    {
-        return false;
-    }
-    runs.lock()
-        .expect("runtime map poisoned")
-        .get(run_id)
-        .is_some_and(|current_slot| Arc::ptr_eq(current_slot, slot))
-}
-
 fn clear_structured_prompt_io_in_flight(
     structured_prompt_submissions: &Arc<Mutex<BTreeSet<String>>>,
     run_id: &str,
@@ -1506,41 +1324,6 @@ fn clear_structured_output_poll_in_flight(
         .lock()
         .expect("structured output poll set poisoned")
         .remove(run_id);
-}
-
-fn clear_runtime_state(
-    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
-    run_id: &str,
-    stop_opencode: bool,
-) {
-    if let Some(slot) = claude_runs
-        .lock()
-        .expect("claude runtime map poisoned")
-        .remove(run_id)
-    {
-        let _ = slot.lock().expect("claude runtime slot poisoned").take();
-    }
-    if let Some(slot) = codex_runs
-        .lock()
-        .expect("codex runtime map poisoned")
-        .remove(run_id)
-    {
-        let _ = slot.lock().expect("codex runtime slot poisoned").take();
-    }
-    if let Some(slot) = opencode_runs
-        .lock()
-        .expect("opencode runtime map poisoned")
-        .remove(run_id)
-    {
-        let state = slot.lock().expect("opencode runtime slot poisoned").take();
-        if let Some(state) = state {
-            if stop_opencode {
-                state.stop();
-            }
-        }
-    }
 }
 
 fn push_finished_abort(
