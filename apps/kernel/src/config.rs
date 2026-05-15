@@ -13,6 +13,7 @@ mod persisted_daemon;
 mod provider;
 mod slices;
 mod storage;
+mod user_config_schema;
 
 use credentials::validate_credentials;
 pub use credentials::{
@@ -38,6 +39,7 @@ pub use storage::{
     UserArchiveArtifactsConfig, UserArchiveHistoryConfig, UserArtifactsConfig, UserHistoryConfig,
     UserOperationalArtifactsConfig, UserOperationalHistoryConfig, UserStateConfig,
 };
+pub use user_config_schema::UserConfigSchemaEntry;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonConfig {
@@ -69,19 +71,6 @@ pub struct DaemonConfig {
     pub provider_catalog_read_delay_ms: u64,
     pub provider_process_list_delay_ms: u64,
     pub provider_runtime_init_delay_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UserConfigSchemaEntry {
-    pub path: String,
-    pub value_type: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_values: Vec<String>,
-    pub settable: bool,
-    pub unsettable: bool,
-    pub effect: String,
-    pub status: String,
-    pub description: String,
 }
 
 impl DaemonConfig {
@@ -467,7 +456,7 @@ impl DaemonConfig {
     }
 
     pub fn user_config_schema() -> Vec<UserConfigSchemaEntry> {
-        user_config_schema_entries().to_vec()
+        user_config_schema::entries()
     }
 
     pub fn persist_relay_config(&self) -> Result<(), DaemonError> {
@@ -688,96 +677,6 @@ impl DaemonConfig {
         }
         Ok(())
     }
-}
-
-fn user_config_schema_entry(
-    path: &str,
-    value_type: &str,
-    allowed_values: &[&str],
-    settable: bool,
-    unsettable: bool,
-    effect: &str,
-    status: &str,
-    description: &str,
-) -> UserConfigSchemaEntry {
-    UserConfigSchemaEntry {
-        path: path.to_string(),
-        value_type: value_type.to_string(),
-        allowed_values: allowed_values
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect(),
-        settable,
-        unsettable,
-        effect: effect.to_string(),
-        status: status.to_string(),
-        description: description.to_string(),
-    }
-}
-
-fn user_config_schema_entries() -> Vec<UserConfigSchemaEntry> {
-    vec![
-        user_config_schema_entry(
-            "providers.managed_io",
-            "enum",
-            &["required", "unrestricted"],
-            true,
-            true,
-            "provider_reload",
-            "live",
-            "Global managed I/O write-enforcement policy for supported provider runs.",
-        ),
-        user_config_schema_entry("providers.default", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted provider default; currently not used by launch defaulting."),
-        user_config_schema_entry("providers.model", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted model default; currently not used by launch defaulting."),
-        user_config_schema_entry("providers.account_profile", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted account profile default; currently not used by launch defaulting."),
-        user_config_schema_entry("providers.effort", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted effort default; currently not used by launch defaulting."),
-        user_config_schema_entry("ui.theme", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted UI theme value; terminal UI currently uses CLI preferences."),
-        user_config_schema_entry("ui.multi_agent_response_layout", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted response layout value; terminal UI currently uses CLI/session preferences."),
-        user_config_schema_entry("ui.max_agents_per_screen", "u32", &[], true, true, "no_runtime_effect", "unwired", "Persisted pane-count value; terminal UI currently uses CLI preferences."),
-        user_config_schema_entry("ui.worktree_aliases.<alias>", "string", &[], true, true, "no_runtime_effect", "unwired", "Pattern key for a worktree alias entry."),
-        user_config_schema_entry("relay.url", "string|null", &[], true, true, "no_runtime_effect", "unwired", "Persisted user-config relay URL; daemon relay connection currently uses daemon config."),
-        user_config_schema_entry("relay.accept_remote_leases", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Persisted remote-lease acceptance flag; daemon runtime currently uses daemon config."),
-        user_config_schema_entry("history.operational.backend", "enum", &["sqlite"], true, false, "restart_required", "boot", "Operational history storage backend."),
-        user_config_schema_entry("history.operational.path", "string", &[], true, true, "restart_required", "boot", "Operational history SQLite database path."),
-        user_config_schema_entry("history.operational.retention_days", "u32", &[], true, true, "no_runtime_effect", "unwired", "Retention-days setting; no pruning job currently consumes it."),
-        user_config_schema_entry("history.operational.max_size_mb", "u32", &[], true, true, "no_runtime_effect", "unwired", "Max-size setting; no pruning job currently consumes it."),
-        user_config_schema_entry("history.operational.keep_pinned_sessions", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Pinned-session retention setting; no pruning job currently consumes it."),
-        user_config_schema_entry("history.operational.archive_inactive_after_days", "u32", &[], true, true, "no_runtime_effect", "unwired", "Inactive-session archival threshold; no archival scheduler currently consumes it."),
-        user_config_schema_entry("history.operational.archive_deleted_agents", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Deleted-agent archival flag; deletion flow does not currently consume it."),
-        user_config_schema_entry("history.archive.mode", "enum", &["disabled", "external"], true, true, "none", "live", "History archive mode."),
-        user_config_schema_entry("history.archive.url", "string", &[], true, true, "none", "live", "External history archive endpoint."),
-        user_config_schema_entry("history.archive.token_env", "string", &[], true, true, "none", "live", "Environment variable name for the history archive bearer token."),
-        user_config_schema_entry("history.archive.archive_deleted_agents", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Archive-deleted-agents flag; deletion flow does not currently consume it."),
-        user_config_schema_entry("history.archive.archive_before_delete", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Archive-before-delete flag; deletion flow does not currently consume it."),
-        user_config_schema_entry("history.archive.delete_operational_after_verified_archive", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Delete-after-archive flag; no archive cleanup flow currently consumes it."),
-        user_config_schema_entry("history.archive.require_durable_acceptance", "bool", &["true", "false"], true, true, "none", "live", "Require durable archive acceptance for history events."),
-        user_config_schema_entry("artifacts.operational.backend", "enum", &["filesystem"], true, false, "none", "live", "Operational artifact storage backend."),
-        user_config_schema_entry("artifacts.operational.root", "string", &[], true, true, "none", "live", "Operational artifact filesystem root."),
-        user_config_schema_entry("artifacts.operational.index_path", "string", &[], true, true, "none", "live", "Operational artifact SQLite index path."),
-        user_config_schema_entry("artifacts.operational.retention_days", "u32", &[], true, true, "no_runtime_effect", "unwired", "Artifact retention setting; no cleanup job currently consumes it."),
-        user_config_schema_entry("artifacts.archive.mode", "enum", &["disabled", "external"], true, true, "none", "live", "Artifact archive mode."),
-        user_config_schema_entry("artifacts.archive.url", "string", &[], true, true, "none", "live", "External artifact archive endpoint."),
-        user_config_schema_entry("artifacts.archive.token_env", "string", &[], true, true, "none", "live", "Environment variable name for the artifact archive bearer token."),
-        user_config_schema_entry("artifacts.archive.require_durable_acceptance", "bool", &["true", "false"], true, true, "none", "live", "Require durable archive acceptance for artifact events."),
-        user_config_schema_entry("state.backend", "enum", &["sqlite"], true, false, "restart_required", "boot", "Durable kernel state backend."),
-        user_config_schema_entry("state.path", "string", &[], true, true, "restart_required", "boot", "Durable kernel state SQLite database path."),
-        user_config_schema_entry("state.snapshot_interval_events", "u32", &[], true, true, "none", "live", "Number of state events between durable snapshots."),
-        user_config_schema_entry("slices.root", "string", &[], true, true, "none", "live", "Arroba-owned slice metadata, logs, and build-helper root."),
-        user_config_schema_entry("slices.linux.docker_image", "string", &[], true, true, "none", "live", "Docker image tag used for new Linux slices."),
-        user_config_schema_entry("slices.linux.build_image", "enum", &["auto", "always", "never"], true, true, "none", "live", "Linux slice image build policy."),
-        user_config_schema_entry("slices.linux.extension_dockerfile", "string", &[], true, true, "none", "live", "Optional user Dockerfile layered on top of the Linux slice image."),
-        user_config_schema_entry("slices.linux.memory_mb", "u32", &[], true, true, "none", "live", "Optional Docker memory limit for new Linux slice containers."),
-        user_config_schema_entry("slices.linux.cpus", "string", &[], true, true, "none", "live", "Optional Docker CPU limit for new Linux slice containers."),
-        user_config_schema_entry("slices.linux.idle_timeout_minutes", "u32", &[], true, true, "no_runtime_effect", "unwired", "Future idle-stop timeout for Linux slices."),
-        user_config_schema_entry("slices.linux.screen_width", "u32", &[], true, true, "none", "live", "Linux slice virtual screen width."),
-        user_config_schema_entry("slices.linux.screen_height", "u32", &[], true, true, "none", "live", "Linux slice virtual screen height."),
-        user_config_schema_entry("kernel.websocket_host", "string", &[], true, true, "restart_required", "boot", "Kernel websocket bind host."),
-        user_config_schema_entry("kernel.websocket_port", "port", &[], true, true, "restart_required", "boot", "Kernel websocket bind port."),
-        user_config_schema_entry("kernel.runtime_mcp_host", "string", &[], true, true, "restart_required", "boot", "Runtime MCP bind host."),
-        user_config_schema_entry("kernel.runtime_mcp_port", "port", &[], true, true, "restart_required", "boot", "Runtime MCP bind port."),
-        user_config_schema_entry("credential_vault.service", "string", &[], true, false, "none", "live", "OS keychain service namespace for vault-backed credentials."),
-        user_config_schema_entry("version", "u32", &[], true, false, "none", "internal", "User config schema version; migration-owned and not recommended for manual edits."),
-    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
