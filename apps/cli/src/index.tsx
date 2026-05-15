@@ -94,7 +94,6 @@ import {
   aliasAgentRequest,
   attachToSessionRequest,
   attachWorkspaceLinkRequest,
-  approveRemoteMachineRequest,
   cancelActivePromptRequest,
   connectCloudRelayRequest,
   configureRelayRequest,
@@ -109,7 +108,6 @@ import {
   detachFromSessionRequest,
   detachWorkspaceLinkRequest,
   endSessionRequest,
-  forgetRemoteMachineRequest,
   focusAgentRequest,
   getMcpServerRequest,
   grantAgentCapabilityRequest,
@@ -133,8 +131,6 @@ import {
   listProviderProcessesRequest,
   listSkillsRequest,
   listWorkspaceLinksRequest,
-  listRemoteMachineKernelsRequest,
-  listRemoteMachinesRequest,
   relayStatusRequest,
   logoutProviderRequest,
   listSessionsRequest,
@@ -156,7 +152,6 @@ import {
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
   revokeAgentCapabilityRequest,
-  renameRemoteMachineRequest,
   resolveSessionRequest,
   setUserConfigValueRequest,
   showWorkspaceLinkRequest,
@@ -364,6 +359,13 @@ import {
   resolveActiveWorkflowRun,
 } from "./workflow-prompt-state.js"
 import { WorkspaceLayout } from "./workspace-layout.js"
+import {
+  approveRemoteMachine,
+  forgetRemoteMachine,
+  listRemoteMachineKernels,
+  listRemoteMachines,
+  renameRemoteMachine,
+} from "./remote-machine-api.js"
 import {
   createSlice,
   deleteSlice,
@@ -10105,41 +10107,6 @@ async function unsetUserConfigValue(
 ): Promise<ArrobaUserConfigPayload> {
   const response = await client.send<Record<string, unknown>>(unsetUserConfigValueRequest(path))
   return expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
-}
-
-async function listRemoteMachines(client: LocalIpcClient): Promise<RemoteMachineView[]> {
-  const response = await client.send<Record<string, unknown>>(listRemoteMachinesRequest())
-  const payload = expectVariant<{
-    machines: RemoteMachineView[]
-  }>(response, "RemoteMachinesListed")
-  return payload.machines
-}
-
-async function approveRemoteMachine(client: LocalIpcClient, machineRef: string): Promise<RemoteMachineView> {
-  const response = await client.send<Record<string, unknown>>(approveRemoteMachineRequest(machineRef))
-  return expectVariant<{ machine: RemoteMachineView }>(response, "RemoteMachineApproved").machine
-}
-
-async function forgetRemoteMachine(client: LocalIpcClient, machineRef: string): Promise<RemoteMachineView> {
-  const response = await client.send<Record<string, unknown>>(forgetRemoteMachineRequest(machineRef))
-  return expectVariant<{ machine: RemoteMachineView }>(response, "RemoteMachineForgotten").machine
-}
-
-async function renameRemoteMachine(
-  client: LocalIpcClient,
-  machineRef: string,
-  alias: string,
-): Promise<RemoteMachineView> {
-  const response = await client.send<Record<string, unknown>>(renameRemoteMachineRequest(machineRef, alias))
-  return expectVariant<{ machine: RemoteMachineView }>(response, "RemoteMachineRenamed").machine
-}
-
-async function listRemoteMachineKernels(client: LocalIpcClient, machineRef: string): Promise<RemoteKernelView[]> {
-  const response = await client.send<Record<string, unknown>>(listRemoteMachineKernelsRequest(machineRef))
-  const payload = expectVariant<{
-    kernels: RemoteKernelView[]
-  }>(response, "RemoteMachineKernelsListed")
-  return payload.kernels
 }
 
 async function createTerminalPairingLink(
