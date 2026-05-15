@@ -42,14 +42,11 @@ attachments. Arroba-origin text attachments are delivered through Claude hook
 `additionalContext`; Arroba-origin non-text attachments are materialized and
 submitted to Claude's TUI as native `@path` mentions.
 
-2026-05-14 standard remote update: standard home-worker native TUI validation
-cannot pass with the current native TUI launch contract. The launchers create or
-attach Arroba agents through the home kernel, but they can only launch native
-provider runs with `LaunchProviderRun` on that same kernel. The kernel correctly
-rejects `LaunchProviderRun` for remote-backed agents because provider execution
-must happen on the worker. Standard home-worker native TUI requires a new
-remote-backed native provider-run path before the prompt/turn, permission, and
-attachment matrix can be validated.
+2026-05-14 standard remote finding, now superseded: the original native TUI
+launch contract could not validate standard home-worker native TUI because it
+only launched provider runs on the home kernel. Standard home-worker native TUI
+requires remote-backed native provider-run launch so provider execution happens
+on the worker.
 
 2026-05-15 implementation update: the first remote-backed native provider-run
 path is in progress. Native launchers accept `--machine`/`--kernel-ref` and
@@ -63,17 +60,15 @@ same-host home/worker relay topology. True cross-host Hetzner validation still
 needs endpoint reachability checks for Codex/OpenCode worker-owned provider
 servers and Claude credential availability on the worker.
 
-2026-05-15 standard home-worker drill update: OpenCode passes the same-host
-standard home-worker prompt/turn drill with two native TUIs plus one Arroba
-observer CLI, separated provider runs, no cross-agent marker contamination, and
-badge transitions back to idle. Codex now creates remote-backed native
-provider runs and projects worker output into home history, but the current
-Codex native TUI launch contract is not product-ready for standard
-home-worker: native-origin prompts are recorded through Arroba, yet
-Arroba-origin turns are not projected back into the Codex TUI screen. A direct
-attempt to forward native `turn/start` through the worker app-server did not
-preserve the remote prompt path, so Codex needs an explicit native-TUI
-control/projection channel before the full bidirectional screen drill can pass.
+2026-05-15 standard home-worker validation update: Codex and OpenCode pass the
+same-host standard home-worker drills for prompt/turns, provider permissions,
+and prompt attachments. The drill uses two native TUIs plus one Arroba observer
+CLI in one session, separated provider runs, no cross-agent marker
+contamination, and badge transitions back to idle. Codex uses a native TUI
+projection path that translates home-kernel session output into Codex app-server
+notifications for the visible provider TUI while preserving the home-kernel
+prompt queue and worker-owned provider execution. Claude is still pending
+remote-rendered PTY validation and worker credential checks.
 
 ## Goal
 
@@ -117,10 +112,9 @@ Prompt/turns:
 - Local Claude: covered by the Claude native TUI drill.
 - Same-host relay Codex/OpenCode/Claude: covered by
   `live-remote-native-tui-drill.mjs`.
-- Standard remote home-worker: OpenCode prompt/turn coverage passes in
-  same-host relay mode. Codex has home-history projection but is blocked on
-  provider-TUI screen projection for Arroba-origin turns. Claude is pending
-  remote-rendered PTY validation and worker credential checks.
+- Standard remote home-worker: Codex/OpenCode prompt/turn coverage passes in
+  same-host relay mode. Claude is pending remote-rendered PTY validation and
+  worker credential checks.
 - Direct slice target Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
   --slice-local-docker`, but home-managed slice is not covered.
 
@@ -133,8 +127,12 @@ Permissions:
   Arroba-origin prompts bridge the permission interaction into Arroba. Dedicated
   automated coverage is provided by `live-native-tui-permission-drill.mjs
   --provider claude`.
-- Standard remote and slice: not covered for all three providers in this native
-  TUI matrix.
+- Standard remote home-worker Codex/OpenCode: covered by
+  `live-remote-native-tui-drill.mjs --standard-home-worker --providers
+  codex,opencode --include-permissions`. Native-origin and Arroba-origin
+  prompts both surface permission interactions to the Arroba observer and can be
+  approved there.
+- Standard remote home-worker Claude and slice: not covered.
 
 Prompt attachments:
 
@@ -146,9 +144,12 @@ Prompt attachments:
 - Same-host relay Codex/OpenCode: covered by
   `live-remote-native-tui-drill.mjs --providers opencode,codex
   --include-attachments`.
+- Standard remote home-worker Codex/OpenCode: covered by
+  `live-remote-native-tui-drill.mjs --standard-home-worker --providers
+  codex,opencode --include-attachments`.
 - Direct slice target Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
   --slice-local-docker --providers opencode,codex --include-attachments`.
-- Standard remote home-worker: not covered.
+- Standard remote home-worker Claude: not covered.
 - Home-managed slice: not covered.
 
 MCPs and skills:
@@ -231,9 +232,8 @@ Provider notes:
    - In progress: native TUI launches can create remote-backed Arroba agents
      and request worker-owned native provider runs.
    - Current provider status:
-     - OpenCode: prompt/turn drill passes in same-host home-worker relay mode.
-     - Codex: remote provider-run launch and home history projection work, but
-       provider-TUI screen projection for Arroba-origin turns is still missing.
+     - Codex/OpenCode: prompt/turn, permission, and prompt-attachment drills pass
+       in same-host home-worker relay mode.
      - Claude: pending remote-rendered PTY drill and credential validation on
        the worker.
    - Required product work:
@@ -245,9 +245,6 @@ Provider notes:
      - mirror native prompt/turn output, permission interactions, status, and
        prompt attachments back to the home session without making the relay a
        runtime authority;
-     - add a native-TUI control/projection path for providers whose server does
-       not broadcast Arroba-origin turns back to an already-running provider
-       TUI connection;
      - run the standard home-worker live drill in same-host relay mode first,
        then repeat against the Hetzner relay where endpoint reachability and
        provider credentials allow it.
@@ -281,8 +278,8 @@ Legend:
 | local | Codex | pass | pass | pass | gap |
 | local | OpenCode | pass | pass | pass | gap |
 | local | Claude | pass | pass | pass | gap |
-| standard remote | Codex | gap | gap | gap | gap |
-| standard remote | OpenCode | gap | gap | gap | gap |
+| standard remote | Codex | pass | pass | pass | gap |
+| standard remote | OpenCode | pass | pass | pass | gap |
 | standard remote | Claude | gap | gap | gap | gap |
 | direct slice target | Codex | pass | gap | pass | gap |
 | direct slice target | OpenCode | pass | gap | pass | gap |

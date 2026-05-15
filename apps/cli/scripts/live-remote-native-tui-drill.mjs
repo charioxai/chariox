@@ -690,6 +690,10 @@ function permissionPrompt(markerText, filePath, content) {
   return `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
 }
 
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`
+}
+
 function attachedFilePrompt(markerText) {
   return `Read the attached file and reply with exactly ${markerText} and nothing else.`
 }
@@ -1050,9 +1054,9 @@ async function runProviderScenario({
         raw.includes(nativePermissionFile))
       await waitForFileContent(nativePermissionFile, `native-${provider}\n`, 10_000)
 
-      await fireAutomationRequest(automationSocket, {
+      await automationRequest(automationSocket, {
         action: "workspace_shell_exec",
-        command: `prompt ${aliases[0]} ${permissionPrompt(markers.arrobaPermission, arrobaPermissionFile, `arroba-${provider}`)}`,
+        command: `prompt ${aliases[0]} ${shellQuote(permissionPrompt(markers.arrobaPermission, arrobaPermissionFile, `arroba-${provider}`))}`,
       })
       const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
       extendedChecks.arrobaPermissionInteraction = interaction.title ?? interaction.message
