@@ -8,10 +8,9 @@ use crate::provider::RuntimeProviderRun;
 use crate::terminal::TerminalOutputKind;
 
 use super::input::codex_input;
+use super::prompt::{abort_codex_turn, codex_turn_id_from_start_response};
 use super::run_config::{codex_client_for_run, normalize_codex_model, normalize_variant};
-use super::{
-    abort_codex_turn, codex_turn_id_from_start_response, drain_codex_events, CodexRuntimeState,
-};
+use super::{drain_codex_events, CodexRuntimeState};
 
 const CODEX_UTILITY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
