@@ -16,8 +16,6 @@ import type {
   SessionInvite,
   SessionHistoryPage,
   SessionHistoryPageEntry,
-  HistoryEvent,
-  SemanticHistoryMatch,
   SessionConfigState,
   SessionMember,
   SkillImportOutcome,
@@ -119,8 +117,6 @@ import {
   setWorkflowNodeMaxTurnsRequest,
   setWorkflowRunOutputSchemaRequest,
   setWorkflowWatchdogEnabledRequest,
-  searchHistoryRequest,
-  semanticSearchHistoryRequest,
   showWorkspaceLinkRequest,
   spawnAgentRequest,
   stopSliceRequest,
@@ -149,12 +145,11 @@ import {
   formatSkillList,
 } from "./shell-capability-format.js"
 import {
-  formatHistoryEvents,
   formatPromptBlob,
   formatPromptReply,
   formatPromptSummary,
-  formatSemanticHistoryMatches,
 } from "./shell-history-format.js"
+import { executeHistoryCommand } from "./shell-history-command.js"
 import {
   executeConfigCommand,
   executeCredentialCommand,
@@ -1174,51 +1169,6 @@ async function parsePromptArgs(
 
 function normalizeShellFlag(value: string): string {
   return value.startsWith("—") ? `--${value.slice(1)}` : value
-}
-
-async function executeHistoryCommand(
-  parsed: ParsedShellCommand,
-  context: ShellContext,
-  deps: ShellExecutorDeps,
-): Promise<ShellCommandResult> {
-  const [action, ...rest] = parsed.args
-  if (action !== "search" && action !== "semantic-search") {
-    return { ok: false, message: "usage: history search <query> | history semantic-search [--agent] <query>" }
-  }
-  const semanticMode = action === "semantic-search" && rest[0] === "--agent" ? "agent" : "knn"
-  const queryArgs = semanticMode === "agent" ? rest.slice(1) : rest
-  const query = queryArgs.join(" ").trim()
-  if (!query) {
-    return { ok: false, message: `usage: history ${action} <query>` }
-  }
-  const filters = {
-    session_id: context.sessionId ?? null,
-    limit: action === "semantic-search" ? 20 : 50,
-  }
-  if (action === "semantic-search") {
-    const response = await deps.client.send(semanticSearchHistoryRequest(query, { ...filters, mode: semanticMode }))
-    const payload = expectVariant<{
-      results?: SemanticHistoryMatch[]
-      unavailable_reason?: string | null
-      answer?: string | null
-    }>(response, "SemanticHistoryEvents")
-    const unavailable = payload.unavailable_reason?.trim()
-    if (unavailable) {
-      return { ok: false, message: unavailable }
-    }
-    return {
-      ok: true,
-      message: [payload.answer?.trim(), formatSemanticHistoryMatches(payload.results ?? [])].filter(Boolean).join("\n\n"),
-      format: "text",
-    }
-  }
-  const response = await deps.client.send(searchHistoryRequest(query, filters))
-  const payload = expectVariant<{ events?: HistoryEvent[] }>(response, "HistoryEvents")
-  return {
-    ok: true,
-    message: formatHistoryEvents(payload.events ?? []),
-    format: "text",
-  }
 }
 
 async function executeSliceCommand(
