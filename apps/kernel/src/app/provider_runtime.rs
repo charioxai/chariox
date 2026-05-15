@@ -5,15 +5,16 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::{
     AgentEndpointMode, LaunchProviderRequest, ProviderProcessInfo, ProviderProcessService,
-    ProviderRunLivenessReconciliation, ProviderRunState, ProviderRuntimeBinding, RuntimeMcpBinding,
-    RuntimeProviderRun,
+    ProviderRunState, ProviderRuntimeBinding, RuntimeMcpBinding, RuntimeProviderRun,
 };
-use crate::pty::PtyProcessState;
-use crate::session::PromptStatus;
 
 use super::provider_launch_policy::{
     default_provider_env_remove, failed_codex_resume_state_replacement,
     generate_runtime_mcp_auth_token, sanitize_resume_state_for_launch,
+};
+pub(crate) use super::provider_liveness::ProviderRunLivenessRuntime;
+use super::provider_liveness::{
+    clear_active_provider_run_session_pointer, poll_provider_run_process_running,
 };
 pub(crate) use super::provider_processes::ProviderProcessTracker;
 
@@ -50,161 +51,7 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
     }
 
     pub(crate) fn poll_running(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
-        ProviderRunLivenessProcesses::poll_process_running(self.app, provider_run_id)
-    }
-}
-
-pub(crate) struct ProviderRunReadService<'a> {
-    app: &'a DaemonApp,
-}
-
-impl<'a> ProviderRunReadService<'a> {
-    pub(crate) fn new(app: &'a DaemonApp) -> Self {
-        Self { app }
-    }
-
-    pub(crate) fn ensure_provider_run_in_session(
-        &self,
-        session_id: &str,
-        provider_run_id: &str,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        let provider_run = self.app.providers.get_run(provider_run_id)?;
-
-        if provider_run.session_id() != session_id {
-            return Err(DaemonError::ProviderRunNotInSession {
-                session_id: session_id.to_string(),
-                provider_run_id: provider_run_id.to_string(),
-            });
-        }
-
-        Ok(provider_run)
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum ProviderRunExitPromptSettlement {
-    FinalizeCancellation,
-    CompleteActivePrompt,
-    SyncIdleProvider,
-}
-
-impl ProviderRunExitPromptSettlement {
-    fn from_active_prompt_status(active_prompt_status: Option<PromptStatus>) -> Self {
-        match active_prompt_status {
-            Some(PromptStatus::Cancelling) => Self::FinalizeCancellation,
-            Some(_) => Self::CompleteActivePrompt,
-            None => Self::SyncIdleProvider,
-        }
-    }
-}
-
-pub(crate) struct ProviderRunLivenessRuntime<'a> {
-    app: &'a mut DaemonApp,
-}
-
-#[derive(Debug, Clone)]
-struct ProviderRunLivenessOutcome {
-    ended_run: RuntimeProviderRun,
-    session_id: String,
-    provider_run_id: String,
-    agent_id: String,
-    transition: ProviderRunLivenessTransition,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum ProviderRunLivenessTransition {
-    AlreadyEnded,
-    UnexpectedExit,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-struct ProviderRunExitSessionOutcome {
-    had_active_prompt: bool,
-    started_next_prompt: bool,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderRunExitSessionSummary {
-    pub(crate) had_active_prompt: bool,
-    pub(crate) started_next_prompt: bool,
-}
-
-struct ProviderRunLivenessProcesses;
-
-impl ProviderRunLivenessProcesses {
-    fn poll_process_running(
-        app: &mut DaemonApp,
-        provider_run_id: &str,
-    ) -> Result<bool, DaemonError> {
-        match app.pty.poll_process_state(provider_run_id) {
-            Ok(PtyProcessState::Running) => Ok(true),
-            Ok(PtyProcessState::Exited) => Ok(false),
-            Err(DaemonError::PtyProcessNotFound { .. }) => Ok(false),
-            Err(error) => Err(error),
-        }
-    }
-
-    fn remove_tracked_process(
-        app: &mut DaemonApp,
-        provider_run_id: &str,
-    ) -> Result<bool, DaemonError> {
-        ProviderProcessTracker::new(app).remove_run(provider_run_id)
-    }
-}
-
-struct ProviderRunLivenessState;
-
-impl ProviderRunLivenessState {
-    fn reconcile_run_liveness(
-        app: &mut DaemonApp,
-        session_id: &str,
-        provider_run_id: &str,
-        process_running: Option<bool>,
-    ) -> Result<ProviderRunLivenessReconciliation, DaemonError> {
-        let reconciliation = app.providers.reconcile_run_liveness_provider_only(
-            session_id,
-            provider_run_id,
-            process_running,
-        )?;
-        Self::sync_ended_provider_run_session_state(
-            app,
-            session_id,
-            provider_run_id,
-            &reconciliation,
-        )?;
-        Ok(reconciliation)
-    }
-
-    fn sync_ended_provider_run_session_state(
-        app: &mut DaemonApp,
-        session_id: &str,
-        provider_run_id: &str,
-        reconciliation: &ProviderRunLivenessReconciliation,
-    ) -> Result<(), DaemonError> {
-        if !matches!(
-            reconciliation,
-            ProviderRunLivenessReconciliation::AlreadyEnded(_)
-                | ProviderRunLivenessReconciliation::NewlyEnded(_)
-        ) {
-            return Ok(());
-        }
-        Self::clear_active_provider_run_session_pointer(app, session_id, provider_run_id)
-    }
-
-    fn clear_active_provider_run_session_pointer(
-        app: &mut DaemonApp,
-        session_id: &str,
-        provider_run_id: &str,
-    ) -> Result<(), DaemonError> {
-        if app
-            .sessions
-            .get_session(session_id)?
-            .active_provider_run_id()
-            == Some(provider_run_id)
-        {
-            app.sessions.set_active_provider_run(session_id, None)?;
-        }
-        Ok(())
+        poll_provider_run_process_running(self.app, provider_run_id)
     }
 }
 
@@ -233,7 +80,7 @@ impl ProviderRunActivationState {
                     let outcome = app
                         .providers
                         .terminate_run_provider_only(&session_id, active_run_id)?;
-                    ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                    clear_active_provider_run_session_pointer(
                         app,
                         &session_id,
                         outcome.run().id(),
@@ -245,7 +92,7 @@ impl ProviderRunActivationState {
                         let outcome = app
                             .providers
                             .park_run_provider_only(&session_id, active_run_id)?;
-                        ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                        clear_active_provider_run_session_pointer(
                             app,
                             &session_id,
                             outcome.run().id(),
@@ -288,7 +135,7 @@ impl ProviderRunActivationState {
                             let outcome = app
                                 .providers
                                 .park_run_provider_only(session_id, active_run_id)?;
-                            ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                            clear_active_provider_run_session_pointer(
                                 app,
                                 session_id,
                                 outcome.run().id(),
@@ -300,7 +147,7 @@ impl ProviderRunActivationState {
                         let outcome = app
                             .providers
                             .terminate_run_provider_only(session_id, active_run_id)?;
-                        ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                        clear_active_provider_run_session_pointer(
                             app,
                             session_id,
                             outcome.run().id(),
@@ -320,171 +167,6 @@ impl ProviderRunActivationState {
         let run = outcome.into_run();
         app.update_provider_run_projection(run.clone());
         Ok(run)
-    }
-}
-
-struct ProviderRunLivenessNotices;
-
-impl ProviderRunLivenessNotices {
-    fn record_provider_exit(
-        app: &mut DaemonApp,
-        session_id: &str,
-        provider_run_id: &str,
-        message: String,
-    ) {
-        let recipients = app.attachments.list_session_attachment_ids(session_id);
-        app.record_notice(session_id, Some(provider_run_id), recipients, message);
-    }
-}
-
-struct ProviderRunLivenessSessionEffects;
-
-impl ProviderRunLivenessSessionEffects {
-    fn apply_provider_exit(
-        app: &mut DaemonApp,
-        outcome: &ProviderRunLivenessOutcome,
-    ) -> Result<ProviderRunExitSessionOutcome, DaemonError> {
-        let active_prompt_status = app
-            .prompt_owner_active_prompt_for_agent(&outcome.session_id, &outcome.agent_id)?
-            .map(|prompt| prompt.status());
-        let had_active_prompt = active_prompt_status.is_some();
-        let started_next_prompt = match ProviderRunExitPromptSettlement::from_active_prompt_status(
-            active_prompt_status,
-        ) {
-            ProviderRunExitPromptSettlement::FinalizeCancellation => app
-                .finalize_active_prompt_cancellation(
-                    &outcome.session_id,
-                    &outcome.agent_id,
-                    Some(&outcome.provider_run_id),
-                )?
-                .started_next
-                .is_some(),
-            ProviderRunExitPromptSettlement::CompleteActivePrompt => app
-                .complete_active_prompt(
-                    &outcome.session_id,
-                    &outcome.agent_id,
-                    Some(&outcome.provider_run_id),
-                )?
-                .started_next
-                .is_some(),
-            ProviderRunExitPromptSettlement::SyncIdleProvider => {
-                app.sync_focused_provider_run_if_idle(&outcome.session_id)?;
-                false
-            }
-        };
-
-        Ok(ProviderRunExitSessionOutcome {
-            had_active_prompt,
-            started_next_prompt,
-        })
-    }
-}
-
-impl<'a> ProviderRunLivenessRuntime<'a> {
-    pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
-    }
-
-    pub(crate) fn reconcile_provider_run_exit(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-    ) -> Result<bool, DaemonError> {
-        let Some(outcome) =
-            self.reconcile_provider_run_exit_provider_phase(session_id, provider_run_id)?
-        else {
-            return Ok(false);
-        };
-        if outcome.transition == ProviderRunLivenessTransition::AlreadyEnded {
-            return Ok(true);
-        }
-
-        let session_outcome =
-            ProviderRunLivenessSessionEffects::apply_provider_exit(self.app, &outcome)?;
-        ProviderRunLivenessNotices::record_provider_exit(
-            self.app,
-            &outcome.session_id,
-            &outcome.provider_run_id,
-            format!(
-                "Provider run `{}` for `{}` ended unexpectedly. {}",
-                outcome.provider_run_id,
-                outcome.ended_run.provider(),
-                if session_outcome.had_active_prompt {
-                    if session_outcome.started_next_prompt {
-                        "The active prompt was closed and Arroba advanced the queued backlog onto the next available provider run."
-                    } else {
-                        "The active prompt was closed without starting the queued backlog."
-                    }
-                } else {
-                    "No active prompt was running."
-                }
-            ),
-        );
-
-        Ok(true)
-    }
-
-    fn reconcile_provider_run_exit_provider_phase(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-    ) -> Result<Option<ProviderRunLivenessOutcome>, DaemonError> {
-        let provider_run = ProviderRunReadService::new(self.app)
-            .ensure_provider_run_in_session(session_id, provider_run_id)?;
-        let agent_id = provider_run
-            .agent_instance_id()
-            .map(str::to_string)
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: "provider run has no agent".to_string(),
-            })?;
-        match ProviderRunLivenessState::reconcile_run_liveness(
-            self.app,
-            session_id,
-            provider_run_id,
-            None,
-        )? {
-            ProviderRunLivenessReconciliation::AlreadyEnded(run) => {
-                self.app.update_provider_run_projection(run.clone());
-                let _ = ProviderRunLivenessProcesses::remove_tracked_process(
-                    self.app,
-                    provider_run_id,
-                )?;
-                return Ok(Some(ProviderRunLivenessOutcome {
-                    ended_run: run,
-                    session_id: session_id.to_string(),
-                    provider_run_id: provider_run_id.to_string(),
-                    agent_id,
-                    transition: ProviderRunLivenessTransition::AlreadyEnded,
-                }));
-            }
-            ProviderRunLivenessReconciliation::ExternalEndpoint(_)
-            | ProviderRunLivenessReconciliation::NewlyEnded(_) => return Ok(None),
-            ProviderRunLivenessReconciliation::StillRunning(_) => {}
-        }
-
-        let process_running =
-            ProviderRunLivenessProcesses::poll_process_running(self.app, provider_run_id)?;
-        let ended_run = match ProviderRunLivenessState::reconcile_run_liveness(
-            self.app,
-            session_id,
-            provider_run_id,
-            Some(process_running),
-        )? {
-            ProviderRunLivenessReconciliation::AlreadyEnded(run)
-            | ProviderRunLivenessReconciliation::NewlyEnded(run) => run,
-            ProviderRunLivenessReconciliation::ExternalEndpoint(_)
-            | ProviderRunLivenessReconciliation::StillRunning(_) => return Ok(None),
-        };
-        self.app.update_provider_run_projection(ended_run.clone());
-        let _ = ProviderRunLivenessProcesses::remove_tracked_process(self.app, provider_run_id)?;
-
-        Ok(Some(ProviderRunLivenessOutcome {
-            ended_run,
-            session_id: session_id.to_string(),
-            provider_run_id: provider_run_id.to_string(),
-            agent_id,
-            transition: ProviderRunLivenessTransition::UnexpectedExit,
-        }))
     }
 }
 
@@ -604,7 +286,7 @@ impl DaemonApp {
                     .providers
                     .terminate_run_provider_only(run.session_id(), run.id())
                 {
-                    ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                    clear_active_provider_run_session_pointer(
                         self,
                         run.session_id(),
                         outcome.run().id(),
@@ -738,7 +420,7 @@ impl DaemonApp {
             .providers
             .terminate_run_provider_only(started.run.session_id(), started.run.id())
         {
-            ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+            clear_active_provider_run_session_pointer(
                 self,
                 started.run.session_id(),
                 outcome.run().id(),
@@ -1011,11 +693,7 @@ impl DaemonApp {
                 let outcome = self
                     .providers
                     .park_run_provider_only(session_id, current_active_run_id)?;
-                ProviderRunLivenessState::clear_active_provider_run_session_pointer(
-                    self,
-                    session_id,
-                    outcome.run().id(),
-                )?;
+                clear_active_provider_run_session_pointer(self, session_id, outcome.run().id())?;
                 self.update_provider_run_projection(outcome.into_run());
             }
         }
@@ -1114,7 +792,7 @@ impl DaemonApp {
                             let outcome = self
                                 .providers
                                 .park_run_provider_only(session_id, current_active_run_id)?;
-                            ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                            clear_active_provider_run_session_pointer(
                                 self,
                                 session_id,
                                 outcome.run().id(),
