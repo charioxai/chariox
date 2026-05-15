@@ -9,6 +9,7 @@ mod kernel_session;
 mod prompt_activity;
 mod prompt_lifecycle;
 mod prompt_state_owner;
+mod provider_activation;
 mod provider_launch_policy;
 mod provider_liveness;
 pub(crate) mod provider_output;
@@ -75,13 +76,14 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
+pub(crate) use provider_activation::StartedProviderLaunch;
 pub(crate) use provider_launch_policy::{
     failed_codex_resume_state_replacement, generate_runtime_mcp_auth_token,
     sanitize_resume_state_for_launch,
 };
 pub(crate) use provider_liveness::ProviderRunExitSessionSummary;
 pub(crate) use provider_run_read::ProviderRunReadService;
-pub(crate) use provider_runtime::{ProviderLaunchProcessRuntime, StartedProviderLaunch};
+pub(crate) use provider_runtime::ProviderLaunchProcessRuntime;
 pub(crate) use remote_lease::RemoteLeaseRuntime;
 
 fn decode_durable_payload_field<T>(
