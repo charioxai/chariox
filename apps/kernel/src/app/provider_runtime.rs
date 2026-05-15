@@ -4,8 +4,8 @@ use crate::agent::AgentInstance;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::{
-    AgentEndpointMode, LaunchProviderRequest, ProviderProcessInfo, ProviderProcessService,
-    ProviderRunState, ProviderRuntimeBinding, RuntimeMcpBinding, RuntimeProviderRun,
+    AgentEndpointMode, LaunchProviderRequest, ProviderProcessService, ProviderRunState,
+    ProviderRuntimeBinding, RuntimeMcpBinding, RuntimeProviderRun,
 };
 
 use super::provider_activation::ProviderRunActivationState;
@@ -14,42 +14,9 @@ use super::provider_launch_policy::{
     default_provider_env_remove, failed_codex_resume_state_replacement,
     generate_runtime_mcp_auth_token, sanitize_resume_state_for_launch,
 };
+use super::provider_liveness::clear_active_provider_run_session_pointer;
 pub(crate) use super::provider_liveness::ProviderRunLivenessRuntime;
-use super::provider_liveness::{
-    clear_active_provider_run_session_pointer, poll_provider_run_process_running,
-};
 pub(crate) use super::provider_processes::ProviderProcessTracker;
-
-pub(crate) struct ProviderLaunchProcessRuntime<'a> {
-    app: &'a mut DaemonApp,
-}
-
-impl<'a> ProviderLaunchProcessRuntime<'a> {
-    pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
-    }
-
-    pub(crate) fn spawn_for_launch(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
-        if run.endpoint_mode() != AgentEndpointMode::Managed {
-            return Ok(());
-        }
-        self.app.pty.spawn_for_run(run)?;
-        ProviderProcessTracker::new(self.app).register_managed_run(run)
-    }
-
-    pub(crate) fn remove_run(
-        &mut self,
-        provider_run_id: &str,
-    ) -> Result<(bool, Option<String>), DaemonError> {
-        let process_key = self.app.pty.process_key(provider_run_id).ok();
-        let removed = self.app.pty.remove_process(provider_run_id)?;
-        Ok((removed, process_key))
-    }
-
-    pub(crate) fn poll_running(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
-        poll_provider_run_process_running(self.app, provider_run_id)
-    }
-}
 
 impl DaemonApp {
     pub(crate) fn start_provider_launch(
@@ -466,21 +433,6 @@ impl DaemonApp {
             request = request.with_provider_env_remove(default_provider_env_remove(&self.config));
         }
         Ok(request)
-    }
-
-    pub fn list_provider_processes(
-        &self,
-        provider: Option<&str>,
-    ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
-        ProviderProcessTracker::list(self, provider)
-    }
-
-    pub fn teardown_provider_processes(
-        &mut self,
-        provider: Option<&str>,
-        force: bool,
-    ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
-        ProviderProcessTracker::new(self).teardown_safe_processes(provider, force)
     }
 
     pub(crate) fn ensure_prompt_provider_run_for_agent(

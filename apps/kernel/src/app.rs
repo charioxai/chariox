@@ -83,8 +83,8 @@ pub(crate) use provider_launch_policy::{
     sanitize_resume_state_for_launch,
 };
 pub(crate) use provider_liveness::ProviderRunExitSessionSummary;
+pub(crate) use provider_processes::ProviderLaunchProcessRuntime;
 pub(crate) use provider_run_read::ProviderRunReadService;
-pub(crate) use provider_runtime::ProviderLaunchProcessRuntime;
 pub(crate) use remote_lease::RemoteLeaseRuntime;
 
 fn decode_durable_payload_field<T>(

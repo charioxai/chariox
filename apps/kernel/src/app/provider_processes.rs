@@ -2,7 +2,42 @@ use std::collections::BTreeSet;
 
 use crate::app::{DaemonApp, TrackedProviderProcess};
 use crate::error::DaemonError;
-use crate::provider::{ProviderProcessInfo, ProviderRunState, RuntimeProviderRun};
+use crate::provider::{
+    AgentEndpointMode, ProviderProcessInfo, ProviderRunState, RuntimeProviderRun,
+};
+
+use super::provider_liveness::poll_provider_run_process_running;
+
+pub(crate) struct ProviderLaunchProcessRuntime<'a> {
+    app: &'a mut DaemonApp,
+}
+
+impl<'a> ProviderLaunchProcessRuntime<'a> {
+    pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn spawn_for_launch(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
+        if run.endpoint_mode() != AgentEndpointMode::Managed {
+            return Ok(());
+        }
+        self.app.pty.spawn_for_run(run)?;
+        ProviderProcessTracker::new(self.app).register_managed_run(run)
+    }
+
+    pub(crate) fn remove_run(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<(bool, Option<String>), DaemonError> {
+        let process_key = self.app.pty.process_key(provider_run_id).ok();
+        let removed = self.app.pty.remove_process(provider_run_id)?;
+        Ok((removed, process_key))
+    }
+
+    pub(crate) fn poll_running(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
+        poll_provider_run_process_running(self.app, provider_run_id)
+    }
+}
 
 pub(crate) struct ProviderProcessTracker<'a> {
     app: &'a mut DaemonApp,
@@ -260,4 +295,21 @@ fn filter_provider_processes(
         .into_iter()
         .filter(|process| process.provider == provider)
         .collect()
+}
+
+impl DaemonApp {
+    pub fn list_provider_processes(
+        &self,
+        provider: Option<&str>,
+    ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
+        ProviderProcessTracker::list(self, provider)
+    }
+
+    pub fn teardown_provider_processes(
+        &mut self,
+        provider: Option<&str>,
+        force: bool,
+    ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
+        ProviderProcessTracker::new(self).teardown_safe_processes(provider, force)
+    }
 }
