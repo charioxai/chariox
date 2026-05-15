@@ -1,6 +1,7 @@
+use crate::agent::RemoteAgentBinding;
 use crate::app::{DaemonApp, KernelRemotePromptDispatch};
 use crate::error::DaemonError;
-use crate::session::{PromptCompletion, PromptQueueItem};
+use crate::session::{PromptCancellation, PromptCompletion, PromptQueueItem};
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use arroba_relay::protocol::ClientTarget;
@@ -56,6 +57,65 @@ fn remote_git_turn_context_for_prompt(
 }
 
 impl<'a> KernelAgentService<'a> {
+    pub(super) fn cancel_remote_active_prompt(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        attachment_id: Option<&str>,
+        active_prompt: &PromptQueueItem,
+        remote_execution: RemoteAgentBinding,
+    ) -> Result<PromptCancellation, DaemonError> {
+        let relay_config = self
+            .app
+            .relay_config_for_remote_execution(&remote_execution);
+        match self
+            .app
+            .block_on_relay_future(send_peer_request_via_temporary_connection(
+                &relay_config,
+                ClientTarget {
+                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                    daemon_alias: None,
+                },
+                RelayPeerRequest::CancelLeasedPrompt {
+                    leased_agent_id: remote_execution.leased_agent_id.clone(),
+                },
+            ))? {
+            RelayPeerResponse::LeasedPromptCancelled { .. } => {}
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "cancel remote prompt",
+                    message: format!("unexpected remote prompt cancellation response: {other:?}"),
+                });
+            }
+        }
+        let prompt = self
+            .app
+            .prompt_owner_begin_cancelling_active_prompt(session_id, agent_id)?;
+        let recipients = match attachment_id {
+            Some(attachment_id) => self.app.other_attachment_ids(session_id, attachment_id),
+            None => self.app.attachments.list_session_attachment_ids(session_id),
+        };
+        let message = match attachment_id {
+            Some(attachment_id) => format!(
+                "Attachment `{attachment_id}` requested cancellation of active remote prompt `{}` on worker kernel `{}`.",
+                active_prompt.id(),
+                remote_execution.worker_kernel_id
+            ),
+            None => format!(
+                "Arroba requested cancellation of active remote prompt `{}` on worker kernel `{}`.",
+                active_prompt.id(),
+                remote_execution.worker_kernel_id
+            ),
+        };
+        self.app
+            .record_notice(session_id, None, recipients, message);
+        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
+        Ok(PromptCancellation {
+            prompt,
+            started_next: None,
+        })
+    }
+
     pub(super) fn finish_compat_remote_prompt_dispatch(
         &mut self,
         dispatch: Option<KernelRemotePromptDispatch>,
