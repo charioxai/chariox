@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 mod credentials;
 mod identity;
+mod persisted_daemon;
 mod provider;
 mod slices;
 mod storage;
@@ -21,6 +22,15 @@ pub use credentials::{
 use identity::load_or_create_runtime_identity;
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};
+#[cfg(test)]
+use persisted_daemon::PersistedDaemonConfig;
+use persisted_daemon::{
+    load_persisted_daemon_config, load_persisted_relay_config, normalized_terminal_type,
+    persist_daemon_config, upsert_client_pairing, upsert_machine_registration,
+};
+pub use persisted_daemon::{
+    PersistedClientPairing, PersistedCloudRelayProfile, PersistedMachineRegistration,
+};
 pub use provider::{ManagedIoConfig, ManagedIoMode, UserProviderConfig};
 pub use slices::{SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig};
 pub use storage::{
@@ -421,11 +431,7 @@ impl DaemonConfig {
     }
 
     pub fn default_daemon_config_path() -> PathBuf {
-        default_config_dir().join("daemon").join("config.json")
-    }
-
-    fn legacy_daemon_config_path() -> PathBuf {
-        default_state_dir().join("daemon").join("config.json")
+        persisted_daemon::default_daemon_config_path()
     }
 
     pub fn default_user_config_path() -> PathBuf {
@@ -1235,132 +1241,6 @@ fn default_user_config_version() -> u32 {
     1
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct PersistedDaemonConfig {
-    #[serde(default)]
-    relay_url: Option<String>,
-    #[serde(default)]
-    relay_token: Option<String>,
-    #[serde(default)]
-    cloud_relay: Option<PersistedCloudRelayProfile>,
-    #[serde(default)]
-    machines: Vec<PersistedMachineRegistration>,
-    #[serde(default)]
-    clients: Vec<PersistedClientPairing>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersistedCloudRelayProfile {
-    pub api_url: String,
-    pub email: String,
-    pub account_id: String,
-    pub user_id: String,
-    pub account_slug: String,
-    pub realm_id: String,
-    pub relay_url: String,
-    pub issuer_id: String,
-    #[serde(default)]
-    pub client_id: Option<String>,
-    #[serde(default)]
-    pub client_alias: Option<String>,
-    #[serde(default)]
-    pub machine_id: Option<String>,
-    #[serde(default)]
-    pub machine_alias: Option<String>,
-    #[serde(default)]
-    pub machine_credential: Option<String>,
-    #[serde(default)]
-    pub cloud_session_token: Option<String>,
-    #[serde(default)]
-    pub cloud_session_expires_at_ms: Option<u64>,
-    #[serde(default)]
-    pub token_expires_at_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersistedMachineRegistration {
-    pub machine_id: String,
-    #[serde(default)]
-    pub alias: Option<String>,
-    #[serde(default)]
-    pub public_key_thumbprint: Option<String>,
-    #[serde(default)]
-    pub paired_at_ms: Option<u64>,
-    #[serde(default)]
-    pub approved: bool,
-    #[serde(default)]
-    pub forgotten: bool,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersistedClientPairing {
-    pub client_id: String,
-    #[serde(default)]
-    pub alias: Option<String>,
-    #[serde(default = "default_terminal_type")]
-    pub terminal_type: String,
-    #[serde(default)]
-    pub public_key_thumbprint: String,
-    #[serde(default)]
-    pub paired_at_ms: u64,
-    #[serde(default)]
-    pub revoked: bool,
-}
-
-fn default_terminal_type() -> String {
-    "cli".to_string()
-}
-
-fn normalized_terminal_type(value: &str) -> String {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "web" | "web_terminal" | "web-terminal" => "web".to_string(),
-        "ios" | "ios_terminal" | "ios-terminal" => "ios".to_string(),
-        "android" | "android_terminal" | "android-terminal" => "android".to_string(),
-        _ => "cli".to_string(),
-    }
-}
-
-fn load_persisted_relay_config() -> Option<PersistedDaemonConfig> {
-    for path in [
-        DaemonConfig::default_daemon_config_path(),
-        DaemonConfig::legacy_daemon_config_path(),
-    ] {
-        let Ok(payload) = fs::read_to_string(path) else {
-            continue;
-        };
-        if let Ok(config) = serde_json::from_str::<PersistedDaemonConfig>(&payload) {
-            return Some(config);
-        }
-    }
-    None
-}
-
-fn load_persisted_daemon_config() -> PersistedDaemonConfig {
-    load_persisted_relay_config().unwrap_or_default()
-}
-
-fn persist_daemon_config(
-    persisted: &PersistedDaemonConfig,
-    operation: &'static str,
-) -> Result<(), DaemonError> {
-    let path = DaemonConfig::default_daemon_config_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
-            operation,
-            message: error.to_string(),
-        })?;
-    }
-    let payload =
-        serde_json::to_string_pretty(persisted).map_err(|error| DaemonError::LocalTransport {
-            operation,
-            message: error.to_string(),
-        })?;
-    fs::write(path, payload).map_err(|error| DaemonError::LocalTransport {
-        operation,
-        message: error.to_string(),
-    })
-}
-
 fn load_user_config_from_path(path: &PathBuf) -> ArrobaUserConfig {
     let Some(payload) = fs::read_to_string(path).ok() else {
         return ArrobaUserConfig::default();
@@ -1383,52 +1263,6 @@ fn persist_user_config(path: &PathBuf, config: &ArrobaUserConfig) -> Result<(), 
         operation: "persist user config",
         message: error.to_string(),
     })
-}
-
-fn upsert_machine_registration<'a>(
-    entries: &'a mut Vec<PersistedMachineRegistration>,
-    machine_id: &str,
-) -> &'a mut PersistedMachineRegistration {
-    if let Some(index) = entries
-        .iter()
-        .position(|entry| entry.machine_id == machine_id)
-    {
-        return &mut entries[index];
-    }
-    entries.push(PersistedMachineRegistration {
-        machine_id: machine_id.to_string(),
-        alias: None,
-        public_key_thumbprint: None,
-        paired_at_ms: None,
-        approved: false,
-        forgotten: false,
-    });
-    entries
-        .last_mut()
-        .expect("entry was just inserted into machine registry")
-}
-
-fn upsert_client_pairing<'a>(
-    entries: &'a mut Vec<PersistedClientPairing>,
-    client_id: &str,
-) -> &'a mut PersistedClientPairing {
-    if let Some(index) = entries
-        .iter()
-        .position(|entry| entry.client_id == client_id)
-    {
-        return &mut entries[index];
-    }
-    entries.push(PersistedClientPairing {
-        client_id: client_id.to_string(),
-        alias: None,
-        terminal_type: default_terminal_type(),
-        public_key_thumbprint: String::new(),
-        paired_at_ms: 0,
-        revoked: false,
-    });
-    entries
-        .last_mut()
-        .expect("entry was just inserted into client pairing registry")
 }
 
 fn normalized_optional(value: Option<String>) -> Option<String> {
