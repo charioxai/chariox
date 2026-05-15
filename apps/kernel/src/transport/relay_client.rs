@@ -51,8 +51,7 @@ use remote_inventory::{
 };
 use request_errors::{map_relay_error, relay_error};
 use subscriptions::{
-    abort_subscription_tasks, relay_subscription_task_key,
-    remove_relay_subscription_task_by_relay_id, run_relay_subscription_loop, RelaySubscriptionTask,
+    abort_subscription_tasks, handle_relay_subscribe, handle_relay_unsubscribe,
     RelaySubscriptionTasks,
 };
 
@@ -596,148 +595,21 @@ async fn handle_incoming_envelope(
             subscription_scope,
             resume_from_event_id,
         } => {
-            let is_inventory_subscription =
-                subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE);
-            crate::logging::info_with_fields(
-                "daemon.relay_client",
-                "relay subscription request received",
-                serde_json::json!({
-                    "relay_request_id": relay_request_id,
-                    "relay_subscription_id": relay_subscription_id,
-                    "session_id": session_id,
-                    "attachment_id": attachment_id,
-                    "subscription_scope": subscription_scope,
-                    "resume_from_event_id": resume_from_event_id,
-                    "is_waiting_room_inventory_subscription": is_inventory_subscription,
-                }),
-            );
-            if !is_inventory_subscription
-                && (session_id == WAITING_ROOM_INVENTORY_SENTINEL_ID
-                    || attachment_id == WAITING_ROOM_INVENTORY_SENTINEL_ID)
-            {
-                crate::logging::warn_with_fields(
-                    "daemon.relay_client",
-                    "waiting-room inventory sentinel arrived without subscription scope",
-                    serde_json::json!({
-                        "relay_request_id": relay_request_id,
-                        "relay_subscription_id": relay_subscription_id,
-                        "session_id": session_id,
-                        "attachment_id": attachment_id,
-                        "subscription_scope": subscription_scope,
-                        "diagnosis": "relay or client likely dropped subscription_scope=waiting_room_inventory",
-                    }),
-                );
-            }
-            if !is_inventory_subscription {
-                if let Err(error) = router
-                    .ensure_relay_subscription_attachment(&session_id, &attachment_id)
-                    .await
-                {
-                    crate::logging::warn_with_fields(
-                        "daemon.relay_client",
-                        "relay subscription attachment validation failed",
-                        serde_json::json!({
-                            "relay_request_id": relay_request_id,
-                            "relay_subscription_id": relay_subscription_id,
-                            "session_id": session_id,
-                            "attachment_id": attachment_id,
-                            "subscription_scope": subscription_scope,
-                            "error": error.to_string(),
-                        }),
-                    );
-                    send_outgoing_envelope(
-                        outgoing_tx,
-                        RelayEnvelope::DaemonResponse {
-                            relay_request_id,
-                            encrypted_response: None,
-                            error: Some(map_relay_error(&error)),
-                        },
-                    )?;
-                    return Ok(());
-                }
-            }
-            let task_key = relay_subscription_task_key(
-                &session_id,
-                &attachment_id,
-                subscription_scope.as_deref(),
-            );
-            if let Some(existing) = subscription_tasks.lock().await.remove(&task_key) {
-                existing.handle.abort();
-            }
-            let ack = match encrypt_json_response(
+            handle_relay_subscribe(
                 router,
-                &client_public_key,
-                serde_json::json!({
-                    "ok": true,
-                    "resumed_from_event_id": resume_from_event_id,
-                }),
-            )
-            .await
-            {
-                Ok(ack) => ack,
-                Err(error) => {
-                    send_outgoing_envelope(
-                        outgoing_tx,
-                        RelayEnvelope::DaemonResponse {
-                            relay_request_id,
-                            encrypted_response: None,
-                            error: Some(map_relay_error(&error)),
-                        },
-                    )?;
-                    return Ok(());
-                }
-            };
-            send_outgoing_envelope(
+                app,
                 outgoing_tx,
-                RelayEnvelope::DaemonResponse {
-                    relay_request_id,
-                    encrypted_response: Some(ack),
-                    error: None,
-                },
-            )?;
-            if !is_inventory_subscription {
-                if let Err(error) = replay_recent_relay_events(
-                    event_runtime,
-                    router,
-                    app,
-                    outgoing_tx,
-                    &relay_subscription_id,
-                    &client_public_key,
-                    &session_id,
-                    &attachment_id,
-                    resume_from_event_id,
-                )
-                .await
-                {
-                    crate::logging::warn_with_fields(
-                        "daemon.relay_client",
-                        "failed to replay relay subscription events",
-                        serde_json::json!({
-                            "relay_subscription_id": relay_subscription_id,
-                            "session_id": session_id,
-                            "attachment_id": attachment_id,
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
-            }
-            let task = tokio::spawn(run_relay_subscription_loop(
-                Arc::clone(router),
-                outgoing_tx.clone(),
-                relay_subscription_id.clone(),
-                client_public_key.clone(),
-                session_id.clone(),
-                attachment_id.clone(),
-                subscription_scope.clone(),
-                Arc::clone(event_runtime),
-            ));
-            subscription_tasks.lock().await.insert(
-                task_key,
-                RelaySubscriptionTask {
-                    relay_subscription_id: relay_subscription_id.clone(),
-                    handle: task,
-                },
-            );
+                subscription_tasks,
+                event_runtime,
+                relay_request_id,
+                relay_subscription_id,
+                session_id,
+                attachment_id,
+                client_public_key,
+                subscription_scope,
+                resume_from_event_id,
+            )
+            .await?;
         }
         RelayEnvelope::DaemonUnsubscribe {
             relay_request_id,
@@ -745,42 +617,15 @@ async fn handle_incoming_envelope(
             caller_identity: _,
             client_public_key,
         } => {
-            let existing = remove_relay_subscription_task_by_relay_id(
-                subscription_tasks,
-                &relay_subscription_id,
-            )
-            .await;
-            if let Some(task) = existing {
-                task.handle.abort();
-            }
-            let ack = match encrypt_json_response(
+            handle_relay_unsubscribe(
                 router,
-                &client_public_key,
-                serde_json::json!({ "ok": true }),
-            )
-            .await
-            {
-                Ok(ack) => ack,
-                Err(error) => {
-                    send_outgoing_envelope(
-                        outgoing_tx,
-                        RelayEnvelope::DaemonResponse {
-                            relay_request_id,
-                            encrypted_response: None,
-                            error: Some(map_relay_error(&error)),
-                        },
-                    )?;
-                    return Ok(());
-                }
-            };
-            send_outgoing_envelope(
                 outgoing_tx,
-                RelayEnvelope::DaemonResponse {
-                    relay_request_id,
-                    encrypted_response: Some(ack),
-                    error: None,
-                },
-            )?;
+                subscription_tasks,
+                relay_request_id,
+                relay_subscription_id,
+                client_public_key,
+            )
+            .await?;
         }
         RelayEnvelope::ClientMetadataResponse { .. } => {}
         RelayEnvelope::Close { reason } => {
