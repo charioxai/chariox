@@ -9,6 +9,7 @@ use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRec
 use arroba_relay::protocol::RelayKernelPresence;
 
 mod agent_utility;
+mod capability;
 mod cloud_relay;
 mod config_capabilities;
 mod history;
@@ -18,6 +19,7 @@ mod terminal_interaction;
 mod workspace;
 
 pub use agent_utility::*;
+pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
 pub use history::*;
@@ -187,60 +189,6 @@ pub struct DeleteSessionRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeleteKernelRequest;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunShellCapabilityRequest {
-    pub session_id: String,
-    pub attachment_id: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub working_directory: Option<PathBuf>,
-    pub timeout_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReadDirectoryTreeCapabilityRequest {
-    pub session_id: String,
-    pub attachment_id: String,
-    pub path: Option<PathBuf>,
-    pub max_depth: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReadFileCapabilityRequest {
-    pub session_id: String,
-    pub attachment_id: String,
-    pub path: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EditFileCapabilityRequest {
-    pub session_id: String,
-    pub attachment_id: String,
-    pub path: PathBuf,
-    pub contents: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InspectGitCapabilityRequest {
-    pub session_id: String,
-    pub attachment_id: String,
-    pub working_directory: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CaptureScreenshotCapabilityRequest {
-    pub session_id: String,
-    pub attachment_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StoreTransferredFileCapabilityRequest {
-    pub session_id: String,
-    pub attachment_id: String,
-    pub source_path: PathBuf,
-    pub display_name: Option<String>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnAgentRequest {
