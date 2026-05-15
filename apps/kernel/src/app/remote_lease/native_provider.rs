@@ -4,7 +4,8 @@ use base64::Engine;
 
 use crate::error::DaemonError;
 use crate::provider::{
-    LaunchProviderRequest, ProviderClientInterface, ProviderResumeState, RuntimeProviderRun,
+    LaunchProviderRequest, ProviderClientInterface, ProviderResumeState, ProviderRunState,
+    RuntimeProviderRun,
 };
 
 use super::RemoteLeaseRuntime;
@@ -95,7 +96,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        let provider_run = self.app.providers.get_run(provider_run_id)?;
+        let mut provider_run = self.app.providers.get_run(provider_run_id)?;
         if provider_run.session_id() != leased_agent.backing_session_id
             || provider_run.agent_instance_id() != Some(leased_agent.backing_agent_id.as_str())
         {
@@ -103,6 +104,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 session_id: leased_agent.backing_session_id,
                 provider_run_id: provider_run_id.to_string(),
             });
+        }
+        if provider_run.state() == ProviderRunState::Parked {
+            let backing_session_id = provider_run.session_id().to_string();
+            let outcome = self
+                .app
+                .providers
+                .resume_run_provider_only(&backing_session_id, provider_run_id)?;
+            self.app.sessions.set_active_provider_run(
+                &backing_session_id,
+                Some(outcome.run().id().to_string()),
+            )?;
+            let run = outcome.into_run();
+            self.app.update_provider_run_projection(run.clone());
+            provider_run = run;
         }
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(data_base64)

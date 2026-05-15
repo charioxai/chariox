@@ -31,10 +31,10 @@ Chronological notes to preserve execution context between contributors/agents.
   directions. Claude-origin attachments are captured from native `@path`
   prompts; Arroba-origin text attachments are delivered through Claude native
   context on the worker.
-- Claude permissions remain a gap in this topology. The automated drill now
-  avoids mixing required-permission mode with baseline startup marker turns, but
-  the remote-rendered PTY approval path still needs product hardening before it
-  can claim parity with Codex/OpenCode.
+- Confirmed Claude standard home-worker permissions in both directions. Native-
+  origin and Arroba-origin prompts both surface permission approval in the
+  remote-rendered Claude TUI, and the approval is sent back through kernel-owned
+  PTY input to the worker provider run.
 
 ## 2026-04-25
 

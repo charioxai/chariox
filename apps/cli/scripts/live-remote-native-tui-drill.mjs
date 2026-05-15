@@ -19,6 +19,7 @@ import {
   listAgentsRequest,
   listRemoteMachinesRequest,
   pumpTerminalOutputRequest,
+  sendTerminalInputRequest,
 } from "../dist/ipc-requests.js"
 
 const execFileAsync = promisify(execFile)
@@ -312,6 +313,19 @@ async function waitForFileMatch(file, pattern, timeoutMs = 90_000) {
     await sleep(250)
   }
   throw new Error(`timed out waiting for ${pattern} in ${file}\n${text.slice(-4000)}`)
+}
+
+async function waitForFileMatchAfterOffset(file, pattern, offset, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs
+  let text = ""
+  while (Date.now() < deadline) {
+    text = await readFile(file, "utf8").catch(() => "")
+    const slice = text.slice(offset)
+    const match = slice.match(pattern)
+    if (match) return { match, text }
+    await sleep(250)
+  }
+  throw new Error(`timed out waiting for ${pattern} after offset ${offset} in ${file}\n${text.slice(-4000)}`)
 }
 
 async function waitForLogOccurrences(logFile, needle, count, timeoutMs = 120_000) {
@@ -659,6 +673,28 @@ async function approveClaudeRenderedPermission(screenName, logFile) {
   await waitForFileMatch(logFile, /Bash command|Bash\(|Do you wa.*to .*roceed|❯\s*1\.\s*Yes|Yes,\s+and\s+always\s+allow/, 300_000)
   await screenStuff(screenName, "\r")
   return "claude-native-tui"
+}
+
+async function approveClaudeRenderedPermissionViaKernelInput(client, sessionId, attachmentId, providerRunId, logFile) {
+  await waitForFileMatch(logFile, /Bash command|Bash\(|Do you wa.*to .*roceed|❯\s*1\.\s*Yes|Yes,\s+and\s+always\s+allow/, 300_000)
+  await client.send(sendTerminalInputRequest(sessionId, attachmentId, "\r", providerRunId))
+  return "claude-rendered-pty"
+}
+
+async function approveClaudeRenderedPermissionViaKernelInputAfterOffset(client, sessionId, attachmentId, providerRunId, logFile, offset) {
+  await waitForFileMatchAfterOffset(logFile, /Bash command|Bash\(|Do you wa.*to .*roceed|❯\s*1\.\s*Yes|Yes,\s+and\s+always\s+allow/, offset, 300_000)
+  await client.send(sendTerminalInputRequest(sessionId, attachmentId, "\r", providerRunId))
+  return "claude-rendered-pty"
+}
+
+async function sendClaudeRenderedPromptViaKernelInput(client, sessionId, attachmentId, providerRunId, prompt) {
+  await client.send(sendTerminalInputRequest(sessionId, attachmentId, prompt, providerRunId))
+  await sleep(250)
+  await client.send(sendTerminalInputRequest(sessionId, attachmentId, "\r", providerRunId))
+}
+
+async function waitForClaudeProviderRunId(logFile) {
+  return (await waitForFileMatch(logFile, /provider run:\s+([^\s]+)/, 90_000)).match[1]
 }
 
 async function waitForProviderToolCompletion(client, sessionId, attachmentId, agentId, matcher, timeoutMs = 240_000) {
@@ -1078,10 +1114,15 @@ async function runProviderScenario({
         const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
         extendedChecks.nativePermissionInteraction = interaction.title ?? interaction.message
       } else {
-        await screenStuff(screenA, nativePrompt)
-        await sleep(250)
-        await screenStuff(screenA, "\r")
-        extendedChecks.nativePermissionInteraction = await approveClaudeRenderedPermission(screenA, logs.a)
+        const providerRunA = await waitForClaudeProviderRunId(logs.a)
+        await sendClaudeRenderedPromptViaKernelInput(client, sessionId, attachment.id, providerRunA, nativePrompt)
+        extendedChecks.nativePermissionInteraction = await approveClaudeRenderedPermissionViaKernelInput(
+          client,
+          sessionId,
+          attachment.id,
+          providerRunA,
+          logs.a,
+        )
       }
       if (provider !== "claude") {
         await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
@@ -1095,35 +1136,26 @@ async function runProviderScenario({
         provider === "claude" ? nativePermissionContent : `${nativePermissionContent}\n`,
         10_000,
       )
-      if (provider === "claude") {
-        await rm(nativePermissionFile, { force: true }).catch(() => {})
-        await rm(arrobaPermissionFile, { force: true }).catch(() => {})
-        extendedChecks.permissions = "native-origin validated; arroba-origin pending"
-        return {
-          provider,
-          sessionId,
-          marker,
-          relayUrl,
-          targetDaemonAlias,
-          agentAliases: aliases,
-          observerSawAgents: snapshot.session.agentCount,
-          badgeTransitions,
-          providerSessions: null,
-          extendedChecks,
-          logs,
-          note: "remote-rendered Claude TUI validated through kernel-owned PTY; Arroba-origin Claude permission approval is pending",
-        }
-      }
-
       const arrobaPrompt = provider === "claude"
         ? claudePermissionPrompt(markers.arrobaPermission, arrobaPermissionFile, arrobaPermissionContent)
         : permissionPrompt(markers.arrobaPermission, arrobaPermissionFile, arrobaPermissionContent)
+      const claudeLogOffsetBeforeArrobaPrompt = provider === "claude"
+        ? (await readFile(logs.a, "utf8").catch(() => "")).length
+        : 0
       await automationRequest(automationSocket, {
         action: "workspace_shell_exec",
         command: `prompt ${aliases[0]} ${shellQuote(arrobaPrompt)}`,
       })
       if (provider === "claude") {
-        extendedChecks.arrobaPermissionInteraction = await approveClaudeRenderedPermission(screenA, logs.a)
+        const providerRunA = await waitForClaudeProviderRunId(logs.a)
+        extendedChecks.arrobaPermissionInteraction = await approveClaudeRenderedPermissionViaKernelInputAfterOffset(
+          client,
+          sessionId,
+          attachment.id,
+          providerRunA,
+          logs.a,
+          claudeLogOffsetBeforeArrobaPrompt,
+        )
       } else {
         const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
         extendedChecks.arrobaPermissionInteraction = interaction.title ?? interaction.message
