@@ -27,19 +27,14 @@ import type {
   CaptureScreenshotResult,
   CliOptions,
   McpImportOutcome,
-  ProviderAuthStatus,
-  ProviderLoginStart,
-  ProviderLogoutResult,
   PromptAttachmentPart,
   PromptInputHistoryPage,
   PromptSubmittedPayload,
-  ProviderProcessInfo,
   RuntimeAttachment,
   RuntimeInteraction,
   RuntimeNoticeRecord,
   RuntimeProviderRun,
   RuntimeSession,
-  SessionConfigState,
   SessionHistoryCursor,
   SessionHistoryEntry,
   SessionHistoryPage,
@@ -108,10 +103,6 @@ import {
   grantAgentCapabilityRequest,
   importMcpServersRequest,
   importSkillsRequest,
-  getProviderAuthStatusRequest,
-  getProviderCatalogRequest,
-  getProviderCommandCatalogsRequest,
-  getProviderRunRequest,
   getPromptInputHistoryRequest,
   getSkillRequest,
   getSessionHistoryRequest,
@@ -119,12 +110,9 @@ import {
   getWaitingRoomPublicSnapshotRequest,
   installMcpServerRequest,
   installSkillRequest,
-  launchProviderRunRequest,
   listMcpServersRequest,
-  listProviderProcessesRequest,
   listSkillsRequest,
   listWorkspaceLinksRequest,
-  logoutProviderRequest,
   listSessionsRequest,
   acceptCloudSessionInviteRequest,
   createCloudSessionInviteRequest,
@@ -141,17 +129,14 @@ import {
   resolveSessionRequest,
   showWorkspaceLinkRequest,
   spawnAgentRequest,
-  startProviderLoginRequest,
   storeTransferredFileRequest,
   submitPromptRequest,
-  teardownProviderProcessesRequest,
   uninstallMcpServerRequest,
   uninstallSkillRequest,
   updateMcpServerRequest,
   updateAgentConfigRequest,
   updateAgentProfileRequest,
   updateAgentSubstitutesRequest,
-  updateSessionConfigRequest,
   updateSkillRequest,
 } from "./ipc-requests.js"
 import { expectVariant, firstVariantName } from "./ipc-response.js"
@@ -209,6 +194,21 @@ import {
   fallbackProviderCommandCatalogs,
   type ProviderCommandCatalogs,
 } from "./provider-command-catalog.js"
+import {
+  getProviderAuthStatus,
+  getProviderCatalog,
+  getProviderCommandCatalogs,
+  getProviderRun,
+  launchProviderRun,
+  listProviderProcesses,
+  logoutProvider,
+  providerRunUsesNativeTui,
+  sameProviderRun,
+  startProviderLogin,
+  teardownProviderProcesses,
+  tryGetProviderRun,
+  updateSessionConfig,
+} from "./provider-api.js"
 import {
   applyHistoryDeferral,
   hydrateTranscriptEntries,
@@ -6746,18 +6746,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
     importSliceProviderAuth: async (sliceRef, provider) => importSliceProviderAuth(client, sliceRef, provider),
     getSliceDisplayEndpoint: async (sliceRef) => getSliceDisplayEndpoint(client, sliceRef),
-    listProviderProcesses: async (provider) => {
-      const response = await client.send<Record<string, unknown>>(
-        listProviderProcessesRequest(provider),
-      )
-      return expectVariant<{ processes: ProviderProcessInfo[] }>(response, "ProviderProcessesListed").processes
-    },
-    teardownProviderProcesses: async (provider) => {
-      const response = await client.send<Record<string, unknown>>(
-        teardownProviderProcessesRequest(provider),
-      )
-      return expectVariant<{ processes: ProviderProcessInfo[] }>(response, "ProviderProcessesTornDown").processes
-    },
+    listProviderProcesses: (provider) => listProviderProcesses(client, provider),
+    teardownProviderProcesses: (provider) => teardownProviderProcesses(client, provider),
     listMcpServers: async () => {
       const response = await client.send<Record<string, unknown>>(
         listMcpServersRequest(pendingWorkspaceTarget()),
@@ -8369,15 +8359,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           return automationSnapshot()
         }
         if (isAttached()) {
-          await client.send<Record<string, unknown>>(
-            launchProviderRunRequest(
-              sessionState().id,
-              options.provider ?? "opencode",
-              options.accountProfile,
-              options.model,
-              options.effort,
-              focusedAgentId(),
-            ),
+          await launchProviderRun(
+            client,
+            sessionState().id,
+            options.provider ?? "opencode",
+            options.accountProfile,
+            options.model,
+            options.effort,
+            focusedAgentId(),
           )
           await maybeResize(client, sessionState().id)
         }
@@ -9554,15 +9543,14 @@ async function submitPromptWithRecovery(
       error: formatError(error),
       session_id: sessionId,
     })
-    await client.send<Record<string, unknown>>(
-      launchProviderRunRequest(
-        sessionId,
-        options.provider ?? "opencode",
-        options.accountProfile,
-        options.model,
-        options.effort,
-        targetAgentId,
-      ),
+    await launchProviderRun(
+      client,
+      sessionId,
+      options.provider ?? "opencode",
+      options.accountProfile,
+      options.model,
+      options.effort,
+      targetAgentId,
     )
     await maybeResize(client, sessionId)
     logger?.info("relaunched provider after recoverable prompt failure", {
@@ -9761,49 +9749,6 @@ async function listSessions(client: LocalIpcClient): Promise<RuntimeSession[]> {
   return normalizeRuntimeSessions(payload.sessions).sort((left, right) => right.created_at_ms - left.created_at_ms)
 }
 
-async function getProviderCatalog(client: LocalIpcClient, logger?: ArrobaLogger | null): Promise<ProviderCatalog> {
-  try {
-    const response = await client.send<Record<string, unknown>>(getProviderCatalogRequest())
-    const payload = expectVariant<{ catalog: ProviderCatalog }>(response, "ProviderCatalog")
-    logger?.info("Received provider catalog from daemon", {
-      provider_count: payload.catalog.all.length,
-      providers: payload.catalog.all.map((p) => ({ id: p.id, model_count: Object.keys(p.models).length })),
-      connected: payload.catalog.connected,
-    })
-    return payload.catalog
-  } catch (error) {
-    logger?.warn("provider catalog lookup failed; using fallback catalog", {
-      error: formatError(error),
-    })
-    return fallbackProviderCatalog()
-  }
-}
-
-async function getProviderCommandCatalogs(
-  client: LocalIpcClient,
-  logger?: ArrobaLogger | null,
-): Promise<ProviderCommandCatalogs> {
-  try {
-    const response = await client.send<Record<string, unknown>>(getProviderCommandCatalogsRequest())
-    const payload = expectVariant<{ catalogs: ProviderCommandCatalogs }>(response, "ProviderCommandCatalogs")
-    logger?.info("Received provider command catalogs from daemon", {
-      providers: Object.values(payload.catalogs).map((catalog) => ({
-        provider: catalog.provider,
-        command_count: catalog.commands.length,
-        source: catalog.source,
-        discovery: catalog.discovery,
-      })),
-    })
-    return payload.catalogs
-  } catch (error) {
-    logger?.warn("provider command catalog lookup failed; using fallback command catalogs", {
-      error: formatError(error),
-    })
-    return fallbackProviderCommandCatalogs()
-  }
-}
-
-
 async function getWaitingRoomInventory(client: LocalIpcClient): Promise<{
   inventoryVersion: string
   sessions: WaitingRoomPublicSessionSummary[]
@@ -9933,52 +9878,10 @@ async function attachToSession(
   return payload.attachment
 }
 
-async function getProviderRun(client: LocalIpcClient, providerRunId: string): Promise<RuntimeProviderRun> {
-  const response = await client.send<Record<string, unknown>>(getProviderRunRequest(providerRunId))
-  const payload = expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRun")
-  return payload.provider_run
-}
-
-async function tryGetProviderRun(
-  client: LocalIpcClient,
-  providerRunId: string,
-  logger?: ArrobaLogger | null,
-): Promise<RuntimeProviderRun | null> {
-  try {
-    return await getProviderRun(client, providerRunId)
-  } catch (error) {
-    const message = formatError(error)
-    if (!/unknown variant `GetProviderRun`/i.test(message)) {
-      throw error
-    }
-    logger?.warn("daemon does not support provider run lookup", {
-      provider_run_id: providerRunId,
-    })
-    return null
-  }
-}
-
 async function getSessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
   return normalizeRuntimeSession(payload.session)
-}
-
-async function updateSessionConfig(
-  client: LocalIpcClient,
-  sessionId: string,
-  attachmentId: string,
-  values: Record<string, string>,
-  requiresIdle: boolean,
-): Promise<{ session: RuntimeSession, config: SessionConfigState }> {
-  const response = await client.send<Record<string, unknown>>(
-    updateSessionConfigRequest(sessionId, attachmentId, values, requiresIdle),
-  )
-  const payload = expectVariant<{ session: RuntimeSession, config: SessionConfigState }>(response, "SessionConfigUpdated")
-  return {
-    ...payload,
-    session: normalizeRuntimeSession(payload.session),
-  }
 }
 
 async function updateAgentConfig(
@@ -10112,71 +10015,11 @@ async function catchUpAttachedSession(
   }
 }
 
-async function launchProviderRun(
-  client: LocalIpcClient,
-  sessionId: string,
-  provider: string,
-  accountProfile: string,
-  model: string,
-  effort: string,
-  agentId?: string | null,
-): Promise<RuntimeProviderRun> {
-  const response = await client.send<Record<string, unknown>>(launchProviderRunRequest(sessionId, provider, accountProfile, model, effort, agentId))
-  const payload = "ProviderRunLaunched" in response
-    ? expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched")
-    : expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunchAccepted")
-  return payload.provider_run
-}
-
-async function getProviderAuthStatus(
-  client: LocalIpcClient,
-  provider: string,
-): Promise<ProviderAuthStatus> {
-  const response = await client.send<Record<string, unknown>>(getProviderAuthStatusRequest(provider))
-  const payload = expectVariant<{ status: ProviderAuthStatus }>(response, "ProviderAuthStatus")
-  return payload.status
-}
-
-async function startProviderLogin(
-  client: LocalIpcClient,
-  provider: string,
-): Promise<ProviderLoginStart> {
-  const response = await client.send<Record<string, unknown>>(startProviderLoginRequest(provider))
-  const payload = expectVariant<{ login: ProviderLoginStart }>(response, "ProviderLoginStarted")
-  return payload.login
-}
-
-async function logoutProvider(
-  client: LocalIpcClient,
-  provider: string,
-): Promise<ProviderLogoutResult> {
-  const response = await client.send<Record<string, unknown>>(logoutProviderRequest(provider))
-  return expectVariant<ProviderLogoutResult>(response, "ProviderLoggedOut")
-}
-
 async function maybeResize(client: LocalIpcClient, sessionId: string): Promise<void> {
   if (!process.stdout.isTTY || !process.stdout.columns || !process.stdout.rows) {
     return
   }
   await client.send<Record<string, unknown>>(resizeTerminalRequest(sessionId, process.stdout.columns, process.stdout.rows))
-}
-
-function sameProviderRun(left: RuntimeProviderRun, right: RuntimeProviderRun) {
-  return left.id === right.id
-    && left.session_id === right.session_id
-    && left.agent_instance_id === right.agent_instance_id
-    && left.adapter_key === right.adapter_key
-    && left.provider === right.provider
-    && left.account_profile === right.account_profile
-    && left.model === right.model
-    && left.variant === right.variant
-    && left.client_interface === right.client_interface
-    && left.usage_tokens_total === right.usage_tokens_total
-    && left.state === right.state
-}
-
-function providerRunUsesNativeTui(run: RuntimeProviderRun | null | undefined): boolean {
-  return run?.client_interface === "native_tui"
 }
 
 function defaultKernelEndpoint(): string {
