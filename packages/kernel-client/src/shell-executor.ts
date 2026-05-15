@@ -36,7 +36,6 @@ import {
   aliasAgentRequest,
   aliasWorkflowEndpointRequest,
   aliasWorkflowRequest,
-  attachToSessionRequest,
   bindWorkflowEndpointRequest,
   cancelActivePromptRequest,
   cancelWorkflowRunRequest,
@@ -164,6 +163,11 @@ import {
   formatSessionList,
   formatSessionMembers,
 } from "./shell-session-format.js"
+import {
+  attachShellSession,
+  expectSessionState,
+  resolveShellAttachmentId,
+} from "./shell-session-attachment.js"
 import { executeProviderCommand } from "./shell-provider-command.js"
 import {
   parsePlacementOptions,
@@ -1936,35 +1940,6 @@ async function tryResolveShellAgent(
   return result.ok ? result : { ok: false }
 }
 
-async function resolveShellAttachmentId(
-  context: ShellContext,
-  deps: ShellExecutorDeps,
-): Promise<{ ok: true; attachmentId: string } | { ok: false; message: string }> {
-  if (context.attachmentId) {
-    return { ok: true, attachmentId: context.attachmentId }
-  }
-  const sessionId = context.sessionId
-  if (!sessionId) {
-    return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
-  }
-  const response = await deps.client.send(getSessionStateRequest(sessionId))
-  const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
-  const attachmentId = session.attachment_ids[0]
-  if (!attachmentId) {
-    return { ok: false, message: "current session has no attached client; stop/session-config commands require an attachment" }
-  }
-  return { ok: true, attachmentId }
-}
-
-async function attachShellSession(sessionId: string, deps: ShellExecutorDeps): Promise<string | undefined> {
-  if (!deps.clientId) {
-    return undefined
-  }
-  const response = await deps.client.send(attachToSessionRequest(sessionId, deps.clientId))
-  const payload = expectVariant<{ attachment: { id: string } }>(response, "SessionAttached")
-  return payload.attachment.id
-}
-
 function parseMcpInstallConfig(args: string[]): ArrobaMcpServerConfig | null {
   const name = args[1]
   if (!name) return null
@@ -2226,13 +2201,6 @@ function sessionHasPrompt(session: RuntimeSession, agentId: string, promptId: st
     || Boolean(state?.queued_prompts?.some((prompt) => prompt.id === promptId))
     || session.active_prompt?.id === promptId
     || session.queued_prompts.some((prompt) => prompt.id === promptId)
-}
-
-function expectSessionState(response: Record<string, unknown>): RuntimeSession {
-  if ("SessionState" in response) {
-    return (response.SessionState as { session: RuntimeSession }).session
-  }
-  return expectVariant<{ session: RuntimeSession }>(response, "SessionStateLoaded").session
 }
 
 function sleep(ms: number): Promise<void> {
