@@ -9,9 +9,9 @@ use crate::runtime::router::CommandRouter;
 use crate::transport::relay_crypto;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
+use super::daemon_requests::RelayRequestOutcome;
 use super::peer_events::emit_leased_projection_event;
 use super::request_errors::{map_relay_error, relay_error};
-use super::RelayRequestOutcome;
 
 pub(super) async fn handle_daemon_peer_request(
     router: &Arc<CommandRouter>,

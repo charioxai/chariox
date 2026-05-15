@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,14 +9,11 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, MissedTickBehavior};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use arroba_relay::protocol::{
-    ClientTarget, EncryptedRelayPayload, RelayCallerIdentity, RelayEnvelope, RelayError,
-};
+use arroba_relay::protocol::{ClientTarget, EncryptedRelayPayload, RelayEnvelope, RelayError};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
-use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
 use crate::runtime::event_log::{EventLog, ReplayOutcome};
 use crate::runtime::projection::SessionSnapshotProjection;
 use crate::runtime::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
@@ -30,6 +27,7 @@ use crate::transport::relay_discovery;
 use crate::transport::relay_peer::RelayPeerEvent;
 
 mod connection_config;
+mod daemon_requests;
 mod events;
 mod peer_client;
 mod peer_events;
@@ -38,6 +36,7 @@ mod remote_inventory;
 mod request_errors;
 mod subscriptions;
 use connection_config::{relay_config_continuity, RelayConfigContinuity};
+use daemon_requests::handle_daemon_request;
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
@@ -50,7 +49,7 @@ use remote_inventory::{
     abort_inventory_refresh_task, clear_remote_inventory_projection,
     spawn_remote_inventory_projection_refresh,
 };
-use request_errors::{map_relay_error, relay_error, relay_request_kind};
+use request_errors::{map_relay_error, relay_error};
 use subscriptions::{
     abort_subscription_tasks, relay_subscription_task_key,
     remove_relay_subscription_task_by_relay_id, run_relay_subscription_loop, RelaySubscriptionTask,
@@ -793,151 +792,6 @@ async fn handle_incoming_envelope(
         _ => {}
     }
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct RelayRequestOutcome {
-    pub(super) encrypted_response: Option<EncryptedRelayPayload>,
-    pub(super) error: Option<RelayError>,
-}
-
-async fn handle_daemon_request(
-    router: &CommandRouter,
-    command_sequence: &AtomicU64,
-    caller_identity: Option<RelayCallerIdentity>,
-    encrypted_request: EncryptedRelayPayload,
-) -> RelayRequestOutcome {
-    let (request, client_public_key, daemon_private_key) = {
-        let daemon_private_key = router.relay_private_key();
-        let decrypted = match relay_crypto::decrypt_payload_for_private_key(
-            &daemon_private_key,
-            &encrypted_request,
-        ) {
-            Ok(payload) => payload,
-            Err(error) => {
-                return RelayRequestOutcome {
-                    encrypted_response: None,
-                    error: Some(relay_error(
-                        "invalid_request",
-                        &format!("invalid relay request payload: {error}"),
-                        false,
-                    )),
-                };
-            }
-        };
-        let request = match serde_json::from_slice::<LocalDaemonRequest>(&decrypted.plaintext) {
-            Ok(request) => request,
-            Err(error) => {
-                return RelayRequestOutcome {
-                    encrypted_response: None,
-                    error: Some(relay_error(
-                        "invalid_request",
-                        &format!("invalid relay request payload: {error}"),
-                        false,
-                    )),
-                };
-            }
-        };
-        (request, decrypted.sender_public_key, daemon_private_key)
-    };
-    let request_kind = relay_request_kind(&request);
-    crate::logging::info_with_fields(
-        "daemon.relay_client",
-        "relay daemon request dispatching",
-        serde_json::json!({
-            "request_kind": request_kind,
-        }),
-    );
-    let result =
-        dispatch_relay_client_request(router, command_sequence, caller_identity, request).await;
-    match result {
-        Ok(response) => {
-            crate::logging::info_with_fields(
-                "daemon.relay_client",
-                "relay daemon request dispatched",
-                serde_json::json!({
-                    "request_kind": request_kind,
-                }),
-            );
-            let plaintext = match serde_json::to_vec(&response) {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        encrypted_response: None,
-                        error: Some(relay_error(
-                            "relay_request_failed",
-                            &format!("failed to serialize relay response: {error}"),
-                            false,
-                        )),
-                    };
-                }
-            };
-            crate::logging::info_with_fields(
-                "daemon.relay_client",
-                "relay daemon response serialized",
-                serde_json::json!({
-                    "request_kind": request_kind,
-                    "byte_len": plaintext.len(),
-                }),
-            );
-            match relay_crypto::encrypt_payload_for_peer(
-                &daemon_private_key,
-                &client_public_key,
-                &plaintext,
-            ) {
-                Ok(encrypted_response) => {
-                    crate::logging::info_with_fields(
-                        "daemon.relay_client",
-                        "relay daemon response encrypted",
-                        serde_json::json!({
-                            "request_kind": request_kind,
-                            "byte_len": plaintext.len(),
-                        }),
-                    );
-                    RelayRequestOutcome {
-                        encrypted_response: Some(encrypted_response),
-                        error: None,
-                    }
-                }
-                Err(error) => RelayRequestOutcome {
-                    encrypted_response: None,
-                    error: Some(relay_error(
-                        "relay_request_failed",
-                        &format!("failed to encrypt relay response: {error}"),
-                        false,
-                    )),
-                },
-            }
-        }
-        Err(error) => RelayRequestOutcome {
-            encrypted_response: None,
-            error: Some(map_relay_error(&error)),
-        },
-    }
-}
-
-async fn dispatch_relay_client_request(
-    router: &CommandRouter,
-    command_sequence: &AtomicU64,
-    caller_identity: Option<RelayCallerIdentity>,
-    request: LocalDaemonRequest,
-) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
-    let sequence = command_sequence.fetch_add(1, Ordering::Relaxed);
-    let command_id = format!(
-        "relay-client-{}-{sequence}",
-        crate::session::unix_epoch_ms()
-    );
-    let command = KernelCommand::from_local_request_with_caller(
-        command_id,
-        KernelCommandSource::RelayClient,
-        caller_identity
-            .map(KernelCaller::from_relay_identity)
-            .unwrap_or_else(|| KernelCaller::for_source(&KernelCommandSource::RelayClient)),
-        None,
-        None,
-        &request,
-    );
-    router.dispatch(command, request).await
 }
 
 async fn encrypt_json_response(
