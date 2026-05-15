@@ -15,6 +15,7 @@ mod provider_launch_policy;
 mod provider_liveness;
 pub(crate) mod provider_output;
 mod provider_processes;
+mod provider_prompt_launch;
 mod provider_run_read;
 mod provider_runtime;
 mod provider_tracking;
