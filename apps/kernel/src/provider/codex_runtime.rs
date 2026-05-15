@@ -12,15 +12,22 @@ use crate::terminal::TerminalOutputKind;
 
 use super::{
     codex_client::codex_endpoint_is_healthy, AgentEndpointMode, CodexClient, CodexNotification,
-    CodexRunSelection, CodexSocket, ProviderNativeInteractionBridge, ProviderResumeState,
-    ProviderRunTokenUsage, RuntimeProviderRun,
+    CodexRunSelection, ProviderNativeInteractionBridge, ProviderResumeState, ProviderRunTokenUsage,
+    RuntimeProviderRun,
 };
 
 mod input;
+mod run_config;
+mod state;
 mod transcript;
 mod turn;
 
 use input::codex_input;
+use run_config::{codex_client_for_run, normalize_codex_model, normalize_variant};
+pub use state::{
+    CodexAssistantCompletion, CodexOutputChunk, CodexPollResult, CodexRuntimeBinding,
+    CodexRuntimeState,
+};
 use transcript::{
     append_text_delta, append_tool_output_delta, append_tool_progress, codex_exec_command_item,
     decode_codex_output_delta_chunk, sync_completed_text_item, sync_tool_item,
@@ -37,85 +44,6 @@ use transcript::render_codex_tool_transcript_update;
 const CODEX_EVENT_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(1);
 const CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS: usize = 64;
 const CODEX_UTILITY_POLL_INTERVAL: Duration = Duration::from_millis(50);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodexPollResult {
-    pub chunks: Vec<CodexOutputChunk>,
-    pub completions: Vec<CodexAssistantCompletion>,
-    pub prompt_completed: bool,
-    pub terminal_failure: Option<String>,
-    pub notices: Vec<String>,
-    pub resolved_usage: Option<ProviderRunTokenUsage>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodexOutputChunk {
-    pub kind: TerminalOutputKind,
-    pub merge_key: Option<String>,
-    pub bytes: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodexAssistantCompletion {
-    pub message_id: String,
-    pub completed_at_ms: u64,
-}
-
-pub struct CodexRuntimeState {
-    endpoint: String,
-    thread_id: String,
-    socket: CodexSocket,
-    next_request_id: u64,
-    buffered_notifications: Vec<CodexNotification>,
-    active_turn_id: Option<String>,
-    turn_tracker: CodexTurnTracker,
-    text_items: BTreeMap<String, CodexTextTranscriptState>,
-    tool_items: BTreeMap<String, CodexToolTranscriptState>,
-}
-
-impl std::fmt::Debug for CodexRuntimeState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CodexRuntimeState")
-            .field("endpoint", &self.endpoint)
-            .field("thread_id", &self.thread_id)
-            .field("next_request_id", &self.next_request_id)
-            .field("buffered_notifications", &self.buffered_notifications)
-            .field("active_turn_id", &self.active_turn_id)
-            .field("turn_tracker", &self.turn_tracker)
-            .field("text_items", &self.text_items)
-            .field("tool_items", &self.tool_items)
-            .finish()
-    }
-}
-
-impl CodexRuntimeState {
-    pub fn endpoint(&self) -> &str {
-        &self.endpoint
-    }
-
-    pub fn thread_id(&self) -> &str {
-        &self.thread_id
-    }
-}
-
-pub struct CodexRuntimeBinding {
-    pub state: CodexRuntimeState,
-    pub selection: CodexRunSelection,
-    pub resume_state: ProviderResumeState,
-}
-
-fn codex_client_for_run(
-    run: &RuntimeProviderRun,
-    endpoint: &str,
-    native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
-) -> Result<CodexClient, DaemonError> {
-    Ok(CodexClient::new(run.id(), endpoint)?
-        .with_runtime_context(Some(run.session_id()), run.agent_instance_id())
-        .with_runtime_mcp_binding(run.runtime_mcp_server_url(), run.runtime_mcp_auth_token())
-        .with_native_interaction_bridge(native_interaction_bridge)
-        .with_mcp_servers(run.mcp_servers())
-        .with_write_access_mode(run.write_access_mode()))
-}
 
 pub fn initialize_codex_runtime(
     run: &RuntimeProviderRun,
@@ -234,17 +162,7 @@ pub fn initialize_codex_runtime(
         }
     };
     Ok(CodexRuntimeBinding {
-        state: CodexRuntimeState {
-            endpoint,
-            thread_id: thread_id.clone(),
-            socket,
-            next_request_id,
-            buffered_notifications: Vec::new(),
-            active_turn_id: None,
-            turn_tracker: CodexTurnTracker::default(),
-            text_items: BTreeMap::new(),
-            tool_items: BTreeMap::new(),
-        },
+        state: CodexRuntimeState::new(endpoint, thread_id.clone(), socket, next_request_id),
         selection,
         resume_state: ProviderResumeState::from_codex_thread_id(thread_id),
     })
@@ -263,7 +181,7 @@ pub fn submit_codex_prompt(
     let model = normalize_codex_model(run.model());
     let effort = normalize_variant(run.variant());
     let input = codex_input(prompt, attachments);
-    let thread_id = state.thread_id.clone();
+    let thread_id = state.thread_id().to_string();
     let response = match client.turn_start(
         &mut state.socket,
         &mut state.next_request_id,
@@ -331,19 +249,9 @@ pub fn run_codex_utility_prompt(
         run.execution_mode(),
         run.permission_level(),
     )?;
-    let mut state = CodexRuntimeState {
-        endpoint,
-        thread_id: thread.thread.id,
-        socket,
-        next_request_id,
-        buffered_notifications: Vec::new(),
-        active_turn_id: None,
-        turn_tracker: CodexTurnTracker::default(),
-        text_items: BTreeMap::new(),
-        tool_items: BTreeMap::new(),
-    };
+    let mut state = CodexRuntimeState::new(endpoint, thread.thread.id, socket, next_request_id);
     let input = codex_input(prompt, &[]);
-    let thread_id = state.thread_id.clone();
+    let thread_id = state.thread_id().to_string();
     let response = client.turn_start(
         &mut state.socket,
         &mut state.next_request_id,
@@ -735,10 +643,11 @@ fn backfill_external_completed_turn(
     let Some(active_turn_id) = state.active_turn_id.clone() else {
         return Ok(());
     };
+    let thread_id = state.thread_id().to_string();
     let response = client.thread_turns_list(
         &mut state.socket,
         &mut state.next_request_id,
-        &state.thread_id,
+        &thread_id,
         &mut state.buffered_notifications,
     )?;
     let Some(turn) = response
@@ -844,21 +753,6 @@ fn clean_codex_utility_output(output: &str) -> String {
         .trim_matches('\'')
         .trim()
         .to_string()
-}
-
-fn normalize_codex_model(model: &str) -> Option<String> {
-    let model = model.trim();
-    if model.is_empty() || model == "default" {
-        return None;
-    }
-    Some(model.strip_prefix("codex/").unwrap_or(model).to_string())
-}
-
-fn normalize_variant(variant: Option<&str>) -> Option<String> {
-    variant
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && *value != "default")
-        .map(str::to_string)
 }
 
 #[cfg(test)]
