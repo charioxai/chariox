@@ -20,12 +20,9 @@ import {
 } from "./cli-types.js"
 import type {
   AgentInstance,
-  ArrobaMcpServerConfig,
-  ArrobaSkillMetadata,
   BootstrapState,
   CaptureScreenshotResult,
   CliOptions,
-  McpImportOutcome,
   PromptAttachmentPart,
   PromptInputHistoryPage,
   PromptSubmittedPayload,
@@ -39,7 +36,6 @@ import type {
   SessionHistoryPage,
   SessionHistoryPageEntry,
   SliceRecord,
-  SkillImportOutcome,
   StoredTransferArtifact,
   TerminalOutputRecord,
   TranscriptEntry,
@@ -92,19 +88,10 @@ import {
   detachWorkspaceLinkRequest,
   endSessionRequest,
   focusAgentRequest,
-  getMcpServerRequest,
-  grantAgentCapabilityRequest,
-  importMcpServersRequest,
-  importSkillsRequest,
   getPromptInputHistoryRequest,
-  getSkillRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
   getWaitingRoomPublicSnapshotRequest,
-  installMcpServerRequest,
-  installSkillRequest,
-  listMcpServersRequest,
-  listSkillsRequest,
   listWorkspaceLinksRequest,
   acceptCloudSessionInviteRequest,
   createCloudSessionInviteRequest,
@@ -117,15 +104,10 @@ import {
   recordPromptInputHistoryRequest,
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
-  revokeAgentCapabilityRequest,
   showWorkspaceLinkRequest,
   spawnAgentRequest,
   storeTransferredFileRequest,
   submitPromptRequest,
-  uninstallMcpServerRequest,
-  uninstallSkillRequest,
-  updateMcpServerRequest,
-  updateSkillRequest,
 } from "./ipc-requests.js"
 import { expectVariant, firstVariantName } from "./ipc-response.js"
 import {
@@ -140,6 +122,24 @@ import {
   updateAgentProfile,
   updateAgentSubstitutes,
 } from "./agent-api.js"
+import {
+  getMcpServer,
+  getSkill,
+  grantAgentMcp,
+  grantAgentSkill,
+  importMcpServers,
+  importSkills,
+  installMcpServer,
+  installSkill,
+  listMcpServers,
+  listSkills,
+  revokeAgentMcp,
+  revokeAgentSkill,
+  uninstallMcpServer,
+  uninstallSkill,
+  updateMcpServer,
+  updateSkill,
+} from "./extension-api.js"
 import { deleteKernel } from "./kernel-api.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
@@ -6757,102 +6757,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getSliceDisplayEndpoint: async (sliceRef) => getSliceDisplayEndpoint(client, sliceRef),
     listProviderProcesses: (provider) => listProviderProcesses(client, provider),
     teardownProviderProcesses: (provider) => teardownProviderProcesses(client, provider),
-    listMcpServers: async () => {
-      const response = await client.send<Record<string, unknown>>(
-        listMcpServersRequest(pendingWorkspaceTarget()),
-      )
-      return expectVariant<{ mcps: ArrobaMcpServerConfig[] }>(response, "McpServersListed").mcps
-    },
-    installMcpServer: async (config) => {
-      const response = await client.send<Record<string, unknown>>(
-        installMcpServerRequest(pendingWorkspaceTarget(), config as unknown as Record<string, unknown>),
-      )
-      return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServerInstalled").mcp
-    },
-    updateMcpServer: async (config) => {
-      const response = await client.send<Record<string, unknown>>(
-        updateMcpServerRequest(pendingWorkspaceTarget(), config as unknown as Record<string, unknown>),
-      )
-      return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServerUpdated").mcp
-    },
-    uninstallMcpServer: async (name) => {
-      const response = await client.send<Record<string, unknown>>(
-        uninstallMcpServerRequest(pendingWorkspaceTarget(), name),
-      )
-      return expectVariant<{ name: string }>(response, "McpServerUninstalled").name
-    },
-    importMcpServers: async (provider, name) => {
-      const response = await client.send<Record<string, unknown>>(
-        importMcpServersRequest(pendingWorkspaceTarget(), provider, name),
-      )
-      return expectVariant<{ outcome: McpImportOutcome }>(response, "McpServersImported").outcome
-    },
-    getMcpServer: async (name) => {
-      const response = await client.send<Record<string, unknown>>(
-        getMcpServerRequest(pendingWorkspaceTarget(), name),
-      )
-      return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServer").mcp
-    },
-    grantAgentMcp: async (agentRef, name) => {
-      const response = await client.send<Record<string, unknown>>(
-        grantAgentCapabilityRequest(pendingWorkspaceTarget(), agentRef, "mcp", name),
-      )
-      return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
-    },
-    revokeAgentMcp: async (agentRef, name) => {
-      const response = await client.send<Record<string, unknown>>(
-        revokeAgentCapabilityRequest(agentRef, "mcp", name),
-      )
-      return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityRevoked").agent
-    },
-    listSkills: async () => {
-      const response = await client.send<Record<string, unknown>>(
-        listSkillsRequest(pendingWorkspaceTarget()),
-      )
-      return expectVariant<{ skills: ArrobaSkillMetadata[] }>(response, "SkillsListed").skills
-    },
-    installSkill: async (sourcePath) => {
-      const response = await client.send<Record<string, unknown>>(
-        installSkillRequest(pendingWorkspaceTarget(), sourcePath),
-      )
-      return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillInstalled").skill
-    },
-    updateSkill: async (sourcePath) => {
-      const response = await client.send<Record<string, unknown>>(
-        updateSkillRequest(pendingWorkspaceTarget(), sourcePath),
-      )
-      return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillUpdated").skill
-    },
-    uninstallSkill: async (name) => {
-      const response = await client.send<Record<string, unknown>>(
-        uninstallSkillRequest(pendingWorkspaceTarget(), name),
-      )
-      return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillUninstalled").skill
-    },
-    importSkills: async (provider, name) => {
-      const response = await client.send<Record<string, unknown>>(
-        importSkillsRequest(pendingWorkspaceTarget(), provider, name),
-      )
-      return expectVariant<{ outcome: SkillImportOutcome }>(response, "SkillsImported").outcome
-    },
-    getSkill: async (name) => {
-      const response = await client.send<Record<string, unknown>>(
-        getSkillRequest(pendingWorkspaceTarget(), name),
-      )
-      return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "Skill").skill
-    },
-    grantAgentSkill: async (agentRef, name) => {
-      const response = await client.send<Record<string, unknown>>(
-        grantAgentCapabilityRequest(pendingWorkspaceTarget(), agentRef, "skill", name),
-      )
-      return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
-    },
-    revokeAgentSkill: async (agentRef, name) => {
-      const response = await client.send<Record<string, unknown>>(
-        revokeAgentCapabilityRequest(agentRef, "skill", name),
-      )
-      return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityRevoked").agent
-    },
+    listMcpServers: () => listMcpServers(client, pendingWorkspaceTarget()),
+    installMcpServer: (config) => installMcpServer(client, pendingWorkspaceTarget(), config),
+    updateMcpServer: (config) => updateMcpServer(client, pendingWorkspaceTarget(), config),
+    uninstallMcpServer: (name) => uninstallMcpServer(client, pendingWorkspaceTarget(), name),
+    importMcpServers: (provider, name) => importMcpServers(client, pendingWorkspaceTarget(), provider, name),
+    getMcpServer: (name) => getMcpServer(client, pendingWorkspaceTarget(), name),
+    grantAgentMcp: (agentRef, name) => grantAgentMcp(client, pendingWorkspaceTarget(), agentRef, name),
+    revokeAgentMcp: (agentRef, name) => revokeAgentMcp(client, agentRef, name),
+    listSkills: () => listSkills(client, pendingWorkspaceTarget()),
+    installSkill: (sourcePath) => installSkill(client, pendingWorkspaceTarget(), sourcePath),
+    updateSkill: (sourcePath) => updateSkill(client, pendingWorkspaceTarget(), sourcePath),
+    uninstallSkill: (name) => uninstallSkill(client, pendingWorkspaceTarget(), name),
+    importSkills: (provider, name) => importSkills(client, pendingWorkspaceTarget(), provider, name),
+    getSkill: (name) => getSkill(client, pendingWorkspaceTarget(), name),
+    grantAgentSkill: (agentRef, name) => grantAgentSkill(client, pendingWorkspaceTarget(), agentRef, name),
+    revokeAgentSkill: (agentRef, name) => revokeAgentSkill(client, agentRef, name),
     logViewCommand: (fields) => {
       appLogger?.info("handling view command", fields)
       logViewDebug("view command:after set layout", fields)
