@@ -9,6 +9,7 @@ mod opencode;
 mod opencode_binding;
 mod opencode_client;
 mod opencode_runtime;
+mod prompt_signals;
 mod registry;
 mod run_actor;
 mod service;
@@ -40,6 +41,12 @@ pub use opencode_client::{
     OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage,
     OpenCodeProviderCatalog, OpenCodeProviderInfo, OpenCodeProviderModel, OpenCodeSessionSnapshot,
 };
+pub(crate) use prompt_signals::{
+    classify_provider_substitutable_failure_text, classify_provider_terminal_failure_text,
+};
+pub use prompt_signals::{
+    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
+};
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
@@ -48,17 +55,13 @@ pub(crate) use run_actor::{
 };
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
-pub(crate) use types::{
-    classify_provider_substitutable_failure_text, classify_provider_terminal_failure_text,
-    provider_requires_managed_io_by_default,
-};
+pub(crate) use types::provider_requires_managed_io_by_default;
 pub use types::{
     default_provider_command_catalogs, AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel,
     ControlCapability, ControlCapabilityMode, ControlOperation, LaunchProviderRequest,
-    ProviderAssistantCompletion, ProviderClientInterface, ProviderCommandCatalog,
-    ProviderCommandCatalogDiscovery, ProviderCommandCatalogSource, ProviderCommandDescriptor,
-    ProviderLaunchResult, ProviderProcessInfo, ProviderProcessStatus, ProviderPromptChunk,
-    ProviderPromptSignalBatch, ProviderResumeState, ProviderRunState, ProviderRunTokenUsage,
-    ProviderWriteAccessMode, RuntimeMcpBinding, RuntimeProviderRun,
+    ProviderClientInterface, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
+    ProviderCommandCatalogSource, ProviderCommandDescriptor, ProviderLaunchResult,
+    ProviderProcessInfo, ProviderProcessStatus, ProviderResumeState, ProviderRunState,
+    ProviderRunTokenUsage, ProviderWriteAccessMode, RuntimeMcpBinding, RuntimeProviderRun,
 };
 pub(crate) use workspace_write_fence::{apply_workspace_write_fence, workspace_write_fence_active};
