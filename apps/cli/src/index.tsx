@@ -23,9 +23,6 @@ import type {
   AgentInstance,
   ArrobaMcpServerConfig,
   ArrobaSkillMetadata,
-  ArrobaUserConfig,
-  ArrobaUserConfigSchemaPayload,
-  ArrobaUserConfigPayload,
   BootstrapState,
   CaptureScreenshotResult,
   CliOptions,
@@ -120,8 +117,6 @@ import {
   getSessionHistoryRequest,
   getSessionStateRequest,
   getWaitingRoomPublicSnapshotRequest,
-  getUserConfigRequest,
-  getUserConfigSchemaRequest,
   installMcpServerRequest,
   installSkillRequest,
   launchProviderRunRequest,
@@ -144,7 +139,6 @@ import {
   resizeTerminalRequest,
   revokeAgentCapabilityRequest,
   resolveSessionRequest,
-  setUserConfigValueRequest,
   showWorkspaceLinkRequest,
   spawnAgentRequest,
   startProviderLoginRequest,
@@ -153,7 +147,6 @@ import {
   teardownProviderProcessesRequest,
   uninstallMcpServerRequest,
   uninstallSkillRequest,
-  unsetUserConfigValueRequest,
   updateMcpServerRequest,
   updateAgentConfigRequest,
   updateAgentProfileRequest,
@@ -162,6 +155,12 @@ import {
   updateSkillRequest,
 } from "./ipc-requests.js"
 import { expectVariant, firstVariantName } from "./ipc-response.js"
+import {
+  getUserConfig,
+  getUserConfigSchema,
+  setUserConfigValue,
+  unsetUserConfigValue,
+} from "./config-api.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
 import { evaluateConnectionHealth, runPollingLoop } from "./polling-effects.js"
@@ -9828,33 +9827,6 @@ async function getWaitingRoomInventory(client: LocalIpcClient): Promise<{
     terminals: payload.terminals ?? [],
     slices,
   }
-}
-
-async function getUserConfig(client: LocalIpcClient): Promise<ArrobaUserConfigPayload> {
-  const response = await client.send<Record<string, unknown>>(getUserConfigRequest())
-  return expectVariant<{ path: string, config: ArrobaUserConfig }>(response, "UserConfig")
-}
-
-async function getUserConfigSchema(client: LocalIpcClient): Promise<ArrobaUserConfigSchemaPayload> {
-  const response = await client.send<Record<string, unknown>>(getUserConfigSchemaRequest())
-  return expectVariant<ArrobaUserConfigSchemaPayload>(response, "UserConfigSchema")
-}
-
-async function setUserConfigValue(
-  client: LocalIpcClient,
-  path: string,
-  value: string,
-): Promise<ArrobaUserConfigPayload> {
-  const response = await client.send<Record<string, unknown>>(setUserConfigValueRequest(path, value))
-  return expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
-}
-
-async function unsetUserConfigValue(
-  client: LocalIpcClient,
-  path: string,
-): Promise<ArrobaUserConfigPayload> {
-  const response = await client.send<Record<string, unknown>>(unsetUserConfigValueRequest(path))
-  return expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
 }
 
 async function createSession(
