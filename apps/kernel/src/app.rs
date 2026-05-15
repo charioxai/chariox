@@ -1,27 +1,41 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use tokio::runtime::{Handle, Runtime};
 
 mod kernel_agent;
 mod kernel_session;
+mod prompt_activity;
 mod prompt_lifecycle;
 mod prompt_state_owner;
 pub(crate) mod provider_output;
 mod provider_runtime;
+mod provider_tracking;
+mod remote_kernel_selection;
 mod remote_lease;
 mod session_runtime;
 mod terminal_fanout;
 pub(crate) mod terminal_input;
+mod workflow_design_events;
 pub(crate) mod workflow_runtime;
 
+pub(crate) use prompt_activity::{
+    ActivePromptState, ActiveTurnState, ActiveTurnStore, PromptActivityStore,
+    PromptWorkspaceClaimStore,
+};
 pub(crate) use prompt_lifecycle::{
     serialize_remote_prompt_attachments, KernelPreparedPromptSubmission, KernelPromptAbortDispatch,
     KernelPromptCancellation, KernelPromptDispatch, KernelPromptSubmission,
     KernelRemotePromptDispatch,
 };
+pub(crate) use provider_tracking::{
+    ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
+};
+use remote_kernel_selection::{
+    ensure_kernel_can_host_provider, kernel_presence_matches_ref, select_remote_kernel,
+};
+pub(crate) use workflow_design_events::WorkflowDesignEventStore;
 
 use arroba_relay::protocol::{ClientTarget, DaemonRegistration, RelayKernelPresence};
 
@@ -47,9 +61,7 @@ use crate::runtime::projection::{
     SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
-use crate::runtime::workspace_coordinator::{
-    WorkspaceClaimGuard, WorkspaceCoordinator, WorkspaceOperationClaimSnapshot,
-};
+use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::session::{CreateSessionRequest, RuntimeSession, SessionService, SessionStateStore};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
@@ -132,374 +144,6 @@ pub struct DaemonApp {
     slices: crate::slice::SliceStore,
     next_execution_lease_number: u64,
     next_leased_agent_number: u64,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct WorkflowDesignEventStore {
-    inner: Arc<Mutex<WorkflowDesignEventStoreState>>,
-}
-
-#[derive(Debug, Default)]
-struct WorkflowDesignEventStoreState {
-    next_sequence: u64,
-    events: VecDeque<crate::local::WorkflowDesignOpForwarded>,
-}
-
-impl WorkflowDesignEventStore {
-    const RETAINED_EVENTS: usize = 1024;
-
-    pub(crate) fn append(
-        &self,
-        session_id: String,
-        origin_client_id: String,
-        op_id: String,
-        op: crate::local::WorkflowDesignOp,
-    ) -> crate::local::WorkflowDesignOpForwarded {
-        let mut state = self
-            .inner
-            .lock()
-            .expect("workflow design event store poisoned");
-        state.next_sequence = state.next_sequence.saturating_add(1);
-        let event = crate::local::WorkflowDesignOpForwarded {
-            session_id,
-            kernel_sequence: state.next_sequence,
-            origin_client_id,
-            op_id,
-            op,
-        };
-        state.events.push_back(event.clone());
-        while state.events.len() > Self::RETAINED_EVENTS {
-            state.events.pop_front();
-        }
-        event
-    }
-
-    pub(crate) fn events_since(
-        &self,
-        session_id: &str,
-        after_sequence: u64,
-        origin_client_id_to_skip: &str,
-    ) -> Vec<crate::local::WorkflowDesignOpForwarded> {
-        let state = self
-            .inner
-            .lock()
-            .expect("workflow design event store poisoned");
-        state
-            .events
-            .iter()
-            .filter(|event| {
-                event.session_id == session_id
-                    && event.kernel_sequence > after_sequence
-                    && event.origin_client_id != origin_client_id_to_skip
-            })
-            .cloned()
-            .collect()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ActivePromptState {
-    pub(crate) last_output_at: Option<Instant>,
-    pub(crate) saw_response_content: bool,
-    pub(crate) completion_recorded: bool,
-    pub(crate) settlement_requested: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ActiveTurnState {
-    pub(crate) session_id: String,
-    pub(crate) agent_id: String,
-    pub(crate) prompt_id: String,
-    pub(crate) provider_run_id: String,
-    pub(crate) settlement_requested: bool,
-}
-
-impl ActiveTurnState {
-    pub(crate) fn new(
-        session_id: String,
-        agent_id: String,
-        prompt_id: String,
-        provider_run_id: String,
-    ) -> Self {
-        Self {
-            session_id,
-            agent_id,
-            prompt_id,
-            provider_run_id,
-            settlement_requested: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ActiveTurnStore {
-    inner: Arc<Mutex<BTreeMap<String, ActiveTurnState>>>,
-}
-
-impl ActiveTurnStore {
-    pub(crate) fn start(&self, turn: ActiveTurnState) {
-        crate::debug_trace::record_terminal_turn(
-            &turn.session_id,
-            "active_turn_start",
-            serde_json::json!({
-                "agent_id": &turn.agent_id,
-                "prompt_id": &turn.prompt_id,
-                "provider_run_id": &turn.provider_run_id,
-                "settlement_requested": turn.settlement_requested,
-            }),
-        );
-        self.inner
-            .lock()
-            .expect("active turn mutex poisoned")
-            .insert(turn.provider_run_id.clone(), turn);
-    }
-
-    pub(crate) fn mark_settling(&self, provider_run_id: &str) {
-        if let Some(turn) = self
-            .inner
-            .lock()
-            .expect("active turn mutex poisoned")
-            .get_mut(provider_run_id)
-        {
-            turn.settlement_requested = true;
-            crate::debug_trace::record_terminal_turn(
-                &turn.session_id,
-                "active_turn_mark_settling",
-                serde_json::json!({
-                    "agent_id": &turn.agent_id,
-                    "prompt_id": &turn.prompt_id,
-                    "provider_run_id": &turn.provider_run_id,
-                    "settlement_requested": true,
-                }),
-            );
-        }
-    }
-
-    pub(crate) fn clear(&self, provider_run_id: &str) {
-        let removed = self
-            .inner
-            .lock()
-            .expect("active turn mutex poisoned")
-            .remove(provider_run_id);
-        if let Some(turn) = removed {
-            crate::debug_trace::record_terminal_turn(
-                &turn.session_id,
-                "active_turn_clear",
-                serde_json::json!({
-                    "agent_id": turn.agent_id,
-                    "prompt_id": turn.prompt_id,
-                    "provider_run_id": turn.provider_run_id,
-                    "settlement_requested": turn.settlement_requested,
-                }),
-            );
-        }
-    }
-
-    pub(crate) fn snapshot(&self) -> BTreeMap<String, ActiveTurnState> {
-        self.inner
-            .lock()
-            .expect("active turn mutex poisoned")
-            .clone()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct PromptActivityStore {
-    inner: Arc<Mutex<BTreeMap<String, ActivePromptState>>>,
-}
-
-impl PromptActivityStore {
-    pub(crate) fn read(&self) -> MutexGuard<'_, BTreeMap<String, ActivePromptState>> {
-        self.inner.lock().expect("prompt activity mutex poisoned")
-    }
-
-    pub(crate) fn write(&self) -> MutexGuard<'_, BTreeMap<String, ActivePromptState>> {
-        self.inner.lock().expect("prompt activity mutex poisoned")
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct PromptWorkspaceClaimStore {
-    inner: Arc<Mutex<BTreeMap<String, WorkspaceClaimGuard>>>,
-}
-
-impl PromptWorkspaceClaimStore {
-    pub(crate) fn contains(&self, provider_run_id: &str) -> bool {
-        self.inner
-            .lock()
-            .expect("prompt workspace claim mutex poisoned")
-            .contains_key(provider_run_id)
-    }
-
-    pub(crate) fn insert(&self, provider_run_id: String, claim: WorkspaceClaimGuard) {
-        self.inner
-            .lock()
-            .expect("prompt workspace claim mutex poisoned")
-            .insert(provider_run_id, claim);
-    }
-
-    pub(crate) fn remove(&self, provider_run_id: &str) -> bool {
-        self.inner
-            .lock()
-            .expect("prompt workspace claim mutex poisoned")
-            .remove(provider_run_id)
-            .is_some()
-    }
-
-    pub(crate) fn remove_matching(
-        &self,
-        mut predicate: impl FnMut(&WorkspaceOperationClaimSnapshot) -> bool,
-    ) -> usize {
-        let mut guard = self
-            .inner
-            .lock()
-            .expect("prompt workspace claim mutex poisoned");
-        let provider_run_ids = guard
-            .iter()
-            .filter_map(|(provider_run_id, claim)| {
-                claim
-                    .snapshot()
-                    .filter(|snapshot| predicate(snapshot))
-                    .map(|_| provider_run_id.clone())
-            })
-            .collect::<Vec<_>>();
-        let removed = provider_run_ids.len();
-        for provider_run_id in provider_run_ids {
-            guard.remove(&provider_run_id);
-        }
-        removed
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct TrackedProviderProcess {
-    pub(crate) process_id: String,
-    pub(crate) pid: Option<u32>,
-    pub(crate) endpoint_mode: crate::provider::AgentEndpointMode,
-    pub(crate) process_label: String,
-    pub(crate) started_at_ms: u64,
-    pub(crate) owner_provider_run_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ProviderProcessTrackingStore {
-    inner: Arc<Mutex<ProviderProcessTrackingState>>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ProviderProcessTrackingState {
-    pub(crate) processes: BTreeMap<String, TrackedProviderProcess>,
-    pub(crate) run_processes: BTreeMap<String, String>,
-}
-
-impl ProviderProcessTrackingStore {
-    pub(crate) fn read(&self) -> MutexGuard<'_, ProviderProcessTrackingState> {
-        self.inner
-            .lock()
-            .expect("provider process tracking mutex poisoned")
-    }
-
-    pub(crate) fn write(&self) -> MutexGuard<'_, ProviderProcessTrackingState> {
-        self.inner
-            .lock()
-            .expect("provider process tracking mutex poisoned")
-    }
-
-    #[cfg(test)]
-    pub(crate) fn snapshot(&self) -> ProviderProcessTrackingState {
-        self.read().clone()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ProviderCatalogCacheStore {
-    inner: Arc<Mutex<Option<(Instant, OpenCodeProviderCatalog)>>>,
-}
-
-impl ProviderCatalogCacheStore {
-    pub(crate) fn get_fresh(&self, ttl: Duration) -> Option<OpenCodeProviderCatalog> {
-        let cache = self
-            .inner
-            .lock()
-            .expect("provider catalog cache mutex poisoned");
-        let Some((cached_at, catalog)) = &*cache else {
-            return None;
-        };
-        (cached_at.elapsed() < ttl).then(|| catalog.clone())
-    }
-
-    pub(crate) fn set(&self, catalog: OpenCodeProviderCatalog) {
-        *self
-            .inner
-            .lock()
-            .expect("provider catalog cache mutex poisoned") = Some((Instant::now(), catalog));
-    }
-
-    pub(crate) fn clear(&self) {
-        *self
-            .inner
-            .lock()
-            .expect("provider catalog cache mutex poisoned") = None;
-    }
-}
-
-fn select_remote_kernel(
-    kernels: Vec<RelayKernelPresence>,
-    machine_ref: &str,
-    provider: &str,
-) -> Option<RelayKernelPresence> {
-    kernels
-        .into_iter()
-        .filter(|kernel| {
-            kernel.machine_id == machine_ref
-                || kernel.machine_alias.as_deref() == Some(machine_ref)
-                || kernel.relay_alias.as_deref() == Some(machine_ref)
-                || kernel.kernel_alias.as_deref() == Some(machine_ref)
-        })
-        .filter(|kernel| kernel.accepting_remote_leases)
-        .filter(|kernel| {
-            kernel
-                .available_providers
-                .iter()
-                .any(|candidate| candidate == provider)
-        })
-        .min_by_key(|kernel| {
-            (
-                kernel.leased_agent_count,
-                kernel.local_session_count,
-                kernel.kernel_id.clone(),
-            )
-        })
-}
-
-fn kernel_presence_matches_ref(kernel: &RelayKernelPresence, kernel_ref: &str) -> bool {
-    kernel.kernel_id == kernel_ref
-        || kernel.kernel_alias.as_deref() == Some(kernel_ref)
-        || kernel.relay_alias.as_deref() == Some(kernel_ref)
-}
-
-fn ensure_kernel_can_host_provider(
-    kernel: RelayKernelPresence,
-    kernel_ref: &str,
-    provider: &str,
-) -> Result<RelayKernelPresence, DaemonError> {
-    if !kernel.accepting_remote_leases {
-        return Err(DaemonError::LocalTransport {
-            operation: "select remote kernel",
-            message: format!("kernel `{kernel_ref}` is not accepting worker agents"),
-        });
-    }
-    if !kernel
-        .available_providers
-        .iter()
-        .any(|candidate| candidate == provider)
-    {
-        return Err(DaemonError::LocalTransport {
-            operation: "select remote kernel",
-            message: format!("kernel `{kernel_ref}` cannot host provider `{provider}`"),
-        });
-    }
-    Ok(kernel)
 }
 
 impl DaemonApp {
