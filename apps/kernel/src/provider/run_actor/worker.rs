@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -17,9 +17,7 @@ use super::finished_jobs::{
 };
 use super::in_flight::ProviderRunInFlightState;
 use super::native_interaction::ProviderNativeInteractionBridgeStore;
-use super::runtime_slots::{
-    clear_runtime_state, ClaudeRuntimeSlot, CodexRuntimeSlot, OpenCodeRuntimeSlot,
-};
+use super::runtime_slots::ProviderRunRuntimeRegistry;
 
 const PROVIDER_RUN_COMMAND_QUEUE_LIMIT: usize = 64;
 
@@ -55,10 +53,7 @@ pub(super) enum ProviderRunActorCommand {
 
 pub(super) struct ProviderRunWorkerDeps {
     pub(super) native_interaction_bridge: ProviderNativeInteractionBridgeStore,
-    pub(super) claude_runs: Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
-    pub(super) codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
-    pub(super) opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
-    pub(super) cleared_runs: Arc<Mutex<BTreeSet<String>>>,
+    pub(super) runtime_registry: ProviderRunRuntimeRegistry,
     pub(super) in_flight: ProviderRunInFlightState,
     pub(super) finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
     pub(super) finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
@@ -85,10 +80,7 @@ impl ProviderRunWorkerDeps {
                         attachments,
                     } => {
                         let result = execute_submit_command(
-                            &self.claude_runs,
-                            &self.codex_runs,
-                            &self.opencode_runs,
-                            &self.cleared_runs,
+                            &self.runtime_registry,
                             run,
                             prompt,
                             attachments,
@@ -107,13 +99,7 @@ impl ProviderRunWorkerDeps {
                         provider_run_id,
                         run,
                     } => {
-                        let result = execute_abort_command(
-                            &self.claude_runs,
-                            &self.codex_runs,
-                            &self.opencode_runs,
-                            &self.cleared_runs,
-                            run,
-                        );
+                        let result = execute_abort_command(&self.runtime_registry, run);
                         self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
                         let finished = FinishedProviderPromptAbortJob {
                             session_id,
@@ -126,13 +112,7 @@ impl ProviderRunWorkerDeps {
                         provider_run_id,
                         run,
                     } => {
-                        if let Err(error) = execute_terminate_command(
-                            &self.claude_runs,
-                            &self.codex_runs,
-                            &self.opencode_runs,
-                            &self.cleared_runs,
-                            run,
-                        ) {
+                        if let Err(error) = execute_terminate_command(&self.runtime_registry, run) {
                             crate::logging::error_with_fields(
                                 "daemon.provider_run_actor",
                                 "structured provider termination abort failed",
@@ -147,13 +127,8 @@ impl ProviderRunWorkerDeps {
                             .lock()
                             .expect("provider output poll delay map poisoned")
                             .remove(&provider_run_id);
-                        clear_runtime_state(
-                            &self.claude_runs,
-                            &self.codex_runs,
-                            &self.opencode_runs,
-                            &provider_run_id,
-                            true,
-                        );
+                        self.runtime_registry
+                            .clear_runtime_state(&provider_run_id, true);
                         break;
                     }
                     ProviderRunActorCommand::SyncSelection {
@@ -161,7 +136,7 @@ impl ProviderRunWorkerDeps {
                         run,
                     } => {
                         let result = execute_selection_sync_command(
-                            &self.opencode_runs,
+                            &self.runtime_registry,
                             &provider_run_id,
                             &run,
                         );
@@ -178,10 +153,7 @@ impl ProviderRunWorkerDeps {
                     } => {
                         let result = execute_output_poll_command(
                             &self.native_interaction_bridge,
-                            &self.claude_runs,
-                            &self.codex_runs,
-                            &self.opencode_runs,
-                            &self.cleared_runs,
+                            &self.runtime_registry,
                             &run,
                             output_poll_delay,
                         );

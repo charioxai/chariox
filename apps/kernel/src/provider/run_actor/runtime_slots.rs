@@ -9,6 +9,165 @@ pub(super) type ClaudeRuntimeSlot = Arc<Mutex<Option<ClaudeRuntimeState>>>;
 pub(super) type CodexRuntimeSlot = Arc<Mutex<Option<CodexRuntimeState>>>;
 pub(super) type OpenCodeRuntimeSlot = Arc<Mutex<Option<OpenCodeRuntimeState>>>;
 
+#[derive(Clone, Default)]
+pub(super) struct ProviderRunRuntimeRegistry {
+    claude_runs: Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
+    codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
+    opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+    cleared_runs: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl ProviderRunRuntimeRegistry {
+    pub(super) fn insert_claude_runtime(&self, run_id: String, state: ClaudeRuntimeState) {
+        self.clear_tombstone(&run_id);
+        self.claude_runs
+            .lock()
+            .expect("claude runtime map poisoned")
+            .insert(run_id, Arc::new(Mutex::new(Some(state))));
+    }
+
+    pub(super) fn insert_codex_runtime(&self, run_id: String, state: CodexRuntimeState) {
+        self.clear_tombstone(&run_id);
+        self.codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .insert(run_id, Arc::new(Mutex::new(Some(state))));
+    }
+
+    pub(super) fn insert_opencode_runtime(&self, run_id: String, state: OpenCodeRuntimeState) {
+        self.clear_tombstone(&run_id);
+        self.opencode_runs
+            .lock()
+            .expect("opencode runtime map poisoned")
+            .insert(run_id, Arc::new(Mutex::new(Some(state))));
+    }
+
+    pub(super) fn state_bound(&self, run_id: &str) -> bool {
+        if self
+            .claude_runs
+            .lock()
+            .expect("claude runtime map poisoned")
+            .get(run_id)
+            .is_some_and(|slot| slot.lock().expect("claude runtime slot poisoned").is_some())
+        {
+            return true;
+        }
+        if self
+            .codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .get(run_id)
+            .is_some_and(|slot| slot.lock().expect("codex runtime slot poisoned").is_some())
+        {
+            return true;
+        }
+        self.opencode_runs
+            .lock()
+            .expect("opencode runtime map poisoned")
+            .get(run_id)
+            .is_some_and(|slot| {
+                slot.lock()
+                    .expect("opencode runtime slot poisoned")
+                    .is_some()
+            })
+    }
+
+    pub(super) fn clear_runtime(&self, run_id: &str, stop_opencode: bool) {
+        self.cleared_runs
+            .lock()
+            .expect("cleared provider run set poisoned")
+            .insert(run_id.to_string());
+        self.clear_runtime_state(run_id, stop_opencode);
+    }
+
+    pub(super) fn clear_runtime_state(&self, run_id: &str, stop_opencode: bool) {
+        clear_runtime_state(
+            &self.claude_runs,
+            &self.codex_runs,
+            &self.opencode_runs,
+            run_id,
+            stop_opencode,
+        );
+    }
+
+    pub(super) fn take_claude_runtime(
+        &self,
+        run_id: &str,
+    ) -> Result<(ClaudeRuntimeSlot, ClaudeRuntimeState), DaemonError> {
+        take_claude_runtime(&self.claude_runs, run_id)
+    }
+
+    pub(super) fn take_codex_runtime(
+        &self,
+        run_id: &str,
+    ) -> Result<(CodexRuntimeSlot, CodexRuntimeState), DaemonError> {
+        take_codex_runtime(&self.codex_runs, run_id)
+    }
+
+    pub(super) fn take_opencode_runtime(
+        &self,
+        run_id: &str,
+    ) -> Result<(OpenCodeRuntimeSlot, OpenCodeRuntimeState), DaemonError> {
+        take_opencode_runtime(&self.opencode_runs, run_id)
+    }
+
+    pub(super) fn opencode_slot(&self, run_id: &str) -> Result<OpenCodeRuntimeSlot, DaemonError> {
+        opencode_slot(&self.opencode_runs, run_id)
+    }
+
+    pub(super) fn runtime_slot_missing_or_empty_claude(&self, run_id: &str) -> bool {
+        runtime_slot_missing_or_empty_claude(&self.claude_runs, run_id)
+    }
+
+    pub(super) fn runtime_slot_missing_or_empty_codex(&self, run_id: &str) -> bool {
+        runtime_slot_missing_or_empty_codex(&self.codex_runs, run_id)
+    }
+
+    pub(super) fn runtime_slot_missing_or_empty_opencode(&self, run_id: &str) -> bool {
+        runtime_slot_missing_or_empty_opencode(&self.opencode_runs, run_id)
+    }
+
+    pub(super) fn restore_claude_runtime_if_live(
+        &self,
+        run_id: &str,
+        slot: &ClaudeRuntimeSlot,
+        state: ClaudeRuntimeState,
+    ) {
+        restore_claude_runtime_if_live(&self.claude_runs, &self.cleared_runs, run_id, slot, state);
+    }
+
+    pub(super) fn restore_codex_runtime_if_live(
+        &self,
+        run_id: &str,
+        slot: &CodexRuntimeSlot,
+        state: CodexRuntimeState,
+    ) {
+        restore_codex_runtime_if_live(&self.codex_runs, &self.cleared_runs, run_id, slot, state);
+    }
+
+    pub(super) fn restore_opencode_runtime_if_live(
+        &self,
+        run_id: &str,
+        slot: &OpenCodeRuntimeSlot,
+        state: OpenCodeRuntimeState,
+    ) {
+        restore_opencode_runtime_if_live(
+            &self.opencode_runs,
+            &self.cleared_runs,
+            run_id,
+            slot,
+            state,
+        );
+    }
+
+    fn clear_tombstone(&self, run_id: &str) {
+        self.cleared_runs
+            .lock()
+            .expect("cleared provider run set poisoned")
+            .remove(run_id);
+    }
+}
+
 fn claude_slot(
     claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     run_id: &str,

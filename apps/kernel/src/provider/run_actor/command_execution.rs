@@ -1,5 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -19,19 +17,10 @@ use super::super::{
     opencode_runtime::drain_opencode_events,
 };
 use super::native_interaction::ProviderNativeInteractionBridgeStore;
-use super::runtime_slots::{
-    opencode_slot, restore_claude_runtime_if_live, restore_codex_runtime_if_live,
-    restore_opencode_runtime_if_live, runtime_slot_missing_or_empty_claude,
-    runtime_slot_missing_or_empty_codex, runtime_slot_missing_or_empty_opencode,
-    take_claude_runtime, take_codex_runtime, take_opencode_runtime, ClaudeRuntimeSlot,
-    CodexRuntimeSlot, OpenCodeRuntimeSlot,
-};
+use super::runtime_slots::ProviderRunRuntimeRegistry;
 
 pub(super) fn execute_submit_command(
-    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
-    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
+    runtime_registry: &ProviderRunRuntimeRegistry,
     run: RuntimeProviderRun,
     prompt: String,
     attachments: Vec<PromptAttachment>,
@@ -42,35 +31,32 @@ pub(super) fn execute_submit_command(
         return Ok(());
     }
     if run.adapter_key() == "codex" {
-        let (slot, mut state) = take_codex_runtime(codex_runs, &run_id)?;
+        let (slot, mut state) = runtime_registry.take_codex_runtime(&run_id)?;
         let result = submit_codex_prompt(&run, &mut state, &prompt, &attachments);
-        restore_codex_runtime_if_live(codex_runs, cleared_runs, &run_id, &slot, state);
+        runtime_registry.restore_codex_runtime_if_live(&run_id, &slot, state);
         return result;
     }
     if run.adapter_key() == "claude" {
         if !run.client_interface().is_arroba() {
             return Ok(());
         }
-        let (slot, mut state) = take_claude_runtime(claude_runs, &run_id)?;
+        let (slot, mut state) = runtime_registry.take_claude_runtime(&run_id)?;
         let result = submit_claude_prompt(&run, &mut state, &prompt, &attachments);
-        restore_claude_runtime_if_live(claude_runs, cleared_runs, &run_id, &slot, state);
+        runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result;
     }
     if run.adapter_key() != "opencode" {
         return Ok(());
     }
 
-    let (slot, mut state) = take_opencode_runtime(opencode_runs, &run_id)?;
+    let (slot, mut state) = runtime_registry.take_opencode_runtime(&run_id)?;
     let result = submit_opencode_prompt(&run, &mut state, &prompt, &attachments);
-    restore_opencode_runtime_if_live(opencode_runs, cleared_runs, &run_id, &slot, state);
+    runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);
     result
 }
 
 pub(super) fn execute_abort_command(
-    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
-    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
+    runtime_registry: &ProviderRunRuntimeRegistry,
     run: RuntimeProviderRun,
 ) -> Result<(), DaemonError> {
     let run_id = run.id().to_string();
@@ -79,58 +65,58 @@ pub(super) fn execute_abort_command(
         return Ok(());
     }
     if run.adapter_key() == "codex" {
-        let (slot, mut state) = take_codex_runtime(codex_runs, &run_id)?;
+        let (slot, mut state) = runtime_registry.take_codex_runtime(&run_id)?;
         let result = abort_codex_turn(&run_id, &mut state);
-        restore_codex_runtime_if_live(codex_runs, cleared_runs, &run_id, &slot, state);
+        runtime_registry.restore_codex_runtime_if_live(&run_id, &slot, state);
         return result;
     }
     if run.adapter_key() == "claude" {
         if !run.client_interface().is_arroba() {
             return Ok(());
         }
-        let (slot, mut state) = take_claude_runtime(claude_runs, &run_id)?;
+        let (slot, mut state) = runtime_registry.take_claude_runtime(&run_id)?;
         let result = abort_claude_turn(&run, &mut state);
-        restore_claude_runtime_if_live(claude_runs, cleared_runs, &run_id, &slot, state);
+        runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result;
     }
     if run.adapter_key() != "opencode" {
         return Ok(());
     }
 
-    let (slot, state) = take_opencode_runtime(opencode_runs, &run_id)?;
+    let (slot, state) = runtime_registry.take_opencode_runtime(&run_id)?;
     let result = abort_opencode_session(&run_id, &state);
-    restore_opencode_runtime_if_live(opencode_runs, cleared_runs, &run_id, &slot, state);
+    runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);
     result
 }
 
 pub(super) fn execute_terminate_command(
-    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
-    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
+    runtime_registry: &ProviderRunRuntimeRegistry,
     run: RuntimeProviderRun,
 ) -> Result<(), DaemonError> {
     let run_id = run.id().to_string();
-    if run.adapter_key() == "codex" && runtime_slot_missing_or_empty_codex(codex_runs, &run_id) {
-        return Ok(());
-    }
-    if run.adapter_key() == "claude" && runtime_slot_missing_or_empty_claude(claude_runs, &run_id) {
-        return Ok(());
-    }
-    if run.adapter_key() == "opencode"
-        && runtime_slot_missing_or_empty_opencode(opencode_runs, &run_id)
+    if run.adapter_key() == "codex" && runtime_registry.runtime_slot_missing_or_empty_codex(&run_id)
     {
         return Ok(());
     }
-    execute_abort_command(claude_runs, codex_runs, opencode_runs, cleared_runs, run)
+    if run.adapter_key() == "claude"
+        && runtime_registry.runtime_slot_missing_or_empty_claude(&run_id)
+    {
+        return Ok(());
+    }
+    if run.adapter_key() == "opencode"
+        && runtime_registry.runtime_slot_missing_or_empty_opencode(&run_id)
+    {
+        return Ok(());
+    }
+    execute_abort_command(runtime_registry, run)
 }
 
 pub(super) fn execute_selection_sync_command(
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+    runtime_registry: &ProviderRunRuntimeRegistry,
     run_id: &str,
     run: &RuntimeProviderRun,
 ) -> Result<OpenCodeRunSelection, DaemonError> {
-    let slot = opencode_slot(opencode_runs, run_id)?;
+    let slot = runtime_registry.opencode_slot(run_id)?;
     let (base_url, session_id) = {
         let guard = slot.lock().expect("opencode runtime slot poisoned");
         let state = guard
@@ -153,10 +139,7 @@ pub(super) fn execute_selection_sync_command(
 
 pub(super) fn execute_output_poll_command(
     native_interaction_bridge: &ProviderNativeInteractionBridgeStore,
-    claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
-    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
+    runtime_registry: &ProviderRunRuntimeRegistry,
     run: &RuntimeProviderRun,
     output_poll_delay: Duration,
 ) -> Result<Option<ProviderPromptSignalBatch>, DaemonError> {
@@ -166,7 +149,7 @@ pub(super) fn execute_output_poll_command(
         return Ok(None);
     }
     if run.adapter_key() == "codex" {
-        let (slot, mut state) = match take_codex_runtime(codex_runs, run_id) {
+        let (slot, mut state) = match runtime_registry.take_codex_runtime(run_id) {
             Ok((slot, state)) => (slot, state),
             Err(_) => return Ok(None),
         };
@@ -174,7 +157,7 @@ pub(super) fn execute_output_poll_command(
             thread::sleep(output_poll_delay);
         }
         let poll = drain_codex_events(run, &mut state, native_interaction_bridge.read());
-        restore_codex_runtime_if_live(codex_runs, cleared_runs, run_id, &slot, state);
+        runtime_registry.restore_codex_runtime_if_live(run_id, &slot, state);
         let poll = poll?;
         crate::logging::debug_with_fields(
             "daemon.provider_run_actor",
@@ -218,7 +201,7 @@ pub(super) fn execute_output_poll_command(
         }));
     }
     if run.adapter_key() == "claude" {
-        let (slot, mut state) = match take_claude_runtime(claude_runs, run_id) {
+        let (slot, mut state) = match runtime_registry.take_claude_runtime(run_id) {
             Ok((slot, state)) => (slot, state),
             Err(_) => return Ok(None),
         };
@@ -226,13 +209,13 @@ pub(super) fn execute_output_poll_command(
             thread::sleep(output_poll_delay);
         }
         let drain = drain_claude_events(run, &mut state);
-        restore_claude_runtime_if_live(claude_runs, cleared_runs, run_id, &slot, state);
+        runtime_registry.restore_claude_runtime_if_live(run_id, &slot, state);
         return drain.map(Some);
     }
     if run.adapter_key() != "opencode" {
         return Ok(None);
     }
-    let (slot, mut state) = match take_opencode_runtime(opencode_runs, run_id) {
+    let (slot, mut state) = match runtime_registry.take_opencode_runtime(run_id) {
         Ok((slot, state)) => (slot, state),
         Err(_) => return Ok(None),
     };
@@ -240,7 +223,7 @@ pub(super) fn execute_output_poll_command(
         thread::sleep(output_poll_delay);
     }
     let drain = drain_opencode_events(run, &mut state, native_interaction_bridge.read());
-    restore_opencode_runtime_if_live(opencode_runs, cleared_runs, run_id, &slot, state);
+    runtime_registry.restore_opencode_runtime_if_live(run_id, &slot, state);
     let drain = drain?;
     Ok(Some(ProviderPromptSignalBatch {
         chunks: drain

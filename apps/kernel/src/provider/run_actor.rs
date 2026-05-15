@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -26,9 +26,7 @@ pub(crate) use native_interaction::{
 pub(crate) use operation_lanes::ProviderRunOperationLanes;
 #[cfg(test)]
 use runtime_slots::runtime_should_restore;
-use runtime_slots::{
-    clear_runtime_state, ClaudeRuntimeSlot, CodexRuntimeSlot, OpenCodeRuntimeSlot,
-};
+use runtime_slots::ProviderRunRuntimeRegistry;
 use worker::{ProviderRunActorCommand, ProviderRunWorkerDeps};
 
 use crate::error::DaemonError;
@@ -44,10 +42,7 @@ pub(crate) struct ProviderRunActorMailbox {
     operation_lanes: ProviderRunOperationLanes,
     native_interaction_bridge: ProviderNativeInteractionBridgeStore,
     workers: Arc<Mutex<BTreeMap<String, mpsc::SyncSender<ProviderRunActorCommand>>>>,
-    claude_runs: Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
-    codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
-    opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
-    cleared_runs: Arc<Mutex<BTreeSet<String>>>,
+    runtime_registry: ProviderRunRuntimeRegistry,
     in_flight: ProviderRunInFlightState,
     finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
     finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
@@ -69,36 +64,15 @@ impl ProviderRunActorMailbox {
     }
 
     pub(crate) fn insert_claude_runtime(&self, run_id: String, state: ClaudeRuntimeState) {
-        self.cleared_runs
-            .lock()
-            .expect("cleared provider run set poisoned")
-            .remove(&run_id);
-        self.claude_runs
-            .lock()
-            .expect("claude runtime map poisoned")
-            .insert(run_id, Arc::new(Mutex::new(Some(state))));
+        self.runtime_registry.insert_claude_runtime(run_id, state);
     }
 
     pub(crate) fn insert_codex_runtime(&self, run_id: String, state: CodexRuntimeState) {
-        self.cleared_runs
-            .lock()
-            .expect("cleared provider run set poisoned")
-            .remove(&run_id);
-        self.codex_runs
-            .lock()
-            .expect("codex runtime map poisoned")
-            .insert(run_id, Arc::new(Mutex::new(Some(state))));
+        self.runtime_registry.insert_codex_runtime(run_id, state);
     }
 
     pub(crate) fn insert_opencode_runtime(&self, run_id: String, state: OpenCodeRuntimeState) {
-        self.cleared_runs
-            .lock()
-            .expect("cleared provider run set poisoned")
-            .remove(&run_id);
-        self.opencode_runs
-            .lock()
-            .expect("opencode runtime map poisoned")
-            .insert(run_id, Arc::new(Mutex::new(Some(state))));
+        self.runtime_registry.insert_opencode_runtime(run_id, state);
     }
 
     pub(crate) fn structured_prompt_io_in_flight(&self, run_id: &str) -> bool {
@@ -106,33 +80,7 @@ impl ProviderRunActorMailbox {
     }
 
     pub(crate) fn structured_runtime_state_bound(&self, run_id: &str) -> bool {
-        if self
-            .claude_runs
-            .lock()
-            .expect("claude runtime map poisoned")
-            .get(run_id)
-            .is_some_and(|slot| slot.lock().expect("claude runtime slot poisoned").is_some())
-        {
-            return true;
-        }
-        if self
-            .codex_runs
-            .lock()
-            .expect("codex runtime map poisoned")
-            .get(run_id)
-            .is_some_and(|slot| slot.lock().expect("codex runtime slot poisoned").is_some())
-        {
-            return true;
-        }
-        self.opencode_runs
-            .lock()
-            .expect("opencode runtime map poisoned")
-            .get(run_id)
-            .is_some_and(|slot| {
-                slot.lock()
-                    .expect("opencode runtime slot poisoned")
-                    .is_some()
-            })
+        self.runtime_registry.state_bound(run_id)
     }
 
     pub(crate) fn mark_structured_prompt_io_in_flight(&self, run_id: String) {
@@ -144,23 +92,13 @@ impl ProviderRunActorMailbox {
     }
 
     pub(crate) fn clear_runtime(&self, run_id: &str) {
-        self.cleared_runs
-            .lock()
-            .expect("cleared provider run set poisoned")
-            .insert(run_id.to_string());
         self.output_poll_delays
             .lock()
             .expect("provider output poll delay map poisoned")
             .remove(run_id);
         self.clear_structured_prompt_io_in_flight(run_id);
         self.clear_structured_output_poll_in_flight(run_id);
-        clear_runtime_state(
-            &self.claude_runs,
-            &self.codex_runs,
-            &self.opencode_runs,
-            run_id,
-            true,
-        );
+        self.runtime_registry.clear_runtime(run_id, true);
     }
 
     #[doc(hidden)]
@@ -445,10 +383,7 @@ impl ProviderRunActorMailbox {
     fn worker_deps(&self) -> ProviderRunWorkerDeps {
         ProviderRunWorkerDeps {
             native_interaction_bridge: self.native_interaction_bridge.clone(),
-            claude_runs: Arc::clone(&self.claude_runs),
-            codex_runs: Arc::clone(&self.codex_runs),
-            opencode_runs: Arc::clone(&self.opencode_runs),
-            cleared_runs: Arc::clone(&self.cleared_runs),
+            runtime_registry: self.runtime_registry.clone(),
             in_flight: self.in_flight.clone(),
             finished_submits: Arc::clone(&self.finished_submits),
             finished_aborts: Arc::clone(&self.finished_aborts),
@@ -462,6 +397,7 @@ impl ProviderRunActorMailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[tokio::test]
     async fn stop_run_removes_worker_and_lane_registration() {
