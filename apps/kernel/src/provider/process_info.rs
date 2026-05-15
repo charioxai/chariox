@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::session::unix_epoch_ms;
 
-use super::types::{AgentEndpointMode, ProviderRunState, RuntimeProviderRun};
+use super::runtime_run::RuntimeProviderRun;
+use super::types::{AgentEndpointMode, ProviderRunState};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

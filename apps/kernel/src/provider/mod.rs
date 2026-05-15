@@ -15,6 +15,7 @@ mod process_info;
 mod prompt_signals;
 mod registry;
 mod run_actor;
+mod runtime_run;
 mod service;
 mod types;
 mod workspace_write_fence;
@@ -65,11 +66,12 @@ pub(crate) use run_actor::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution, ProviderRunActorMailbox,
     ProviderRunOperationLanes,
 };
+pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
 pub(crate) use types::provider_requires_managed_io_by_default;
 pub use types::{
     AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
-    ProviderClientInterface, ProviderRunState, ProviderRunTokenUsage, RuntimeProviderRun,
+    ProviderClientInterface, ProviderRunState,
 };
 pub(crate) use workspace_write_fence::{apply_workspace_write_fence, workspace_write_fence_active};

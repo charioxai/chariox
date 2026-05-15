@@ -1,7 +1,7 @@
 use crate::terminal::TerminalOutputKind;
 
 use super::launch_contract::ProviderResumeState;
-use super::types::ProviderRunTokenUsage;
+use super::runtime_run::ProviderRunTokenUsage;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderPromptChunk {
