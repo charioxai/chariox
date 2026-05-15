@@ -122,7 +122,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       const launched = await launchProviderRun(client, session.id, "opencode", "default", "default", "", agent.id, {
         nativeTui: true,
       })
-      run = launched.session_id === session.id
+      run = !options.machineRef && launched.session_id === session.id
         ? await waitForOpenCodeRunReady(client, launched.id)
         : launched
       if (!run.structured_endpoint) {
@@ -151,7 +151,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
         structuredEndpoint: proxyUrl,
         nativeTui: true,
       })
-      run = launched.session_id === session.id
+      run = !options.machineRef && launched.session_id === session.id
         ? await waitForOpenCodeRunReady(client, launched.id)
         : launched
     }

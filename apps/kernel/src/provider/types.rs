@@ -897,6 +897,16 @@ impl RuntimeProviderRun {
     pub fn owned_by(&self, user_id: &str) -> bool {
         self.owner_user_id == user_id
     }
+
+    pub(crate) fn projected_for_home_agent(
+        mut self,
+        session_id: impl Into<String>,
+        agent_id: impl Into<String>,
+    ) -> Self {
+        self.session_id = session_id.into();
+        self.agent_instance_id = Some(agent_id.into());
+        self
+    }
 }
 
 fn default_control_capabilities(

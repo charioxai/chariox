@@ -23,7 +23,13 @@ impl KernelRuntimeOwnedState {
         session: &mut crate::session::RuntimeSession,
     ) {
         if let Some(active_provider_run_id) = session.active_provider_run_id() {
-            if let Ok(active_run) = self.provider_store.get_run(active_provider_run_id) {
+            if let Ok(active_run) = self.provider_store.get_run(active_provider_run_id).or_else(|_| {
+                self.provider_run_projection
+                    .get(active_provider_run_id)
+                    .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                        provider_run_id: active_provider_run_id.to_string(),
+                    })
+            }) {
                 let active_run_agent_id = active_run.agent_instance_id();
                 let active_prompt_is_running = active_run_agent_id
                     .and_then(|agent_id| {
@@ -46,6 +52,10 @@ impl KernelRuntimeOwnedState {
         let projected_run_id = projected_agent_id.as_deref().and_then(|agent_id| {
             self.provider_store
                 .get_run_for_agent(session.id(), agent_id)
+                .or_else(|| {
+                    self.provider_run_projection
+                        .get_for_agent(session.id(), agent_id)
+                })
                 .and_then(|run| match run.state() {
                     crate::provider::ProviderRunState::Running
                     | crate::provider::ProviderRunState::Starting => Some(run.id().to_string()),
@@ -177,8 +187,35 @@ impl KernelRuntimeOwnedState {
             session_id,
             &provider_run_id,
             None,
-        )?;
-        let provider_run = self.ensure_provider_run_in_session(session_id, &provider_run_id)?;
+        )
+        .or_else(|error| {
+            if matches!(error, DaemonError::ProviderRunNotFound { .. })
+                && self
+                    .provider_run_projection
+                    .get(&provider_run_id)
+                    .is_some_and(|run| run.session_id() == session_id)
+            {
+                Ok(None)
+            } else {
+                Err(error)
+            }
+        })?;
+        let provider_run = match self.ensure_provider_run_in_session(session_id, &provider_run_id) {
+            Ok(run) => run,
+            Err(DaemonError::ProviderRunNotFound { .. }) => {
+                let Some(projected) = self.provider_run_projection.get(&provider_run_id) else {
+                    return Err(DaemonError::ProviderRunNotFound { provider_run_id });
+                };
+                if projected.session_id() != session_id {
+                    return Err(DaemonError::ProviderRunNotInSession {
+                        session_id: session_id.to_string(),
+                        provider_run_id,
+                    });
+                }
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
         if provider_run.state() == crate::provider::ProviderRunState::Ended {
             return Err(DaemonError::InvalidProviderRunState {
                 provider_run_id,

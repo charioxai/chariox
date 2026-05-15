@@ -64,11 +64,21 @@ impl KernelRuntimeState {
         .await?;
         match response {
             RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run } => {
+                let projected_run = provider_run
+                    .clone()
+                    .projected_for_home_agent(request.session_id.clone(), agent_id);
                 self.owned
                     .provider_run_projection
-                    .update(provider_run.clone());
+                    .update(projected_run.clone());
+                self.owned.session_store.set_active_provider_run(
+                    &request.session_id,
+                    Some(projected_run.id().to_string()),
+                )?;
+                let _ = self.owned.session_snapshot(&request.session_id)?;
                 Ok(Some(
-                    crate::local::LocalDaemonResponse::ProviderRunLaunched { provider_run },
+                    crate::local::LocalDaemonResponse::ProviderRunLaunched {
+                        provider_run: projected_run,
+                    },
                 ))
             }
             other => Err(DaemonError::LocalTransport {

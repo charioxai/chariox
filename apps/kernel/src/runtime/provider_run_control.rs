@@ -65,7 +65,7 @@ pub(crate) fn projected_provider_run_response(
         return Ok(None);
     };
     ensure_provider_run_visible_to_user(&provider_run, caller_user_id)?;
-    if provider_run.adapter_key() == "opencode" {
+    if provider_run.adapter_key() == "opencode" && provider_run.client_interface().is_arroba() {
         return Ok(None);
     }
     Ok(Some(LocalDaemonResponse::ProviderRun { provider_run }))

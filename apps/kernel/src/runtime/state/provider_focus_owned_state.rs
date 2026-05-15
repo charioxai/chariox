@@ -16,7 +16,16 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(false);
         };
-        let active_run = self.provider_store.get_run(&active_provider_run_id)?;
+        let active_run = self
+            .provider_store
+            .get_run(&active_provider_run_id)
+            .or_else(|_| {
+                self.provider_run_projection
+                    .get(&active_provider_run_id)
+                    .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                        provider_run_id: active_provider_run_id.clone(),
+                    })
+            })?;
         if active_run.agent_instance_id() == Some(target_agent_id)
             || active_run.state() != crate::provider::ProviderRunState::Running
         {
@@ -39,7 +48,16 @@ impl KernelRuntimeOwnedState {
             .map(str::to_string);
 
         if let Some(current_active_run_id) = current_active_run_id.as_deref() {
-            let active_run = self.provider_store.get_run(current_active_run_id)?;
+            let active_run = self
+                .provider_store
+                .get_run(current_active_run_id)
+                .or_else(|_| {
+                    self.provider_run_projection
+                        .get(current_active_run_id)
+                        .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                            provider_run_id: current_active_run_id.to_string(),
+                        })
+                })?;
             if active_run.agent_instance_id() != Some(agent_id)
                 && active_run.state() == crate::provider::ProviderRunState::Running
                 && active_run.client_interface().is_arroba()
@@ -64,6 +82,22 @@ impl KernelRuntimeOwnedState {
                     let _ = self.resume_provider_run_for_session(session_id, agent_run.id())?;
                 }
                 crate::provider::ProviderRunState::Ended => {
+                    self.session_store
+                        .set_active_provider_run(session_id, None)?;
+                }
+            }
+        } else if let Some(agent_run) = self
+            .provider_run_projection
+            .get_for_agent(session_id, agent_id)
+        {
+            match agent_run.state() {
+                crate::provider::ProviderRunState::Running
+                | crate::provider::ProviderRunState::Starting => {
+                    self.session_store
+                        .set_active_provider_run(session_id, Some(agent_run.id().to_string()))?;
+                }
+                crate::provider::ProviderRunState::Parked
+                | crate::provider::ProviderRunState::Ended => {
                     self.session_store
                         .set_active_provider_run(session_id, None)?;
                 }
@@ -93,7 +127,16 @@ impl KernelRuntimeOwnedState {
                     let current_active_run_id =
                         session.active_provider_run_id().map(str::to_string);
                     if let Some(current_active_run_id) = current_active_run_id.as_deref() {
-                        let active_run = self.provider_store.get_run(current_active_run_id)?;
+                        let active_run = self
+                            .provider_store
+                            .get_run(current_active_run_id)
+                            .or_else(|_| {
+                                self.provider_run_projection
+                                    .get(current_active_run_id)
+                                    .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                                        provider_run_id: current_active_run_id.to_string(),
+                                    })
+                            })?;
                         if active_run.agent_instance_id() != Some(focused_agent_id.as_str())
                             && active_run.state() == crate::provider::ProviderRunState::Running
                             && active_run.client_interface().is_arroba()
@@ -149,6 +192,10 @@ impl KernelRuntimeOwnedState {
         let projected_run_id = self
             .provider_store
             .get_run_for_agent(session_id, agent_id)
+            .or_else(|| {
+                self.provider_run_projection
+                    .get_for_agent(session_id, agent_id)
+            })
             .and_then(|run| match run.state() {
                 crate::provider::ProviderRunState::Running
                 | crate::provider::ProviderRunState::Starting => Some(run.id().to_string()),

@@ -212,14 +212,25 @@ impl KernelRuntimeState {
             .attachment_store
             .list_session_attachment_ids(session_id);
         for provider_run_id in provider_run_ids {
-            let _ = self
+            let result = self
                 .pump_owned_provider_output(
                     session_id,
                     &provider_run_id,
                     recipient_attachment_ids.clone(),
                     false,
                 )
-                .await?;
+                .await;
+            if let Err(error) = result {
+                if matches!(error, DaemonError::ProviderRunNotFound { .. })
+                    && owned
+                        .provider_run_projection
+                        .get(&provider_run_id)
+                        .is_some_and(|run| run.session_id() == session_id)
+                {
+                    continue;
+                }
+                return Err(error);
+            }
         }
         let records = owned
             .terminal_stream

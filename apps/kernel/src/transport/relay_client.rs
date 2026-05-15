@@ -71,7 +71,7 @@ const RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 50;
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
-const RELAY_HEARTBEAT_APP_WORK_TIMEOUT: Duration = Duration::from_millis(25);
+const RELAY_HEARTBEAT_APP_WORK_TIMEOUT: Duration = Duration::from_millis(500);
 const REMOTE_INVENTORY_RELAY_TIMEOUT_MS: u64 = 10_000;
 const REMOTE_INVENTORY_KERNEL_PROBE_TIMEOUT_MS: u64 = 5_000;
 

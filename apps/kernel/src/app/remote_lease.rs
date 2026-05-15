@@ -1421,6 +1421,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 &leased_agent.backing_attachment_id,
             )
             .into_iter()
+            .filter(|record| record.provider_run_id == provider_run_id)
             .map(|record| RelayProjectedOutputChunk {
                 kind: record.kind,
                 merge_key: record.merge_key,
@@ -1435,6 +1436,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 &leased_agent.backing_attachment_id,
             )
             .into_iter()
+            .filter(|record| {
+                record
+                    .provider_run_id
+                    .as_deref()
+                    .is_none_or(|record_provider_run_id| record_provider_run_id == provider_run_id)
+            })
             .map(|record| record.message)
             .collect::<Vec<_>>();
         let mut completions = self
@@ -1445,6 +1452,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 &leased_agent.backing_attachment_id,
             )
             .into_iter()
+            .filter(|record| record.provider_run_id == provider_run_id)
             .map(|record| RelayProjectedCompletion {
                 message_id: record.message_id,
                 completed_at_ms: record.completed_at_ms,
