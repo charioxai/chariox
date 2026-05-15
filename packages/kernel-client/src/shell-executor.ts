@@ -5,9 +5,6 @@ import type {
   ArrobaMcpServerConfig,
   ArrobaSkillMetadata,
   McpImportOutcome,
-  ProviderAuthStatus,
-  ProviderLoginStart,
-  ProviderProcessInfo,
   PromptQueueItem,
   PromptSubmittedPayload,
   QueuedWorkflowLaunch,
@@ -65,7 +62,6 @@ import {
   deleteSliceRequest,
   focusAgentRequest,
   getMcpServerRequest,
-  getProviderAuthStatusRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
   getSkillRequest,
@@ -89,7 +85,6 @@ import {
   detachWorkspaceLinkRequest,
   listAgentsRequest,
   listMcpServersRequest,
-  listProviderProcessesRequest,
   listQueuedWorkflowLaunchesRequest,
   listSessionMembersRequest,
   listSessionsRequest,
@@ -101,7 +96,6 @@ import {
   listWorkflowRunsRequest,
   listWorkflowsRequest,
   launchProviderRunRequest,
-  logoutProviderRequest,
   pumpTerminalOutputRequest,
   removeQueuedWorkflowLaunchRequest,
   removeWorkflowEdgeRequest,
@@ -129,11 +123,9 @@ import {
   semanticSearchHistoryRequest,
   showWorkspaceLinkRequest,
   spawnAgentRequest,
-  startProviderLoginRequest,
   stopSliceRequest,
   submitPromptRequest,
   cycleAgentFocusRequest,
-  teardownProviderProcessesRequest,
   uninstallMcpServerRequest,
   uninstallSkillRequest,
   updateAgentConfigRequest,
@@ -179,11 +171,7 @@ import {
   formatSessionList,
   formatSessionMembers,
 } from "./shell-session-format.js"
-import {
-  formatProviderAuthStatus,
-  formatProviderLoginStart,
-  formatProviderProcesses,
-} from "./shell-provider-format.js"
+import { executeProviderCommand } from "./shell-provider-command.js"
 import {
   parsePlacementOptions,
   resolveShellPlacement,
@@ -2181,49 +2169,6 @@ async function executeWorkflowQueueCommand(
     return { ok: true, message: `removed queued workflow launch ${payload.queued_launch.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
   return { ok: false, message: "usage: workflow queue [list|flush|remove <queue-item-ref>]" }
-}
-
-async function executeProviderCommand(
-  parsed: ParsedShellCommand,
-  context: ShellContext,
-  deps: ShellExecutorDeps,
-): Promise<ShellCommandResult> {
-  const [action, providerArg, ...rest] = parsed.args
-  if (action === "status") {
-    const provider = providerArg ?? context.provider
-    const response = await deps.client.send(getProviderAuthStatusRequest(provider))
-    const status = expectVariant<{ status: ProviderAuthStatus }>(response, "ProviderAuthStatus").status
-    return { ok: true, message: formatProviderAuthStatus(status), data: { status } }
-  }
-  if (action === "login" || action === "logout" || action === "reauth") {
-    const provider = providerArg ?? context.provider
-    if (action === "logout") {
-      const response = await deps.client.send(logoutProviderRequest(provider))
-      const result = expectVariant<{ provider: string }>(response, "ProviderLoggedOut")
-      return { ok: true, message: `${result.provider} logged out`, data: result }
-    }
-    if (action === "reauth") {
-      await deps.client.send(logoutProviderRequest(provider))
-    }
-    const response = await deps.client.send(startProviderLoginRequest(provider))
-    const login = expectVariant<{ login: ProviderLoginStart }>(response, "ProviderLoginStarted").login
-    const verb = action === "reauth" ? "reauth" : "login"
-    return { ok: true, message: formatProviderLoginStart(login, verb), data: { login } }
-  }
-  if (action === "processes") {
-    const subcommand = providerArg
-    if (subcommand === "teardown") {
-      const provider = rest[0] ?? null
-      const response = await deps.client.send(teardownProviderProcessesRequest(provider))
-      const processes = expectVariant<{ processes: ProviderProcessInfo[] }>(response, "ProviderProcessesTornDown").processes
-      return { ok: true, message: processes.length === 0 ? "no safe provider processes to tear down" : `tore down ${processes.length} provider process(es)\n${formatProviderProcesses(processes)}`, data: { processes } }
-    }
-    const provider = providerArg ?? null
-    const response = await deps.client.send(listProviderProcessesRequest(provider))
-    const processes = expectVariant<{ processes: ProviderProcessInfo[] }>(response, "ProviderProcessesListed").processes
-    return { ok: true, message: formatProviderProcesses(processes), data: { processes } }
-  }
-  return { ok: false, message: "usage: provider status|login|logout|reauth|processes" }
 }
 
 async function executeStopCommand(
