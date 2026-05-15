@@ -8,7 +8,7 @@ import { createServer, type Server as NetServer, type Socket as NetSocket } from
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, MouseButton, RGBA, ScrollBoxRenderable, SyntaxStyle, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, MouseButton, RGBA, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
@@ -60,6 +60,7 @@ import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntr
 import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent, shouldHandleWaitingRoomKeyEvent } from "./hotkeys.js"
+import { buildHotkeySections } from "./hotkey-help.js"
 import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { executeShellLine } from "@arroba/kernel-client/shell-script"
@@ -162,6 +163,11 @@ import {
   preparePromptAttachmentsForSubmit,
   promptAttachmentTransferIsForced,
 } from "./prompt-attachment-transfer.js"
+import {
+  promptAttachmentTokenKind,
+  promptAttachmentTokenStyle,
+  promptAttachmentTokenStyleIds,
+} from "./prompt-attachment-tokens.js"
 import {
   cancelActivePrompt,
   respondToInteraction,
@@ -454,63 +460,11 @@ const COMMAND_CENTER_OVERLAY_FOOTPRINT = 3
 const ATTACHED_PROMPT_PLACEHOLDER = "Write your next prompt here"
 const HOTKEY_DIALOG_WIDTH = 72
 
-type HotkeyItem = {
-  keys: string
-  description: string
-}
-
 type PendingWaitingRoomSessionAction = {
   action: WaitingRoomSessionLifecycleAction
   targetKind: "session" | "sessions" | "machine" | "kernel"
   targetId: string
   expiresAtMs: number
-}
-
-type HotkeySection = {
-  title: string
-  items: HotkeyItem[]
-}
-
-const GLOBAL_HOTKEYS: HotkeyItem[] = [
-  { keys: HOTKEY_TOGGLE_LABEL, description: "Show or hide this hotkey list." },
-  { keys: "Ctrl+E", description: "Exit the CLI with the same behavior as /exit." },
-  { keys: "Ctrl+C", description: "Stop the active agent; if idle, exit the CLI." },
-]
-
-const SESSION_HOTKEYS: HotkeyItem[] = [
-  { keys: "Enter", description: "Submit the current prompt." },
-  { keys: "Shift+Enter", description: "Insert a newline in the prompt." },
-  { keys: "Tab", description: "Cycle focus to the next agent or workflow node." },
-  { keys: "Ctrl+P", description: "Toggle between the agent screens and workflow outline." },
-  { keys: "Up / Down", description: "Browse submitted prompts in the prompt area." },
-  { keys: "Shift+Up / Shift+Down", description: "Jump between user turns when the prompt is empty." },
-  { keys: "Backspace / Delete", description: "Remove pending attachment tokens from the prompt." },
-]
-
-const WAITING_ROOM_HOTKEYS: HotkeyItem[] = [
-  { keys: "Arrow keys", description: "Move through options and browse the visible session preview." },
-  { keys: "Enter", description: "Create, attach, or open the full session list from Join Existing Session." },
-  { keys: "A", description: "Archive the selected session, or all sessions from Join Existing Session, after confirmation." },
-  { keys: "D / Delete", description: "Delete the selected session, all sessions, or inactive remote inventory after confirmation." },
-]
-
-const promptTokenStyle = SyntaxStyle.create()
-const promptTokenStyleIds = {
-  image: promptTokenStyle.registerStyle("prompt-token-image", {
-    fg: RGBA.fromHex("#1f1400"),
-    bg: RGBA.fromHex("#f0d77d"),
-    bold: true,
-  }),
-  pdf: promptTokenStyle.registerStyle("prompt-token-pdf", {
-    fg: RGBA.fromHex("#09182b"),
-    bg: RGBA.fromHex("#8cc0ff"),
-    bold: true,
-  }),
-  file: promptTokenStyle.registerStyle("prompt-token-file", {
-    fg: RGBA.fromHex("#0d1f13"),
-    bg: RGBA.fromHex("#8fd8a8"),
-    bold: true,
-  }),
 }
 
 type PromptQueueItem = {
@@ -2902,7 +2856,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         promptInput.addHighlightByCharRange({
           start,
           end: start + file.token.length,
-          styleId: promptTokenStyleIds[attachmentTokenKind(file.kind)],
+          styleId: promptAttachmentTokenStyleIds[promptAttachmentTokenKind(file.kind)],
         })
         start = value.indexOf(file.token, start + file.token.length)
       }
@@ -3048,13 +3002,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
     })
   })
-  const attachmentTokenKind = (kind: PromptAttachmentKind) => (kind === "image" ? "image" : kind === "pdf" ? "pdf" : "file")
-  const hotkeySections = (): HotkeySection[] => [
-    { title: "Global", items: GLOBAL_HOTKEYS },
-    isAttached()
-      ? { title: "Session", items: SESSION_HOTKEYS }
-      : { title: "Waiting room", items: WAITING_ROOM_HOTKEYS },
-  ]
+  const hotkeySections = () => buildHotkeySections(isAttached())
   const sessionBrowserSessions = () => availableSessions()
     .filter((session) => session.status !== "Ended")
     .slice()
@@ -3476,8 +3424,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     openHotkeys()
   }
   const nextAttachmentToken = (kind: PromptAttachmentKind) => {
-    const label = attachmentTokenKind(kind)
-    const count = pendingAttachments().filter((file) => attachmentTokenKind(file.kind) === label).length + 1
+    const label = promptAttachmentTokenKind(kind)
+    const count = pendingAttachments().filter((file) => promptAttachmentTokenKind(file.kind) === label).length + 1
     return `[${label} ${count}]`
   }
   const syncPendingPromptAttachmentsFromText = (value: string) => {
@@ -3516,12 +3464,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return false
     }
     const counts = {
-      image: pendingAttachments().filter((file) => attachmentTokenKind(file.kind) === "image").length,
-      pdf: pendingAttachments().filter((file) => attachmentTokenKind(file.kind) === "pdf").length,
-      file: pendingAttachments().filter((file) => attachmentTokenKind(file.kind) === "file").length,
+      image: pendingAttachments().filter((file) => promptAttachmentTokenKind(file.kind) === "image").length,
+      pdf: pendingAttachments().filter((file) => promptAttachmentTokenKind(file.kind) === "pdf").length,
+      file: pendingAttachments().filter((file) => promptAttachmentTokenKind(file.kind) === "file").length,
     }
     const attachments = next.map((file) => {
-      const kind = attachmentTokenKind(file.kind)
+      const kind = promptAttachmentTokenKind(file.kind)
       counts[kind] += 1
       return { ...file, token: `[${kind} ${counts[kind]}]` }
     })
@@ -9184,7 +9132,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }}
       onPromptInputRef={(value) => {
         promptInput = value
-        value.syntaxStyle = promptTokenStyle
+        value.syntaxStyle = promptAttachmentTokenStyle
         syncPromptPlaceholder()
         if (promptTextSnapshot) {
           setPromptText(promptTextSnapshot)
