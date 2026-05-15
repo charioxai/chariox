@@ -14,6 +14,7 @@ mod capability;
 mod cloud_relay;
 mod config_capabilities;
 mod history;
+mod prompt_control;
 mod provider_control;
 mod remote_access;
 mod session_control;
@@ -27,6 +28,7 @@ pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
 pub use history::*;
+pub use prompt_control::*;
 pub use provider_control::*;
 pub use remote_access::*;
 pub use session_control::*;
@@ -35,35 +37,6 @@ pub use terminal_interaction::*;
 pub use workspace::*;
 
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 35;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SubmitPromptRequest {
-    pub session_id: String,
-    pub attachment_id: String,
-    pub target_agent_id: Option<String>,
-    pub prompt: String,
-    #[serde(default)]
-    pub attachments: Vec<PromptAttachment>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CompletePromptRequest {
-    pub session_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CancelActivePromptRequest {
-    pub session_id: String,
-    pub attachment_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UpdateSessionConfigRequest {
-    pub session_id: String,
-    pub attachment_id: String,
-    pub values: BTreeMap<String, String>,
-    pub requires_idle: bool,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
