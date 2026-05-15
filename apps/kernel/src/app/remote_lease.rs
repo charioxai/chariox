@@ -20,19 +20,16 @@ use crate::session::CreateSessionRequest;
 use crate::terminal::TerminalOutputKind;
 use crate::transport::relay_peer::{
     RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk, RelayPromptAttachment,
-    RemoteGitObservation, RemoteGitTurnContext, RemoteManagedIoContext, RemoteMcpAvailability,
-    RemoteMcpAvailabilityStatus, RemoteMcpCheckContext, RemoteNativeInteractionContext,
-    RemoteSkillMaterialization, RemoteSkillSyncContext, RequiredRemoteMcp,
+    RemoteGitObservation, RemoteGitTurnContext, RemoteManagedIoContext,
+    RemoteNativeInteractionContext, RemoteSkillMaterialization, RemoteSkillSyncContext,
+    RequiredRemoteMcp,
 };
 
 mod git_worktree;
 mod mcp_availability;
 
 use git_worktree::prepare_remote_git_worktree;
-use mcp_availability::{
-    format_remote_mcp_unavailable_message, provider_run_mcp_set_matches,
-    validate_worker_mcp_runtime,
-};
+use mcp_availability::provider_run_mcp_set_matches;
 
 pub(crate) struct RemoteLeaseRuntime<'a> {
     app: &'a mut DaemonApp,
@@ -869,127 +866,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     version_hash: package.version_hash.clone(),
                     materialized_root: materialized_root.to_string_lossy().to_string(),
                 })
-            })
-            .collect()
-    }
-
-    pub(crate) fn check_remote_mcp_availability(
-        &mut self,
-        context: RemoteMcpCheckContext,
-        required_mcps: Vec<RequiredRemoteMcp>,
-    ) -> Result<Vec<RemoteMcpAvailability>, DaemonError> {
-        let leased_agent = self
-            .app
-            .leased_agents
-            .get(&context.leased_agent_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
-                leased_agent_id: context.leased_agent_id.clone(),
-            })?;
-        self.validate_mcp_check_context(&leased_agent, &context)?;
-        Ok(self.remote_mcp_availability_for_leased_agent(&leased_agent, &required_mcps))
-    }
-
-    fn ensure_required_remote_mcps_available(
-        &mut self,
-        leased_agent: &LeasedAgent,
-        required_mcps: &[RequiredRemoteMcp],
-    ) -> Result<(), DaemonError> {
-        let unavailable = self
-            .remote_mcp_availability_for_leased_agent(leased_agent, required_mcps)
-            .into_iter()
-            .filter(|result| !matches!(result.status, RemoteMcpAvailabilityStatus::Available))
-            .collect::<Vec<_>>();
-        if unavailable.is_empty() {
-            return Ok(());
-        }
-        Err(DaemonError::LocalTransport {
-            operation: "remote mcp availability",
-            message: format_remote_mcp_unavailable_message(leased_agent, &unavailable),
-        })
-    }
-
-    fn validate_mcp_check_context(
-        &self,
-        leased_agent: &LeasedAgent,
-        context: &RemoteMcpCheckContext,
-    ) -> Result<(), DaemonError> {
-        let lease = self
-            .app
-            .execution_leases
-            .get(&leased_agent.lease_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
-                lease_id: leased_agent.lease_id.clone(),
-            })?;
-        if lease.home_kernel_id != context.home_kernel_id
-            || lease.home_session_id != context.home_session_id
-            || lease.home_agent_id != context.home_agent_id
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "check remote MCP availability",
-                message: "remote MCP check context does not match leased agent".to_string(),
-            });
-        }
-        Ok(())
-    }
-
-    fn remote_mcp_availability_for_leased_agent(
-        &self,
-        leased_agent: &LeasedAgent,
-        required_mcps: &[RequiredRemoteMcp],
-    ) -> Vec<RemoteMcpAvailability> {
-        let session = match self
-            .app
-            .sessions
-            .get_session(&leased_agent.backing_session_id)
-        {
-            Ok(session) => session,
-            Err(error) => {
-                return required_mcps
-                    .iter()
-                    .map(|required| RemoteMcpAvailability {
-                        name: required.config.name.clone(),
-                        expected_hash: required.definition_hash.clone(),
-                        status: RemoteMcpAvailabilityStatus::Invalid {
-                            reason: error.to_string(),
-                        },
-                    })
-                    .collect();
-            }
-        };
-        let mut roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(
-            session.worktree_id(),
-        )];
-        if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
-            roots.push(user_root);
-        }
-        let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
-        required_mcps
-            .iter()
-            .map(|required| {
-                let status = match registry.get(&required.config.name) {
-                    Ok(Some(worker_config)) => match worker_config.definition_hash() {
-                        Ok(worker_hash) if worker_hash == required.definition_hash => {
-                            validate_worker_mcp_runtime(&worker_config)
-                        }
-                        Ok(worker_hash) => {
-                            RemoteMcpAvailabilityStatus::DefinitionMismatch { worker_hash }
-                        }
-                        Err(error) => RemoteMcpAvailabilityStatus::Invalid {
-                            reason: error.to_string(),
-                        },
-                    },
-                    Ok(None) => RemoteMcpAvailabilityStatus::Missing,
-                    Err(error) => RemoteMcpAvailabilityStatus::Invalid {
-                        reason: error.to_string(),
-                    },
-                };
-                RemoteMcpAvailability {
-                    name: required.config.name.clone(),
-                    expected_hash: required.definition_hash.clone(),
-                    status,
-                }
             })
             .collect()
     }
