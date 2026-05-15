@@ -21,7 +21,6 @@ import {
 import type {
   AgentInstance,
   BootstrapState,
-  CaptureScreenshotResult,
   CliOptions,
   PromptAttachmentPart,
   PromptInputHistoryPage,
@@ -35,7 +34,6 @@ import type {
   SessionHistoryEntry,
   SessionHistoryPageEntry,
   SliceRecord,
-  StoredTransferArtifact,
   TerminalOutputRecord,
   TranscriptEntry,
   WaitingRoomPublicSessionSummary,
@@ -76,12 +74,7 @@ import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
 import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
 import {
-  cancelActivePromptRequest,
-  captureScreenshotRequest,
   getWaitingRoomPublicSnapshotRequest,
-  respondToInteractionRequest,
-  storeTransferredFileRequest,
-  submitPromptRequest,
 } from "./ipc-requests.js"
 import { expectVariant, firstVariantName } from "./ipc-response.js"
 import {
@@ -157,9 +150,19 @@ import {
   type PromptAttachmentKind,
 } from "./prompt-attachments.js"
 import {
+  captureScreenshot,
+  storeTransferredFile,
+} from "./prompt-attachment-api.js"
+import {
   preparePromptAttachmentsForSubmit,
   promptAttachmentTransferIsForced,
 } from "./prompt-attachment-transfer.js"
+import {
+  cancelActivePrompt,
+  respondToInteraction,
+  submittedPromptTargetAgentId,
+  submitPromptWithRecovery,
+} from "./prompt-runtime-api.js"
 import {
   getPromptInputHistory,
   getSessionHistory,
@@ -3667,15 +3670,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!attachment) {
       throw new Error("no active attachment available for storing prompt attachments")
     }
-    const response = await client.send<Record<string, unknown>>(
-      storeTransferredFileRequest(sessionState().id, attachment.id, file.path, file.filename),
-    )
-    const payload = expectVariant<{ result: StoredTransferArtifact }>(response, "FileTransferred")
+    const artifact = await storeTransferredFile(client, sessionState().id, attachment.id, file.path, file.filename)
     return {
-      id: payload.result.artifact_id,
-      url: pathToFileURL(payload.result.stored_path).href,
+      id: artifact.artifact_id,
+      url: pathToFileURL(artifact.stored_path).href,
       mime: file.mime,
-      filename: payload.result.display_name,
+      filename: artifact.display_name,
       kind: file.kind,
     }
   }
@@ -3695,19 +3695,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       flashFooter("attach to a session before capturing screenshots", "error")
       return
     }
-    const response = await client.send<Record<string, unknown>>(
-      captureScreenshotRequest(sessionState().id, attachment.id),
-    )
-    const payload = expectVariant<{ result: CaptureScreenshotResult }>(response, "ScreenshotCaptured")
-    if (payload.result.status !== "Captured" || !payload.result.artifact_path) {
-      flashFooter(payload.result.message, "error")
+    const result = await captureScreenshot(client, sessionState().id, attachment.id)
+    if (result.status !== "Captured" || !result.artifact_path) {
+      flashFooter(result.message, "error")
       return
     }
     addPendingPromptAttachments([{
       id: `screenshot-${Date.now()}`,
-      url: pathToFileURL(payload.result.artifact_path).href,
+      url: pathToFileURL(result.artifact_path).href,
       mime: "image/png",
-      filename: path.basename(payload.result.artifact_path),
+      filename: path.basename(result.artifact_path),
       kind: "image",
     }], promptInput?.cursorOffset ?? promptTextSnapshot.length)
     flashFooter("attached screenshot", "info")
@@ -7595,7 +7592,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     stopRequestInFlight = true
     try {
-      await client.send(cancelActivePromptRequest(sessionState().id, attachment.id))
+      await cancelActivePrompt(client, sessionState().id, attachment.id)
       appLogger?.info("requested active prompt cancellation")
       setStatusLine("Cancellation requested.")
       setStreamingAgentId(activePrompt()?.target_agent_id ?? streamingAgentId())
@@ -7639,17 +7636,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     interactionChoiceSelection.set(interaction.id, resolvedChoiceIndex)
     try {
-      const response = await client.send<Record<string, unknown>>(
-        respondToInteractionRequest(
-          sessionState().id,
-          interaction.id,
-          customChoice?.id ?? choice!.id,
-          customChoice ? interactionCustomReplies.get(interaction.id) ?? "" : null,
-        ),
+      const session = await respondToInteraction(
+        client,
+        sessionState().id,
+        interaction.id,
+        customChoice?.id ?? choice!.id,
+        customChoice ? interactionCustomReplies.get(interaction.id) ?? "" : null,
       )
-      const payload = expectVariant<{ session: RuntimeSession }>(response, "InteractionResponded")
-      payload.session = normalizeRuntimeSession(payload.session)
-      applySessionState(payload.session)
+      applySessionState(session)
       interactionCustomReplies.delete(interaction.id)
       interactionCustomEditing.delete(interaction.id)
       flashFooter("interaction answered", "info")
@@ -9371,63 +9365,6 @@ function reindexTranscriptEntries(entries: TranscriptEntry[], startingId: number
     ...entry,
     id: startingId + index + 1,
   }))
-}
-
-async function submitPromptWithRecovery(
-  client: LocalIpcClient,
-  sessionId: string,
-  attachmentId: string,
-  targetAgentId: string | null,
-  prompt: string,
-  attachments: PromptAttachmentPart[],
-  options: CliOptions,
-  logger?: ArrobaLogger | null,
-): Promise<Record<string, unknown>> {
-  try {
-    return await client.send<Record<string, unknown>>(
-      submitPromptRequest(sessionId, attachmentId, targetAgentId, prompt, attachments),
-    )
-  } catch (error) {
-    if (!isRecoverableProviderError(error)) {
-      throw error
-    }
-
-    logger?.warn("prompt submission hit recoverable provider error", {
-      error: formatError(error),
-      session_id: sessionId,
-    })
-    await launchProviderRun(
-      client,
-      sessionId,
-      options.provider ?? "opencode",
-      options.accountProfile,
-      options.model,
-      options.effort,
-      targetAgentId,
-    )
-    await maybeResize(client, sessionId)
-    logger?.info("relaunched provider after recoverable prompt failure", {
-      session_id: sessionId,
-    })
-    return client.send<Record<string, unknown>>(
-      submitPromptRequest(sessionId, attachmentId, targetAgentId, prompt, attachments),
-    )
-  }
-}
-
-function submittedPromptTargetAgentId(payload: PromptSubmittedPayload) {
-  const outcome = payload.outcome as Record<string, unknown>
-  const variant = Object.values(outcome)[0]
-  if (!variant || typeof variant !== "object") {
-    return null
-  }
-  const prompt = (variant as { prompt?: { target_agent_id?: unknown } }).prompt
-  return typeof prompt?.target_agent_id === "string" ? prompt.target_agent_id : null
-}
-
-function isRecoverableProviderError(error: unknown): boolean {
-  const message = formatError(error)
-  return message.includes("has no active provider run") || message.includes("cannot perform `submit prompt` while ended")
 }
 
 function isSessionUnavailableError(error: unknown): boolean {
