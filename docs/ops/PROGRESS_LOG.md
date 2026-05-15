@@ -18,10 +18,17 @@ Chronological notes to preserve execution context between contributors/agents.
 - Confirmed Codex against the Hetzner worker for the same prompt/turn,
   permission, attachment, separation, and badge-status matrix.
 - Confirmed Claude Code prompt/turns against the Hetzner worker through the
-  remote-rendered PTY path. Claude extended Hetzner validation remains blocked:
-  image attachments are intercepted/read in the remote-rendered TUI, but the
-  permission phase enters Claude Code's remote `Not logged in` state before a
-  permission prompt can be validated.
+  remote-rendered PTY path. The first extended run exposed a credential-transfer
+  gap: macOS stores Claude Code credentials in the Keychain, while the Linux
+  worker expects `~/.claude/.credentials.json`, so copying `.claude.json` alone
+  left the worker in `Not logged in`.
+- Confirmed the credential-transfer path for Claude Code by exporting the local
+  `Claude Code-credentials` Keychain payload to the worker's
+  `~/.claude/.credentials.json`; `claude auth status` then reported
+  `loggedIn: true` on the worker.
+- Confirmed Claude Code extended Hetzner validation after credential transfer:
+  image prompt attachments and native-origin/Arroba-origin permission prompts
+  pass through the remote-rendered PTY path.
 - Fixed OpenCode native TUI projection for cross-host multi-TUI runs by adding a
   periodic transcript refresh while the provider event stream is active.
 - Updated remote permission assertions to check execution files on the worker

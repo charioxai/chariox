@@ -85,12 +85,15 @@ input to the worker provider run.
 real Hetzner worker for prompt/turns, provider permissions, and prompt
 attachments in both native-origin and Arroba-origin directions. The drill uses
 SSH local forwarding for the relay and an SSH provider endpoint bridge for
-worker-local Codex/OpenCode provider endpoints. Claude Code passes the actual
-Hetzner prompt/turn drill through the remote-rendered PTY path. Claude extended
-Hetzner validation is not yet product-green: image attachments are intercepted
-and read in the remote-rendered TUI, but the permission phase hit Claude Code's
-remote `Not logged in · Please run /login` state, so no permission prompt could
-be validated on the worker.
+worker-local Codex/OpenCode provider endpoints. Claude Code initially failed
+extended Hetzner validation because macOS stores Claude Code credentials in the
+Keychain while Linux expects `~/.claude/.credentials.json`; copying only
+`.claude.json` transfers account metadata but not the login credential. Exporting
+the local `Claude Code-credentials` Keychain payload into the worker
+`~/.claude/.credentials.json` makes `claude auth status` green on the worker.
+After that transfer, Claude Code passes the actual Hetzner prompt/turn,
+permission, and image prompt-attachment drill through the remote-rendered PTY
+path.
 
 ## Goal
 
@@ -159,9 +162,9 @@ Permissions:
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers claude
   --include-permissions`. Native-origin and Arroba-origin prompts both surface
   permission interactions in the remote-rendered Claude native TUI and can be
-  approved through kernel-owned PTY input in same-host relay mode. Actual
-  Hetzner validation is blocked by Claude Code entering `Not logged in` on the
-  remote worker during the permission phase.
+  approved through kernel-owned PTY input in same-host relay mode and with the
+  actual Hetzner worker once the Linux worker has Claude credentials in
+  `~/.claude/.credentials.json`.
 - Slice: not covered.
 
 Prompt attachments:
@@ -183,10 +186,8 @@ Prompt attachments:
 - Standard remote home-worker Claude: covered for image prompt attachments in
   both native-origin and Arroba-origin directions by
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers claude
-  --include-attachments` in same-host relay mode. Actual Hetzner validation
-  observes image attachment interception and remote TUI reads before the
-  extended run is blocked by Claude Code remote auth during the permission
-  phase.
+  --include-attachments` in same-host relay mode and with the actual Hetzner
+  worker once credentials are transferred.
 - Home-managed slice: not covered.
 
 MCPs and skills:
@@ -272,10 +273,9 @@ Provider notes:
      - Codex/OpenCode: prompt/turn, permission, and prompt-attachment drills pass
        in same-host home-worker relay mode and against the Hetzner worker.
      - Claude: prompt/turn, image prompt-attachment, and permission drills pass
-       in same-host home-worker relay mode through the remote-rendered PTY path.
-       Prompt/turn also passes against the Hetzner worker; extended Hetzner
-       validation is blocked by Claude Code remote auth during permission
-       validation.
+       in same-host home-worker relay mode and against the Hetzner worker
+       through the remote-rendered PTY path, after transferring the local
+       Keychain credential payload to the worker's Linux credentials file.
    - Required product work:
      - validate native TUI `--machine`/`--kernel-ref` placement arguments for
        Codex, OpenCode, and Claude;
@@ -285,9 +285,8 @@ Provider notes:
      - mirror native prompt/turn output, permission interactions, status, and
        prompt attachments back to the home session without making the relay a
        runtime authority;
-      - keep the Hetzner worker drill in the standard regression set for
-        Codex/OpenCode, and resolve Claude Code worker auth before marking
-        Claude actual-cross-host permissions/product readiness green.
+      - keep the Hetzner worker drill in the standard regression set for all
+        providers, with an explicit Claude credential-transfer preflight.
    - Run the prompt/turn, permission, and prompt-attachment matrix for all three
      providers.
    - Home kernel owns the session; worker kernel owns provider execution.
@@ -320,7 +319,7 @@ Legend:
 | local | Claude | pass | pass | pass | gap |
 | standard remote | Codex | pass | pass | pass | gap |
 | standard remote | OpenCode | pass | pass | pass | gap |
-| standard remote | Claude | pass | partial | partial | gap |
+| standard remote | Claude | pass | pass | pass | gap |
 | direct slice target | Codex | pass | gap | pass | gap |
 | direct slice target | OpenCode | pass | gap | pass | gap |
 | home-managed slice | Codex | gap | gap | gap | gap |
