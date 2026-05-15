@@ -27,6 +27,7 @@ use crate::runtime::slice_command_executor::execute_slice_request;
 use crate::runtime::terminal_output_executor::execute_append_native_provider_output_request;
 use crate::runtime::user_config_executor::execute_user_config_request;
 use crate::runtime::waiting_room_control::execute_waiting_room_request;
+use crate::runtime::workflow_actor::is_workflow_command;
 use crate::runtime::workspace_command_executor::execute_workspace_command_request;
 
 use super::CommandRouter;
@@ -351,77 +352,43 @@ impl CommandRouter {
                     .dispatch_prompt_cancel(&command, request)
                     .await
             }
-            request @ (LocalDaemonRequest::CreateWorkflow(_)
-            | LocalDaemonRequest::ApplyWorkflowDesignOp(_)
-            | LocalDaemonRequest::AliasWorkflow(_)
-            | LocalDaemonRequest::ListWorkflows(_)
-            | LocalDaemonRequest::ResolveWorkflow(_)
-            | LocalDaemonRequest::CreateWorkflowPublication(_)
-            | LocalDaemonRequest::ListWorkflowPublications(_)
-            | LocalDaemonRequest::GetWorkflowPublication(_)
-            | LocalDaemonRequest::DisableWorkflowPublication(_)
-            | LocalDaemonRequest::CreateWorkflowPublicationPairCode(_)
-            | LocalDaemonRequest::RedeemWorkflowPublicationPairCode(_)
-            | LocalDaemonRequest::ListWorkflowPublicationSenders(_)
-            | LocalDaemonRequest::RevokeWorkflowPublicationSender(_)
-            | LocalDaemonRequest::AuthenticateWorkflowPublicationSender(_)
-            | LocalDaemonRequest::CreateWorkflowEndpoint(_)
-            | LocalDaemonRequest::AliasWorkflowEndpoint(_)
-            | LocalDaemonRequest::BindWorkflowEndpoint(_)
-            | LocalDaemonRequest::AddWorkflowNode(_)
-            | LocalDaemonRequest::RemoveWorkflowNode(_)
-            | LocalDaemonRequest::UpdateWorkflowNodeInstructions(_)
-            | LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(_)
-            | LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(_)
-            | LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(_)
-            | LocalDaemonRequest::SetWorkflowNodeMaxTurns(_)
-            | LocalDaemonRequest::AddWorkflowEdge(_)
-            | LocalDaemonRequest::RemoveWorkflowEdge(_)
-            | LocalDaemonRequest::UpdateWorkflowCanvasLayout(_)
-            | LocalDaemonRequest::InvokeWorkflowEndpoint(_)
-            | LocalDaemonRequest::ListWorkflowRuns(_)
-            | LocalDaemonRequest::GetWorkflowRun(_)
-            | LocalDaemonRequest::CancelWorkflowRun(_)
-            | LocalDaemonRequest::ResumeWorkflowRun(_)
-            | LocalDaemonRequest::CreateWorkflowWatchdog(_)
-            | LocalDaemonRequest::ListWorkflowWatchdogs(_)
-            | LocalDaemonRequest::SetWorkflowWatchdogEnabled(_)
-            | LocalDaemonRequest::RemoveWorkflowWatchdog(_)
-            | LocalDaemonRequest::SetWorkflowFlushContext(_)
-            | LocalDaemonRequest::SetWorkflowRunOutputSchema(_)
-            | LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(_)
-            | LocalDaemonRequest::SetWorkflowLaunchPolicy(_)
-            | LocalDaemonRequest::ListQueuedWorkflowLaunches(_)
-            | LocalDaemonRequest::RemoveQueuedWorkflowLaunch(_)
-            | LocalDaemonRequest::ClearQueuedWorkflowLaunches(_)
-            | LocalDaemonRequest::ValidateWorkflowOutput(_)
-            | LocalDaemonRequest::AckWorkflowTurn(_)) => {
-                self.workflow_runtime
-                    .dispatch_workflow_command(command, request)
-                    .await
-            }
-            request @ (LocalDaemonRequest::CreateSession(_)
-            | LocalDaemonRequest::AttachToSession(_)
-            | LocalDaemonRequest::DetachFromSession(_)
-            | LocalDaemonRequest::UpdateSessionConfig(_)
-            | LocalDaemonRequest::AliasAgent(_)
-            | LocalDaemonRequest::UpdateAgentConfig(_)
-            | LocalDaemonRequest::UpdateAgentProfile(_)
-            | LocalDaemonRequest::UpdateAgentSubstitutes(_)
-            | LocalDaemonRequest::ResizeTerminal(_)
-            | LocalDaemonRequest::SendTerminalInput(_)
-            | LocalDaemonRequest::EndSession(_)
-            | LocalDaemonRequest::DeleteSession(_)
-            | LocalDaemonRequest::AliasSession(_)
-            | LocalDaemonRequest::SpawnAgent(_)
-            | LocalDaemonRequest::MoveAgentToRemote(_)
-            | LocalDaemonRequest::DestroyAgent(_)
-            | LocalDaemonRequest::FocusAgent(_)
-            | LocalDaemonRequest::CycleAgentFocus(_)
-            | LocalDaemonRequest::GrantAgentCapability(_)
-            | LocalDaemonRequest::RevokeAgentCapability(_)
-            | LocalDaemonRequest::PollRuntimeNotices(_)) => {
-                self.dispatch_interactive(command, request).await
+            request => {
+                if is_workflow_command(&request) {
+                    self.workflow_runtime
+                        .dispatch_workflow_command(command, request)
+                        .await
+                } else {
+                    match request {
+                        request @ (LocalDaemonRequest::CreateSession(_)
+                        | LocalDaemonRequest::AttachToSession(_)
+                        | LocalDaemonRequest::DetachFromSession(_)
+                        | LocalDaemonRequest::UpdateSessionConfig(_)
+                        | LocalDaemonRequest::AliasAgent(_)
+                        | LocalDaemonRequest::UpdateAgentConfig(_)
+                        | LocalDaemonRequest::UpdateAgentProfile(_)
+                        | LocalDaemonRequest::UpdateAgentSubstitutes(_)
+                        | LocalDaemonRequest::ResizeTerminal(_)
+                        | LocalDaemonRequest::SendTerminalInput(_)
+                        | LocalDaemonRequest::EndSession(_)
+                        | LocalDaemonRequest::DeleteSession(_)
+                        | LocalDaemonRequest::AliasSession(_)
+                        | LocalDaemonRequest::SpawnAgent(_)
+                        | LocalDaemonRequest::MoveAgentToRemote(_)
+                        | LocalDaemonRequest::DestroyAgent(_)
+                        | LocalDaemonRequest::FocusAgent(_)
+                        | LocalDaemonRequest::CycleAgentFocus(_)
+                        | LocalDaemonRequest::GrantAgentCapability(_)
+                        | LocalDaemonRequest::RevokeAgentCapability(_)
+                        | LocalDaemonRequest::PollRuntimeNotices(_)) => {
+                            self.dispatch_interactive(command, request).await
+                        }
+                        _ => {
+                            unreachable!(
+                                "normal/background request should be handled before fallback"
+                            )
+                        }
+                    }
+                }
             }
         }
     }
