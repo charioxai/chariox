@@ -9,6 +9,7 @@ mod kernel_session;
 mod prompt_activity;
 mod prompt_lifecycle;
 mod prompt_state_owner;
+mod provider_launch_policy;
 pub(crate) mod provider_output;
 mod provider_processes;
 mod provider_runtime;
@@ -72,10 +73,13 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
-pub(crate) use provider_runtime::{
+pub(crate) use provider_launch_policy::{
     failed_codex_resume_state_replacement, generate_runtime_mcp_auth_token,
-    sanitize_resume_state_for_launch, ProviderLaunchProcessRuntime, ProviderRunExitSessionSummary,
-    ProviderRunReadService, StartedProviderLaunch,
+    sanitize_resume_state_for_launch,
+};
+pub(crate) use provider_runtime::{
+    ProviderLaunchProcessRuntime, ProviderRunExitSessionSummary, ProviderRunReadService,
+    StartedProviderLaunch,
 };
 pub(crate) use remote_lease::RemoteLeaseRuntime;
 
