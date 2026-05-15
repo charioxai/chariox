@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) mod attachment_artifacts;
+mod config_runtime;
 mod daemon_lifecycle;
 mod durable_runtime_state;
 mod kernel_agent;
@@ -194,51 +195,6 @@ impl DaemonApp {
 
     pub(crate) fn config_projection_store(&self) -> DaemonConfigProjectionStore {
         self.config_projection.clone()
-    }
-
-    pub(crate) fn configure_relay(
-        &mut self,
-        relay_url: Option<String>,
-        relay_token: Option<String>,
-    ) -> Result<(), DaemonError> {
-        self.config.relay_url = relay_url
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        self.config.relay_token = relay_token
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        self.config.validate()?;
-        self.config.persist_relay_config()?;
-        self.config_projection.update(self.config.clone());
-        Ok(())
-    }
-
-    pub(crate) fn persist_cloud_relay_profile(
-        &mut self,
-        profile: Option<crate::config::PersistedCloudRelayProfile>,
-    ) -> Result<(), DaemonError> {
-        self.config.persist_cloud_relay_profile(profile)?;
-        self.config_projection.update(self.config.clone());
-        Ok(())
-    }
-
-    pub(crate) fn set_user_config_value(
-        &mut self,
-        path: impl AsRef<str>,
-        value: impl Into<String>,
-    ) -> Result<(), DaemonError> {
-        self.config.set_user_config_value(path, value)?;
-        self.config_projection.update(self.config.clone());
-        Ok(())
-    }
-
-    pub(crate) fn unset_user_config_value(
-        &mut self,
-        path: impl AsRef<str>,
-    ) -> Result<(), DaemonError> {
-        self.config.unset_user_config_value(path)?;
-        self.config_projection.update(self.config.clone());
-        Ok(())
     }
 
     pub(crate) fn session_state_store(&self) -> SessionStateStore {
