@@ -8,6 +8,7 @@ use crate::slice::{SliceBackendKind, SliceDisplayEndpoint, SliceRecord};
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
+mod agent_lifecycle;
 mod agent_utility;
 mod capability;
 mod cloud_relay;
@@ -19,6 +20,7 @@ mod slice;
 mod terminal_interaction;
 mod workspace;
 
+pub use agent_lifecycle::*;
 pub use agent_utility::*;
 pub use capability::*;
 pub use cloud_relay::*;
@@ -172,13 +174,6 @@ pub struct AliasSessionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AliasAgentRequest {
-    pub session_id: String,
-    pub agent_id: String,
-    pub alias: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndSessionRequest {
     pub session_id: String,
 }
@@ -191,56 +186,6 @@ pub struct DeleteSessionRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeleteKernelRequest;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SpawnAgentRequest {
-    pub session_id: String,
-    pub alias: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution_mode: Option<crate::provider::AgentExecutionMode>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission_level: Option<crate::provider::AgentPermissionLevel>,
-    pub worktree_id: Option<String>,
-    #[serde(default)]
-    pub kernel_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slice_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_placement: Option<crate::agent::GitWorktreePlacement>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MoveAgentToRemoteRequest {
-    pub session_id: String,
-    pub agent_ref: String,
-    pub machine_ref: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DestroyAgentRequest {
-    pub session_id: String,
-    pub agent_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FocusAgentRequest {
-    pub session_id: String,
-    pub agent_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CycleAgentFocusRequest {
-    pub session_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ListAgentsRequest {
-    pub session_id: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateWorkflowRequest {
