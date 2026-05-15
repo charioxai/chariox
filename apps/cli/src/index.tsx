@@ -1,14 +1,12 @@
 import path from "node:path"
 import process from "node:process"
-import { execFile } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import { unlink } from "node:fs/promises"
 import { homedir } from "node:os"
 import { pathToFileURL } from "node:url"
-import { createConnection, createServer, type Server as NetServer, type Socket as NetSocket } from "node:net"
+import { createServer, type Server as NetServer, type Socket as NetSocket } from "node:net"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
-import { promisify } from "node:util"
 
 import { BoxRenderable, MouseButton, RGBA, ScrollBoxRenderable, SyntaxStyle, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
@@ -125,6 +123,14 @@ import {
   resolveConfiguredCloudRelayApiUrl,
 } from "./cli-options.js"
 import { openExternalUrl } from "./external-url.js"
+import {
+  inferWorkspaceTargetsFromLaunchDirectory,
+} from "./workspace-launch-targets.js"
+import {
+  isKernelEndpointReachable,
+  isKernelEndpointUnavailableError,
+  isNoArgDefaultKernelLaunch,
+} from "./kernel-endpoint.js"
 import {
   loadPreferences,
   mergeSessionPromptState,
@@ -432,8 +438,6 @@ import {
 } from "./workspace-renderables.js"
 import parserConfig from "./parsers-config.js"
 
-const execFileAsync = promisify(execFile)
-
 const PROMPT_KEYBINDINGS = [
   { name: "return", action: "submit" },
   { name: "return", shift: true, action: "newline" },
@@ -578,26 +582,6 @@ type CliAutomationResponse = {
 
 function getLogger(component: string, fields: Record<string, unknown> = {}) {
   return processLogger?.child(component, fields) ?? null
-}
-
-async function inferWorkspaceTargetsFromLaunchDirectory(cwd: string): Promise<{ workspace: string; worktree: string }> {
-  try {
-    const [worktreeResult, commonDirResult] = await Promise.all([
-      execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd }),
-      execFileAsync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd }),
-    ])
-    const worktree = worktreeResult.stdout.trim()
-    const commonDir = commonDirResult.stdout.trim()
-    if (!worktree) {
-      return { workspace: cwd, worktree: cwd }
-    }
-    const workspace = commonDir.endsWith("/.git")
-      ? commonDir.slice(0, -"/.git".length)
-      : worktree
-    return { workspace, worktree }
-  } catch {
-    return { workspace: cwd, worktree: cwd }
-  }
 }
 
 async function main() {
@@ -757,44 +741,6 @@ function buildDetachedBootstrap(
     options,
     preferences,
   }
-}
-
-function isNoArgDefaultKernelLaunch(argv: string[]): boolean {
-  return argv.length === 0
-}
-
-async function isKernelEndpointReachable(endpoint: string): Promise<boolean> {
-  let url: URL
-  try {
-    url = new URL(endpoint)
-  } catch {
-    return true
-  }
-  if (url.protocol !== "ws:" && url.protocol !== "wss:") {
-    return true
-  }
-  const port = Number(url.port || (url.protocol === "wss:" ? 443 : 80))
-  if (!Number.isFinite(port) || port <= 0) {
-    return true
-  }
-  return new Promise((resolve) => {
-    const socket = createConnection({ host: url.hostname, port })
-    const settle = (reachable: boolean) => {
-      socket.removeAllListeners()
-      socket.destroy()
-      resolve(reachable)
-    }
-    socket.setTimeout(500)
-    socket.once("connect", () => settle(true))
-    socket.once("error", () => settle(false))
-    socket.once("timeout", () => settle(false))
-  })
-}
-
-function isKernelEndpointUnavailableError(error: unknown): boolean {
-  const message = formatError(error)
-  return /\bECONNREFUSED\b|\bENOENT\b|\bEHOSTUNREACH\b|\bENETUNREACH\b|\bETIMEDOUT\b/i.test(message)
-    || /kernel transport `connect kernel websocket` failed: \[object ErrorEvent\]/i.test(message)
 }
 
 function ensureTranscriptParsersRegistered() {
