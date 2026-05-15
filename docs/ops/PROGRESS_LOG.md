@@ -1122,3 +1122,10 @@ Chronological notes to preserve execution context between contributors/agents.
 - Routed slash-command drafts through the existing `ArrobaAppModel` actions so `/session list`, `/session new|create`, `/session attach [ref]`, `/session detach`, `/agent list`, `/agent focus <ref>`, `/agent cycle`, `/stop`, and `/waiting` use the same typed kernel-backed request paths as the buttons and agent controls.
 - Added command feedback into the transcript as notices and kept failed freeform prompt submission behavior intact.
 - Expanded Swift Testing coverage to 20 cases for command catalog filtering plus slash command execution; verified `swift test --package-path apps/ios/ArrobaPackage` and `xcodebuild -workspace apps/ios/Arroba.xcworkspace -scheme Arroba -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' test` pass. A simulator text-entry command-center assertion was intentionally not kept because XCTest did not reliably expose the transient SwiftUI suggestion buttons; package/model coverage is the stable gate for that logic for now.
+
+### M14B home-managed slice native TUI update
+
+- Added `--slice <ref>` native TUI placement for Codex, OpenCode, and Claude so `arroba codex/opencode/claude <session> --slice <slice_id>` attaches to a home-kernel session and places provider execution on the home-managed slice worker.
+- Local Docker slices now reuse the home relay when available, start only the worker runtime, bind provider endpoints for worker access, import provider auth on demand, install Claude Code, copy Claude credentials from file or macOS Keychain, and trust `/workspace` for Claude Code.
+- Fixed slice worker kernel ref resolution so shared-relay home-managed slices keep the recorded home relay endpoint/token instead of being rewritten to the old slice-private Docker relay.
+- Extended `live-remote-native-tui-drill.mjs` with `--home-managed-slice-local-docker` and validated Codex, OpenCode, and Claude with two provider-native TUIs plus one Arroba observer in one home session, provider execution on the slice worker, prompt/turns, provider permissions, prompt attachments, cross-agent separation, and badge transitions back to idle.

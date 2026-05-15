@@ -33,6 +33,11 @@ SLICE_MACHINE_ID="${ARROBA_SLICE_MACHINE_ID:-slice:linux}"
 SLICE_MACHINE_ALIAS="${ARROBA_SLICE_MACHINE_ALIAS:-linux}"
 SLICE_CODEX_AUTH="${ARROBA_SLICE_CODEX_AUTH:-$HOME/.codex/auth.json}"
 SLICE_OPENCODE_AUTH="${ARROBA_SLICE_OPENCODE_AUTH:-$HOME/.local/share/opencode/auth.json}"
+SLICE_CLAUDE_JSON="${ARROBA_SLICE_CLAUDE_JSON:-$HOME/.claude.json}"
+SLICE_CLAUDE_SETTINGS="${ARROBA_SLICE_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+SLICE_CLAUDE_STATS="${ARROBA_SLICE_CLAUDE_STATS:-$HOME/.claude/stats-cache.json}"
+SLICE_CLAUDE_CREDENTIALS="${ARROBA_SLICE_CLAUDE_CREDENTIALS:-$HOME/.claude/.credentials.json}"
+SLICE_CLAUDE_KEYCHAIN_SERVICE="${ARROBA_SLICE_CLAUDE_KEYCHAIN_SERVICE:-Claude Code-credentials}"
 SLICE_OPENCODE_PROVIDER="${ARROBA_SLICE_OPENCODE_PROVIDER:-openai}"
 SLICE_OPENCODE_LOGIN_METHOD="${ARROBA_SLICE_OPENCODE_LOGIN_METHOD:-ChatGPT Pro/Plus (headless)}"
 
@@ -190,19 +195,64 @@ copy_provider_auth_file() {
   log "imported $label auth into $target_path"
 }
 
+trust_claude_slice_workspace() {
+  docker exec -u slice "$SLICE_NAME" bash -lc "node <<'NODE'
+const fs = require('fs')
+const file = '/home/slice/.claude.json'
+let data = {}
+try {
+  data = JSON.parse(fs.readFileSync(file, 'utf8'))
+} catch {
+  data = {}
+}
+const projects = data.projects && typeof data.projects === 'object' ? data.projects : {}
+const template = Object.values(projects).find((value) =>
+  value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'hasTrustDialogAccepted')
+) || {}
+projects['/workspace'] = {
+  ...template,
+  allowedTools: Array.isArray(template.allowedTools) ? template.allowedTools : [],
+  hasTrustDialogAccepted: true,
+  projectOnboardingSeenCount: Math.max(Number(template.projectOnboardingSeenCount) || 0, 1),
+}
+data.projects = projects
+fs.writeFileSync(file, JSON.stringify(data, null, 2))
+fs.chmodSync(file, 0o600)
+NODE"
+  log "marked /workspace as trusted for Claude Code"
+}
+
 import_provider_auth() {
   ensure_container
   copy_provider_auth_file "$SLICE_CODEX_AUTH" "/home/slice/.codex/auth.json" "Codex"
   copy_provider_auth_file "$SLICE_OPENCODE_AUTH" "/home/slice/.local/share/opencode/auth.json" "OpenCode"
+  copy_provider_auth_file "$SLICE_CLAUDE_JSON" "/home/slice/.claude.json" "Claude metadata"
+  copy_provider_auth_file "$SLICE_CLAUDE_SETTINGS" "/home/slice/.claude/settings.json" "Claude settings"
+  copy_provider_auth_file "$SLICE_CLAUDE_STATS" "/home/slice/.claude/stats-cache.json" "Claude stats"
+  if [[ -f "$SLICE_CLAUDE_CREDENTIALS" ]]; then
+    copy_provider_auth_file "$SLICE_CLAUDE_CREDENTIALS" "/home/slice/.claude/.credentials.json" "Claude credentials"
+  elif command -v security >/dev/null 2>&1; then
+    local credentials_tmp
+    credentials_tmp="$(mktemp "${TMPDIR:-/tmp}/arroba-claude-credentials.XXXXXX")"
+    if security find-generic-password -s "$SLICE_CLAUDE_KEYCHAIN_SERVICE" -w >"$credentials_tmp" 2>/dev/null; then
+      copy_provider_auth_file "$credentials_tmp" "/home/slice/.claude/.credentials.json" "Claude Keychain credentials"
+    else
+      log "Claude credentials not found in Keychain service $SLICE_CLAUDE_KEYCHAIN_SERVICE; skipping"
+    fi
+    rm -f "$credentials_tmp"
+  else
+    log "Claude credentials not found at $SLICE_CLAUDE_CREDENTIALS; skipping"
+  fi
+  trust_claude_slice_workspace
 }
 
 print_provider_auth_status() {
-  exec_slice bash -lc "echo '--- provider auth'; codex login status || true; opencode providers list || true"
+  exec_slice bash -lc "echo '--- provider auth'; codex login status || true; opencode providers list || true; claude auth status --text || claude auth status || true"
 }
 
 print_status() {
   log "container: $SLICE_NAME"
-  exec_slice bash -lc "set -e; echo '--- versions'; node --version; npm --version; codex --version || true; opencode --version || true; chromium --version || true; tesseract --version | head -n 1 || true; echo '--- browser smoke'; chromium --headless=new --disable-gpu --dump-dom 'data:text/html,slice-browser-ok' >/tmp/chromium-smoke.out 2>/tmp/chromium-smoke.err || { cat /tmp/chromium-smoke.err; exit 1; }; grep -q 'slice-browser-ok' /tmp/chromium-smoke.out && echo chromium=sandboxed-headless-ok; echo '--- desktop'; /opt/arroba-slice/slice-screen.sh status || true; echo '--- binaries'; ls -l /opt/arroba-slice/bin; echo '--- processes'; pgrep -af 'arroba-kernel|arroba-relay|codex app-server|opencode serve' || true; echo '--- logs'; ls -1 /opt/arroba-slice/logs || true"
+  exec_slice bash -lc "set -e; echo '--- versions'; node --version; npm --version; codex --version || true; opencode --version || true; claude --version || true; chromium --version || true; tesseract --version | head -n 1 || true; echo '--- browser smoke'; chromium --headless=new --disable-gpu --dump-dom 'data:text/html,slice-browser-ok' >/tmp/chromium-smoke.out 2>/tmp/chromium-smoke.err || { cat /tmp/chromium-smoke.err; exit 1; }; grep -q 'slice-browser-ok' /tmp/chromium-smoke.out && echo chromium=sandboxed-headless-ok; echo '--- desktop'; /opt/arroba-slice/slice-screen.sh status || true; echo '--- binaries'; ls -l /opt/arroba-slice/bin; echo '--- processes'; pgrep -af 'arroba-kernel|arroba-relay|codex app-server|opencode serve' || true; echo '--- logs'; ls -1 /opt/arroba-slice/logs || true"
   print_provider_auth_status
 }
 

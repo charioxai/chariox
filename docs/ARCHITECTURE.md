@@ -773,6 +773,11 @@ Codex/OpenCode use provider protocol proxies where available. Claude Code uses
 a kernel-owned remote-rendered PTY because Claude Code's public integration
 surface is terminal-first rather than a separable app-server protocol.
 
+Slice-backed native TUI mode is the same composition with a home-managed slice
+as the worker execution environment. Provider TUIs still attach to the home
+kernel session; `slice_ref` only selects where provider execution runs. Native
+TUI clients must not attach directly to a slice kernel for the product path.
+
 ### 5.3.2 OpenCode Structured Adapter
 
 OpenCode is the first provider where Arroba intentionally prefers a structured local provider protocol over PTY-only inference.

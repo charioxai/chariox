@@ -193,6 +193,7 @@ Remote native TUI composition:
 - worker output, notices, completions, and permission interactions MUST return to the home kernel through existing leased runtime projection and native interaction relay paths
 - the provider-native proxy/launcher MAY translate home-kernel session output back into provider-native UI protocol or PTY rendering, but it must not become a session authority or bypass the home kernel prompt queue
 - the relay remains transport-only and must not inspect or transform provider-native prompts, outputs, attachments, permissions, or history
+- slice-backed native TUI mode follows the same contract: provider TUIs and Arroba TUIs attach to the home kernel session, `slice_ref` selects a home-managed worker execution environment, and the slice worker uses the same worker-owned provider adapter/server path as remote leased agents
 
 Provider-specific transport:
 

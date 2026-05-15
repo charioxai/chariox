@@ -208,7 +208,7 @@ if ! command -v node >/dev/null || [[ "$(node -p 'Number(process.versions.node.s
 fi
 
 log "installing provider CLIs"
-need_sudo npm install -g @openai/codex opencode-ai
+need_sudo npm install -g @openai/codex opencode-ai @anthropic-ai/claude-code
 
 if ! command -v cargo >/dev/null; then
   log "installing Rust toolchain"

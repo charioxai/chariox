@@ -54,6 +54,7 @@ type NativeOpenCodeOptions = {
   workspace?: string
   worktree?: string
   machineRef?: string
+  sliceRef?: string
   alias?: string
   agentAlias?: string
   mode: "build" | "plan"
@@ -102,9 +103,10 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
   let endpointBridge: { close: () => Promise<void> } | null = null
   let pump: { stop: () => void } | null = null
   try {
+    const remotePlacement = Boolean(options.machineRef || options.sliceRef)
     const created = options.sessionRef
       ? null
-      : await createSession(client, workspace, worktree, options.alias, options.mode, options.permissions)
+      : await createSession(client, workspace, worktree, options.alias, options.mode, options.permissions, options.sliceRef)
     const session = created?.session ?? (options.sessionRef
       ? await resolveSession(client, options.sessionRef, workspace)
       : (() => {
@@ -113,7 +115,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     const attachment = await attachToSession(client, session.id, options.clientId)
     const agent = created?.agent
       ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
-      : await spawnOpenCodeAgent(client, session.id, options.agentAlias, options.mode, options.permissions, options.machineRef)
+      : await spawnOpenCodeAgent(client, session.id, options.agentAlias, options.mode, options.permissions, options.machineRef, options.sliceRef)
     const proxyState: OpenCodeProxyState = {
       providerRunId: null,
       providerSessionId: null,
@@ -126,7 +128,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       const launched = await launchProviderRun(client, session.id, "opencode", "default", "default", "", agent.id, {
         nativeTui: true,
       })
-      run = !options.machineRef && launched.session_id === session.id
+      run = !remotePlacement && launched.session_id === session.id
         ? await waitForOpenCodeRunReady(client, launched.id)
         : launched
       if (!run.structured_endpoint) {
@@ -146,7 +148,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       sessionId: session.id,
       attachmentId: attachment.id,
       agentId: agent.id,
-      inlineLocalAttachments: Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
+      inlineLocalAttachments: Boolean(options.relayUrl) || remotePlacement || promptAttachmentTransferIsForced(),
     }, proxyState)
     const proxyAddress = proxy.address()
     if (!proxyAddress || typeof proxyAddress === "string") {
@@ -158,7 +160,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
         structuredEndpoint: proxyUrl,
         nativeTui: true,
       })
-      run = !options.machineRef && launched.session_id === session.id
+      run = !remotePlacement && launched.session_id === session.id
         ? await waitForOpenCodeRunReady(client, launched.id)
         : launched
     }
@@ -264,6 +266,9 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
       case "--kernel-ref":
         options.machineRef = next()
         break
+      case "--slice":
+        options.sliceRef = next()
+        break
       case "--alias":
         options.alias = next()
         break
@@ -312,8 +317,14 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
   if (options.socketPath && options.kernelPort) {
     throw new Error("--socket cannot be used together with --kernel-port")
   }
+  if (options.machineRef && options.sliceRef) {
+    throw new Error("--machine and --slice cannot be used together")
+  }
   if (options.machineRef && !options.serverInKernel) {
     throw new Error("--machine requires --server-in-kernel so the OpenCode server is launched by the worker kernel")
+  }
+  if (options.sliceRef && !options.serverInKernel) {
+    throw new Error("--slice requires --server-in-kernel so the OpenCode server is launched by the slice worker kernel")
   }
   if (positional[0] !== undefined) {
     options.sessionRef = positional[0]
@@ -328,6 +339,7 @@ function printNativeOpenCodeUsage() {
     "",
     "placement:",
     "  --machine, --kernel-ref REF       Run the Arroba agent/provider on a remote worker kernel",
+    "  --slice REF                       Run the Arroba agent/provider on a home-managed slice worker",
     "",
     "behavior:",
     "  creates a new Arroba agent in the selected session and launches native `opencode attach` for it.",
@@ -391,6 +403,7 @@ async function createSession(
   alias?: string,
   mode: "build" | "plan" = "build",
   permissions: "required" | "yolo" = "yolo",
+  sliceRef?: string,
 ): Promise<{ session: RuntimeSession; agent: AgentInstance | null }> {
   const response = await client.send<Record<string, unknown>>(
     createSessionRequest(workspace, worktree, alias, {
@@ -399,7 +412,7 @@ async function createSession(
       effort: null,
       execution_mode: mode,
       permission_level: permissions,
-    }),
+    }, sliceRef ?? null),
   )
   const payload = expectVariant<{ session: RuntimeSession; agent?: AgentInstance | null }>(response, "SessionCreated")
   return {
@@ -429,9 +442,10 @@ async function spawnOpenCodeAgent(
   mode: "build" | "plan" = "build",
   permissions: "required" | "yolo" = "yolo",
   machineRef?: string,
+  sliceRef?: string,
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
-    spawnAgentRequest(sessionId, "opencode", alias, "default", undefined, null, mode, permissions),
+    spawnAgentRequest(sessionId, "opencode", alias, "default", undefined, null, mode, permissions, undefined, undefined, sliceRef),
   )
   const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
   return machineRef

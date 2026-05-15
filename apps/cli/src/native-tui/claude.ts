@@ -59,6 +59,7 @@ type NativeClaudeOptions = {
   workspace?: string
   worktree?: string
   machineRef?: string
+  sliceRef?: string
   alias?: string
   agentAlias?: string
   model: string
@@ -266,6 +267,9 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
       case "--kernel-ref":
         options.machineRef = next()
         break
+      case "--slice":
+        options.sliceRef = next()
+        break
       case "--alias":
         options.alias = next()
         break
@@ -304,8 +308,14 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
     }
   }
   if (positional.length > 1) throw new Error(`unexpected claude arguments: ${positional.slice(1).join(" ")}`)
+  if (options.machineRef && options.sliceRef) {
+    throw new Error("--machine and --slice cannot be used together")
+  }
   if (options.machineRef && !options.remoteRendered) {
     throw new Error("--machine requires --remote-rendered so Claude Code runs in the worker kernel PTY")
+  }
+  if (options.sliceRef && !options.remoteRendered) {
+    throw new Error("--slice requires --remote-rendered so Claude Code runs in the slice worker kernel PTY")
   }
   if (positional[0] !== undefined) options.sessionRef = positional[0]
   return options
@@ -323,6 +333,7 @@ function printNativeClaudeUsage() {
     "  --workspace <path>               Workspace root",
     "  --worktree <path>                Worktree root",
     "  --machine, --kernel-ref <ref>    Run the Arroba agent/provider on a remote worker kernel",
+    "  --slice <ref>                    Run the Arroba agent/provider on a home-managed slice worker",
     "  --alias <name>                   Alias for a newly-created session",
     "  --agent-alias <name>             Alias for the Claude native agent",
     "  --model <model>                  Claude model argument (default sonnet)",
@@ -346,12 +357,12 @@ async function runClaudeRemoteRendered(
   try {
     const created = options.sessionRef
       ? null
-      : await createSession(client, workspace, worktree, options.alias, options.model, options.effort, options.mode, options.permissions)
+      : await createSession(client, workspace, worktree, options.alias, options.model, options.effort, options.mode, options.permissions, options.sliceRef)
     const session = created?.session ?? await resolveSession(client, options.sessionRef!, workspace)
     const attachment = await attachToSession(client, session.id, options.clientId)
     const agent = created?.agent
       ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
-      : await spawnClaudeAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef)
+      : await spawnClaudeAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef, options.sliceRef)
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
     const run = await waitForProviderRunReady(client, launched.id)
 
@@ -377,7 +388,7 @@ async function runClaudeRemoteRendered(
       agent.id,
       run.id,
       worktree,
-      Boolean(options.relayUrl) || Boolean(options.machineRef) || promptAttachmentTransferIsForced(),
+      Boolean(options.relayUrl) || Boolean(options.machineRef) || Boolean(options.sliceRef) || promptAttachmentTransferIsForced(),
     )
     installResizeForwarder(client, session.id)
     if (options.initialPrompt) {
@@ -1371,6 +1382,7 @@ async function createSession(
   effort: string,
   mode: "build" | "plan",
   permissions: "required" | "yolo",
+  sliceRef?: string,
 ): Promise<{ session: RuntimeSession; agent: AgentInstance }> {
   const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, worktree, alias, {
     provider: "claude",
@@ -1378,7 +1390,7 @@ async function createSession(
     effort,
     execution_mode: mode,
     permission_level: permissions,
-  }))
+  }, sliceRef ?? null))
   const payload = expectVariant<{ session: RuntimeSession; agent: AgentInstance }>(response, "SessionCreated")
   return { session: normalizeRuntimeSession(payload.session), agent: payload.agent }
 }
@@ -1407,9 +1419,10 @@ async function spawnClaudeAgent(
   mode: "build" | "plan",
   permissions: "required" | "yolo",
   machineRef?: string,
+  sliceRef?: string,
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
-    spawnAgentRequest(sessionId, "claude", alias, model, worktree, effort, mode, permissions),
+    spawnAgentRequest(sessionId, "claude", alias, model, worktree, effort, mode, permissions, undefined, undefined, sliceRef),
   )
   const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
   return machineRef

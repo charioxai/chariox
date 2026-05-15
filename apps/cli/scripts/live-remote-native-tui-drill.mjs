@@ -12,14 +12,18 @@ import WebSocket from "ws"
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
   attachToSessionRequest,
+  createSliceRequest,
   createSessionRequest,
+  deleteSliceRequest,
   endSessionRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
+  importSliceProviderAuthRequest,
   listAgentsRequest,
   listRemoteMachinesRequest,
   pumpTerminalOutputRequest,
   sendTerminalInputRequest,
+  startSliceRequest,
 } from "../dist/ipc-requests.js"
 
 const execFileAsync = promisify(execFile)
@@ -45,6 +49,7 @@ function parseArgs(argv) {
     providers: ["opencode", "codex", "claude"],
     keepArtifactsOnFailure: false,
     sliceLocalDocker: false,
+    homeManagedSliceLocalDocker: false,
     standardHomeWorker: false,
     hetznerWorker: false,
     hetznerHost: process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? "root@195.201.123.115",
@@ -64,6 +69,8 @@ function parseArgs(argv) {
       options.keepArtifactsOnFailure = true
     } else if (arg === "--slice-local-docker") {
       options.sliceLocalDocker = true
+    } else if (arg === "--home-managed-slice-local-docker") {
+      options.homeManagedSliceLocalDocker = true
     } else if (arg === "--standard-home-worker") {
       options.standardHomeWorker = true
     } else if (arg === "--hetzner-worker") {
@@ -87,8 +94,11 @@ function parseArgs(argv) {
       throw new Error(`unknown argument: ${arg}`)
     }
   }
-  if (options.sliceLocalDocker && options.standardHomeWorker) {
-    throw new Error("--slice-local-docker and --standard-home-worker are mutually exclusive")
+  const placementModes = [options.sliceLocalDocker, options.homeManagedSliceLocalDocker, options.standardHomeWorker]
+    .filter(Boolean)
+    .length
+  if (placementModes > 1) {
+    throw new Error("--slice-local-docker, --home-managed-slice-local-docker, and --standard-home-worker are mutually exclusive")
   }
   if (options.hetznerWorker && !options.standardHomeWorker) {
     throw new Error("--hetzner-worker requires --standard-home-worker")
@@ -118,7 +128,8 @@ function printHelp() {
     "  --hetzner-relay-host HOST  Relay host clients connect to for --hetzner-worker",
     "  --hetzner-key PATH         SSH key for --hetzner-worker",
     "  --hetzner-repo PATH        Remote Arroba checkout for --hetzner-worker",
-    "  --slice-local-docker          Run against a local Docker slice kernel instead of a host kernel",
+    "  --slice-local-docker          Legacy direct local Docker slice kernel drill",
+    "  --home-managed-slice-local-docker  Run native TUIs through the home kernel into a managed local Docker slice",
     "  --include-permissions         Validate provider-native permissions through the Arroba observer",
     "  --include-attachments         Validate prompt attachment transfer through native TUI providers",
     "  --keep-artifacts-on-failure",
@@ -263,11 +274,12 @@ async function waitForLocalDaemon(kernelUrl, workspace, worktree) {
   throw new Error("home kernel did not become ready")
 }
 
-async function waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias) {
+async function waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias, targetDaemonId = null) {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const client = new LocalIpcClient(relayUrl, {
       relayAuthToken: relayToken,
-      targetDaemonAlias,
+      targetDaemonAlias: targetDaemonId ? undefined : targetDaemonAlias,
+      targetDaemonId: targetDaemonId ?? undefined,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })
@@ -285,7 +297,7 @@ async function waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias) {
       await sleep(250)
     }
   }
-  throw new Error(`relay target ${targetDaemonAlias} did not become reachable`)
+  throw new Error(`relay target ${targetDaemonId ?? targetDaemonAlias} did not become reachable`)
 }
 
 async function waitForRemoteMachine(relayUrl, relayToken, targetDaemonAlias, machineAlias) {
@@ -862,12 +874,14 @@ async function runProviderScenario({
   relayToken,
   targetDaemonAlias,
   machineRef = null,
+  sliceRef = null,
   workspace,
   worktree,
   nativeEnv = {},
   options,
 }) {
   const scenarioRoot = path.join(root, provider)
+  const remotePlacement = Boolean(machineRef || sliceRef)
   const screenA = `arroba-rnt-${provider}-a-${process.pid}`
   const screenB = `arroba-rnt-${provider}-b-${process.pid}`
   const screenCli = `arroba-rnt-${provider}-cli-${process.pid}`
@@ -942,6 +956,7 @@ async function runProviderScenario({
       "--worktree",
       worktree,
       ...(machineRef ? ["--machine", machineRef] : []),
+      ...(sliceRef ? ["--slice", sliceRef] : []),
       ...providerArgs,
       ...(provider === "claude" && !skipBaselineTurns ? ["--initial-prompt", `Reply with exactly ${markers.nativeA} and nothing else.`] : []),
       ...(provider === "claude" ? ["--remote-rendered"] : []),
@@ -975,6 +990,7 @@ async function runProviderScenario({
       "--worktree",
       worktree,
       ...(machineRef ? ["--machine", machineRef] : []),
+      ...(sliceRef ? ["--slice", sliceRef] : []),
       ...providerArgs,
       ...(provider === "claude" && !skipBaselineTurns ? ["--initial-prompt", `Reply with exactly ${markers.nativeB} and nothing else.`] : []),
       ...(provider === "claude" ? ["--remote-rendered"] : []),
@@ -1002,7 +1018,7 @@ async function runProviderScenario({
     } else if (provider === "codex") {
       proxyA = (await waitForFileMatch(logs.a, /proxy:\s+(ws:\/\/127\.0\.0\.1:\d+)/)).match[1]
       proxyB = (await waitForFileMatch(logs.b, /proxy:\s+(ws:\/\/127\.0\.0\.1:\d+)/)).match[1]
-      if (!machineRef) {
+      if (!remotePlacement) {
         providerSessionA = (await waitForFileMatch(logs.proxyA, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
         providerSessionB = (await waitForFileMatch(logs.proxyB, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
       }
@@ -1014,7 +1030,7 @@ async function runProviderScenario({
       "SessionAttached",
     ).attachment
     const agents = await waitForNamedAgents(client, sessionId, aliases)
-    if (!machineRef) {
+    if (!remotePlacement) {
       await waitForActiveProviderRun(client, sessionId)
     }
 
@@ -1113,6 +1129,32 @@ async function runProviderScenario({
       for (const expected of [markers.arrobaB, markers.nativeB]) {
         await waitForFileMatch(logs.b, new RegExp(expected), 90_000)
       }
+    } else if (provider === "claude") {
+      const providerRunB = await waitForClaudeProviderRunId(logs.b)
+      await sendClaudeRenderedPromptViaKernelInput(
+        client,
+        sessionId,
+        attachment.id,
+        providerRunB,
+        `Reply with exactly ${markers.nativeB} and nothing else.`,
+      )
+      badgeTransitions[aliases[1]].during = await waitForAgentBadgeTone(automationSocket, aliases[1], "working")
+      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[1]], {
+        [aliases[1]]: { prompts: [markers.nativeB], outputs: [markers.nativeB] },
+      })
+      await fireAutomationRequest(automationSocket, {
+        action: "workspace_shell_exec",
+        command: `prompt ${aliases[1]} Reply with exactly ${markers.arrobaB} and nothing else.`,
+      })
+      const histories = await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+        [aliases[1]]: { prompts: [markers.arrobaB, markers.nativeB], outputs: [markers.arrobaB, markers.nativeB] },
+      })
+      badgeTransitions[aliases[1]].after = await waitForAgentBadgeTone(automationSocket, aliases[1], "idle")
+      if (histories[aliases[0]].all.includes(markers.arrobaB) || histories[aliases[0]].all.includes(markers.nativeB)) {
+        throw new Error(`${aliases[0]} history was contaminated with ${aliases[1]} markers`)
+      }
+      await waitForFileMatch(logs.b, new RegExp(markers.nativeB), 90_000)
+      await waitForFileMatch(logs.b, new RegExp(markers.arrobaB), 90_000)
     }
 
     const proxyALog = await readFile(logs.proxyA, "utf8").catch(() => "")
@@ -1120,7 +1162,7 @@ async function runProviderScenario({
     if (provider === "codex") {
       const expectedProxySignal = nativeEnv.ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE
         ? "provider_run_bound"
-        : machineRef
+        : remotePlacement
           ? "native_prompt_submitted"
         : "kernel_connected"
       if (!proxyALog.includes(expectedProxySignal) || !proxyBLog.includes(expectedProxySignal)) {
@@ -1233,6 +1275,9 @@ async function runProviderScenario({
       } else {
         const providerRunA = await waitForClaudeProviderRunId(logs.a)
         await sendClaudeRenderedPromptViaKernelInput(client, sessionId, attachment.id, providerRunA, nativePrompt)
+        if (!badgeTransitions[aliases[0]].during) {
+          badgeTransitions[aliases[0]].during = await waitForAgentBadgeTone(automationSocket, aliases[0], "working")
+        }
         extendedChecks.nativePermissionInteraction = await approveClaudeRenderedPermissionViaKernelInput(
           client,
           sessionId,
@@ -1255,6 +1300,9 @@ async function runProviderScenario({
         provider === "claude" ? nativePermissionContent : `${nativePermissionContent}\n`,
         10_000,
       )
+      if (provider === "claude" && !badgeTransitions[aliases[0]].after) {
+        badgeTransitions[aliases[0]].after = await waitForAgentBadgeTone(automationSocket, aliases[0], "idle")
+      }
       const arrobaPrompt = provider === "claude"
         ? claudePermissionPrompt(markers.arrobaPermission, arrobaPermissionFile, arrobaPermissionContent)
         : permissionPrompt(markers.arrobaPermission, arrobaPermissionFile, arrobaPermissionContent)
@@ -1317,6 +1365,8 @@ async function runProviderScenario({
         ? "remote-rendered Claude TUI validated through kernel-owned PTY"
         : options.hetznerWorker
           ? "server-in-kernel native TUI validated against a Hetzner worker through the SSH provider endpoint bridge"
+          : sliceRef
+            ? "server-in-kernel native TUI validated through a home-managed slice_ref placement"
           : "server-in-kernel native TUI validated on one host; use --hetzner-worker to validate cross-host provider endpoints",
     }
   } finally {
@@ -1406,6 +1456,43 @@ async function runSliceDockerScenarios({ options, root, ports }) {
   }
 }
 
+async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, providers, relayUrl, relayToken }) {
+  const client = new LocalIpcClient(homeKernelUrl, {
+    kernelPingIntervalMs: 60_000,
+    kernelMaxMissedPongs: 10,
+  })
+  try {
+    const name = `native-tui-${process.pid}`
+    const created = unwrap(await client.send(createSliceRequest({
+      name,
+      backend: "local_docker",
+      os: "linux",
+      workspaceMount: workspace,
+    })), "SliceCreated").slice
+    const started = unwrap(await client.send(startSliceRequest(created.id)), "SliceStarted").slice
+    for (const provider of providers) {
+      await client.send(importSliceProviderAuthRequest(started.id, provider))
+    }
+    await waitForRelayTarget(relayUrl, relayToken, started.worker_kernel_ref, started.worker_kernel_id ?? null)
+    return started
+  } finally {
+    await client.close().catch(() => {})
+  }
+}
+
+async function deleteHomeManagedSlice(homeKernelUrl, sliceRef) {
+  if (!sliceRef) return
+  const client = new LocalIpcClient(homeKernelUrl, {
+    kernelPingIntervalMs: 60_000,
+    kernelMaxMissedPongs: 10,
+  })
+  try {
+    await client.send(deleteSliceRequest(sliceRef))
+  } finally {
+    await client.close().catch(() => {})
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -1440,6 +1527,7 @@ async function main() {
   let relayTunnel = null
   let kernel = null
   let workerKernel = null
+  let managedSlice = null
   let succeeded = false
   try {
     await mkdir(root, { recursive: true })
@@ -1448,6 +1536,21 @@ async function main() {
     await mkdir(xdgStateHome, { recursive: true })
     await mkdir(xdgDataHome, { recursive: true })
     await mkdir(xdgCacheHome, { recursive: true })
+    if (options.homeManagedSliceLocalDocker) {
+      const configDir = path.join(xdgConfigHome, "arroba")
+      await mkdir(configDir, { recursive: true })
+      await writeFile(path.join(configDir, "config.toml"), [
+        "version = 1",
+        "",
+        "[slices]",
+        `root = ${JSON.stringify(path.join(root, "slices"))}`,
+        "",
+        "[slices.linux]",
+        "docker_image = \"arroba-slice-linux-spike:local\"",
+        `build_image = ${JSON.stringify(process.env.ARROBA_NATIVE_TUI_SLICE_BUILD_IMAGE ?? "auto")}`,
+        "",
+      ].join("\n"))
+    }
     if (options.hetznerWorker) {
       await prepareHetznerWorktree(options, worktree)
     }
@@ -1524,6 +1627,15 @@ async function main() {
     })
     await waitForLocalDaemon(homeKernelUrl, workspace, worktree)
     await waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias)
+    if (options.homeManagedSliceLocalDocker) {
+      managedSlice = await createHomeManagedLocalDockerSlice({
+        homeKernelUrl,
+        workspace,
+        providers: options.providers,
+        relayUrl,
+        relayToken,
+      })
+    }
     if (options.standardHomeWorker) {
       if (options.hetznerWorker) {
         const remoteRoot = `/tmp/arb-remote-native-tui-${process.pid}-${Date.now()}`
@@ -1593,6 +1705,7 @@ async function main() {
         relayToken,
         targetDaemonAlias,
         machineRef: options.standardHomeWorker ? workerMachineAlias : null,
+        sliceRef: managedSlice ? managedSlice.id : null,
         workspace,
         worktree,
         options,
@@ -1613,11 +1726,17 @@ async function main() {
       workerKernelUrl: options.standardHomeWorker ? workerKernelUrl : null,
       targetDaemonAlias,
       workerMachineAlias: options.standardHomeWorker ? workerMachineAlias : null,
+      sliceRef: managedSlice ? managedSlice.id : null,
       providers: options.providers,
       scenarios,
     }, null, 2))
     succeeded = true
   } finally {
+    if ((succeeded || !options.keepArtifactsOnFailure) && managedSlice) {
+      await deleteHomeManagedSlice(homeKernelUrl, managedSlice.id).catch((error) => {
+        console.error(`home-managed slice cleanup failed: ${error.message}`)
+      })
+    }
     await terminateChild(workerKernel)
     await terminateChild(kernel)
     await terminateChild(relayTunnel)
@@ -1626,6 +1745,9 @@ async function main() {
       await rm(root, { recursive: true, force: true }).catch(() => {})
     } else {
       console.error(`remote native TUI drill artifacts kept at ${root}`)
+      if (managedSlice) {
+        console.error(`home-managed slice ${managedSlice.id} left running`)
+      }
     }
   }
 }

@@ -42,7 +42,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && apt-get install -y nodejs \
   && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @openai/codex opencode-ai
+RUN npm install -g @openai/codex opencode-ai @anthropic-ai/claude-code
 
 RUN useradd -m -s /bin/bash slice
 USER slice

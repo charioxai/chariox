@@ -55,6 +55,7 @@ type NativeCodexOptions = {
   workspace?: string
   worktree?: string
   machineRef?: string
+  sliceRef?: string
   alias?: string
   agentAlias?: string
   model: string
@@ -104,16 +105,17 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
   let cleanupAttachmentId: string | null = null
 
   try {
+    const remotePlacement = Boolean(options.machineRef || options.sliceRef)
     const created = options.sessionRef
       ? null
-      : await createSession(client, workspace, worktree, options.alias, options.model, options.effort, options.mode, options.permissions)
+      : await createSession(client, workspace, worktree, options.alias, options.model, options.effort, options.mode, options.permissions, options.sliceRef)
     const session = created?.session ?? await resolveSession(client, options.sessionRef!, workspace)
     const attachment = await attachToSession(client, session.id, options.clientId)
     cleanupSessionId = session.id
     cleanupAttachmentId = attachment.id
     const agent = created?.agent
       ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
-      : await spawnCodexAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef)
+      : await spawnCodexAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef, options.sliceRef)
     const bindState: {
       promise: Promise<RuntimeProviderRun> | null
       run: RuntimeProviderRun | null
@@ -126,7 +128,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     let providerSessionId: string | null = null
     let upstreamEndpoint: string
     let bindProviderEndpoint: string
-    if (options.serverInKernel && options.machineRef) {
+    if (options.serverInKernel && remotePlacement) {
       const run = await launchManagedNativeProviderRun({
         client,
         sessionId: session.id,
@@ -176,7 +178,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       model: options.model,
       effort: options.effort,
       bindState,
-      inlineLocalAttachments: Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
+      inlineLocalAttachments: Boolean(options.relayUrl) || remotePlacement || promptAttachmentTransferIsForced(),
     })
     const proxyAddress = proxy.address()
     if (!proxyAddress || typeof proxyAddress === "string") {
@@ -194,14 +196,14 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       "  prompt policy:  native prompts pass through; Arroba observes the session",
       "",
     ].join("\n"))
-    pump = startKernelPumpLoop(client, session.id, attachment.id, options.machineRef
+    pump = startKernelPumpLoop(client, session.id, attachment.id, remotePlacement
       ? (records) => proxy?.projectKernelOutputToTui(records)
       : undefined)
     await runCodexTui({
       proxyUrl,
       model: options.model,
       workingDirectory: worktree,
-      providerSessionId: options.machineRef ? null : providerSessionId,
+      providerSessionId: remotePlacement ? null : providerSessionId,
       initialPrompt: options.initialPrompt,
     })
   } finally {
@@ -280,6 +282,9 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
       case "--kernel-ref":
         options.machineRef = next()
         break
+      case "--slice":
+        options.sliceRef = next()
+        break
       case "--alias":
         options.alias = next()
         break
@@ -329,8 +334,14 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
   if (options.relayUrl && options.kernelPort) throw new Error("--relay-url cannot be used together with --kernel-port")
   if (options.kernelUrl && options.kernelPort) throw new Error("--kernel-url cannot be used together with --kernel-port")
   if (options.socketPath && options.kernelPort) throw new Error("--socket cannot be used together with --kernel-port")
+  if (options.machineRef && options.sliceRef) {
+    throw new Error("--machine and --slice cannot be used together")
+  }
   if (options.machineRef && !options.serverInKernel) {
     throw new Error("--machine requires --server-in-kernel so the Codex app-server is launched by the worker kernel")
+  }
+  if (options.sliceRef && !options.serverInKernel) {
+    throw new Error("--slice requires --server-in-kernel so the Codex app-server is launched by the slice worker kernel")
   }
   if (positional[0] !== undefined) options.sessionRef = positional[0]
   return options
@@ -343,6 +354,7 @@ function printNativeCodexUsage() {
     "",
     "placement:",
     "  --machine, --kernel-ref REF       Run the Arroba agent/provider on a remote worker kernel",
+    "  --slice REF                       Run the Arroba agent/provider on a home-managed slice worker",
     "",
     "behavior:",
     "  creates a new Arroba agent in the selected session and launches native `codex --remote` for it.",
@@ -402,6 +414,7 @@ async function createSession(
   effort = "high",
   mode: "build" | "plan" = "build",
   permissions: "required" | "yolo" = "yolo",
+  sliceRef?: string,
 ): Promise<{ session: RuntimeSession; agent: AgentInstance | null }> {
   const response = await client.send<Record<string, unknown>>(
     createSessionRequest(workspace, worktree, alias, {
@@ -410,7 +423,7 @@ async function createSession(
       effort,
       execution_mode: mode,
       permission_level: permissions,
-    }),
+    }, sliceRef ?? null),
   )
   const payload = expectVariant<{ session: RuntimeSession; agent?: AgentInstance | null }>(response, "SessionCreated")
   return {
@@ -443,9 +456,10 @@ async function spawnCodexAgent(
   mode: "build" | "plan",
   permissions: "required" | "yolo",
   machineRef?: string,
+  sliceRef?: string,
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
-    spawnAgentRequest(sessionId, "codex", alias, model, worktree, effort, mode, permissions),
+    spawnAgentRequest(sessionId, "codex", alias, model, worktree, effort, mode, permissions, undefined, undefined, sliceRef),
   )
   const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
   return machineRef

@@ -107,6 +107,7 @@ pub struct CreateSliceInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalDockerSliceAction {
     Provision,
+    ImportProviderAuth,
     Stop,
     Destroy,
 }
@@ -467,6 +468,7 @@ pub fn run_local_docker_slice_action(
     command
         .arg(match action {
             LocalDockerSliceAction::Provision => "provision",
+            LocalDockerSliceAction::ImportProviderAuth => "import-provider-auth",
             LocalDockerSliceAction::Stop => "stop",
             LocalDockerSliceAction::Destroy => "destroy",
         })
@@ -483,14 +485,17 @@ pub fn run_local_docker_slice_action(
         .env("ARROBA_SLICE_SCREEN_GEOMETRY", options.screen_geometry())
         .env("ARROBA_SLICE_CODEX_PORT", ports.codex.to_string())
         .env("ARROBA_SLICE_OPENCODE_PORT", ports.opencode.to_string())
+        .env("ARROBA_SLICE_CODEX_PORT_RANGE", ports.codex_range())
+        .env("ARROBA_SLICE_OPENCODE_PORT_RANGE", ports.opencode_range())
         .env("ARROBA_SLICE_KERNEL_PORT", ports.kernel.to_string())
         .env("ARROBA_SLICE_MCP_PORT", ports.mcp.to_string())
         .env("ARROBA_SLICE_RELAY_PORT", ports.relay.to_string())
         .env("ARROBA_SLICE_NOVNC_PORT", ports.novnc.to_string())
         .env("ARROBA_SLICE_START_DESKTOP", "1")
-        .env("ARROBA_SLICE_START_PROVIDER_SERVERS", "1")
+        .env("ARROBA_SLICE_START_PROVIDER_SERVERS", "0")
         .env("ARROBA_SLICE_START_RUNTIME", "1")
         .env("ARROBA_SLICE_IMPORT_PROVIDER_AUTH", "0")
+        .env("ARROBA_SLICE_PROVIDER_BIND_HOST", "0.0.0.0")
         .env(
             "ARROBA_SLICE_DAEMON_ALIAS",
             record.worker_kernel_ref.clone(),
@@ -615,6 +620,7 @@ impl LocalDockerSliceAction {
     fn as_str(self) -> &'static str {
         match self {
             Self::Provision => "provision",
+            Self::ImportProviderAuth => "import-provider-auth",
             Self::Stop => "stop",
             Self::Destroy => "destroy",
         }
@@ -641,11 +647,25 @@ impl LocalDockerSlicePorts {
         Self {
             codex: 43252_u16.saturating_add(ordinal),
             opencode: 43140_u16.saturating_add(ordinal),
-            kernel: 43119_u16.saturating_add(ordinal),
-            mcp: 43120_u16.saturating_add(ordinal),
-            relay: 43130_u16.saturating_add(ordinal),
-            novnc: 6080_u16.saturating_add(ordinal),
+            kernel: 53119_u16.saturating_add(ordinal),
+            mcp: 53120_u16.saturating_add(ordinal),
+            relay: 53130_u16.saturating_add(ordinal),
+            novnc: 16080_u16.saturating_add(ordinal),
         }
+    }
+
+    fn codex_range(self) -> String {
+        let start = 43362_u16.saturating_add(self.ordinal_offset());
+        format!("{start}-{}", start.saturating_add(19))
+    }
+
+    fn opencode_range(self) -> String {
+        let start = 43150_u16.saturating_add(self.ordinal_offset());
+        format!("{start}-{}", start.saturating_add(19))
+    }
+
+    fn ordinal_offset(self) -> u16 {
+        self.kernel.saturating_sub(53119).saturating_mul(20)
     }
 }
 

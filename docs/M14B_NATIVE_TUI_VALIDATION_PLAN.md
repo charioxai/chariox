@@ -95,6 +95,17 @@ After that transfer, Claude Code passes the actual Hetzner prompt/turn,
 permission, and image prompt-attachment drill through the remote-rendered PTY
 path.
 
+2026-05-15 home-managed slice validation update: Codex, OpenCode, and Claude
+Code pass the local Docker home-managed slice drill for prompt/turns, provider
+permissions, and prompt attachments. The native provider TUIs and Arroba
+observer attach to the home kernel session; the home kernel places provider
+execution on the slice worker through `slice_ref` and reuses the existing
+leased-runtime projection path. Codex/OpenCode run in server-in-kernel mode with
+worker-owned provider endpoints. Claude uses the remote-rendered PTY path.
+Local Docker slice auth import now also copies Claude Code credentials from
+`~/.claude/.credentials.json` or the macOS `Claude Code-credentials` Keychain
+payload and marks `/workspace` trusted in the slice.
+
 ## Goal
 
 Validate and complete native TUI parity across the three providers and three
@@ -142,7 +153,9 @@ Prompt/turns:
   coverage passes through the remote-rendered PTY path in same-host relay mode
   and against the Hetzner worker.
 - Direct slice target Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
-  --slice-local-docker`, but home-managed slice is not covered.
+  --slice-local-docker`; retained only as a lower-level compatibility drill.
+- Home-managed slice Codex/OpenCode/Claude: covered by
+  `live-remote-native-tui-drill.mjs --home-managed-slice-local-docker`.
 
 Permissions:
 
@@ -165,7 +178,9 @@ Permissions:
   approved through kernel-owned PTY input in same-host relay mode and with the
   actual Hetzner worker once the Linux worker has Claude credentials in
   `~/.claude/.credentials.json`.
-- Slice: not covered.
+- Home-managed slice Codex/OpenCode/Claude: covered by
+  `live-remote-native-tui-drill.mjs --home-managed-slice-local-docker
+  --include-permissions`.
 
 Prompt attachments:
 
@@ -188,7 +203,10 @@ Prompt attachments:
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers claude
   --include-attachments` in same-host relay mode and with the actual Hetzner
   worker once credentials are transferred.
-- Home-managed slice: not covered.
+- Home-managed slice Codex/OpenCode/Claude: covered by
+  `live-remote-native-tui-drill.mjs --home-managed-slice-local-docker
+  --include-attachments`. Remote/slice placement forces byte transfer and
+  provider-side materialization instead of passing host-local paths.
 
 MCPs and skills:
 
@@ -292,9 +310,13 @@ Provider notes:
    - Home kernel owns the session; worker kernel owns provider execution.
 
 6. Validate slice native TUI.
-   - Run the same prompt/turn, permission, and prompt-attachment matrix for all
-     three providers.
-   - Home kernel manages the slice/worker execution environment.
+   - Completed for local Docker home-managed slices.
+   - Codex/OpenCode/Claude pass the same prompt/turn, permission, and
+     prompt-attachment matrix as standard home-worker mode.
+   - Home kernel manages the slice/worker execution environment; native TUIs do
+     not attach directly to the slice kernel.
+   - Local Docker slice startup reuses the home relay when available and only
+     falls back to a slice-private relay for standalone slice workflows.
 
 7. Validate MCPs and skills for native TUI runs.
    - Adapt existing MCP/skill drills to launch native-TUI provider runs.
@@ -322,9 +344,9 @@ Legend:
 | standard remote | Claude | pass | pass | pass | gap |
 | direct slice target | Codex | pass | gap | pass | gap |
 | direct slice target | OpenCode | pass | gap | pass | gap |
-| home-managed slice | Codex | gap | gap | gap | gap |
-| home-managed slice | OpenCode | gap | gap | gap | gap |
-| home-managed slice | Claude | gap | gap | gap | gap |
+| home-managed slice | Codex | pass | pass | pass | gap |
+| home-managed slice | OpenCode | pass | pass | pass | gap |
+| home-managed slice | Claude | pass | pass | pass | gap |
 
 ## Drill Requirements
 

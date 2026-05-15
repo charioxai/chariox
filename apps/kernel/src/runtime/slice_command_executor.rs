@@ -98,11 +98,17 @@ pub(crate) async fn execute_start_slice_request(
     config_projection: &DaemonConfigProjectionStore,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let initial_record = {
+        let app = app.lock().await;
+        app.slices().resolve(&request.slice_ref)?
+    };
+    let relay = local_docker_slice_relay(config_projection, &initial_record);
     let initial_slice = {
         let app = app.lock().await;
-        let relay_endpoint = crate::slice::local_docker_private_relay_endpoint(
-            &app.slices().resolve(&request.slice_ref)?,
-        );
+        let relay_endpoint = crate::slice::SliceRelayEndpoint {
+            url: relay.relay_url.clone(),
+            private: relay.container_relay_url.is_none(),
+        };
         app.slices().set_relay_endpoint(
             &request.slice_ref,
             Some(relay_endpoint),
@@ -121,7 +127,7 @@ pub(crate) async fn execute_start_slice_request(
         slice
     };
     let supervisor_slice = initial_slice.clone();
-    let relay = Some(crate::slice::local_docker_private_relay(&supervisor_slice));
+    let supervisor_relay = Some(relay.clone());
     let docker_options = {
         let app = app.lock().await;
         crate::slice::LocalDockerSliceOptions::from_config(app.config())
@@ -130,7 +136,7 @@ pub(crate) async fn execute_start_slice_request(
         crate::slice::run_local_docker_slice_action(
             &supervisor_slice,
             crate::slice::LocalDockerSliceAction::Provision,
-            relay,
+            supervisor_relay,
             &docker_options,
         )
     })
@@ -155,7 +161,7 @@ pub(crate) async fn execute_start_slice_request(
         }
         return Err(error);
     }
-    let discovered = discover_started_slice_worker(config_projection, &initial_slice)
+    let discovered = discover_started_slice_worker(config_projection, &initial_slice, &relay)
         .await
         .ok();
     let slice = {
@@ -278,6 +284,31 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
         let app = app.lock().await;
         app.slices().resolve(&request.slice_ref)?
     };
+    if slice.backend == crate::slice::SliceBackendKind::LocalDocker {
+        let docker_options = {
+            let app = app.lock().await;
+            crate::slice::LocalDockerSliceOptions::from_config(app.config())
+        };
+        let resolved_slice = slice.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::slice::run_local_docker_slice_action(
+                &resolved_slice,
+                crate::slice::LocalDockerSliceAction::ImportProviderAuth,
+                None,
+                &docker_options,
+            )
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.auth.import",
+            message: format!("slice auth import task failed: {error}"),
+        })??;
+        return Ok(LocalDaemonResponse::SliceProviderAuthImported {
+            slice,
+            provider: request.provider,
+            status: "imported".to_string(),
+        });
+    }
     Ok(LocalDaemonResponse::SliceProviderAuthImported {
         slice,
         provider: request.provider,
@@ -299,11 +330,11 @@ pub(crate) async fn execute_get_slice_display_endpoint_request(
 async fn discover_started_slice_worker(
     config_projection: &DaemonConfigProjectionStore,
     slice: &crate::slice::SliceRecord,
+    relay: &crate::slice::LocalDockerSliceRelay,
 ) -> Result<arroba_relay::protocol::RelayKernelPresence, DaemonError> {
     let mut config = config_projection.snapshot();
-    let relay = crate::slice::local_docker_private_relay(slice);
-    config.relay_url = Some(relay.relay_url);
-    config.relay_token = Some(relay.relay_token);
+    config.relay_url = Some(relay.relay_url.clone());
+    config.relay_token = Some(relay.relay_token.clone());
     config.cloud_relay = None;
     let worker_ref = slice.worker_kernel_ref.clone();
     let mut last_error = None;
@@ -320,4 +351,19 @@ async fn discover_started_slice_worker(
         operation: "slice.discover_worker",
         message: format!("slice `{}` worker did not appear", slice.name),
     }))
+}
+
+fn local_docker_slice_relay(
+    config_projection: &DaemonConfigProjectionStore,
+    slice: &crate::slice::SliceRecord,
+) -> crate::slice::LocalDockerSliceRelay {
+    let config = config_projection.snapshot();
+    match (config.relay_url, config.relay_token) {
+        (Some(relay_url), Some(relay_token)) => crate::slice::LocalDockerSliceRelay {
+            relay_url: relay_url.clone(),
+            container_relay_url: Some(relay_url),
+            relay_token,
+        },
+        _ => crate::slice::local_docker_private_relay(slice),
+    }
 }

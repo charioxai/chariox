@@ -400,10 +400,17 @@ impl DaemonApp {
 
     fn slice_relay_config_for_kernel_ref(&self, kernel_ref: &str) -> Option<DaemonConfig> {
         let slice = self.slices.resolve_by_worker_kernel_ref(kernel_ref)?;
-        let relay = crate::slice::local_docker_private_relay(&slice);
         let mut config = self.config.clone();
-        config.relay_url = Some(relay.relay_url);
-        config.relay_token = Some(relay.relay_token);
+        if let Some(endpoint) = slice.relay_endpoint.as_ref() {
+            config.relay_url = Some(endpoint.url.clone());
+            if endpoint.private {
+                config.relay_token = Some(crate::slice::local_docker_private_relay_token(&slice));
+            }
+        } else {
+            let relay = crate::slice::local_docker_private_relay(&slice);
+            config.relay_url = Some(relay.relay_url);
+            config.relay_token = Some(relay.relay_token);
+        }
         config.cloud_relay = None;
         Some(config)
     }
@@ -461,6 +468,54 @@ mod tests {
         assert_eq!(
             relay_config.relay_token.as_deref(),
             Some("slice-local-daemon-test-slice-1")
+        );
+        assert!(relay_config.cloud_relay.is_none());
+    }
+
+    #[test]
+    fn slice_worker_kernel_refs_resolve_to_recorded_shared_relay_config() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("ws://127.0.0.1:54909".to_string());
+        config.relay_token = Some("home-relay-token".to_string());
+        let app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let slice = app
+            .slices()
+            .create(
+                &app.config().daemon_id,
+                &app.config().host_machine_id,
+                crate::slice::CreateSliceInput {
+                    name: "linux-dev".to_string(),
+                    backend: crate::slice::SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    workspace_mount: Some("/repo".to_string()),
+                    worker_kernel_ref: None,
+                    display_url: Some("http://127.0.0.1:6080".to_string()),
+                    now_ms: 42,
+                },
+            )
+            .expect("slice should create");
+        app.slices()
+            .set_relay_endpoint(
+                &slice.id,
+                Some(crate::slice::SliceRelayEndpoint {
+                    url: "ws://127.0.0.1:54909".to_string(),
+                    private: false,
+                }),
+                43,
+            )
+            .expect("slice relay endpoint should update");
+
+        let relay_config = app
+            .slice_relay_config_for_kernel_ref(&slice.worker_kernel_ref)
+            .expect("slice worker ref should have relay config");
+
+        assert_eq!(
+            relay_config.relay_url.as_deref(),
+            Some("ws://127.0.0.1:54909")
+        );
+        assert_eq!(
+            relay_config.relay_token.as_deref(),
+            Some("home-relay-token")
         );
         assert!(relay_config.cloud_relay.is_none());
     }
