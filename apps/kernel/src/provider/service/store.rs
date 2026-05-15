@@ -1,0 +1,304 @@
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use crate::error::DaemonError;
+use crate::provider::{
+    FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
+    LaunchProviderRequest, ProviderNativeInteractionBridge, ProviderPromptSignalBatch,
+    ProviderRegistry, ProviderRunOperationLanes, RuntimeProviderRun,
+};
+use crate::session::PromptAttachment;
+
+use super::{
+    ProviderProcessService, ProviderRunEndedOutcome, ProviderRunLivenessReconciliation,
+    ProviderRunParkedOutcome, ProviderRunResumedOutcome, ProviderRunStartedOutcome,
+    ProviderRuntimeBinding, ProviderSessionRunsTerminatedOutcome,
+};
+
+#[derive(Clone)]
+pub struct ProviderProcessServiceStore {
+    inner: Arc<Mutex<ProviderProcessService>>,
+}
+
+impl std::fmt::Debug for ProviderProcessServiceStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderProcessServiceStore")
+            .finish_non_exhaustive()
+    }
+}
+
+impl ProviderProcessServiceStore {
+    pub fn new(service: ProviderProcessService) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(service)),
+        }
+    }
+
+    pub fn read(&self) -> MutexGuard<'_, ProviderProcessService> {
+        self.inner.lock().expect("provider service mutex poisoned")
+    }
+
+    pub fn write(&self) -> MutexGuard<'_, ProviderProcessService> {
+        self.inner.lock().expect("provider service mutex poisoned")
+    }
+
+    pub fn registry(&self) -> ProviderRegistry {
+        *self.read().registry()
+    }
+
+    pub(crate) fn run_operation_lanes(&self) -> ProviderRunOperationLanes {
+        self.read().run_operation_lanes()
+    }
+
+    pub(crate) fn set_native_interaction_bridge(
+        &self,
+        bridge: Arc<dyn ProviderNativeInteractionBridge>,
+    ) {
+        self.read().set_native_interaction_bridge(bridge);
+    }
+
+    pub fn get_run(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
+        self.read().get_run(run_id)
+    }
+
+    #[doc(hidden)]
+    pub fn structured_runtime_state_bound_for_tests(&self, provider_run_id: &str) -> bool {
+        self.read()
+            .structured_runtime_state_bound_for_tests(provider_run_id)
+    }
+
+    pub(crate) fn start_run_provider_only(
+        &self,
+        request: LaunchProviderRequest,
+    ) -> Result<ProviderRunStartedOutcome, DaemonError> {
+        self.write().start_run_provider_only(request)
+    }
+
+    pub(crate) fn launch_run_detached(
+        &self,
+        request: LaunchProviderRequest,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write().launch_run_detached(request)
+    }
+
+    pub(crate) fn park_run_provider_only(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<ProviderRunParkedOutcome, DaemonError> {
+        self.write().park_run_provider_only(session_id, run_id)
+    }
+
+    pub(crate) fn resume_run_provider_only(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<ProviderRunResumedOutcome, DaemonError> {
+        self.write().resume_run_provider_only(session_id, run_id)
+    }
+
+    pub fn resume_run_detached(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write().resume_run_detached(run_id)
+    }
+
+    pub(crate) fn terminate_run_provider_only(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<ProviderRunEndedOutcome, DaemonError> {
+        self.write().terminate_run_provider_only(session_id, run_id)
+    }
+
+    pub fn list_runs(&self) -> Vec<RuntimeProviderRun> {
+        self.read().list_runs()
+    }
+
+    pub fn get_run_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<RuntimeProviderRun> {
+        self.read().get_run_for_agent(session_id, agent_id)
+    }
+
+    pub fn get_latest_run_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<RuntimeProviderRun> {
+        self.read().get_latest_run_for_agent(session_id, agent_id)
+    }
+
+    pub fn get_session_run_for_provider(
+        &self,
+        session_id: &str,
+        provider: &str,
+    ) -> Option<RuntimeProviderRun> {
+        self.read()
+            .get_session_run_for_provider(session_id, provider)
+    }
+
+    pub fn get_run_by_runtime_mcp_auth_token(
+        &self,
+        auth_token: &str,
+    ) -> Option<RuntimeProviderRun> {
+        self.read().get_run_by_runtime_mcp_auth_token(auth_token)
+    }
+
+    pub fn get_runs_by_runtime_mcp_auth_token(&self, auth_token: &str) -> Vec<RuntimeProviderRun> {
+        self.read().get_runs_by_runtime_mcp_auth_token(auth_token)
+    }
+
+    pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
+        self.read().structured_prompt_io_in_flight(provider_run_id)
+    }
+
+    pub fn record_run_activity(&self, run_id: &str) -> Result<(), DaemonError> {
+        self.write().record_run_activity(run_id)
+    }
+
+    pub(crate) fn mark_run_running(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write().mark_run_running(run_id)
+    }
+
+    pub(crate) fn adapter_supports_turn_scoped_execution_config(&self, adapter_key: &str) -> bool {
+        self.read()
+            .adapter_supports_turn_scoped_execution_config(adapter_key)
+    }
+
+    pub(crate) fn update_run_execution_config(
+        &self,
+        run_id: &str,
+        execution_mode: crate::provider::AgentExecutionMode,
+        permission_level: crate::provider::AgentPermissionLevel,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .update_run_execution_config(run_id, execution_mode, permission_level)
+    }
+
+    pub(crate) fn reconcile_run_liveness_provider_only(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        process_running: Option<bool>,
+    ) -> Result<ProviderRunLivenessReconciliation, DaemonError> {
+        self.write()
+            .reconcile_run_liveness_provider_only(session_id, run_id, process_running)
+    }
+
+    pub(crate) fn terminate_session_runs_provider_only(
+        &self,
+        session_id: &str,
+    ) -> Result<ProviderSessionRunsTerminatedOutcome, DaemonError> {
+        self.write()
+            .terminate_session_runs_provider_only(session_id)
+    }
+
+    pub fn initialize_runtime(&self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
+        self.write().initialize_runtime(run)
+    }
+
+    pub(crate) fn apply_runtime_binding(
+        &self,
+        run_id: &str,
+        binding: ProviderRuntimeBinding,
+    ) -> Result<(), DaemonError> {
+        self.write().apply_runtime_binding(run_id, binding)
+    }
+
+    pub(crate) fn run_uses_structured_prompt_io(&self, run: &RuntimeProviderRun) -> bool {
+        self.read().run_uses_structured_prompt_io(run)
+    }
+
+    pub fn enqueue_run_selection_sync(&self, provider_run_id: &str) -> Result<(), DaemonError> {
+        self.write().enqueue_run_selection_sync(provider_run_id)
+    }
+
+    pub(crate) fn apply_finished_provider_run_selection_sync_jobs(&self) {
+        self.write()
+            .apply_finished_provider_run_selection_sync_jobs()
+    }
+
+    pub fn clear_runtime(&self, provider_run_id: &str) {
+        self.write().clear_runtime(provider_run_id)
+    }
+
+    pub(crate) fn enqueue_structured_prompt_submit(
+        &self,
+        session_id: String,
+        provider_run_id: String,
+        agent_id: String,
+        run: &RuntimeProviderRun,
+        prompt: &str,
+        attachments: &[PromptAttachment],
+    ) -> Result<(), DaemonError> {
+        self.write().enqueue_structured_prompt_submit(
+            session_id,
+            provider_run_id,
+            agent_id,
+            run,
+            prompt,
+            attachments,
+        )
+    }
+
+    pub(crate) fn enqueue_structured_prompt_abort(
+        &self,
+        session_id: String,
+        provider_run_id: String,
+    ) -> Result<(), DaemonError> {
+        self.write()
+            .enqueue_structured_prompt_abort(session_id, provider_run_id)
+    }
+
+    pub(crate) fn drain_finished_structured_prompt_submit_jobs(
+        &self,
+    ) -> Vec<FinishedProviderPromptSubmitJob> {
+        self.write().drain_finished_structured_prompt_submit_jobs()
+    }
+
+    pub(crate) fn drain_finished_structured_prompt_abort_jobs(
+        &self,
+    ) -> Vec<FinishedProviderPromptAbortJob> {
+        self.write().drain_finished_structured_prompt_abort_jobs()
+    }
+
+    pub fn enqueue_structured_output_poll(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        self.write().enqueue_structured_output_poll(provider_run_id)
+    }
+
+    pub fn set_output_poll_delay_for_tests(
+        &self,
+        provider_run_id: &str,
+        delay: std::time::Duration,
+    ) {
+        self.read()
+            .set_output_poll_delay_for_tests(provider_run_id, delay);
+    }
+
+    pub(crate) fn drain_finished_structured_output_poll_jobs(
+        &self,
+    ) -> Vec<FinishedProviderOutputPollJob> {
+        self.write().drain_finished_structured_output_poll_jobs()
+    }
+
+    pub(crate) fn apply_structured_output_metadata(
+        &self,
+        provider_run_id: &str,
+        batch: &ProviderPromptSignalBatch,
+    ) -> Result<(), DaemonError> {
+        self.write()
+            .apply_structured_output_metadata(provider_run_id, batch)
+    }
+
+    pub(crate) fn record_terminal_diagnostic(
+        &self,
+        provider_run_id: &str,
+        diagnostic: impl Into<String>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .record_terminal_diagnostic(provider_run_id, diagnostic)
+    }
+}
