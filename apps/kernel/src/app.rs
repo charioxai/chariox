@@ -12,6 +12,7 @@ mod prompt_state_owner;
 mod provider_activation;
 mod provider_focus;
 mod provider_launch_policy;
+mod provider_launch_request;
 mod provider_liveness;
 pub(crate) mod provider_output;
 mod provider_processes;
