@@ -4,6 +4,7 @@ mod codex;
 mod codex_client;
 mod codex_runtime;
 mod command_catalog;
+mod launch_contract;
 mod managed_io_policy;
 mod mcp_proxy;
 mod opencode;
@@ -32,6 +33,10 @@ pub use codex_runtime::{run_codex_utility_prompt, CodexRuntimeState};
 pub use command_catalog::{
     default_provider_command_catalogs, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
     ProviderCommandCatalogSource, ProviderCommandDescriptor,
+};
+pub use launch_contract::{
+    AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest, ProviderLaunchResult,
+    ProviderResumeState, ProviderWriteAccessMode, RuntimeMcpBinding,
 };
 pub(crate) use managed_io_policy::{
     native_tui_hidden_instructions_block, MANAGED_IO_INSTRUCTIONS_SOURCE_PATH,
@@ -64,9 +69,7 @@ pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
 pub(crate) use types::provider_requires_managed_io_by_default;
 pub use types::{
-    AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel, ControlCapability,
-    ControlCapabilityMode, ControlOperation, LaunchProviderRequest, ProviderClientInterface,
-    ProviderLaunchResult, ProviderResumeState, ProviderRunState, ProviderRunTokenUsage,
-    ProviderWriteAccessMode, RuntimeMcpBinding, RuntimeProviderRun,
+    AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
+    ProviderClientInterface, ProviderRunState, ProviderRunTokenUsage, RuntimeProviderRun,
 };
 pub(crate) use workspace_write_fence::{apply_workspace_write_fence, workspace_write_fence_active};
