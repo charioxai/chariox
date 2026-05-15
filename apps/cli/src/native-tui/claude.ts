@@ -353,9 +353,7 @@ async function runClaudeRemoteRendered(
       ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
       : await spawnClaudeAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef)
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
-    const run = launched.session_id === session.id
-      ? await waitForProviderRunReady(client, launched.id)
-      : launched
+    const run = await waitForProviderRunReady(client, launched.id)
 
     process.stderr.write([
       "[arroba claude remote-native-tui]",
@@ -1313,27 +1311,55 @@ async function launchClaudeRemoteRenderedRun(
 async function waitForProviderRunReady(client: LocalIpcClient, providerRunId: string): Promise<RuntimeProviderRun> {
   const deadline = Date.now() + 30_000
   let latest: RuntimeProviderRun | null = null
+  let latestError: unknown = null
   while (Date.now() < deadline) {
-    latest = expectVariant<{ provider_run: RuntimeProviderRun }>(
-      await client.send<Record<string, unknown>>(getProviderRunRequest(providerRunId)),
-      "ProviderRun",
-    ).provider_run
-    if (latest.state === "Running") return latest
-    if (latest.state === "Ended") throw new Error(`Claude provider run ended before native TUI was ready: ${providerRunId}`)
+    latest = await getProviderRunIfAvailable(client, providerRunId).catch((error) => {
+      latestError = error
+      return null
+    })
+    if (latest?.state === "Running") return latest
+    if (latest?.state === "Ended") throw new Error(`Claude provider run ended before native TUI was ready: ${providerRunId}`)
     await sleep(250)
   }
-  throw new Error(`timed out waiting for Claude provider run ${providerRunId}; latest state ${latest?.state ?? "unknown"}`)
+  throw new Error(`timed out waiting for Claude provider run ${providerRunId}; latest state ${latest?.state ?? "unknown"}${latestError ? `; latest error ${formatError(latestError)}` : ""}`)
 }
 
 async function waitForRemoteRenderedRunExit(client: LocalIpcClient, providerRunId: string): Promise<void> {
+  let sawProviderRun = false
   while (true) {
-    const run = expectVariant<{ provider_run: RuntimeProviderRun }>(
-      await client.send<Record<string, unknown>>(getProviderRunRequest(providerRunId)),
-      "ProviderRun",
-    ).provider_run
+    const run = await getProviderRunIfAvailable(client, providerRunId).catch((error) => {
+      if (sawProviderRun) throw error
+      return null
+    })
+    if (!run) {
+      await sleep(500)
+      continue
+    }
+    sawProviderRun = true
     if (run.state === "Ended") return
     await sleep(1_000)
   }
+}
+
+async function getProviderRunIfAvailable(client: LocalIpcClient, providerRunId: string): Promise<RuntimeProviderRun | null> {
+  try {
+    return expectVariant<{ provider_run: RuntimeProviderRun }>(
+      await client.send<Record<string, unknown>>(getProviderRunRequest(providerRunId)),
+      "ProviderRun",
+    ).provider_run
+  } catch (error) {
+    if (isProviderRunNotFound(error)) return null
+    throw error
+  }
+}
+
+function isProviderRunNotFound(error: unknown): boolean {
+  const message = formatError(error)
+  return message.includes("provider run") && message.includes("not found")
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function startKernelPumpLoop(client: LocalIpcClient, sessionId: string, attachmentId: string): { stop: () => void } {

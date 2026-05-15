@@ -14,9 +14,9 @@ use crate::runtime_transport::WatchResult;
 use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutcome};
 use crate::skill::ArrobaSkillPackage;
 use crate::transport::relay_peer::{
-    RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk, RelayPromptAttachment,
-    RemoteGitObservation, RemoteGitTurnContext, RemoteMcpAvailability, RemoteMcpCheckContext,
-    RemoteSkillMaterialization, RemoteSkillSyncContext, RequiredRemoteMcp,
+    RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk, RelayProjectedPrompt,
+    RelayPromptAttachment, RemoteGitObservation, RemoteGitTurnContext, RemoteMcpAvailability,
+    RemoteMcpCheckContext, RemoteSkillMaterialization, RemoteSkillSyncContext, RequiredRemoteMcp,
 };
 
 pub(crate) async fn ensure_relay_subscription_attachment(
@@ -154,6 +154,22 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
     )
 }
 
+pub(crate) async fn send_relay_leased_native_provider_input(
+    app: &Arc<Mutex<DaemonApp>>,
+    leased_agent_id: &str,
+    provider_run_id: &str,
+    attachment_id: &str,
+    data_base64: &str,
+) -> Result<usize, DaemonError> {
+    let mut app = app.lock().await;
+    RemoteLeaseRuntime::new(&mut app).send_leased_native_provider_input(
+        leased_agent_id,
+        provider_run_id,
+        attachment_id,
+        data_base64,
+    )
+}
+
 pub(crate) async fn submit_relay_leased_prompt(
     app: &Arc<Mutex<DaemonApp>>,
     leased_agent_id: &str,
@@ -261,6 +277,7 @@ pub(crate) async fn project_relay_remote_runtime_projection(
     session_id: &str,
     agent_id: &str,
     provider_run_id: &str,
+    prompts: Vec<RelayProjectedPrompt>,
     output_chunks: Vec<RelayProjectedOutputChunk>,
     notices: Vec<String>,
     completions: Vec<RelayProjectedCompletion>,
@@ -270,6 +287,7 @@ pub(crate) async fn project_relay_remote_runtime_projection(
         session_id,
         agent_id,
         provider_run_id,
+        prompts,
         output_chunks,
         notices,
         completions,

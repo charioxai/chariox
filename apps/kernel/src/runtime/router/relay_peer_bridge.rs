@@ -147,6 +147,23 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_send_leased_native_provider_input(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+        attachment_id: &str,
+        data_base64: &str,
+    ) -> Result<usize, DaemonError> {
+        relay_peer_runtime::send_relay_leased_native_provider_input(
+            &self.app,
+            leased_agent_id,
+            provider_run_id,
+            attachment_id,
+            data_base64,
+        )
+        .await
+    }
+
     pub(crate) async fn relay_submit_leased_prompt(
         &self,
         leased_agent_id: &str,
@@ -255,6 +272,7 @@ impl CommandRouter {
         session_id: &str,
         agent_id: &str,
         provider_run_id: &str,
+        prompts: Vec<crate::transport::relay_peer::RelayProjectedPrompt>,
         output_chunks: Vec<crate::transport::relay_peer::RelayProjectedOutputChunk>,
         notices: Vec<String>,
         completions: Vec<crate::transport::relay_peer::RelayProjectedCompletion>,
@@ -264,6 +282,7 @@ impl CommandRouter {
             session_id,
             agent_id,
             provider_run_id,
+            prompts,
             output_chunks,
             notices,
             completions,

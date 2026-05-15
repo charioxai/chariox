@@ -32,14 +32,71 @@ impl KernelRuntimeState {
         let byte_count = bytes.len();
         let session_id = session_id.to_string();
         let attachment_id = attachment_id.to_string();
-        let provider_run_id = provider_run_id.map(str::to_string);
+        let provider_run_id = match provider_run_id {
+            Some(provider_run_id) => provider_run_id.to_string(),
+            None => self
+                .owned
+                .session_store
+                .get_session(&session_id)?
+                .active_provider_run_id()
+                .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                    session_id: session_id.clone(),
+                })?
+                .to_string(),
+        };
+        if self.owned.provider_store.get_run(&provider_run_id).is_err() {
+            if let Some(projected_run) = self
+                .owned
+                .provider_run_projection
+                .get(&provider_run_id)
+                .filter(|run| run.session_id() == session_id)
+            {
+                if let Some(agent_id) = projected_run.agent_instance_id() {
+                    let agent = self.owned.agent_store.get_agent(agent_id)?;
+                    if let Some(remote_execution) = agent.remote_execution().cloned() {
+                        self.owned
+                            .ensure_attachment_in_session(&session_id, &attachment_id)?;
+                        let mut relay_config = self.owned.config_projection.snapshot();
+                        if let (Some(relay_url), Some(relay_token)) = (
+                            remote_execution.relay_url.clone(),
+                            remote_execution.relay_token.clone(),
+                        ) {
+                            relay_config.relay_url = Some(relay_url);
+                            relay_config.relay_token = Some(relay_token);
+                            relay_config.cloud_relay = None;
+                        }
+                        let response =
+                            crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                                &relay_config,
+                                ClientTarget {
+                                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                                    daemon_alias: None,
+                                },
+                                RelayPeerRequest::SendLeasedNativeProviderInput {
+                                    leased_agent_id: remote_execution.leased_agent_id,
+                                    provider_run_id: provider_run_id.clone(),
+                                    attachment_id: attachment_id.clone(),
+                                    data_base64: data_base64.to_string(),
+                                },
+                            )
+                            .await?;
+                        return match response {
+                            RelayPeerResponse::LeasedNativeProviderInputSent { byte_count } => {
+                                Ok(byte_count)
+                            }
+                            other => Err(DaemonError::LocalTransport {
+                                operation: "send leased native provider input",
+                                message: format!(
+                                    "unexpected remote native provider input response: {other:?}"
+                                ),
+                            }),
+                        };
+                    }
+                }
+            }
+        }
         self.with_app_side_effect(move |app| {
-            app.send_terminal_input(
-                &session_id,
-                &attachment_id,
-                provider_run_id.as_deref(),
-                &bytes,
-            )
+            app.send_terminal_input(&session_id, &attachment_id, Some(&provider_run_id), &bytes)
         })
         .await?;
         Ok(byte_count)

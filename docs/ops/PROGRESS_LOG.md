@@ -16,6 +16,26 @@ Chronological notes to preserve execution context between contributors/agents.
 - Fixed Claude Code remote-rendered auth in the drill by keeping Arroba state isolated through explicit runtime env vars while launching the kernel/provider process with the real user `HOME`, which lets Claude Code see its normal authenticated configuration.
 - Fixed Claude Code Arroba-origin prompt submission reliability by staging visible prompt typing and Enter submission instead of sending the prompt plus carriage return in one PTY write.
 
+### M14B standard home-worker native TUI
+
+- Added the Claude Code standard home-worker remote-rendered PTY path. The home
+  kernel owns the Arroba session, the worker kernel owns the Claude provider
+  process and PTY, and the local native TUI launcher renders/controls that PTY
+  through the existing kernel and relay paths.
+- Added relay peer support for leased native provider PTY input, plus worker-to-
+  home projection of native prompts from active prompt state and worker history.
+- Confirmed the Claude standard home-worker prompt/turn drill with two Claude
+  native TUIs plus one Arroba observer CLI in one Arroba session, separated
+  agents, no marker contamination, and badge transitions returning to idle.
+- Confirmed Claude standard home-worker text prompt attachments in both
+  directions. Claude-origin attachments are captured from native `@path`
+  prompts; Arroba-origin text attachments are delivered through Claude native
+  context on the worker.
+- Claude permissions remain a gap in this topology. The automated drill now
+  avoids mixing required-permission mode with baseline startup marker turns, but
+  the remote-rendered PTY approval path still needs product hardening before it
+  can claim parity with Codex/OpenCode.
+
 ## 2026-04-25
 
 ### OSS iOS app planning baseline

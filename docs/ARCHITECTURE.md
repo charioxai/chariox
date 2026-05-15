@@ -749,7 +749,7 @@ Provider-facing extension projection is also adapter-owned: the daemon resolves 
 
 ### 5.3.1 Native TUI Client Interface
 
-Some agents can be launched through a provider-native TUI client interface, for example `arroba codex [session-ref]` or `arroba opencode [session-ref]`.
+Some agents can be launched through a provider-native TUI client interface, for example `arroba codex [session-ref]`, `arroba opencode [session-ref]`, or `arroba claude [session-ref]`.
 
 Boundary rules:
 
@@ -769,6 +769,9 @@ same provider adapter/server path it uses for normal worker-owned runs. Any
 provider-native proxy code is only an edge translator between home-kernel
 session events and provider-native UI protocol or PTY rendering; it must not
 own prompt state, history, permissions, attachments, or remote execution.
+Codex/OpenCode use provider protocol proxies where available. Claude Code uses
+a kernel-owned remote-rendered PTY because Claude Code's public integration
+surface is terminal-first rather than a separable app-server protocol.
 
 ### 5.3.2 OpenCode Structured Adapter
 

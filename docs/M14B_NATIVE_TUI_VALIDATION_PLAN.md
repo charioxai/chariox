@@ -67,8 +67,17 @@ CLI in one session, separated provider runs, no cross-agent marker
 contamination, and badge transitions back to idle. Codex uses a native TUI
 projection path that translates home-kernel session output into Codex app-server
 notifications for the visible provider TUI while preserving the home-kernel
-prompt queue and worker-owned provider execution. Claude is still pending
-remote-rendered PTY validation and worker credential checks.
+prompt queue and worker-owned provider execution.
+
+2026-05-15 Claude standard home-worker update: Claude Code now has a
+remote-rendered PTY path for worker-owned execution. Prompt/turn observation
+passes with two Claude native TUIs plus one Arroba observer in the same Arroba
+session, with no cross-agent marker contamination and badge transitions back to
+idle. Text prompt attachments pass in both directions in same-host
+home-worker mode. Permissions remain a gap in this topology. The required-
+permission drill now avoids startup marker turns for Claude, but the
+remote-rendered PTY permission path still needs hardening before it can claim
+either native-origin or Arroba-origin approval parity.
 
 ## Goal
 
@@ -113,8 +122,9 @@ Prompt/turns:
 - Same-host relay Codex/OpenCode/Claude: covered by
   `live-remote-native-tui-drill.mjs`.
 - Standard remote home-worker: Codex/OpenCode prompt/turn coverage passes in
-  same-host relay mode. Claude is pending remote-rendered PTY validation and
-  worker credential checks.
+  same-host relay mode. Claude prompt/turn coverage also passes through the
+  remote-rendered PTY path in same-host relay mode. True cross-host worker
+  credential checks are still pending.
 - Direct slice target Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
   --slice-local-docker`, but home-managed slice is not covered.
 
@@ -132,7 +142,10 @@ Permissions:
   codex,opencode --include-permissions`. Native-origin and Arroba-origin
   prompts both surface permission interactions to the Arroba observer and can be
   approved there.
-- Standard remote home-worker Claude and slice: not covered.
+- Standard remote home-worker Claude: gap. The remote-rendered PTY path works
+  for normal turns and text attachments, but required-permission mode is not yet
+  product-ready in the standard home-worker drill.
+- Slice: not covered.
 
 Prompt attachments:
 
@@ -149,7 +162,10 @@ Prompt attachments:
   codex,opencode --include-attachments`.
 - Direct slice target Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
   --slice-local-docker --providers opencode,codex --include-attachments`.
-- Standard remote home-worker Claude: not covered.
+- Standard remote home-worker Claude: covered for text prompt attachments in
+  both native-origin and Arroba-origin directions by
+  `live-remote-native-tui-drill.mjs --standard-home-worker --providers claude
+  --include-attachments`.
 - Home-managed slice: not covered.
 
 MCPs and skills:
@@ -234,8 +250,9 @@ Provider notes:
    - Current provider status:
      - Codex/OpenCode: prompt/turn, permission, and prompt-attachment drills pass
        in same-host home-worker relay mode.
-     - Claude: pending remote-rendered PTY drill and credential validation on
-       the worker.
+     - Claude: prompt/turn and text prompt-attachment drills pass in same-host
+       home-worker relay mode through the remote-rendered PTY path; permissions
+       remain a gap for this topology.
    - Required product work:
      - validate native TUI `--machine`/`--kernel-ref` placement arguments for
        Codex, OpenCode, and Claude;
@@ -280,7 +297,7 @@ Legend:
 | local | Claude | pass | pass | pass | gap |
 | standard remote | Codex | pass | pass | pass | gap |
 | standard remote | OpenCode | pass | pass | pass | gap |
-| standard remote | Claude | gap | gap | gap | gap |
+| standard remote | Claude | pass | gap | pass | gap |
 | direct slice target | Codex | pass | gap | pass | gap |
 | direct slice target | OpenCode | pass | gap | pass | gap |
 | home-managed slice | Codex | gap | gap | gap | gap |

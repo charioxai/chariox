@@ -610,6 +610,7 @@ mod tests {
                 session.id(),
                 agent.id(),
                 "remote:worker:provider-run-1",
+                Vec::new(),
                 vec![RelayProjectedOutputChunk {
                     kind: TerminalOutputKind::ProviderOutput,
                     merge_key: Some("assistant-1".to_string()),

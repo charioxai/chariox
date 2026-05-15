@@ -23,13 +23,17 @@ impl KernelRuntimeOwnedState {
         session: &mut crate::session::RuntimeSession,
     ) {
         if let Some(active_provider_run_id) = session.active_provider_run_id() {
-            if let Ok(active_run) = self.provider_store.get_run(active_provider_run_id).or_else(|_| {
-                self.provider_run_projection
-                    .get(active_provider_run_id)
-                    .ok_or_else(|| DaemonError::ProviderRunNotFound {
-                        provider_run_id: active_provider_run_id.to_string(),
+            if let Ok(active_run) =
+                self.provider_store
+                    .get_run(active_provider_run_id)
+                    .or_else(|_| {
+                        self.provider_run_projection
+                            .get(active_provider_run_id)
+                            .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                                provider_run_id: active_provider_run_id.to_string(),
+                            })
                     })
-            }) {
+            {
                 let active_run_agent_id = active_run.agent_instance_id();
                 let active_prompt_is_running = active_run_agent_id
                     .and_then(|agent_id| {
@@ -183,23 +187,20 @@ impl KernelRuntimeOwnedState {
             })?
             .to_string();
 
-        let _ = self.reconcile_provider_run_liveness_provider_phase(
-            session_id,
-            &provider_run_id,
-            None,
-        )
-        .or_else(|error| {
-            if matches!(error, DaemonError::ProviderRunNotFound { .. })
-                && self
-                    .provider_run_projection
-                    .get(&provider_run_id)
-                    .is_some_and(|run| run.session_id() == session_id)
-            {
-                Ok(None)
-            } else {
-                Err(error)
-            }
-        })?;
+        let _ = self
+            .reconcile_provider_run_liveness_provider_phase(session_id, &provider_run_id, None)
+            .or_else(|error| {
+                if matches!(error, DaemonError::ProviderRunNotFound { .. })
+                    && self
+                        .provider_run_projection
+                        .get(&provider_run_id)
+                        .is_some_and(|run| run.session_id() == session_id)
+                {
+                    Ok(None)
+                } else {
+                    Err(error)
+                }
+            })?;
         let provider_run = match self.ensure_provider_run_in_session(session_id, &provider_run_id) {
             Ok(run) => run,
             Err(DaemonError::ProviderRunNotFound { .. }) => {

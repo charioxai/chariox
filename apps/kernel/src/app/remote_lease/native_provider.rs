@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use base64::Engine;
+
 use crate::error::DaemonError;
 use crate::provider::{
     LaunchProviderRequest, ProviderClientInterface, ProviderResumeState, RuntimeProviderRun,
@@ -76,5 +78,45 @@ impl<'a> RemoteLeaseRuntime<'a> {
             };
         }
         self.app.launch_provider(request)
+    }
+
+    pub(crate) fn send_leased_native_provider_input(
+        &mut self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+        _attachment_id: &str,
+        data_base64: &str,
+    ) -> Result<usize, DaemonError> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        let provider_run = self.app.providers.get_run(provider_run_id)?;
+        if provider_run.session_id() != leased_agent.backing_session_id
+            || provider_run.agent_instance_id() != Some(leased_agent.backing_agent_id.as_str())
+        {
+            return Err(DaemonError::ProviderRunNotInSession {
+                session_id: leased_agent.backing_session_id,
+                provider_run_id: provider_run_id.to_string(),
+            });
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data_base64)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "send leased native provider input",
+                message: format!("data_base64 is not valid base64: {error}"),
+            })?;
+        let byte_count = bytes.len();
+        self.app.send_terminal_input(
+            provider_run.session_id(),
+            &leased_agent.backing_attachment_id,
+            Some(provider_run_id),
+            &bytes,
+        )?;
+        Ok(byte_count)
     }
 }

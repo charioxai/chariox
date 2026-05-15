@@ -173,6 +173,12 @@ pub enum RelayPeerRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_session_id: Option<String>,
     },
+    SendLeasedNativeProviderInput {
+        leased_agent_id: String,
+        provider_run_id: String,
+        attachment_id: String,
+        data_base64: String,
+    },
     SubmitLeasedPrompt {
         leased_agent_id: String,
         prompt: String,
@@ -250,6 +256,9 @@ pub enum RelayPeerResponse {
     LeasedNativeProviderRunLaunched {
         provider_run: crate::provider::RuntimeProviderRun,
     },
+    LeasedNativeProviderInputSent {
+        byte_count: usize,
+    },
     LeasedPromptSubmitted {
         provider_run_id: String,
         outcome: PromptSubmissionOutcome,
@@ -304,12 +313,20 @@ pub struct RelayProjectedCompletion {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayProjectedPrompt {
+    pub prompt_id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerEvent {
     LeasedRuntimeProjection {
         home_session_id: String,
         home_agent_id: String,
         provider_run_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        prompts: Vec<RelayProjectedPrompt>,
         output_chunks: Vec<RelayProjectedOutputChunk>,
         notices: Vec<String>,
         completions: Vec<RelayProjectedCompletion>,

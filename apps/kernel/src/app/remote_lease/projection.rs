@@ -1,9 +1,10 @@
 use crate::app::provider_output;
 use crate::error::DaemonError;
-use crate::history::SessionHistoryEntry;
+use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
+use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
 use crate::terminal::TerminalOutputKind;
 use crate::transport::relay_peer::{
-    RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk,
+    RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk, RelayProjectedPrompt,
 };
 
 use super::RemoteLeaseRuntime;
@@ -83,18 +84,79 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 completed_at_ms: record.completed_at_ms,
             })
             .collect::<Vec<_>>();
-        let backing_prompt_active = self
+        let mut prompts = Vec::new();
+        if let Ok(backing_session) = self
             .app
-            .prompt_owner_active_prompt_for_agent(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-            )?
-            .is_some();
+            .sessions
+            .get_session(&leased_agent.backing_session_id)
+        {
+            let history_entries = self.app.load_session_history_entries(
+                &backing_session,
+                Some(&leased_agent.backing_agent_id),
+            )?;
+            for entry in history_entries
+                .into_iter()
+                .filter(|entry| entry.kind == SessionHistoryEntryKind::UserPrompt)
+            {
+                let prompt_id = format!(
+                    "history:{}:{}:{}",
+                    entry
+                        .source_attachment_id
+                        .as_deref()
+                        .unwrap_or(&leased_agent.backing_attachment_id),
+                    entry.timestamp_ms,
+                    stable_prompt_hash(&entry.text)
+                );
+                if !leased_agent
+                    .projected_prompt_ids
+                    .iter()
+                    .any(|id| id == &prompt_id)
+                {
+                    prompts.push(RelayProjectedPrompt {
+                        prompt_id,
+                        text: entry.text,
+                    });
+                }
+            }
+        }
+        let backing_active_prompt = self.app.prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )?;
+        if let Some(prompt) = backing_active_prompt.as_ref() {
+            if !leased_agent
+                .projected_prompt_ids
+                .iter()
+                .any(|id| id == prompt.id())
+            {
+                prompts.push(RelayProjectedPrompt {
+                    prompt_id: prompt.id().to_string(),
+                    text: prompt.prompt().to_string(),
+                });
+            }
+        }
+        let backing_prompt_active = backing_active_prompt.is_some();
         let completion_already_projected = leased_agent
             .projected_completion_provider_run_ids
             .iter()
             .any(|id| id == provider_run_id);
-        if completions.is_empty() && !backing_prompt_active && !completion_already_projected {
+        if !prompts.is_empty() {
+            if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+                for prompt in &prompts {
+                    if !agent
+                        .projected_prompt_ids
+                        .iter()
+                        .any(|id| id == &prompt.prompt_id)
+                    {
+                        agent.projected_prompt_ids.push(prompt.prompt_id.clone());
+                    }
+                }
+            }
+        }
+        if completions.is_empty()
+            && !backing_prompt_active
+            && (!completion_already_projected || !prompts.is_empty())
+        {
             completions.push(RelayProjectedCompletion {
                 message_id: format!("leased-{provider_run_id}-completion"),
                 completed_at_ms: crate::session::unix_epoch_ms(),
@@ -121,7 +183,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
             self.app.leased_workflow_turns.remove(provider_run_id);
         }
-        if output_chunks.is_empty() && notices.is_empty() && completions.is_empty() {
+        if output_chunks.is_empty()
+            && notices.is_empty()
+            && completions.is_empty()
+            && prompts.is_empty()
+        {
             return Ok(None);
         }
         Ok(Some((
@@ -130,6 +196,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 home_session_id: lease.home_session_id,
                 home_agent_id: lease.home_agent_id,
                 provider_run_id: provider_run_id.to_string(),
+                prompts,
                 output_chunks,
                 notices,
                 completions,
@@ -182,6 +249,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         session_id: &str,
         agent_id: &str,
         provider_run_id: &str,
+        prompts: Vec<RelayProjectedPrompt>,
         output_chunks: Vec<RelayProjectedOutputChunk>,
         notices: Vec<String>,
         completions: Vec<RelayProjectedCompletion>,
@@ -189,6 +257,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let _ = self.app.sessions.get_session(session_id)?;
         let recipient_attachment_ids = self.app.attachments.list_session_attachment_ids(session_id);
         let saw_completion = !completions.is_empty();
+        for prompt in prompts {
+            self.project_remote_native_prompt_started(
+                session_id,
+                agent_id,
+                provider_run_id,
+                prompt,
+            )?;
+        }
         for chunk in output_chunks {
             self.app.terminal.fan_out_output(
                 session_id,
@@ -357,4 +433,58 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         Ok(())
     }
+
+    fn project_remote_native_prompt_started(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        projected: RelayProjectedPrompt,
+    ) -> Result<(), DaemonError> {
+        if self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let Some(attachment_id) = self
+            .app
+            .attachments
+            .list_session_attachment_ids(session_id)
+            .into_iter()
+            .next()
+        else {
+            return Ok(());
+        };
+        let prompt = PromptQueueItem::new(
+            self.app.sessions_mut().reserve_prompt_id(),
+            &attachment_id,
+            agent_id,
+            &projected.text,
+            PromptStatus::Queued,
+        );
+        self.app.spawn_user_prompt_history_append(
+            session_id,
+            &attachment_id,
+            agent_id,
+            prompt.prompt(),
+            prompt.attachments(),
+        )?;
+        let outcome = self
+            .app
+            .prompt_owner_submit_prepared_prompt(session_id, prompt, false)?;
+        if matches!(outcome, PromptSubmissionOutcome::Started { .. }) {
+            crate::transport::flow_control::note_prompt_started(self.app, provider_run_id);
+        }
+        Ok(())
+    }
+}
+
+fn stable_prompt_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }

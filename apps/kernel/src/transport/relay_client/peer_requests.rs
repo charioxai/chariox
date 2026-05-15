@@ -196,6 +196,30 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::SendLeasedNativeProviderInput {
+            leased_agent_id,
+            provider_run_id,
+            attachment_id,
+            data_base64,
+        } => {
+            let sent = router
+                .relay_send_leased_native_provider_input(
+                    &leased_agent_id,
+                    &provider_run_id,
+                    &attachment_id,
+                    &data_base64,
+                )
+                .await;
+            match sent {
+                Ok(byte_count) => RelayPeerResponse::LeasedNativeProviderInputSent { byte_count },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id,
             prompt,

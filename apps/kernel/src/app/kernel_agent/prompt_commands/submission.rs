@@ -75,6 +75,7 @@ impl<'a> KernelAgentService<'a> {
         attachment_id: &str,
         target_agent_id: &str,
         prompt: &str,
+        attachments: Vec<PromptAttachment>,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
         crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(session_id, attachment_id)?;
@@ -84,7 +85,8 @@ impl<'a> KernelAgentService<'a> {
             target_agent_id,
             prompt,
             PromptStatus::Queued,
-        );
+        )
+        .with_attachments(attachments);
         let admission = self.prepare_prompt_admission(KernelPreparedPromptSubmission {
             session_id: session_id.to_string(),
             prompt: prepared_prompt,

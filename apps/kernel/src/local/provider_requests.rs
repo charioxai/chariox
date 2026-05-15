@@ -315,7 +315,34 @@ fn remote_native_provider_run_response(
     ))?;
     match response {
         RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run } => {
+            let agent_id = request
+                .agent_id
+                .clone()
+                .or_else(|| {
+                    app.sessions()
+                        .get_session(&request.session_id)
+                        .ok()
+                        .and_then(|session| session.focused_agent_id().map(str::to_string))
+                })
+                .or_else(|| {
+                    app.agents()
+                        .get_focused_agent(&request.session_id)
+                        .map(|agent| agent.id().to_string())
+                })
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "launch remote native provider run",
+                    message: format!(
+                        "no focused agent available for remote native provider run in session `{}`",
+                        request.session_id
+                    ),
+                })?;
+            let provider_run =
+                provider_run.projected_for_home_agent(request.session_id.clone(), agent_id);
             app.update_provider_run_projection(provider_run.clone());
+            app.sessions_mut().set_active_provider_run(
+                provider_run.session_id(),
+                Some(provider_run.id().to_string()),
+            )?;
             Ok(Some(LocalDaemonResponse::ProviderRunLaunched {
                 provider_run,
             }))

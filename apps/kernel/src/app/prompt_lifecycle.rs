@@ -213,18 +213,20 @@ impl DaemonApp {
         )
     }
 
-    pub(crate) fn record_native_prompt_started(
+    pub(crate) fn record_native_prompt_started_with_attachments(
         &mut self,
         session_id: &str,
         attachment_id: &str,
         target_agent_id: &str,
         prompt: &str,
+        attachments: Vec<crate::session::PromptAttachment>,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
         crate::app::KernelAgentService::new(self).record_native_prompt_started(
             session_id,
             attachment_id,
             target_agent_id,
             prompt,
+            attachments,
         )
     }
 

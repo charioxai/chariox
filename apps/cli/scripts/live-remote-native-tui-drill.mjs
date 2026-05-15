@@ -288,6 +288,10 @@ async function screenQuit(name) {
   await screen(name, ["-X", "quit"]).catch(() => {})
 }
 
+async function screenStuff(name, text) {
+  await screen(name, ["-p", "0", "-X", "stuff", text])
+}
+
 function startScreen(name, logDir, command, args, env) {
   return execFileAsync("screen", [
     "-dmS",
@@ -651,6 +655,12 @@ async function answerPermissionFromCli(socketPath, alias) {
   return pending.interaction
 }
 
+async function approveClaudeRenderedPermission(screenName, logFile) {
+  await waitForFileMatch(logFile, /Bash command|Bash\(|Do you wa.*to .*roceed|❯\s*1\.\s*Yes|Yes,\s+and\s+always\s+allow/, 300_000)
+  await screenStuff(screenName, "\r")
+  return "claude-native-tui"
+}
+
 async function waitForProviderToolCompletion(client, sessionId, attachmentId, agentId, matcher, timeoutMs = 240_000) {
   const deadline = Date.now() + timeoutMs
   let lastMatch = null
@@ -688,6 +698,10 @@ async function waitForFileContent(filePath, expected, timeoutMs = 240_000) {
 function permissionPrompt(markerText, filePath, content) {
   const shellCommand = `printf '${content}\\n' > ${filePath}`
   return `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
+}
+
+function claudePermissionPrompt(markerText, filePath, content) {
+  return `Please create the file ${filePath} with exactly this content: ${content}. You can use Bash if convenient. After the file is written, reply with exactly ${markerText}.`
 }
 
 function shellQuote(value) {
@@ -737,7 +751,7 @@ async function runProviderScenario({
     : provider === "opencode"
       ? ["--server-in-kernel"]
     : []
-  if (options.includePermissions && (provider === "codex" || provider === "opencode")) {
+  if (options.includePermissions) {
     providerArgs.push("--permissions", "required")
   }
   const marker = provider === "opencode" ? "OPENCODE" : provider === "codex" ? "CODEX" : "CLAUDE"
@@ -751,6 +765,7 @@ async function runProviderScenario({
     nativeAttachment: `${marker}NATIVEATTACHMENT`,
     arrobaAttachment: `${marker}ARROBAATTACHMENT`,
   }
+  const skipBaselineTurns = provider === "claude" && options.includePermissions
   const logs = {
     aDir: path.join(scenarioRoot, "native-a-screen"),
     bDir: path.join(scenarioRoot, "native-b-screen"),
@@ -790,7 +805,7 @@ async function runProviderScenario({
       worktree,
       ...(machineRef ? ["--machine", machineRef] : []),
       ...providerArgs,
-      ...(provider === "claude" ? ["--initial-prompt", `Reply with exactly ${markers.nativeA} and nothing else.`] : []),
+      ...(provider === "claude" && !skipBaselineTurns ? ["--initial-prompt", `Reply with exactly ${markers.nativeA} and nothing else.`] : []),
       ...(provider === "claude" ? ["--remote-rendered"] : []),
     ], {
       ...process.env,
@@ -820,7 +835,7 @@ async function runProviderScenario({
       worktree,
       ...(machineRef ? ["--machine", machineRef] : []),
       ...providerArgs,
-      ...(provider === "claude" ? ["--initial-prompt", `Reply with exactly ${markers.nativeB} and nothing else.`] : []),
+      ...(provider === "claude" && !skipBaselineTurns ? ["--initial-prompt", `Reply with exactly ${markers.nativeB} and nothing else.`] : []),
       ...(provider === "claude" ? ["--remote-rendered"] : []),
     ], {
       ...process.env,
@@ -898,19 +913,6 @@ async function runProviderScenario({
       throw new Error(`observer CLI did not see both ${provider} agents: ${JSON.stringify(snapshot.session)}`)
     }
 
-    if (provider === "opencode") {
-      await runNativeOpenCodePrompt(proxyA, providerSessionA, worktree, `Reply with exactly ${markers.nativeA} and nothing else.`, logs.nativeA)
-      await runNativeOpenCodePrompt(proxyB, providerSessionB, worktree, `Reply with exactly ${markers.nativeB} and nothing else.`, logs.nativeB)
-    } else if (provider === "codex") {
-      await runNativeCodexPrompt(proxyA, providerSessionA, `Reply with exactly ${markers.nativeA} and nothing else.`)
-      await runNativeCodexPrompt(proxyB, providerSessionB, `Reply with exactly ${markers.nativeB} and nothing else.`)
-    }
-
-    await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
-      [aliases[0]]: { prompts: [markers.nativeA], outputs: [markers.nativeA] },
-      [aliases[1]]: { prompts: [markers.nativeB], outputs: [markers.nativeB] },
-    })
-
     const badgeTransitions = {
       [aliases[0]]: {
         before: await waitForAgentBadgeTone(automationSocket, aliases[0], "idle"),
@@ -920,38 +922,53 @@ async function runProviderScenario({
       },
     }
 
-    await fireAutomationRequest(automationSocket, {
-      action: "workspace_shell_exec",
-      command: `prompt ${aliases[0]} Reply with exactly ${markers.arrobaA} and nothing else.`,
-    })
-    badgeTransitions[aliases[0]].during = await waitForAgentBadgeTone(automationSocket, aliases[0], "working")
-    await fireAutomationRequest(automationSocket, {
-      action: "workspace_shell_exec",
-      command: `prompt ${aliases[1]} Reply with exactly ${markers.arrobaB} and nothing else.`,
-    })
-    badgeTransitions[aliases[1]].during = await waitForAgentBadgeTone(automationSocket, aliases[1], "working")
+    if (!skipBaselineTurns) {
+      if (provider === "opencode") {
+        await runNativeOpenCodePrompt(proxyA, providerSessionA, worktree, `Reply with exactly ${markers.nativeA} and nothing else.`, logs.nativeA)
+        await runNativeOpenCodePrompt(proxyB, providerSessionB, worktree, `Reply with exactly ${markers.nativeB} and nothing else.`, logs.nativeB)
+      } else if (provider === "codex") {
+        await runNativeCodexPrompt(proxyA, providerSessionA, `Reply with exactly ${markers.nativeA} and nothing else.`)
+        await runNativeCodexPrompt(proxyB, providerSessionB, `Reply with exactly ${markers.nativeB} and nothing else.`)
+      }
 
-    const histories = await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
-      [aliases[0]]: { prompts: [markers.arrobaA, markers.nativeA], outputs: [markers.arrobaA, markers.nativeA] },
-      [aliases[1]]: { prompts: [markers.arrobaB, markers.nativeB], outputs: [markers.arrobaB, markers.nativeB] },
-    })
-    badgeTransitions[aliases[0]].after = await waitForAgentBadgeTone(automationSocket, aliases[0], "idle")
-    badgeTransitions[aliases[1]].after = await waitForAgentBadgeTone(automationSocket, aliases[1], "idle")
+      await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+        [aliases[0]]: { prompts: [markers.nativeA], outputs: [markers.nativeA] },
+        [aliases[1]]: { prompts: [markers.nativeB], outputs: [markers.nativeB] },
+      })
 
-    if (histories[aliases[0]].all.includes(markers.arrobaB) || histories[aliases[0]].all.includes(markers.nativeB)) {
-      throw new Error(`${aliases[0]} history was contaminated with ${aliases[1]} markers`)
-    }
-    if (histories[aliases[1]].all.includes(markers.arrobaA) || histories[aliases[1]].all.includes(markers.nativeA)) {
-      throw new Error(`${aliases[1]} history was contaminated with ${aliases[0]} markers`)
-    }
+      await fireAutomationRequest(automationSocket, {
+        action: "workspace_shell_exec",
+        command: `prompt ${aliases[0]} Reply with exactly ${markers.arrobaA} and nothing else.`,
+      })
+      badgeTransitions[aliases[0]].during = await waitForAgentBadgeTone(automationSocket, aliases[0], "working")
+      await fireAutomationRequest(automationSocket, {
+        action: "workspace_shell_exec",
+        command: `prompt ${aliases[1]} Reply with exactly ${markers.arrobaB} and nothing else.`,
+      })
+      badgeTransitions[aliases[1]].during = await waitForAgentBadgeTone(automationSocket, aliases[1], "working")
 
-    await automationRequest(automationSocket, { action: "switch_screen", screen: "agents" })
-    await sleep(1_000)
-    for (const expected of [markers.arrobaA, markers.nativeA]) {
-      await waitForFileMatch(logs.a, new RegExp(expected), 90_000)
-    }
-    for (const expected of [markers.arrobaB, markers.nativeB]) {
-      await waitForFileMatch(logs.b, new RegExp(expected), 90_000)
+      const histories = await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+        [aliases[0]]: { prompts: [markers.arrobaA, markers.nativeA], outputs: [markers.arrobaA, markers.nativeA] },
+        [aliases[1]]: { prompts: [markers.arrobaB, markers.nativeB], outputs: [markers.arrobaB, markers.nativeB] },
+      })
+      badgeTransitions[aliases[0]].after = await waitForAgentBadgeTone(automationSocket, aliases[0], "idle")
+      badgeTransitions[aliases[1]].after = await waitForAgentBadgeTone(automationSocket, aliases[1], "idle")
+
+      if (histories[aliases[0]].all.includes(markers.arrobaB) || histories[aliases[0]].all.includes(markers.nativeB)) {
+        throw new Error(`${aliases[0]} history was contaminated with ${aliases[1]} markers`)
+      }
+      if (histories[aliases[1]].all.includes(markers.arrobaA) || histories[aliases[1]].all.includes(markers.nativeA)) {
+        throw new Error(`${aliases[1]} history was contaminated with ${aliases[0]} markers`)
+      }
+
+      await automationRequest(automationSocket, { action: "switch_screen", screen: "agents" })
+      await sleep(1_000)
+      for (const expected of [markers.arrobaA, markers.nativeA]) {
+        await waitForFileMatch(logs.a, new RegExp(expected), 90_000)
+      }
+      for (const expected of [markers.arrobaB, markers.nativeB]) {
+        await waitForFileMatch(logs.b, new RegExp(expected), 90_000)
+      }
     }
 
     const proxyALog = await readFile(logs.proxyA, "utf8").catch(() => "")
@@ -970,7 +987,7 @@ async function runProviderScenario({
     }
 
     const extendedChecks = {}
-    if (options.includeAttachments && (provider === "codex" || provider === "opencode")) {
+    if (options.includeAttachments) {
       const nativeAttachmentPath = path.join(
         scenarioRoot,
         provider === "codex" ? "native-attachment.png" : "native-attachment.txt",
@@ -985,6 +1002,12 @@ async function runProviderScenario({
         await runNativeCodexPrompt(proxyA, providerSessionA, attachedImagePrompt(markers.nativeAttachment), [
           { type: "localImage", path: nativeAttachmentPath },
         ])
+      } else if (provider === "claude") {
+        await writeFile(nativeAttachmentPath, `native ${provider} attachment ${markers.nativeAttachment}\n`)
+        await writeFile(arrobaAttachmentPath, `arroba ${provider} attachment ${markers.arrobaAttachment}\n`)
+        await screenStuff(screenA, `@${nativeAttachmentPath} ${attachedFilePrompt(markers.nativeAttachment)}`)
+        await sleep(250)
+        await screenStuff(screenA, "\r")
       } else {
         await writeFile(nativeAttachmentPath, `native ${provider} attachment ${markers.nativeAttachment}\n`)
         await writeFile(arrobaAttachmentPath, `arroba ${provider} attachment ${markers.arrobaAttachment}\n`)
@@ -997,11 +1020,13 @@ async function runProviderScenario({
           nativeAttachmentPath,
         )
       }
-      await waitForLogOccurrences(
-        logs.proxyA,
-        provider === "codex" ? "attachmentCount\":1" : "native_prompt_attachments_observed",
-        1,
-      )
+      if (provider !== "claude") {
+        await waitForLogOccurrences(
+          logs.proxyA,
+          provider === "codex" ? "attachmentCount\":1" : "native_prompt_attachments_observed",
+          1,
+        )
+      }
       await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
         [aliases[0]]: { prompts: [markers.nativeAttachment], outputs: [markers.nativeAttachment] },
       })
@@ -1013,9 +1038,11 @@ async function runProviderScenario({
       })
       await automationRequest(automationSocket, {
         action: "submit_prompt",
-        prompt: provider === "codex"
-          ? attachedImagePrompt(markers.arrobaAttachment)
-          : attachedFilePrompt(markers.arrobaAttachment),
+        prompt: provider === "opencode"
+          ? attachedFilePrompt(markers.arrobaAttachment)
+          : provider === "claude"
+            ? attachedFilePrompt(markers.arrobaAttachment)
+            : attachedImagePrompt(markers.arrobaAttachment),
         attachments: [{
           url: arrobaAttachmentPath,
           mime: provider === "codex" ? "image/png" : "text/plain",
@@ -1029,43 +1056,90 @@ async function runProviderScenario({
       extendedChecks.attachments = "validated"
     }
 
-    if (options.includePermissions && (provider === "codex" || provider === "opencode")) {
+    if (options.includePermissions) {
       await mkdir(path.join(worktree, "outputs"), { recursive: true })
       const nativePermissionFile = path.join(worktree, "outputs", `remote-native-${provider}-${process.pid}-native-permission.txt`)
       const arrobaPermissionFile = path.join(worktree, "outputs", `remote-native-${provider}-${process.pid}-arroba-permission.txt`)
       await rm(nativePermissionFile, { force: true }).catch(() => {})
       await rm(arrobaPermissionFile, { force: true }).catch(() => {})
 
-      const nativePrompt = permissionPrompt(markers.nativePermission, nativePermissionFile, `native-${provider}`)
+      const nativePermissionContent = `native-${provider}`
+      const arrobaPermissionContent = `arroba-${provider}`
+      const nativePrompt = provider === "claude"
+        ? claudePermissionPrompt(markers.nativePermission, nativePermissionFile, nativePermissionContent)
+        : permissionPrompt(markers.nativePermission, nativePermissionFile, nativePermissionContent)
       if (provider === "opencode") {
         const nativeRun = await runNativeOpenCodePromptDetached(proxyA, providerSessionA, worktree, nativePrompt)
         const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
         await nativeRun.wait()
         extendedChecks.nativePermissionInteraction = interaction.title ?? interaction.message
-      } else {
+      } else if (provider === "codex") {
         await runNativeCodexPrompt(proxyA, providerSessionA, nativePrompt)
         const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
         extendedChecks.nativePermissionInteraction = interaction.title ?? interaction.message
+      } else {
+        await screenStuff(screenA, nativePrompt)
+        await sleep(250)
+        await screenStuff(screenA, "\r")
+        extendedChecks.nativePermissionInteraction = await approveClaudeRenderedPermission(screenA, logs.a)
       }
-      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
-        [aliases[0]]: { prompts: [markers.nativePermission], outputs: [markers.nativePermission] },
-      })
-      await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
-        raw.includes(nativePermissionFile))
-      await waitForFileContent(nativePermissionFile, `native-${provider}\n`, 10_000)
+      if (provider !== "claude") {
+        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+          [aliases[0]]: { prompts: [markers.nativePermission], outputs: [markers.nativePermission] },
+        })
+        await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
+          raw.includes(nativePermissionFile))
+      }
+      await waitForFileContent(
+        nativePermissionFile,
+        provider === "claude" ? nativePermissionContent : `${nativePermissionContent}\n`,
+        10_000,
+      )
+      if (provider === "claude") {
+        await rm(nativePermissionFile, { force: true }).catch(() => {})
+        await rm(arrobaPermissionFile, { force: true }).catch(() => {})
+        extendedChecks.permissions = "native-origin validated; arroba-origin pending"
+        return {
+          provider,
+          sessionId,
+          marker,
+          relayUrl,
+          targetDaemonAlias,
+          agentAliases: aliases,
+          observerSawAgents: snapshot.session.agentCount,
+          badgeTransitions,
+          providerSessions: null,
+          extendedChecks,
+          logs,
+          note: "remote-rendered Claude TUI validated through kernel-owned PTY; Arroba-origin Claude permission approval is pending",
+        }
+      }
 
+      const arrobaPrompt = provider === "claude"
+        ? claudePermissionPrompt(markers.arrobaPermission, arrobaPermissionFile, arrobaPermissionContent)
+        : permissionPrompt(markers.arrobaPermission, arrobaPermissionFile, arrobaPermissionContent)
       await automationRequest(automationSocket, {
         action: "workspace_shell_exec",
-        command: `prompt ${aliases[0]} ${shellQuote(permissionPrompt(markers.arrobaPermission, arrobaPermissionFile, `arroba-${provider}`))}`,
+        command: `prompt ${aliases[0]} ${shellQuote(arrobaPrompt)}`,
       })
-      const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
-      extendedChecks.arrobaPermissionInteraction = interaction.title ?? interaction.message
-      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
-        [aliases[0]]: { prompts: [markers.arrobaPermission], outputs: [markers.arrobaPermission] },
-      })
-      await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
-        raw.includes(arrobaPermissionFile))
-      await waitForFileContent(arrobaPermissionFile, `arroba-${provider}\n`, 10_000)
+      if (provider === "claude") {
+        extendedChecks.arrobaPermissionInteraction = await approveClaudeRenderedPermission(screenA, logs.a)
+      } else {
+        const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
+        extendedChecks.arrobaPermissionInteraction = interaction.title ?? interaction.message
+      }
+      if (provider !== "claude") {
+        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+          [aliases[0]]: { prompts: [markers.arrobaPermission], outputs: [markers.arrobaPermission] },
+        })
+        await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
+          raw.includes(arrobaPermissionFile))
+      }
+      await waitForFileContent(
+        arrobaPermissionFile,
+        provider === "claude" ? arrobaPermissionContent : `${arrobaPermissionContent}\n`,
+        10_000,
+      )
       await rm(nativePermissionFile, { force: true }).catch(() => {})
       await rm(arrobaPermissionFile, { force: true }).catch(() => {})
       extendedChecks.permissions = "validated"

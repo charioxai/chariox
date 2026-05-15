@@ -170,6 +170,7 @@ Current commands:
 
 - `arroba codex [session-ref] [--kernel-port PORT|--kernel-url URL]`
 - `arroba opencode [session-ref] [--kernel-port PORT|--kernel-url URL]`
+- `arroba claude [session-ref] [--kernel-port PORT|--kernel-url URL]`
 
 Semantics:
 
@@ -197,6 +198,7 @@ Provider-specific transport:
 
 - Codex uses a native WebSocket proxy in front of a Codex app-server endpoint and binds the observed Codex thread to the Arroba provider run.
 - OpenCode uses a native HTTP proxy in front of a launcher-managed `opencode serve` endpoint. The kernel binds its provider run to the proxy endpoint, while the provider TUI attaches to the same proxy/provider session.
+- Claude Code has no stable provider UI/server split. Local and remote native TUI mode therefore use a kernel-owned PTY: the provider process runs where execution belongs, and the launcher streams/render-controls that PTY while the kernel projects prompts, output, attachments, status, and supported interactions back into the Arroba session.
 
 ## 3.4 Workflow Coordination Semantics
 
