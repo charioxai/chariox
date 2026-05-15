@@ -27,6 +27,7 @@ use crate::transport::relay_discovery;
 use crate::transport::relay_peer::RelayPeerEvent;
 
 mod connection_config;
+mod connection_state;
 mod daemon_requests;
 mod envelope_io;
 mod events;
@@ -38,6 +39,9 @@ mod remote_inventory;
 mod request_errors;
 mod subscriptions;
 use connection_config::{relay_config_continuity, RelayConfigContinuity};
+use connection_state::{
+    publish_cloud_presence, publish_offline_and_set_disconnected, set_connected,
+};
 use daemon_requests::handle_daemon_request;
 use envelope_io::{encrypt_json_response, encrypt_peer_payload, send_outgoing_envelope};
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
@@ -53,37 +57,12 @@ use remote_inventory::{
     abort_inventory_refresh_task, clear_remote_inventory_projection,
     spawn_remote_inventory_projection_refresh,
 };
-use request_errors::{map_relay_error, relay_error};
 use subscriptions::{
     abort_subscription_tasks, handle_relay_subscribe, handle_relay_unsubscribe,
     RelaySubscriptionTasks,
 };
 
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct RelayClientState {
-    connected: bool,
-    outgoing_tx: Option<mpsc::UnboundedSender<RelayEnvelope>>,
-    pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
-    next_peer_request_id: u64,
-}
-
-impl RelayClientState {
-    pub fn connected(&self) -> bool {
-        self.connected
-    }
-}
-
-impl Default for RelayClientState {
-    fn default() -> Self {
-        Self {
-            connected: false,
-            outgoing_tx: None,
-            pending_peer_requests: BTreeMap::new(),
-            next_peer_request_id: 0,
-        }
-    }
-}
+pub use connection_state::RelayClientState;
 
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 50;
@@ -491,65 +470,6 @@ pub async fn run_daemon_relay_connector(
                 }
             }
         }
-    }
-}
-
-async fn set_connected(
-    state: &Arc<RwLock<RelayClientState>>,
-    outgoing_tx: mpsc::UnboundedSender<RelayEnvelope>,
-) {
-    let mut guard = state.write().await;
-    guard.connected = true;
-    guard.outgoing_tx = Some(outgoing_tx);
-}
-
-async fn publish_cloud_presence(router: &Arc<CommandRouter>, online: bool, reason: &str) {
-    if let Err(error) = router.publish_cloud_kernel_presence(online).await {
-        crate::logging::warn_with_fields(
-            "daemon.relay_client",
-            "failed to publish cloud relay presence",
-            serde_json::json!({
-                "online": online,
-                "reason": reason,
-                "error": error.to_string(),
-            }),
-        );
-    }
-}
-
-async fn publish_offline_and_set_disconnected(
-    router: &Arc<CommandRouter>,
-    state: &Arc<RwLock<RelayClientState>>,
-    reason: &str,
-) {
-    crate::logging::warn_with_fields(
-        "daemon.relay_client",
-        "relay socket disconnected",
-        serde_json::json!({
-            "reason": reason,
-        }),
-    );
-    publish_cloud_presence(router, false, reason).await;
-    set_disconnected(state).await;
-}
-
-async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
-    let pending_peer = {
-        let mut guard = state.write().await;
-        guard.connected = false;
-        guard.outgoing_tx = None;
-        std::mem::take(&mut guard.pending_peer_requests)
-    };
-    for (_, sender) in pending_peer {
-        let _ = sender.send(RelayPeerResponseEnvelope {
-            from_daemon_id: String::new(),
-            encrypted_response: None,
-            error: Some(relay_error(
-                "relay_disconnected",
-                "relay connection closed before peer response arrived",
-                true,
-            )),
-        });
     }
 }
 

@@ -1,5 +1,6 @@
 //! Relay subscription task lifecycle and event polling loops.
 
+use super::request_errors::map_relay_error;
 use super::*;
 
 pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscriptionTask>>>;
