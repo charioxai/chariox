@@ -47,7 +47,6 @@ import type {
   SessionHistoryEntry,
   SessionHistoryPage,
   SessionHistoryPageEntry,
-  SliceDisplayEndpoint,
   SliceRecord,
   SkillImportOutcome,
   StoredTransferArtifact,
@@ -144,13 +143,10 @@ import {
   acceptCloudSessionInviteRequest,
   createCloudSessionInviteRequest,
   createSessionInviteRequest,
-  createSliceRequest,
   createTerminalPairingLinkRequest,
   joinSessionInviteRequest,
-  deleteSliceRequest,
   listCloudCollaboratorsRequest,
   listCloudSessionMembersRequest,
-  listSlicesRequest,
   pairCloudRelayClientRequest,
   pairCloudRelayMachineRequest,
   pollCloudRelayLoginRequest,
@@ -165,10 +161,8 @@ import {
   setUserConfigValueRequest,
   showWorkspaceLinkRequest,
   spawnAgentRequest,
-  startSliceRequest,
   startCloudRelayLoginRequest,
   startProviderLoginRequest,
-  stopSliceRequest,
   storeTransferredFileRequest,
   submitPromptRequest,
   teardownProviderProcessesRequest,
@@ -181,10 +175,8 @@ import {
   updateAgentSubstitutesRequest,
   updateSessionConfigRequest,
   updateSkillRequest,
-  getSliceRequest,
-  getSliceDisplayEndpointRequest,
-  importSliceProviderAuthRequest,
 } from "./ipc-requests.js"
+import { expectVariant, firstVariantName } from "./ipc-response.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
 import { evaluateConnectionHealth, runPollingLoop } from "./polling-effects.js"
@@ -372,6 +364,16 @@ import {
   resolveActiveWorkflowRun,
 } from "./workflow-prompt-state.js"
 import { WorkspaceLayout } from "./workspace-layout.js"
+import {
+  createSlice,
+  deleteSlice,
+  getSlice,
+  getSliceDisplayEndpoint,
+  importSliceProviderAuth,
+  listSlices,
+  startSlice,
+  stopSlice,
+} from "./slice-api.js"
 import {
   appendPreviewLine,
   computeCurrentTurnId,
@@ -10140,60 +10142,6 @@ async function listRemoteMachineKernels(client: LocalIpcClient, machineRef: stri
   return payload.kernels
 }
 
-async function listSlices(client: LocalIpcClient): Promise<SliceRecord[]> {
-  const response = await client.send<Record<string, unknown>>(listSlicesRequest())
-  return expectVariant<{ slices: SliceRecord[] }>(response, "SlicesListed").slices
-}
-
-async function createSlice(
-  client: LocalIpcClient,
-  options: {
-    name: string
-    backend?: "local_docker" | "ssh_docker"
-    os?: string
-    workspaceMount?: string | null
-    workerKernelRef?: string | null
-    displayUrl?: string | null
-  },
-): Promise<SliceRecord> {
-  const response = await client.send<Record<string, unknown>>(createSliceRequest(options))
-  return expectVariant<{ slice: SliceRecord }>(response, "SliceCreated").slice
-}
-
-async function getSlice(client: LocalIpcClient, sliceRef: string): Promise<SliceRecord> {
-  const response = await client.send<Record<string, unknown>>(getSliceRequest(sliceRef))
-  return expectVariant<{ slice: SliceRecord }>(response, "Slice").slice
-}
-
-async function startSlice(client: LocalIpcClient, sliceRef: string): Promise<SliceRecord> {
-  const response = await client.send<Record<string, unknown>>(startSliceRequest(sliceRef))
-  return expectVariant<{ slice: SliceRecord }>(response, "SliceStarted").slice
-}
-
-async function stopSlice(client: LocalIpcClient, sliceRef: string): Promise<SliceRecord> {
-  const response = await client.send<Record<string, unknown>>(stopSliceRequest(sliceRef))
-  return expectVariant<{ slice: SliceRecord }>(response, "SliceStopped").slice
-}
-
-async function deleteSlice(client: LocalIpcClient, sliceRef: string): Promise<SliceRecord> {
-  const response = await client.send<Record<string, unknown>>(deleteSliceRequest(sliceRef))
-  return expectVariant<{ slice: SliceRecord }>(response, "SliceDeleted").slice
-}
-
-async function importSliceProviderAuth(
-  client: LocalIpcClient,
-  sliceRef: string,
-  provider: string,
-): Promise<{ slice: SliceRecord; provider: string; status: string }> {
-  const response = await client.send<Record<string, unknown>>(importSliceProviderAuthRequest(sliceRef, provider))
-  return expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthImported")
-}
-
-async function getSliceDisplayEndpoint(client: LocalIpcClient, sliceRef: string): Promise<SliceDisplayEndpoint> {
-  const response = await client.send<Record<string, unknown>>(getSliceDisplayEndpointRequest(sliceRef))
-  return expectVariant<{ endpoint: SliceDisplayEndpoint }>(response, "SliceDisplayEndpoint").endpoint
-}
-
 async function createTerminalPairingLink(
   client: LocalIpcClient,
   terminalType: TerminalTypeView = "cli",
@@ -10588,17 +10536,6 @@ async function openExternalUrl(url: string): Promise<boolean> {
       resolve(true)
     })
   })
-}
-
-function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
-  if (!(variant in response)) {
-    throw new Error(`unexpected response variant: expected ${variant}`)
-  }
-  return response[variant] as T
-}
-
-function firstVariantName(value: Record<string, unknown>): string {
-  return Object.keys(value)[0] ?? "unknown"
 }
 
 function trimSingleTrailingNewline(text: string): string {

@@ -26,9 +26,10 @@ export async function bridgeRemoteNativeProviderEndpoint(
 
   const localPort = await reservePort()
   const remoteHost = process.env.ARROBA_NATIVE_PROVIDER_ENDPOINT_SSH_REMOTE_HOST?.trim() || "127.0.0.1"
+  const sshKey = process.env.ARROBA_NATIVE_PROVIDER_ENDPOINT_SSH_KEY?.trim() || undefined
   const child = spawn("ssh", sshForwardArgs({
     sshHost,
-    sshKey: process.env.ARROBA_NATIVE_PROVIDER_ENDPOINT_SSH_KEY?.trim(),
+    ...(sshKey ? { sshKey } : {}),
     localPort,
     remoteHost,
     remotePort: Number(url.port),
@@ -72,13 +73,13 @@ function sshForwardArgs(options: {
 
 async function waitForForward(child: ChildProcess, port: number, label: string): Promise<void> {
   const deadline = Date.now() + 15_000
-  let exited: { code: number | null, signal: NodeJS.Signals | null } | null = null
+  const exited: { value?: { code: number | null, signal: NodeJS.Signals | null } } = {}
   child.once("exit", (code, signal) => {
-    exited = { code, signal }
+    exited.value = { code, signal }
   })
   while (Date.now() < deadline) {
-    if (exited) {
-      throw new Error(`${label} native provider endpoint SSH bridge exited before becoming ready: ${exited.signal ?? exited.code}`)
+    if (exited.value) {
+      throw new Error(`${label} native provider endpoint SSH bridge exited before becoming ready: ${exited.value.signal ?? exited.value.code}`)
     }
     if (await portIsReachable(port)) return
     await sleep(100)
