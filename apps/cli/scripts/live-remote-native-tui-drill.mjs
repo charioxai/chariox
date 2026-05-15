@@ -46,6 +46,11 @@ function parseArgs(argv) {
     keepArtifactsOnFailure: false,
     sliceLocalDocker: false,
     standardHomeWorker: false,
+    hetznerWorker: false,
+    hetznerHost: process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? "root@195.201.123.115",
+    hetznerRelayHost: process.env.ARROBA_NATIVE_TUI_HETZNER_RELAY_HOST ?? "195.201.123.115",
+    hetznerKey: process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), ".ssh/arroba_hetzner_staging"),
+    hetznerRepo: process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? "/tmp/arroba-native-remote-validate",
     includePermissions: false,
     includeAttachments: false,
   }
@@ -61,6 +66,17 @@ function parseArgs(argv) {
       options.sliceLocalDocker = true
     } else if (arg === "--standard-home-worker") {
       options.standardHomeWorker = true
+    } else if (arg === "--hetzner-worker") {
+      options.hetznerWorker = true
+      options.standardHomeWorker = true
+    } else if (arg === "--hetzner-host") {
+      options.hetznerHost = argv[++index]
+    } else if (arg === "--hetzner-relay-host") {
+      options.hetznerRelayHost = argv[++index]
+    } else if (arg === "--hetzner-key") {
+      options.hetznerKey = argv[++index]
+    } else if (arg === "--hetzner-repo") {
+      options.hetznerRepo = argv[++index]
     } else if (arg === "--include-permissions") {
       options.includePermissions = true
     } else if (arg === "--include-attachments") {
@@ -73,6 +89,9 @@ function parseArgs(argv) {
   }
   if (options.sliceLocalDocker && options.standardHomeWorker) {
     throw new Error("--slice-local-docker and --standard-home-worker are mutually exclusive")
+  }
+  if (options.hetznerWorker && !options.standardHomeWorker) {
+    throw new Error("--hetzner-worker requires --standard-home-worker")
   }
   for (const provider of options.providers) {
     if (provider !== "opencode" && provider !== "codex" && provider !== "claude") {
@@ -94,6 +113,11 @@ function printHelp() {
     "",
     "  --providers opencode,codex,claude",
     "  --standard-home-worker     Run home and worker kernels through the relay",
+    "  --hetzner-worker           Run relay and worker kernel on the configured Hetzner host",
+    "  --hetzner-host HOST        SSH host for --hetzner-worker (default root@195.201.123.115)",
+    "  --hetzner-relay-host HOST  Relay host clients connect to for --hetzner-worker",
+    "  --hetzner-key PATH         SSH key for --hetzner-worker",
+    "  --hetzner-repo PATH        Remote Arroba checkout for --hetzner-worker",
     "  --slice-local-docker          Run against a local Docker slice kernel instead of a host kernel",
     "  --include-permissions         Validate provider-native permissions through the Arroba observer",
     "  --include-attachments         Validate prompt attachment transfer through native TUI providers",
@@ -185,6 +209,39 @@ async function waitForTcpPort(port, host = "127.0.0.1", timeoutMs = 15_000) {
     await sleep(100)
   }
   throw new Error(`TCP listener ${host}:${port} did not become reachable`)
+}
+
+function sshArgs(options, remoteCommand) {
+  return [
+    "-i",
+    options.hetznerKey,
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    options.hetznerHost,
+    remoteCommand,
+  ]
+}
+
+function remoteEnvCommand(env, command) {
+  const assignments = Object.entries(env)
+    .map(([key, value]) => `${key}=${shellQuote(String(value))}`)
+    .join(" ")
+  return `cd ${shellQuote(env.ARROBA_REMOTE_REPO)} && env ${assignments} bash -lc ${shellQuote(command)}`
+}
+
+async function prepareHetznerWorktree(options, localWorktree) {
+  const parent = path.posix.dirname(localWorktree)
+  await execFileAsync("ssh", sshArgs(options, [
+    "set -e",
+    `test -x ${shellQuote(path.posix.join(options.hetznerRepo, "apps/kernel/target/debug/arroba-kernel"))}`,
+    `test -x ${shellQuote(path.posix.join(options.hetznerRepo, "apps/relay/target/debug/arroba-relay"))}`,
+    `mkdir -p ${shellQuote(parent)}`,
+    `git -C ${shellQuote(options.hetznerRepo)} worktree remove --force ${shellQuote(localWorktree)} 2>/dev/null || rm -rf ${shellQuote(localWorktree)}`,
+    `git -C ${shellQuote(options.hetznerRepo)} worktree prune`,
+    `git -C ${shellQuote(options.hetznerRepo)} worktree add --force --detach ${shellQuote(localWorktree)} HEAD`,
+  ].join("; ")))
 }
 
 async function waitForLocalDaemon(kernelUrl, workspace, worktree) {
@@ -279,6 +336,11 @@ async function runLogged(command, args, options = {}) {
       reject(new Error(`${command} ${args.join(" ")} exited with ${signal ?? code}`))
     })
   })
+}
+
+async function resolveCommandPath(command) {
+  const { stdout } = await execFileAsync("bash", ["-lc", `command -v ${shellQuote(command)}`])
+  return stdout.trim()
 }
 
 async function screen(name, args) {
@@ -731,6 +793,38 @@ async function waitForFileContent(filePath, expected, timeoutMs = 240_000) {
   throw new Error(`timed out waiting for ${filePath} to contain ${JSON.stringify(expected)}`)
 }
 
+async function runHetznerCommand(options, command) {
+  const { stdout } = await execFileAsync("ssh", sshArgs(options, command), { maxBuffer: 4 * 1024 * 1024 })
+  return stdout
+}
+
+async function ensureExecutionDirectory(options, remoteExecution, dirPath) {
+  if (remoteExecution) {
+    await runHetznerCommand(options, `mkdir -p ${shellQuote(dirPath)}`)
+    return
+  }
+  await mkdir(dirPath, { recursive: true })
+}
+
+async function removeExecutionFile(options, remoteExecution, filePath) {
+  if (remoteExecution) {
+    await runHetznerCommand(options, `rm -f ${shellQuote(filePath)}`).catch(() => {})
+    return
+  }
+  await rm(filePath, { force: true }).catch(() => {})
+}
+
+async function waitForExecutionFileContent(options, remoteExecution, filePath, expected, timeoutMs = 240_000) {
+  if (!remoteExecution) return await waitForFileContent(filePath, expected, timeoutMs)
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const content = await runHetznerCommand(options, `cat ${shellQuote(filePath)}`).catch(() => "")
+    if (content === expected) return content
+    await sleep(500)
+  }
+  throw new Error(`timed out waiting for remote ${filePath} to contain ${JSON.stringify(expected)}`)
+}
+
 function permissionPrompt(markerText, filePath, content) {
   const shellCommand = `printf '${content}\\n' > ${filePath}`
   return `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
@@ -802,6 +896,14 @@ async function runProviderScenario({
     arrobaAttachment: `${marker}ARROBAATTACHMENT`,
   }
   const skipBaselineTurns = provider === "claude" && options.includePermissions
+  const providerBinaryEnv = {}
+  if (provider === "opencode" && !process.env.ARROBA_OPENCODE_BIN) {
+    providerBinaryEnv.ARROBA_OPENCODE_BIN = await resolveCommandPath("opencode")
+  } else if (provider === "codex" && !process.env.ARROBA_CODEX_BIN) {
+    providerBinaryEnv.ARROBA_CODEX_BIN = await resolveCommandPath("codex")
+  } else if (provider === "claude" && !process.env.ARROBA_CLAUDE_BIN) {
+    providerBinaryEnv.ARROBA_CLAUDE_BIN = await resolveCommandPath("claude")
+  }
   const logs = {
     aDir: path.join(scenarioRoot, "native-a-screen"),
     bDir: path.join(scenarioRoot, "native-b-screen"),
@@ -845,6 +947,7 @@ async function runProviderScenario({
       ...(provider === "claude" ? ["--remote-rendered"] : []),
     ], {
       ...process.env,
+      ...providerBinaryEnv,
       ...nativeEnv,
       ARROBA_CODEX_NATIVE_DEBUG: "1",
       ARROBA_CODEX_NATIVE_DEBUG_FILE: logs.proxyA,
@@ -877,6 +980,7 @@ async function runProviderScenario({
       ...(provider === "claude" ? ["--remote-rendered"] : []),
     ], {
       ...process.env,
+      ...providerBinaryEnv,
       ...nativeEnv,
       ARROBA_CODEX_NATIVE_DEBUG: "1",
       ARROBA_CODEX_NATIVE_DEBUG_FILE: logs.proxyB,
@@ -1074,7 +1178,7 @@ async function runProviderScenario({
       })
       await waitForFileMatch(logs.a, new RegExp(markers.nativeAttachment), 60_000)
       if (provider === "claude") {
-        await waitForFileMatch(logs.a, /native-attachment\.png/, 60_000)
+        await waitForFileMatch(logs.a, /native-attach/, 60_000)
       }
 
       await automationRequest(automationSocket, {
@@ -1099,17 +1203,18 @@ async function runProviderScenario({
       })
       await waitForFileMatch(logs.a, new RegExp(markers.arrobaAttachment), 60_000)
       if (provider === "claude") {
-        await waitForFileMatch(logs.a, /arroba-attachment\.png/, 60_000)
+        await waitForFileMatch(logs.a, /arroba-attach/, 60_000)
       }
       extendedChecks.attachments = "validated"
     }
 
     if (options.includePermissions) {
-      await mkdir(path.join(worktree, "outputs"), { recursive: true })
+      const remoteExecution = Boolean(options.hetznerWorker && machineRef)
+      await ensureExecutionDirectory(options, remoteExecution, path.join(worktree, "outputs"))
       const nativePermissionFile = path.join(worktree, "outputs", `remote-native-${provider}-${process.pid}-native-permission.txt`)
       const arrobaPermissionFile = path.join(worktree, "outputs", `remote-native-${provider}-${process.pid}-arroba-permission.txt`)
-      await rm(nativePermissionFile, { force: true }).catch(() => {})
-      await rm(arrobaPermissionFile, { force: true }).catch(() => {})
+      await removeExecutionFile(options, remoteExecution, nativePermissionFile)
+      await removeExecutionFile(options, remoteExecution, arrobaPermissionFile)
 
       const nativePermissionContent = `native-${provider}`
       const arrobaPermissionContent = `arroba-${provider}`
@@ -1143,7 +1248,9 @@ async function runProviderScenario({
         await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
           raw.includes(nativePermissionFile))
       }
-      await waitForFileContent(
+      await waitForExecutionFileContent(
+        options,
+        remoteExecution,
         nativePermissionFile,
         provider === "claude" ? nativePermissionContent : `${nativePermissionContent}\n`,
         10_000,
@@ -1179,13 +1286,15 @@ async function runProviderScenario({
         await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
           raw.includes(arrobaPermissionFile))
       }
-      await waitForFileContent(
+      await waitForExecutionFileContent(
+        options,
+        remoteExecution,
         arrobaPermissionFile,
         provider === "claude" ? arrobaPermissionContent : `${arrobaPermissionContent}\n`,
         10_000,
       )
-      await rm(nativePermissionFile, { force: true }).catch(() => {})
-      await rm(arrobaPermissionFile, { force: true }).catch(() => {})
+      await removeExecutionFile(options, remoteExecution, nativePermissionFile)
+      await removeExecutionFile(options, remoteExecution, arrobaPermissionFile)
       extendedChecks.permissions = "validated"
     }
 
@@ -1206,7 +1315,9 @@ async function runProviderScenario({
       logs,
       note: provider === "claude"
         ? "remote-rendered Claude TUI validated through kernel-owned PTY"
-        : "server-in-kernel native TUI validated on one host; true network-isolated provider endpoints still require the reverse provider tunnel",
+        : options.hetznerWorker
+          ? "server-in-kernel native TUI validated against a Hetzner worker through the SSH provider endpoint bridge"
+          : "server-in-kernel native TUI validated on one host; use --hetzner-worker to validate cross-host provider endpoints",
     }
   } finally {
     if (client) await client.close().catch(() => {})
@@ -1317,7 +1428,7 @@ async function main() {
   const targetDaemonAlias = `remote-native-home-${process.pid}`
   const workerDaemonAlias = `remote-native-worker-${process.pid}`
   const workerMachineAlias = `remote-native-worker-machine-${process.pid}`
-  const workerKernelUrl = `ws://127.0.0.1:${ports.workerKernelPort}`
+  const workerKernelUrl = options.hetznerWorker ? null : `ws://127.0.0.1:${ports.workerKernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot
   const homeDir = path.join(root, "home")
@@ -1326,6 +1437,7 @@ async function main() {
   const xdgDataHome = path.join(root, "xdg-data")
   const xdgCacheHome = path.join(root, "xdg-cache")
   let relay = null
+  let relayTunnel = null
   let kernel = null
   let workerKernel = null
   let succeeded = false
@@ -1336,23 +1448,52 @@ async function main() {
     await mkdir(xdgStateHome, { recursive: true })
     await mkdir(xdgDataHome, { recursive: true })
     await mkdir(xdgCacheHome, { recursive: true })
+    if (options.hetznerWorker) {
+      await prepareHetznerWorktree(options, worktree)
+    }
     await access(path.join(realHomeDir, ".claude"))
       .then(() => symlink(path.join(realHomeDir, ".claude"), path.join(homeDir, ".claude"), "dir"))
       .catch(() => {})
     await access(path.join(realHomeDir, ".claude.json"))
       .then(() => symlink(path.join(realHomeDir, ".claude.json"), path.join(homeDir, ".claude.json")))
       .catch(() => {})
-    relay = spawn(relayBinary, [], {
-      cwd: repoRoot,
-      env: {
-        ...process.env,
+    if (options.hetznerWorker) {
+      relay = spawn("ssh", sshArgs(options, remoteEnvCommand({
+        ARROBA_REMOTE_REPO: options.hetznerRepo,
         ARROBA_RELAY_HOST: "127.0.0.1",
         ARROBA_RELAY_PORT: String(ports.relayPort),
         ARROBA_RELAY_TOKEN: relayToken,
-      },
-      stdio: ["ignore", "ignore", "inherit"],
-    })
-    await waitForTcpPort(ports.relayPort)
+      }, "./apps/relay/target/debug/arroba-relay")), {
+        stdio: ["ignore", "ignore", "inherit"],
+      })
+      relayTunnel = spawn("ssh", [
+        "-i",
+        options.hetznerKey,
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-N",
+        "-L",
+        `127.0.0.1:${ports.relayPort}:127.0.0.1:${ports.relayPort}`,
+        options.hetznerHost,
+      ], {
+        stdio: ["ignore", "ignore", "inherit"],
+      })
+      await waitForTcpPort(ports.relayPort, "127.0.0.1", 30_000)
+    } else {
+      relay = spawn(relayBinary, [], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          ARROBA_RELAY_HOST: "127.0.0.1",
+          ARROBA_RELAY_PORT: String(ports.relayPort),
+          ARROBA_RELAY_TOKEN: relayToken,
+        },
+        stdio: ["ignore", "ignore", "inherit"],
+      })
+      await waitForTcpPort(ports.relayPort)
+    }
     kernel = spawn(kernelBinary, [], {
       cwd: repoRoot,
       env: {
@@ -1384,33 +1525,61 @@ async function main() {
     await waitForLocalDaemon(homeKernelUrl, workspace, worktree)
     await waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias)
     if (options.standardHomeWorker) {
-      workerKernel = spawn(kernelBinary, [], {
-        cwd: repoRoot,
-        env: {
-          ...process.env,
-          HOME: realHomeDir,
-          XDG_CONFIG_HOME: path.join(root, "worker-xdg-config"),
-          XDG_STATE_HOME: path.join(root, "worker-xdg-state"),
-          XDG_DATA_HOME: path.join(root, "worker-xdg-data"),
-          XDG_CACHE_HOME: path.join(root, "worker-xdg-cache"),
-          CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, ".codex"),
-          OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, ".config", "opencode"),
-          ARROBA_LOG_DIR: path.join(root, "worker-logs"),
+      if (options.hetznerWorker) {
+        const remoteRoot = `/tmp/arb-remote-native-tui-${process.pid}-${Date.now()}`
+        workerKernel = spawn("ssh", sshArgs(options, remoteEnvCommand({
+          ARROBA_REMOTE_REPO: options.hetznerRepo,
+          PATH: `/root/.bun/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+          HOME: "/root",
+          XDG_CONFIG_HOME: "/root/.config",
+          XDG_STATE_HOME: "/root/.local/state",
+          XDG_DATA_HOME: "/root/.local/share",
+          XDG_CACHE_HOME: "/root/.cache",
+          OPENCODE_CONFIG_DIR: "/root/.config/opencode",
+          ARROBA_LOG_DIR: path.posix.join(remoteRoot, "worker-logs"),
           ARROBA_KERNEL_PORT: String(ports.workerKernelPort),
           ARROBA_MCP_PORT: String(ports.workerMcpPort),
-          ARROBA_RELAY_URL: relayUrl,
+          ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
           ARROBA_RELAY_TOKEN: relayToken,
           ARROBA_DAEMON_ID: `remote-native-worker-${process.pid}-${Date.now()}`,
           ARROBA_DAEMON_ALIAS: workerDaemonAlias,
           ARROBA_MACHINE_ID: workerMachineAlias,
           ARROBA_MACHINE_ALIAS: workerMachineAlias,
           ARROBA_ACCEPT_REMOTE_LEASES: "1",
-          ARROBA_DAEMON_SOCKET: path.join(root, "worker.sock"),
-          ARROBA_SESSION_HISTORY_DIR: path.join(root, "worker-history"),
-        },
-        stdio: ["ignore", "ignore", "inherit"],
-      })
-      await waitForLocalDaemon(workerKernelUrl, workspace, worktree)
+          ARROBA_DAEMON_SOCKET: path.posix.join(remoteRoot, "worker.sock"),
+          ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, "worker-history"),
+        }, `mkdir -p /tmp/arb-remote-native-tui-${process.pid} && ./apps/kernel/target/debug/arroba-kernel`)), {
+          stdio: ["ignore", "ignore", "inherit"],
+        })
+      } else {
+        workerKernel = spawn(kernelBinary, [], {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            HOME: realHomeDir,
+            XDG_CONFIG_HOME: path.join(root, "worker-xdg-config"),
+            XDG_STATE_HOME: path.join(root, "worker-xdg-state"),
+            XDG_DATA_HOME: path.join(root, "worker-xdg-data"),
+            XDG_CACHE_HOME: path.join(root, "worker-xdg-cache"),
+            CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, ".codex"),
+            OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, ".config", "opencode"),
+            ARROBA_LOG_DIR: path.join(root, "worker-logs"),
+            ARROBA_KERNEL_PORT: String(ports.workerKernelPort),
+            ARROBA_MCP_PORT: String(ports.workerMcpPort),
+            ARROBA_RELAY_URL: relayUrl,
+            ARROBA_RELAY_TOKEN: relayToken,
+            ARROBA_DAEMON_ID: `remote-native-worker-${process.pid}-${Date.now()}`,
+            ARROBA_DAEMON_ALIAS: workerDaemonAlias,
+            ARROBA_MACHINE_ID: workerMachineAlias,
+            ARROBA_MACHINE_ALIAS: workerMachineAlias,
+            ARROBA_ACCEPT_REMOTE_LEASES: "1",
+            ARROBA_DAEMON_SOCKET: path.join(root, "worker.sock"),
+            ARROBA_SESSION_HISTORY_DIR: path.join(root, "worker-history"),
+          },
+          stdio: ["ignore", "ignore", "inherit"],
+        })
+        await waitForLocalDaemon(workerKernelUrl, workspace, worktree)
+      }
       await waitForRelayTarget(relayUrl, relayToken, workerDaemonAlias)
       await waitForRemoteMachine(relayUrl, relayToken, targetDaemonAlias, workerMachineAlias)
     }
@@ -1427,6 +1596,12 @@ async function main() {
         workspace,
         worktree,
         options,
+        nativeEnv: options.hetznerWorker
+          ? {
+            ARROBA_NATIVE_PROVIDER_ENDPOINT_SSH_HOST: options.hetznerHost,
+            ARROBA_NATIVE_PROVIDER_ENDPOINT_SSH_KEY: options.hetznerKey,
+          }
+          : {},
       }))
     }
 
@@ -1445,6 +1620,7 @@ async function main() {
   } finally {
     await terminateChild(workerKernel)
     await terminateChild(kernel)
+    await terminateChild(relayTunnel)
     await terminateChild(relay)
     if (succeeded || !options.keepArtifactsOnFailure) {
       await rm(root, { recursive: true, force: true }).catch(() => {})

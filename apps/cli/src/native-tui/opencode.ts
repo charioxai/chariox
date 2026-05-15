@@ -37,6 +37,7 @@ import {
   promptAttachmentTransferIsForced,
 } from "../prompt-attachment-transfer.js"
 import { hiddenInstructionsStart, redactHiddenInstructions } from "./hidden-instructions.js"
+import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -77,6 +78,7 @@ type NativeProviderSelection = {
 
 type OpenCodeProxyState = {
   providerRunId: string | null
+  providerSessionId: string | null
   providerRunLocal: boolean
   lastNativeSelection: NativeProviderSelection | null
 }
@@ -97,6 +99,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
 
   let proxy: http.Server | null = null
   let openCodeServer: ReturnType<typeof spawn> | null = null
+  let endpointBridge: { close: () => Promise<void> } | null = null
   let pump: { stop: () => void } | null = null
   try {
     const created = options.sessionRef
@@ -113,6 +116,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       : await spawnOpenCodeAgent(client, session.id, options.agentAlias, options.mode, options.permissions, options.machineRef)
     const proxyState: OpenCodeProxyState = {
       providerRunId: null,
+      providerSessionId: null,
       providerRunLocal: true,
       lastNativeSelection: null,
     }
@@ -133,6 +137,9 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       upstreamBaseUrl = `http://127.0.0.1:${await reservePort()}`
       openCodeServer = await startOpenCodeServer(upstreamBaseUrl, worktree)
     }
+    const bridgedEndpoint = await bridgeRemoteNativeProviderEndpoint(upstreamBaseUrl, "OpenCode")
+    upstreamBaseUrl = bridgedEndpoint.endpoint
+    endpointBridge = bridgedEndpoint
     proxy = await startOpenCodeProxy({
       upstreamBaseUrl,
       client,
@@ -163,6 +170,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       throw new Error("OpenCode provider run did not expose provider_session_id")
     }
     proxyState.providerRunId = run.id
+    proxyState.providerSessionId = providerSessionId
     proxyState.providerRunLocal = run.session_id === session.id
     process.stderr.write([
       "[arroba opencode native-tui]",
@@ -180,7 +188,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     await runOpenCodeAttach({
       proxyUrl,
       providerSessionId,
-      workingDirectory: run.working_directory ?? session.worktree_id ?? worktree,
+      workingDirectory: worktree,
     })
   } finally {
     pump?.stop()
@@ -195,6 +203,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       ])
       if (openCodeServer.exitCode == null) openCodeServer.kill("SIGKILL")
     }
+    await endpointBridge?.close()
     await client.close()
   }
 }
@@ -731,7 +740,7 @@ async function handleProxyRequest(
   }
 
   if (!isKernelRequest && method === "GET" && new URL(path, options.upstreamBaseUrl).pathname === "/event") {
-    await proxyOpenCodeEventsForNativeTui(request, response, options.upstreamBaseUrl)
+    await proxyOpenCodeEventsForNativeTui(request, response, options.upstreamBaseUrl, state)
     return
   }
 
@@ -742,6 +751,7 @@ async function proxyOpenCodeEventsForNativeTui(
   request: IncomingMessage,
   response: ServerResponse,
   upstreamBaseUrl: string,
+  state: OpenCodeProxyState,
 ): Promise<void> {
   const target = new URL(request.url ?? "/", upstreamBaseUrl)
   const headers = requestHeadersForFetch(request)
@@ -764,31 +774,58 @@ async function proxyOpenCodeEventsForNativeTui(
 
   let carry = ""
   let refreshCounter = 0
-  for await (const chunk of Readable.fromWeb(upstream.body as never)) {
-    carry += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk)
-    while (true) {
-      const separator = findSseFrameSeparator(carry)
-      if (!separator) break
-      const frame = carry.slice(0, separator.index)
-      const delimiter = carry.slice(separator.index, separator.index + separator.length)
-      const redactedFrame = redactHiddenInstructions(frame)
-      response.write(redactedFrame)
-      response.write(delimiter)
-      const sessionId = sessionIdNeedingNativeRefresh(frame)
-      if (sessionId) {
-        refreshCounter = await emitNativeTranscriptRefresh({
-          response,
-          upstreamBaseUrl,
-          sessionId,
-          directory: target.searchParams.get("directory"),
-          counter: refreshCounter,
-        })
-      }
-      carry = carry.slice(separator.index + separator.length)
+  let refreshInFlight = false
+  const refreshFromProviderSession = async () => {
+    const providerSessionId = state.providerSessionId
+    if (!providerSessionId || refreshInFlight || response.destroyed) return
+    refreshInFlight = true
+    try {
+      refreshCounter = await emitNativeTranscriptRefresh({
+        response,
+        upstreamBaseUrl,
+        sessionId: providerSessionId,
+        directory: target.searchParams.get("directory"),
+        counter: refreshCounter,
+      })
+    } finally {
+      refreshInFlight = false
     }
   }
-  if (carry) {
-    response.write(redactHiddenInstructions(carry))
+  const refreshTimer = setInterval(() => {
+    void refreshFromProviderSession().catch((error) => {
+      debugNativeMutation("native_refresh_timer_failed", { error: formatError(error) })
+    })
+  }, 1_000)
+  response.once("close", () => clearInterval(refreshTimer))
+  try {
+    for await (const chunk of Readable.fromWeb(upstream.body as never)) {
+      carry += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk)
+      while (true) {
+        const separator = findSseFrameSeparator(carry)
+        if (!separator) break
+        const frame = carry.slice(0, separator.index)
+        const delimiter = carry.slice(separator.index, separator.index + separator.length)
+        const redactedFrame = redactHiddenInstructions(frame)
+        response.write(redactedFrame)
+        response.write(delimiter)
+        const sessionId = sessionIdNeedingNativeRefresh(frame)
+        if (sessionId) {
+          refreshCounter = await emitNativeTranscriptRefresh({
+            response,
+            upstreamBaseUrl,
+            sessionId,
+            directory: target.searchParams.get("directory"),
+            counter: refreshCounter,
+          })
+        }
+        carry = carry.slice(separator.index + separator.length)
+      }
+    }
+    if (carry) {
+      response.write(redactHiddenInstructions(carry))
+    }
+  } finally {
+    clearInterval(refreshTimer)
   }
   response.end()
 }
@@ -1159,7 +1196,6 @@ async function runOpenCodeAttach(options: {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(executable, args, {
       stdio: "inherit",
-      cwd: options.workingDirectory,
       env: process.env,
     })
     child.once("error", reject)

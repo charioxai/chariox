@@ -56,9 +56,8 @@ requires `--remote-rendered`, so provider execution is worker-owned rather than
 handed a local provider endpoint. The home kernel forwards native provider-run
 launches for remote-backed agents to the worker kernel over relay peer transport.
 The live drill now has a `--standard-home-worker` mode for an isolated
-same-host home/worker relay topology. True cross-host Hetzner validation still
-needs endpoint reachability checks for Codex/OpenCode worker-owned provider
-servers and Claude credential availability on the worker.
+same-host home/worker relay topology and a `--hetzner-worker` mode for a real
+cross-host worker.
 
 2026-05-15 standard home-worker validation update: Codex and OpenCode pass the
 same-host standard home-worker drills for prompt/turns, provider permissions,
@@ -81,6 +80,17 @@ follow the same worker materialization path. Permissions pass in both
 native-origin and Arroba-origin directions: permission prompts surface in the
 remote-rendered Claude native TUI and approval is sent through kernel-owned PTY
 input to the worker provider run.
+
+2026-05-15 actual Hetzner validation update: Codex and OpenCode pass against a
+real Hetzner worker for prompt/turns, provider permissions, and prompt
+attachments in both native-origin and Arroba-origin directions. The drill uses
+SSH local forwarding for the relay and an SSH provider endpoint bridge for
+worker-local Codex/OpenCode provider endpoints. Claude Code passes the actual
+Hetzner prompt/turn drill through the remote-rendered PTY path. Claude extended
+Hetzner validation is not yet product-green: image attachments are intercepted
+and read in the remote-rendered TUI, but the permission phase hit Claude Code's
+remote `Not logged in · Please run /login` state, so no permission prompt could
+be validated on the worker.
 
 ## Goal
 
@@ -125,9 +135,9 @@ Prompt/turns:
 - Same-host relay Codex/OpenCode/Claude: covered by
   `live-remote-native-tui-drill.mjs`.
 - Standard remote home-worker: Codex/OpenCode prompt/turn coverage passes in
-  same-host relay mode. Claude prompt/turn coverage also passes through the
-  remote-rendered PTY path in same-host relay mode. True cross-host worker
-  credential checks are still pending.
+  same-host relay mode and against the Hetzner worker. Claude prompt/turn
+  coverage passes through the remote-rendered PTY path in same-host relay mode
+  and against the Hetzner worker.
 - Direct slice target Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
   --slice-local-docker`, but home-managed slice is not covered.
 
@@ -144,12 +154,14 @@ Permissions:
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers
   codex,opencode --include-permissions`. Native-origin and Arroba-origin
   prompts both surface permission interactions to the Arroba observer and can be
-  approved there.
+  approved there. The same coverage also passes with `--hetzner-worker`.
 - Standard remote home-worker Claude: covered by
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers claude
   --include-permissions`. Native-origin and Arroba-origin prompts both surface
   permission interactions in the remote-rendered Claude native TUI and can be
-  approved through kernel-owned PTY input.
+  approved through kernel-owned PTY input in same-host relay mode. Actual
+  Hetzner validation is blocked by Claude Code entering `Not logged in` on the
+  remote worker during the permission phase.
 - Slice: not covered.
 
 Prompt attachments:
@@ -164,13 +176,17 @@ Prompt attachments:
   --include-attachments`.
 - Standard remote home-worker Codex/OpenCode: covered by
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers
-  codex,opencode --include-attachments`.
+  codex,opencode --include-attachments`. The same coverage also passes with
+  `--hetzner-worker`.
 - Direct slice target Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
   --slice-local-docker --providers opencode,codex --include-attachments`.
 - Standard remote home-worker Claude: covered for image prompt attachments in
   both native-origin and Arroba-origin directions by
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers claude
-  --include-attachments`.
+  --include-attachments` in same-host relay mode. Actual Hetzner validation
+  observes image attachment interception and remote TUI reads before the
+  extended run is blocked by Claude Code remote auth during the permission
+  phase.
 - Home-managed slice: not covered.
 
 MCPs and skills:
@@ -254,9 +270,12 @@ Provider notes:
      and request worker-owned native provider runs.
    - Current provider status:
      - Codex/OpenCode: prompt/turn, permission, and prompt-attachment drills pass
-       in same-host home-worker relay mode.
+       in same-host home-worker relay mode and against the Hetzner worker.
      - Claude: prompt/turn, image prompt-attachment, and permission drills pass
        in same-host home-worker relay mode through the remote-rendered PTY path.
+       Prompt/turn also passes against the Hetzner worker; extended Hetzner
+       validation is blocked by Claude Code remote auth during permission
+       validation.
    - Required product work:
      - validate native TUI `--machine`/`--kernel-ref` placement arguments for
        Codex, OpenCode, and Claude;
@@ -266,9 +285,9 @@ Provider notes:
      - mirror native prompt/turn output, permission interactions, status, and
        prompt attachments back to the home session without making the relay a
        runtime authority;
-     - run the standard home-worker live drill in same-host relay mode first,
-       then repeat against the Hetzner relay where endpoint reachability and
-       provider credentials allow it.
+      - keep the Hetzner worker drill in the standard regression set for
+        Codex/OpenCode, and resolve Claude Code worker auth before marking
+        Claude actual-cross-host permissions/product readiness green.
    - Run the prompt/turn, permission, and prompt-attachment matrix for all three
      providers.
    - Home kernel owns the session; worker kernel owns provider execution.
@@ -301,7 +320,7 @@ Legend:
 | local | Claude | pass | pass | pass | gap |
 | standard remote | Codex | pass | pass | pass | gap |
 | standard remote | OpenCode | pass | pass | pass | gap |
-| standard remote | Claude | pass | pass | pass | gap |
+| standard remote | Claude | pass | partial | partial | gap |
 | direct slice target | Codex | pass | gap | pass | gap |
 | direct slice target | OpenCode | pass | gap | pass | gap |
 | home-managed slice | Codex | gap | gap | gap | gap |

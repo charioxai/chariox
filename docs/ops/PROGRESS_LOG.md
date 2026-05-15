@@ -2,6 +2,31 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-05-15
+
+### M14B actual Hetzner native TUI worker validation
+
+- Added the actual Hetzner worker path to `live-remote-native-tui-drill.mjs`.
+  The drill starts the relay and worker kernel on the Hetzner host, reaches the
+  relay through an SSH local forward, and bridges Codex/OpenCode worker-local
+  provider endpoints back to local native TUIs through an SSH provider endpoint
+  bridge.
+- Confirmed OpenCode against the Hetzner worker for prompt/turns, provider
+  permissions, prompt attachments, two native TUIs plus one Arroba observer in
+  one session, no cross-agent marker contamination, and badge transitions back
+  to idle.
+- Confirmed Codex against the Hetzner worker for the same prompt/turn,
+  permission, attachment, separation, and badge-status matrix.
+- Confirmed Claude Code prompt/turns against the Hetzner worker through the
+  remote-rendered PTY path. Claude extended Hetzner validation remains blocked:
+  image attachments are intercepted/read in the remote-rendered TUI, but the
+  permission phase enters Claude Code's remote `Not logged in` state before a
+  permission prompt can be validated.
+- Fixed OpenCode native TUI projection for cross-host multi-TUI runs by adding a
+  periodic transcript refresh while the provider event stream is active.
+- Updated remote permission assertions to check execution files on the worker
+  when the provider run is Hetzner-backed.
+
 ## 2026-05-14
 
 ### M14B native TUI validation reset

@@ -37,6 +37,7 @@ import {
   promptAttachmentTransferIsForced,
 } from "../prompt-attachment-transfer.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
+import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 
 const execFileAsync = promisify(execFile)
 const reservedKernelPortLocks: string[] = []
@@ -97,6 +98,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
   let appServer: ReturnType<typeof spawn> | null = null
   let kernelServerPid: string | null = null
   let proxy: CodexProxyServer | null = null
+  let endpointBridge: { close: () => Promise<void> } | null = null
   let pump: { stop: () => void } | null = null
   let cleanupSessionId: string | null = null
   let cleanupAttachmentId: string | null = null
@@ -162,6 +164,9 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       appServer = await startCodexAppServer(upstreamEndpoint, worktree)
       bindProviderEndpoint = ""
     }
+    const bridgedEndpoint = await bridgeRemoteNativeProviderEndpoint(upstreamEndpoint, "Codex")
+    upstreamEndpoint = bridgedEndpoint.endpoint
+    endpointBridge = bridgedEndpoint
     proxy = await startCodexProxy({
       upstreamEndpoint,
       client,
@@ -215,6 +220,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     if (kernelServerPid) {
       await stopCodexAppServerInKernel(client, cleanupSessionId, cleanupAttachmentId, kernelServerPid, worktree).catch(() => {})
     }
+    await endpointBridge?.close()
     releaseKernelPortLocks()
     await client.close()
   }
