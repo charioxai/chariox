@@ -44,6 +44,7 @@ function parseArgs(argv) {
     providers: ["opencode", "codex", "claude"],
     keepArtifactsOnFailure: false,
     sliceLocalDocker: false,
+    standardHomeWorker: false,
     includePermissions: false,
     includeAttachments: false,
   }
@@ -57,6 +58,8 @@ function parseArgs(argv) {
       options.keepArtifactsOnFailure = true
     } else if (arg === "--slice-local-docker") {
       options.sliceLocalDocker = true
+    } else if (arg === "--standard-home-worker") {
+      options.standardHomeWorker = true
     } else if (arg === "--include-permissions") {
       options.includePermissions = true
     } else if (arg === "--include-attachments") {
@@ -66,6 +69,9 @@ function parseArgs(argv) {
     } else {
       throw new Error(`unknown argument: ${arg}`)
     }
+  }
+  if (options.sliceLocalDocker && options.standardHomeWorker) {
+    throw new Error("--slice-local-docker and --standard-home-worker are mutually exclusive")
   }
   for (const provider of options.providers) {
     if (provider !== "opencode" && provider !== "codex" && provider !== "claude") {
@@ -86,6 +92,7 @@ function printHelp() {
     "- verifies native-origin and Arroba-origin prompts, no cross-contamination, and badge transitions",
     "",
     "  --providers opencode,codex,claude",
+    "  --standard-home-worker     Run home and worker kernels through the relay",
     "  --slice-local-docker          Run against a local Docker slice kernel instead of a host kernel",
     "  --include-permissions         Validate provider-native permissions through the Arroba observer",
     "  --include-attachments         Validate prompt attachment transfer through native TUI providers",
@@ -97,6 +104,8 @@ function makePorts(base = 52000 + Math.floor(Math.random() * 4000)) {
   return {
     relayPort: base,
     kernelPort: base + 1000,
+    workerKernelPort: base + 1100,
+    workerMcpPort: base + 1101,
     mcpPort: base + 1001,
     openCodePort: base + 2000,
     codexPort: base + 2001,
@@ -120,6 +129,8 @@ async function portsAreAvailable(ports, includeSliceRanges) {
   const candidates = [
     ports.relayPort,
     ports.kernelPort,
+    ports.workerKernelPort,
+    ports.workerMcpPort,
     ports.mcpPort,
     ports.openCodePort,
     ports.codexPort,
@@ -217,6 +228,22 @@ async function waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias) {
     }
   }
   throw new Error(`relay target ${targetDaemonAlias} did not become reachable`)
+}
+
+async function waitForRemoteMachine(relayUrl, relayToken, targetDaemonAlias, machineAlias) {
+  const client = relayClient(relayUrl, relayToken, targetDaemonAlias)
+  try {
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      const machines = unwrap(await client.send(listRemoteMachinesRequest()), "RemoteMachinesListed").machines ?? []
+      if (machines.some((machine) => machine.alias === machineAlias || machine.machine_alias === machineAlias || machine.id === machineAlias || machine.machine_id === machineAlias)) {
+        return
+      }
+      await sleep(500)
+    }
+  } finally {
+    await client.close().catch(() => {})
+  }
+  throw new Error(`remote machine ${machineAlias} did not appear in home kernel inventory`)
 }
 
 async function terminateChild(child, signal = "SIGTERM") {
@@ -687,6 +714,7 @@ async function runProviderScenario({
   relayUrl,
   relayToken,
   targetDaemonAlias,
+  machineRef = null,
   workspace,
   worktree,
   nativeEnv = {},
@@ -757,6 +785,7 @@ async function runProviderScenario({
       workspace,
       "--worktree",
       worktree,
+      ...(machineRef ? ["--machine", machineRef] : []),
       ...providerArgs,
       ...(provider === "codex" || provider === "claude" ? ["--initial-prompt", `Reply with exactly ${markers.nativeA} and nothing else.`] : []),
       ...(provider === "claude" ? ["--remote-rendered"] : []),
@@ -786,6 +815,7 @@ async function runProviderScenario({
       workspace,
       "--worktree",
       worktree,
+      ...(machineRef ? ["--machine", machineRef] : []),
       ...providerArgs,
       ...(provider === "codex" || provider === "claude" ? ["--initial-prompt", `Reply with exactly ${markers.nativeB} and nothing else.`] : []),
       ...(provider === "claude" ? ["--remote-rendered"] : []),
@@ -1155,6 +1185,9 @@ async function main() {
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   const targetDaemonAlias = `remote-native-home-${process.pid}`
+  const workerDaemonAlias = `remote-native-worker-${process.pid}`
+  const workerMachineAlias = `remote-native-worker-machine-${process.pid}`
+  const workerKernelUrl = `ws://127.0.0.1:${ports.workerKernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot
   const homeDir = path.join(root, "home")
@@ -1164,6 +1197,7 @@ async function main() {
   const xdgCacheHome = path.join(root, "xdg-cache")
   let relay = null
   let kernel = null
+  let workerKernel = null
   let succeeded = false
   try {
     await mkdir(root, { recursive: true })
@@ -1219,6 +1253,37 @@ async function main() {
     })
     await waitForLocalDaemon(homeKernelUrl, workspace, worktree)
     await waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias)
+    if (options.standardHomeWorker) {
+      workerKernel = spawn(kernelBinary, [], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          HOME: realHomeDir,
+          XDG_CONFIG_HOME: path.join(root, "worker-xdg-config"),
+          XDG_STATE_HOME: path.join(root, "worker-xdg-state"),
+          XDG_DATA_HOME: path.join(root, "worker-xdg-data"),
+          XDG_CACHE_HOME: path.join(root, "worker-xdg-cache"),
+          CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, ".codex"),
+          OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, ".config", "opencode"),
+          ARROBA_LOG_DIR: path.join(root, "worker-logs"),
+          ARROBA_KERNEL_PORT: String(ports.workerKernelPort),
+          ARROBA_MCP_PORT: String(ports.workerMcpPort),
+          ARROBA_RELAY_URL: relayUrl,
+          ARROBA_RELAY_TOKEN: relayToken,
+          ARROBA_DAEMON_ID: `remote-native-worker-${process.pid}-${Date.now()}`,
+          ARROBA_DAEMON_ALIAS: workerDaemonAlias,
+          ARROBA_MACHINE_ID: workerMachineAlias,
+          ARROBA_MACHINE_ALIAS: workerMachineAlias,
+          ARROBA_ACCEPT_REMOTE_LEASES: "1",
+          ARROBA_DAEMON_SOCKET: path.join(root, "worker.sock"),
+          ARROBA_SESSION_HISTORY_DIR: path.join(root, "worker-history"),
+        },
+        stdio: ["ignore", "ignore", "inherit"],
+      })
+      await waitForLocalDaemon(workerKernelUrl, workspace, worktree)
+      await waitForRelayTarget(relayUrl, relayToken, workerDaemonAlias)
+      await waitForRemoteMachine(relayUrl, relayToken, targetDaemonAlias, workerMachineAlias)
+    }
 
     const scenarios = []
     for (const provider of options.providers) {
@@ -1228,6 +1293,7 @@ async function main() {
         relayUrl,
         relayToken,
         targetDaemonAlias,
+        machineRef: options.standardHomeWorker ? workerMachineAlias : null,
         workspace,
         worktree,
         options,
@@ -1239,12 +1305,15 @@ async function main() {
       mode: "remote-native-tui-relay-drill",
       relayUrl,
       homeKernelUrl,
+      workerKernelUrl: options.standardHomeWorker ? workerKernelUrl : null,
       targetDaemonAlias,
+      workerMachineAlias: options.standardHomeWorker ? workerMachineAlias : null,
       providers: options.providers,
       scenarios,
     }, null, 2))
     succeeded = true
   } finally {
+    await terminateChild(workerKernel)
     await terminateChild(kernel)
     await terminateChild(relay)
     if (succeeded || !options.keepArtifactsOnFailure) {

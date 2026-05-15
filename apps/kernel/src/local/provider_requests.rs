@@ -6,6 +6,9 @@ use crate::provider::{
     ensure_opencode_catalog_endpoint, logout_codex, CodexClient, LaunchProviderRequest,
     OpenCodeClient, OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderClientInterface,
 };
+use crate::transport::relay_client::send_peer_request_via_temporary_connection;
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+use arroba_relay::protocol::ClientTarget;
 use arroba_relay::protocol::RelayMachinePresence;
 use std::collections::BTreeMap;
 use std::thread;
@@ -63,6 +66,11 @@ impl DaemonApp {
         &mut self,
         request: LaunchProviderRunRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if request.native_tui {
+            if let Some(response) = remote_native_provider_run_response(self, &request)? {
+                return Ok(response);
+            }
+        }
         let launch_request = launch_provider_request_from_local(self, request);
         let provider_run = self.launch_provider(launch_request)?;
         crate::logging::debug_with_fields(
@@ -268,6 +276,54 @@ impl DaemonApp {
                 message: format!("provider `{provider}` does not expose a logout API"),
             }),
         }
+    }
+}
+
+fn remote_native_provider_run_response(
+    app: &mut DaemonApp,
+    request: &LaunchProviderRunRequest,
+) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+    let session = app.sessions().get_session(&request.session_id)?;
+    let agent_id = request
+        .agent_id
+        .clone()
+        .or_else(|| session.focused_agent_id().map(str::to_string));
+    let Some(agent_id) = agent_id else {
+        return Ok(None);
+    };
+    let agent = app.agents().get_agent(&agent_id)?;
+    let Some(remote_execution) = agent.remote_execution().cloned() else {
+        return Ok(None);
+    };
+    let relay_config = app.relay_config_for_remote_execution(&remote_execution);
+    let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
+        &relay_config,
+        ClientTarget {
+            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::LaunchLeasedNativeProviderRun {
+            leased_agent_id: remote_execution.leased_agent_id,
+            adapter_key: request.adapter_key.clone(),
+            provider: request.provider.clone(),
+            account_profile: request.account_profile.clone(),
+            model: request.model.clone(),
+            variant: request.variant.clone(),
+            structured_endpoint: request.structured_endpoint.clone(),
+            provider_session_id: request.provider_session_id.clone(),
+        },
+    ))?;
+    match response {
+        RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run } => {
+            app.update_provider_run_projection(provider_run.clone());
+            Ok(Some(LocalDaemonResponse::ProviderRunLaunched {
+                provider_run,
+            }))
+        }
+        other => Err(DaemonError::LocalTransport {
+            operation: "launch remote native provider run",
+            message: format!("unexpected remote native provider launch response: {other:?}"),
+        }),
     }
 }
 

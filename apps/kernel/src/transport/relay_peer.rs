@@ -160,6 +160,19 @@ pub enum RelayPeerRequest {
         execution_mode: crate::provider::AgentExecutionMode,
         permission_level: crate::provider::AgentPermissionLevel,
     },
+    LaunchLeasedNativeProviderRun {
+        leased_agent_id: String,
+        adapter_key: String,
+        provider: String,
+        account_profile: String,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        variant: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        structured_endpoint: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_session_id: Option<String>,
+    },
     SubmitLeasedPrompt {
         leased_agent_id: String,
         prompt: String,
@@ -233,6 +246,9 @@ pub enum RelayPeerResponse {
     },
     LeasedAgentConfigUpdated {
         leased_agent: LeasedAgent,
+    },
+    LeasedNativeProviderRunLaunched {
+        provider_run: crate::provider::RuntimeProviderRun,
     },
     LeasedPromptSubmitted {
         provider_run_id: String,

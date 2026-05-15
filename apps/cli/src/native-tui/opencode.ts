@@ -24,6 +24,7 @@ import {
   createSessionRequest,
   getProviderRunRequest,
   launchProviderRunRequest,
+  moveAgentToRemoteRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
   resolveSessionRequest,
@@ -51,6 +52,7 @@ type NativeOpenCodeOptions = {
   clientId: string
   workspace?: string
   worktree?: string
+  machineRef?: string
   alias?: string
   agentAlias?: string
   mode: "build" | "plan"
@@ -75,6 +77,7 @@ type NativeProviderSelection = {
 
 type OpenCodeProxyState = {
   providerRunId: string | null
+  providerRunLocal: boolean
   lastNativeSelection: NativeProviderSelection | null
 }
 
@@ -106,10 +109,11 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       })())
     const attachment = await attachToSession(client, session.id, options.clientId)
     const agent = created?.agent
-      ? await maybeAliasAgent(client, session.id, created.agent, options.agentAlias)
-      : await spawnOpenCodeAgent(client, session.id, options.agentAlias, options.mode, options.permissions)
+      ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
+      : await spawnOpenCodeAgent(client, session.id, options.agentAlias, options.mode, options.permissions, options.machineRef)
     const proxyState: OpenCodeProxyState = {
       providerRunId: null,
+      providerRunLocal: true,
       lastNativeSelection: null,
     }
     let upstreamBaseUrl: string
@@ -118,7 +122,9 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       const launched = await launchProviderRun(client, session.id, "opencode", "default", "default", "", agent.id, {
         nativeTui: true,
       })
-      run = await waitForOpenCodeRunReady(client, launched.id)
+      run = launched.session_id === session.id
+        ? await waitForOpenCodeRunReady(client, launched.id)
+        : launched
       if (!run.structured_endpoint) {
         throw new Error("OpenCode managed native server did not expose an endpoint")
       }
@@ -145,7 +151,9 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
         structuredEndpoint: proxyUrl,
         nativeTui: true,
       })
-      run = await waitForOpenCodeRunReady(client, launched.id)
+      run = launched.session_id === session.id
+        ? await waitForOpenCodeRunReady(client, launched.id)
+        : launched
     }
     if (!run) {
       throw new Error("OpenCode provider run was not launched")
@@ -155,6 +163,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       throw new Error("OpenCode provider run did not expose provider_session_id")
     }
     proxyState.providerRunId = run.id
+    proxyState.providerRunLocal = run.session_id === session.id
     process.stderr.write([
       "[arroba opencode native-tui]",
       `  arroba session: ${session.id}${session.alias ? ` (${session.alias})` : ""}`,
@@ -242,6 +251,10 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
       case "--worktree":
         options.worktree = path.resolve(next())
         break
+      case "--machine":
+      case "--kernel-ref":
+        options.machineRef = next()
+        break
       case "--alias":
         options.alias = next()
         break
@@ -290,6 +303,9 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
   if (options.socketPath && options.kernelPort) {
     throw new Error("--socket cannot be used together with --kernel-port")
   }
+  if (options.machineRef && !options.serverInKernel) {
+    throw new Error("--machine requires --server-in-kernel so the OpenCode server is launched by the worker kernel")
+  }
   if (positional[0] !== undefined) {
     options.sessionRef = positional[0]
   }
@@ -300,6 +316,9 @@ function printNativeOpenCodeUsage() {
   process.stdout.write([
     "usage: arroba opencode [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--mode build|plan] [--permissions required|yolo]",
     "       arroba opencode [session-ref] --relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)",
+    "",
+    "placement:",
+    "  --machine, --kernel-ref REF       Run the Arroba agent/provider on a remote worker kernel",
     "",
     "behavior:",
     "  creates a new Arroba agent in the selected session and launches native `opencode attach` for it.",
@@ -400,11 +419,40 @@ async function spawnOpenCodeAgent(
   alias?: string,
   mode: "build" | "plan" = "build",
   permissions: "required" | "yolo" = "yolo",
+  machineRef?: string,
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
     spawnAgentRequest(sessionId, "opencode", alias, "default", undefined, null, mode, permissions),
   )
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
+  const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
+  return machineRef
+    ? moveAgentToRemote(client, sessionId, agent.id, machineRef)
+    : agent
+}
+
+async function prepareCreatedAgent(
+  client: LocalIpcClient,
+  sessionId: string,
+  agent: AgentInstance,
+  alias: string | undefined,
+  machineRef: string | undefined,
+): Promise<AgentInstance> {
+  const placed = machineRef
+    ? await moveAgentToRemote(client, sessionId, agent.id, machineRef)
+    : agent
+  return maybeAliasAgent(client, sessionId, placed, alias)
+}
+
+async function moveAgentToRemote(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+  machineRef: string,
+): Promise<AgentInstance> {
+  const response = await client.send<Record<string, unknown>>(
+    moveAgentToRemoteRequest(sessionId, agentId, machineRef),
+  )
+  return expectVariant<{ agent: AgentInstance }>(response, "AgentMovedToRemote").agent
 }
 
 async function maybeAliasAgent(
@@ -625,8 +673,10 @@ async function handleProxyRequest(
     if (selection) {
       debugNativeMutation("selection_observed", selection)
     }
-    const run = await getProviderRun(options.client, state.providerRunId)
-    if (selection && shouldApplyNativeSelection(selection, state.lastNativeSelection, run)) {
+    const run = state.providerRunLocal
+      ? await getProviderRun(options.client, state.providerRunId)
+      : null
+    if (selection && run && shouldApplyNativeSelection(selection, state.lastNativeSelection, run)) {
       const updated = await updateProviderRunSelection(
         options.client,
         options.sessionId,
@@ -637,13 +687,18 @@ async function handleProxyRequest(
         model: updated.model,
         variant: updated.variant,
       })
-    } else if (selection) {
+    } else if (selection && run) {
       debugNativeMutation("selection_ignored_as_stale", {
         incoming: selection,
         current: {
           model: run.model,
           variant: run.variant,
         },
+      })
+    } else if (selection) {
+      debugNativeMutation("selection_observed_on_remote_run", {
+        model: selection.model,
+        variant: selection.variant,
       })
     }
     if (selection?.model || selection?.variant) {

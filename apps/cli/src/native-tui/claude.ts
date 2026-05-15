@@ -29,6 +29,7 @@ import {
   getProviderRunRequest,
   getSessionStateRequest,
   launchProviderRunRequest,
+  moveAgentToRemoteRequest,
   pumpTerminalOutputRequest,
   requestNativeProviderInteractionRequest,
   resolveSessionRequest,
@@ -57,6 +58,7 @@ type NativeClaudeOptions = {
   clientId: string
   workspace?: string
   worktree?: string
+  machineRef?: string
   alias?: string
   agentAlias?: string
   model: string
@@ -135,10 +137,12 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
     const session = created?.session ?? await resolveSession(client, options.sessionRef!, workspace)
     const attachment = await attachToSession(client, session.id, options.clientId)
     const agent = created?.agent
-      ? await maybeAliasAgent(client, session.id, created.agent, options.agentAlias)
-      : await spawnClaudeAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions)
+      ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
+      : await spawnClaudeAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef)
     const launched = await launchClaudeNativeRun(client, session.id, agent.id, options.model, options.effort)
-    const run = await waitForProviderRunReady(client, launched.id)
+    const run = launched.session_id === session.id
+      ? await waitForProviderRunReady(client, launched.id)
+      : launched
     permissionBridge = await startClaudePermissionBridge({
       client,
       sessionId: session.id,
@@ -258,6 +262,10 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
       case "--worktree":
         options.worktree = path.resolve(next())
         break
+      case "--machine":
+      case "--kernel-ref":
+        options.machineRef = next()
+        break
       case "--alias":
         options.alias = next()
         break
@@ -296,6 +304,9 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
     }
   }
   if (positional.length > 1) throw new Error(`unexpected claude arguments: ${positional.slice(1).join(" ")}`)
+  if (options.machineRef && !options.remoteRendered) {
+    throw new Error("--machine requires --remote-rendered so Claude Code runs in the worker kernel PTY")
+  }
   if (positional[0] !== undefined) options.sessionRef = positional[0]
   return options
 }
@@ -311,6 +322,7 @@ function printNativeClaudeUsage() {
     "  --kernel-url <url>               Kernel websocket URL",
     "  --workspace <path>               Workspace root",
     "  --worktree <path>                Worktree root",
+    "  --machine, --kernel-ref <ref>    Run the Arroba agent/provider on a remote worker kernel",
     "  --alias <name>                   Alias for a newly-created session",
     "  --agent-alias <name>             Alias for the Claude native agent",
     "  --model <model>                  Claude model argument (default sonnet)",
@@ -338,10 +350,12 @@ async function runClaudeRemoteRendered(
     const session = created?.session ?? await resolveSession(client, options.sessionRef!, workspace)
     const attachment = await attachToSession(client, session.id, options.clientId)
     const agent = created?.agent
-      ? await maybeAliasAgent(client, session.id, created.agent, options.agentAlias)
-      : await spawnClaudeAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions)
+      ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
+      : await spawnClaudeAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef)
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
-    const run = await waitForProviderRunReady(client, launched.id)
+    const run = launched.session_id === session.id
+      ? await waitForProviderRunReady(client, launched.id)
+      : launched
 
     process.stderr.write([
       "[arroba claude remote-native-tui]",
@@ -1214,11 +1228,40 @@ async function spawnClaudeAgent(
   worktree: string,
   mode: "build" | "plan",
   permissions: "required" | "yolo",
+  machineRef?: string,
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
     spawnAgentRequest(sessionId, "claude", alias, model, worktree, effort, mode, permissions),
   )
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
+  const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
+  return machineRef
+    ? moveAgentToRemote(client, sessionId, agent.id, machineRef)
+    : agent
+}
+
+async function prepareCreatedAgent(
+  client: LocalIpcClient,
+  sessionId: string,
+  agent: AgentInstance,
+  alias: string | undefined,
+  machineRef: string | undefined,
+): Promise<AgentInstance> {
+  const placed = machineRef
+    ? await moveAgentToRemote(client, sessionId, agent.id, machineRef)
+    : agent
+  return maybeAliasAgent(client, sessionId, placed, alias)
+}
+
+async function moveAgentToRemote(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+  machineRef: string,
+): Promise<AgentInstance> {
+  const response = await client.send<Record<string, unknown>>(
+    moveAgentToRemoteRequest(sessionId, agentId, machineRef),
+  )
+  return expectVariant<{ agent: AgentInstance }>(response, "AgentMovedToRemote").agent
 }
 
 async function maybeAliasAgent(

@@ -162,6 +162,40 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::LaunchLeasedNativeProviderRun {
+            leased_agent_id,
+            adapter_key,
+            provider,
+            account_profile,
+            model,
+            variant,
+            structured_endpoint,
+            provider_session_id,
+        } => {
+            let launched = router
+                .relay_launch_leased_native_provider_run(
+                    &leased_agent_id,
+                    &adapter_key,
+                    &provider,
+                    &account_profile,
+                    &model,
+                    variant,
+                    structured_endpoint,
+                    provider_session_id,
+                )
+                .await;
+            match launched {
+                Ok(provider_run) => {
+                    RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id,
             prompt,

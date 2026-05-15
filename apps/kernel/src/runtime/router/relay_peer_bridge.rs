@@ -121,6 +121,32 @@ impl CommandRouter {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn relay_launch_leased_native_provider_run(
+        &self,
+        leased_agent_id: &str,
+        adapter_key: &str,
+        provider: &str,
+        account_profile: &str,
+        model: &str,
+        variant: Option<String>,
+        structured_endpoint: Option<String>,
+        provider_session_id: Option<String>,
+    ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
+        relay_peer_runtime::launch_relay_leased_native_provider_run(
+            &self.app,
+            leased_agent_id,
+            adapter_key,
+            provider,
+            account_profile,
+            model,
+            variant,
+            structured_endpoint,
+            provider_session_id,
+        )
+        .await
+    }
+
     pub(crate) async fn relay_submit_leased_prompt(
         &self,
         leased_agent_id: &str,

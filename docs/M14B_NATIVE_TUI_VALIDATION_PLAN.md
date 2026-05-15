@@ -51,6 +51,18 @@ must happen on the worker. Standard home-worker native TUI requires a new
 remote-backed native provider-run path before the prompt/turn, permission, and
 attachment matrix can be validated.
 
+2026-05-15 implementation update: the first remote-backed native provider-run
+path is in progress. Native launchers accept `--machine`/`--kernel-ref` and
+move the native TUI agent onto a worker lease before launching the provider run.
+For remote placement, Codex/OpenCode require `--server-in-kernel` and Claude
+requires `--remote-rendered`, so provider execution is worker-owned rather than
+handed a local provider endpoint. The home kernel forwards native provider-run
+launches for remote-backed agents to the worker kernel over relay peer transport.
+The live drill now has a `--standard-home-worker` mode for an isolated
+same-host home/worker relay topology. True cross-host Hetzner validation still
+needs endpoint reachability checks for Codex/OpenCode worker-owned provider
+servers and Claude credential availability on the worker.
+
 ## Goal
 
 Validate and complete native TUI parity across the three providers and three
@@ -201,19 +213,20 @@ Provider notes:
      native `@path` mentions so the provider TUI handles them normally.
 
 5. Validate standard remote home-worker native TUI.
-   - Blocked until native TUI launches can create remote-backed Arroba agents
-     and bind their provider-native protocol stream to a worker-owned provider
-     run.
+   - In progress: native TUI launches can create remote-backed Arroba agents
+     and request worker-owned native provider runs.
    - Required product work:
-     - add native TUI `--machine`/`--kernel-ref` placement arguments for Codex,
-       OpenCode, and Claude;
-     - add a kernel-owned remote native provider-run launch path that asks the
-       selected worker kernel to launch/bind the provider-native runtime for the
-       leased agent;
+     - validate native TUI `--machine`/`--kernel-ref` placement arguments for
+       Codex, OpenCode, and Claude;
+     - validate the kernel-owned remote native provider-run launch path that
+       asks the selected worker kernel to launch/bind the provider-native
+       runtime for the leased agent;
      - mirror native prompt/turn output, permission interactions, status, and
        prompt attachments back to the home session without making the relay a
        runtime authority;
-     - add the standard home-worker live drill only after that contract exists.
+     - run the standard home-worker live drill in same-host relay mode first,
+       then repeat against the Hetzner relay where endpoint reachability and
+       provider credentials allow it.
    - Run the prompt/turn, permission, and prompt-attachment matrix for all three
      providers.
    - Home kernel owns the session; worker kernel owns provider execution.

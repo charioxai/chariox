@@ -24,6 +24,7 @@ import {
   createSessionRequest,
   getProviderRunRequest,
   launchProviderRunRequest,
+  moveAgentToRemoteRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
   resolveSessionRequest,
@@ -51,6 +52,7 @@ type NativeCodexOptions = {
   clientId: string
   workspace?: string
   worktree?: string
+  machineRef?: string
   alias?: string
   agentAlias?: string
   model: string
@@ -103,8 +105,8 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     cleanupSessionId = session.id
     cleanupAttachmentId = attachment.id
     const agent = created?.agent
-      ? await maybeAliasAgent(client, session.id, created.agent, options.agentAlias)
-      : await spawnCodexAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions)
+      ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
+      : await spawnCodexAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef)
     const bindState: {
       promise: Promise<RuntimeProviderRun> | null
       run: RuntimeProviderRun | null
@@ -117,7 +119,22 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     let providerSessionId: string | null = null
     let upstreamEndpoint: string
     let bindProviderEndpoint: string
-    if (options.serverInKernel) {
+    if (options.serverInKernel && options.machineRef) {
+      const run = await launchManagedNativeProviderRun({
+        client,
+        sessionId: session.id,
+        agentId: agent.id,
+        model: options.model,
+        effort: options.effort,
+      })
+      if (!run.structured_endpoint) {
+        throw new Error("Codex managed native server did not expose an endpoint")
+      }
+      bindState.promise = Promise.resolve(run)
+      bindState.run = run
+      upstreamEndpoint = run.structured_endpoint
+      bindProviderEndpoint = ""
+    } else if (options.serverInKernel) {
       const port = await reserveCodexKernelServerPort()
       upstreamEndpoint = `ws://127.0.0.1:${port}`
       const listenHost = process.env.ARROBA_CODEX_KERNEL_SERVER_BIND_HOST?.trim() || "127.0.0.1"
@@ -242,6 +259,10 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
       case "--worktree":
         options.worktree = path.resolve(next())
         break
+      case "--machine":
+      case "--kernel-ref":
+        options.machineRef = next()
+        break
       case "--alias":
         options.alias = next()
         break
@@ -291,6 +312,9 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
   if (options.relayUrl && options.kernelPort) throw new Error("--relay-url cannot be used together with --kernel-port")
   if (options.kernelUrl && options.kernelPort) throw new Error("--kernel-url cannot be used together with --kernel-port")
   if (options.socketPath && options.kernelPort) throw new Error("--socket cannot be used together with --kernel-port")
+  if (options.machineRef && !options.serverInKernel) {
+    throw new Error("--machine requires --server-in-kernel so the Codex app-server is launched by the worker kernel")
+  }
   if (positional[0] !== undefined) options.sessionRef = positional[0]
   return options
 }
@@ -299,6 +323,9 @@ function printNativeCodexUsage() {
   process.stdout.write([
     "usage: arroba codex [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--mode build|plan] [--permissions required|yolo]",
     "       arroba codex [session-ref] --relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)",
+    "",
+    "placement:",
+    "  --machine, --kernel-ref REF       Run the Arroba agent/provider on a remote worker kernel",
     "",
     "behavior:",
     "  creates a new Arroba agent in the selected session and launches native `codex --remote` for it.",
@@ -398,11 +425,40 @@ async function spawnCodexAgent(
   worktree: string,
   mode: "build" | "plan",
   permissions: "required" | "yolo",
+  machineRef?: string,
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
     spawnAgentRequest(sessionId, "codex", alias, model, worktree, effort, mode, permissions),
   )
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
+  const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
+  return machineRef
+    ? moveAgentToRemote(client, sessionId, agent.id, machineRef)
+    : agent
+}
+
+async function prepareCreatedAgent(
+  client: LocalIpcClient,
+  sessionId: string,
+  agent: AgentInstance,
+  alias: string | undefined,
+  machineRef: string | undefined,
+): Promise<AgentInstance> {
+  const placed = machineRef
+    ? await moveAgentToRemote(client, sessionId, agent.id, machineRef)
+    : agent
+  return maybeAliasAgent(client, sessionId, placed, alias)
+}
+
+async function moveAgentToRemote(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+  machineRef: string,
+): Promise<AgentInstance> {
+  const response = await client.send<Record<string, unknown>>(
+    moveAgentToRemoteRequest(sessionId, agentId, machineRef),
+  )
+  return expectVariant<{ agent: AgentInstance }>(response, "AgentMovedToRemote").agent
 }
 
 async function maybeAliasAgent(
@@ -443,6 +499,7 @@ async function launchNativeProviderRun(options: {
   const run = "ProviderRunLaunched" in response
     ? expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched").provider_run
     : expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunchAccepted").provider_run
+  if (run.session_id !== options.sessionId) return run
   return waitForProviderRunReady(options.client, run.id)
 }
 
