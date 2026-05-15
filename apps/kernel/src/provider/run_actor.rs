@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 
 mod command_execution;
@@ -9,14 +8,8 @@ mod finished_jobs;
 mod native_interaction;
 mod operation_lanes;
 mod runtime_slots;
-use command_execution::{
-    execute_abort_command, execute_output_poll_command, execute_selection_sync_command,
-    execute_submit_command, execute_terminate_command,
-};
-use finished_jobs::{
-    push_finished_abort, push_finished_output_poll, push_finished_selection_sync,
-    push_finished_submit,
-};
+mod worker;
+use finished_jobs::push_finished_output_poll;
 pub(crate) use finished_jobs::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
     FinishedProviderRunSelectionSyncJob,
@@ -31,6 +24,7 @@ use runtime_slots::runtime_should_restore;
 use runtime_slots::{
     clear_runtime_state, ClaudeRuntimeSlot, CodexRuntimeSlot, OpenCodeRuntimeSlot,
 };
+use worker::{ProviderRunActorCommand, ProviderRunWorkerDeps};
 
 use crate::error::DaemonError;
 use crate::session::PromptAttachment;
@@ -39,8 +33,6 @@ use super::{
     opencode_runtime::OpenCodeRuntimeState, ClaudeRuntimeState, CodexRuntimeState,
     RuntimeProviderRun,
 };
-
-const PROVIDER_RUN_COMMAND_QUEUE_LIMIT: usize = 64;
 
 #[derive(Clone, Default)]
 pub(crate) struct ProviderRunActorMailbox {
@@ -58,36 +50,6 @@ pub(crate) struct ProviderRunActorMailbox {
     finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
     finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
     output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
-}
-
-enum ProviderRunActorCommand {
-    Submit {
-        session_id: String,
-        provider_run_id: String,
-        agent_id: String,
-        run: RuntimeProviderRun,
-        prompt: String,
-        attachments: Vec<PromptAttachment>,
-    },
-    Abort {
-        session_id: String,
-        provider_run_id: String,
-        run: RuntimeProviderRun,
-    },
-    Terminate {
-        provider_run_id: String,
-        run: RuntimeProviderRun,
-    },
-    SyncSelection {
-        provider_run_id: String,
-        run: RuntimeProviderRun,
-    },
-    PollOutput {
-        provider_run_id: String,
-        run: RuntimeProviderRun,
-        output_poll_delay: Duration,
-    },
-    Stop,
 }
 
 impl ProviderRunActorMailbox {
@@ -322,23 +284,9 @@ impl ProviderRunActorMailbox {
                 .workers
                 .lock()
                 .expect("provider run actor worker map poisoned");
-            workers.remove(&provider_run_id).unwrap_or_else(|| {
-                Self::spawn_worker(
-                    provider_run_id.clone(),
-                    self.native_interaction_bridge.clone(),
-                    Arc::clone(&self.claude_runs),
-                    Arc::clone(&self.codex_runs),
-                    Arc::clone(&self.opencode_runs),
-                    Arc::clone(&self.cleared_runs),
-                    Arc::clone(&self.structured_prompt_submissions),
-                    Arc::clone(&self.structured_output_polls),
-                    Arc::clone(&self.finished_submits),
-                    Arc::clone(&self.finished_aborts),
-                    Arc::clone(&self.finished_selection_syncs),
-                    Arc::clone(&self.finished_output_polls),
-                    Arc::clone(&self.output_poll_delays),
-                )
-            })
+            workers
+                .remove(&provider_run_id)
+                .unwrap_or_else(|| self.worker_deps().spawn(provider_run_id.clone()))
         };
         match sender.try_send(ProviderRunActorCommand::Terminate {
             provider_run_id: provider_run_id.clone(),
@@ -545,182 +493,25 @@ impl ProviderRunActorMailbox {
             .expect("provider run actor worker map poisoned");
         workers
             .entry(provider_run_id.to_string())
-            .or_insert_with(|| {
-                Self::spawn_worker(
-                    provider_run_id.to_string(),
-                    self.native_interaction_bridge.clone(),
-                    Arc::clone(&self.claude_runs),
-                    Arc::clone(&self.codex_runs),
-                    Arc::clone(&self.opencode_runs),
-                    Arc::clone(&self.cleared_runs),
-                    Arc::clone(&self.structured_prompt_submissions),
-                    Arc::clone(&self.structured_output_polls),
-                    Arc::clone(&self.finished_submits),
-                    Arc::clone(&self.finished_aborts),
-                    Arc::clone(&self.finished_selection_syncs),
-                    Arc::clone(&self.finished_output_polls),
-                    Arc::clone(&self.output_poll_delays),
-                )
-            })
+            .or_insert_with(|| self.worker_deps().spawn(provider_run_id.to_string()))
             .clone()
     }
 
-    fn spawn_worker(
-        provider_run_id: String,
-        native_interaction_bridge: ProviderNativeInteractionBridgeStore,
-        claude_runs: Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
-        codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
-        opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
-        cleared_runs: Arc<Mutex<BTreeSet<String>>>,
-        structured_prompt_submissions: Arc<Mutex<BTreeSet<String>>>,
-        structured_output_polls: Arc<Mutex<BTreeSet<String>>>,
-        finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
-        finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
-        finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
-        finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
-        output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
-    ) -> mpsc::SyncSender<ProviderRunActorCommand> {
-        let (tx, rx) = mpsc::sync_channel(PROVIDER_RUN_COMMAND_QUEUE_LIMIT);
-        thread::spawn(move || {
-            while let Ok(command) = rx.recv() {
-                match command {
-                    ProviderRunActorCommand::Submit {
-                        session_id,
-                        provider_run_id,
-                        agent_id,
-                        run,
-                        prompt,
-                        attachments,
-                    } => {
-                        let result = execute_submit_command(
-                            &claude_runs,
-                            &codex_runs,
-                            &opencode_runs,
-                            &cleared_runs,
-                            run,
-                            prompt,
-                            attachments,
-                        );
-                        clear_structured_prompt_io_in_flight(
-                            &structured_prompt_submissions,
-                            &provider_run_id,
-                        );
-                        let finished = FinishedProviderPromptSubmitJob {
-                            session_id,
-                            provider_run_id,
-                            agent_id,
-                            result,
-                        };
-                        push_finished_submit(&finished_submits, finished);
-                    }
-                    ProviderRunActorCommand::Abort {
-                        session_id,
-                        provider_run_id,
-                        run,
-                    } => {
-                        let result = execute_abort_command(
-                            &claude_runs,
-                            &codex_runs,
-                            &opencode_runs,
-                            &cleared_runs,
-                            run,
-                        );
-                        clear_structured_prompt_io_in_flight(
-                            &structured_prompt_submissions,
-                            &provider_run_id,
-                        );
-                        let finished = FinishedProviderPromptAbortJob {
-                            session_id,
-                            provider_run_id,
-                            result,
-                        };
-                        push_finished_abort(&finished_aborts, finished);
-                    }
-                    ProviderRunActorCommand::Terminate {
-                        provider_run_id,
-                        run,
-                    } => {
-                        if let Err(error) = execute_terminate_command(
-                            &claude_runs,
-                            &codex_runs,
-                            &opencode_runs,
-                            &cleared_runs,
-                            run,
-                        ) {
-                            crate::logging::error_with_fields(
-                                "daemon.provider_run_actor",
-                                "structured provider termination abort failed",
-                                serde_json::json!({
-                                    "provider_run_id": provider_run_id,
-                                    "error": error.to_string(),
-                                }),
-                            );
-                        }
-                        clear_structured_prompt_io_in_flight(
-                            &structured_prompt_submissions,
-                            &provider_run_id,
-                        );
-                        output_poll_delays
-                            .lock()
-                            .expect("provider output poll delay map poisoned")
-                            .remove(&provider_run_id);
-                        clear_runtime_state(
-                            &claude_runs,
-                            &codex_runs,
-                            &opencode_runs,
-                            &provider_run_id,
-                            true,
-                        );
-                        break;
-                    }
-                    ProviderRunActorCommand::SyncSelection {
-                        provider_run_id,
-                        run,
-                    } => {
-                        let result =
-                            execute_selection_sync_command(&opencode_runs, &provider_run_id, &run);
-                        let finished = FinishedProviderRunSelectionSyncJob {
-                            provider_run_id,
-                            result,
-                        };
-                        push_finished_selection_sync(&finished_selection_syncs, finished);
-                    }
-                    ProviderRunActorCommand::PollOutput {
-                        provider_run_id,
-                        run,
-                        output_poll_delay,
-                    } => {
-                        let result = execute_output_poll_command(
-                            &native_interaction_bridge,
-                            &claude_runs,
-                            &codex_runs,
-                            &opencode_runs,
-                            &cleared_runs,
-                            &run,
-                            output_poll_delay,
-                        );
-                        clear_structured_output_poll_in_flight(
-                            &structured_output_polls,
-                            &provider_run_id,
-                        );
-                        let finished = FinishedProviderOutputPollJob {
-                            provider_run_id,
-                            result,
-                        };
-                        push_finished_output_poll(&finished_output_polls, finished);
-                    }
-                    ProviderRunActorCommand::Stop => break,
-                }
-            }
-            crate::logging::info_with_fields(
-                "daemon.provider_run_actor",
-                "provider run actor worker stopped",
-                serde_json::json!({
-                    "provider_run_id": provider_run_id,
-                }),
-            );
-        });
-        tx
+    fn worker_deps(&self) -> ProviderRunWorkerDeps {
+        ProviderRunWorkerDeps {
+            native_interaction_bridge: self.native_interaction_bridge.clone(),
+            claude_runs: Arc::clone(&self.claude_runs),
+            codex_runs: Arc::clone(&self.codex_runs),
+            opencode_runs: Arc::clone(&self.opencode_runs),
+            cleared_runs: Arc::clone(&self.cleared_runs),
+            structured_prompt_submissions: Arc::clone(&self.structured_prompt_submissions),
+            structured_output_polls: Arc::clone(&self.structured_output_polls),
+            finished_submits: Arc::clone(&self.finished_submits),
+            finished_aborts: Arc::clone(&self.finished_aborts),
+            finished_selection_syncs: Arc::clone(&self.finished_selection_syncs),
+            finished_output_polls: Arc::clone(&self.finished_output_polls),
+            output_poll_delays: Arc::clone(&self.output_poll_delays),
+        }
     }
 }
 
@@ -1021,24 +812,4 @@ fn provider_actor_enqueue_error(
             "provider run actor queue rejected command for `{provider_run_id}`: {error_message}"
         ),
     }
-}
-
-fn clear_structured_prompt_io_in_flight(
-    structured_prompt_submissions: &Arc<Mutex<BTreeSet<String>>>,
-    run_id: &str,
-) {
-    structured_prompt_submissions
-        .lock()
-        .expect("structured prompt submission set poisoned")
-        .remove(run_id);
-}
-
-fn clear_structured_output_poll_in_flight(
-    structured_output_polls: &Arc<Mutex<BTreeSet<String>>>,
-    run_id: &str,
-) {
-    structured_output_polls
-        .lock()
-        .expect("structured output poll set poisoned")
-        .remove(run_id);
 }
