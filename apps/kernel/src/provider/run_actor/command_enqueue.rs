@@ -271,3 +271,180 @@ impl ProviderRunActorMailbox {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::error::DaemonError;
+    use crate::provider::RuntimeProviderRun;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn stop_run_removes_worker_and_lane_registration() {
+        let mailbox = ProviderRunActorMailbox::default();
+        let _sender = mailbox.worker_for_run("run-1");
+        let _permit = mailbox.operation_lanes.acquire("run-1").await;
+        mailbox.mark_structured_prompt_io_in_flight("run-1".to_string());
+        assert!(mailbox.mark_structured_output_poll_in_flight("run-1".to_string()));
+        assert_eq!(
+            mailbox
+                .workers
+                .lock()
+                .expect("worker map should not be poisoned")
+                .len(),
+            1
+        );
+        assert_eq!(
+            mailbox
+                .operation_lanes
+                .lanes
+                .lock()
+                .expect("lane map should not be poisoned")
+                .len(),
+            1
+        );
+        assert!(mailbox.structured_prompt_io_in_flight("run-1"));
+
+        mailbox.clear_runtime("run-1");
+        mailbox.stop_run("run-1");
+
+        assert_eq!(
+            mailbox
+                .workers
+                .lock()
+                .expect("worker map should not be poisoned")
+                .len(),
+            0
+        );
+        assert_eq!(
+            mailbox
+                .operation_lanes
+                .lanes
+                .lock()
+                .expect("lane map should not be poisoned")
+                .len(),
+            0
+        );
+        assert!(!mailbox.structured_prompt_io_in_flight("run-1"));
+        assert!(!mailbox.structured_output_poll_in_flight("run-1"));
+        assert_eq!(
+            mailbox.operation_lanes.health_snapshot().enqueued_commands,
+            1
+        );
+    }
+
+    #[test]
+    fn provider_run_actor_health_counts_enqueue_rejections() {
+        let lanes = ProviderRunOperationLanes::default();
+        lanes.record_command_enqueued();
+        lanes.record_enqueue_rejection();
+
+        let snapshot = lanes.health_snapshot();
+
+        assert_eq!(snapshot.enqueued_commands, 1);
+        assert_eq!(snapshot.enqueue_rejections, 1);
+    }
+
+    fn mailbox_with_full_run_queue(run_id: &str) -> ProviderRunActorMailbox {
+        let mailbox = ProviderRunActorMailbox::default();
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(0);
+        mailbox
+            .workers
+            .lock()
+            .expect("worker map should not be poisoned")
+            .insert(run_id.to_string(), sender);
+        mailbox
+    }
+
+    fn runtime_run(run_id: &str) -> RuntimeProviderRun {
+        RuntimeProviderRun::from_control_capability_inference(
+            run_id,
+            "session-1".to_string(),
+            Some("agent-1".to_string()),
+            "codex".to_string(),
+        )
+    }
+
+    fn assert_local_transport_operation(error: DaemonError, expected_operation: &'static str) {
+        match error {
+            DaemonError::LocalTransport { operation, .. } => {
+                assert_eq!(operation, expected_operation);
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[test]
+    fn structured_submit_enqueue_failure_is_reported_and_clears_in_flight_state() {
+        let mailbox = mailbox_with_full_run_queue("run-1");
+
+        let error = mailbox
+            .spawn_submit(
+                "session-1".to_string(),
+                "run-1".to_string(),
+                "agent-1".to_string(),
+                runtime_run("run-1"),
+                "hello".to_string(),
+                Vec::new(),
+            )
+            .expect_err("full provider actor queue should reject submit");
+
+        assert!(!mailbox.structured_prompt_io_in_flight("run-1"));
+        assert_eq!(
+            mailbox.operation_lanes.health_snapshot().enqueue_rejections,
+            1
+        );
+        assert_local_transport_operation(error, "enqueue structured prompt submit");
+    }
+
+    #[test]
+    fn structured_abort_enqueue_failure_is_reported_and_clears_in_flight_state() {
+        let mailbox = mailbox_with_full_run_queue("run-1");
+
+        let error = mailbox
+            .spawn_abort(
+                "session-1".to_string(),
+                "run-1".to_string(),
+                runtime_run("run-1"),
+            )
+            .expect_err("full provider actor queue should reject abort");
+
+        assert!(!mailbox.structured_prompt_io_in_flight("run-1"));
+        assert_eq!(
+            mailbox.operation_lanes.health_snapshot().enqueue_rejections,
+            1
+        );
+        assert_local_transport_operation(error, "enqueue structured prompt abort");
+    }
+
+    #[test]
+    fn structured_output_poll_enqueue_failure_is_reported_and_clears_in_flight_state() {
+        let mailbox = mailbox_with_full_run_queue("run-1");
+
+        let error = mailbox
+            .spawn_output_poll("run-1".to_string(), runtime_run("run-1"))
+            .expect_err("full provider actor queue should reject output poll");
+
+        assert!(!mailbox.structured_output_poll_in_flight("run-1"));
+        assert_eq!(
+            mailbox.operation_lanes.health_snapshot().enqueue_rejections,
+            1
+        );
+        assert_local_transport_operation(error, "enqueue provider run output poll");
+    }
+
+    #[test]
+    fn selection_sync_enqueue_failure_is_reported() {
+        let mailbox = mailbox_with_full_run_queue("run-1");
+
+        let error = mailbox
+            .spawn_selection_sync("run-1".to_string(), runtime_run("run-1"))
+            .expect_err("full provider actor queue should reject selection sync");
+
+        assert_eq!(
+            mailbox.operation_lanes.health_snapshot().enqueue_rejections,
+            1
+        );
+        assert_local_transport_operation(error, "enqueue provider run selection sync");
+    }
+}

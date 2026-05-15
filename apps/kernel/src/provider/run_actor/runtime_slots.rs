@@ -391,3 +391,115 @@ pub(super) fn clear_runtime_state(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::{Arc, Mutex};
+
+    use super::runtime_should_restore;
+
+    #[test]
+    fn runtime_tombstone_rejects_stale_state_restore_after_cleanup() {
+        let cleared_runs = Arc::new(Mutex::new(BTreeSet::new()));
+        let runs: Arc<Mutex<BTreeMap<String, Arc<Mutex<Option<i32>>>>>> =
+            Arc::new(Mutex::new(BTreeMap::new()));
+        let slot = Arc::new(Mutex::new(None));
+        runs.lock()
+            .expect("runtime map should not be poisoned")
+            .insert("run-1".to_string(), Arc::clone(&slot));
+
+        assert!(runtime_should_restore(&cleared_runs, &runs, "run-1", &slot));
+
+        cleared_runs
+            .lock()
+            .expect("cleared set should not be poisoned")
+            .insert("run-1".to_string());
+        runs.lock()
+            .expect("runtime map should not be poisoned")
+            .remove("run-1");
+
+        assert!(!runtime_should_restore(
+            &cleared_runs,
+            &runs,
+            "run-1",
+            &slot
+        ));
+    }
+
+    #[test]
+    fn runtime_restore_drops_taken_state_after_cleanup_tombstone() {
+        let cleared_runs = Arc::new(Mutex::new(BTreeSet::new()));
+        let runs: Arc<Mutex<BTreeMap<String, Arc<Mutex<Option<i32>>>>>> =
+            Arc::new(Mutex::new(BTreeMap::new()));
+        let slot = Arc::new(Mutex::new(Some(7)));
+        runs.lock()
+            .expect("runtime map should not be poisoned")
+            .insert("run-1".to_string(), Arc::clone(&slot));
+
+        let taken_state = slot
+            .lock()
+            .expect("runtime slot should not be poisoned")
+            .take()
+            .expect("runtime state should be present");
+
+        cleared_runs
+            .lock()
+            .expect("cleared set should not be poisoned")
+            .insert("run-1".to_string());
+        runs.lock()
+            .expect("runtime map should not be poisoned")
+            .remove("run-1");
+
+        if runtime_should_restore(&cleared_runs, &runs, "run-1", &slot) {
+            *slot.lock().expect("runtime slot should not be poisoned") = Some(taken_state);
+        }
+
+        assert!(!runs
+            .lock()
+            .expect("runtime map should not be poisoned")
+            .contains_key("run-1"));
+        assert!(slot
+            .lock()
+            .expect("runtime slot should not be poisoned")
+            .is_none());
+    }
+
+    #[test]
+    fn runtime_restore_rejects_old_slot_after_same_run_replacement() {
+        let cleared_runs = Arc::new(Mutex::new(BTreeSet::new()));
+        let runs: Arc<Mutex<BTreeMap<String, Arc<Mutex<Option<i32>>>>>> =
+            Arc::new(Mutex::new(BTreeMap::new()));
+        let old_slot = Arc::new(Mutex::new(Some(7)));
+        runs.lock()
+            .expect("runtime map should not be poisoned")
+            .insert("run-1".to_string(), Arc::clone(&old_slot));
+
+        let taken_state = old_slot
+            .lock()
+            .expect("old runtime slot should not be poisoned")
+            .take()
+            .expect("old runtime state should be present");
+        let replacement_slot = Arc::new(Mutex::new(Some(42)));
+        runs.lock()
+            .expect("runtime map should not be poisoned")
+            .insert("run-1".to_string(), Arc::clone(&replacement_slot));
+
+        if runtime_should_restore(&cleared_runs, &runs, "run-1", &old_slot) {
+            *old_slot
+                .lock()
+                .expect("old runtime slot should not be poisoned") = Some(taken_state);
+        }
+
+        assert!(old_slot
+            .lock()
+            .expect("old runtime slot should not be poisoned")
+            .is_none());
+        assert_eq!(
+            *replacement_slot
+                .lock()
+                .expect("replacement runtime slot should not be poisoned"),
+            Some(42)
+        );
+    }
+}
