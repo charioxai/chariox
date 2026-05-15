@@ -78,14 +78,8 @@ import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
 import {
   cancelActivePromptRequest,
   captureScreenshotRequest,
-  detachFromSessionRequest,
-  endSessionRequest,
-  getSessionStateRequest,
   getWaitingRoomPublicSnapshotRequest,
-  pollRuntimeNoticesRequest,
   respondToInteractionRequest,
-  pumpTerminalOutputRequest,
-  resizeTerminalRequest,
   storeTransferredFileRequest,
   submitPromptRequest,
 } from "./ipc-requests.js"
@@ -297,10 +291,17 @@ import {
   attachToSession,
   createSession,
   deleteSessionByRef,
+  detachSessionAttachment,
   getSessionState,
   listSessions,
   resolveSession,
 } from "./session-api.js"
+import {
+  catchUpAttachedSession,
+  pollRuntimeNotices,
+  pumpTerminalOutput,
+  resizeSessionTerminal as maybeResize,
+} from "./session-runtime-api.js"
 import {
   attachWorkspaceLink,
   createWorkspaceLink,
@@ -6482,7 +6483,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     scheduleShortViewportHistoryCheck: () => {
       scheduleShortViewportHistoryCheck()
     },
-    detachAttachment: (attachmentId) => client.send(detachFromSessionRequest(attachmentId)).then(() => {}),
+    detachAttachment: (attachmentId) => detachSessionAttachment(client, attachmentId),
     syncKernelEventSubscription,
     formatError,
     logWarning: (message, fields) => {
@@ -7063,9 +7064,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       if (!attachment) {
         exitCleanupFailed = false
       } else if (shouldEndSessionOnCliExit(createdSessionState(), connectedClientCount())) {
-        await client.send(endSessionRequest(sessionState().id))
+        await archiveSessionById(client, sessionState().id)
       } else {
-        await client.send(detachFromSessionRequest(attachment.id))
+        await detachSessionAttachment(client, attachment.id)
       }
       exitCleanupFailed = false
     } catch (error) {
@@ -7115,9 +7116,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       const attachment = attachmentState()
       if (attachment) {
         if (shouldEndSessionOnCliExit(createdSessionState(), connectedClientCount())) {
-          await client.send(endSessionRequest(sessionState().id))
+          await archiveSessionById(client, sessionState().id)
         } else {
-          await client.send(detachFromSessionRequest(attachment.id))
+          await detachSessionAttachment(client, attachment.id)
         }
       }
     } catch (error) {
@@ -8878,11 +8879,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       if (!attachment) {
         return
       }
-      let response: Record<string, unknown>
+      let records: TerminalOutputRecord[]
       try {
-        response = await client.send<Record<string, unknown>>(
-          pumpTerminalOutputRequest(sessionState().id, attachment.id),
-        )
+        records = await pumpTerminalOutput(client, sessionState().id, attachment.id)
       } catch (error) {
         const message = formatError(error)
         if (/has no active provider run/i.test(message) && !sessionHasPromptWork(sessionState())) {
@@ -8892,11 +8891,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         }
         throw error
       }
-      const payload = expectVariant<{ records: TerminalOutputRecord[] }>(response, "TerminalOutput")
-      if (payload.records.length > 0) {
+      if (records.length > 0) {
         recordDaemonActivity("terminal_output")
       }
-      queueTerminalOutputRecords(payload.records)
+      queueTerminalOutputRecords(records)
       },
       sleep,
     })
@@ -8928,12 +8926,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       if (!attachment) {
         return
       }
-      const response = await client.send<Record<string, unknown>>(
-        pollRuntimeNoticesRequest(sessionState().id, attachment.id),
-      )
+      const notices = await pollRuntimeNotices(client, sessionState().id, attachment.id)
       recordDaemonActivity("runtime_notices")
-      const payload = expectVariant<{ notices: RuntimeNoticeRecord[] }>(response, "RuntimeNotices")
-      for (const notice of payload.notices) {
+      for (const notice of notices) {
         appendNotice(notice.message)
       }
       },
@@ -8967,30 +8962,28 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       }
       const previousSession = sessionState()
-      const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionState().id))
+      const session = await getSessionState(client, sessionState().id)
       recordDaemonActivity("session_state_poll")
-      const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
-      payload.session = normalizeRuntimeSession(payload.session)
-      const projectedSession = applyProviderRunProfileToSession(payload.session, providerRunState())
+      const projectedSession = applyProviderRunProfileToSession(session, providerRunState())
       const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(projectedSession)
       const promptJustCompleted = sessionHasPromptWork(previousSession) && !sessionHasPromptWork(projectedSession)
       applySessionState(projectedSession)
       if (shouldRefreshPanes || promptJustCompleted) {
         await refreshAgentPanes(projectedSession)
       }
-      if (payload.session.active_provider_run_id) {
+      if (session.active_provider_run_id) {
         const activeRun = providerRunState()
-        const run = await tryGetProviderRun(client, payload.session.active_provider_run_id, appLogger)
+        const run = await tryGetProviderRun(client, session.active_provider_run_id, appLogger)
         if (run && (!activeRun || !sameProviderRun(activeRun, run))) {
           logProviderRunDebug("session poll refreshed provider run", run, {
-            session_id: payload.session.id,
+            session_id: session.id,
             previous_provider_run_id: activeRun?.id ?? null,
             previous_model: activeRun?.model ?? null,
             previous_variant: activeRun?.variant ?? null,
             previous_usage_tokens_total: activeRun?.usage_tokens_total ?? null,
             refresh_reason: !activeRun
               ? "missing_run"
-              : activeRun.id !== payload.session.active_provider_run_id
+              : activeRun.id !== session.active_provider_run_id
                 ? "run_changed"
                 : activeRun.usage_tokens_total !== run.usage_tokens_total
                   ? "usage_changed"
@@ -9008,11 +9001,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         }
       } else if (providerRunState()) {
         logProviderRunDebug("session poll cleared provider run", providerRunState(), {
-          session_id: payload.session.id,
+          session_id: session.id,
         })
         setProviderRunState(null)
         updateSessionChrome()
-        if (sessionHasPromptWork(payload.session)) {
+        if (sessionHasPromptWork(session)) {
           void recoverProviderRun("missing active provider run")
         }
       }
@@ -9626,36 +9619,6 @@ async function getWaitingRoomInventory(client: LocalIpcClient): Promise<{
     terminals: payload.terminals ?? [],
     slices,
   }
-}
-
-async function catchUpAttachedSession(
-  client: LocalIpcClient,
-  sessionId: string,
-  attachmentId: string,
-  session: RuntimeSession,
-  logger?: ArrobaLogger | null,
-): Promise<void> {
-  if (!session.active_provider_run_id && !sessionHasPromptWork(session)) {
-    return
-  }
-
-  try {
-    await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
-    await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
-  } catch (error) {
-    logger?.warn("attached session catch-up failed", {
-      session_id: sessionId,
-      attachment_id: attachmentId,
-      error: formatError(error),
-    })
-  }
-}
-
-async function maybeResize(client: LocalIpcClient, sessionId: string): Promise<void> {
-  if (!process.stdout.isTTY || !process.stdout.columns || !process.stdout.rows) {
-    return
-  }
-  await client.send<Record<string, unknown>>(resizeTerminalRequest(sessionId, process.stdout.columns, process.stdout.rows))
 }
 
 function defaultKernelEndpoint(): string {

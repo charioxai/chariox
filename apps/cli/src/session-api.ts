@@ -10,6 +10,7 @@ import {
   attachToSessionRequest,
   createSessionRequest,
   deleteSessionRequest,
+  detachFromSessionRequest,
   endSessionRequest,
   getSessionStateRequest,
   listSessionsRequest,
@@ -74,6 +75,10 @@ export async function archiveSessionById(client: LocalIpcClient, sessionId: stri
   const response = await client.send<Record<string, unknown>>(endSessionRequest(sessionId))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionEnded")
   return normalizeRuntimeSession(payload.session)
+}
+
+export async function detachSessionAttachment(client: LocalIpcClient, attachmentId: string): Promise<void> {
+  await client.send<Record<string, unknown>>(detachFromSessionRequest(attachmentId))
 }
 
 export async function attachToSession(
