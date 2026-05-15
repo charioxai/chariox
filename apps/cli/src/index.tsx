@@ -277,6 +277,10 @@ import {
   setTranscriptBlobCollapsed,
 } from "./transcript-display.js"
 import {
+  reindexTranscriptEntries,
+  trimSingleTrailingNewline,
+} from "./transcript-text.js"
+import {
   formatToolTranscriptUpdate,
   mergeToolTranscriptUpdate,
   parseToolTranscriptUpdate,
@@ -309,6 +313,7 @@ import {
   listSessions,
   resolveSession,
 } from "./session-api.js"
+import { isSessionUnavailableError } from "./session-errors.js"
 import {
   catchUpAttachedSession,
   pollRuntimeNotices,
@@ -9228,25 +9233,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }}
     />
   )
-}
-
-function reindexTranscriptEntries(entries: TranscriptEntry[], startingId: number): TranscriptEntry[] {
-  return entries.map((entry, index) => ({
-    ...entry,
-    id: startingId + index + 1,
-  }))
-}
-
-function isSessionUnavailableError(error: unknown): boolean {
-  const message = formatError(error)
-  return /session `[^`]+` was not found/i.test(message)
-    || /attachment `[^`]+` was not found/i.test(message)
-    || /does not belong to session/i.test(message)
-    || /cannot perform `[^`]+` while ended/i.test(message)
-}
-
-function trimSingleTrailingNewline(text: string): string {
-  return text.endsWith("\n") ? text.slice(0, -1) : text
 }
 
 function formatError(error: unknown): string {

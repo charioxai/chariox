@@ -6,6 +6,7 @@ import {
   shouldRenderProviderStatus,
   type ToolTranscriptUpdate,
 } from "./transcript.js"
+import { trimSingleTrailingNewline } from "./transcript-text.js"
 
 function shouldDeferHistoryEntry(entry: TranscriptEntry) {
   return entry.historyFragmentStart !== undefined && entry.historyFragmentStart > 0
@@ -237,8 +238,4 @@ export function previewLineForHistoryEntry(entry: SessionHistoryEntry) {
               ? "Note"
               : "Asst"
   return `${label}: ${text.split("\n")[0]}`
-}
-
-function trimSingleTrailingNewline(text: string): string {
-  return text.endsWith("\n") ? text.slice(0, -1) : text
 }
