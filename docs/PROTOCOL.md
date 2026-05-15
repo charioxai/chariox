@@ -182,6 +182,17 @@ Semantics:
 - native TUI provider runs are marked with `client_interface = native_tui`
 - Arroba clients must treat model/variant controls for those runs as provider-controlled; provider-native changes may be recorded when observable, but Arroba-side parameter mutation is disabled for the active native TUI run
 
+Remote native TUI composition:
+
+- remote native TUI mode MUST compose existing protocol paths rather than create a second prompt/runtime protocol
+- provider-native TUIs and Arroba TUIs attach to the home kernel session through the same client/session attachment semantics used locally
+- provider-native TUI prompts MUST enter the home kernel through the same `SubmitPrompt` path as Arroba prompts
+- the home kernel MUST dispatch remote execution through the existing leased-agent relay path (`SubmitLeasedPrompt`, remote prompt attachments, remote MCP/skill checks, and related completion/cancel paths)
+- the worker kernel MUST talk to the provider through the same kernel-provider adapter/server path used by ordinary worker-owned provider runs
+- worker output, notices, completions, and permission interactions MUST return to the home kernel through existing leased runtime projection and native interaction relay paths
+- the provider-native proxy/launcher MAY translate home-kernel session output back into provider-native UI protocol or PTY rendering, but it must not become a session authority or bypass the home kernel prompt queue
+- the relay remains transport-only and must not inspect or transform provider-native prompts, outputs, attachments, permissions, or history
+
 Provider-specific transport:
 
 - Codex uses a native WebSocket proxy in front of a Codex app-server endpoint and binds the observed Codex thread to the Arroba provider run.

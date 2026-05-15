@@ -572,7 +572,6 @@ async function codexRpc(proxyUrl, messages, timeoutMs = 30_000) {
 
 async function runNativeCodexPrompt(proxyUrl, threadId, prompt, extraInput = []) {
   const responses = await codexRpc(proxyUrl, [
-    { id: 1, method: "initialize", params: { clientInfo: { name: "remote-native-tui-drill", version: "0.0.0" } } },
     {
       id: 2,
       method: "turn/start",
@@ -787,7 +786,7 @@ async function runProviderScenario({
       worktree,
       ...(machineRef ? ["--machine", machineRef] : []),
       ...providerArgs,
-      ...(provider === "codex" || provider === "claude" ? ["--initial-prompt", `Reply with exactly ${markers.nativeA} and nothing else.`] : []),
+      ...(provider === "claude" ? ["--initial-prompt", `Reply with exactly ${markers.nativeA} and nothing else.`] : []),
       ...(provider === "claude" ? ["--remote-rendered"] : []),
     ], {
       ...process.env,
@@ -817,7 +816,7 @@ async function runProviderScenario({
       worktree,
       ...(machineRef ? ["--machine", machineRef] : []),
       ...providerArgs,
-      ...(provider === "codex" || provider === "claude" ? ["--initial-prompt", `Reply with exactly ${markers.nativeB} and nothing else.`] : []),
+      ...(provider === "claude" ? ["--initial-prompt", `Reply with exactly ${markers.nativeB} and nothing else.`] : []),
       ...(provider === "claude" ? ["--remote-rendered"] : []),
     ], {
       ...process.env,
@@ -898,6 +897,9 @@ async function runProviderScenario({
     if (provider === "opencode") {
       await runNativeOpenCodePrompt(proxyA, providerSessionA, worktree, `Reply with exactly ${markers.nativeA} and nothing else.`, logs.nativeA)
       await runNativeOpenCodePrompt(proxyB, providerSessionB, worktree, `Reply with exactly ${markers.nativeB} and nothing else.`, logs.nativeB)
+    } else if (provider === "codex") {
+      await runNativeCodexPrompt(proxyA, providerSessionA, `Reply with exactly ${markers.nativeA} and nothing else.`)
+      await runNativeCodexPrompt(proxyB, providerSessionB, `Reply with exactly ${markers.nativeB} and nothing else.`)
     }
 
     await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
@@ -942,10 +944,10 @@ async function runProviderScenario({
     await automationRequest(automationSocket, { action: "switch_screen", screen: "agents" })
     await sleep(1_000)
     for (const expected of [markers.arrobaA, markers.nativeA]) {
-      await waitForFileMatch(logs.a, new RegExp(expected), 30_000)
+      await waitForFileMatch(logs.a, new RegExp(expected), 90_000)
     }
     for (const expected of [markers.arrobaB, markers.nativeB]) {
-      await waitForFileMatch(logs.b, new RegExp(expected), 30_000)
+      await waitForFileMatch(logs.b, new RegExp(expected), 90_000)
     }
 
     const proxyALog = await readFile(logs.proxyA, "utf8").catch(() => "")

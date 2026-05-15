@@ -759,6 +759,17 @@ Boundary rules:
 - the relay remains transport-only; it must not inspect or own provider-native traffic
 - Arroba clients must not mutate model/variant for a provider run marked `native_tui`
 
+Remote native TUI mode is a composition of the existing local native TUI and
+remote leased-agent architectures. The home kernel remains the only session
+authority. Provider TUIs and Arroba TUIs attach to the home session, submit
+prompts through the home prompt path, and observe home session output. The home
+kernel dispatches execution to the worker through the existing leased-agent
+relay protocol. The worker kernel launches and drives the provider through the
+same provider adapter/server path it uses for normal worker-owned runs. Any
+provider-native proxy code is only an edge translator between home-kernel
+session events and provider-native UI protocol or PTY rendering; it must not
+own prompt state, history, permissions, attachments, or remote execution.
+
 ### 5.3.2 OpenCode Structured Adapter
 
 OpenCode is the first provider where Arroba intentionally prefers a structured local provider protocol over PTY-only inference.

@@ -25,6 +25,10 @@ Primary connectivity:
 
 Cloud may authenticate users, issue relay tokens, select relay targets, and display waiting-room/control-plane state. Cloud must not fork kernel runtime behavior.
 
+## Native Provider TUI Contract
+
+Native provider TUI mode (`arroba codex`, `arroba opencode`, `arroba claude`) must reuse the normal Arroba runtime paths. For local native TUI, provider prompts enter the kernel through the same prompt path as Arroba clients, and Arroba-origin prompts go through the kernel-managed provider run so the provider TUI observes the same turns. For remote native TUI, provider TUIs and Arroba TUIs attach to the home kernel session; the home kernel dispatches to the worker through the existing leased-agent relay protocol; the worker kernel uses the existing provider adapter/server path. Do not add a parallel prompt, permission, attachment, history, or relay authority path for native TUIs. See `docs/PROTOCOL.md` section `3.3.2 Native TUI Agents` and `docs/ARCHITECTURE.md` section `5.3.1 Native TUI Client Interface`.
+
 ## Protocol Change Rule
 
 When changing `LocalDaemonRequest`, `LocalDaemonResponse`, relay terminal events, browser/kernel terminal transport semantics, or any serialized protocol shape that a CLI or app depends on:
