@@ -63,6 +63,35 @@ export function formatSessionList(sessions: SessionListEntry[], currentSessionId
   ].join("\n")
 }
 
+export function formatSessionDisplayLabel(session: { id: string; alias?: string | null }) {
+  return session.alias ?? session.id
+}
+
+export function sessionBrowserTitle(session: { id: string; alias?: string | null }) {
+  return (session.alias ? `${session.id} (${session.alias})` : session.id).slice(0, 30)
+}
+
+export function sessionBrowserStatus(session: { status: string }) {
+  return session.status.charAt(0).toUpperCase() + session.status.slice(1).toLowerCase()
+}
+
+export function sessionBrowserTimestamp(value: number | null) {
+  if (value === null) {
+    return "-"
+  }
+  const date = new Date(value)
+  const year = date.getUTCFullYear()
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0")
+  const day = String(date.getUTCDate()).padStart(2, "0")
+  const hours = String(date.getUTCHours()).padStart(2, "0")
+  const minutes = String(date.getUTCMinutes()).padStart(2, "0")
+  return `${year}-${month}-${day} ${hours}:${minutes} UTC`
+}
+
+export function sessionBrowserSortTime(session: { last_used_at_ms?: number | null; created_at_ms?: number | null }) {
+  return session.last_used_at_ms ?? session.created_at_ms ?? 0
+}
+
 export function selectAttachableSession(
   sessions: SessionListEntry[],
   workspace: string,

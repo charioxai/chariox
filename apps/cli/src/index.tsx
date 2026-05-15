@@ -17,7 +17,6 @@ import { createStore, reconcile } from "solid-js/store"
 
 import {
   normalizeRuntimeSession,
-  normalizeRuntimeSessions,
 } from "./cli-types.js"
 import type {
   AgentInstance,
@@ -83,17 +82,11 @@ import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
 import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
 import {
-  aliasAgentRequest,
-  attachToSessionRequest,
   attachWorkspaceLinkRequest,
   cancelActivePromptRequest,
   captureScreenshotRequest,
-  aliasSessionRequest,
-  createSessionRequest,
   createWorkspaceLinkRequest,
   cycleAgentFocusRequest,
-  deleteKernelRequest,
-  deleteSessionRequest,
   destroyAgentRequest,
   detachFromSessionRequest,
   detachWorkspaceLinkRequest,
@@ -113,7 +106,6 @@ import {
   listMcpServersRequest,
   listSkillsRequest,
   listWorkspaceLinksRequest,
-  listSessionsRequest,
   acceptCloudSessionInviteRequest,
   createCloudSessionInviteRequest,
   createSessionInviteRequest,
@@ -126,7 +118,6 @@ import {
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
   revokeAgentCapabilityRequest,
-  resolveSessionRequest,
   showWorkspaceLinkRequest,
   spawnAgentRequest,
   storeTransferredFileRequest,
@@ -134,9 +125,6 @@ import {
   uninstallMcpServerRequest,
   uninstallSkillRequest,
   updateMcpServerRequest,
-  updateAgentConfigRequest,
-  updateAgentProfileRequest,
-  updateAgentSubstitutesRequest,
   updateSkillRequest,
 } from "./ipc-requests.js"
 import { expectVariant, firstVariantName } from "./ipc-response.js"
@@ -146,6 +134,13 @@ import {
   setUserConfigValue,
   unsetUserConfigValue,
 } from "./config-api.js"
+import {
+  aliasAgent,
+  updateAgentConfig,
+  updateAgentProfile,
+  updateAgentSubstitutes,
+} from "./agent-api.js"
+import { deleteKernel } from "./kernel-api.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
 import { evaluateConnectionHealth, runPollingLoop } from "./polling-effects.js"
@@ -288,10 +283,25 @@ import {
   SESSION_NEW_ERROR_HINT,
   SESSION_NEW_FOOTER_HINT,
   SESSION_NEW_PLACEHOLDER,
+  formatSessionDisplayLabel,
   formatSessionList,
   selectAttachableSession,
+  sessionBrowserSortTime,
+  sessionBrowserStatus,
+  sessionBrowserTimestamp,
+  sessionBrowserTitle,
   type SessionListEntry,
 } from "./sessions.js"
+import {
+  aliasSession,
+  archiveSessionById,
+  attachToSession,
+  createSession,
+  deleteSessionByRef,
+  getSessionState,
+  listSessions,
+  resolveSession,
+} from "./session-api.js"
 import {
   agentPaneStatusBadge,
   formatSplitPaneFooterParts,
@@ -326,7 +336,6 @@ import {
 } from "./waiting-room.js"
 import {
   primeWaitingRoomWorktreeInventory,
-  resolvePendingWaitingRoomWorktreePath,
 } from "./waiting-room-worktrees.js"
 import {
   resolveWorkspaceVisibleAgents,
@@ -9743,12 +9752,6 @@ function parseArgs(args: string[]): CliOptions {
   return options
 }
 
-async function listSessions(client: LocalIpcClient): Promise<RuntimeSession[]> {
-  const response = await client.send<Record<string, unknown>>(listSessionsRequest())
-  const payload = expectVariant<{ sessions: RuntimeSession[] }>(response, "SessionsListed")
-  return normalizeRuntimeSessions(payload.sessions).sort((left, right) => right.created_at_ms - left.created_at_ms)
-}
-
 async function getWaitingRoomInventory(client: LocalIpcClient): Promise<{
   inventoryVersion: string
   sessions: WaitingRoomPublicSessionSummary[]
@@ -9771,192 +9774,6 @@ async function getWaitingRoomInventory(client: LocalIpcClient): Promise<{
     remoteKernels: payload.remote_kernels,
     terminals: payload.terminals ?? [],
     slices,
-  }
-}
-
-async function createSession(
-  client: LocalIpcClient,
-  workspace: string,
-  worktree: string,
-  alias?: string,
-  agentDefaults?: RuntimeSession["agent_defaults"],
-  sliceRef?: string | null,
-): Promise<RuntimeSession> {
-  const resolvedWorktree = await resolvePendingWaitingRoomWorktreePath(workspace, worktree)
-  const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, resolvedWorktree, alias, agentDefaults, sliceRef))
-  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
-  return normalizeRuntimeSession(payload.session)
-}
-
-async function resolveSession(client: LocalIpcClient, sessionRef: string, workspace: string): Promise<RuntimeSession> {
-  const response = await client.send<Record<string, unknown>>(resolveSessionRequest(sessionRef, workspace))
-  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionResolved")
-  return normalizeRuntimeSession(payload.session)
-}
-
-async function aliasSession(
-  client: LocalIpcClient,
-  sessionId: string,
-  alias: string,
-): Promise<RuntimeSession> {
-  const response = await client.send<Record<string, unknown>>(aliasSessionRequest(sessionId, alias))
-  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionAliased")
-  return normalizeRuntimeSession(payload.session)
-}
-
-async function aliasAgent(
-  client: LocalIpcClient,
-  sessionId: string,
-  agentId: string,
-  alias: string,
-): Promise<{ session: RuntimeSession; agent: AgentInstance }> {
-  const response = await client.send<Record<string, unknown>>(aliasAgentRequest(sessionId, agentId, alias))
-  const payload = expectVariant<{ session: RuntimeSession; agent: AgentInstance }>(response, "AgentAliased")
-  return {
-    ...payload,
-    session: normalizeRuntimeSession(payload.session),
-  }
-}
-
-async function deleteSessionByRef(client: LocalIpcClient, sessionRef: string, workspace: string): Promise<RuntimeSession> {
-  const response = await client.send<Record<string, unknown>>(deleteSessionRequest(sessionRef, workspace))
-  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionDeleted")
-  return normalizeRuntimeSession(payload.session)
-}
-
-async function deleteKernel(client: LocalIpcClient): Promise<{ kernelId: string; deletedSessions: RuntimeSession[] }> {
-  const response = await client.send<Record<string, unknown>>(deleteKernelRequest())
-  const payload = expectVariant<{ kernel_id: string; deleted_sessions: RuntimeSession[] }>(response, "KernelDeleted")
-  return {
-    kernelId: payload.kernel_id,
-    deletedSessions: payload.deleted_sessions.map(normalizeRuntimeSession),
-  }
-}
-
-async function archiveSessionById(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
-  const response = await client.send<Record<string, unknown>>(endSessionRequest(sessionId))
-  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionEnded")
-  return normalizeRuntimeSession(payload.session)
-}
-
-function formatSessionDisplayLabel(session: { id: string; alias?: string | null }) {
-  return session.alias ?? session.id
-}
-
-function sessionBrowserTitle(session: { id: string; alias?: string | null }) {
-  return (session.alias ? `${session.id} (${session.alias})` : session.id).slice(0, 30)
-}
-
-function sessionBrowserStatus(session: { status: string }) {
-  return session.status.charAt(0).toUpperCase() + session.status.slice(1).toLowerCase()
-}
-
-function sessionBrowserTimestamp(value: number | null) {
-  if (value === null) {
-    return "-"
-  }
-  const date = new Date(value)
-  const year = date.getUTCFullYear()
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0")
-  const day = String(date.getUTCDate()).padStart(2, "0")
-  const hours = String(date.getUTCHours()).padStart(2, "0")
-  const minutes = String(date.getUTCMinutes()).padStart(2, "0")
-  return `${year}-${month}-${day} ${hours}:${minutes} UTC`
-}
-
-function sessionBrowserSortTime(session: { last_used_at_ms?: number | null; created_at_ms?: number | null }) {
-  return session.last_used_at_ms ?? session.created_at_ms ?? 0
-}
-
-async function attachToSession(
-  client: LocalIpcClient,
-  sessionId: string,
-  clientId: string,
-): Promise<RuntimeAttachment> {
-  const response = await client.send<Record<string, unknown>>(attachToSessionRequest(sessionId, clientId))
-  const payload = expectVariant<{ attachment: RuntimeAttachment }>(response, "SessionAttached")
-  return payload.attachment
-}
-
-async function getSessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
-  const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
-  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
-  return normalizeRuntimeSession(payload.session)
-}
-
-async function updateAgentConfig(
-  client: LocalIpcClient,
-  sessionId: string,
-  agentId: string,
-  options: {
-    executionMode?: "build" | "plan" | null
-    clearExecutionMode?: boolean
-    permissionLevel?: "required" | "yolo" | null
-    clearPermissionLevel?: boolean
-  },
-): Promise<{ session: RuntimeSession; agent: AgentInstance }> {
-  const response = await client.send<Record<string, unknown>>(
-    updateAgentConfigRequest({
-      sessionId,
-      agentId,
-      ...(options.executionMode !== undefined ? { executionMode: options.executionMode } : {}),
-      ...(options.clearExecutionMode !== undefined ? { clearExecutionMode: options.clearExecutionMode } : {}),
-      ...(options.permissionLevel !== undefined ? { permissionLevel: options.permissionLevel } : {}),
-      ...(options.clearPermissionLevel !== undefined ? { clearPermissionLevel: options.clearPermissionLevel } : {}),
-    }),
-  )
-  const payload = expectVariant<{ session: RuntimeSession; agent: AgentInstance }>(response, "AgentConfigUpdated")
-  return {
-    ...payload,
-    session: normalizeRuntimeSession(payload.session),
-  }
-}
-
-async function updateAgentProfile(
-  client: LocalIpcClient,
-  sessionId: string,
-  agentId: string,
-  options: {
-    provider?: string | null
-    model?: string | null
-    effort?: string | null
-    clearEffort?: boolean
-  },
-): Promise<{ session: RuntimeSession; agent: AgentInstance }> {
-  const response = await client.send<Record<string, unknown>>(
-    updateAgentProfileRequest({
-      sessionId,
-      agentId,
-      ...(options.provider !== undefined ? { provider: options.provider } : {}),
-      ...(options.model !== undefined ? { model: options.model } : {}),
-      ...(options.effort !== undefined ? { effort: options.effort } : {}),
-      ...(options.clearEffort !== undefined ? { clearEffort: options.clearEffort } : {}),
-    }),
-  )
-  const payload = expectVariant<{ session: RuntimeSession; agent: AgentInstance }>(response, "AgentProfileUpdated")
-  return {
-    ...payload,
-    session: normalizeRuntimeSession(payload.session),
-  }
-}
-
-async function updateAgentSubstitutes(
-  client: LocalIpcClient,
-  sessionId: string,
-  agentId: string,
-  action: Record<string, unknown>,
-): Promise<{ session: RuntimeSession; agent: AgentInstance }> {
-  const response = await client.send<Record<string, unknown>>(
-    updateAgentSubstitutesRequest({
-      sessionId,
-      agentId,
-      action: action as never,
-    }),
-  )
-  const payload = expectVariant<{ session: RuntimeSession; agent: AgentInstance }>(response, "AgentConfigUpdated")
-  return {
-    ...payload,
-    session: normalizeRuntimeSession(payload.session),
   }
 }
 
