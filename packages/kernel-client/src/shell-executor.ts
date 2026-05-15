@@ -169,6 +169,13 @@ import {
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
+  formatAgentCapabilityGrants,
+  formatMcpImportOutcome,
+  formatMcpList,
+  formatSkillImportOutcome,
+  formatSkillList,
+} from "./shell-capability-format.js"
+import {
   formatHistoryEvents,
   formatPromptBlob,
   formatPromptReply,
@@ -2891,61 +2898,6 @@ async function focusedAgentSliceRef(context: ShellContext, deps: ShellExecutorDe
     throw new Error("no slice specified and focused agent is not running in a slice")
   }
   return match.id
-}
-
-function formatMcpList(mcps: ArrobaMcpServerConfig[]): string {
-  if (mcps.length === 0) {
-    return "no MCP servers installed"
-  }
-  return mcps.map((mcp) => {
-    const enabled = mcp.enabled === false ? "disabled" : "enabled"
-    const transport = Object.keys(mcp.transport ?? {})[0] ?? "transport"
-    return `${mcp.name} [${enabled}] ${transport}`
-  }).join("\n")
-}
-
-function formatSkillList(skills: ArrobaSkillMetadata[]): string {
-  if (skills.length === 0) {
-    return "no skills installed"
-  }
-  return skills.map((skill) => {
-    const description = skill.short_description || skill.description || skill.path
-    return `${skill.name} - ${description}`
-  }).join("\n")
-}
-
-function formatMcpImportOutcome(outcome: McpImportOutcome): string {
-  const lines: string[] = []
-  if (outcome.imported.length > 0) {
-    lines.push(`Imported MCPs: ${outcome.imported.map((mcp) => mcp.name).join(", ")}`)
-  }
-  if (outcome.skipped.length > 0) {
-    lines.push("Skipped MCPs:")
-    lines.push(...outcome.skipped.map((skip) => `- ${skip.name}: ${skip.reason}`))
-  }
-  return lines.length === 0 ? "No MCPs imported." : lines.join("\n")
-}
-
-function formatSkillImportOutcome(outcome: SkillImportOutcome): string {
-  const lines: string[] = []
-  if (outcome.imported.length > 0) {
-    lines.push(`Imported skills: ${outcome.imported.map((skill) => skill.name).join(", ")}`)
-  }
-  if (outcome.skipped.length > 0) {
-    lines.push("Skipped skills:")
-    lines.push(...outcome.skipped.map((skip) => `- ${skip.name}: ${skip.reason}`))
-  }
-  return lines.length === 0 ? "No skills imported." : lines.join("\n")
-}
-
-function formatAgentCapabilityGrants(agent: AgentInstance, kind: "mcp" | "skill"): string {
-  const grants = kind === "mcp" ? (agent.mcp_grants ?? []) : (agent.skill_grants ?? [])
-  const label = kind === "mcp" ? "MCP" : "skill"
-  const agentLabel = `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
-  if (grants.length === 0) {
-    return `${agentLabel} has no ${label} grants.`
-  }
-  return `${agentLabel} ${label} grants:\n${grants.map((grant) => `- ${grant}`).join("\n")}`
 }
 
 function formatWorkflowLabel(workflow: WorkflowDefinition): string {
