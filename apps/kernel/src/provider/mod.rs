@@ -9,6 +9,7 @@ mod opencode;
 mod opencode_binding;
 mod opencode_client;
 mod opencode_runtime;
+mod process_info;
 mod prompt_signals;
 mod registry;
 mod run_actor;
@@ -41,6 +42,7 @@ pub use opencode_client::{
     OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage,
     OpenCodeProviderCatalog, OpenCodeProviderInfo, OpenCodeProviderModel, OpenCodeSessionSnapshot,
 };
+pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
     classify_provider_substitutable_failure_text, classify_provider_terminal_failure_text,
 };
@@ -61,7 +63,7 @@ pub use types::{
     ControlCapability, ControlCapabilityMode, ControlOperation, LaunchProviderRequest,
     ProviderClientInterface, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
     ProviderCommandCatalogSource, ProviderCommandDescriptor, ProviderLaunchResult,
-    ProviderProcessInfo, ProviderProcessStatus, ProviderResumeState, ProviderRunState,
-    ProviderRunTokenUsage, ProviderWriteAccessMode, RuntimeMcpBinding, RuntimeProviderRun,
+    ProviderResumeState, ProviderRunState, ProviderRunTokenUsage, ProviderWriteAccessMode,
+    RuntimeMcpBinding, RuntimeProviderRun,
 };
 pub(crate) use workspace_write_fence::{apply_workspace_write_fence, workspace_write_fence_active};
