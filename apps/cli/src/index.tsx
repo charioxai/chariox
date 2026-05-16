@@ -113,8 +113,10 @@ import {
   listCloudSessionMembers,
 } from "./cloud-session-api.js"
 import {
+  clampSessionBrowserIndex,
   nextSessionBrowserIndex,
   resolveSessionBrowserKeyAction,
+  sessionBrowserVisibleSessions,
 } from "./session-browser-key-policy.js"
 import {
   aliasAgent,
@@ -344,7 +346,6 @@ import {
   formatSessionDisplayLabel,
   formatSessionList,
   selectAttachableSession,
-  sessionBrowserSortTime,
   type SessionListEntry,
 } from "./sessions.js"
 import {
@@ -2871,13 +2872,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   })
   const hotkeySections = () => buildHotkeySections(isAttached())
-  const sessionBrowserSessions = () => availableSessions()
-    .filter((session) => session.status !== "Ended")
-    .slice()
-    .sort((left, right) => sessionBrowserSortTime(right) - sessionBrowserSortTime(left))
+  const sessionBrowserSessions = () => sessionBrowserVisibleSessions(availableSessions())
   const normalizeSessionBrowserIndex = () => {
     const sessions = sessionBrowserSessions()
-    const index = Math.min(Math.max(0, sessionBrowserIndex()), Math.max(0, sessions.length - 1))
+    const index = clampSessionBrowserIndex(sessionBrowserIndex(), sessions.length)
     if (index !== sessionBrowserIndex()) {
       setSessionBrowserIndex(index)
     }
@@ -3049,7 +3047,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     hotkeysFocus?.blur()
     setHotkeysOpen(false)
     setTerminalPairingOpen(false)
-    setSessionBrowserIndex(Math.min(Math.max(0, waitingRoomState().sessionIndex), sessions.length - 1))
+    setSessionBrowserIndex(clampSessionBrowserIndex(waitingRoomState().sessionIndex, sessions.length))
     setSessionBrowserOpen(true)
     renderHotkeysOverlay()
     flashFooter("select a session to open, archive, or delete", "info")

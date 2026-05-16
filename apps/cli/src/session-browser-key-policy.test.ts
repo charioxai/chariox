@@ -2,8 +2,10 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  clampSessionBrowserIndex,
   nextSessionBrowserIndex,
   resolveSessionBrowserKeyAction,
+  sessionBrowserVisibleSessions,
 } from "./session-browser-key-policy.js"
 
 test("resolveSessionBrowserKeyAction ignores inactive or modified events", () => {
@@ -80,3 +82,29 @@ test("nextSessionBrowserIndex wraps across available sessions", () => {
   assert.equal(nextSessionBrowserIndex(2, 1, 3), 0)
   assert.equal(nextSessionBrowserIndex(2, 1, 0), 2)
 })
+
+test("sessionBrowserVisibleSessions filters ended sessions and sorts by recent activity", () => {
+  assert.deepEqual(sessionBrowserVisibleSessions([
+    session("old", { status: "Created", created_at_ms: 1 }),
+    session("ended", { status: "Ended", created_at_ms: 100 }),
+    session("recent", { status: "Active", last_used_at_ms: 20, created_at_ms: 2 }),
+  ]).map((session) => session.id), ["recent", "old"])
+})
+
+test("clampSessionBrowserIndex keeps selection in range", () => {
+  assert.equal(clampSessionBrowserIndex(-1, 3), 0)
+  assert.equal(clampSessionBrowserIndex(5, 3), 2)
+  assert.equal(clampSessionBrowserIndex(5, 0), 0)
+})
+
+function session(id: string, overrides: Partial<Parameters<typeof sessionBrowserVisibleSessions>[0][number]> = {}) {
+  return {
+    id,
+    alias: null,
+    worktree_id: "/workspace",
+    status: "Created",
+    created_at_ms: 1,
+    attachment_ids: [],
+    ...overrides,
+  }
+}

@@ -1,3 +1,5 @@
+import { sessionBrowserSortTime, type SessionListEntry } from "./sessions.js"
+
 export type SessionBrowserKeyEvent = {
   name: string
   eventType?: string | undefined
@@ -63,4 +65,15 @@ export function nextSessionBrowserIndex(index: number, delta: number, sessionCou
   }
   const next = index + delta
   return ((next % sessionCount) + sessionCount) % sessionCount
+}
+
+export function sessionBrowserVisibleSessions(sessions: readonly SessionListEntry[]): SessionListEntry[] {
+  return sessions
+    .filter((session) => session.status !== "Ended")
+    .slice()
+    .sort((left, right) => sessionBrowserSortTime(right) - sessionBrowserSortTime(left))
+}
+
+export function clampSessionBrowserIndex(index: number, sessionCount: number): number {
+  return Math.min(Math.max(0, index), Math.max(0, sessionCount - 1))
 }
