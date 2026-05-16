@@ -112,10 +112,9 @@ import {
   listCloudCollaborators,
   listCloudSessionMembers,
 } from "./cloud-session-api.js"
+import { createSessionBrowserController } from "./session-browser-controller.js"
 import {
   clampSessionBrowserIndex,
-  nextSessionBrowserIndex,
-  resolveSessionBrowserKeyAction,
   sessionBrowserVisibleSessions,
 } from "./session-browser-key-policy.js"
 import {
@@ -1793,81 +1792,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       flashFooter(formatError(error), "error")
     }
   }
-  const handleSessionBrowserKey = (event: {
-    name: string
-    eventType?: string
-    ctrl?: boolean
-    meta?: boolean
-    alt?: boolean
-    super?: boolean
-  }) => {
-    const open = sessionBrowserOpen()
-    const sessions = open ? sessionBrowserSessions() : []
-    const selectedIndex = open ? normalizeSessionBrowserIndex() : 0
-    const action = resolveSessionBrowserKeyAction({
-      open,
-      event,
-      sessionCount: sessions.length,
-      selectedIndex,
-    })
-    if (action.action === "ignore") {
-      return false
-    }
-    if (action.action === "close") {
-      closeSessionBrowserDialog()
-      return true
-    }
-    if (action.action === "move") {
-      if (sessions.length > 0) {
-        setSessionBrowserIndex((index) => {
-          return nextSessionBrowserIndex(index, action.delta, sessions.length)
-        })
-        renderHotkeysOverlay()
-      }
-      return true
-    }
-    if (action.action === "empty") {
-      flashFooter("no sessions available", "error")
-      return true
-    }
-    if (action.action === "submit") {
-      const state = { ...waitingRoomState(), focus: "session" as const, sessionIndex: action.selectedIndex }
-      const decision = deriveWaitingRoomActivationDecision({
-        state,
-        sessions: availableSessions(),
-        catalog: providerCatalogState(),
-        currentProvider: (options.provider ?? "opencode") as BackendProviderId,
-        currentModel: options.model,
-      })
-      if (decision.action !== "join") {
-        flashFooter(decision.action === "error" ? decision.message : "select a session to join", "error")
-        return true
-      }
-      closeSessionBrowserDialog()
-      void attachBinding(decision.session, false, decision.launch).then(
-        () => flashFooter(`attached to session ${decision.session.alias ?? decision.session.id}`, "info"),
-        (error) => flashFooter(formatError(error), "error"),
-      )
-      return true
-    }
-    if (action.action === "lifecycle") {
-      void applyWaitingRoomSessionLifecycleAction(action.lifecycleAction, {
-        ...waitingRoomState(),
-        focus: "session",
-        sessionIndex: action.selectedIndex,
-      }).then(() => {
-        const nextLength = sessionBrowserSessions().length
-        if (nextLength === 0) {
-          closeSessionBrowserDialog()
-        } else {
-          setSessionBrowserIndex((index) => Math.min(index, nextLength - 1))
-          renderHotkeysOverlay()
-        }
-      })
-      return true
-    }
-    return true
-  }
   const waitingRoomLifecycleTarget = (
     decision: WaitingRoomSessionLifecycleDecision | WaitingRoomDeleteDecision,
   ) => {
@@ -3504,6 +3428,25 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       updateSessionChrome()
     }, 10_000)
   }
+
+  const sessionBrowserController = createSessionBrowserController({
+    isOpen: sessionBrowserOpen,
+    visibleSessions: sessionBrowserSessions,
+    availableSessions,
+    normalizeSelectedIndex: normalizeSessionBrowserIndex,
+    setSelectedIndex: (updater) => setSessionBrowserIndex((index) => updater(index)),
+    waitingRoomState,
+    providerCatalog: providerCatalogState,
+    currentProvider: () => (options.provider ?? "opencode") as BackendProviderId,
+    currentModel: () => options.model,
+    closeDialog: closeSessionBrowserDialog,
+    renderOverlay: renderHotkeysOverlay,
+    flashFooter,
+    attachSession: (session, createNew, launch) => attachBinding(session, createNew, launch),
+    applyLifecycleAction: applyWaitingRoomSessionLifecycleAction,
+    formatError,
+  })
+  const handleSessionBrowserKey = sessionBrowserController.handleKey
 
   const hotkeyDebug = (message: string) => {
     appLogger?.debug("hotkeys footer debug", { detail: message })
