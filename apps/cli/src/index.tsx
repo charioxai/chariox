@@ -37,12 +37,11 @@ import {
   createCommandActionHandlers,
 } from "./command-actions.js"
 import {
-  automationSnapshotMatches,
   startCliAutomationServer,
   stopCliAutomationServer,
-  type CliAutomationRequest,
   type CliAutomationServer,
 } from "./cli-automation.js"
+import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
 import {
   computeTranscriptRebuildScrollTop,
   evaluateTranscriptScrollMonitor,
@@ -7966,145 +7965,31 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const handleAutomationRequest = async (request: CliAutomationRequest): Promise<unknown> => {
-    const action = typeof request.action === "string" ? request.action : ""
-    switch (action) {
-      case "ping":
-        return { status: "ok" }
-      case "switch_screen": {
-        const screen = typeof request.screen === "string" ? request.screen : ""
-        if (screen !== "agents" && screen !== "workflow") {
-          throw new Error("usage: switch_screen screen=agents|workflow")
-        }
-        if (!isAttached()) {
-          throw new Error("cannot switch screen without an attached session")
-        }
-        setWorkspaceScreenMode(screen)
-        rebuildTranscript()
-        applyResponseLayout()
-        return automationSnapshot()
-      }
-      case "workspace_shell_exec": {
-        const command = typeof request.command === "string" ? request.command : ""
-        if (!command.trim()) {
-          throw new Error("usage: workspace_shell_exec command=<arroba-shell command>")
-        }
-        if (!workflowScreenActive()) {
-          showWorkflowScreen()
-        }
-        const result = await submitWorkspaceShellCommand(`@ ${command}`)
-        return { result, snapshot: automationSnapshot() }
-      }
-      case "submit_prompt": {
-        const prompt = typeof request.prompt === "string" ? request.prompt : ""
-        if (!prompt.trim()) {
-          throw new Error("usage: submit_prompt prompt=<text>")
-        }
-        const requestAttachments = Array.isArray(request.attachments)
-          ? request.attachments.map((entry) => {
-            if (!entry || typeof entry !== "object") {
-              throw new Error("submit_prompt attachments must be objects")
-            }
-            const attachment = entry as Record<string, unknown>
-            if (typeof attachment.url !== "string" || typeof attachment.mime !== "string") {
-              throw new Error("submit_prompt attachments require url and mime")
-            }
-            return {
-              url: attachment.url,
-              mime: attachment.mime,
-              filename: typeof attachment.filename === "string" ? attachment.filename : null,
-            } satisfies PromptAttachmentPart
-          })
-          : []
-        if (requestAttachments.length > 0) {
-          if (!isAttached()) {
-            throw new Error("cannot submit prompt attachments without an attached session")
-          }
-          const attachment = attachmentState()
-          if (!attachment) {
-            throw new Error("cannot submit prompt attachments without an attached client")
-          }
-          const attachments = await preparePromptAttachmentsForSubmit(requestAttachments, {
-            inlineLocalFiles: Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
-          })
-          await submitPromptWithRecovery(
-            client,
-            sessionState().id,
-            attachment.id,
-            focusedAgentId(),
-            prompt.endsWith("\n") ? prompt : `${prompt}\n`,
-            attachments,
-            options,
-            appLogger,
-          )
-          return automationSnapshot()
-        }
-        if (isAttached()) {
-          await launchProviderRun(
-            client,
-            sessionState().id,
-            options.provider ?? "opencode",
-            options.accountProfile,
-            options.model,
-            options.effort,
-            focusedAgentId(),
-          )
-          await maybeResize(client, sessionState().id)
-        }
-        setPromptText(prompt)
-        await submitPrompt()
-        return automationSnapshot()
-      }
-      case "activate_waiting_room": {
-        if (isAttached()) {
-          throw new Error("cannot activate waiting room while attached")
-        }
-        await activateWaitingRoom()
-        return automationSnapshot()
-      }
-      case "connect_detached_kernel": {
-        if (kernelConnected()) {
-          return automationSnapshot()
-        }
-        await connectDetachedKernelFromWaitingRoom()
-        return automationSnapshot()
-      }
-      case "snapshot":
-        return automationSnapshot()
-      case "interaction_submit": {
-        const choiceIndex = typeof request.choiceIndex === "number" ? request.choiceIndex : undefined
-        await submitFocusedInteractionChoice(choiceIndex)
-        return automationSnapshot()
-      }
-      case "interaction_move": {
-        const delta = typeof request.delta === "number" ? request.delta : 0
-        if (!delta) {
-          throw new Error("usage: interaction_move delta=<signed integer>")
-        }
-        cycleFocusedInteractionChoice(delta)
-        return automationSnapshot()
-      }
-      case "wait_for": {
-        const timeoutMs = typeof request.timeoutMs === "number" ? request.timeoutMs : 10_000
-        const intervalMs = typeof request.intervalMs === "number" ? request.intervalMs : 100
-        const deadline = Date.now() + Math.max(1, timeoutMs)
-        let snapshot = automationSnapshot()
-        while (!automationSnapshotMatches(snapshot, request) && Date.now() < deadline) {
-          await sleep(Math.max(10, intervalMs))
-          snapshot = automationSnapshot()
-        }
-        if (!automationSnapshotMatches(snapshot, request)) {
-          throw new Error("timed out waiting for CLI automation condition")
-        }
-        return snapshot
-      }
-      case "exit":
-        void restoreTerminalAndExit(0)
-        return { exiting: true }
-      default:
-        throw new Error(`unknown automation action '${action || String(request.action)}'`)
-    }
-  }
+  const handleAutomationRequest = createCliAutomationActionHandler({
+    client,
+    options,
+    appLogger,
+    snapshot: automationSnapshot,
+    isAttached,
+    kernelConnected,
+    workflowScreenActive,
+    setWorkspaceScreenMode,
+    rebuildTranscript,
+    applyResponseLayout,
+    showWorkflowScreen,
+    submitWorkspaceShellCommand,
+    attachmentState,
+    sessionState,
+    focusedAgentId,
+    setPromptText,
+    submitPrompt,
+    activateWaitingRoom,
+    connectDetachedKernelFromWaitingRoom,
+    submitFocusedInteractionChoice,
+    cycleFocusedInteractionChoice,
+    restoreTerminalAndExit,
+    sleep,
+  })
 
   const automationSocketPath = options.automationSocket
   let automationServer: CliAutomationServer | null = null
