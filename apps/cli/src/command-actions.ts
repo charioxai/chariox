@@ -11,7 +11,6 @@ import type {
   WorkflowNodeDefinition,
   WorkflowRun,
   WorkflowWatchdogDefinition,
-  WorkspaceLinkDefinition,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { RelayCloudProfile, MultiAgentResponseLayout } from "./preferences.js"
@@ -45,13 +44,16 @@ import {
   type SliceCommandHandlerDeps,
 } from "./slice-command-handlers.js"
 import {
+  handleWorkspaceSlashCommand,
+  handleWorktreeSlashCommand,
+  type WorkspaceCommandHandlerDeps,
+} from "./workspace-command-handlers.js"
+import {
   parseAgentSpawnOptions,
   parsePlacementOptions,
   prepareLocalGitWorktree,
   resolveExistingLocalDirectory,
   resolveLocalPlacement,
-  suggestNamedWorktreePath,
-  worktreeAliasConfigPath,
   type LocalGitWorktreeOptions,
   type RemoteGitWorktreePlacement,
 } from "./command-worktree-placement.js"
@@ -151,11 +153,6 @@ type WorkflowWatchdogPayload = {
   session: RuntimeSession
 }
 
-type WorkspaceLinkPayload = {
-  link: WorkspaceLinkDefinition
-  session?: RuntimeSession
-}
-
 export { parseRequestedViewLayout } from "./selection-command-handlers.js"
 export {
   formatAgentCapabilityGrants,
@@ -169,6 +166,7 @@ type CommandActionDeps =
   & RemoteMachineCommandHandlerDeps
   & CapabilityCommandHandlerDeps
   & Omit<SliceCommandHandlerDeps, "currentWorktreeTarget">
+  & Omit<WorkspaceCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget" | "setWorkspaceTarget" | "setWorktreeTarget" | "baseWorktree" | "hasDynamicWorktreeTarget">
   & {
   workspace: string
   worktree: string
@@ -322,11 +320,6 @@ type CommandActionDeps =
   ) => Promise<AgentConfigUpdatePayload>
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>
-  createWorkspaceLink?: (name: string) => Promise<WorkspaceLinkPayload>
-  listWorkspaceLinks?: () => Promise<WorkspaceLinkDefinition[]>
-  showWorkspaceLink?: (linkRef: string) => Promise<WorkspaceLinkDefinition>
-  attachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload>
-  detachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload & { detached: unknown[] }>
   rebuildTranscript: () => void
   requestRender: () => void
   cycleAgentFocus: () => Promise<AgentCyclePayload>
@@ -542,26 +535,6 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
     return numeric
   }
-  const formatWorkspaceLinks = (links: WorkspaceLinkDefinition[]): string => {
-    if (links.length === 0) {
-      return "No workspace links in this session."
-    }
-    return links.map((link) => (
-      `${link.name} (${link.link_id}) attachments=${link.attachments?.length ?? 0}`
-    )).join("\n")
-  }
-  const formatWorkspaceLinkDetails = (link: WorkspaceLinkDefinition): string => {
-    const lines = [
-      `Workspace link ${link.name} (${link.link_id})`,
-      `created_by=${link.created_by_user_id}`,
-      `attachments=${link.attachments?.length ?? 0}`,
-    ]
-    for (const attachment of link.attachments ?? []) {
-      const branch = attachment.branch ? ` branch=${attachment.branch}` : ""
-      lines.push(`- ${attachment.user_id} ${attachment.repo_root}${branch}`)
-    }
-    return lines.join("\n")
-  }
   const hasDuplicateWorkflowEdge = (
     workflow: WorkflowDefinition,
     fromNodeId: string,
@@ -669,6 +642,15 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const currentWorktreeTarget = () => deps.getWorktreeTarget?.() ?? deps.worktree
   const setWorkspaceTarget = (workspace: string) => deps.setWorkspaceTarget?.(workspace)
   const setWorktreeTarget = (worktree: string) => deps.setWorktreeTarget?.(worktree)
+  const workspaceCommandDeps = (): WorkspaceCommandHandlerDeps => ({
+    ...deps,
+    currentWorkspaceTarget,
+    currentWorktreeTarget,
+    setWorkspaceTarget,
+    setWorktreeTarget,
+    baseWorktree: deps.worktree,
+    hasDynamicWorktreeTarget: Boolean(deps.getWorktreeTarget),
+  })
 
   const spawnAndLaunchAgent = async (options: {
     provider?: string | null
@@ -1457,135 +1439,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleWorkspaceCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "workspace" }>,
   ): Promise<void> => {
-    const [resource, action, ...args] = command.args
-    if (resource && resource !== "link") {
-      const previousWorktreeTarget = currentWorktreeTarget()
-      const previousWorkspaceTarget = currentWorkspaceTarget()
-      const workspacePath = resolvePath(currentWorktreeTarget(), [resource, action, ...args].filter(Boolean).join(" "))
-      setWorkspaceTarget(workspacePath)
-      if (!deps.getWorktreeTarget || previousWorktreeTarget === deps.worktree || previousWorktreeTarget === previousWorkspaceTarget) {
-        setWorktreeTarget(workspacePath)
-      }
-      deps.flashFooter(`next-session workspace set to ${workspacePath}`, "info")
-      return
-    }
-    if (resource !== "link") {
-      deps.flashFooter(`workspace target: ${currentWorkspaceTarget()}`, "info")
-      return
-    }
-    if (!deps.isAttached()) {
-      deps.flashFooter("attach to a session before managing workspace links", "error")
-      return
-    }
-    if (action === "create" || action === "new") {
-      const name = args[0]
-      if (!name || !deps.createWorkspaceLink) {
-        deps.flashFooter("usage: /workspace link create <name>", "error")
-        return
-      }
-      const payload = await deps.createWorkspaceLink(name)
-      if (payload.session) deps.applySessionState(payload.session)
-      deps.flashFooter(`created workspace link ${payload.link.name}`, "info")
-      return
-    }
-    if (!action || action === "list" || action === "ls") {
-      if (!deps.listWorkspaceLinks) {
-        deps.flashFooter("workspace links are not available", "error")
-        return
-      }
-      const links = await deps.listWorkspaceLinks()
-      deps.appendNotice(formatWorkspaceLinks(links))
-      deps.flashFooter(`listed ${links.length} workspace link${links.length === 1 ? "" : "s"}`, "info")
-      return
-    }
-    if (action === "show") {
-      const linkRef = args[0]
-      if (!linkRef || !deps.showWorkspaceLink) {
-        deps.flashFooter("usage: /workspace link show <name-or-id>", "error")
-        return
-      }
-      const link = await deps.showWorkspaceLink(linkRef)
-      deps.appendNotice(formatWorkspaceLinkDetails(link))
-      deps.flashFooter(`showing workspace link ${link.name}`, "info")
-      return
-    }
-    if (action === "attach") {
-      const linkRef = args[0]
-      const repoRoot = args[1] ? resolvePath(currentWorktreeTarget(), args[1]) : currentWorktreeTarget()
-      if (!linkRef || !deps.attachWorkspaceLink) {
-        deps.flashFooter("usage: /workspace link attach <name-or-id> [repo-root]", "error")
-        return
-      }
-      const payload = await deps.attachWorkspaceLink(linkRef, repoRoot)
-      if (payload.session) deps.applySessionState(payload.session)
-      deps.flashFooter(`attached ${repoRoot} to workspace link ${payload.link.name}`, "info")
-      return
-    }
-    if (action === "detach") {
-      const linkRef = args[0]
-      const repoRoot = args[1] ? resolvePath(currentWorktreeTarget(), args[1]) : currentWorktreeTarget()
-      if (!linkRef || !deps.detachWorkspaceLink) {
-        deps.flashFooter("usage: /workspace link detach <name-or-id> [repo-root]", "error")
-        return
-      }
-      const payload = await deps.detachWorkspaceLink(linkRef, repoRoot)
-      if (payload.session) deps.applySessionState(payload.session)
-      deps.flashFooter(`detached ${payload.detached.length} workspace link attachment${payload.detached.length === 1 ? "" : "s"} from ${payload.link.name}`, "info")
-      return
-    }
-    deps.flashFooter("usage: /workspace link create|list|show|attach|detach", "error")
+    await handleWorkspaceSlashCommand(workspaceCommandDeps(), command)
   }
 
   const handleWorktreeCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "worktree" }>,
   ): Promise<void> => {
-    const [action, ...args] = command.args
-    if (!action) {
-      deps.flashFooter(`worktree target: ${currentWorktreeTarget()}`, "info")
-      return
-    }
-    if (action === "name") {
-      const alias = args.join(" ").trim()
-      if (!deps.setUserConfigValue || !deps.unsetUserConfigValue) {
-        deps.flashFooter("worktree naming is unavailable in this build", "error")
-        return
-      }
-      const configPath = worktreeAliasConfigPath(currentWorktreeTarget())
-      if (!alias) {
-        await deps.unsetUserConfigValue(configPath)
-        deps.flashFooter(`cleared worktree name for ${currentWorktreeTarget()}`, "info")
-        return
-      }
-      await deps.setUserConfigValue(configPath, alias)
-      deps.flashFooter(`named ${currentWorktreeTarget()} as ${alias}`, "info")
-      return
-    }
-    if (action === "create" || action === "new") {
-      const [branch, explicitPath, ...rest] = args
-      if (!branch) {
-        deps.flashFooter("usage: /worktree create <branch> [directory] [--from <ref>]", "error")
-        return
-      }
-      let fromRef: string | undefined
-      for (let index = 0; index < rest.length; index += 1) {
-        if (rest[index] === "--from") {
-          fromRef = rest[index + 1]
-        }
-      }
-      const targetDirectory = suggestNamedWorktreePath(currentWorkspaceTarget(), branch, explicitPath)
-      const createdPath = await prepareLocalGitWorktree({
-        baseDirectory: currentWorkspaceTarget(),
-        targetDirectory,
-        branch,
-        fromRef,
-      }, deps.prepareLocalGitWorktree)
-      setWorktreeTarget(createdPath)
-      deps.flashFooter(`next-session worktree set to ${createdPath}`, "info")
-      return
-    }
-    const worktreePath = resolvePath(currentWorkspaceTarget(), [action, ...args].join(" "))
-    setWorktreeTarget(worktreePath)
-    deps.flashFooter(`next-session worktree set to ${worktreePath}`, "info")
+    await handleWorktreeSlashCommand(workspaceCommandDeps(), command)
   }
 
   const handleWorkflowCommand = async (
