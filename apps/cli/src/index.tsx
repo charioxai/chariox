@@ -18,7 +18,6 @@ import type {
   AgentInstance,
   BootstrapState,
   CliOptions,
-  PromptAttachmentPart,
   PromptInputHistoryPage,
   RuntimeAttachment,
   RuntimeInteraction,
@@ -200,6 +199,11 @@ import {
   respondToInteraction,
   submitPromptWithRecovery,
 } from "./prompt-runtime-api.js"
+import {
+  formatPromptSubmissionBody,
+  formatPromptSubmissionStatusLine,
+  pendingPromptAttachmentsToParts,
+} from "./prompt-submission-state.js"
 import {
   getPromptInputHistory,
   getSessionHistory,
@@ -6559,12 +6563,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
     }
 
-    const prompt = trimmed ? (rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`) : ""
-    const rawAttachments = pendingAttachments().map<PromptAttachmentPart>((file) => ({
-      url: file.url,
-      mime: file.mime,
-      filename: file.filename,
-    }))
+    const prompt = formatPromptSubmissionBody(rawPrompt)
+    const rawAttachments = pendingPromptAttachmentsToParts(pendingAttachments())
     let submissionUi: SubmittedPromptUiSnapshot | null = null
     try {
       await waitForPendingAgentFocusTransition()
@@ -6611,9 +6611,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         queued_prompts: payload.session.queued_prompts.length,
       })
       setStatusLine(
-        outcomeName === "Queued"
-          ? `Prompt queued behind ${payload.session.active_prompt?.id ?? "the active turn"}.`
-          : "Prompt submitted.",
+        formatPromptSubmissionStatusLine({
+          outcomeName,
+          activePromptId: payload.session.active_prompt?.id ?? null,
+        }),
       )
       updateSessionChrome()
       recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
