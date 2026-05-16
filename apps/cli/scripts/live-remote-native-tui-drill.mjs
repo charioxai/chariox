@@ -1242,9 +1242,15 @@ async function runProviderScenario({
     if (!skipBaselineTurns) {
       if (provider === "opencode") {
         await runNativeOpenCodePrompt(proxyA, providerSessionA, worktree, `Reply with exactly ${markers.nativeA} and nothing else.`, logs.nativeA)
+        await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+          [aliases[0]]: { prompts: [markers.nativeA], outputs: [markers.nativeA] },
+        })
         await runNativeOpenCodePrompt(proxyB, providerSessionB, worktree, `Reply with exactly ${markers.nativeB} and nothing else.`, logs.nativeB)
       } else if (provider === "codex") {
         await runNativeCodexPrompt(proxyA, providerSessionA, `Reply with exactly ${markers.nativeA} and nothing else.`)
+        await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+          [aliases[0]]: { prompts: [markers.nativeA], outputs: [markers.nativeA] },
+        })
         await runNativeCodexPrompt(proxyB, providerSessionB, `Reply with exactly ${markers.nativeB} and nothing else.`)
       }
 
@@ -1629,6 +1635,18 @@ async function deleteHomeManagedSlice(homeKernelUrl, sliceRef) {
   }
 }
 
+async function prebuildLocalDockerSliceImageIfNeeded(policy) {
+  if (policy !== "always") return
+  await runLogged("docker", [
+    "build",
+    "-f",
+    path.join(repoRoot, "experiments/slice-spike/docker/Dockerfile"),
+    "-t",
+    "arroba-slice-linux-spike:local",
+    repoRoot,
+  ])
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -1654,6 +1672,7 @@ async function main() {
   const xdgStateHome = path.join(root, "xdg-state")
   const xdgDataHome = path.join(root, "xdg-data")
   const xdgCacheHome = path.join(root, "xdg-cache")
+  const sliceBuildImagePolicy = process.env.ARROBA_NATIVE_TUI_SLICE_BUILD_IMAGE ?? "always"
   let relay = null
   let relayTunnel = null
   let kernel = null
@@ -1668,6 +1687,7 @@ async function main() {
     await mkdir(xdgDataHome, { recursive: true })
     await mkdir(xdgCacheHome, { recursive: true })
     if (options.homeManagedSliceLocalDocker) {
+      await prebuildLocalDockerSliceImageIfNeeded(sliceBuildImagePolicy)
       const configDir = path.join(xdgConfigHome, "arroba")
       await mkdir(configDir, { recursive: true })
       await writeFile(path.join(configDir, "config.toml"), [
@@ -1678,7 +1698,7 @@ async function main() {
         "",
         "[slices.linux]",
         "docker_image = \"arroba-slice-linux-spike:local\"",
-        `build_image = ${JSON.stringify(process.env.ARROBA_NATIVE_TUI_SLICE_BUILD_IMAGE ?? "auto")}`,
+        `build_image = ${JSON.stringify(sliceBuildImagePolicy === "always" ? "auto" : sliceBuildImagePolicy)}`,
         "",
       ].join("\n"))
     }
