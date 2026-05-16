@@ -38,6 +38,10 @@ import {
   type ConfigCommandHandlerDeps,
 } from "./config-command-handlers.js"
 import {
+  handleRemoteMachineSlashCommand,
+  type RemoteMachineCommandHandlerDeps,
+} from "./remote-machine-command-handlers.js"
+import {
   parseAgentSpawnOptions,
   parsePlacementOptions,
   prepareLocalGitWorktree,
@@ -151,7 +155,12 @@ type WorkspaceLinkPayload = {
 
 export { parseRequestedViewLayout } from "./selection-command-handlers.js"
 
-type CommandActionDeps = ProviderCommandHandlerDeps & SelectionCommandHandlerDeps & ConfigCommandHandlerDeps & {
+type CommandActionDeps =
+  & ProviderCommandHandlerDeps
+  & SelectionCommandHandlerDeps
+  & ConfigCommandHandlerDeps
+  & RemoteMachineCommandHandlerDeps
+  & {
   workspace: string
   worktree: string
   getWorkspaceTarget?: () => string
@@ -266,47 +275,6 @@ type CommandActionDeps = ProviderCommandHandlerDeps & SelectionCommandHandlerDep
   acceptCloudSessionInvite?: (inviteToken: string) => Promise<Record<string, unknown>>
   listCloudSessionMembers?: (sessionId: string) => Promise<Record<string, unknown>>
   listCloudCollaborators?: () => Promise<Record<string, unknown>[]>
-  listRemoteMachines?: () => Promise<Array<{
-    machine_id: string
-    machine_alias?: string | null
-    registry_alias?: string | null
-    display_name?: string
-    trust_status?: "approved" | "pending" | "forgotten"
-    online?: boolean
-    pending?: boolean
-    kernel_count: number
-    available_providers?: string[]
-  }>>
-  approveRemoteMachine?: (machineRef: string) => Promise<{
-    machine_id: string
-    display_name?: string
-    trust_status?: "approved" | "pending" | "forgotten"
-    online?: boolean
-  }>
-  forgetRemoteMachine?: (machineRef: string) => Promise<{
-    machine_id: string
-    display_name?: string
-    trust_status?: "approved" | "pending" | "forgotten"
-    online?: boolean
-  }>
-  renameRemoteMachine?: (machineRef: string, alias: string) => Promise<{
-    machine_id: string
-    display_name?: string
-    trust_status?: "approved" | "pending" | "forgotten"
-    online?: boolean
-  }>
-  listRemoteMachineKernels?: (machineRef: string) => Promise<Array<{
-    kernel_id: string
-    machine_id: string
-    machine_alias?: string | null
-    relay_alias?: string | null
-    kernel_alias?: string | null
-    available_providers?: string[]
-    capabilities?: string[]
-    accepting_remote_leases?: boolean
-    leased_agent_count?: number
-    local_session_count?: number
-  }>>
   listSlices?: () => Promise<SliceRecord[]>
   createSlice?: (options: {
     name: string
@@ -1555,105 +1523,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleMachineCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "machine" }>,
   ): Promise<void> => {
-    const args = command.args
-    const subcommand = args[0]
-    if (subcommand === "list") {
-      if (!deps.listRemoteMachines) {
-        deps.flashFooter("remote machine discovery is unavailable in this build", "error")
-        return
-      }
-      const machines = await deps.listRemoteMachines()
-      if (machines.length === 0) {
-        deps.flashFooter("no live remote machines available through relay", "info")
-        return
-      }
-      deps.appendNotice(
-        machines
-          .map((machine) =>
-            `${machine.display_name ?? machine.machine_alias ?? "-"} id=${machine.machine_id} status=${machine.trust_status ?? "pending"}${machine.online === false ? ",offline" : ""} kernels=${machine.kernel_count} providers=${(machine.available_providers ?? []).join(",") || "-"}`
-          )
-          .join("\n"),
-      )
-      deps.flashFooter(`listed ${machines.length} live remote machine(s)`, "info")
-      return
-    }
-    if (subcommand === "kernels") {
-      if (!deps.listRemoteMachineKernels) {
-        deps.flashFooter("remote machine discovery is unavailable in this build", "error")
-        return
-      }
-      const machineRef = args[1]
-      if (!machineRef) {
-        deps.flashFooter("usage: /machine kernels <machine-ref>", "error")
-        return
-      }
-      const kernels = await deps.listRemoteMachineKernels(machineRef)
-      if (kernels.length === 0) {
-        deps.flashFooter(`no live kernels found for machine ${machineRef}`, "info")
-        return
-      }
-      deps.appendNotice(
-        kernels
-          .map((kernel) => {
-            const displayName = kernel.relay_alias ?? kernel.kernel_alias ?? "-"
-            const kernelAlias =
-              kernel.kernel_alias && kernel.kernel_alias !== displayName
-                ? ` kernel_alias=${kernel.kernel_alias}`
-                : ""
-            return `${displayName} id=${kernel.kernel_id}${kernelAlias} machine=${kernel.machine_alias ?? kernel.machine_id} providers=${(kernel.available_providers ?? []).join(",") || "-"} accepting_remote_leases=${String(kernel.accepting_remote_leases ?? false)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}`
-          })
-          .join("\n"),
-      )
-      deps.flashFooter(`listed ${kernels.length} live kernel(s) for ${machineRef}`, "info")
-      return
-    }
-    if (subcommand === "approve") {
-      if (!deps.approveRemoteMachine) {
-        deps.flashFooter("remote machine registration is unavailable in this build", "error")
-        return
-      }
-      const machineRef = args[1]
-      if (!machineRef) {
-        deps.flashFooter("usage: /machine approve <machine-ref>", "error")
-        return
-      }
-      const machine = await deps.approveRemoteMachine(machineRef)
-      await deps.refreshWaitingRoomData?.()
-      deps.flashFooter(`approved remote machine ${machine.display_name ?? machine.machine_id}`, "info")
-      return
-    }
-    if (subcommand === "forget") {
-      if (!deps.forgetRemoteMachine) {
-        deps.flashFooter("remote machine registration is unavailable in this build", "error")
-        return
-      }
-      const machineRef = args[1]
-      if (!machineRef) {
-        deps.flashFooter("usage: /machine forget <machine-ref>", "error")
-        return
-      }
-      const machine = await deps.forgetRemoteMachine(machineRef)
-      await deps.refreshWaitingRoomData?.()
-      deps.flashFooter(`forgot remote machine ${machine.display_name ?? machine.machine_id}`, "info")
-      return
-    }
-    if (subcommand === "rename") {
-      if (!deps.renameRemoteMachine) {
-        deps.flashFooter("remote machine registration is unavailable in this build", "error")
-        return
-      }
-      const machineRef = args[1]
-      const alias = args.slice(2).join(" ").trim()
-      if (!machineRef || !alias) {
-        deps.flashFooter("usage: /machine rename <machine-ref> <alias>", "error")
-        return
-      }
-      const machine = await deps.renameRemoteMachine(machineRef, alias)
-      await deps.refreshWaitingRoomData?.()
-      deps.flashFooter(`renamed remote machine ${machine.machine_id} to ${machine.display_name ?? alias}`, "info")
-      return
-    }
-    deps.flashFooter("usage: /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine rename <machine-ref> <alias>", "error")
+    await handleRemoteMachineSlashCommand(deps, command)
   }
 
   const formatSliceLabel = (slice: SliceRecord): string => slice.name || slice.id
