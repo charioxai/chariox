@@ -361,7 +361,7 @@ test("relay cloud login without args uses device flow", async () => {
   assert.equal(notices.at(-1), "cloud linked: user")
 })
 
-test("/cloud opens hosted web CLI when a cloud profile already exists", async () => {
+test("/cloud opens hosted browser terminal when a cloud profile already exists", async () => {
   const flashed: string[] = []
   const notices: string[] = []
   const openedUrls: string[] = []

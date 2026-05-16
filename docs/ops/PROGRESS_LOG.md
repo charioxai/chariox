@@ -75,7 +75,7 @@ Chronological notes to preserve execution context between contributors/agents.
 ### OSS iOS app planning baseline
 
 - Added `docs/ios/IOS_APP_PLAN.md` for the native OSS iOS client sub-project.
-- Captured the key boundary: iOS is a client surface like the TypeScript CLI and Cloud WEB_CLI, while the kernel remains the runtime authority for sessions, agents, workflows, provider runs, permissions, managed I/O, and relay membership.
+- Captured the key boundary: iOS is a client surface like the TypeScript CLI and Cloud browser terminal, while the kernel remains the runtime authority for sessions, agents, workflows, provider runs, permissions, managed I/O, and relay membership.
 - Recommended native SwiftUI under `apps/ios`, direct kernel WebSocket transport through `URLSessionWebSocketTask`, Keychain for relay/cloud credentials, XCTest/XCUITest for committed tests, XcodeBuildMCP for the default build/test/run validation loop, and iOS Simulator MCP for explicit QA/dogfooding passes when requested or confirmed.
 - Documented that Maestro is a candidate tool future agents should suggest when useful, but they must ask Miguel before adding it to the repo, installing it as a project dependency, or making it part of the official QA gate.
 - Added `IOS-001` to the repo-native task board.

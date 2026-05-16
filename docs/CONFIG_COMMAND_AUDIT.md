@@ -39,7 +39,7 @@ Status meanings:
 | `providers.account_profile` | Yes | fix/remove | Parsed and persisted, but launch requests pass explicit account profile. | Same as `providers.default`. | Only if wired and inherited. |
 | `providers.effort` | Yes | fix/remove | Parsed and persisted, but not clearly used as variant/effort default. | Same as `providers.default`. | Only if wired and inherited. |
 | `version` | Set only | remove from command | Internal schema version can be set manually through generic command. Unset is blocked. | Do not expose through config command; keep TOML/load migration-owned. | No. |
-| `ui.theme` | Yes | remove/fix | Parsed in kernel config, but terminal UI uses CLI preferences/theme registry state. | Prefer CLI preferences as owner; remove kernel key unless web CLI needs kernel-owned UI defaults. | No. |
+| `ui.theme` | Yes | remove/fix | Parsed in kernel config, but terminal UI uses CLI preferences/theme registry state. | Prefer CLI preferences as owner; remove kernel key unless browser terminal needs kernel-owned UI defaults. | No. |
 | `ui.multi_agent_response_layout` | Yes | remove/fix | Parsed in kernel config, but response layout is driven by CLI preferences/session config. | Prefer CLI preferences/session config; remove kernel key or wire intentionally. | No. |
 | `ui.max_agents_per_screen` | Yes | remove/fix | Parsed in kernel config, but CLI has its own max-agents state/preference path. | Prefer CLI preferences; remove kernel key or wire intentionally. | No. |
 | `ui.worktree_aliases.*` | Yes, via worktree alias command | fix/remove | CLI writes aliases, but no read path was found in current search. | If aliases are desired, wire waiting room/worktree labels to read this; otherwise remove. | No. |
