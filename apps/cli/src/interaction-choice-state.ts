@@ -11,6 +11,43 @@ export type InteractionChoiceSubmissionDecision = {
   action: "unavailable"
 }
 
+export type InteractionChoiceKeyEvent = {
+  name: string
+  eventType?: string
+  ctrl?: boolean
+  meta?: boolean
+  alt?: boolean
+}
+
+export type InteractionChoiceKeyAction = {
+  action: "ignore"
+} | {
+  action: "handled"
+  consumeEvent: boolean
+} | {
+  action: "cancel_custom_edit"
+  consumeEvent: true
+} | {
+  action: "delete_custom_reply"
+  consumeEvent: true
+} | {
+  action: "append_custom_reply"
+  input: string
+  consumeEvent: true
+} | {
+  action: "cycle"
+  delta: number
+  consumeEvent: true
+} | {
+  action: "begin_custom_edit"
+  selectedIndex: number
+  consumeEvent: true
+} | {
+  action: "submit"
+  choiceIndex?: number | undefined
+  consumeEvent: true
+}
+
 export function interactionChoiceCount(interaction: RuntimeInteraction): number {
   return interaction.choices.length + (interaction.custom_choice ? 1 : 0)
 }
@@ -70,6 +107,10 @@ export function appendInteractionCustomReply(options: {
   return options.current.length < maxLength ? `${options.current}${options.input}` : options.current
 }
 
+export function deleteInteractionCustomReply(current: string): string {
+  return current.slice(0, -1)
+}
+
 export function shouldEditCustomInteractionOnEnter(options: {
   interaction: RuntimeInteraction
   selectedIndex: number
@@ -80,4 +121,63 @@ export function shouldEditCustomInteractionOnEnter(options: {
       && options.selectedIndex === interactionCustomChoiceIndex(options.interaction)
       && !options.customReply,
   )
+}
+
+export function resolveInteractionChoiceKeyAction(options: {
+  interaction: RuntimeInteraction
+  event: InteractionChoiceKeyEvent
+  selectedIndex: number
+  customEditing: boolean
+  customReply: string
+}): InteractionChoiceKeyAction {
+  const { interaction, event } = options
+  if (event.eventType === "release") {
+    return { action: "ignore" }
+  }
+
+  const customIndex = interactionCustomChoiceIndex(interaction)
+  if (interaction.custom_choice && options.customEditing) {
+    if (event.name === "escape") {
+      return { action: "cancel_custom_edit", consumeEvent: true }
+    }
+    if (event.name === "backspace") {
+      return { action: "delete_custom_reply", consumeEvent: true }
+    }
+    if (event.name === "return" || event.name === "enter") {
+      return { action: "submit", choiceIndex: customIndex, consumeEvent: true }
+    }
+    if (!event.ctrl && !event.meta && !event.alt && event.name.length === 1) {
+      return { action: "append_custom_reply", input: event.name, consumeEvent: true }
+    }
+    return { action: "handled", consumeEvent: false }
+  }
+
+  if (event.name === "left" || event.name === "up") {
+    return { action: "cycle", delta: -1, consumeEvent: true }
+  }
+  if (event.name === "right" || event.name === "down") {
+    return { action: "cycle", delta: 1, consumeEvent: true }
+  }
+
+  const numericIndex = Number.parseInt(event.name, 10)
+  const choiceCount = interactionChoiceCount(interaction)
+  if (Number.isInteger(numericIndex) && numericIndex >= 1 && numericIndex <= choiceCount) {
+    if (interaction.custom_choice && numericIndex - 1 === customIndex) {
+      return { action: "begin_custom_edit", selectedIndex: customIndex, consumeEvent: true }
+    }
+    return { action: "submit", choiceIndex: numericIndex - 1, consumeEvent: true }
+  }
+
+  if (event.name === "return" || event.name === "enter") {
+    if (shouldEditCustomInteractionOnEnter({
+      interaction,
+      selectedIndex: options.selectedIndex,
+      customReply: options.customReply,
+    })) {
+      return { action: "begin_custom_edit", selectedIndex: customIndex, consumeEvent: true }
+    }
+    return { action: "submit", consumeEvent: true }
+  }
+
+  return { action: "ignore" }
 }

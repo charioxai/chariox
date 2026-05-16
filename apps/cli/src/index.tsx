@@ -87,11 +87,11 @@ import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-cli
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
 import {
   appendInteractionCustomReply,
-  interactionChoiceCount,
+  deleteInteractionCustomReply,
   interactionCustomChoiceIndex,
   nextInteractionChoiceIndex,
+  resolveInteractionChoiceKeyAction,
   resolveInteractionChoiceSubmission,
-  shouldEditCustomInteractionOnEnter,
 } from "./interaction-choice-state.js"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
@@ -6736,86 +6736,58 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!interaction || event.eventType === "release") {
       return false
     }
-    const customIndex = interactionCustomChoiceIndex(interaction)
-    const selectedIndex = interactionChoiceSelection.get(interaction.id) ?? 0
-    if (interaction.custom_choice && interactionCustomEditing.has(interaction.id)) {
-      if (event.name === "escape") {
-        event.preventDefault?.()
-        event.stopPropagation?.()
-        interactionCustomEditing.delete(interaction.id)
-        renderAgentInteractions()
-        applyResponseLayout()
-        return true
-      }
-      if (event.name === "backspace") {
-        event.preventDefault?.()
-        event.stopPropagation?.()
-        const current = interactionCustomReplies.get(interaction.id) ?? ""
-        interactionCustomReplies.set(interaction.id, current.slice(0, -1))
-        renderAgentInteractions()
-        applyResponseLayout()
-        return true
-      }
-      if (event.name === "return" || event.name === "enter") {
-        event.preventDefault?.()
-        event.stopPropagation?.()
-        void submitFocusedInteractionChoice(customIndex)
-        return true
-      }
-      if (!event.ctrl && !event.meta && !event.alt && event.name.length === 1) {
-        event.preventDefault?.()
-        event.stopPropagation?.()
-        const current = interactionCustomReplies.get(interaction.id) ?? ""
-        interactionCustomReplies.set(interaction.id, appendInteractionCustomReply({
-          current,
-          input: event.name,
-          maxLength: interaction.custom_choice.max_length,
-        }))
-        renderAgentInteractions()
-        applyResponseLayout()
-        return true
-      }
+    const keyAction = resolveInteractionChoiceKeyAction({
+      interaction,
+      event,
+      selectedIndex: interactionChoiceSelection.get(interaction.id) ?? 0,
+      customEditing: interactionCustomEditing.has(interaction.id),
+      customReply: interactionCustomReplies.get(interaction.id) ?? "",
+    })
+    if (keyAction.action === "ignore") {
+      return false
+    }
+    if (keyAction.consumeEvent) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+    }
+    if (keyAction.action === "handled") {
       return true
     }
-    if (event.name === "left" || event.name === "up") {
-      event.preventDefault?.()
-      event.stopPropagation?.()
-      return cycleFocusedInteractionChoice(-1)
-    }
-    if (event.name === "right" || event.name === "down") {
-      event.preventDefault?.()
-      event.stopPropagation?.()
-      return cycleFocusedInteractionChoice(1)
-    }
-    const numericIndex = Number.parseInt(event.name, 10)
-    const choiceCount = interactionChoiceCount(interaction)
-    if (Number.isInteger(numericIndex) && numericIndex >= 1 && numericIndex <= choiceCount) {
-      event.preventDefault?.()
-      event.stopPropagation?.()
-      if (interaction.custom_choice && numericIndex - 1 === customIndex) {
-        interactionChoiceSelection.set(interaction.id, customIndex)
-        interactionCustomEditing.add(interaction.id)
-        renderAgentInteractions()
-        applyResponseLayout()
-      } else {
-        void submitFocusedInteractionChoice(numericIndex - 1)
-      }
+    if (keyAction.action === "cancel_custom_edit") {
+      interactionCustomEditing.delete(interaction.id)
+      renderAgentInteractions()
+      applyResponseLayout()
       return true
     }
-    if (event.name === "return" || event.name === "enter") {
-      event.preventDefault?.()
-      event.stopPropagation?.()
-      if (shouldEditCustomInteractionOnEnter({
-        interaction,
-        selectedIndex,
-        customReply: interactionCustomReplies.get(interaction.id) ?? "",
-      })) {
-        interactionCustomEditing.add(interaction.id)
-        renderAgentInteractions()
-        applyResponseLayout()
-      } else {
-        void submitFocusedInteractionChoice()
-      }
+    if (keyAction.action === "delete_custom_reply") {
+      interactionCustomReplies.set(interaction.id, deleteInteractionCustomReply(interactionCustomReplies.get(interaction.id) ?? ""))
+      renderAgentInteractions()
+      applyResponseLayout()
+      return true
+    }
+    if (keyAction.action === "append_custom_reply") {
+      const current = interactionCustomReplies.get(interaction.id) ?? ""
+      interactionCustomReplies.set(interaction.id, appendInteractionCustomReply({
+        current,
+        input: keyAction.input,
+        maxLength: interaction.custom_choice?.max_length,
+      }))
+      renderAgentInteractions()
+      applyResponseLayout()
+      return true
+    }
+    if (keyAction.action === "cycle") {
+      return cycleFocusedInteractionChoice(keyAction.delta)
+    }
+    if (keyAction.action === "begin_custom_edit") {
+      interactionChoiceSelection.set(interaction.id, keyAction.selectedIndex)
+      interactionCustomEditing.add(interaction.id)
+      renderAgentInteractions()
+      applyResponseLayout()
+      return true
+    }
+    if (keyAction.action === "submit") {
+      void submitFocusedInteractionChoice(keyAction.choiceIndex)
       return true
     }
     return false
