@@ -2,8 +2,6 @@ import type {
   AgentInstance,
   ArrobaMcpServerConfig,
   ArrobaSkillMetadata,
-  ArrobaUserConfigSchemaPayload,
-  ArrobaUserConfigPayload,
   McpImportOutcome,
   RuntimeAttachment,
   QueuedWorkflowLaunch,
@@ -20,7 +18,6 @@ import type {
   WorkflowRun,
   WorkflowWatchdogDefinition,
   WorkspaceLinkDefinition,
-  UserConfigSchemaEntry,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { RelayCloudProfile, MultiAgentResponseLayout } from "./preferences.js"
@@ -36,6 +33,10 @@ import {
   handleViewSlashCommand,
   type SelectionCommandHandlerDeps,
 } from "./selection-command-handlers.js"
+import {
+  handleConfigSlashCommand,
+  type ConfigCommandHandlerDeps,
+} from "./config-command-handlers.js"
 import {
   parseAgentSpawnOptions,
   parsePlacementOptions,
@@ -150,7 +151,7 @@ type WorkspaceLinkPayload = {
 
 export { parseRequestedViewLayout } from "./selection-command-handlers.js"
 
-type CommandActionDeps = ProviderCommandHandlerDeps & SelectionCommandHandlerDeps & {
+type CommandActionDeps = ProviderCommandHandlerDeps & SelectionCommandHandlerDeps & ConfigCommandHandlerDeps & {
   workspace: string
   worktree: string
   getWorkspaceTarget?: () => string
@@ -380,10 +381,6 @@ type CommandActionDeps = ProviderCommandHandlerDeps & SelectionCommandHandlerDep
   showWorkspaceLink?: (linkRef: string) => Promise<WorkspaceLinkDefinition>
   attachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload>
   detachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload & { detached: unknown[] }>
-  getUserConfig?: () => Promise<ArrobaUserConfigPayload>
-  getUserConfigSchema?: () => Promise<ArrobaUserConfigSchemaPayload>
-  setUserConfigValue?: (path: string, value: string) => Promise<ArrobaUserConfigPayload>
-  unsetUserConfigValue?: (path: string) => Promise<ArrobaUserConfigPayload>
   rebuildTranscript: () => void
   requestRender: () => void
   cycleAgentFocus: () => Promise<AgentCyclePayload>
@@ -663,27 +660,6 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const formatSkillSummary = (skill: ArrobaSkillMetadata): string => {
     const summary = skill.short_description ?? skill.description
     return `${skill.name}: ${summary}`
-  }
-  const appendUserConfigEffects = (payload: ArrobaUserConfigPayload): void => {
-    const effects = payload.effects ?? []
-    if (effects.length > 0) {
-      deps.appendNotice(effects.map((effect) => effect.message).join("\n"))
-    }
-  }
-  const formatConfigSchemaKeys = (entries: UserConfigSchemaEntry[]): string => {
-    if (entries.length === 0) {
-      return "(no config keys)"
-    }
-    return entries
-      .filter((entry) => entry.settable)
-      .map((entry) => {
-        const values = entry.allowed_values && entry.allowed_values.length > 0
-          ? ` values=${entry.allowed_values.join("|")}`
-          : ""
-        const unset = entry.unsettable ? " unset" : ""
-        return `${entry.path} (${entry.value_type}; ${entry.status}; ${entry.effect}${unset}${values})`
-      })
-      .join("\n")
   }
   const formatWorkspaceLinks = (links: WorkspaceLinkDefinition[]): string => {
     if (links.length === 0) {
@@ -1573,96 +1549,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleConfigCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "config" }>,
   ): Promise<void> => {
-    const [subcommand, keyPath, ...rest] = command.args
-    if (!subcommand || subcommand === "show") {
-      if (!deps.getUserConfig) {
-        deps.flashFooter("user config is unavailable in this build", "error")
-        return
-      }
-      const payload = await deps.getUserConfig()
-      deps.appendNotice(`config path: ${payload.path}\n${JSON.stringify(payload.config, null, 2)}`)
-      deps.flashFooter(`config loaded from ${payload.path}`, "info")
-      return
-    }
-    if (subcommand === "path") {
-      if (!deps.getUserConfig) {
-        deps.flashFooter("user config is unavailable in this build", "error")
-        return
-      }
-      const payload = await deps.getUserConfig()
-      deps.appendNotice(payload.path)
-      deps.flashFooter(`config path: ${payload.path}`, "info")
-      return
-    }
-    if (subcommand === "keys" || subcommand === "list") {
-      if (!deps.getUserConfigSchema) {
-        deps.flashFooter("user config schema is unavailable in this build", "error")
-        return
-      }
-      const payload = await deps.getUserConfigSchema()
-      deps.appendNotice(formatConfigSchemaKeys(payload.entries))
-      deps.flashFooter(`listed ${payload.entries.length} config key${payload.entries.length === 1 ? "" : "s"}`, "info")
-      return
-    }
-    if (subcommand === "schema") {
-      if (!deps.getUserConfigSchema) {
-        deps.flashFooter("user config schema is unavailable in this build", "error")
-        return
-      }
-      const payload = await deps.getUserConfigSchema()
-      deps.appendNotice(JSON.stringify(payload.entries, null, 2))
-      deps.flashFooter(`listed ${payload.entries.length} config schema entr${payload.entries.length === 1 ? "y" : "ies"}`, "info")
-      return
-    }
-    if (subcommand === "set") {
-      if (!deps.setUserConfigValue) {
-        deps.flashFooter("user config updates are unavailable in this build", "error")
-        return
-      }
-      const value = rest.join(" ").trim()
-      if (!keyPath || !value) {
-        deps.flashFooter("usage: /config set <path> <value>", "error")
-        return
-      }
-      const payload = await deps.setUserConfigValue(keyPath, value)
-      appendUserConfigEffects(payload)
-      deps.flashFooter(`config ${keyPath} set to ${value}`, "info")
-      return
-    }
-    if (subcommand === "unset") {
-      if (!deps.unsetUserConfigValue) {
-        deps.flashFooter("user config updates are unavailable in this build", "error")
-        return
-      }
-      if (!keyPath) {
-        deps.flashFooter("usage: /config unset <path>", "error")
-        return
-      }
-      const payload = await deps.unsetUserConfigValue(keyPath)
-      appendUserConfigEffects(payload)
-      deps.flashFooter(`config ${keyPath} unset`, "info")
-      return
-    }
-    if (subcommand === "managed-io") {
-      if (!deps.setUserConfigValue) {
-        deps.flashFooter("user config updates are unavailable in this build", "error")
-        return
-      }
-      const mode = keyPath ?? "required"
-      if (rest.length > 0 || !["required", "unrestricted", "on", "off"].includes(mode)) {
-        deps.flashFooter("usage: /config managed-io required|unrestricted|on|off", "error")
-        return
-      }
-      const normalizedMode = mode === "on" ? "required" : mode === "off" ? "unrestricted" : mode
-      const payload = await deps.setUserConfigValue("providers.managed_io", normalizedMode)
-      appendUserConfigEffects(payload)
-      deps.flashFooter(`managed I/O set to ${normalizedMode}`, "info")
-      return
-    }
-    deps.flashFooter(
-      "usage: /config show | path | keys | schema | set <path> <value> | unset <path> | managed-io required|unrestricted",
-      "error",
-    )
+    await handleConfigSlashCommand(deps, command)
   }
 
   const handleMachineCommand = async (
