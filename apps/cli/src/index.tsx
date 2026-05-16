@@ -188,17 +188,14 @@ import {
 import {
   extractDroppedPromptAttachments,
   parsePromptAttachmentCommand,
-  resolvePromptAttachmentEdit,
   type ParsedPromptAttachment,
 } from "./prompt-attachments.js"
+import { createPromptAttachmentController } from "./prompt-attachment-controller.js"
 import {
   captureScreenshot,
   storeTransferredFile,
 } from "./prompt-attachment-api.js"
 import {
-  addPendingPromptAttachments as addPendingPromptAttachmentsState,
-  filterPendingPromptAttachmentsForText,
-  removePendingPromptAttachmentToken as removePendingPromptAttachmentTokenState,
   type PendingPromptAttachment,
 } from "./prompt-attachment-state.js"
 import {
@@ -2716,12 +2713,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     promptPlaceholder()
     syncPromptPlaceholder()
   })
-  const clearPendingPromptAttachments = () => {
-    setPendingAttachments([])
-    refreshPromptAttachmentHighlights()
-    updateSessionChrome()
-    ;(renderer as { requestRender?: () => void }).requestRender?.()
-  }
+  const promptAttachmentController = createPromptAttachmentController({
+    getPromptInput: () => promptInput ?? null,
+    getPromptText: () => promptInput?.plainText ?? promptTextSnapshot,
+    setPromptText,
+    pendingAttachments,
+    setPendingAttachments: (attachments) => setPendingAttachments(attachments),
+    updatePendingAttachments: (updater) => setPendingAttachments((current) => updater(current)),
+    refreshHighlights: refreshPromptAttachmentHighlights,
+    updateSessionChrome: () => updateSessionChrome(),
+    requestRender: () => (renderer as { requestRender?: () => void }).requestRender?.(),
+  })
+  const clearPendingPromptAttachments = promptAttachmentController.clear
+  const syncPendingPromptAttachmentsFromText = promptAttachmentController.syncFromText
+  const removeLastPendingPromptAttachment = promptAttachmentController.removeLast
+  const addPendingPromptAttachments = promptAttachmentController.addStoredFiles
+  const removePromptAttachmentsForEdit = promptAttachmentController.removeForEdit
 
   type SubmittedPromptUiSnapshot = {
     rawPrompt: string
@@ -2998,99 +3005,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       closeSessionBrowserDialog()
     }
     openHotkeys()
-  }
-  const syncPendingPromptAttachmentsFromText = (value: string) => {
-    setPendingAttachments((current) => filterPendingPromptAttachmentsForText(current, value))
-    refreshPromptAttachmentHighlights()
-  }
-  const insertPromptAttachmentTokens = (tokens: string[], at: number) => {
-    if (tokens.length === 0) {
-      return
-    }
-    const current = promptInput?.plainText ?? promptTextSnapshot
-    const prefix = current.slice(0, at)
-    const suffix = current.slice(at)
-    const before = prefix && !/\s$/.test(prefix) ? " " : ""
-    const after = suffix && !/^\s/.test(suffix) ? " " : ""
-    const content = tokens.join(" ")
-    const next = `${prefix}${before}${content}${after}${suffix}`
-    setPromptText(next)
-    if (promptInput) {
-      promptInput.cursorOffset = prefix.length + before.length + content.length
-    }
-  }
-  const removeLastPendingPromptAttachment = () => {
-    const last = pendingAttachments().at(-1)
-    if (!last) {
-      return
-    }
-    removePromptAttachmentToken(last.token)
-    updateSessionChrome()
-    ;(renderer as { requestRender?: () => void }).requestRender?.()
-  }
-  const addPendingPromptAttachments = (files: Array<Omit<PendingPromptAttachment, "token">>, at: number) => {
-    const result = addPendingPromptAttachmentsState(pendingAttachments(), files)
-    if (result.addedAttachments.length === 0) {
-      return false
-    }
-    setPendingAttachments(result.nextAttachments)
-    insertPromptAttachmentTokens(result.addedAttachments.map((file) => file.token), at)
-    refreshPromptAttachmentHighlights()
-    updateSessionChrome()
-    ;(renderer as { requestRender?: () => void }).requestRender?.()
-    return true
-  }
-  const removePromptAttachmentToken = (token: string) => {
-    const current = promptInput?.plainText ?? promptTextSnapshot
-    const result = removePendingPromptAttachmentTokenState({
-      attachments: pendingAttachments(),
-      text: current,
-      token,
-    })
-    setPendingAttachments(result.nextAttachments)
-    if (!result.tokenFound) {
-      refreshPromptAttachmentHighlights()
-      return
-    }
-    setPromptText(result.nextText)
-    if (promptInput) {
-      promptInput.cursorOffset = result.cursorOffset ?? promptInput.cursorOffset
-    }
-  }
-  const removePromptAttachmentsForEdit = (action: "backspace" | "delete") => {
-    if (!promptInput) {
-      return false
-    }
-    const text = promptInput.plainText
-    const selection = promptInput.getSelection()
-    const cursor = promptInput.cursorOffset
-    const edit = resolvePromptAttachmentEdit(
-      text,
-      pendingAttachments().map((file) => file.token),
-      action,
-      cursor,
-      selection,
-    )
-    if (!edit) {
-      return false
-    }
-    if (edit.kind === "noop") {
-      return true
-    }
-    if (edit.kind === "delete-text") {
-      const hasSelection = selection && selection.start !== selection.end
-      setPromptText(`${text.slice(0, edit.start)}${text.slice(edit.end)}`)
-      promptInput.cursorOffset = hasSelection ? Math.min(selection.start, selection.end) : cursor
-      updateSessionChrome()
-      ;(renderer as { requestRender?: () => void }).requestRender?.()
-      return true
-    }
-    setPendingAttachments((files) => files.filter((file) => !edit.tokens.includes(file.token)))
-    setPromptText(`${text.slice(0, edit.start)}${text.slice(edit.end)}`)
-    promptInput.cursorOffset = edit.start
-    updateSessionChrome()
-    ;(renderer as { requestRender?: () => void }).requestRender?.()
-    return true
   }
   const storePromptAttachment = async (file: ParsedPromptAttachment) => {
     const attachment = attachmentState()
