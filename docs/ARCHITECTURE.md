@@ -769,6 +769,10 @@ same provider adapter/server path it uses for normal worker-owned runs. Any
 provider-native proxy code is only an edge translator between home-kernel
 session events and provider-native UI protocol or PTY rendering; it must not
 own prompt state, history, permissions, attachments, or remote execution.
+Provider-native permission prompts follow the same rule: a provider request
+creates one kernel-owned `RuntimeInteraction`, projected to all Arroba clients,
+and provider-native approval replies are routed back to that interaction where
+the provider seam allows it.
 Codex/OpenCode use provider protocol proxies where available. Claude Code uses
 a kernel-owned remote-rendered PTY because Claude Code's public integration
 surface is terminal-first rather than a separable app-server protocol.

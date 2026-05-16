@@ -383,19 +383,6 @@ async function waitForFileMatch(file, pattern, timeoutMs = 90_000) {
   throw new Error(`timed out waiting for ${pattern} in ${file}\n${text.slice(-4000)}`)
 }
 
-async function waitForFileMatchAfterOffset(file, pattern, offset, timeoutMs = 90_000) {
-  const deadline = Date.now() + timeoutMs
-  let text = ""
-  while (Date.now() < deadline) {
-    text = await readFile(file, "utf8").catch(() => "")
-    const slice = text.slice(offset)
-    const match = slice.match(pattern)
-    if (match) return { match, text }
-    await sleep(250)
-  }
-  throw new Error(`timed out waiting for ${pattern} after offset ${offset} in ${file}\n${text.slice(-4000)}`)
-}
-
 async function waitForLogOccurrences(logFile, needle, count, timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs
   let text = ""
@@ -715,11 +702,13 @@ async function waitForInteractionCleared(socketPath, interactionId, timeoutMs = 
 
 async function answerPermissionFromCli(socketPath, alias) {
   const pending = await waitForInteraction(socketPath, alias)
-  await automationRequest(socketPath, {
-    action: "workspace_shell_exec",
-    command: `agent focus ${pending.agent.id}`,
-  })
-  await waitForInteractionFocused(socketPath, pending.interaction.id)
+  if (!pending.interaction.focused) {
+    await automationRequest(socketPath, {
+      action: "workspace_shell_exec",
+      command: `agent focus ${pending.agent.id}`,
+    })
+    await waitForInteractionFocused(socketPath, pending.interaction.id)
+  }
   const allowIndex = pending.interaction.choices.findIndex((choice) =>
     choice.id === "allow_once"
       || choice.id === "allow"
@@ -735,24 +724,6 @@ async function answerPermissionFromCli(socketPath, alias) {
   }
   await waitForInteractionCleared(socketPath, pending.interaction.id)
   return pending.interaction
-}
-
-async function approveClaudeRenderedPermission(screenName, logFile) {
-  await waitForFileMatch(logFile, /Bash command|Bash\(|Do you wa.*to .*roceed|❯\s*1\.\s*Yes|Yes,\s+and\s+always\s+allow/, 300_000)
-  await screenStuff(screenName, "\r")
-  return "claude-native-tui"
-}
-
-async function approveClaudeRenderedPermissionViaKernelInput(client, sessionId, attachmentId, providerRunId, logFile) {
-  await waitForFileMatch(logFile, /Bash command|Bash\(|Do you wa.*to .*roceed|❯\s*1\.\s*Yes|Yes,\s+and\s+always\s+allow/, 300_000)
-  await client.send(sendTerminalInputRequest(sessionId, attachmentId, "\r", providerRunId))
-  return "claude-rendered-pty"
-}
-
-async function approveClaudeRenderedPermissionViaKernelInputAfterOffset(client, sessionId, attachmentId, providerRunId, logFile, offset) {
-  await waitForFileMatchAfterOffset(logFile, /Bash command|Bash\(|Do you wa.*to .*roceed|❯\s*1\.\s*Yes|Yes,\s+and\s+always\s+allow/, offset, 300_000)
-  await client.send(sendTerminalInputRequest(sessionId, attachmentId, "\r", providerRunId))
-  return "claude-rendered-pty"
 }
 
 async function sendClaudeRenderedPromptViaKernelInput(client, sessionId, attachmentId, providerRunId, prompt) {
@@ -1514,6 +1485,10 @@ async function runProviderScenario({
       const nativePrompt = provider === "claude"
         ? claudePermissionPrompt(markers.nativePermission, nativePermissionFile, nativePermissionContent)
         : permissionPrompt(markers.nativePermission, nativePermissionFile, nativePermissionContent)
+      await automationRequest(automationSocket, {
+        action: "workspace_shell_exec",
+        command: `agent focus ${agents[0].id}`,
+      })
       if (provider === "opencode") {
         const nativeRun = await runNativeOpenCodePromptDetached(proxyA, providerSessionA, worktree, nativePrompt)
         const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
@@ -1529,13 +1504,8 @@ async function runProviderScenario({
         if (!badgeTransitions[aliases[0]].during) {
           badgeTransitions[aliases[0]].during = await waitForAgentBadgeTone(automationSocket, aliases[0], "working")
         }
-        extendedChecks.nativePermissionInteraction = await approveClaudeRenderedPermissionViaKernelInput(
-          client,
-          sessionId,
-          attachment.id,
-          providerRunA,
-          logs.a,
-        )
+        const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
+        extendedChecks.nativePermissionInteraction = interaction.title ?? interaction.message
       }
       if (provider !== "claude") {
         await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
@@ -1557,23 +1527,13 @@ async function runProviderScenario({
       const arrobaPrompt = provider === "claude"
         ? claudePermissionPrompt(markers.arrobaPermission, arrobaPermissionFile, arrobaPermissionContent)
         : permissionPrompt(markers.arrobaPermission, arrobaPermissionFile, arrobaPermissionContent)
-      const claudeLogOffsetBeforeArrobaPrompt = provider === "claude"
-        ? (await readFile(logs.a, "utf8").catch(() => "")).length
-        : 0
       await automationRequest(automationSocket, {
         action: "workspace_shell_exec",
         command: `prompt ${aliases[0]} ${shellQuote(arrobaPrompt)}`,
       })
       if (provider === "claude") {
-        const providerRunA = await waitForClaudeProviderRunId(logs.a)
-        extendedChecks.arrobaPermissionInteraction = await approveClaudeRenderedPermissionViaKernelInputAfterOffset(
-          client,
-          sessionId,
-          attachment.id,
-          providerRunA,
-          logs.a,
-          claudeLogOffsetBeforeArrobaPrompt,
-        )
+        const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
+        extendedChecks.arrobaPermissionInteraction = interaction.title ?? interaction.message
       } else {
         const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
         extendedChecks.arrobaPermissionInteraction = interaction.title ?? interaction.message

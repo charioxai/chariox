@@ -97,6 +97,10 @@ fn plan_claude_launch_unlocked(
             "ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
             native.context_response_dir.display().to_string(),
         );
+        pty_env.insert(
+            "ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
+            native.permission_response_dir.display().to_string(),
+        );
         pty_env.insert("TERM".to_string(), "xterm-256color".to_string());
         pty_env.insert("COLORTERM".to_string(), "truecolor".to_string());
         return Ok(ProviderLaunchResult {
@@ -128,6 +132,7 @@ struct ClaudeNativeTuiFiles {
     events_file: PathBuf,
     context_file: PathBuf,
     context_response_dir: PathBuf,
+    permission_response_dir: PathBuf,
     settings_file: PathBuf,
 }
 
@@ -147,11 +152,18 @@ fn prepare_claude_native_tui_files() -> Result<ClaudeNativeTuiFiles, DaemonError
     let events_file = root.join("events.jsonl");
     let context_file = root.join("hidden-context.txt");
     let context_response_dir = root.join("hook-context-responses");
+    let permission_response_dir = root.join("permission-responses");
     let settings_file = root.join("settings.json");
     let hook_handler_file = root.join("hook-handler.mjs");
     fs::create_dir_all(&context_response_dir).map_err(|error| DaemonError::LocalTransport {
         operation: "prepare claude native context response dir",
         message: error.to_string(),
+    })?;
+    fs::create_dir_all(&permission_response_dir).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "prepare claude native permission response dir",
+            message: error.to_string(),
+        }
     })?;
     fs::write(&events_file, "").map_err(|error| DaemonError::LocalTransport {
         operation: "prepare claude native events file",
@@ -195,6 +207,7 @@ fn prepare_claude_native_tui_files() -> Result<ClaudeNativeTuiFiles, DaemonError
         events_file,
         context_file,
         context_response_dir,
+        permission_response_dir,
         settings_file,
     })
 }
@@ -215,7 +228,7 @@ try {
   input = { hook_event_name: "parse_error", raw, error: String(error) }
 }
 const eventName = input.hook_event_name ?? "unknown"
-const hookContextRequestId = eventName === "UserPromptSubmit"
+const hookContextRequestId = eventName === "UserPromptSubmit" || eventName === "PreToolUse" || eventName === "PermissionRequest"
   ? `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`
   : null
 appendFileSync(process.env.ARROBA_CLAUDE_NATIVE_EVENTS, JSON.stringify({
@@ -254,6 +267,33 @@ if (eventName === "UserPromptSubmit") {
       additionalContext
     }
   }))
+} else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
+  const responseDir = process.env.ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES
+  const responseFile = responseDir && hookContextRequestId
+    ? join(responseDir, `${hookContextRequestId}.json`)
+    : null
+  if (responseFile) {
+    const deadline = Date.now() + 300000
+    while (Date.now() < deadline) {
+      if (existsSync(responseFile)) {
+        try {
+          const decision = JSON.parse(readFileSync(responseFile, "utf8"))
+          try { unlinkSync(responseFile) } catch {}
+          if (decision?.permissionDecision) {
+            process.stdout.write(JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: eventName,
+                permissionDecision: decision.permissionDecision,
+                permissionDecisionReason: decision.permissionDecisionReason ?? "Resolved through Arroba."
+              }
+            }))
+          }
+        } catch {}
+        break
+      }
+      await sleep(50)
+    }
+  }
 }
 "#
 }

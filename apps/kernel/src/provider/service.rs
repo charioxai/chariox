@@ -43,6 +43,12 @@ impl ProviderProcessService {
     ) {
         self.run_actor_mailbox.set_native_interaction_bridge(bridge);
     }
+
+    pub(crate) fn native_interaction_bridge(
+        &self,
+    ) -> Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>> {
+        self.run_actor_mailbox.native_interaction_bridge()
+    }
 }
 
 impl Default for ProviderProcessService {

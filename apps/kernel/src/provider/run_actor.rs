@@ -62,6 +62,12 @@ impl ProviderRunActorMailbox {
         self.native_interaction_bridge.set(bridge);
     }
 
+    pub(crate) fn native_interaction_bridge(
+        &self,
+    ) -> Option<Arc<dyn ProviderNativeInteractionBridge>> {
+        self.native_interaction_bridge.read()
+    }
+
     pub(crate) fn insert_claude_runtime(&self, run_id: String, state: ClaudeRuntimeState) {
         self.runtime_registry.insert_claude_runtime(run_id, state);
     }

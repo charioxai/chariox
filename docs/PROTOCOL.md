@@ -204,6 +204,14 @@ Native TUI MCP and skill placement:
 - slice-backed native TUI still executes MCP commands on the worker side, so MCP commands, environment, and credentials must be available in the slice image or injected slice environment
 - capability grants remain agent-scoped in all modes; native TUI launch must not expose ungranted local/user MCPs or skills just because the provider CLI can see them natively
 
+Native TUI permissions:
+
+- provider-native permission requests MUST be represented as one agent-scoped, kernel-owned `RuntimeInteraction`
+- that interaction MUST be projected to every Arroba TUI attached to the session, regardless of whether the current turn was submitted from an Arroba TUI or provider-native TUI
+- answering from an Arroba TUI resolves the kernel interaction and the provider adapter/proxy forwards the resulting decision to the provider
+- where a provider-native TUI can submit an approval response through a stable proxy or hook seam, the native response MUST resolve the same kernel interaction rather than bypassing it; first valid resolution wins
+- if the provider only exposes the approval through a rendered PTY, Arroba may detect the rendered prompt and create the kernel interaction, then inject the resulting decision back into the PTY using the provider's native selection semantics
+
 Native TUI hidden context:
 
 - granted skill prompt context and other Arroba-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text

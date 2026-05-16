@@ -56,6 +56,12 @@ impl ProviderProcessServiceStore {
         self.read().set_native_interaction_bridge(bridge);
     }
 
+    pub(crate) fn native_interaction_bridge(
+        &self,
+    ) -> Option<Arc<dyn ProviderNativeInteractionBridge>> {
+        self.read().native_interaction_bridge()
+    }
+
     pub fn get_run(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
         self.read().get_run(run_id)
     }

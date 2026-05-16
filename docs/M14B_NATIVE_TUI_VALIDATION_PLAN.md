@@ -28,12 +28,14 @@ attachments with two provider-native TUIs plus one Arroba observer in the same
 session. The older direct Docker slice-target drill has been removed; slice
 coverage now uses the home-managed slice topology only.
 
-2026-05-14 permissions update: local Codex/OpenCode mixed native TUI
-permission drills pass in both directions. Claude local permissions use an
-origin-aware contract: permissions for prompts entered in Claude Code's native
-TUI stay in Claude Code's native permission UI, while permissions for prompts
-entered from an Arroba TUI are bridged into Arroba and can be answered there.
-This keeps the initiating CLI in control of the user-facing permission prompt.
+2026-05-16 permissions update: native TUI permissions now use a single
+kernel-owned interaction contract. Provider-native permission requests are
+projected to every Arroba TUI in the session regardless of prompt origin.
+Codex/OpenCode provider-native approval replies are routed back to the active
+Arroba interaction when they arrive through the native proxy. Claude local
+native TUI permission hooks bridge all origins into Arroba; remote-rendered
+Claude detects visible PTY permission prompts and creates the same Arroba
+interaction before injecting the resolved decision back into the PTY.
 
 2026-05-14 Claude attachment update: local Claude native TUI prompt attachments
 are implemented and covered by `live-native-tui-attachment-drill.mjs --provider
@@ -163,9 +165,8 @@ Permissions:
 
 - Local Codex/OpenCode: covered by `live-native-tui-permission-drill.mjs` in
   both native-TUI-origin and Arroba-TUI-origin directions.
-- Local Claude: product behavior is implemented with origin-aware permission
-  ownership. Claude-origin prompts defer to Claude Code's native permission UI;
-  Arroba-origin prompts bridge the permission interaction into Arroba. Dedicated
+- Local Claude: product behavior is implemented with the same kernel-owned
+  interaction contract for native-origin and Arroba-origin prompts. Dedicated
   automated coverage is provided by `live-native-tui-permission-drill.mjs
   --provider claude`.
 - Standard remote home-worker Codex/OpenCode: covered by
@@ -176,9 +177,10 @@ Permissions:
 - Standard remote home-worker Claude: covered by
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers claude
   --include-permissions`. Native-origin and Arroba-origin prompts both surface
-  permission interactions in the remote-rendered Claude native TUI and can be
-  approved through kernel-owned PTY input in same-host relay mode and with the
-  actual Hetzner worker once the Linux worker has Claude credentials in
+  permission interactions through Arroba. The remote-rendered Claude TUI remains
+  coherent while the launcher detects the PTY prompt and injects the resolved
+  decision back into the provider run. This passes in same-host relay mode and
+  with the actual Hetzner worker once the Linux worker has Claude credentials in
   `~/.claude/.credentials.json`.
 - Home-managed slice Codex/OpenCode/Claude: covered by
   `live-remote-native-tui-drill.mjs --home-managed-slice-local-docker
@@ -289,11 +291,10 @@ Provider notes:
 
 3. Revisit local permissions for all providers.
    - Codex/OpenCode local native TUI permissions pass in both directions.
-   - Claude local permissions are origin-aware: Claude-origin permissions stay
-     native; Arroba-origin permissions bridge into Arroba.
-   - Claude deterministic live coverage is implemented with a native-TUI
-     approval driver for native-origin prompts and Arroba interaction approval
-     for Arroba-origin prompts.
+   - Claude local permissions bridge native-origin and Arroba-origin prompts
+     into the same Arroba interaction path.
+   - Provider-native approval replies for Codex/OpenCode resolve the active
+     Arroba interaction instead of bypassing the kernel.
 
 4. Implement and validate local Claude prompt attachments.
    - Completed for local text/file and image attachments.
@@ -408,11 +409,14 @@ Attachment drills must validate:
 
 Permission drills must validate:
 
-- provider-native permission prompts surface according to the provider contract
-- if Arroba-side response is supported, answering from Arroba resumes the same
-  provider turn
-- if a provider only supports native-TUI response, the native TUI remains
-  coherent and Arroba state does not claim a false approval bridge
+- provider-native permission requests create a kernel-owned interaction visible
+  to all Arroba TUIs attached to the session
+- answering from Arroba resumes the same provider turn
+- where provider-native approval replies are supported, the native reply
+  resolves the same Arroba interaction instead of bypassing kernel state
+- if a provider only exposes approval through a rendered PTY, the PTY remains
+  coherent and Arroba injects the resolved decision back through the provider
+  selection path
 
 MCP/skill drills must validate:
 

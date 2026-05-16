@@ -223,6 +223,18 @@ impl<'a> ProviderOutputPump<'a> {
                 return Err(error);
             }
         };
+        if provider_run.adapter_key() == "claude" && !provider_run.client_interface().is_arroba() {
+            let rendered = chunks
+                .iter()
+                .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
+                .collect::<String>();
+            self.context.process_claude_native_terminal_output_bridge(
+                request.session_id,
+                request.provider_run_id,
+                &provider_run,
+                &rendered,
+            )?;
+        }
         let terminal_failure = classify_provider_terminal_failure_text(
             provider_run.adapter_key(),
             &chunks
@@ -741,6 +753,23 @@ impl<'a> ProviderOutputPumpContext<'a> {
             session_id,
             provider_run_id,
             provider_run,
+            self.provider_store.native_interaction_bridge(),
+        )
+    }
+
+    fn process_claude_native_terminal_output_bridge(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &RuntimeProviderRun,
+        rendered: &str,
+    ) -> Result<(), DaemonError> {
+        ProviderOutputClaudeNativeBridge::new(self.app).process_terminal_output(
+            session_id,
+            provider_run_id,
+            provider_run,
+            self.provider_store.native_interaction_bridge(),
+            rendered,
         )
     }
 

@@ -92,10 +92,6 @@ async function screen(name, args) {
   await execFileAsync("screen", ["-S", name, ...args])
 }
 
-async function screenStuff(name, text) {
-  await screen(name, ["-p", "0", "-X", "stuff", text])
-}
-
 async function screenQuit(name) {
   await screen(name, ["-X", "quit"]).catch(() => {})
 }
@@ -224,15 +220,6 @@ async function waitForInteraction(socketPath, alias, timeoutMs = 120_000) {
   throw new Error(`timed out waiting for permission interaction for ${alias}; last=${JSON.stringify(last)}`)
 }
 
-async function assertNoPermissionInteraction(socketPath, alias) {
-  const snapshot = await automationRequest(socketPath, { action: "snapshot" })
-  const agent = snapshot.session?.agents?.find((entry) => entry.alias === alias)
-  const interaction = snapshot.interactions?.find((entry) => entry.agentId === agent?.id && entry.kind === "permission")
-  if (interaction) {
-    throw new Error(`unexpected Arroba permission interaction for native-origin Claude prompt: ${JSON.stringify(interaction)}`)
-  }
-}
-
 async function waitForInteractionFocused(socketPath, interactionId, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs
   let last = null
@@ -261,11 +248,13 @@ async function waitForInteractionCleared(socketPath, interactionId, timeoutMs = 
 
 async function answerPermissionFromCli(socketPath, alias) {
   const pending = await waitForInteraction(socketPath, alias)
-  await automationRequest(socketPath, {
-    action: "workspace_shell_exec",
-    command: `agent focus ${pending.agent.id}`,
-  })
-  await waitForInteractionFocused(socketPath, pending.interaction.id)
+  if (!pending.interaction.focused) {
+    await automationRequest(socketPath, {
+      action: "workspace_shell_exec",
+      command: `agent focus ${pending.agent.id}`,
+    })
+    await waitForInteractionFocused(socketPath, pending.interaction.id)
+  }
   const allowIndex = pending.interaction.choices.findIndex((choice) =>
     choice.id === "allow_once"
       || choice.id === "allow"
@@ -342,18 +331,6 @@ function permissionPrompt(provider, markerText, filePath, content) {
   return provider === "codex"
     ? `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
     : `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
-}
-
-function claudeInnerScreenLogPath(screenName) {
-  const tempName = screenName.replace(/^arroba-claude-/, "arroba-claude-native-")
-  return path.join(os.tmpdir(), tempName, "screen", "screenlog.0")
-}
-
-async function approveClaudeNativePermission(screenName, logFile, alias, automationSocket) {
-  await waitForFileMatch(logFile, /Bash\(|❯\s*1\.\s*Yes|Yes,\s+and\s+always\s+allow/, 180_000)
-  await assertNoPermissionInteraction(automationSocket, alias)
-  await screenStuff(screenName, "\r")
-  return { surface: "claude-native-tui", screen: screenName }
 }
 
 async function runProvider(provider, options) {
@@ -455,10 +432,9 @@ async function runProvider(provider, options) {
     const providerSessionId = provider === "opencode"
       ? (await waitForFileMatch(logs.native, /opencode sess:\s+([^\s]+)/)).match[1]
       : null
-    const claudeScreen = provider === "claude"
-      ? (await waitForFileMatch(logs.native, /screen:\s+(arroba-claude-[^\s]+)/)).match[1]
-      : null
-    const claudeScreenLog = claudeScreen ? claudeInnerScreenLogPath(claudeScreen) : null
+    if (provider === "claude") {
+      await waitForFileMatch(logs.native, /screen:\s+(arroba-claude-[^\s]+)/)
+    }
 
     client = new LocalIpcClient(kernelUrl)
     const attachment = unwrap(
@@ -497,9 +473,7 @@ async function runProvider(provider, options) {
       await waitForAgentIdle(automationSocket, alias)
       console.log(JSON.stringify({ provider, direction: "native_tui_to_arroba", interaction: nativeInteraction.title ?? nativeInteraction.message }))
     } else {
-      const nativeInteraction = provider === "claude"
-        ? await approveClaudeNativePermission(claudeScreen, claudeScreenLog, alias, automationSocket)
-        : await answerPermissionFromCli(automationSocket, alias)
+      const nativeInteraction = await answerPermissionFromCli(automationSocket, alias)
       if (provider !== "claude") await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.nativePrompt)
       if (provider !== "claude") await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.nativePrompt)
       if (provider === "claude") await waitForFileContent(files.nativePrompt, `native-${provider}`)

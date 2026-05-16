@@ -24,11 +24,13 @@ import {
   attachToSessionRequest,
   createSessionRequest,
   getProviderRunRequest,
+  getSessionStateRequest,
   grantAgentCapabilityRequest,
   launchProviderRunRequest,
   moveAgentToRemoteRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
+  respondToInteractionRequest,
   resolveSessionRequest,
   spawnAgentRequest,
   submitPromptRequest,
@@ -1111,6 +1113,15 @@ async function startCodexProxy(options: {
         return
       }
       if (message.id !== undefined && !message.method) {
+        if (downstream.kind !== "kernel") {
+          void resolveCodexNativePermissionResponse(message, options).then((resolved) => {
+            if (!resolved) sendUpstream(message)
+          }).catch((error) => {
+            debugNativeCodex("native_permission_response_resolution_failed", { error: error instanceof Error ? error.message : String(error) })
+            sendUpstream(message)
+          })
+          return
+        }
         sendUpstream(message)
         return
       }
@@ -1155,6 +1166,47 @@ async function startCodexProxy(options: {
     })
   }) as WebSocketServer["close"]
   return Object.assign(server, { projectKernelOutputToTui })
+}
+
+async function resolveCodexNativePermissionResponse(
+  message: JsonRpcMessage,
+  options: {
+    client: LocalIpcClient
+    sessionId: string
+    agentId: string
+  },
+): Promise<boolean> {
+  const choiceId = codexNativePermissionChoice(message)
+  if (!choiceId) return false
+  const response = await options.client.send<Record<string, unknown>>(getSessionStateRequest(options.sessionId))
+  const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
+  const interaction = session.active_interactions?.find((entry) =>
+    entry.agent_id === options.agentId && entry.kind === "permission")
+  if (!interaction) return false
+  await options.client.send<Record<string, unknown>>(
+    respondToInteractionRequest(options.sessionId, interaction.id, choiceId),
+  )
+  return true
+}
+
+function codexNativePermissionChoice(message: JsonRpcMessage): string | null {
+  const result = message.result && typeof message.result === "object" ? message.result : null
+  const decision = typeof result?.decision === "string" ? result.decision.toLowerCase() : ""
+  const action = typeof result?.action === "string" ? result.action.toLowerCase() : ""
+  const combined = `${decision} ${action}`
+  if (combined.includes("decline") || combined.includes("deny") || combined.includes("reject")) {
+    return "deny"
+  }
+  if (combined.includes("session") || combined.includes("always")) {
+    return "allow_session"
+  }
+  if (combined.includes("accept") || combined.includes("allow")) {
+    return "allow_once"
+  }
+  if (result && "permissions" in result) {
+    return "allow_once"
+  }
+  return null
 }
 
 function bindObservedThread(

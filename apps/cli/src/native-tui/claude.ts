@@ -806,12 +806,6 @@ async function handleClaudePermissionBridgeRequest(
       writeJsonResponse(response, 200, { handled: false })
       return
     }
-    if (!shouldBridgeCurrentClaudePermission(
-      options.promptOrigin,
-    )) {
-      writeJsonResponse(response, 200, { handled: false })
-      return
-    }
     const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "tool"
     const interactionId = `claude-native-permission-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
     const interactionResponse = await options.client.send<Record<string, unknown>>(
@@ -843,12 +837,6 @@ async function handleClaudePermissionBridgeRequest(
       error: error instanceof Error ? error.message : String(error),
     })
   }
-}
-
-function shouldBridgeCurrentClaudePermission(
-  promptOrigin: ClaudePromptOriginState,
-): boolean {
-  return promptOrigin.current === "external"
 }
 
 type ClaudePermissionPayload = {

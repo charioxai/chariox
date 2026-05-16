@@ -33,6 +33,8 @@ For native TUI MCP/skills, keep standard home-worker and slice behavior distinct
 
 Claude native TUI hidden prompt context must use the `UserPromptSubmit` hook `additionalContext` bridge, not visible PTY prompt injection; see `docs/PROTOCOL.md` section `3.3.2 Native TUI Agents`.
 
+Native TUI permission prompts must resolve through one kernel-owned `RuntimeInteraction` projected to every Arroba TUI in the session; provider-native approval replies should route back to that interaction when the provider seam allows it.
+
 ## Protocol Change Rule
 
 When changing `LocalDaemonRequest`, `LocalDaemonResponse`, relay terminal events, browser/kernel terminal transport semantics, or any serialized protocol shape that a CLI or app depends on:
