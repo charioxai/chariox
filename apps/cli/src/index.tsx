@@ -267,6 +267,10 @@ import {
   type SessionStatusMode,
 } from "./session-chrome-state.js"
 import {
+  createSessionChromeSummaryRenderState,
+  renderSessionChromeSummary,
+} from "./session-chrome-summary-renderer.js"
+import {
   agentHasPromptWork,
   agentPromptState,
   deriveAttachedCliTransitionState,
@@ -845,7 +849,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let statusIndicatorBox: BoxRenderable | undefined
   let footerSummaryBox: BoxRenderable | undefined
   let historyLoadingBox: BoxRenderable | undefined
-  let promptStateText: TextRenderable | undefined
   let promptMetaProviderText: TextRenderable | undefined
   let promptMetaProviderDividerText: TextRenderable | undefined
   let promptMetaModelText: TextRenderable | undefined
@@ -861,8 +864,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let commandCenterBox: BoxRenderable | undefined
   let workflowNodeInstructionsInput: TextareaRenderable | undefined
   let hotkeysOverlayBox: BoxRenderable | undefined
-  let footerSummaryText: TextRenderable | undefined
-  let footerFlashText: TextRenderable | undefined
+  const sessionChromeSummaryRenderState = createSessionChromeSummaryRenderState()
   let historyLoadingText: TextRenderable | undefined
   const statusIndicatorRenderState = createStatusIndicatorRenderState()
   let closing = false
@@ -3900,19 +3902,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }, STREAM_BATCH_WINDOW_MS)
   }
 
-  const ensureChromeRenderables = () => {
-    if (promptStateBox && !promptStateText) {
-      promptStateText = new TextRenderable(renderer, { fg: theme.textMuted, wrapMode: "none" })
-      promptStateBox.add(promptStateText)
-    }
-    if (footerSummaryBox && !footerSummaryText) {
-      footerSummaryText = new TextRenderable(renderer, { fg: theme.textMuted, wrapMode: "none" })
-      footerFlashText = new TextRenderable(renderer, { fg: theme.info, wrapMode: "none" })
-      footerSummaryBox.add(footerSummaryText)
-      footerSummaryBox.add(footerFlashText)
-    }
-  }
-
   const setTextRenderable = (
     text: TextRenderable | undefined,
     content: string,
@@ -4055,7 +4044,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const renderStatusIndicator = () => {
-    ensureChromeRenderables()
     const attached = isAttached()
     const badge = attached ? focusedStatusBadge() : null
     if (!badge) {
@@ -4425,18 +4413,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       pendingSessionChromeUpdate = true
       return
     }
-    ensureChromeRenderables()
     syncPromptPlaceholder()
-    setTextRenderable(
-      promptStateText,
-      fatalError() ? "error" : submitting() ? "thinking" : footerHint(),
-      fatalError() ? theme.error : submitting() ? theme.primary : theme.textMuted,
-    )
-    setPromptMetaRenderables(isAttached() ? promptMetaParts() : [])
-    promptStateBox?.requestRender()
-    setTextRenderable(
-      footerSummaryText,
-      isAttached()
+    renderSessionChromeSummary({
+      renderer,
+      state: sessionChromeSummaryRenderState,
+      promptStateBox,
+      footerSummaryBox,
+      promptStateLabel: fatalError() ? "error" : submitting() ? "thinking" : footerHint(),
+      promptStateTone: fatalError() ? "error" : submitting() ? "thinking" : "muted",
+      footerSummary: isAttached()
         ? deriveAttachedFooterSummary({
             session: sessionState(),
             connectedClientCount: connectedClientCount(),
@@ -4447,15 +4432,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             focusedHasPromptWork: agentHasPromptWork(sessionState(), focusedAgentId()),
           })
         : SESSION_NEW_FOOTER_HINT,
-      theme.textMuted,
-    )
-    setTextRenderable(
-      footerFlashText,
-      footerFlash() ? ` • ${footerFlash()!.message}` : "",
-      footerFlash()?.tone === "error" ? theme.error : theme.info,
-      footerFlash() ? TextAttributes.BOLD : TextAttributes.NONE,
-    )
-    footerSummaryBox?.requestRender()
+      footerFlash: footerFlash(),
+    })
+    setPromptMetaRenderables(isAttached() ? promptMetaParts() : [])
     renderStatusIndicator()
     renderSplitPaneFooters()
     renderAgentInteractions()
