@@ -78,6 +78,7 @@ import {
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
 import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
+import { validateProviderNamespaceSubmit } from "./provider-namespace-submit-policy.js"
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent, shouldHandleWaitingRoomKeyEvent } from "./hotkeys.js"
 import { buildHotkeySections } from "./hotkey-help.js"
@@ -6452,26 +6453,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     if (providerNamespaceCommand) {
-      const focusedProvider = focusedBackendProvider()
-      if (providerNamespaceCommand.provider !== focusedProvider) {
-        flashFooter(
-          focusedProvider
-            ? `${providerNamespaceCommand.raw.split(/\s+/, 1)[0]} is unavailable while the focused agent uses ${focusedProvider}`
-            : "provider-native commands require a focused OpenCode, Codex, or Claude Code agent",
-          "error",
-        )
-        return
-      }
-      if (!providerNamespaceCommand.forwardedCommand) {
-        flashFooter(`usage: ${providerNamespaceCommand.raw} <provider-command>`, "error")
-        return
-      }
-      if (workflowScreenShowing()) {
-        flashFooter("provider-native commands are unavailable while the workflow screen owns the prompt", "error")
-        return
-      }
-      if (pendingAttachments().length > 0) {
-        flashFooter("provider-native commands do not support attachments", "error")
+      const submitDecision = validateProviderNamespaceSubmit({
+        command: providerNamespaceCommand,
+        focusedProvider: focusedBackendProvider(),
+        workflowScreenShowing: workflowScreenShowing(),
+        pendingAttachmentCount: pendingAttachments().length,
+      })
+      if (!submitDecision.ok) {
+        flashFooter(submitDecision.message, "error")
         return
       }
 
@@ -6491,7 +6480,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         }
         submissionUi = beginSubmittedPromptUi(rawPrompt)
         appendUserPrompt(renderPromptTranscript(providerNamespaceCommand.raw), targetAgentId)
-        const forwardedPrompt = `${providerNamespaceCommand.forwardedCommand}\n`
+        const forwardedPrompt = `${submitDecision.forwardedCommand}\n`
         const submission = await submitPromptWithRecovery(
           client,
           sessionState().id,
