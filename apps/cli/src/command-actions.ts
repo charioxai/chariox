@@ -27,6 +27,15 @@ import type {
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { RelayCloudProfile, MultiAgentResponseLayout, UiPreferences } from "./preferences.js"
+import {
+  buildHostedCloudTerminalUrl,
+  formatCloudRelayPendingNotice,
+  isRefreshableCloudLinkError,
+  openHostedCloud,
+  startHostedCloudLink,
+  waitForHostedCloudRelayConnection,
+  type RelayStatus,
+} from "./cloud-command-lifecycle.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { SessionListEntry } from "./sessions.js"
 import { execFile } from "node:child_process"
@@ -40,54 +49,8 @@ const WORKFLOW_MAX_TURNS_CONFIG_KEY = "workflow.max_turns"
 const WORKFLOW_LAUNCH_POLICY_CONFIG_KEY = "workflow.launch_policy"
 const SESSION_AGENT_MODE_CONFIG_KEY = "agents.mode"
 const SESSION_AGENT_PERMISSION_CONFIG_KEY = "agents.permissions"
-const DEFAULT_HOSTED_CLOUD_API_URL = "https://arroba-cloud-staging.osc-fr1.scalingo.io"
-const HOSTED_CLOUD_RELAY_CONNECT_TIMEOUT_MS = 8_000
-const HOSTED_CLOUD_RELAY_CONNECT_POLL_MS = 500
-
-function buildHostedCloudTerminalUrl(apiUrl: string): string {
-  const url = new URL("/terminal", apiUrl)
-  url.searchParams.set("view", "waiting")
-  return url.toString()
-}
-
-function isMissingKernelCloudProfileError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-  return message.includes("cloud relay profile missing") || message.includes("run /relay cloud login first")
-}
-
-function isRefreshableCloudLinkError(error: unknown): boolean {
-  if (isMissingKernelCloudProfileError(error)) {
-    return true
-  }
-  const message = error instanceof Error ? error.message : String(error)
-  return message.includes("identity_revoked")
-    || message.includes("Subject has been revoked")
-    || message.includes("session_invalid")
-    || message.includes("session_expired")
-    || message.includes("invalid_session")
-    || message.includes("realm_not_found")
-    || message.includes("account_deleted")
-    || message.includes("user_deleted")
-    || message.includes("cloud_api_code=session_invalid")
-    || message.includes("cloud relay request failed with 401")
-}
 
 type FooterTone = "info" | "error"
-
-type RelayStatus = {
-  configured: boolean
-  connected: boolean
-  relay_url?: string | null
-  relay_token_configured: boolean
-  daemon_id: string
-  machine_id: string
-  machine_alias?: string | null
-}
-
-type HostedCloudRelayEnsureResult = {
-  profile: RelayCloudProfile
-  status: RelayStatus | null
-}
 
 type LocalGitWorktreeOptions = {
   baseDirectory: string
@@ -737,8 +700,6 @@ function suggestNamedWorktreePath(baseDirectory: string, branch: string, explici
   return resolvePath(dirname(baseDirectory), `${rootName}-${slugifyGitBranch(branch)}`)
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
 function buildCloudInviteUrl(apiUrl: string, cloudInviteToken: string, localInviteToken: string): string {
   const url = new URL("/sessions/invites", apiUrl)
   url.searchParams.set("cloud_invite", cloudInviteToken)
@@ -851,162 +812,6 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   }
   const appendCloudNotice = (message: string): void => {
     ;(deps.appendCloudNotice ?? deps.appendNotice)(message)
-  }
-  const waitForHostedCloudRelayConnection = async (status: RelayStatus | null): Promise<RelayStatus | null> => {
-    if (!deps.getRelayStatus || status?.connected) {
-      return status
-    }
-    const timeoutMs = deps.cloudRelayConnectTimeoutMs ?? HOSTED_CLOUD_RELAY_CONNECT_TIMEOUT_MS
-    const pollMs = deps.cloudRelayConnectPollMs ?? HOSTED_CLOUD_RELAY_CONNECT_POLL_MS
-    const deadline = Date.now() + Math.max(timeoutMs, 0)
-    let latest = status
-    while (!latest?.connected && Date.now() < deadline) {
-      await sleep(Math.max(pollMs, 1))
-      latest = await deps.getRelayStatus()
-    }
-    return latest
-  }
-  const formatCloudRelayPendingNotice = (
-    status: RelayStatus | null,
-    relayUrl: string | null | undefined,
-  ): string => [
-    "cloud machine linked, but the kernel is not online in Cloud yet.",
-    `relay=${status?.connected ? "connected" : "not connected"}`,
-    `relay_url=${status?.relay_url ?? relayUrl ?? "-"}`,
-    `machine=${status?.machine_id ?? "-"}`,
-    "next=keep this CLI running; run /cloud link if the link was revoked or /cloud status to check again.",
-  ].join("\n")
-  const ensureHostedCloudRelay = async (profile: RelayCloudProfile): Promise<HostedCloudRelayEnsureResult> => {
-    if (!deps.getRelayStatus || !deps.configureRelay || (!deps.issueCloudMachineRelayToken && !deps.issueCloudKernelRelayToken)) {
-      return { profile, status: null }
-    }
-    const relayStatus = await deps.getRelayStatus()
-    if (relayStatus.configured && relayStatus.connected) {
-      return { profile, status: relayStatus }
-    }
-    const issued = profile.machineId && deps.issueCloudMachineRelayToken
-      ? await deps.issueCloudMachineRelayToken(profile, relayStatus.daemon_id, profile.machineId)
-      : deps.issueCloudKernelRelayToken
-        ? await deps.issueCloudKernelRelayToken(profile, relayStatus.daemon_id)
-        : null
-    if (!issued) {
-      return { profile, status: relayStatus }
-    }
-    const configuredStatus = await deps.configureRelay(issued.relayUrl, issued.relayToken)
-    const nextProfile = {
-      ...(issued.profile ?? profile),
-      tokenExpiresAtMs: issued.tokenExpiresAtMs,
-    }
-    await deps.saveCloudRelayProfile?.(nextProfile)
-    const connectedStatus = await waitForHostedCloudRelayConnection(configuredStatus)
-    await deps.refreshWaitingRoomData?.()
-    return { profile: nextProfile, status: connectedStatus ?? configuredStatus }
-  }
-  const openHostedCloud = async (): Promise<void> => {
-    const currentProfile = deps.getCloudRelayProfile?.() ?? null
-    if (!currentProfile) {
-      await startHostedCloudLink()
-      return
-    }
-    const terminalUrl = buildHostedCloudTerminalUrl(currentProfile.apiUrl)
-    let relayLine: string | null = null
-    try {
-      const ensured = await ensureHostedCloudRelay(currentProfile)
-      if (ensured.status && !ensured.status.connected) {
-        relayLine = formatCloudRelayPendingNotice(ensured.status, ensured.profile.relayUrl)
-      }
-    } catch (error) {
-      if (isMissingKernelCloudProfileError(error)) {
-        await startHostedCloudLink()
-        return
-      }
-      if (isRefreshableCloudLinkError(error)) {
-        appendCloudNotice("Cloud link needs refresh. Starting link flow.")
-        await startHostedCloudLink()
-        return
-      }
-      relayLine = [
-        "cloud relay could not be refreshed.",
-        `error=${deps.formatError(error)}`,
-        "next=run /cloud link to refresh pairing.",
-      ].join("\n")
-    }
-    const opened = await deps.openExternalUrl?.(terminalUrl)
-    appendCloudNotice(
-      [
-        "Opening Arroba Cloud.",
-        `url=${terminalUrl}`,
-        opened ? "browser=opened" : "browser=manual",
-        ...(relayLine ? [relayLine] : []),
-      ].join("\n"),
-    )
-    deps.flashFooter(opened ? "opened Arroba Cloud" : "Arroba Cloud URL ready", "info")
-  }
-  const startHostedCloudLink = async (): Promise<void> => {
-    if (!deps.startCloudDeviceLogin || !deps.pollCloudDeviceLogin || !deps.getRelayStatus || !deps.saveCloudRelayProfile) {
-      deps.flashFooter("cloud login is unavailable in this build", "error")
-      return
-    }
-    const relayStatus = await deps.getRelayStatus()
-    const started = await deps.startCloudDeviceLogin(deps.cloudRelayApiUrl ?? DEFAULT_HOSTED_CLOUD_API_URL, {
-      clientId: deps.clientId ?? "arroba-cli",
-      machineId: relayStatus.machine_id,
-      ...(relayStatus.machine_alias ? { machineAlias: relayStatus.machine_alias } : {}),
-    })
-    const opened = await deps.openExternalUrl?.(started.verificationUrl)
-    appendCloudNotice(
-      [
-        "Link this machine to Arroba Cloud.",
-        `url=${started.verificationUrl}`,
-        `code=${started.userCode}`,
-        opened ? "browser=opened" : "browser=manual",
-      ].join("\n"),
-    )
-    let intervalMs = Math.max(started.intervalSeconds, 1) * 1000
-    while (Date.now() < started.expiresAtMs) {
-      const polled = await deps.pollCloudDeviceLogin(started.apiUrl, started.deviceCode)
-      if (polled.status === "approved") {
-        let profile = polled.profile
-        await deps.saveCloudRelayProfile(profile)
-        if (deps.pairCloudRelayMachine) {
-          profile = await deps.pairCloudRelayMachine(
-            profile,
-            relayStatus.machine_id,
-            relayStatus.machine_alias || undefined,
-          )
-          await deps.saveCloudRelayProfile(profile)
-          appendCloudNotice(`cloud machine linked: ${profile.machineId ?? relayStatus.machine_id}`)
-        }
-        if ((deps.issueCloudMachineRelayToken || deps.issueCloudKernelRelayToken) && deps.getRelayStatus && deps.configureRelay) {
-          const refreshedRelayStatus = await deps.getRelayStatus()
-          const issued = profile.machineId && deps.issueCloudMachineRelayToken
-            ? await deps.issueCloudMachineRelayToken(profile, refreshedRelayStatus.daemon_id, profile.machineId)
-            : await deps.issueCloudKernelRelayToken!(profile, refreshedRelayStatus.daemon_id)
-          const configuredStatus = await deps.configureRelay(issued.relayUrl, issued.relayToken)
-          profile = {
-            ...(issued.profile ?? profile),
-            tokenExpiresAtMs: issued.tokenExpiresAtMs,
-          }
-          await deps.saveCloudRelayProfile(profile)
-          const connectedStatus = await waitForHostedCloudRelayConnection(configuredStatus)
-          appendCloudNotice(
-            connectedStatus?.connected
-              ? `cloud kernel connected: ${issued.relayUrl}`
-              : formatCloudRelayPendingNotice(connectedStatus ?? configuredStatus, issued.relayUrl),
-          )
-        }
-        await deps.refreshWaitingRoomData?.()
-        appendCloudNotice(`cloud linked: ${profile.accountSlug}`)
-        return
-      }
-      if (polled.status === "expired_token") {
-        appendCloudNotice("cloud login expired")
-        return
-      }
-      intervalMs = Math.max(polled.intervalSeconds, 1) * 1000
-      await sleep(intervalMs)
-    }
-    appendCloudNotice("cloud login expired")
   }
   const formatWorkspaceLinks = (links: WorkspaceLinkDefinition[]): string => {
     if (links.length === 0) {
@@ -2269,7 +2074,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         const email = cloudArgs[1]
         const accountSlug = cloudArgs[2]
         if (!apiUrl && cloudCommand === "login") {
-          await startHostedCloudLink()
+          await startHostedCloudLink(deps)
           return
         }
         if (!apiUrl || !email) {
@@ -2358,7 +2163,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           ...(issued.profile ?? profile),
           tokenExpiresAtMs: issued.tokenExpiresAtMs,
         })
-        const connectedStatus = await waitForHostedCloudRelayConnection(configuredStatus)
+        const connectedStatus = await waitForHostedCloudRelayConnection(deps, configuredStatus)
         await deps.refreshWaitingRoomData?.()
         deps.appendNotice(
           connectedStatus?.connected
@@ -2485,11 +2290,11 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   ): Promise<void> => {
     const [area, action, ...args] = command.args
     if (!area || area === "open") {
-      await openHostedCloud()
+      await openHostedCloud(deps)
       return
     }
     if (area === "link" || area === "login") {
-      await startHostedCloudLink()
+      await startHostedCloudLink(deps)
       return
     }
     const profile = deps.getCloudRelayProfile?.() ?? null
