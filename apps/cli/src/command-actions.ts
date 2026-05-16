@@ -36,14 +36,21 @@ import {
   waitForHostedCloudRelayConnection,
   type RelayStatus,
 } from "./cloud-command-lifecycle.js"
+import {
+  parseAgentSpawnOptions,
+  parsePlacementOptions,
+  prepareLocalGitWorktree,
+  resolveExistingLocalDirectory,
+  resolveLocalPlacement,
+  suggestNamedWorktreePath,
+  worktreeAliasConfigPath,
+  type LocalGitWorktreeOptions,
+  type RemoteGitWorktreePlacement,
+} from "./command-worktree-placement.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { SessionListEntry } from "./sessions.js"
-import { execFile } from "node:child_process"
-import { readFile, stat } from "node:fs/promises"
-import { basename, dirname, resolve as resolvePath } from "node:path"
-import { promisify } from "node:util"
-
-const execFileAsync = promisify(execFile)
+import { readFile } from "node:fs/promises"
+import { resolve as resolvePath } from "node:path"
 
 const WORKFLOW_MAX_TURNS_CONFIG_KEY = "workflow.max_turns"
 const WORKFLOW_LAUNCH_POLICY_CONFIG_KEY = "workflow.launch_policy"
@@ -51,19 +58,6 @@ const SESSION_AGENT_MODE_CONFIG_KEY = "agents.mode"
 const SESSION_AGENT_PERMISSION_CONFIG_KEY = "agents.permissions"
 
 type FooterTone = "info" | "error"
-
-type LocalGitWorktreeOptions = {
-  baseDirectory: string
-  targetDirectory?: string | undefined
-  branch?: string | undefined
-  fromRef?: string | undefined
-}
-
-type RemoteGitWorktreePlacement = {
-  target_directory?: string | null
-  branch?: string | null
-  from_ref?: string | null
-}
 
 type CreateSessionResult = Pick<RuntimeSession, "id" | "alias">
 type ResolveSessionResult = Pick<RuntimeSession, "id" | "alias">
@@ -627,79 +621,6 @@ function effectiveAgentPermissionLevel(session: RuntimeSession, agent: AgentInst
     ?? "yolo"
 }
 
-async function defaultPrepareLocalGitWorktree(options: LocalGitWorktreeOptions): Promise<string> {
-  const baseDirectory = resolvePath(options.baseDirectory)
-  const repoRoot = (await runGit(baseDirectory, ["rev-parse", "--show-toplevel"])).trim()
-  if (!repoRoot) {
-    throw new Error(`git did not report a repository root for ${baseDirectory}`)
-  }
-
-  const fromRef = options.fromRef ?? "HEAD"
-  const targetDirectory = options.targetDirectory
-    ? resolvePath(baseDirectory, options.targetDirectory)
-    : resolvePath(dirname(repoRoot), `${basename(repoRoot)}-${slugifyGitBranch(options.branch ?? fromRef)}`)
-
-  let args: string[]
-  if (options.branch) {
-    const branchExists = await gitBranchExists(repoRoot, options.branch)
-    args = branchExists
-      ? ["worktree", "add", targetDirectory, options.branch]
-      : ["worktree", "add", "-b", options.branch, targetDirectory, fromRef]
-  } else {
-    args = ["worktree", "add", targetDirectory, fromRef]
-  }
-
-  await runGit(repoRoot, args)
-  const details = await stat(targetDirectory)
-  if (!details.isDirectory()) {
-    throw new Error(`created git worktree is not a directory: ${targetDirectory}`)
-  }
-  return targetDirectory
-}
-
-async function gitBranchExists(repoRoot: string, branch: string): Promise<boolean> {
-  try {
-    await runGit(repoRoot, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function runGit(cwd: string, args: string[]): Promise<string> {
-  try {
-    const { stdout } = await execFileAsync("git", args, { cwd })
-    return stdout
-  } catch (error) {
-    const detail = error && typeof error === "object" && "stderr" in error
-      ? String((error as { stderr?: unknown }).stderr ?? "").trim()
-      : ""
-    const message = detail || (error instanceof Error ? error.message : String(error))
-    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${message}`)
-  }
-}
-
-function slugifyGitBranch(value: string): string {
-  return value
-    .trim()
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    || "worktree"
-}
-
-function worktreeAliasConfigPath(worktreePath: string): string {
-  const encoded = Buffer.from(worktreePath).toString("base64url")
-  return `ui.worktree_aliases.${encoded}`
-}
-
-function suggestNamedWorktreePath(baseDirectory: string, branch: string, explicitPath?: string): string {
-  if (explicitPath?.trim()) {
-    return resolvePath(baseDirectory, explicitPath)
-  }
-  const rootName = basename(baseDirectory)
-  return resolvePath(dirname(baseDirectory), `${rootName}-${slugifyGitBranch(branch)}`)
-}
-
 function buildCloudInviteUrl(apiUrl: string, cloudInviteToken: string, localInviteToken: string): string {
   const url = new URL("/sessions/invites", apiUrl)
   url.searchParams.set("cloud_invite", cloudInviteToken)
@@ -981,180 +902,6 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const setWorkspaceTarget = (workspace: string) => deps.setWorkspaceTarget?.(workspace)
   const setWorktreeTarget = (worktree: string) => deps.setWorktreeTarget?.(worktree)
 
-  const parsePlacementOptions = (
-    args: string[],
-    commandName: string,
-    allowMachine: boolean,
-  ) => {
-    const positional: string[] = []
-    let directory: string | undefined
-    let machineRef: string | undefined
-    let sliceRef: string | undefined
-    let gitWorktree: string | undefined
-    let branch: string | undefined
-    let fromRef: string | undefined
-    let error: string | undefined
-
-    for (let index = 0; index < args.length; index += 1) {
-      const arg = args[index]
-      if (!arg) {
-        continue
-      }
-      if (arg === "--dir" || arg === "--directory") {
-        const value = args[index + 1]
-        if (!value || value.startsWith("--")) {
-          error = `usage: ${commandName} --dir <directory>`
-          break
-        }
-        directory = value
-        index += 1
-        continue
-      }
-      if (arg === "--worktree") {
-        const value = args[index + 1]
-        if (!value || value.startsWith("--")) {
-          error = `usage: ${commandName} --worktree <directory> [--branch <branch>] [--from <ref>]`
-          break
-        }
-        gitWorktree = value
-        index += 1
-        continue
-      }
-      if (arg === "--branch") {
-        const value = args[index + 1]
-        if (!value || value.startsWith("--")) {
-          error = `usage: ${commandName} [--worktree <directory>] --branch <branch> [--from <ref>]`
-          break
-        }
-        branch = value
-        index += 1
-        continue
-      }
-      if (arg === "--from") {
-        const value = args[index + 1]
-        if (!value || value.startsWith("--")) {
-          error = `usage: ${commandName} [--worktree <directory>] [--branch <branch>] --from <ref>`
-          break
-        }
-        fromRef = value
-        index += 1
-        continue
-      }
-      if (arg === "--machine" && allowMachine) {
-        const value = args[index + 1]
-        if (!value || value.startsWith("--")) {
-          error = "usage: /agent spawn [alias] [model] --machine <machine-ref> --dir <remote-directory>"
-          break
-        }
-        machineRef = value
-        index += 1
-        continue
-      }
-      if (arg === "--slice" && allowMachine) {
-        const value = args[index + 1]
-        if (!value || value.startsWith("--")) {
-          error = "usage: /agent spawn [alias] [model] --slice <slice-ref>"
-          break
-        }
-        sliceRef = value
-        index += 1
-        continue
-      }
-      if (arg.startsWith("--")) {
-        error = `unknown ${commandName} option ${arg}`
-        break
-      }
-      positional.push(arg)
-    }
-
-    const gitRequested = Boolean(gitWorktree || branch || fromRef)
-    if (!error && directory && gitRequested) {
-      error = `usage: ${commandName} uses either --dir or --worktree/--branch, not both`
-    }
-    if (!error && machineRef && sliceRef) {
-      error = "usage: /agent spawn uses either --machine or --slice, not both"
-    }
-    if (!error && sliceRef && (directory || gitRequested)) {
-      error = "usage: /agent spawn --slice <slice-ref> does not accept --dir or --worktree"
-    }
-    if (!error && machineRef && !directory && !gitRequested) {
-      error = "usage: /agent spawn [alias] [model] --machine <machine-ref> (--dir <remote-directory>|--worktree <remote-directory> --branch <branch>)"
-    }
-    if (!error && machineRef && gitRequested && !gitWorktree) {
-      error = "usage: /agent spawn [alias] [model] --machine <machine-ref> --worktree <remote-directory> --branch <branch>"
-    }
-    if (!error && machineRef && gitRequested && !branch) {
-      error = "usage: /agent spawn [alias] [model] --machine <machine-ref> --worktree <remote-directory> --branch <branch>"
-    }
-
-    return {
-      positional,
-      directory,
-      machineRef,
-      sliceRef,
-      gitWorktree,
-      branch,
-      fromRef,
-      error,
-    }
-  }
-
-  const parseAgentSpawnOptions = (args: string[]) => {
-    const parsed = parsePlacementOptions(args, "/agent spawn", true)
-    let error = parsed.error
-    if (!error && parsed.positional.length > 2) {
-      error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--slice <slice-ref>]"
-    }
-    return {
-      ...parsed,
-      error,
-    }
-  }
-
-  const resolveExistingLocalDirectory = async (directory: string, baseDirectory: string, label: string) => {
-    const resolved = resolvePath(baseDirectory, directory)
-    const details = await stat(resolved)
-    if (!details.isDirectory()) {
-      throw new Error(`${label} is not a directory: ${resolved}`)
-    }
-    return resolved
-  }
-
-  const prepareLocalGitWorktree = async (options: LocalGitWorktreeOptions) => {
-    if (deps.prepareLocalGitWorktree) {
-      return deps.prepareLocalGitWorktree(options)
-    }
-    return defaultPrepareLocalGitWorktree(options)
-  }
-
-  const resolveLocalPlacement = async (options: {
-    directory?: string | undefined
-    gitWorktree?: string | undefined
-    branch?: string | undefined
-    fromRef?: string | undefined
-    machineRef?: string | undefined
-    label: string
-  }) => {
-    if (options.directory) {
-      if (options.machineRef) {
-        return options.directory
-      }
-      return resolveExistingLocalDirectory(options.directory, currentWorktreeTarget(), options.label)
-    }
-    if (options.gitWorktree || options.branch || options.fromRef) {
-      if (options.machineRef) {
-        return options.gitWorktree
-      }
-      return prepareLocalGitWorktree({
-        baseDirectory: currentWorktreeTarget(),
-        targetDirectory: options.gitWorktree,
-        branch: options.branch,
-        fromRef: options.fromRef,
-      })
-    }
-    return undefined
-  }
-
   const spawnAndLaunchAgent = async (options: {
     provider?: string | null
     alias?: string | undefined
@@ -1239,6 +986,9 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
               branch: parsed.branch,
               fromRef: parsed.fromRef,
               label: "session working directory",
+            }, {
+              baseDirectory: currentWorktreeTarget(),
+              prepareLocalGitWorktree: deps.prepareLocalGitWorktree,
             })
             sessionWorktree = resolvedPlacement ?? currentWorktreeTarget()
           }
@@ -1665,6 +1415,9 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
             fromRef: parsed.fromRef,
             machineRef: parsed.machineRef,
             label: "agent working directory",
+          }, {
+            baseDirectory: currentWorktreeTarget(),
+            prepareLocalGitWorktree: deps.prepareLocalGitWorktree,
           })
           const payload = await spawnAndLaunchAgent({
             provider,
@@ -3189,7 +2942,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         targetDirectory,
         branch,
         fromRef,
-      })
+      }, deps.prepareLocalGitWorktree)
       setWorktreeTarget(createdPath)
       deps.flashFooter(`next-session worktree set to ${createdPath}`, "info")
       return
