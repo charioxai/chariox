@@ -23,13 +23,19 @@ import type {
   UserConfigSchemaEntry,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
-import type { RelayCloudProfile, MultiAgentResponseLayout, UiPreferences } from "./preferences.js"
+import type { RelayCloudProfile, MultiAgentResponseLayout } from "./preferences.js"
 import { type RelayStatus } from "./cloud-command-lifecycle.js"
 import { handleCloudSlashCommand, handleRelaySlashCommand } from "./cloud-command-handlers.js"
 import {
   handleProviderSlashCommand,
   type ProviderCommandHandlerDeps,
 } from "./provider-command-handlers.js"
+import {
+  handleModelSlashCommand,
+  handleVariantSlashCommand,
+  handleViewSlashCommand,
+  type SelectionCommandHandlerDeps,
+} from "./selection-command-handlers.js"
 import {
   parseAgentSpawnOptions,
   parsePlacementOptions,
@@ -142,7 +148,9 @@ type WorkspaceLinkPayload = {
   session?: RuntimeSession
 }
 
-type CommandActionDeps = ProviderCommandHandlerDeps & {
+export { parseRequestedViewLayout } from "./selection-command-handlers.js"
+
+type CommandActionDeps = ProviderCommandHandlerDeps & SelectionCommandHandlerDeps & {
   workspace: string
   worktree: string
   getWorkspaceTarget?: () => string
@@ -191,8 +199,6 @@ type CommandActionDeps = ProviderCommandHandlerDeps & {
   deleteKernel?: () => Promise<{ kernelId: string; deletedSessions: RuntimeSession[] }>
   assignSessionAlias?: (sessionId: string, alias: string) => Promise<RuntimeSession>
   transitionToNoSession: (message: string) => void
-  applyModelSelection: (value: string) => Promise<void>
-  applyVariantSelection: (value: string) => Promise<void>
   getRelayStatus?: () => Promise<RelayStatus>
   configureRelay?: (relayUrl: string | null, relayToken: string | null) => Promise<RelayStatus>
   cloudRelayConnectTimeoutMs?: number
@@ -331,14 +337,6 @@ type CommandActionDeps = ProviderCommandHandlerDeps & {
   getSkill?: (name: string) => Promise<ArrobaSkillMetadata>
   grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
   revokeAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
-  logViewCommand?: (fields: Record<string, unknown>) => void
-  setMultiAgentResponseLayout: (layout: MultiAgentResponseLayout) => void
-  applyResponseLayout: () => void
-  updateSessionResponseLayout: (
-    sessionId: string,
-    attachmentId: string,
-    layout: MultiAgentResponseLayout,
-  ) => Promise<{ session: RuntimeSession; config: SessionConfigState }>
   updateSessionConfig: (
     sessionId: string,
     attachmentId: string,
@@ -382,14 +380,12 @@ type CommandActionDeps = ProviderCommandHandlerDeps & {
   showWorkspaceLink?: (linkRef: string) => Promise<WorkspaceLinkDefinition>
   attachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload>
   detachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload & { detached: unknown[] }>
-  saveUiPreferences: (prefs: UiPreferences) => Promise<void>
   getUserConfig?: () => Promise<ArrobaUserConfigPayload>
   getUserConfigSchema?: () => Promise<ArrobaUserConfigSchemaPayload>
   setUserConfigValue?: (path: string, value: string) => Promise<ArrobaUserConfigPayload>
   unsetUserConfigValue?: (path: string) => Promise<ArrobaUserConfigPayload>
   rebuildTranscript: () => void
   requestRender: () => void
-  afterViewRender?: (layout: MultiAgentResponseLayout) => void
   cycleAgentFocus: () => Promise<AgentCyclePayload>
   launchAgentProviderRun: (
     provider: string,
@@ -1067,64 +1063,19 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleModelCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "model" }>,
   ): Promise<void> => {
-    const { value } = command
-    if (!value) {
-      deps.flashFooter("usage: /model <provider/model>", "error")
-      return
-    }
-    await deps.applyModelSelection(value)
+    await handleModelSlashCommand(deps, command)
   }
 
   const handleVariantCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "variant" }>,
   ): Promise<void> => {
-    const { value } = command
-    if (!value) {
-      deps.flashFooter("usage: /variant <name>", "error")
-      return
-    }
-    await deps.applyVariantSelection(value)
+    await handleVariantSlashCommand(deps, command)
   }
 
   const handleViewCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "view" }>,
   ): Promise<void> => {
-    const selection = parseRequestedViewLayout(command.value, deps.multiAgentResponseLayout())
-    if (selection.kind === "summary") {
-      deps.flashFooter(
-        `view: ${deps.multiAgentResponseLayout()} • agents: ${deps.sessionState().agents.length}`,
-        "info",
-      )
-      return
-    }
-    if (selection.kind === "invalid") {
-      deps.flashFooter("usage: /view <split|individual>", "error")
-      return
-    }
-    const nextLayout = selection.layout
-    deps.logViewCommand?.({
-      requested_layout: nextLayout,
-      previous_layout: deps.multiAgentResponseLayout(),
-      attached: deps.isAttached(),
-      agent_count: deps.sessionState().agents.length,
-      focused_agent_id: deps.focusedAgentId(),
-    })
-    deps.setMultiAgentResponseLayout(nextLayout)
-    deps.applyResponseLayout()
-    if (deps.isAttached() && deps.attachmentState()) {
-      const updated = await deps.updateSessionResponseLayout(
-        deps.sessionState().id,
-        deps.attachmentState()!.id,
-        nextLayout,
-      )
-      deps.applySessionState(updated.session)
-      await deps.refreshAgentPanes(updated.session)
-    }
-    await deps.saveUiPreferences({ multiAgentResponseLayout: nextLayout })
-    deps.rebuildTranscript()
-    deps.requestRender()
-    deps.afterViewRender?.(nextLayout)
-    deps.flashFooter(`view set to ${nextLayout} • ${deps.sessionState().agents.length} agents`, "info")
+    await handleViewSlashCommand(deps, command)
   }
 
   const handleCycleAgentFocus = async (): Promise<void> => {
@@ -3329,26 +3280,6 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleMcpCommand,
     handleSkillCommand,
   }
-}
-
-export function parseRequestedViewLayout(
-  value: string,
-  currentLayout: MultiAgentResponseLayout,
-):
-  | { kind: "summary" }
-  | { kind: "invalid" }
-  | { kind: "set"; layout: MultiAgentResponseLayout } {
-  const normalized = value.trim().toLowerCase()
-  if (!normalized) {
-    return { kind: "summary" }
-  }
-  if (normalized !== "split" && normalized !== "individual") {
-    return { kind: "invalid" }
-  }
-  if (normalized === currentLayout) {
-    return { kind: "set", layout: currentLayout }
-  }
-  return { kind: "set", layout: normalized }
 }
 
 export function formatAgentListSummary(agents: AgentInstance[]): string {
