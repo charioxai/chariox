@@ -263,7 +263,6 @@ import {
   deriveSessionStatusMode,
   type FocusedStatusBadge,
   type SessionStatusMode,
-  type StatusBadgePart,
 } from "./session-chrome-state.js"
 import {
   agentHasPromptWork,
@@ -338,9 +337,12 @@ import {
 import {
   agentPaneStatusBadge,
   formatSplitPaneFooterParts,
-  reflectedDistance,
   type StatusBadgeTone,
 } from "./split-pane-footer.js"
+import {
+  renderStatusBadgeLabel,
+  renderStatusBadgeParts,
+} from "./status-badge-renderer.js"
 import { syncAuxiliaryPane } from "./response-layout-render.js"
 import { createRenderScheduler } from "./render-scheduler.js"
 import { bootstrapSession } from "./session-bootstrap.js"
@@ -4013,62 +4015,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     label: string,
     tone: StatusBadgeTone,
   ) => {
-    renderStatusBadgeParts(texts, [{ label, tone }], STATUS_BADGE_WIDTH)
-  }
-
-  const renderStatusBadgeParts = (
-    texts: TextRenderable[],
-    parts: StatusBadgePart[],
-    minWidth = 0,
-  ) => {
-    const cells = badgeCells(parts)
-    const width = Math.max(minWidth, cells.length)
-    for (let index = 0; index < texts.length; index += 1) {
-      const cell = index < width ? cells[index] : undefined
-      const character = cell?.character ?? " "
-      const tone = cell?.tone ?? "idle"
-      let fg = theme.success
-      if (tone === "disconnected" || tone === "error") {
-        fg = theme.error
-      } else if (tone === "working") {
-        const distance = reflectedDistance(cell?.partIndex ?? 0, cell?.partLength ?? 0, workingAnimationFrame())
-        fg = distance === 0 ? theme.primary : distance === 1 ? theme.warning : theme.secondary
-      }
-      setTextRenderable(
-        texts[index],
-        character,
-        fg,
-        tone === "working" && character.trim() ? TextAttributes.BOLD : TextAttributes.NONE,
-      )
-    }
-  }
-
-  const badgeCells = (parts: StatusBadgePart[]) => {
-    const cells: Array<{
-      character: string
-      tone: StatusBadgeTone
-      partIndex: number
-      partLength: number
-    }> = []
-    for (const [partOffset, part] of parts.entries()) {
-      if (partOffset > 0) {
-        cells.push({
-          character: " ",
-          tone: "idle",
-          partIndex: 0,
-          partLength: 0,
-        })
-      }
-      for (let index = 0; index < part.label.length; index += 1) {
-        cells.push({
-          character: part.label[index] ?? " ",
-          tone: part.tone,
-          partIndex: index,
-          partLength: part.label.length,
-        })
-      }
-    }
-    return cells
+    renderStatusBadgeLabel(texts, label, tone, STATUS_BADGE_WIDTH, workingAnimationFrame())
   }
 
   const ensureStatusLabelTextCount = (count: number) => {
@@ -4384,7 +4331,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       lastLoggedFocusedBadgeState = null
       setTextRenderable(statusOpenText, "", theme.textMuted)
       ensureStatusLabelTextCount(STATUS_BADGE_WIDTH)
-      renderStatusBadgeParts(statusLabelTexts, [], STATUS_BADGE_WIDTH)
+      renderStatusBadgeParts(statusLabelTexts, [], STATUS_BADGE_WIDTH, workingAnimationFrame())
       setTextRenderable(statusCloseText, "", theme.textMuted)
       statusIndicatorBox?.requestRender()
       return
@@ -4393,7 +4340,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     logFocusedBadgeChange(badge)
     setTextRenderable(statusOpenText, "", theme.textMuted)
     ensureStatusLabelTextCount(Math.max(STATUS_BADGE_WIDTH, badge.label.length))
-    renderStatusBadgeParts(statusLabelTexts, badge.parts, Math.max(STATUS_BADGE_WIDTH, badge.label.length))
+    renderStatusBadgeParts(statusLabelTexts, badge.parts, Math.max(STATUS_BADGE_WIDTH, badge.label.length), workingAnimationFrame())
     setTextRenderable(statusCloseText, "", theme.textMuted)
     statusIndicatorBox?.requestRender()
   }
