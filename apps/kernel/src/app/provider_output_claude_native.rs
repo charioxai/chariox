@@ -24,6 +24,18 @@ fn write_claude_native_marker(context_file: &str, value: &str) {
     let _ = fs::write(marker, value);
 }
 
+fn write_claude_hook_context_response(context_file: &str, request_id: &str, context: &str) {
+    if request_id.trim().is_empty() {
+        return;
+    }
+    let Some(root) = std::path::Path::new(context_file).parent() else {
+        return;
+    };
+    let dir = root.join("hook-context-responses");
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join(format!("{request_id}.txt")), context);
+}
+
 fn extract_native_hidden_instructions(prompt: &str) -> String {
     let start = crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_START;
     let end = crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_END;
@@ -127,6 +139,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 {
                     continue;
                 }
+                if let Some(request_id) =
+                    event.get("hook_context_request_id").and_then(Value::as_str)
+                {
+                    let context =
+                        self.claude_native_prompt_context(session_id, &agent_id, prompt)?;
+                    write_claude_hook_context_response(context_file, request_id, &context);
+                }
                 let Some(attachment_id) = attachment_id.as_deref() else {
                     continue;
                 };
@@ -153,6 +172,22 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             }
         }
         Ok(())
+    }
+
+    fn claude_native_prompt_context(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &str,
+    ) -> Result<String, DaemonError> {
+        let agent = self.app.agents.get_agent(agent_id)?;
+        let session = self.app.sessions.get_session(session_id)?;
+        crate::skill::format_granted_skill_prompt_context(
+            agent.agent_ref(),
+            agent.skill_grants(),
+            session.workspace_id(),
+            prompt,
+        )
     }
 
     fn inject_pending_prompt(

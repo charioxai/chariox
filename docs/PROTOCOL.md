@@ -204,6 +204,15 @@ Native TUI MCP and skill placement:
 - slice-backed native TUI still executes MCP commands on the worker side, so MCP commands, environment, and credentials must be available in the slice image or injected slice environment
 - capability grants remain agent-scoped in all modes; native TUI launch must not expose ungranted local/user MCPs or skills just because the provider CLI can see them natively
 
+Native TUI hidden context:
+
+- granted skill prompt context and other Arroba-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
+- Codex/OpenCode proxies redact Arroba hidden blocks from provider-TUI-facing protocol traffic while forwarding them to the provider server
+- Claude Code native TUI MUST use the `UserPromptSubmit` hook `additionalContext` path for hidden context; the hook emits a scoped context request id, and the Arroba CLI bridge or worker kernel writes the matching context response before the hook returns
+- Claude hook context responses are scoped to the session, agent, and provider run; they must not expose broad kernel authority or accept arbitrary provider-origin file paths
+- if a Claude hook context response is unavailable before timeout, the provider-facing hidden context is empty and the native TUI remains coherent; Arroba MUST NOT fall back to visible PTY prompt injection for skill bodies or system prompt blocks
+- local Claude native TUI can answer hook context requests through the launcher bridge and home kernel; remote/slice Claude native TUI answers them on the provider-execution side so worker-local or slice-isolated skill material is used
+
 Provider-specific transport:
 
 - Codex uses a native WebSocket proxy in front of a Codex app-server endpoint and binds the observed Codex thread to the Arroba provider run.

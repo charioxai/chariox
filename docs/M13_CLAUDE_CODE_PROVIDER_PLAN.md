@@ -42,6 +42,9 @@ Achieved:
   the worker kernel with Claude/Codex/OpenCode, a remote Claude agent spawned on
   the worker machine, completed one prompt, and accepted cancellation of a second
   prompt.
+- Added native Claude TUI hidden context delivery through the
+  `UserPromptSubmit` hook `additionalContext` path, including local launcher
+  responses and worker-kernel responses for remote/slice native TUI execution.
 
 Verified:
 
@@ -404,10 +407,11 @@ Live drills:
 
 ### M13.7 Native Claude TUI
 
-Status: research needed before implementation. Claude Code v2.1.140 exposes a
+Status: implemented for the current native TUI contract. Claude Code exposes a
 rich interactive TUI, background sessions, `claude attach`, Remote Control, and
 hooks, but does not expose the same local provider-server protocol shape that
-Codex/OpenCode expose.
+Codex/OpenCode expose. Arroba therefore uses a kernel-owned PTY plus hook
+events rather than a provider app-server proxy.
 
 Goal: add a native Claude Code TUI mode comparable to native Codex/OpenCode TUI
 work, while the kernel remains session authority.

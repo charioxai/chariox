@@ -772,6 +772,11 @@ own prompt state, history, permissions, attachments, or remote execution.
 Codex/OpenCode use provider protocol proxies where available. Claude Code uses
 a kernel-owned remote-rendered PTY because Claude Code's public integration
 surface is terminal-first rather than a separable app-server protocol.
+Claude hidden prompt context for native TUI runs is delivered through Claude
+Code's `UserPromptSubmit` hook `additionalContext` response. Local launchers and
+worker kernels answer a scoped hook context request with the same granted-skill
+prompt context used by normal Arroba provider runs, while keeping that context
+out of visible PTY input and native TUI transcript rendering.
 
 Slice-backed native TUI mode is the same composition with a home-managed slice
 as the worker execution environment. Provider TUIs still attach to the home

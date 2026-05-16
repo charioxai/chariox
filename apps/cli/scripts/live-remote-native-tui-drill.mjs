@@ -1386,8 +1386,34 @@ async function runProviderScenario({
         })
         await waitForFileMatch(logs.a, new RegExp(markers.arrobaSkill), 90_000)
       } else {
-        nativeSkillCheck = "not_supported_for_claude_native_origin_without_visible_pty_injection"
-        skillPromptContext = "not_validated_for_claude_native_tui_hidden_injection_gap"
+        const providerRunA = await waitForClaudeProviderRunId(logs.a)
+        await sendClaudeRenderedPromptViaKernelInput(
+          client,
+          sessionId,
+          attachment.id,
+          providerRunA,
+          `Use the ${nativeCapabilities.skillName} skill. Give the native skill marker.`,
+        )
+        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+          [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.nativeSkill] },
+        })
+        await waitForFileMatch(logs.a, new RegExp(markers.nativeSkill), 90_000)
+        await automationRequest(automationSocket, {
+          action: "workspace_shell_exec",
+          command: `agent focus ${agents[0].id}`,
+        })
+        await automationRequest(automationSocket, {
+          action: "workspace_shell_exec",
+          command: `prompt ${aliases[0]} ${shellQuote(`Use the ${nativeCapabilities.skillName} skill. Give the Arroba skill marker.`)}`,
+        })
+        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+          [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.arrobaSkill] },
+        })
+        await waitForFileMatch(logs.a, new RegExp(markers.arrobaSkill), 90_000)
+        const claudeScreenLog = await readFile(logs.a, "utf8").catch(() => "")
+        if (claudeScreenLog.includes("Full instructions for explicitly requested Arroba skills")) {
+          throw new Error("Claude native TUI displayed hidden Arroba skill context")
+        }
       }
       extendedChecks.mcpSkills = {
         mcp: nativeCapabilities.mcpName,

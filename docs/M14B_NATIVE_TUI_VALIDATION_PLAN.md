@@ -110,10 +110,12 @@ payload and marks `/workspace` trusted in the slice.
 agent-scoped grants for Codex and OpenCode in local, same-host standard
 home-worker, and home-managed local Docker slice modes. Home-managed slices use
 `ARROBA_CAPABILITY_ISOLATION_ROOT` so worker MCP/skill registries are isolated
-from host workspace and persisted-home registries. Claude native TUI validates
-MCP grant rendering in those modes, but hidden Arroba skill injection remains a
-known gap for Claude because the remote-rendered PTY path cannot yet add
-invisible skill context without showing it in the native TUI.
+from host workspace and persisted-home registries. Claude native TUI hidden
+skill injection now uses Claude Code's `UserPromptSubmit` hook
+`additionalContext` path: the hook emits a scoped request id, and the local
+launcher bridge or provider-execution worker kernel writes the matching hidden
+context response before the hook returns. The hidden skill context does not
+appear in the native TUI transcript.
 
 ## Goal
 
@@ -229,9 +231,9 @@ MCPs and skills:
   registries mounted from the host workspace or persisted in the slice home.
 - Live MCP/skill drills now pass for Codex and OpenCode in local, standard
   same-host home-worker, and home-managed local Docker slice modes. Claude
-  native TUI validates the provider-run MCP config in those modes, but hidden
-  Arroba skill injection remains a gap because Claude's native TUI path cannot
-  yet receive invisible prompt context without making it visible in the PTY.
+  native TUI validates provider-run MCP config and hidden skill injection
+  through hook `additionalContext` in local, same-host standard home-worker,
+  and home-managed local Docker slice modes.
 
 ## Attachment Transfer Contract
 
@@ -340,9 +342,9 @@ Provider notes:
    - Codex/OpenCode: live MCP/skill validation passes locally, in same-host
      standard home-worker mode, and in home-managed local Docker slice mode.
    - Claude: live validation confirms pre-granted MCPs are rendered into the
-     provider run in all three modes. Hidden Arroba skill injection is still a
-     product gap for Claude native TUI because the remote-rendered PTY path does
-     not yet support invisible context injection.
+     provider run and same-turn skill requests receive hidden Arroba skill
+     context through Claude Code hook `additionalContext` rather than visible
+     PTY input.
    - Standard remote home-worker: do not copy/install MCPs or skills as product
      behavior. The drill preinstalls matching worker MCP definitions as setup,
      then validates grant-derived worker provider-run rendering.
@@ -368,13 +370,13 @@ Legend:
 | --- | --- | --- | --- | --- | --- |
 | local | Codex | pass | pass | pass | pass |
 | local | OpenCode | pass | pass | pass | pass |
-| local | Claude | pass | pass | pass | partial |
+| local | Claude | pass | pass | pass | pass |
 | standard remote | Codex | pass | pass | pass | pass |
 | standard remote | OpenCode | pass | pass | pass | pass |
-| standard remote | Claude | pass | pass | pass | partial |
+| standard remote | Claude | pass | pass | pass | pass |
 | home-managed slice | Codex | pass | pass | pass | pass |
 | home-managed slice | OpenCode | pass | pass | pass | pass |
-| home-managed slice | Claude | pass | pass | pass | partial |
+| home-managed slice | Claude | pass | pass | pass | pass |
 
 ## Drill Requirements
 

@@ -26,6 +26,7 @@ import {
   attachToSessionRequest,
   completePromptRequest,
   createSessionRequest,
+  getSkillRequest,
   getProviderRunRequest,
   getSessionStateRequest,
   grantAgentCapabilityRequest,
@@ -77,6 +78,7 @@ type NativeClaudeOptions = {
 type ClaudeHookEvent = {
   index: number
   hook_event_name: string
+  hook_context_request_id?: string | null
   prompt?: string | null
   transcript_path?: string | null
   permission_mode?: string | null
@@ -118,6 +120,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
   const tempRoot = path.join(os.tmpdir(), `arroba-claude-native-${process.pid}-${Date.now()}`)
   const eventsFile = path.join(tempRoot, "events.jsonl")
   const contextFile = path.join(tempRoot, "hidden-context.txt")
+  const contextResponseDir = path.join(tempRoot, "hook-context-responses")
   const attachmentContextDir = path.join(tempRoot, "attachments")
   const settingsPath = path.join(tempRoot, "settings.json")
   const hookHandlerPath = path.join(tempRoot, "hook-handler.mjs")
@@ -131,6 +134,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
 
   try {
     await mkdir(screenLogDir, { recursive: true })
+    await mkdir(contextResponseDir, { recursive: true })
     await writeFile(contextFile, "", "utf8")
     await writeClaudeHookHandler(hookHandlerPath)
     await writeFile(settingsPath, JSON.stringify(claudeHookSettings(hookHandlerPath), null, 2), "utf8")
@@ -177,6 +181,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
         ...process.env,
         ARROBA_CLAUDE_NATIVE_EVENTS: eventsFile,
         ARROBA_CLAUDE_NATIVE_CONTEXT: contextFile,
+        ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES: contextResponseDir,
         ARROBA_CLAUDE_NATIVE_HOOK_BRIDGE_URL: permissionBridge.url,
       },
     }
@@ -192,6 +197,8 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       eventsFile,
       contextFile,
       attachmentContextDir,
+      hookContextResponseDir: contextResponseDir,
+      workspace,
       worktree,
       inlineLocalAttachments: Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
       promptOrigin,
@@ -620,6 +627,8 @@ function startClaudeBridge(options: {
   eventsFile: string
   contextFile: string
   attachmentContextDir: string
+  hookContextResponseDir: string
+  workspace: string
   worktree: string
   inlineLocalAttachments: boolean
   promptOrigin: ClaudePromptOriginState
@@ -650,6 +659,20 @@ function startClaudeBridge(options: {
                 debugNativeClaude("native_prompt_attachments_observed", {
                   attachmentCount: attachments.length,
                 })
+              }
+              if (event.hook_context_request_id) {
+                const context = await buildClaudeNativeSkillContext(
+                  options.client,
+                  options.sessionId,
+                  options.workspace,
+                  options.agentId,
+                  prompt,
+                )
+                await writeClaudeHookContextResponse(
+                  options.hookContextResponseDir,
+                  event.hook_context_request_id,
+                  context,
+                )
               }
               const response = await options.client.send<Record<string, unknown>>(
                 submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
@@ -885,7 +908,9 @@ function writeJsonResponse(response: ServerResponse, statusCode: number, body: R
 
 async function writeClaudeHookHandler(file: string) {
   await writeFile(file, `#!/usr/bin/env node
-import { appendFileSync, readFileSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs"
+import { join } from "node:path"
+import { setTimeout as sleep } from "node:timers/promises"
 
 const chunks = []
 for await (const chunk of process.stdin) chunks.push(chunk)
@@ -897,9 +922,13 @@ try {
   input = { hook_event_name: "parse_error", raw, error: String(error) }
 }
 const eventName = input.hook_event_name ?? "unknown"
+const hookContextRequestId = eventName === "UserPromptSubmit"
+  ? \`\${Date.now()}-\${process.pid}-\${Math.random().toString(36).slice(2)}\`
+  : null
 appendFileSync(process.env.ARROBA_CLAUDE_NATIVE_EVENTS, JSON.stringify({
   at: new Date().toISOString(),
   hook_event_name: eventName,
+  hook_context_request_id: hookContextRequestId,
   prompt: input.prompt ?? null,
   transcript_path: input.transcript_path ?? null,
   permission_mode: input.permission_mode ?? null,
@@ -914,6 +943,18 @@ if (eventName === "UserPromptSubmit") {
   try {
     additionalContext = readFileSync(process.env.ARROBA_CLAUDE_NATIVE_CONTEXT, "utf8")
   } catch {}
+  if (!additionalContext && hookContextRequestId && process.env.ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES) {
+    const responseFile = join(process.env.ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES, \`\${hookContextRequestId}.txt\`)
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline) {
+      if (existsSync(responseFile)) {
+        additionalContext = readFileSync(responseFile, "utf8")
+        try { unlinkSync(responseFile) } catch {}
+        break
+      }
+      await sleep(50)
+    }
+  }
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "UserPromptSubmit",
@@ -1378,6 +1419,79 @@ function extensionForMime(mime: string): string {
 
 function joinClaudeAdditionalContext(...parts: string[]): string {
   return parts.map((part) => part.trim()).filter(Boolean).join("\n\n")
+}
+
+async function writeClaudeHookContextResponse(dir: string, requestId: string, context: string): Promise<void> {
+  if (!requestId.trim()) return
+  await mkdir(dir, { recursive: true })
+  await writeFile(path.join(dir, `${requestId}.txt`), context, "utf8")
+}
+
+async function buildClaudeNativeSkillContext(
+  client: LocalIpcClient,
+  sessionId: string,
+  workspace: string,
+  agentId: string,
+  prompt: string,
+): Promise<string> {
+  const session = await sessionState(client, sessionId)
+  const agent = session.agents.find((candidate) => candidate.id === agentId)
+  const grants = agent?.skill_grants ?? []
+  if (grants.length === 0) return ""
+  const lines = [
+    "Available Arroba skills for this agent:",
+    "Use these granted skills as routing hints when they match the task. If a skill is explicitly selected, mentioned, or requested below, follow its full instructions.",
+  ]
+  const requestedBodies: Array<{ name: string; body: string }> = []
+  for (const grant of grants) {
+    const response = await client.send<Record<string, unknown>>(getSkillRequest(workspace, grant))
+    const skill = expectVariant<{ skill: { name: string; description: string; short_description?: string | null; path: string } }>(response, "Skill").skill
+    lines.push(`- \`${skill.name}\`: ${skill.short_description || skill.description}`)
+    if (promptExplicitlyRequestsSkill(prompt, skill.name)) {
+      const body = await readFile(skill.path, "utf8")
+      requestedBodies.push({ name: skill.name, body })
+    }
+  }
+  if (requestedBodies.length > 0) {
+    lines.push("", "Full instructions for explicitly requested Arroba skills:")
+    for (const { name, body } of requestedBodies) {
+      lines.push(`<arroba_skill name="${name}">`, body.trim(), "</arroba_skill>")
+    }
+  }
+  return lines.join("\n")
+}
+
+function promptExplicitlyRequestsSkill(prompt: string, skillName: string): boolean {
+  const normalizedPrompt = prompt.toLowerCase()
+  const normalizedSkill = skillName.toLowerCase()
+  const explicitMarkers = [
+    `@${normalizedSkill}`,
+    `\`${normalizedSkill}\``,
+    `/skill ${normalizedSkill}`,
+    `skill ${normalizedSkill}`,
+    `use ${normalizedSkill}`,
+    `using ${normalizedSkill}`,
+    `with ${normalizedSkill}`,
+  ]
+  return explicitMarkers.some((marker) => normalizedPrompt.includes(marker))
+    || containsTokenishSkillName(normalizedPrompt, normalizedSkill)
+}
+
+function containsTokenishSkillName(prompt: string, skillName: string): boolean {
+  let index = prompt.indexOf(skillName)
+  while (index >= 0) {
+    const before = index > 0 ? prompt.charCodeAt(index - 1) : null
+    const afterIndex = index + skillName.length
+    const after = afterIndex < prompt.length ? prompt.charCodeAt(afterIndex) : null
+    if (isSkillBoundary(before) && isSkillBoundary(after)) return true
+    index = prompt.indexOf(skillName, index + skillName.length)
+  }
+  return false
+}
+
+function isSkillBoundary(code: number | null): boolean {
+  if (code === null) return true
+  return !((code >= 48 && code <= 57) || (code >= 97 && code <= 122) || code === 45 || code === 95)
 }
 
 function extractHiddenInstructions(prompt: string): string {

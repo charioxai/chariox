@@ -40,11 +40,23 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .get_session(&leased_agent.backing_session_id)?;
         let base_dir = crate::skill::remote_skill_materialization_base(session.worktree_id())
             .join(&context.home_kernel_id);
+        let install_into_isolated_registry = std::env::var_os("ARROBA_CAPABILITY_ISOLATION_ROOT")
+            .is_some_and(|value| !value.is_empty());
+        let registry = install_into_isolated_registry.then(|| {
+            crate::skill::ArrobaSkillRegistry::new(vec![
+                crate::skill::ArrobaSkillRegistry::project_root(session.worktree_id()),
+            ])
+        });
         packages
             .iter()
             .map(|package| {
                 let materialized_root =
                     crate::skill::materialize_skill_package(&base_dir, package)?;
+                if let Some(registry) = registry.as_ref() {
+                    if registry.get(&package.metadata.name)?.is_none() {
+                        registry.install_from_path(&materialized_root)?;
+                    }
+                }
                 Ok(RemoteSkillMaterialization {
                     name: package.metadata.name.clone(),
                     version_hash: package.version_hash.clone(),

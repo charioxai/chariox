@@ -93,6 +93,10 @@ fn plan_claude_launch_unlocked(
             "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
             native.context_file.display().to_string(),
         );
+        pty_env.insert(
+            "ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
+            native.context_response_dir.display().to_string(),
+        );
         pty_env.insert("TERM".to_string(), "xterm-256color".to_string());
         pty_env.insert("COLORTERM".to_string(), "truecolor".to_string());
         return Ok(ProviderLaunchResult {
@@ -123,6 +127,7 @@ fn plan_claude_launch_unlocked(
 struct ClaudeNativeTuiFiles {
     events_file: PathBuf,
     context_file: PathBuf,
+    context_response_dir: PathBuf,
     settings_file: PathBuf,
 }
 
@@ -141,8 +146,13 @@ fn prepare_claude_native_tui_files() -> Result<ClaudeNativeTuiFiles, DaemonError
     })?;
     let events_file = root.join("events.jsonl");
     let context_file = root.join("hidden-context.txt");
+    let context_response_dir = root.join("hook-context-responses");
     let settings_file = root.join("settings.json");
     let hook_handler_file = root.join("hook-handler.mjs");
+    fs::create_dir_all(&context_response_dir).map_err(|error| DaemonError::LocalTransport {
+        operation: "prepare claude native context response dir",
+        message: error.to_string(),
+    })?;
     fs::write(&events_file, "").map_err(|error| DaemonError::LocalTransport {
         operation: "prepare claude native events file",
         message: error.to_string(),
@@ -184,13 +194,16 @@ fn prepare_claude_native_tui_files() -> Result<ClaudeNativeTuiFiles, DaemonError
     Ok(ClaudeNativeTuiFiles {
         events_file,
         context_file,
+        context_response_dir,
         settings_file,
     })
 }
 
 fn claude_native_hook_handler() -> &'static str {
     r#"#!/usr/bin/env node
-import { appendFileSync, readFileSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs"
+import { join } from "node:path"
+import { setTimeout as sleep } from "node:timers/promises"
 
 const chunks = []
 for await (const chunk of process.stdin) chunks.push(chunk)
@@ -202,9 +215,13 @@ try {
   input = { hook_event_name: "parse_error", raw, error: String(error) }
 }
 const eventName = input.hook_event_name ?? "unknown"
+const hookContextRequestId = eventName === "UserPromptSubmit"
+  ? `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`
+  : null
 appendFileSync(process.env.ARROBA_CLAUDE_NATIVE_EVENTS, JSON.stringify({
   at: new Date().toISOString(),
   hook_event_name: eventName,
+  hook_context_request_id: hookContextRequestId,
   prompt: input.prompt ?? null,
   transcript_path: input.transcript_path ?? null,
   permission_mode: input.permission_mode ?? null,
@@ -219,6 +236,18 @@ if (eventName === "UserPromptSubmit") {
   try {
     additionalContext = readFileSync(process.env.ARROBA_CLAUDE_NATIVE_CONTEXT, "utf8")
   } catch {}
+  if (!additionalContext && hookContextRequestId && process.env.ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES) {
+    const responseFile = join(process.env.ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES, `${hookContextRequestId}.txt`)
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline) {
+      if (existsSync(responseFile)) {
+        additionalContext = readFileSync(responseFile, "utf8")
+        try { unlinkSync(responseFile) } catch {}
+        break
+      }
+      await sleep(50)
+    }
+  }
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "UserPromptSubmit",
