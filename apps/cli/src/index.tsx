@@ -72,6 +72,7 @@ import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent, shouldHandleWaitingRoomKeyEvent } from "./hotkeys.js"
 import { buildHotkeySections } from "./hotkey-help.js"
 import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
+import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { executeShellLine } from "@arroba/kernel-client/shell-script"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
@@ -190,6 +191,7 @@ import {
   recordPromptInputHistory,
 } from "./session-history-api.js"
 import type { PromptMetaPart, PromptMetaTone } from "./prompt-meta.js"
+import { renderPromptMeta } from "./prompt-meta-renderer.js"
 import {
   backendProviderLabel,
   type BackendProviderId,
@@ -4202,70 +4204,32 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const promptMetaToneColor = (tone: PromptMetaTone) => theme[tone]
 
   const setPromptMetaRenderables = (parts: PromptMetaPart[]) => {
-    const usage = promptUsageMeta()
-    const renderUsageMeta = () => {
-      setTextRenderable(promptMetaUsageDividerText, "", theme.textMuted)
-      setTextRenderable(
-        promptMetaUsageTokensText,
-        usage?.tokensLabel ?? "",
-        usage ? theme.secondary : theme.textMuted,
-        usage ? TextAttributes.BOLD : TextAttributes.NONE,
-      )
-      setTextRenderable(promptMetaUsageBarOpenText, usage?.usageLabel ? " [" : "", theme.textMuted)
-      setTextRenderable(
-        promptMetaUsageBarFilledText,
-        usage?.barFilled ?? "",
-        theme.primary,
-        usage?.barFilled ? TextAttributes.BOLD : TextAttributes.NONE,
-      )
-      setTextRenderable(promptMetaUsageBarEmptyText, usage?.usageLabel ? (usage?.barEmpty ?? "") : "", theme.textMuted)
-      setTextRenderable(promptMetaUsageBarCloseText, usage?.usageLabel ? "]" : "", theme.textMuted)
-      setTextRenderable(
-        promptMetaUsagePercentText,
-        usage?.usageLabel ? ` ${usage.usageLabel}` : "",
-        usage?.usageLabel ? theme.info : theme.textMuted,
-        usage?.usageLabel ? TextAttributes.BOLD : TextAttributes.NONE,
-      )
-    }
-
-    if (parts.length === 0) {
-      setTextRenderable(promptMetaProviderText, "", theme.textMuted)
-      setTextRenderable(promptMetaProviderDividerText, "", theme.textMuted)
-      setTextRenderable(promptMetaModelText, "", theme.textMuted)
-      setTextRenderable(promptMetaModelDividerText, "", theme.textMuted)
-      setTextRenderable(promptMetaVariantText, "", theme.textMuted)
-      renderUsageMeta()
-      return
-    }
-
-    setTextRenderable(promptMetaProviderText, "", theme.textMuted)
-    setTextRenderable(promptMetaProviderDividerText, "", theme.textMuted)
-    setTextRenderable(promptMetaModelText, "", theme.textMuted)
-    setTextRenderable(promptMetaModelDividerText, "", theme.textMuted)
-    setTextRenderable(promptMetaVariantText, "", theme.textMuted)
-    renderUsageMeta()
+    renderPromptMeta({
+      providerText: promptMetaProviderText,
+      providerDividerText: promptMetaProviderDividerText,
+      modelText: promptMetaModelText,
+      modelDividerText: promptMetaModelDividerText,
+      variantText: promptMetaVariantText,
+      usageDividerText: promptMetaUsageDividerText,
+      usageTokensText: promptMetaUsageTokensText,
+      usageBarOpenText: promptMetaUsageBarOpenText,
+      usageBarFilledText: promptMetaUsageBarFilledText,
+      usageBarEmptyText: promptMetaUsageBarEmptyText,
+      usageBarCloseText: promptMetaUsageBarCloseText,
+      usagePercentText: promptMetaUsagePercentText,
+    }, parts, promptUsageMeta())
   }
 
   const renderHistoryLoadingIndicator = () => {
-    if (!historyLoadingBox) {
-      return
-    }
-    historyLoadingBox.visible = loadingHistory()
-    if (loadingHistory()) {
-      if (!historyLoadingText) {
-        historyLoadingText = new TextRenderable(renderer, {
-          content: "loading...",
-          fg: theme.textMuted,
-          wrapMode: "none",
-        })
-        historyLoadingBox.add(historyLoadingText)
-      }
-    } else if (historyLoadingText) {
-      historyLoadingBox.remove(historyLoadingText.id)
-      historyLoadingText.destroyRecursively()
-      historyLoadingText = undefined
-    }
-    historyLoadingBox.requestRender()
+    renderHistoryLoadingIndicatorView({
+      box: historyLoadingBox,
+      text: historyLoadingText,
+      loading: loadingHistory(),
+      renderer,
+      assignText: (value) => {
+        historyLoadingText = value
+      },
+    })
   }
 
   const setHistoryLoadingState = (next: boolean) => {
