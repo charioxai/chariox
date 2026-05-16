@@ -5,8 +5,6 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
   SessionConfigState,
-  SliceDisplayEndpoint,
-  SliceRecord,
   WorkflowEdgeDefinition,
   WorkflowDefinition,
   WorkflowEndpointDefinition,
@@ -42,6 +40,10 @@ import {
   handleSkillSlashCommand,
   type CapabilityCommandHandlerDeps,
 } from "./capability-command-handlers.js"
+import {
+  handleSliceSlashCommand,
+  type SliceCommandHandlerDeps,
+} from "./slice-command-handlers.js"
 import {
   parseAgentSpawnOptions,
   parsePlacementOptions,
@@ -166,6 +168,7 @@ type CommandActionDeps =
   & ConfigCommandHandlerDeps
   & RemoteMachineCommandHandlerDeps
   & CapabilityCommandHandlerDeps
+  & Omit<SliceCommandHandlerDeps, "currentWorktreeTarget">
   & {
   workspace: string
   worktree: string
@@ -281,21 +284,6 @@ type CommandActionDeps =
   acceptCloudSessionInvite?: (inviteToken: string) => Promise<Record<string, unknown>>
   listCloudSessionMembers?: (sessionId: string) => Promise<Record<string, unknown>>
   listCloudCollaborators?: () => Promise<Record<string, unknown>[]>
-  listSlices?: () => Promise<SliceRecord[]>
-  createSlice?: (options: {
-    name: string
-    backend?: "local_docker" | "ssh_docker"
-    os?: string
-    workspaceMount?: string | null
-    workerKernelRef?: string | null
-    displayUrl?: string | null
-  }) => Promise<SliceRecord>
-  getSlice?: (sliceRef: string) => Promise<SliceRecord>
-  startSlice?: (sliceRef: string) => Promise<SliceRecord>
-  stopSlice?: (sliceRef: string) => Promise<SliceRecord>
-  deleteSlice?: (sliceRef: string) => Promise<SliceRecord>
-  importSliceProviderAuth?: (sliceRef: string, provider: string) => Promise<{ slice: SliceRecord; provider: string; status: string }>
-  getSliceDisplayEndpoint?: (sliceRef: string) => Promise<SliceDisplayEndpoint>
   updateSessionConfig: (
     sessionId: string,
     attachmentId: string,
@@ -1424,201 +1412,10 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await handleRemoteMachineSlashCommand(deps, command)
   }
 
-  const formatSliceLabel = (slice: SliceRecord): string => slice.name || slice.id
-
-  const formatSlice = (slice: SliceRecord): string => {
-    const display = slice.display_endpoint?.url ? ` screen=${slice.display_endpoint.url}` : ""
-    const providers = (slice.providers ?? []).join(",") || "-"
-    const worker = slice.worker_kernel_id ?? slice.worker_kernel_ref
-    return `${formatSliceLabel(slice)} id=${slice.id} status=${slice.status} backend=${slice.backend} os=${slice.os} worker=${worker} providers=${providers}${slice.workspace_mount ? ` mount=${slice.workspace_mount}` : ""}${display}`
-  }
-
-  const resolveFocusedSliceRef = async (): Promise<string> => {
-    const focusedId = deps.focusedAgentId()
-    const resolved = deps.resolveSessionAgent(focusedId)
-    const remote = resolved.agent?.remote_execution
-    if (!remote) {
-      throw new Error("no slice specified and focused agent is not running in a slice")
-    }
-    if (!deps.listSlices) {
-      throw new Error("slice inventory is unavailable in this build")
-    }
-    const slices = await deps.listSlices()
-    const match = slices.find((slice) =>
-      slice.worker_kernel_id === remote.worker_kernel_id
-      || slice.worker_kernel_ref === remote.worker_kernel_id
-      || slice.worker_machine_id === remote.worker_machine_id
-    )
-    if (!match) {
-      throw new Error("no slice specified and focused agent is not running in a slice")
-    }
-    return match.name || match.id
-  }
-
-  const explicitOrFocusedSliceRef = async (value: string | undefined): Promise<string> => value ?? resolveFocusedSliceRef()
-
-  const parseSliceCreateOptions = (args: string[]): {
-    name?: string
-    backend?: "local_docker" | "ssh_docker"
-    workerKernelRef?: string | null
-    displayUrl?: string | null
-    workspaceMount?: string | null
-    error?: string
-  } => {
-    const name = args[0]
-    let backend: "local_docker" | "ssh_docker" | undefined
-    let workerKernelRef: string | null | undefined
-    let displayUrl: string | null | undefined
-    let workspaceMount: string | null | undefined = currentWorktreeTarget()
-    let error: string | undefined
-    for (let index = 1; index < args.length; index += 1) {
-      const arg = args[index]
-      const value = args[index + 1]
-      if (arg === "--backend") {
-        if (value !== "local_docker" && value !== "ssh_docker") {
-          error = "usage: /slice create <name> [--backend local_docker|ssh_docker] [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]"
-          break
-        }
-        backend = value
-        index += 1
-        continue
-      }
-      if (arg === "--kernel") {
-        if (!value || value.startsWith("--")) {
-          error = "usage: /slice create <name> --kernel <worker-kernel-ref>"
-          break
-        }
-        workerKernelRef = value
-        index += 1
-        continue
-      }
-      if (arg === "--display-url") {
-        if (!value || value.startsWith("--")) {
-          error = "usage: /slice create <name> --display-url <url>"
-          break
-        }
-        displayUrl = value
-        index += 1
-        continue
-      }
-      if (arg === "--mount") {
-        if (!value || value.startsWith("--")) {
-          error = "usage: /slice create <name> --mount <path|none>"
-          break
-        }
-        workspaceMount = value === "none" ? null : value
-        index += 1
-        continue
-      }
-      error = `unknown /slice create option ${arg}`
-      break
-    }
-    return {
-      ...(name !== undefined ? { name } : {}),
-      ...(backend !== undefined ? { backend } : {}),
-      ...(workerKernelRef !== undefined ? { workerKernelRef } : {}),
-      ...(displayUrl !== undefined ? { displayUrl } : {}),
-      ...(workspaceMount !== undefined ? { workspaceMount } : {}),
-      ...(error !== undefined ? { error } : {}),
-    }
-  }
-
   const handleSliceCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "slice" }>,
   ): Promise<void> => {
-    const [subcommand, ...args] = command.args
-    if (!subcommand || subcommand === "list" || subcommand === "ls") {
-      if (!deps.listSlices) {
-        deps.flashFooter("slice inventory is unavailable in this build", "error")
-        return
-      }
-      const slices = await deps.listSlices()
-      deps.appendNotice(slices.length === 0 ? "No slices owned by this kernel." : slices.map(formatSlice).join("\n"))
-      deps.flashFooter(`listed ${slices.length} slice${slices.length === 1 ? "" : "s"}`, "info")
-      return
-    }
-    if (subcommand === "create") {
-      if (!deps.createSlice) {
-        deps.flashFooter("slice creation is unavailable in this build", "error")
-        return
-      }
-      const parsed = parseSliceCreateOptions(args)
-      if (!parsed.name || parsed.error) {
-        deps.flashFooter(parsed.error ?? "usage: /slice create <name> [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]", "error")
-        return
-      }
-      const createOptions = {
-        name: parsed.name,
-        ...(parsed.backend !== undefined ? { backend: parsed.backend } : {}),
-        ...(parsed.workspaceMount !== undefined ? { workspaceMount: parsed.workspaceMount } : {}),
-        workerKernelRef: parsed.workerKernelRef ?? null,
-        displayUrl: parsed.displayUrl ?? null,
-      }
-      const slice = await deps.createSlice(createOptions)
-      deps.flashFooter(`created slice ${formatSliceLabel(slice)}`, "info")
-      return
-    }
-    if (subcommand === "status" || subcommand === "show") {
-      if (!deps.getSlice) {
-        deps.flashFooter("slice inventory is unavailable in this build", "error")
-        return
-      }
-      const slice = await deps.getSlice(await explicitOrFocusedSliceRef(args[0]))
-      deps.appendNotice(formatSlice(slice))
-      deps.flashFooter(`showing slice ${formatSliceLabel(slice)}`, "info")
-      return
-    }
-    if (subcommand === "start" || subcommand === "stop") {
-      const handler = subcommand === "start" ? deps.startSlice : deps.stopSlice
-      if (!handler) {
-        deps.flashFooter(`slice ${subcommand} is unavailable in this build`, "error")
-        return
-      }
-      const slice = await handler(await explicitOrFocusedSliceRef(args[0]))
-      deps.flashFooter(`${subcommand === "start" ? "started" : "stopped"} slice ${formatSliceLabel(slice)}`, "info")
-      return
-    }
-    if (subcommand === "delete" || subcommand === "rm") {
-      if (!deps.deleteSlice) {
-        deps.flashFooter("slice delete is unavailable in this build", "error")
-        return
-      }
-      const sliceRef = args[0]
-      if (!sliceRef) {
-        deps.flashFooter("usage: /slice delete <slice-ref>", "error")
-        return
-      }
-      const slice = await deps.deleteSlice(sliceRef)
-      deps.flashFooter(`deleted slice ${formatSliceLabel(slice)}`, "info")
-      return
-    }
-    if (subcommand === "screen") {
-      if (!deps.getSliceDisplayEndpoint) {
-        deps.flashFooter("slice screen is unavailable in this build", "error")
-        return
-      }
-      const endpoint = await deps.getSliceDisplayEndpoint(await explicitOrFocusedSliceRef(args[0]))
-      deps.appendNotice(endpoint.url)
-      const opened = await deps.openExternalUrl?.(endpoint.url)
-      deps.flashFooter(`${opened ? "opened" : "screen"} ${endpoint.url}`, "info")
-      return
-    }
-    if (subcommand === "auth" && args[0] === "import") {
-      if (!deps.importSliceProviderAuth) {
-        deps.flashFooter("slice auth import is unavailable in this build", "error")
-        return
-      }
-      const provider = args.length >= 3 ? args[2] : args[1]
-      const sliceRef = args.length >= 3 ? args[1]! : await resolveFocusedSliceRef()
-      if (!provider) {
-        deps.flashFooter("usage: /slice auth import [slice-ref] <provider>", "error")
-        return
-      }
-      const result = await deps.importSliceProviderAuth(sliceRef, provider)
-      deps.flashFooter(`slice auth import ${result.provider}: ${result.status}`, result.status === "imported" ? "info" : "error")
-      return
-    }
-    deps.flashFooter("usage: /slice list | /slice create <name> | /slice status [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider>", "error")
+    await handleSliceSlashCommand({ ...deps, currentWorktreeTarget }, command)
   }
 
   const handleKernelCommand = async (
