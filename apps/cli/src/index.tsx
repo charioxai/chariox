@@ -74,6 +74,7 @@ import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollT
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { executeShellLine } from "@arroba/kernel-client/shell-script"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
+import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
@@ -4306,115 +4307,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     responsePrimaryFooterBox?.requestRender()
   }
 
-  const renderInteractionChoices = (
-    container: BoxRenderable,
-    interaction: RuntimeInteraction,
-    focused: boolean,
-  ) => {
-    const choiceCount = interaction.choices.length + (interaction.custom_choice ? 1 : 0)
-    const selectedIndex = Math.min(
-      interactionChoiceSelection.get(interaction.id) ?? 0,
-      Math.max(0, choiceCount - 1),
-    )
-    interactionChoiceSelection.set(interaction.id, selectedIndex)
-    const choicesBox = new BoxRenderable(renderer, {
-      flexDirection: "row",
-      gap: 1,
-      flexShrink: 0,
-    })
-    interaction.choices.forEach((choice, index) => {
-      const text = new TextRenderable(renderer, { wrapMode: "none" })
-      const selected = focused && index === selectedIndex
-      const tone = choice.style === "danger"
-        ? theme.error
-        : choice.style === "secondary"
-          ? theme.textMuted
-          : theme.primary
-      text.content = `${selected ? ">" : " "} ${index + 1}.${choice.label}`
-      text.fg = selected ? theme.background : tone
-      text.bg = selected ? tone : undefined
-      text.attributes = selected ? TextAttributes.BOLD : TextAttributes.NONE
-      choicesBox.add(text)
-    })
-    if (interaction.custom_choice) {
-      const index = interaction.choices.length
-      const text = new TextRenderable(renderer, { wrapMode: "none" })
-      const selected = focused && index === selectedIndex
-      const editing = interactionCustomEditing.has(interaction.id)
-      const value = interactionCustomReplies.get(interaction.id) ?? ""
-      const placeholder = interaction.custom_choice.placeholder ?? "type another option"
-      const renderedValue = value ? value : `<${placeholder}>`
-      text.content = `${selected ? ">" : " "} ${index + 1}.${interaction.custom_choice.label}: ${renderedValue}${editing ? "_" : ""}`
-      text.fg = selected ? theme.background : theme.primary
-      text.bg = selected ? theme.primary : undefined
-      text.attributes = selected ? TextAttributes.BOLD : TextAttributes.NONE
-      choicesBox.add(text)
-    }
-    container.add(choicesBox)
-  }
-
-  const renderInteractionStrip = (
-    box: BoxRenderable | undefined,
-    agent: AgentInstance | null | undefined,
-  ) => {
-    if (!box) {
-      return
-    }
-    for (const child of [...box.getChildren()]) {
-      box.remove(String(child.id))
-      child.destroyRecursively?.()
-    }
-    const interaction = activeInteractionForAgent(agent?.id ?? null)
-    box.visible = Boolean(interaction)
-    box.flexDirection = "column"
-    box.gap = 0
-    box.paddingLeft = interaction ? 1 : 0
-    box.paddingRight = interaction ? 1 : 0
-    box.paddingTop = interaction ? 0 : 0
-    box.paddingBottom = interaction ? 0 : 0
-    box.backgroundColor = theme.backgroundElement
-    if (!interaction) {
-      box.requestRender?.()
-      return
-    }
-
-    const focused = agent?.id === focusedAgentId()
-    const titleLine = new TextRenderable(renderer, {
-      wrapMode: "char",
-      fg: interaction.level === "critical"
-        ? theme.error
-        : interaction.level === "warning"
-          ? theme.warning
-          : theme.info,
-      attributes: TextAttributes.BOLD,
-    })
-    const titlePrefix = interaction.level.toUpperCase()
-    titleLine.content = interaction.title
-      ? `${titlePrefix} • ${interaction.title}`
-      : titlePrefix
-    const messageLine = new TextRenderable(renderer, {
-      wrapMode: "word",
-      fg: theme.text,
-    })
-    const timeoutSuffix = interaction.timeout_sec
-      ? ` • timeout ${interaction.timeout_sec}s`
-      : ""
-    messageLine.content = `${interaction.message}${timeoutSuffix}`
-    box.add(titleLine)
-    box.add(messageLine)
-    renderInteractionChoices(box, interaction, focused)
-    box.requestRender?.()
-  }
-
   const renderAgentInteractions = () => {
-    const visibleAgents = responseVisibleAgents()
-    renderInteractionStrip(responsePrimaryInteractionBox, visibleAgents[0] ?? null)
-    for (let slotIndex = 0; slotIndex < maxAgentsPerScreen() - 1; slotIndex += 1) {
-      renderInteractionStrip(
-        responseAuxiliaryInteractionBoxes[slotIndex],
-        visibleAgents[slotIndex + 1] ?? null,
-      )
-    }
+    renderAgentInteractionStrips({
+      renderer,
+      primaryBox: responsePrimaryInteractionBox,
+      auxiliaryBoxes: responseAuxiliaryInteractionBoxes,
+      visibleAgents: responseVisibleAgents(),
+      maxAgentsPerScreen: maxAgentsPerScreen(),
+      focusedAgentId: focusedAgentId(),
+      activeInteractionForAgent,
+      selectedChoiceIndex: (interactionId) => interactionChoiceSelection.get(interactionId) ?? 0,
+      setSelectedChoiceIndex: (interactionId, index) => {
+        interactionChoiceSelection.set(interactionId, index)
+      },
+      customReply: (interactionId) => interactionCustomReplies.get(interactionId) ?? "",
+      customEditing: (interactionId) => interactionCustomEditing.has(interactionId),
+    })
   }
 
   const promptMetaToneColor = (tone: PromptMetaTone) => theme[tone]
