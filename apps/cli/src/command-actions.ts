@@ -1,5 +1,4 @@
 import type {
-  AgentInstance,
   RuntimeAttachment,
   RuntimeProviderRun,
   RuntimeSession,
@@ -60,35 +59,9 @@ import {
 } from "./workflow-command-handlers.js"
 import type {
   LocalGitWorktreeOptions,
-  RemoteGitWorktreePlacement,
 } from "./command-worktree-placement.js"
 
 type FooterTone = "info" | "error"
-
-type ResolvedAgentReference = {
-  agent: AgentInstance | null
-  error?: string
-}
-
-type AgentCyclePayload = {
-  agent: AgentInstance | null
-  session: RuntimeSession
-}
-
-type AgentFocusPayload = {
-  agent: AgentInstance
-  session: RuntimeSession
-}
-
-type AgentSpawnPayload = {
-  agent: AgentInstance
-  session: RuntimeSession
-}
-
-type AgentConfigUpdatePayload = {
-  agent: AgentInstance
-  session: RuntimeSession
-}
 
 export { parseRequestedViewLayout } from "./selection-command-handlers.js"
 export {
@@ -109,6 +82,7 @@ type CommandActionDeps =
   & Omit<SliceCommandHandlerDeps, "currentWorktreeTarget">
   & Omit<WorkspaceCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget" | "setWorkspaceTarget" | "setWorktreeTarget" | "baseWorktree" | "hasDynamicWorktreeTarget">
   & Omit<SessionCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget">
+  & Omit<AgentCommandHandlerDeps, "currentWorktreeTarget">
   & KernelCommandHandlerDeps
   & Omit<WorkflowCommandHandlerDeps, "currentWorkspaceTarget">
   & {
@@ -222,64 +196,10 @@ type CommandActionDeps =
     values: Record<string, string>,
     requiresIdle: boolean,
   ) => Promise<{ session: RuntimeSession; config: SessionConfigState }>
-  updateAgentConfig?: (
-    sessionId: string,
-    agentId: string,
-    options: {
-      executionMode?: "build" | "plan" | null
-      clearExecutionMode?: boolean
-      permissionLevel?: "required" | "yolo" | null
-      clearPermissionLevel?: boolean
-    },
-  ) => Promise<AgentConfigUpdatePayload>
-  updateAgentProfile?: (
-    sessionId: string,
-    agentId: string,
-    options: {
-      provider?: string | null
-      model?: string | null
-      effort?: string | null
-      clearEffort?: boolean
-    },
-  ) => Promise<AgentConfigUpdatePayload>
-  aliasAgent?: (
-    sessionId: string,
-    agentId: string,
-    alias: string,
-  ) => Promise<AgentConfigUpdatePayload>
-  updateAgentSubstitutes?: (
-    sessionId: string,
-    agentId: string,
-    action: Record<string, unknown>,
-  ) => Promise<AgentConfigUpdatePayload>
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>
   rebuildTranscript: () => void
   requestRender: () => void
-  cycleAgentFocus: () => Promise<AgentCyclePayload>
-  launchAgentProviderRun: (
-    provider: string,
-    model: string,
-    variant: string,
-    agentId: string,
-  ) => Promise<RuntimeProviderRun>
-  setProviderRunState: (run: RuntimeProviderRun | null) => void
-  refreshSessionState: (sessionId: string) => Promise<RuntimeSession>
-  spawnAgent: (
-    provider?: string | null,
-    alias?: string,
-    model?: string | null,
-    effort?: string | null,
-    worktreeId?: string,
-    machineRef?: string,
-    worktreePlacement?: RemoteGitWorktreePlacement | undefined,
-    sliceRef?: string,
-  ) => Promise<AgentSpawnPayload>
-  destroyAgent: (agentId: string) => Promise<RuntimeSession>
-  focusAgent: (agentId: string) => Promise<AgentFocusPayload>
-  resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
-  formatAgentLabel: (agent: AgentInstance | null | undefined) => string
-  refreshSplitPaneFocusRepaint: () => void
 }
 
 export function createCommandActionHandlers(deps: CommandActionDeps) {
