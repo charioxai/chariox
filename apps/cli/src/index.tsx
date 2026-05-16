@@ -79,7 +79,7 @@ import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
 import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
 import { validateProviderNamespaceSubmit } from "./provider-namespace-submit-policy.js"
-import { copyTextToClipboard } from "./clipboard.js"
+import { createClipboardController } from "./clipboard-controller.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent, shouldHandleWaitingRoomKeyEvent } from "./hotkeys.js"
 import { buildHotkeySections } from "./hotkey-help.js"
 import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget, promptTurnNavigationDirectionForKey } from "./history-viewport.js"
@@ -3313,38 +3313,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     flashFooter(`[hotkeys] ${message}`, "info")
   }
 
-  const copyTextWithFeedback = (text: string | null | undefined) => {
-    if (!text) {
-      return false
-    }
-    void copyTextToClipboard(text, renderer)
-      .then(() => {
-        flashFooter("selection copied to clipboard", "info")
-      })
-      .catch((error) => {
-        appLogger?.warn("selection copy failed", {
-          error: formatError(error),
-        })
-        flashFooter("failed to copy selection", "error")
-      })
-    return true
-  }
-
-  const copyPromptSelection = () => {
-    const selection = promptInput?.getSelection()
-    if (!selection || selection.start === selection.end || !promptInput) {
-      return false
-    }
-    const start = Math.max(0, Math.min(selection.start, selection.end))
-    const end = Math.min(promptInput.plainText.length, Math.max(selection.start, selection.end))
-    return copyTextWithFeedback(promptInput.plainText.slice(start, end))
-  }
-
-  const copySelection = () => {
-    const text = renderer.getSelection()?.getSelectedText()
-    renderer.clearSelection()
-    copyTextWithFeedback(text)
-  }
+  const clipboardController = createClipboardController({
+    renderer,
+    promptInput: () => promptInput ?? null,
+    flashFooter,
+    logWarning: (message, fields) => appLogger?.warn(message, fields),
+    formatError,
+  })
+  const copyPromptSelection = clipboardController.copyPromptSelection
+  const copySelection = clipboardController.copySelection
 
   const applySessionState = (nextSession: RuntimeSession) => {
     nextSession = normalizeRuntimeSession(nextSession)
