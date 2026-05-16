@@ -60,11 +60,7 @@ impl KernelRuntimeState {
         if result.ok {
             if let Some(skill_package) = skill_package {
                 let materialized_root = crate::skill::materialize_skill_package(
-                    &workspace_context
-                        .root
-                        .join(".arroba")
-                        .join("remote")
-                        .join("skills")
+                    &crate::skill::remote_skill_materialization_base(&workspace_context.root)
                         .join(&remote_context.home_kernel_id),
                     &skill_package,
                 )?;

@@ -23,6 +23,7 @@ import {
   cancelActivePromptRequest,
   createSessionRequest,
   getProviderRunRequest,
+  grantAgentCapabilityRequest,
   launchProviderRunRequest,
   moveAgentToRemoteRequest,
   pollRuntimeNoticesRequest,
@@ -60,6 +61,8 @@ type NativeOpenCodeOptions = {
   mode: "build" | "plan"
   permissions: "required" | "yolo"
   serverInKernel: boolean
+  grantMcps: string[]
+  grantSkills: string[]
 }
 
 type OpenCodePromptBody = {
@@ -116,6 +119,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     const agent = created?.agent
       ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
       : await spawnOpenCodeAgent(client, session.id, options.agentAlias, options.mode, options.permissions, options.machineRef, options.sliceRef)
+    await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     const proxyState: OpenCodeProxyState = {
       providerRunId: null,
       providerSessionId: null,
@@ -216,6 +220,8 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
     mode: "build",
     permissions: "yolo",
     serverInKernel: false,
+    grantMcps: [],
+    grantSkills: [],
   }
   const positional: string[] = []
 
@@ -284,6 +290,12 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
       case "--server-in-kernel":
         options.serverInKernel = true
         break
+      case "--grant-mcp":
+        options.grantMcps.push(next())
+        break
+      case "--grant-skill":
+        options.grantSkills.push(next())
+        break
       case "--help":
       case "-h":
         printNativeOpenCodeUsage()
@@ -342,8 +354,33 @@ function printNativeOpenCodeUsage() {
     "  --slice REF                       Run the Arroba agent/provider on a home-managed slice worker",
     "",
     "behavior:",
+    "  --grant-mcp NAME                Grant an installed Arroba MCP to the native agent before provider launch",
+    "  --grant-skill NAME              Grant an installed Arroba skill to the native agent before provider launch",
     "  creates a new Arroba agent in the selected session and launches native `opencode attach` for it.",
   ].join("\n") + "\n")
+}
+
+async function grantNativeCapabilities(
+  client: LocalIpcClient,
+  workspace: string,
+  agentId: string,
+  mcps: string[],
+  skills: string[],
+): Promise<void> {
+  for (const name of mcps) {
+    const response = await client.send<Record<string, unknown>>(grantAgentCapabilityRequest(workspace, agentId, "mcp", name))
+    const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
+    if (!agent.mcp_grants?.includes(name)) {
+      throw new Error(`Arroba MCP grant ${name} was accepted but is missing from agent ${agentId}`)
+    }
+  }
+  for (const name of skills) {
+    const response = await client.send<Record<string, unknown>>(grantAgentCapabilityRequest(workspace, agentId, "skill", name))
+    const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
+    if (!agent.skill_grants?.includes(name)) {
+      throw new Error(`Arroba skill grant ${name} was accepted but is missing from agent ${agentId}`)
+    }
+  }
 }
 
 function parseMode(value: string): "build" | "plan" {

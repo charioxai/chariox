@@ -14,7 +14,9 @@ RELAY_TOKEN="${ARROBA_SLICE_RELAY_TOKEN:-slice-local}"
 DAEMON_ALIAS="${ARROBA_SLICE_DAEMON_ALIAS:-slice:linux}"
 MACHINE_ID="${ARROBA_SLICE_MACHINE_ID:-slice:linux}"
 MACHINE_ALIAS="${ARROBA_SLICE_MACHINE_ALIAS:-linux}"
+CAPABILITY_ISOLATION_ROOT="${ARROBA_SLICE_CAPABILITY_ISOLATION_ROOT:-$HOME/.arroba/managed-capabilities}"
 mkdir -p "$LOGS"
+mkdir -p "$CAPABILITY_ISOLATION_ROOT"
 
 screen -S arroba-slice-relay -X quit >/dev/null 2>&1 || true
 screen -S arroba-slice-kernel -X quit >/dev/null 2>&1 || true
@@ -34,6 +36,7 @@ screen -dmS arroba-slice-kernel env \
   ARROBA_DAEMON_ALIAS="$DAEMON_ALIAS" \
   ARROBA_MACHINE_ID="$MACHINE_ID" \
   ARROBA_MACHINE_ALIAS="$MACHINE_ALIAS" \
+  ARROBA_CAPABILITY_ISOLATION_ROOT="$CAPABILITY_ISOLATION_ROOT" \
   ARROBA_OS_NAME="Linux slice" \
   ARROBA_RELAY_URL="$RELAY_URL" \
   ARROBA_RELAY_TOKEN="$RELAY_TOKEN" \

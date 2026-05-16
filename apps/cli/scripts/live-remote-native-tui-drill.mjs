@@ -16,9 +16,12 @@ import {
   createSessionRequest,
   deleteSliceRequest,
   endSessionRequest,
+  getProviderRunRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
   importSliceProviderAuthRequest,
+  installMcpServerRequest,
+  installSkillRequest,
   listAgentsRequest,
   listRemoteMachinesRequest,
   pumpTerminalOutputRequest,
@@ -33,7 +36,6 @@ const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
 const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
 const relayBinary = path.join(repoRoot, "apps/relay/target/debug/arroba-relay")
-const sliceDockerScript = path.join(repoRoot, "experiments/slice-spike/scripts/provision-linux-docker-slice.sh")
 const realHomeDir = os.homedir()
 const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64")
 
@@ -44,11 +46,14 @@ function unwrap(response, variant) {
   return response[variant]
 }
 
+function unwrapVariant(response, variant) {
+  return unwrap(response, variant)
+}
+
 function parseArgs(argv) {
   const options = {
     providers: ["opencode", "codex", "claude"],
     keepArtifactsOnFailure: false,
-    sliceLocalDocker: false,
     homeManagedSliceLocalDocker: false,
     standardHomeWorker: false,
     hetznerWorker: false,
@@ -58,6 +63,7 @@ function parseArgs(argv) {
     hetznerRepo: process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? "/tmp/arroba-native-remote-validate",
     includePermissions: false,
     includeAttachments: false,
+    includeMcpSkills: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -67,8 +73,6 @@ function parseArgs(argv) {
       options.providers = argv[++index].split(",").map((provider) => provider.trim()).filter(Boolean)
     } else if (arg === "--keep-artifacts-on-failure") {
       options.keepArtifactsOnFailure = true
-    } else if (arg === "--slice-local-docker") {
-      options.sliceLocalDocker = true
     } else if (arg === "--home-managed-slice-local-docker") {
       options.homeManagedSliceLocalDocker = true
     } else if (arg === "--standard-home-worker") {
@@ -88,17 +92,19 @@ function parseArgs(argv) {
       options.includePermissions = true
     } else if (arg === "--include-attachments") {
       options.includeAttachments = true
+    } else if (arg === "--include-mcp-skills") {
+      options.includeMcpSkills = true
     } else if (arg === "--help" || arg === "-h") {
       options.help = true
     } else {
       throw new Error(`unknown argument: ${arg}`)
     }
   }
-  const placementModes = [options.sliceLocalDocker, options.homeManagedSliceLocalDocker, options.standardHomeWorker]
+  const placementModes = [options.homeManagedSliceLocalDocker, options.standardHomeWorker]
     .filter(Boolean)
     .length
   if (placementModes > 1) {
-    throw new Error("--slice-local-docker, --home-managed-slice-local-docker, and --standard-home-worker are mutually exclusive")
+    throw new Error("--home-managed-slice-local-docker and --standard-home-worker are mutually exclusive")
   }
   if (options.hetznerWorker && !options.standardHomeWorker) {
     throw new Error("--hetzner-worker requires --standard-home-worker")
@@ -128,10 +134,10 @@ function printHelp() {
     "  --hetzner-relay-host HOST  Relay host clients connect to for --hetzner-worker",
     "  --hetzner-key PATH         SSH key for --hetzner-worker",
     "  --hetzner-repo PATH        Remote Arroba checkout for --hetzner-worker",
-    "  --slice-local-docker          Legacy direct local Docker slice kernel drill",
     "  --home-managed-slice-local-docker  Run native TUIs through the home kernel into a managed local Docker slice",
     "  --include-permissions         Validate provider-native permissions through the Arroba observer",
     "  --include-attachments         Validate prompt attachment transfer through native TUI providers",
+    "  --include-mcp-skills          Validate pre-granted MCP/skill propagation for native TUI providers",
     "  --keep-artifacts-on-failure",
   ].join("\n"))
 }
@@ -148,20 +154,15 @@ function makePorts(base = 52000 + Math.floor(Math.random() * 4000)) {
   }
 }
 
-async function makeAvailablePorts({ includeSliceRanges = false } = {}) {
-  const preferredBases = includeSliceRanges ? [43000, 44000, 45000, 46000, 47000, 48000] : []
-  for (const base of preferredBases) {
-    const ports = makePorts(base)
-    if (await portsAreAvailable(ports, includeSliceRanges)) return ports
-  }
+async function makeAvailablePorts() {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const ports = makePorts()
-    if (await portsAreAvailable(ports, includeSliceRanges)) return ports
+    if (await portsAreAvailable(ports)) return ports
   }
   throw new Error("could not find available drill ports")
 }
 
-async function portsAreAvailable(ports, includeSliceRanges) {
+async function portsAreAvailable(ports) {
   const candidates = [
     ports.relayPort,
     ports.kernelPort,
@@ -171,13 +172,6 @@ async function portsAreAvailable(ports, includeSliceRanges) {
     ports.openCodePort,
     ports.codexPort,
   ]
-  if (includeSliceRanges) {
-    candidates.push(ports.relayPort + 3000)
-    for (let offset = 10; offset < 30; offset += 1) {
-      candidates.push(ports.openCodePort + offset)
-      candidates.push(ports.codexPort + 100 + offset)
-    }
-  }
   for (const port of candidates) {
     if (!(await portIsAvailable(port))) return false
   }
@@ -858,6 +852,170 @@ function attachedImagePrompt(markerText) {
   return `Reply with exactly ${markerText} and nothing else after receiving the attached image.`
 }
 
+async function createNativeDrillMcpServer(workspace, name) {
+  const scriptDir = path.join(workspace, ".arroba", "native-tui-drill")
+  const scriptPath = path.join(scriptDir, `${name}.mjs`)
+  await mkdir(scriptDir, { recursive: true })
+  await writeFile(scriptPath, [
+    "let buffer = Buffer.alloc(0)",
+    "function write(message) {",
+    "  const body = Buffer.from(JSON.stringify(message), 'utf8')",
+    "  process.stdout.write(`Content-Length: ${body.length}\\r\\n\\r\\n`)",
+    "  process.stdout.write(body)",
+    "}",
+    "function handle(message) {",
+    "  const { id, method, params } = message",
+    "  if (method === 'notifications/initialized') return",
+    "  if (method === 'initialize') {",
+    "    write({ jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'arroba-native-tui-drill', version: '1.0.0' } } })",
+    "    return",
+    "  }",
+    "  if (method === 'tools/list') {",
+    "    write({ jsonrpc: '2.0', id, result: { tools: [{ name: 'echo_marker', description: 'Echoes a marker for Arroba native TUI MCP drills.', inputSchema: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'] } }] } })",
+    "    return",
+    "  }",
+    "  if (method === 'tools/call' && params?.name === 'echo_marker') {",
+    "    write({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `ECHO:${params?.arguments?.marker ?? ''}` }] } })",
+    "    return",
+    "  }",
+    "  write({ jsonrpc: '2.0', id, error: { code: -32601, message: `unknown method ${method}` } })",
+    "}",
+    "process.stdin.on('data', (chunk) => {",
+    "  buffer = Buffer.concat([buffer, chunk])",
+    "  while (true) {",
+    "    const newline = buffer.indexOf('\\n')",
+    "    if (newline >= 0) {",
+    "      const line = buffer.subarray(0, newline).toString('utf8').trim()",
+    "      buffer = buffer.subarray(newline + 1)",
+    "      if (line) handle(JSON.parse(line))",
+    "      continue",
+    "    }",
+    "    const headerEnd = buffer.indexOf('\\r\\n\\r\\n')",
+    "    if (headerEnd < 0) return",
+    "    const header = buffer.subarray(0, headerEnd).toString('utf8')",
+    "    const match = /^content-length:\\s*(\\d+)$/im.exec(header)",
+    "    if (!match) throw new Error(`missing Content-Length: ${header}`)",
+    "    const length = Number(match[1])",
+    "    const bodyStart = headerEnd + 4",
+    "    const frameEnd = bodyStart + length",
+    "    if (buffer.length < frameEnd) return",
+    "    const message = JSON.parse(buffer.subarray(bodyStart, frameEnd).toString('utf8'))",
+    "    buffer = buffer.subarray(frameEnd)",
+    "    handle(message)",
+    "  }",
+    "})",
+  ].join("\n"), "utf8")
+  return scriptPath
+}
+
+function nativeDrillMcpConfig(name, command) {
+  return {
+    name,
+    transport: {
+      type: "stdio",
+      command: "node",
+      args: [command],
+    },
+    enabled: true,
+    required: true,
+    tools: {},
+  }
+}
+
+async function createNativeDrillSkill(sourceRoot, name, nativeMarker, arrobaMarker) {
+  const skillDir = path.join(sourceRoot, name)
+  await mkdir(skillDir, { recursive: true })
+  await writeFile(path.join(skillDir, "SKILL.md"), [
+    "---",
+    `name: ${name}`,
+    `description: Native TUI drill skill for ${name}.`,
+    "short-description: Native TUI drill",
+    "---",
+    `If the prompt asks for the native skill marker, reply with exactly ${nativeMarker} and nothing else.`,
+    `If the prompt asks for the Arroba skill marker, reply with exactly ${arrobaMarker} and nothing else.`,
+    "",
+  ].join("\n"))
+  return skillDir
+}
+
+async function installNativeDrillCapabilities({
+  homeClient,
+  workerKernelUrl,
+  provider,
+  scenarioRoot,
+  workspace,
+  options,
+  markers,
+}) {
+  if (!options.includeMcpSkills) return null
+  if (options.hetznerWorker) {
+    throw new Error("--include-mcp-skills is not implemented for --hetzner-worker yet; use same-host standard remote or home-managed slice")
+  }
+  const normalizedProvider = provider.replaceAll(/[^a-z0-9_-]/gi, "-").toLowerCase()
+  const suffix = `${process.pid}-${Date.now()}`
+  const mcpName = `native-${normalizedProvider}-${suffix}-node`
+  const skillName = `native-${normalizedProvider}-${suffix}-skill`
+  const mcpServerPath = await createNativeDrillMcpServer(workspace, mcpName)
+  const mcpConfig = nativeDrillMcpConfig(mcpName, mcpServerPath)
+  const skillSource = await createNativeDrillSkill(
+    path.join(scenarioRoot, "skill-source"),
+    skillName,
+    markers.nativeSkill,
+    markers.arrobaSkill,
+  )
+  await homeClient.send(installMcpServerRequest(workspace, mcpConfig))
+  const installedSkill = unwrapVariant(
+    await homeClient.send(installSkillRequest(workspace, skillSource)),
+    "SkillInstalled",
+  ).skill
+
+  if (options.standardHomeWorker && workerKernelUrl) {
+    const workerClient = new LocalIpcClient(workerKernelUrl, {
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    try {
+      await workerClient.send(installMcpServerRequest(workspace, mcpConfig))
+    } finally {
+      await workerClient.close().catch(() => {})
+    }
+  }
+
+  return {
+    mcpName,
+    mcpServerPath,
+    skillName: installedSkill?.name ?? skillName,
+  }
+}
+
+async function cleanupNativeDrillCapabilities(workspace, nativeCapabilities) {
+  if (!nativeCapabilities) return
+  await rm(path.join(workspace, ".arroba", "skills", nativeCapabilities.skillName), {
+    recursive: true,
+    force: true,
+  }).catch(() => {})
+  await rm(path.join(workspace, ".arroba", "mcps", `${nativeCapabilities.mcpName}.json`), {
+    force: true,
+  }).catch(() => {})
+  await rm(nativeCapabilities.mcpServerPath, { force: true }).catch(() => {})
+}
+
+async function waitForProviderRunMcpGrant(client, providerRunId, mcpName, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastRun = null
+  while (Date.now() < deadline) {
+    const run = unwrapVariant(
+      await client.send(getProviderRunRequest(providerRunId)),
+      "ProviderRun",
+    ).provider_run
+    lastRun = run
+    const mcps = run?.mcp_servers ?? []
+    if (mcps.some((mcp) => mcp.name === mcpName)) return run
+    await sleep(500)
+  }
+  throw new Error(`timed out waiting for provider run ${providerRunId} MCP grant ${mcpName}; last=${JSON.stringify(lastRun)}`)
+}
+
 function relayClient(relayUrl, relayToken, targetDaemonAlias) {
   return new LocalIpcClient(relayUrl, {
     relayAuthToken: relayToken,
@@ -873,6 +1031,7 @@ async function runProviderScenario({
   relayUrl,
   relayToken,
   targetDaemonAlias,
+  workerKernelUrl = null,
   machineRef = null,
   sliceRef = null,
   workspace,
@@ -908,6 +1067,8 @@ async function runProviderScenario({
     arrobaPermission: `${marker}ARROBAPERMISSION`,
     nativeAttachment: `${marker}NATIVEATTACHMENT`,
     arrobaAttachment: `${marker}ARROBAATTACHMENT`,
+    nativeSkill: `${marker}NATIVESKILL`,
+    arrobaSkill: `${marker}ARROBASKILL`,
   }
   const skipBaselineTurns = provider === "claude" && options.includePermissions
   const providerBinaryEnv = {}
@@ -933,10 +1094,23 @@ async function runProviderScenario({
   const automationSocket = path.join("/tmp", `arb-rnt-${provider}-${process.pid}.sock`)
   let client = null
   let sessionId = null
+  let nativeCapabilities = null
   try {
     await mkdir(logs.aDir, { recursive: true })
     await mkdir(logs.bDir, { recursive: true })
     await mkdir(logs.cliDir, { recursive: true })
+    client = relayClient(relayUrl, relayToken, targetDaemonAlias)
+    nativeCapabilities = await installNativeDrillCapabilities({
+      homeClient: client,
+      workerKernelUrl,
+      provider,
+      scenarioRoot,
+      workspace,
+      options,
+      markers,
+    })
+    await client.close().catch(() => {})
+    client = null
 
     await startScreen(screenA, logs.aDir, "bun", [
       cliPath,
@@ -957,6 +1131,7 @@ async function runProviderScenario({
       worktree,
       ...(machineRef ? ["--machine", machineRef] : []),
       ...(sliceRef ? ["--slice", sliceRef] : []),
+      ...(nativeCapabilities ? ["--grant-mcp", nativeCapabilities.mcpName, "--grant-skill", nativeCapabilities.skillName] : []),
       ...providerArgs,
       ...(provider === "claude" && !skipBaselineTurns ? ["--initial-prompt", `Reply with exactly ${markers.nativeA} and nothing else.`] : []),
       ...(provider === "claude" ? ["--remote-rendered"] : []),
@@ -991,6 +1166,7 @@ async function runProviderScenario({
       worktree,
       ...(machineRef ? ["--machine", machineRef] : []),
       ...(sliceRef ? ["--slice", sliceRef] : []),
+      ...(nativeCapabilities ? ["--grant-mcp", nativeCapabilities.mcpName, "--grant-skill", nativeCapabilities.skillName] : []),
       ...providerArgs,
       ...(provider === "claude" && !skipBaselineTurns ? ["--initial-prompt", `Reply with exactly ${markers.nativeB} and nothing else.`] : []),
       ...(provider === "claude" ? ["--remote-rendered"] : []),
@@ -1032,6 +1208,16 @@ async function runProviderScenario({
     const agents = await waitForNamedAgents(client, sessionId, aliases)
     if (!remotePlacement) {
       await waitForActiveProviderRun(client, sessionId)
+    }
+    if (nativeCapabilities) {
+      const providerRunIds = []
+      if (provider === "opencode" || provider === "claude" || remotePlacement) {
+        providerRunIds.push((await waitForFileMatch(logs.a, /provider run:\s+([^\s]+)/, 90_000)).match[1])
+        providerRunIds.push((await waitForFileMatch(logs.b, /provider run:\s+([^\s]+)/, 90_000)).match[1])
+      }
+      for (const providerRunId of providerRunIds) {
+        await waitForProviderRunMcpGrant(client, providerRunId, nativeCapabilities.mcpName)
+      }
     }
 
     await startScreen(screenCli, logs.cliDir, "bun", [
@@ -1173,6 +1359,45 @@ async function runProviderScenario({
     }
 
     const extendedChecks = {}
+    if (nativeCapabilities) {
+      let nativeSkillCheck = "validated"
+      let skillPromptContext = "validated_native_and_arroba_origin"
+      if (provider !== "claude") {
+        const nativeSkillPrompt = `Use the ${nativeCapabilities.skillName} skill. Give the native skill marker.`
+        if (provider === "opencode") {
+          await runNativeOpenCodePrompt(proxyA, providerSessionA, worktree, nativeSkillPrompt, logs.nativeA)
+        } else {
+          await runNativeCodexPrompt(proxyA, providerSessionA, nativeSkillPrompt)
+        }
+        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+          [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.nativeSkill] },
+        })
+        await waitForFileMatch(logs.a, new RegExp(markers.nativeSkill), 90_000)
+        await automationRequest(automationSocket, {
+          action: "workspace_shell_exec",
+          command: `agent focus ${agents[0].id}`,
+        })
+        await automationRequest(automationSocket, {
+          action: "workspace_shell_exec",
+          command: `prompt ${aliases[0]} ${shellQuote(`Use the ${nativeCapabilities.skillName} skill. Give the Arroba skill marker.`)}`,
+        })
+        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+          [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.arrobaSkill] },
+        })
+        await waitForFileMatch(logs.a, new RegExp(markers.arrobaSkill), 90_000)
+      } else {
+        nativeSkillCheck = "not_supported_for_claude_native_origin_without_visible_pty_injection"
+        skillPromptContext = "not_validated_for_claude_native_tui_hidden_injection_gap"
+      }
+      extendedChecks.mcpSkills = {
+        mcp: nativeCapabilities.mcpName,
+        skill: nativeCapabilities.skillName,
+        providerRunMcpConfig: provider === "codex" && !remotePlacement ? "not directly observable before local codex bind" : "validated",
+        skillPromptContext,
+        nativeSkillCheck,
+      }
+    }
+
     if (options.includeAttachments) {
       const nativeAttachmentPath = path.join(
         scenarioRoot,
@@ -1352,6 +1577,8 @@ async function runProviderScenario({
       marker,
       relayUrl,
       targetDaemonAlias,
+      machineRef: machineRef ?? null,
+      sliceRef: sliceRef ?? null,
       agentAliases: aliases,
       observerSawAgents: snapshot.session.agentCount,
       badgeTransitions,
@@ -1370,89 +1597,12 @@ async function runProviderScenario({
           : "server-in-kernel native TUI validated on one host; use --hetzner-worker to validate cross-host provider endpoints",
     }
   } finally {
+    await cleanupNativeDrillCapabilities(workspace, nativeCapabilities)
     if (client) await client.close().catch(() => {})
     await screenQuit(screenA)
     await screenQuit(screenB)
     await screenQuit(screenCli)
     await rm(automationSocket, { force: true }).catch(() => {})
-  }
-}
-
-function sliceDockerEnv({ root, ports, targetDaemonAlias }) {
-  const sliceName = `arroba-rnt-slice-${process.pid}`
-  const codexRangeStart = ports.codexPort + 110
-  const opencodeRangeStart = ports.openCodePort + 10
-  return {
-    ...process.env,
-    ARROBA_SLICE_NAME: sliceName,
-    ARROBA_SLICE_HOME_VOLUME: `${sliceName}-home`,
-    ARROBA_SLICE_RECREATE: "1",
-    ARROBA_SLICE_WORKSPACE: repoRoot,
-    ARROBA_SLICE_BUILD_IMAGE: process.env.ARROBA_SLICE_BUILD_IMAGE ?? "always",
-    ARROBA_SLICE_START_DESKTOP: "0",
-    ARROBA_SLICE_START_PROVIDER_SERVERS: "0",
-    ARROBA_SLICE_START_RUNTIME: "1",
-    ARROBA_SLICE_IMPORT_PROVIDER_AUTH: "1",
-    ARROBA_SLICE_CODEX_PORT: String(ports.codexPort),
-    ARROBA_SLICE_OPENCODE_PORT: String(ports.openCodePort),
-    ARROBA_SLICE_CODEX_PORT_RANGE: `${codexRangeStart}-${codexRangeStart + 19}`,
-    ARROBA_SLICE_OPENCODE_PORT_RANGE: `${opencodeRangeStart}-${opencodeRangeStart + 19}`,
-    ARROBA_SLICE_PROVIDER_BIND_HOST: "0.0.0.0",
-    ARROBA_SLICE_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_SLICE_MCP_PORT: String(ports.mcpPort),
-    ARROBA_SLICE_RELAY_PORT: String(ports.relayPort),
-    ARROBA_SLICE_NOVNC_PORT: String(ports.relayPort + 3000),
-    ARROBA_SLICE_DAEMON_ALIAS: targetDaemonAlias,
-    ARROBA_SLICE_MACHINE_ID: `slice-rnt-machine-${process.pid}`,
-    ARROBA_SLICE_MACHINE_ALIAS: targetDaemonAlias,
-    ARROBA_SLICE_ROOT: path.join(root, "slice-root"),
-  }
-}
-
-async function runSliceDockerScenarios({ options, root, ports }) {
-  const targetDaemonAlias = `rnt-slice-${process.pid}`
-  const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
-  const env = sliceDockerEnv({ root, ports, targetDaemonAlias })
-  let succeeded = false
-  try {
-    await runLogged("bash", [sliceDockerScript, "provision"], { env })
-    await waitForTcpPort(ports.relayPort)
-    await waitForRelayTarget(relayUrl, env.ARROBA_SLICE_RELAY_TOKEN ?? "slice-local", targetDaemonAlias)
-
-    const scenarios = []
-    for (const provider of options.providers) {
-      scenarios.push(await runProviderScenario({
-        provider,
-        root,
-        relayUrl,
-        relayToken: env.ARROBA_SLICE_RELAY_TOKEN ?? "slice-local",
-        targetDaemonAlias,
-        workspace: repoRoot,
-        worktree: repoRoot,
-        options,
-        nativeEnv: {
-          ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE: env.ARROBA_SLICE_CODEX_PORT_RANGE,
-          ARROBA_CODEX_KERNEL_SERVER_BIND_HOST: "0.0.0.0",
-        },
-      }))
-    }
-    console.log(JSON.stringify({
-      status: "ok",
-      mode: "remote-native-tui-slice-local-docker-drill",
-      relayUrl,
-      targetDaemonAlias,
-      providers: options.providers,
-      scenarios,
-    }, null, 2))
-    succeeded = true
-  } finally {
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await runLogged("bash", [sliceDockerScript, "destroy"], { env }).catch((error) => {
-        console.error(`slice cleanup failed: ${error.message}`)
-      })
-    } else {
-      console.error(`remote native TUI slice drill artifacts kept at ${root}; Docker slice ${env.ARROBA_SLICE_NAME} left running`)
-    }
   }
 }
 
@@ -1503,12 +1653,7 @@ async function main() {
   await assertBinary(relayBinary, path.join(repoRoot, "apps/relay/Cargo.toml"), "arroba-relay")
 
   const root = path.join("/tmp", `arb-remote-native-tui-${process.pid}-${Date.now()}`)
-  const ports = await makeAvailablePorts({ includeSliceRanges: options.sliceLocalDocker })
-  if (options.sliceLocalDocker) {
-    await mkdir(root, { recursive: true })
-    await runSliceDockerScenarios({ options, root, ports })
-    return
-  }
+  const ports = await makeAvailablePorts()
   const relayToken = `remote-native-token-${process.pid}`
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
@@ -1527,7 +1672,7 @@ async function main() {
   let relayTunnel = null
   let kernel = null
   let workerKernel = null
-  let managedSlice = null
+  const managedSlices = []
   let succeeded = false
   try {
     await mkdir(root, { recursive: true })
@@ -1627,15 +1772,6 @@ async function main() {
     })
     await waitForLocalDaemon(homeKernelUrl, workspace, worktree)
     await waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias)
-    if (options.homeManagedSliceLocalDocker) {
-      managedSlice = await createHomeManagedLocalDockerSlice({
-        homeKernelUrl,
-        workspace,
-        providers: options.providers,
-        relayUrl,
-        relayToken,
-      })
-    }
     if (options.standardHomeWorker) {
       if (options.hetznerWorker) {
         const remoteRoot = `/tmp/arb-remote-native-tui-${process.pid}-${Date.now()}`
@@ -1698,14 +1834,26 @@ async function main() {
 
     const scenarios = []
     for (const provider of options.providers) {
+      let providerSlice = null
+      if (options.homeManagedSliceLocalDocker) {
+        providerSlice = await createHomeManagedLocalDockerSlice({
+          homeKernelUrl,
+          workspace,
+          providers: [provider],
+          relayUrl,
+          relayToken,
+        })
+        managedSlices.push(providerSlice)
+      }
       scenarios.push(await runProviderScenario({
         provider,
         root,
         relayUrl,
         relayToken,
         targetDaemonAlias,
+        workerKernelUrl,
         machineRef: options.standardHomeWorker ? workerMachineAlias : null,
-        sliceRef: managedSlice ? managedSlice.id : null,
+        sliceRef: providerSlice ? providerSlice.id : null,
         workspace,
         worktree,
         options,
@@ -1716,6 +1864,13 @@ async function main() {
           }
           : {},
       }))
+      if (providerSlice) {
+        await deleteHomeManagedSlice(homeKernelUrl, providerSlice.id).catch((error) => {
+          console.error(`home-managed slice cleanup failed: ${error.message}`)
+        })
+        const index = managedSlices.findIndex((slice) => slice.id === providerSlice.id)
+        if (index >= 0) managedSlices.splice(index, 1)
+      }
     }
 
     console.log(JSON.stringify({
@@ -1726,16 +1881,18 @@ async function main() {
       workerKernelUrl: options.standardHomeWorker ? workerKernelUrl : null,
       targetDaemonAlias,
       workerMachineAlias: options.standardHomeWorker ? workerMachineAlias : null,
-      sliceRef: managedSlice ? managedSlice.id : null,
+      sliceRefs: scenarios.map((scenario) => scenario.sliceRef).filter(Boolean),
       providers: options.providers,
       scenarios,
     }, null, 2))
     succeeded = true
   } finally {
-    if ((succeeded || !options.keepArtifactsOnFailure) && managedSlice) {
-      await deleteHomeManagedSlice(homeKernelUrl, managedSlice.id).catch((error) => {
-        console.error(`home-managed slice cleanup failed: ${error.message}`)
-      })
+    if (succeeded || !options.keepArtifactsOnFailure) {
+      for (const slice of managedSlices.splice(0)) {
+        await deleteHomeManagedSlice(homeKernelUrl, slice.id).catch((error) => {
+          console.error(`home-managed slice cleanup failed: ${error.message}`)
+        })
+      }
     }
     await terminateChild(workerKernel)
     await terminateChild(kernel)
@@ -1745,8 +1902,8 @@ async function main() {
       await rm(root, { recursive: true, force: true }).catch(() => {})
     } else {
       console.error(`remote native TUI drill artifacts kept at ${root}`)
-      if (managedSlice) {
-        console.error(`home-managed slice ${managedSlice.id} left running`)
+      for (const slice of managedSlices) {
+        console.error(`home-managed slice ${slice.id} left running`)
       }
     }
   }

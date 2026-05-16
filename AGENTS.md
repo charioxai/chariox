@@ -51,6 +51,7 @@ Do not merge protocol shape changes without the version bump and test update.
 - Use heartbeat freshness for relay target selection; stale targets must not be treated as online.
 - Preserve local/dev/self-host compatibility where practical, but fail loudly when hosted Cloud configuration violates the runtime architecture.
 - Be lean, don't over engineer and delete all old/unnecessary code along the way.
+- Always clean up temporary drill artifacts, orphaned provider processes, and large build outputs you no longer need before handing work back.
 
 ## Provider-Native Permission Visibility
 

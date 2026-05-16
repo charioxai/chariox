@@ -24,6 +24,7 @@ import {
   attachToSessionRequest,
   createSessionRequest,
   getProviderRunRequest,
+  grantAgentCapabilityRequest,
   launchProviderRunRequest,
   moveAgentToRemoteRequest,
   pollRuntimeNoticesRequest,
@@ -64,6 +65,8 @@ type NativeCodexOptions = {
   permissions: "required" | "yolo"
   initialPrompt?: string
   serverInKernel: boolean
+  grantMcps: string[]
+  grantSkills: string[]
 }
 
 type JsonRpcMessage = {
@@ -116,6 +119,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     const agent = created?.agent
       ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
       : await spawnCodexAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef, options.sliceRef)
+    await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     const bindState: {
       promise: Promise<RuntimeProviderRun> | null
       run: RuntimeProviderRun | null
@@ -190,6 +194,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       "[arroba codex native-tui]",
       `  arroba session: ${session.id}${session.alias ? ` (${session.alias})` : ""}`,
       `  arroba agent:   ${agent.id}${agent.alias ? ` (${agent.alias})` : ""}`,
+      ...(bindState.run ? [`  provider run:   ${bindState.run.id}`] : []),
       `  app-server:     ${upstreamEndpoint}`,
       `  proxy:          ${proxyUrl}`,
       ...(providerSessionId ? [`  codex thread:   ${providerSessionId}`] : []),
@@ -236,6 +241,8 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
     mode: "build",
     permissions: "yolo",
     serverInKernel: false,
+    grantMcps: [],
+    grantSkills: [],
   }
   const positional: string[] = []
   for (let index = 0; index < args.length; index += 1) {
@@ -314,6 +321,12 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
       case "--server-in-kernel":
         options.serverInKernel = true
         break
+      case "--grant-mcp":
+        options.grantMcps.push(next())
+        break
+      case "--grant-skill":
+        options.grantSkills.push(next())
+        break
       case "--help":
       case "-h":
         printNativeCodexUsage()
@@ -357,8 +370,33 @@ function printNativeCodexUsage() {
     "  --slice REF                       Run the Arroba agent/provider on a home-managed slice worker",
     "",
     "behavior:",
+    "  --grant-mcp NAME                Grant an installed Arroba MCP to the native agent before provider launch",
+    "  --grant-skill NAME              Grant an installed Arroba skill to the native agent before provider launch",
     "  creates a new Arroba agent in the selected session and launches native `codex --remote` for it.",
   ].join("\n") + "\n")
+}
+
+async function grantNativeCapabilities(
+  client: LocalIpcClient,
+  workspace: string,
+  agentId: string,
+  mcps: string[],
+  skills: string[],
+): Promise<void> {
+  for (const name of mcps) {
+    const response = await client.send<Record<string, unknown>>(grantAgentCapabilityRequest(workspace, agentId, "mcp", name))
+    const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
+    if (!agent.mcp_grants?.includes(name)) {
+      throw new Error(`Arroba MCP grant ${name} was accepted but is missing from agent ${agentId}`)
+    }
+  }
+  for (const name of skills) {
+    const response = await client.send<Record<string, unknown>>(grantAgentCapabilityRequest(workspace, agentId, "skill", name))
+    const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
+    if (!agent.skill_grants?.includes(name)) {
+      throw new Error(`Arroba skill grant ${name} was accepted but is missing from agent ${agentId}`)
+    }
+  }
 }
 
 function parseMode(value: string): "build" | "plan" {

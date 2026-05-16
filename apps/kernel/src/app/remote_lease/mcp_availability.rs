@@ -163,6 +163,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 leased_agent_id: context.leased_agent_id.clone(),
             })?;
         self.validate_mcp_check_context(&leased_agent, &context)?;
+        self.ensure_isolated_required_mcp_definitions(&leased_agent, &required_mcps)?;
         Ok(self.remote_mcp_availability_for_leased_agent(&leased_agent, &required_mcps))
     }
 
@@ -171,6 +172,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent: &LeasedAgent,
         required_mcps: &[RequiredRemoteMcp],
     ) -> Result<(), DaemonError> {
+        self.ensure_isolated_required_mcp_definitions(leased_agent, required_mcps)?;
         let unavailable = self
             .remote_mcp_availability_for_leased_agent(leased_agent, required_mcps)
             .into_iter()
@@ -183,6 +185,32 @@ impl<'a> RemoteLeaseRuntime<'a> {
             operation: "remote mcp availability",
             message: format_remote_mcp_unavailable_message(leased_agent, &unavailable),
         })
+    }
+
+    fn ensure_isolated_required_mcp_definitions(
+        &mut self,
+        leased_agent: &LeasedAgent,
+        required_mcps: &[RequiredRemoteMcp],
+    ) -> Result<(), DaemonError> {
+        if required_mcps.is_empty()
+            || std::env::var_os("ARROBA_CAPABILITY_ISOLATION_ROOT")
+                .filter(|value| !value.is_empty())
+                .is_none()
+        {
+            return Ok(());
+        }
+        let session = self
+            .app
+            .sessions
+            .get_session(&leased_agent.backing_session_id)?;
+        let registry =
+            crate::mcp::ArrobaMcpRegistry::new(vec![crate::mcp::ArrobaMcpRegistry::project_root(
+                session.worktree_id(),
+            )]);
+        for required in required_mcps {
+            registry.install(&required.config)?;
+        }
+        Ok(())
     }
 
     fn validate_mcp_check_context(

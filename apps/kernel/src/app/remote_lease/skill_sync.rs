@@ -38,10 +38,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .app
             .sessions
             .get_session(&leased_agent.backing_session_id)?;
-        let base_dir = std::path::PathBuf::from(session.worktree_id())
-            .join(".arroba")
-            .join("remote")
-            .join("skills")
+        let base_dir = crate::skill::remote_skill_materialization_base(session.worktree_id())
             .join(&context.home_kernel_id);
         packages
             .iter()

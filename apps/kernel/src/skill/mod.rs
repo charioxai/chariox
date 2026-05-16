@@ -71,10 +71,19 @@ impl ArrobaSkillRegistry {
     }
 
     pub fn project_root(workspace: impl AsRef<Path>) -> PathBuf {
+        if let Some(root) = managed_capability_root() {
+            return root
+                .join("project")
+                .join(workspace_registry_hash(workspace.as_ref()))
+                .join("skills");
+        }
         workspace.as_ref().join(".arroba").join("skills")
     }
 
     pub fn user_root() -> Option<PathBuf> {
+        if let Some(root) = managed_capability_root() {
+            return Some(root.join("user").join("skills"));
+        }
         std::env::var_os("HOME")
             .map(PathBuf::from)
             .map(|home| home.join(".arroba").join("skills"))
@@ -344,6 +353,17 @@ pub fn materialize_skill_package(
         ),
     })?;
     Ok(destination)
+}
+
+pub(crate) fn remote_skill_materialization_base(workspace: impl AsRef<Path>) -> PathBuf {
+    if let Some(root) = managed_capability_root() {
+        return root.join("remote").join("skills");
+    }
+    workspace
+        .as_ref()
+        .join(".arroba")
+        .join("remote")
+        .join("skills")
 }
 
 pub fn import_codex_skills(
@@ -940,6 +960,16 @@ fn hex_digest(bytes: &[u8]) -> String {
     output
 }
 
+fn managed_capability_root() -> Option<PathBuf> {
+    std::env::var_os("ARROBA_CAPABILITY_ISOLATION_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn workspace_registry_hash(workspace: &Path) -> String {
+    hex_digest(Sha256::digest(workspace.to_string_lossy().as_bytes()).as_slice())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -951,6 +981,25 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         root
+    }
+
+    #[test]
+    fn registry_and_remote_materialization_roots_can_be_isolated_for_managed_slice_runtime() {
+        let _guard = crate::env_lock::lock();
+        let isolation_root = temp_root("managed-slice-isolation");
+        std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+
+        let project_root = ArrobaSkillRegistry::project_root("/workspace");
+        let user_root = ArrobaSkillRegistry::user_root().expect("user root should resolve");
+        let remote_root = remote_skill_materialization_base("/workspace");
+
+        std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
+        let _ = fs::remove_dir_all(&isolation_root);
+
+        assert!(project_root.starts_with(isolation_root.join("project")));
+        assert!(project_root.ends_with("skills"));
+        assert_eq!(user_root, isolation_root.join("user").join("skills"));
+        assert_eq!(remote_root, isolation_root.join("remote").join("skills"));
     }
 
     #[test]

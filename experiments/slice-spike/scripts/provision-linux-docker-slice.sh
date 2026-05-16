@@ -142,6 +142,8 @@ ensure_container() {
   fi
 
   docker exec -u root "$SLICE_NAME" bash -lc "mkdir -p /home/slice/.local/share /home/slice/.config /home/slice/.cache && chown -R slice:slice /home/slice"
+  docker cp "$REPO_ROOT/experiments/slice-spike/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh"
+  docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh
 }
 
 exec_slice() {

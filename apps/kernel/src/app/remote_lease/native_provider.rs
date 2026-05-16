@@ -154,6 +154,7 @@ mod tests {
 
     #[test]
     fn leased_native_provider_launch_preserves_required_mcp_set() {
+        let _guard = crate::env_lock::lock();
         let mut config = DaemonConfig::for_tests();
         config.accept_remote_leases = true;
         let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
@@ -161,6 +162,11 @@ mod tests {
             "arroba-native-provider-mcp-test-{}",
             std::process::id()
         ));
+        let isolation_root = std::env::temp_dir().join(format!(
+            "arroba-native-provider-mcp-isolation-test-{}",
+            std::process::id()
+        ));
+        std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
         std::fs::create_dir_all(&worktree).expect("worktree should create");
         let mut runtime = RemoteLeaseRuntime::new(&mut app);
         let lease = runtime
@@ -186,11 +192,6 @@ mod tests {
                 .to_string(),
             Vec::new(),
         );
-        crate::mcp::ArrobaMcpRegistry::new(vec![crate::mcp::ArrobaMcpRegistry::project_root(
-            &worktree,
-        )])
-        .install(&mcp)
-        .expect("worker MCP definition should install");
         let required = RequiredRemoteMcp {
             definition_hash: mcp.definition_hash().expect("hash should compute"),
             config: mcp,
@@ -213,6 +214,11 @@ mod tests {
         assert_eq!(run.mcp_servers().len(), 1);
         assert_eq!(run.mcp_servers()[0].name, "browser");
         assert!(!run.client_interface().is_arroba());
+        assert!(crate::mcp::ArrobaMcpRegistry::project_root(&worktree)
+            .join("browser.json")
+            .exists());
+        std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
         let _ = std::fs::remove_dir_all(&worktree);
+        let _ = std::fs::remove_dir_all(&isolation_root);
     }
 }

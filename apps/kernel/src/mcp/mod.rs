@@ -148,10 +148,19 @@ impl ArrobaMcpRegistry {
     }
 
     pub fn project_root(workspace: impl AsRef<Path>) -> PathBuf {
+        if let Some(root) = managed_capability_root() {
+            return root
+                .join("project")
+                .join(workspace_registry_hash(workspace.as_ref()))
+                .join("mcps");
+        }
         workspace.as_ref().join(".arroba").join("mcps")
     }
 
     pub fn user_root() -> Option<PathBuf> {
+        if let Some(root) = managed_capability_root() {
+            return Some(root.join("user").join("mcps"));
+        }
         home_dir().map(|home| home.join(".arroba").join("mcps"))
     }
 
@@ -667,6 +676,17 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
+fn managed_capability_root() -> Option<PathBuf> {
+    std::env::var_os("ARROBA_CAPABILITY_ISOLATION_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn workspace_registry_hash(workspace: &Path) -> String {
+    let digest = Sha256::digest(workspace.to_string_lossy().as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn codex_home_dir() -> Result<PathBuf, DaemonError> {
     if let Some(codex_home) = std::env::var_os("CODEX_HOME") {
         return Ok(PathBuf::from(codex_home));
@@ -994,6 +1014,23 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         root
+    }
+
+    #[test]
+    fn registry_roots_can_be_isolated_for_managed_slice_runtime() {
+        let _guard = crate::env_lock::lock();
+        let isolation_root = temp_root("managed-slice-isolation");
+        std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+
+        let project_root = ArrobaMcpRegistry::project_root("/workspace");
+        let user_root = ArrobaMcpRegistry::user_root().expect("user root should resolve");
+
+        std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
+        let _ = fs::remove_dir_all(&isolation_root);
+
+        assert!(project_root.starts_with(isolation_root.join("project")));
+        assert!(project_root.ends_with("mcps"));
+        assert_eq!(user_root, isolation_root.join("user").join("mcps"));
     }
 
     #[test]

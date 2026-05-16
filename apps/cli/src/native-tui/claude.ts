@@ -28,6 +28,7 @@ import {
   createSessionRequest,
   getProviderRunRequest,
   getSessionStateRequest,
+  grantAgentCapabilityRequest,
   launchProviderRunRequest,
   moveAgentToRemoteRequest,
   pumpTerminalOutputRequest,
@@ -69,6 +70,8 @@ type NativeClaudeOptions = {
   initialPrompt?: string
   detachedScreen: boolean
   remoteRendered: boolean
+  grantMcps: string[]
+  grantSkills: string[]
 }
 
 type ClaudeHookEvent = {
@@ -140,6 +143,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
     const agent = created?.agent
       ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
       : await spawnClaudeAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef)
+    await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     const launched = await launchClaudeNativeRun(client, session.id, agent.id, options.model, options.effort)
     const run = launched.session_id === session.id
       ? await waitForProviderRunReady(client, launched.id)
@@ -221,6 +225,8 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
     permissions: "required",
     detachedScreen: false,
     remoteRendered: false,
+    grantMcps: [],
+    grantSkills: [],
   }
   const positional: string[] = []
   for (let index = 0; index < args.length; index += 1) {
@@ -298,6 +304,12 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
       case "--remote-rendered":
         options.remoteRendered = true
         break
+      case "--grant-mcp":
+        options.grantMcps.push(next())
+        break
+      case "--grant-skill":
+        options.grantSkills.push(next())
+        break
       case "--help":
       case "-h":
         printNativeClaudeUsage()
@@ -341,8 +353,33 @@ function printNativeClaudeUsage() {
     "  --mode <build|plan>              Arroba agent mode (default build)",
     "  --permissions <required|yolo>    Claude permission mode mapping (default required)",
     "  --remote-rendered                Run Claude Code in the target kernel PTY and render it here",
+    "  --grant-mcp <name>               Grant an installed Arroba MCP to the native agent before provider launch",
+    "  --grant-skill <name>             Grant an installed Arroba skill to the native agent before provider launch",
     "",
   ].join("\n"))
+}
+
+async function grantNativeCapabilities(
+  client: LocalIpcClient,
+  workspace: string,
+  agentId: string,
+  mcps: string[],
+  skills: string[],
+): Promise<void> {
+  for (const name of mcps) {
+    const response = await client.send<Record<string, unknown>>(grantAgentCapabilityRequest(workspace, agentId, "mcp", name))
+    const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
+    if (!agent.mcp_grants?.includes(name)) {
+      throw new Error(`Arroba MCP grant ${name} was accepted but is missing from agent ${agentId}`)
+    }
+  }
+  for (const name of skills) {
+    const response = await client.send<Record<string, unknown>>(grantAgentCapabilityRequest(workspace, agentId, "skill", name))
+    const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
+    if (!agent.skill_grants?.includes(name)) {
+      throw new Error(`Arroba skill grant ${name} was accepted but is missing from agent ${agentId}`)
+    }
+  }
 }
 
 async function runClaudeRemoteRendered(
@@ -363,6 +400,7 @@ async function runClaudeRemoteRendered(
     const agent = created?.agent
       ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
       : await spawnClaudeAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef, options.sliceRef)
+    await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
     const run = await waitForProviderRunReady(client, launched.id)
 

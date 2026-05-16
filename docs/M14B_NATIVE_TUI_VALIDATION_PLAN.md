@@ -23,10 +23,10 @@ system and remains covered by the managed-I/O milestones and drills.
 
 2026-05-14 update: Codex/OpenCode prompt attachment byte transfer is
 implemented for relay-attached native TUI clients and Arroba TUI submissions.
-The same-host relay drill and direct Docker slice-target drill now validate
-native-TUI-origin and Arroba-TUI-origin attachments with two provider-native
-TUIs plus one Arroba observer in the same session. These are not yet the full
-standard home-worker or home-managed slice topologies.
+The same-host relay drill validates native-TUI-origin and Arroba-TUI-origin
+attachments with two provider-native TUIs plus one Arroba observer in the same
+session. The older direct Docker slice-target drill has been removed; slice
+coverage now uses the home-managed slice topology only.
 
 2026-05-14 permissions update: local Codex/OpenCode mixed native TUI
 permission drills pass in both directions. Claude local permissions use an
@@ -106,6 +106,15 @@ Local Docker slice auth import now also copies Claude Code credentials from
 `~/.claude/.credentials.json` or the macOS `Claude Code-credentials` Keychain
 payload and marks `/workspace` trusted in the slice.
 
+2026-05-16 MCP/skills update: Native TUI MCP/skill drills now validate
+agent-scoped grants for Codex and OpenCode in local, same-host standard
+home-worker, and home-managed local Docker slice modes. Home-managed slices use
+`ARROBA_CAPABILITY_ISOLATION_ROOT` so worker MCP/skill registries are isolated
+from host workspace and persisted-home registries. Claude native TUI validates
+MCP grant rendering in those modes, but hidden Arroba skill injection remains a
+known gap for Claude because the remote-rendered PTY path cannot yet add
+invisible skill context without showing it in the native TUI.
+
 ## Goal
 
 Validate and complete native TUI parity across the three providers and three
@@ -133,13 +142,6 @@ Scenarios:
 - slice: home kernel owns the session and manages a slice/worker execution
   environment
 
-Interim drill target:
-
-- direct slice target: the native TUI and observer connect directly to the
-  slice kernel through relay. This validates cross-filesystem provider
-  execution and attachment materialization, but it is not the final
-  home-managed slice topology.
-
 ## Current Coverage
 
 Prompt/turns:
@@ -152,8 +154,6 @@ Prompt/turns:
   same-host relay mode and against the Hetzner worker. Claude prompt/turn
   coverage passes through the remote-rendered PTY path in same-host relay mode
   and against the Hetzner worker.
-- Direct slice target Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
-  --slice-local-docker`; retained only as a lower-level compatibility drill.
 - Home-managed slice Codex/OpenCode/Claude: covered by
   `live-remote-native-tui-drill.mjs --home-managed-slice-local-docker`.
 
@@ -196,8 +196,6 @@ Prompt attachments:
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers
   codex,opencode --include-attachments`. The same coverage also passes with
   `--hetzner-worker`.
-- Direct slice target Codex/OpenCode: covered by `live-remote-native-tui-drill.mjs
-  --slice-local-docker --providers opencode,codex --include-attachments`.
 - Standard remote home-worker Claude: covered for image prompt attachments in
   both native-origin and Arroba-origin directions by
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers claude
@@ -220,13 +218,20 @@ MCPs and skills:
   provider/Arroba skill material required for the run. Home may send
   grant-derived MCP requirements for fail-fast validation and provider-run
   rendering, but it must not become a remote package installer in this mode.
-- Home-managed slice native TUI may transfer Arroba skill packages from home to
-  the child worker before provider execution because the slice is managed by the
-  home kernel. MCP commands/env still execute on the worker side and must be
-  present in the slice image or injected slice environment.
+- Home-managed slice native TUI transfers granted Arroba skill packages from
+  home to the child worker before provider execution because the slice is
+  managed by the home kernel. MCP definitions are installed into an isolated
+  managed-slice registry before worker launch and MCP commands/env execute on
+  the worker side.
 - Focused unit coverage has landed for native remote provider-run MCP
-  propagation. Live MCP/skill drills for native TUI remain the next validation
-  step.
+  propagation. Home-managed slice kernels set `ARROBA_CAPABILITY_ISOLATION_ROOT`
+  so project/user MCP and skill registries are isolated from any `.arroba`
+  registries mounted from the host workspace or persisted in the slice home.
+- Live MCP/skill drills now pass for Codex and OpenCode in local, standard
+  same-host home-worker, and home-managed local Docker slice modes. Claude
+  native TUI validates the provider-run MCP config in those modes, but hidden
+  Arroba skill injection remains a gap because Claude's native TUI path cannot
+  yet receive invisible prompt context without making it visible in the PTY.
 
 ## Attachment Transfer Contract
 
@@ -277,8 +282,8 @@ Provider notes:
    - Confirm the kernel materializes those bytes on the provider-execution
      machine and provider-facing paths are local to that machine.
    - Add live checks for native-TUI-origin and Arroba-TUI-origin attachments.
-     Same-host relay and direct slice target are validated for Codex/OpenCode;
-     standard remote and home-managed slice remain to be added.
+     Same-host relay is validated for Codex/OpenCode; standard remote and
+     home-managed slice remain to be added.
 
 3. Revisit local permissions for all providers.
    - Codex/OpenCode local native TUI permissions pass in both directions.
@@ -332,20 +337,20 @@ Provider notes:
      falls back to a slice-private relay for standalone slice workflows.
 
 7. Validate MCPs and skills for native TUI runs.
-   - Adapt existing MCP/skill drills to launch native-TUI provider runs.
-   - Cover local, standard remote, and slice scenarios for all providers.
-   - Local: verify agent-scoped MCP grants are rendered into native provider
-     launch config and granted skills are injected only into prompts for the
-     target native-TUI agent.
-   - Standard remote home-worker: do not copy/install MCPs or skills. Validate
-     that missing/mismatched worker MCP definitions fail fast, matching worker
-     MCP definitions are rendered into the worker-owned provider run, and any
-     provider/Arroba skill material required by the drill is preinstalled on the
-     worker by the test setup.
+   - Codex/OpenCode: live MCP/skill validation passes locally, in same-host
+     standard home-worker mode, and in home-managed local Docker slice mode.
+   - Claude: live validation confirms pre-granted MCPs are rendered into the
+     provider run in all three modes. Hidden Arroba skill injection is still a
+     product gap for Claude native TUI because the remote-rendered PTY path does
+     not yet support invisible context injection.
+   - Standard remote home-worker: do not copy/install MCPs or skills as product
+     behavior. The drill preinstalls matching worker MCP definitions as setup,
+     then validates grant-derived worker provider-run rendering.
    - Home-managed slice: transfer granted Arroba skill packages to the
      home-managed child worker before provider execution, validate worker-local
-     materialized skill paths in prompt context, and validate MCP execution
-     against MCP commands/env available in the slice.
+     materialized skill paths in prompt context where provider-supported, and
+     validate MCP rendering against MCP definitions installed into the managed
+     slice isolation root.
    - Keep managed-I/O marker writes out of native-TUI MCP/skill validation
      unless the drill is explicitly a managed-I/O drill.
 
@@ -361,16 +366,14 @@ Legend:
 
 | Scenario | Provider | Prompt/turns | Permissions | Attachments | MCP/skills |
 | --- | --- | --- | --- | --- | --- |
-| local | Codex | pass | pass | pass | partial |
-| local | OpenCode | pass | pass | pass | partial |
+| local | Codex | pass | pass | pass | pass |
+| local | OpenCode | pass | pass | pass | pass |
 | local | Claude | pass | pass | pass | partial |
-| standard remote | Codex | pass | pass | pass | partial |
-| standard remote | OpenCode | pass | pass | pass | partial |
+| standard remote | Codex | pass | pass | pass | pass |
+| standard remote | OpenCode | pass | pass | pass | pass |
 | standard remote | Claude | pass | pass | pass | partial |
-| direct slice target | Codex | pass | gap | pass | gap |
-| direct slice target | OpenCode | pass | gap | pass | gap |
-| home-managed slice | Codex | pass | pass | pass | partial |
-| home-managed slice | OpenCode | pass | pass | pass | partial |
+| home-managed slice | Codex | pass | pass | pass | pass |
+| home-managed slice | OpenCode | pass | pass | pass | pass |
 | home-managed slice | Claude | pass | pass | pass | partial |
 
 ## Drill Requirements
