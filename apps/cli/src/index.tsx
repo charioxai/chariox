@@ -74,7 +74,6 @@ import { buildHotkeySections } from "./hotkey-help.js"
 import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
-import { executeShellLine } from "@arroba/kernel-client/shell-script"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
@@ -387,11 +386,10 @@ import {
   type WorkspaceScreenMode,
 } from "./workspace-screen.js"
 import {
-  appendWorkspaceShellEntry,
   isWorkspaceShellCommand,
-  workspaceShellCommandText,
   type WorkspaceShellEntry,
 } from "./workspace-shell.js"
+import { submitWorkspaceShellCommand as submitWorkspaceShellCommandWithDeps } from "./workspace-shell-controller.js"
 import { createWorkflowController, deriveWorkflowSelectionState } from "./workflow-controller.js"
 import {
   deriveWorkflowPromptState,
@@ -6273,49 +6271,35 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const submitWorkspaceShellCommand = async (rawPrompt: string) => {
-    const command = workspaceShellCommandText(rawPrompt)
-    if (!command) {
-      flashFooter("usage: @ <arroba-shell command>", "error")
-      return { ok: false, output: "usage: @ <arroba-shell command>", context: workspaceShellContext() }
-    }
-    const context = workspaceShellContext()
-    const output: string[] = []
-    const result = await executeShellLine(command, context, { client }, (text) => output.push(text))
-    const rendered = output.join("").trimEnd()
-    const nextContext = result.context
-    setWorkspaceShellContext(nextContext)
-    setWorkspaceShellEntries((entries) => appendWorkspaceShellEntry(entries, {
-      id: workspaceShellEntryCounter() + 1,
-      command,
-      output: rendered,
-      ok: result.ok,
-    }))
-    setWorkspaceShellEntryCounter((counter) => counter + 1)
-
-    const nextSessionId = nextContext.sessionId
-    if (nextSessionId && nextSessionId === sessionState().id) {
-      try {
-        applySessionState(await getSessionState(client, nextSessionId))
-      } catch (error) {
+    return submitWorkspaceShellCommandWithDeps(rawPrompt, {
+      client,
+      workspaceShellContext,
+      setWorkspaceShellContext: (context) => {
+        setWorkspaceShellContext(context)
+      },
+      nextEntryId: () => {
+        const id = workspaceShellEntryCounter() + 1
+        setWorkspaceShellEntryCounter((counter) => counter + 1)
+        return id
+      },
+      setWorkspaceShellEntries: (updater) => {
+        setWorkspaceShellEntries(updater)
+      },
+      sessionState,
+      refreshSessionState: (sessionId) => getSessionState(client, sessionId),
+      applySessionState,
+      selectedWorkflowId,
+      setSelectedWorkflowId,
+      setSelectedWorkflowNodeId,
+      rebuildTranscript,
+      flashFooter,
+      onSessionRefreshError: (sessionId, error) => {
         appLogger?.warn("workspace shell session refresh failed", {
-          session_id: nextSessionId,
+          session_id: sessionId,
           error: formatError(error),
         })
-      }
-    }
-
-    const nextWorkflowId = nextContext.workflowId ?? null
-    if (result.ok && nextWorkflowId) {
-      const workflowExists = (sessionState().workflows ?? []).some((workflow) => workflow.id === nextWorkflowId)
-      if (workflowExists && selectedWorkflowId() !== nextWorkflowId) {
-        setSelectedWorkflowId(nextWorkflowId)
-        setSelectedWorkflowNodeId(null)
-      }
-    }
-
-    rebuildTranscript()
-    flashFooter(result.ok ? "shell command completed" : (rendered || "shell command failed"), result.ok ? "info" : "error")
-    return { ok: result.ok, output: rendered, context: nextContext }
+      },
+    })
   }
 
   const submitPrompt = async () => {
