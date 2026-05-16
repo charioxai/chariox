@@ -1,10 +1,8 @@
 import path from "node:path"
 import process from "node:process"
 import { randomBytes } from "node:crypto"
-import { unlink } from "node:fs/promises"
 import { homedir } from "node:os"
 import { pathToFileURL } from "node:url"
-import { createServer, type Server as NetServer, type Socket as NetSocket } from "node:net"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
@@ -38,6 +36,13 @@ import type {
 import {
   createCommandActionHandlers,
 } from "./command-actions.js"
+import {
+  automationSnapshotMatches,
+  startCliAutomationServer,
+  stopCliAutomationServer,
+  type CliAutomationRequest,
+  type CliAutomationServer,
+} from "./cli-automation.js"
 import {
   computeTranscriptRebuildScrollTop,
   evaluateTranscriptScrollMonitor,
@@ -512,32 +517,6 @@ const DEBUG_LOGS_ENABLED = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() ==
 const OPEN_CONSOLE_ON_ERROR = process.env.ARROBA_OPEN_CONSOLE_ON_ERROR === "1"
 let processLogger: ArrobaLogger | null = null
 let transcriptParsersRegistered = false
-
-type CliAutomationRequest = {
-  id?: unknown
-  action?: unknown
-  attachments?: unknown
-  command?: unknown
-  prompt?: unknown
-  screen?: unknown
-  choiceIndex?: unknown
-  delta?: unknown
-  daemonDisconnected?: unknown
-  sessionId?: unknown
-  statusLine?: unknown
-  intervalMs?: unknown
-  timeoutMs?: unknown
-  selectedWorkflowAlias?: unknown
-  shellEntryCount?: unknown
-  workflowAlias?: unknown
-}
-
-type CliAutomationResponse = {
-  id: string | number | null
-  ok: boolean
-  data?: unknown
-  error?: string
-}
 
 function getLogger(component: string, fields: Record<string, unknown> = {}) {
   return processLogger?.child(component, fields) ?? null
@@ -7987,34 +7966,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const automationSnapshotMatches = (
-    snapshot: ReturnType<typeof automationSnapshot>,
-    request: CliAutomationRequest,
-  ) => {
-    if (typeof request.screen === "string" && snapshot.screen !== request.screen) {
-      return false
-    }
-    if (typeof request.daemonDisconnected === "boolean" && snapshot.daemonDisconnected !== request.daemonDisconnected) {
-      return false
-    }
-    if (typeof request.sessionId === "string" && snapshot.session.id !== request.sessionId) {
-      return false
-    }
-    if (typeof request.statusLine === "string" && snapshot.statusLine !== request.statusLine) {
-      return false
-    }
-    if (typeof request.selectedWorkflowAlias === "string" && snapshot.selectedWorkflow?.alias !== request.selectedWorkflowAlias) {
-      return false
-    }
-    if (typeof request.workflowAlias === "string" && !snapshot.workflows.some((workflow) => workflow.alias === request.workflowAlias)) {
-      return false
-    }
-    if (typeof request.shellEntryCount === "number" && snapshot.shell.entries.length < request.shellEntryCount) {
-      return false
-    }
-    return true
-  }
-
   const handleAutomationRequest = async (request: CliAutomationRequest): Promise<unknown> => {
     const action = typeof request.action === "string" ? request.action : ""
     switch (action) {
@@ -8155,66 +8106,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const sendAutomationResponse = (socket: NetSocket, response: CliAutomationResponse) => {
-    socket.write(`${JSON.stringify(response)}\n`)
-  }
-
-  const startAutomationServer = async (socketPath: string): Promise<NetServer> => {
-    await unlink(socketPath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") {
-        throw error
-      }
+  const automationSocketPath = options.automationSocket
+  let automationServer: CliAutomationServer | null = null
+  if (automationSocketPath) {
+    void startCliAutomationServer({
+      socketPath: automationSocketPath,
+      handleRequest: handleAutomationRequest,
+      formatError,
+      onListening: (socketPath) => {
+        appLogger?.info("cli automation socket listening", { socket_path: socketPath })
+      },
     })
-    const server = createServer((socket) => {
-      socket.setEncoding("utf8")
-      let buffer = ""
-      socket.on("data", (chunk) => {
-        buffer += chunk
-        while (buffer.includes("\n")) {
-          const newlineIndex = buffer.indexOf("\n")
-          const line = buffer.slice(0, newlineIndex).trim()
-          buffer = buffer.slice(newlineIndex + 1)
-          if (!line) {
-            continue
-          }
-          let request: CliAutomationRequest
-          try {
-            request = JSON.parse(line) as CliAutomationRequest
-          } catch (error) {
-            sendAutomationResponse(socket, {
-              id: null,
-              ok: false,
-              error: `invalid JSON automation request: ${formatError(error)}`,
-            })
-            continue
-          }
-          const id = typeof request.id === "string" || typeof request.id === "number" ? request.id : null
-          void handleAutomationRequest(request)
-            .then((data) => sendAutomationResponse(socket, { id, ok: true, data }))
-            .catch((error) => sendAutomationResponse(socket, { id, ok: false, error: formatError(error) }))
-        }
-      })
-    })
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject)
-      server.listen(socketPath, () => {
-        server.off("error", reject)
-        resolve()
-      })
-    })
-    appLogger?.info("cli automation socket listening", { socket_path: socketPath })
-    return server
-  }
-
-  let automationServer: NetServer | null = null
-  if (options.automationSocket) {
-    void startAutomationServer(options.automationSocket)
       .then((server) => {
         automationServer = server
       })
       .catch((error) => {
         appLogger?.error("failed to start cli automation socket", {
-          socket_path: options.automationSocket,
+          socket_path: automationSocketPath,
           error: formatError(error),
         })
         flashFooter(`automation socket failed: ${formatError(error)}`, "error")
@@ -8225,12 +8133,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   onCleanup(() => {
     process.off("SIGINT", handleSigint)
     process.stdin.off("data", handleStdinData)
-    if (automationServer) {
-      automationServer.close()
+    if (automationServer && automationSocketPath) {
+      stopCliAutomationServer(automationServer, automationSocketPath)
       automationServer = null
-    }
-    if (options.automationSocket) {
-      void unlink(options.automationSocket).catch(() => {})
     }
     if (pendingTerminalRecordFlush) {
       clearTimeout(pendingTerminalRecordFlush)
