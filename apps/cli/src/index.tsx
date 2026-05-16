@@ -85,6 +85,14 @@ import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollT
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
+import {
+  appendInteractionCustomReply,
+  interactionChoiceCount,
+  interactionCustomChoiceIndex,
+  nextInteractionChoiceIndex,
+  resolveInteractionChoiceSubmission,
+  shouldEditCustomInteractionOnEnter,
+} from "./interaction-choice-state.js"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import { runClaudeNativeTui } from "./native-tui/claude.js"
@@ -6661,35 +6669,29 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!interaction || !isAttached()) {
       return false
     }
-    const resolvedChoiceIndex = Math.min(
-      choiceIndex ?? interactionChoiceSelection.get(interaction.id) ?? 0,
-      Math.max(0, interaction.choices.length + (interaction.custom_choice ? 1 : 0) - 1),
-    )
-    const customChoice = interaction.custom_choice && resolvedChoiceIndex === interaction.choices.length
-      ? interaction.custom_choice
-      : null
-    const choice = customChoice ? null : interaction.choices[resolvedChoiceIndex]
-    if (!choice) {
-      if (!customChoice) {
-        return false
-      }
-      const reply = interactionCustomReplies.get(interaction.id) ?? ""
-      const minLength = customChoice.min_length ?? 1
-      if (reply.length < minLength) {
-        interactionCustomEditing.add(interaction.id)
-        renderAgentInteractions()
-        applyResponseLayout()
-        return true
-      }
+    const submitDecision = resolveInteractionChoiceSubmission({
+      interaction,
+      requestedIndex: choiceIndex,
+      selectedIndex: interactionChoiceSelection.get(interaction.id),
+      customReply: interactionCustomReplies.get(interaction.id) ?? "",
+    })
+    if (submitDecision.action === "unavailable") {
+      return false
     }
-    interactionChoiceSelection.set(interaction.id, resolvedChoiceIndex)
+    if (submitDecision.action === "edit_custom") {
+      interactionCustomEditing.add(interaction.id)
+      renderAgentInteractions()
+      applyResponseLayout()
+      return true
+    }
+    interactionChoiceSelection.set(interaction.id, submitDecision.selectedIndex)
     try {
       const session = await respondToInteraction(
         client,
         sessionState().id,
         interaction.id,
-        customChoice?.id ?? choice!.id,
-        customChoice ? interactionCustomReplies.get(interaction.id) ?? "" : null,
+        submitDecision.choiceId,
+        submitDecision.customReply,
       )
       applySessionState(session)
       interactionCustomReplies.delete(interaction.id)
@@ -6708,10 +6710,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return false
     }
     const currentIndex = interactionChoiceSelection.get(interaction.id) ?? 0
-    const choiceCount = interaction.choices.length + (interaction.custom_choice ? 1 : 0)
-    const nextIndex = (currentIndex + delta + choiceCount) % choiceCount
+    const nextIndex = nextInteractionChoiceIndex({ interaction, currentIndex, delta })
+    if (nextIndex === null) {
+      return false
+    }
     interactionChoiceSelection.set(interaction.id, nextIndex)
-    if (interaction.custom_choice && nextIndex !== interaction.choices.length) {
+    if (interaction.custom_choice && nextIndex !== interactionCustomChoiceIndex(interaction)) {
       interactionCustomEditing.delete(interaction.id)
     }
     renderAgentInteractions()
@@ -6732,7 +6736,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!interaction || event.eventType === "release") {
       return false
     }
-    const customIndex = interaction.custom_choice ? interaction.choices.length : -1
+    const customIndex = interactionCustomChoiceIndex(interaction)
     const selectedIndex = interactionChoiceSelection.get(interaction.id) ?? 0
     if (interaction.custom_choice && interactionCustomEditing.has(interaction.id)) {
       if (event.name === "escape") {
@@ -6762,10 +6766,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         event.preventDefault?.()
         event.stopPropagation?.()
         const current = interactionCustomReplies.get(interaction.id) ?? ""
-        const maxLength = interaction.custom_choice.max_length ?? 2000
-        if (current.length < maxLength) {
-          interactionCustomReplies.set(interaction.id, `${current}${event.name}`)
-        }
+        interactionCustomReplies.set(interaction.id, appendInteractionCustomReply({
+          current,
+          input: event.name,
+          maxLength: interaction.custom_choice.max_length,
+        }))
         renderAgentInteractions()
         applyResponseLayout()
         return true
@@ -6783,7 +6788,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return cycleFocusedInteractionChoice(1)
     }
     const numericIndex = Number.parseInt(event.name, 10)
-    const choiceCount = interaction.choices.length + (interaction.custom_choice ? 1 : 0)
+    const choiceCount = interactionChoiceCount(interaction)
     if (Number.isInteger(numericIndex) && numericIndex >= 1 && numericIndex <= choiceCount) {
       event.preventDefault?.()
       event.stopPropagation?.()
@@ -6800,7 +6805,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (event.name === "return" || event.name === "enter") {
       event.preventDefault?.()
       event.stopPropagation?.()
-      if (interaction.custom_choice && selectedIndex === customIndex && !(interactionCustomReplies.get(interaction.id) ?? "")) {
+      if (shouldEditCustomInteractionOnEnter({
+        interaction,
+        selectedIndex,
+        customReply: interactionCustomReplies.get(interaction.id) ?? "",
+      })) {
         interactionCustomEditing.add(interaction.id)
         renderAgentInteractions()
         applyResponseLayout()
