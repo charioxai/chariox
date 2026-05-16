@@ -52,6 +52,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: CLI prompt attachment UI state controller is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI prompt attachment intake/controller is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI clipboard selection controller is responsibility-owned; CLI tests pass.
+- Latest verified batch: Cloud API route-adapter guardrail prevents direct service/repository imports; API build/tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build, focused API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Full Cloud API test is blocked by dirty Cloud web client changes; full kernel test currently fails in dirty slice/private-relay tests outside these slices.
 
 ## Responsibility Rule
