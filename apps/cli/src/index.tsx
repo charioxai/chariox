@@ -305,6 +305,7 @@ import {
   reindexTranscriptEntries,
   trimSingleTrailingNewline,
 } from "./transcript-text.js"
+import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
 import {
   formatToolTranscriptUpdate,
   mergeToolTranscriptUpdate,
@@ -1300,17 +1301,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const connectedClientCount = () => sessionState().attachment_ids.length
   const activePrompt = () => focusedActivePrompt()
   const resolveTerminalRecordAgentId = (record: TerminalOutputRecord) => {
-    if (record.agent_id) {
-      return record.agent_id
-    }
-    const activeStreamAgentId = streamingAgentId()
-    const activePromptAgentId = activePrompt()?.target_agent_id ?? null
-    const activeProcessingAgentId = sessionState().agents.find((agent) => agent.is_processing || agent.state === "Working")?.id ?? null
-    return record.agent_id
-      ?? activeStreamAgentId
-      ?? activePromptAgentId
-      ?? activeProcessingAgentId
-      ?? focusedAgentId()
+    return resolveTerminalRecordAgentIdFromState({
+      record,
+      streamingAgentId: streamingAgentId(),
+      activePromptAgentId: activePrompt()?.target_agent_id ?? null,
+      agents: sessionState().agents,
+      focusedAgentId: focusedAgentId(),
+    })
   }
   const focusedStatusBadge = () => deriveFocusedStatusBadge({
     attached: isAttached(),
