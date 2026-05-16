@@ -58,6 +58,10 @@ import {
   type AgentCommandHandlerDeps,
 } from "./agent-command-handlers.js"
 import {
+  handleKernelSlashCommand,
+  type KernelCommandHandlerDeps,
+} from "./kernel-command-handlers.js"
+import {
   prepareLocalGitWorktree,
   type LocalGitWorktreeOptions,
   type RemoteGitWorktreePlacement,
@@ -169,6 +173,7 @@ type CommandActionDeps =
   & Omit<SliceCommandHandlerDeps, "currentWorktreeTarget">
   & Omit<WorkspaceCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget" | "setWorkspaceTarget" | "setWorktreeTarget" | "baseWorktree" | "hasDynamicWorktreeTarget">
   & Omit<SessionCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget">
+  & KernelCommandHandlerDeps
   & {
   workspace: string
   worktree: string
@@ -670,25 +675,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleKernelCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "kernel" }>,
   ): Promise<void> => {
-    const [subcommand, ...args] = command.args
-    if (subcommand === "delete") {
-      if (!deps.deleteKernel) {
-        deps.flashFooter("kernel delete is unavailable in this build", "error")
-        return
-      }
-      if (args.length > 0) {
-        deps.flashFooter("usage: /kernel delete", "error")
-        return
-      }
-      const deleted = await deps.deleteKernel()
-      if (deps.isAttached() && deleted.deletedSessions.some((session) => session.id === deps.sessionState().id)) {
-        deps.transitionToNoSession(`Kernel ${deleted.kernelId} was deleted.`)
-        return
-      }
-      deps.flashFooter(`deleted kernel ${deleted.kernelId} (${deleted.deletedSessions.length} session${deleted.deletedSessions.length === 1 ? "" : "s"})`, "info")
-      return
-    }
-    deps.flashFooter("usage: /kernel delete", "error")
+    await handleKernelSlashCommand(deps, command)
   }
 
   const handleMcpCommand = async (
