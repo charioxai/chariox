@@ -42,6 +42,7 @@ import {
   type CliAutomationServer,
 } from "./cli-automation.js"
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
+import { buildCliAutomationSnapshot } from "./cli-automation-snapshot.js"
 import {
   computeTranscriptRebuildScrollTop,
   evaluateTranscriptScrollMonitor,
@@ -364,7 +365,6 @@ import {
   moveWaitingRoomFocus,
   waitingRoomRemoteKernelCanDelete,
   waitingRoomRemoteKernelIsAttachable,
-  waitingRoomRows,
   type WaitingRoomFocus,
   type WaitingRoomState,
 } from "./waiting-room.js"
@@ -379,7 +379,6 @@ import {
 import {
   appendWorkspaceShellEntry,
   isWorkspaceShellCommand,
-  renderWorkspaceShellTranscript,
   workspaceShellCommandText,
   type WorkspaceShellEntry,
 } from "./workspace-shell.js"
@@ -7858,111 +7857,39 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const automationSnapshot = () => {
-    const selectedWorkflow = sessionState().workflows?.find((workflow) => workflow.id === selectedWorkflowId()) ?? null
-    return {
-      screen: workspaceScreenMode(),
-      workflowScreenActive: workflowScreenActive(),
-      daemonDisconnected: daemonDisconnected(),
-      statusLine: statusLine(),
-      session: {
-        id: sessionState().id,
-        workspace: sessionState().workspace_id,
-        worktree: sessionState().worktree_id,
-        focusedAgentId: focusedAgentId(),
-        agentCount: sessionState().agents.length,
-        agents: sessionState().agents.map((agent) => {
-          const badge = agentPaneStatusBadge(
-            agent,
-            agentActivityLabels()[agent.id] ?? null,
-            hasPromptWorkByAgent()[agent.id] ?? false,
-            agent.id === streamingAgentId(),
-            agentBusyLatch(agent.id),
-          )
-          return {
-            id: agent.id,
-            alias: agent.alias,
-            provider: agent.provider,
-            state: agent.state,
-            isProcessing: agent.is_processing,
-            badge,
-          }
-        }),
-      },
-      interactions: (sessionState().active_interactions ?? []).map((interaction) => ({
-        id: interaction.id,
-        agentId: interaction.agent_id,
-        kind: interaction.kind,
-        level: interaction.level,
-        title: interaction.title,
-        message: interaction.message,
-        timeoutSec: interaction.timeout_sec,
-        defaultOnTimeout: interaction.default_on_timeout,
-        focused: focusedAgentId() === interaction.agent_id,
-        selectedChoiceIndex: interactionChoiceSelection.get(interaction.id) ?? 0,
-        customChoice: interaction.custom_choice ?? null,
-        customReply: interactionCustomReplies.get(interaction.id) ?? "",
-        customEditing: interactionCustomEditing.has(interaction.id),
-        choices: interaction.choices.map((choice) => ({
-          id: choice.id,
-          label: choice.label,
-          style: choice.style,
-        })),
-      })),
-      waitingRoom: !isAttached()
-        ? {
-          state: waitingRoomState(),
-          rows: waitingRoomRows(waitingRoomState(), availableSessions(), providerCatalogState(), {
-            cloudNotice: waitingRoomCloudNotice(),
-            inventoryStatus: waitingRoomInventoryStatus(),
-            loadingFrame: waitingRoomState().introStep,
-            relay: relayStatusState(),
-            machines: remoteMachinesState(),
-            kernels: remoteKernelsState(),
-            terminals: terminalsState(),
-            slices: slicesState(),
-          }, waitingRoomTargets(), themeRegistryState()).map((row) => ({
-            id: row.id,
-            title: row.title,
-            value: row.value,
-            focused: row.focused,
-            selectable: row.selectable,
-          })),
-        }
-        : null,
-      selectedWorkflowId: selectedWorkflowId(),
-      selectedWorkflowNodeId: selectedWorkflowNodeId(),
-      selectedWorkflow: selectedWorkflow
-        ? {
-          id: selectedWorkflow.id,
-          alias: selectedWorkflow.alias,
-          nodeCount: selectedWorkflow.nodes?.length ?? 0,
-          edgeCount: selectedWorkflow.edges?.length ?? 0,
-          endpointCount: selectedWorkflow.endpoints?.length ?? 0,
-        }
-        : null,
-      workflows: (sessionState().workflows ?? []).map((workflow) => ({
-        id: workflow.id,
-        alias: workflow.alias,
-        nodeCount: workflow.nodes?.length ?? 0,
-        edgeCount: workflow.edges?.length ?? 0,
-        endpointCount: workflow.endpoints?.length ?? 0,
-      })),
-      workflowRuns: (sessionState().workflow_runs ?? []).map((run) => ({
-        id: run.id,
-        workflowId: run.workflow_id,
-        endpointId: run.endpoint_id,
-        status: run.status,
-        nodeRunCount: run.node_runs?.length ?? 0,
-        failureCount: run.failure_events?.length ?? 0,
-        finalOutput: run.final_output ?? null,
-      })),
-      shell: {
-        context: workspaceShellContext(),
-        entries: workspaceShellEntries(),
-        transcript: renderWorkspaceShellTranscript(workspaceShellEntries()),
-      },
-      footer: footerFlash(),
-    }
+    return buildCliAutomationSnapshot({
+      workspaceScreenMode,
+      workflowScreenActive,
+      daemonDisconnected,
+      statusLine,
+      sessionState,
+      focusedAgentId,
+      agentActivityLabels,
+      hasPromptWorkByAgent,
+      streamingAgentId,
+      agentBusyLatch,
+      isAttached,
+      waitingRoomState,
+      availableSessions,
+      providerCatalogState,
+      waitingRoomCloudNotice,
+      waitingRoomInventoryStatus,
+      relayStatusState,
+      remoteMachinesState,
+      remoteKernelsState,
+      terminalsState,
+      slicesState,
+      waitingRoomTargets,
+      themeRegistryState,
+      selectedWorkflowId,
+      selectedWorkflowNodeId,
+      workspaceShellContext,
+      workspaceShellEntries,
+      footerFlash,
+      interactionChoiceSelection: (interactionId) => interactionChoiceSelection.get(interactionId) ?? 0,
+      interactionCustomReply: (interactionId) => interactionCustomReplies.get(interactionId) ?? "",
+      interactionCustomEditing: (interactionId) => interactionCustomEditing.has(interactionId),
+    })
   }
 
   const handleAutomationRequest = createCliAutomationActionHandler({

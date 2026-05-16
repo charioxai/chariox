@@ -28,13 +28,14 @@ export type CliAutomationResponse = {
 }
 
 export type CliAutomationSnapshot = {
+  [key: string]: unknown
   screen?: unknown
   daemonDisconnected?: unknown
   statusLine?: unknown
-  session?: { id?: unknown }
-  selectedWorkflow?: { alias?: unknown } | null
-  workflows?: Array<{ alias?: unknown }>
-  shell?: { entries?: unknown[] }
+  session?: Record<string, unknown> & { id?: unknown }
+  selectedWorkflow?: (Record<string, unknown> & { alias?: unknown }) | null
+  workflows?: Array<Record<string, unknown> & { alias?: unknown }>
+  shell?: Record<string, unknown> & { entries?: unknown[] }
 }
 
 export type CliAutomationServer = NetServer
