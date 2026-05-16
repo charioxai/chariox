@@ -3,9 +3,13 @@ import test from "node:test"
 
 import type { AgentInstance, RuntimeSession } from "./cli-types.js"
 import {
+  deriveAllAgentsBusyState,
+  deriveFocusedActivityLabel,
+  deriveFocusedAgentBusy,
   nextAgentActivityLabels,
   nextAgentBusyLatches,
   readAgentBusyLatch,
+  resolveActiveToolLabelForAgent,
   shouldPreserveAgentActivityLabel,
 } from "./agent-activity-state.js"
 
@@ -92,4 +96,99 @@ test("agent activity labels are preserved for streaming, prompt work, and workin
     session: session(),
     streamingAgentId: null,
   }), false)
+})
+
+test("active tool labels prefer visible transcript tools and ignore completed pane tools", () => {
+  assert.equal(resolveActiveToolLabelForAgent({
+    agentId: "a1",
+    visibleTranscriptAgentId: "a1",
+    activeToolLabels: ["reading", "patching"],
+    agentPaneToolUpdates: null,
+  }), "patching")
+  assert.equal(resolveActiveToolLabelForAgent({
+    agentId: "a2",
+    visibleTranscriptAgentId: "a1",
+    activeToolLabels: ["reading"],
+    agentPaneToolUpdates: [
+      { tool: "read", status: "completed" },
+      { tool: "bash", status: "running" },
+    ],
+  }), "bashing")
+  assert.equal(resolveActiveToolLabelForAgent({
+    agentId: null,
+    visibleTranscriptAgentId: "a1",
+    activeToolLabels: ["reading"],
+    agentPaneToolUpdates: null,
+  }), null)
+})
+
+test("focused activity and busy state derive from tool labels, latches, prompt work, and agent state", () => {
+  assert.equal(deriveFocusedActivityLabel({
+    focusedAgentId: "a1",
+    activeToolLabel: "reading",
+    agentActivityLabel: "thinking",
+  }), "reading")
+  assert.equal(deriveFocusedActivityLabel({
+    focusedAgentId: "a1",
+    activeToolLabel: null,
+    agentActivityLabel: "thinking",
+  }), "thinking")
+  assert.equal(deriveFocusedActivityLabel({
+    focusedAgentId: null,
+    activeToolLabel: "reading",
+    agentActivityLabel: "thinking",
+  }), null)
+
+  assert.equal(deriveFocusedAgentBusy({
+    focusedAgentId: "a1",
+    submitting: false,
+    submittingAgentId: null,
+    session: session(),
+    streamingAgentId: null,
+    focusedActivityLabel: null,
+    agentBusyLatches: { a1: true },
+  }), true)
+  assert.equal(deriveFocusedAgentBusy({
+    focusedAgentId: "a1",
+    submitting: false,
+    submittingAgentId: null,
+    session: session({ agents: [agent("a1", { is_processing: true })] }),
+    streamingAgentId: null,
+    focusedActivityLabel: null,
+    agentBusyLatches: {},
+  }), true)
+  assert.equal(deriveFocusedAgentBusy({
+    focusedAgentId: "a1",
+    submitting: false,
+    submittingAgentId: null,
+    session: session(),
+    streamingAgentId: null,
+    focusedActivityLabel: null,
+    agentBusyLatches: {},
+  }), false)
+})
+
+test("all agent busy state is derived per agent", () => {
+  assert.deepEqual(deriveAllAgentsBusyState({
+    submitting: true,
+    submittingAgentId: "a1",
+    session: session({ agents: [agent("a1"), agent("a2", { state: "Working" })] }),
+    streamingAgentId: null,
+    agentActivityLabels: {},
+    agentBusyLatches: {},
+  }), [
+    { id: "a1", busy: true },
+    { id: "a2", busy: true },
+  ])
+  assert.deepEqual(deriveAllAgentsBusyState({
+    submitting: false,
+    submittingAgentId: null,
+    session: session({ agents: [agent("a1"), agent("a2")] }),
+    streamingAgentId: "a2",
+    agentActivityLabels: { a1: "thinking" },
+    agentBusyLatches: {},
+  }), [
+    { id: "a1", busy: true },
+    { id: "a2", busy: true },
+  ])
 })

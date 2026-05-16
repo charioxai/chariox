@@ -44,9 +44,13 @@ import {
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
 import { buildCliAutomationSnapshot } from "./cli-automation-snapshot.js"
 import {
+  deriveAllAgentsBusyState,
+  deriveFocusedActivityLabel,
+  deriveFocusedAgentBusy,
   nextAgentActivityLabels,
   nextAgentBusyLatches,
   readAgentBusyLatch,
+  resolveActiveToolLabelForAgent,
   shouldPreserveAgentActivityLabel as shouldPreserveAgentActivityLabelState,
 } from "./agent-activity-state.js"
 import {
@@ -1230,26 +1234,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const focusedQueueDepth = () => agentQueuedDepth(focusedAgentId())
   const focusedActivePrompt = () => agentActivePrompt(focusedAgentId())
   const activeToolLabelForAgent = (agentId: string | null | undefined) => {
-    if (!agentId) {
-      return null
-    }
-    if (agentId === visibleTranscriptAgentId()) {
-      return Array.from(activeToolLabels.values()).at(-1) ?? null
-    }
-    const toolState = agentPaneTools.get(agentId)
-    if (!toolState) {
-      return null
-    }
-    const labels = Array.from(toolState.values())
-      .filter((update) => update.status !== "completed" && update.status !== "error" && update.status !== "cancelled")
-      .map((update) => getToolActivityLabel(update.tool))
-      .filter((label): label is string => Boolean(label))
-    return labels.at(-1) ?? null
+    return resolveActiveToolLabelForAgent({
+      agentId,
+      visibleTranscriptAgentId: visibleTranscriptAgentId(),
+      activeToolLabels: activeToolLabels.values(),
+      agentPaneToolUpdates: agentId ? agentPaneTools.get(agentId)?.values() : null,
+    })
   }
   const focusedActivityLabel = () => {
     const agentId = focusedAgentId()
     const toolLabel = activeToolLabelForAgent(agentId)
-    return toolLabel ?? agentActivityLabel(agentId)
+    return deriveFocusedActivityLabel({
+      focusedAgentId: agentId,
+      activeToolLabel: toolLabel,
+      agentActivityLabel: agentActivityLabel(agentId),
+    })
   }
   const setAgentBusyLatch = (agentId: string | null | undefined, busy: boolean) => {
     setAgentBusyLatches((current) => nextAgentBusyLatches(current, agentId, busy))
@@ -1261,28 +1260,24 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAgentBusyLatch(agentId, false)
   }
   const focusedAgentBusy = () => {
-    const agentId = focusedAgentId()
-    if (!agentId) {
-      return false
-    }
-    const focused = sessionState().agents.find((agent) => agent.id === agentId) ?? null
-    return (submitting() && submittingAgentId === agentId)
-      || agentHasPromptWork(sessionState(), agentId)
-      || streamingAgentId() === agentId
-      || Boolean(focusedActivityLabel())
-      || agentBusyLatch(agentId)
-      || Boolean(focused && (focused.is_processing || focused.state === "Working"))
+    return deriveFocusedAgentBusy({
+      focusedAgentId: focusedAgentId(),
+      submitting: submitting(),
+      submittingAgentId,
+      session: sessionState(),
+      streamingAgentId: streamingAgentId(),
+      focusedActivityLabel: focusedActivityLabel(),
+      agentBusyLatches: agentBusyLatches(),
+    })
   }
   const allAgentsBusyState = () => {
-    return sessionState().agents.map((agent) => {
-      const agentId = agent.id
-      const isBusy = (submitting() && submittingAgentId === agentId)
-        || agentHasPromptWork(sessionState(), agentId)
-        || streamingAgentId() === agentId
-        || Boolean(agentActivityLabels()[agentId])
-        || agentBusyLatch(agentId)
-        || (agent.is_processing || agent.state === "Working")
-      return { id: agentId, busy: isBusy }
+    return deriveAllAgentsBusyState({
+      submitting: submitting(),
+      submittingAgentId,
+      session: sessionState(),
+      streamingAgentId: streamingAgentId(),
+      agentActivityLabels: agentActivityLabels(),
+      agentBusyLatches: agentBusyLatches(),
     })
   }
   const shouldPreserveAgentActivityLabel = (agentId: string | null | undefined) => {
