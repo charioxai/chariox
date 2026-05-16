@@ -5,9 +5,12 @@ import type {
   SessionConfigState,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
-import type { RelayCloudProfile, MultiAgentResponseLayout } from "./preferences.js"
-import { type RelayStatus } from "./cloud-command-lifecycle.js"
-import { handleCloudSlashCommand, handleRelaySlashCommand } from "./cloud-command-handlers.js"
+import type { MultiAgentResponseLayout } from "./preferences.js"
+import {
+  handleCloudSlashCommand,
+  handleRelaySlashCommand,
+  type CloudCommandHandlerDeps,
+} from "./cloud-command-handlers.js"
 import {
   handleProviderSlashCommand,
   type ProviderCommandHandlerDeps,
@@ -75,6 +78,7 @@ export {
 
 type CommandActionDeps =
   & ProviderCommandHandlerDeps
+  & CloudCommandHandlerDeps
   & SelectionCommandHandlerDeps
   & ConfigCommandHandlerDeps
   & RemoteMachineCommandHandlerDeps
@@ -93,7 +97,6 @@ type CommandActionDeps =
   setWorkspaceTarget?: (workspace: string) => void
   setWorktreeTarget?: (worktree: string) => void
   accountProfile?: string | null
-  clientId?: string | null
   isAttached: () => boolean
   sessionState: () => RuntimeSession
   attachmentState: () => RuntimeAttachment | null
@@ -106,17 +109,7 @@ type CommandActionDeps =
   maxAgentsPerScreen: () => number
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
-  appendCloudNotice?: (message: string) => void
   formatError: (error: unknown) => string
-  createSessionInvite?: (
-    sessionId: string,
-    expiresInMs: number | null,
-    maxUses: number | null,
-  ) => Promise<{ invite: { invite_token: string; invite: { invite_id: string } }; session: RuntimeSession }>
-  joinSessionInvite?: (
-    inviteToken: string,
-    userId: string,
-  ) => Promise<{ member: { user_id: string }; session: RuntimeSession }>
   prepareLocalGitWorktree?: (options: LocalGitWorktreeOptions) => Promise<string>
   attachBinding: (
     session: Pick<RuntimeSession, "id">,
@@ -124,72 +117,6 @@ type CommandActionDeps =
   ) => Promise<void>
   deleteKernel?: () => Promise<{ kernelId: string; deletedSessions: RuntimeSession[] }>
   transitionToNoSession: (message: string) => void
-  getRelayStatus?: () => Promise<RelayStatus>
-  configureRelay?: (relayUrl: string | null, relayToken: string | null) => Promise<RelayStatus>
-  cloudRelayConnectTimeoutMs?: number
-  cloudRelayConnectPollMs?: number
-  refreshWaitingRoomData?: () => Promise<void>
-  getCloudRelayProfile?: () => RelayCloudProfile | null
-  saveCloudRelayProfile?: (profile: RelayCloudProfile | null) => Promise<void>
-  cloudRelayApiUrl?: string | undefined
-  bootstrapCloudRelay?: (
-    apiUrl: string,
-    email: string,
-    accountSlug?: string,
-  ) => Promise<RelayCloudProfile>
-  startCloudDeviceLogin?: (
-    apiUrl: string,
-    input: { clientId?: string; machineId?: string; clientAlias?: string; machineAlias?: string },
-  ) => Promise<{
-    apiUrl: string
-    deviceCode: string
-    userCode: string
-    verificationUrl: string
-    expiresAtMs: number
-    intervalSeconds: number
-  }>
-  pollCloudDeviceLogin?: (
-    apiUrl: string,
-    deviceCode: string,
-  ) => Promise<
-    | { status: "authorization_pending"; intervalSeconds: number; expiresAtMs: number }
-    | { status: "expired_token" }
-    | { status: "approved"; profile: RelayCloudProfile }
-  >
-  openExternalUrl?: (url: string) => Promise<boolean>
-  logoutCloudRelay?: (profile: RelayCloudProfile, options?: { revokeClient?: boolean; revokeMachine?: boolean }) => Promise<void>
-  pairCloudRelayClient?: (
-    profile: RelayCloudProfile,
-    clientId: string,
-    alias?: string,
-  ) => Promise<RelayCloudProfile>
-  pairCloudRelayMachine?: (
-    profile: RelayCloudProfile,
-    machineId: string,
-    alias?: string,
-  ) => Promise<RelayCloudProfile>
-  issueCloudKernelRelayToken?: (
-    profile: RelayCloudProfile,
-    daemonId: string,
-  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; profile?: RelayCloudProfile }>
-  issueCloudMachineRelayToken?: (
-    profile: RelayCloudProfile,
-    daemonId: string,
-    machineId: string,
-  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; profile?: RelayCloudProfile }>
-  issueCloudClientRelayToken?: (
-    profile: RelayCloudProfile,
-    targetDaemonAlias: string,
-    options?: { sessionId?: string | null },
-  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; profile?: RelayCloudProfile }>
-  createCloudSessionInvite?: (
-    sessionId: string,
-    options: { displayName?: string | null; expiresInMs?: number | null; maxUses?: number | null },
-  ) => Promise<Record<string, unknown>>
-  showCloudSessionInvite?: (inviteToken: string) => Promise<Record<string, unknown>>
-  acceptCloudSessionInvite?: (inviteToken: string) => Promise<Record<string, unknown>>
-  listCloudSessionMembers?: (sessionId: string) => Promise<Record<string, unknown>>
-  listCloudCollaborators?: () => Promise<Record<string, unknown>[]>
   updateSessionConfig: (
     sessionId: string,
     attachmentId: string,
