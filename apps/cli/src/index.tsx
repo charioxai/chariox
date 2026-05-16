@@ -113,6 +113,10 @@ import {
   listCloudSessionMembers,
 } from "./cloud-session-api.js"
 import {
+  nextSessionBrowserIndex,
+  resolveSessionBrowserKeyAction,
+} from "./session-browser-key-policy.js"
+import {
   aliasAgent,
   cycleAgentFocus as cycleAgentFocusApi,
   destroyAgent as destroyAgentApi,
@@ -1796,32 +1800,37 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     alt?: boolean
     super?: boolean
   }) => {
-    if (!sessionBrowserOpen() || event.eventType === "release" || event.ctrl || event.meta || event.alt || event.super) {
+    const open = sessionBrowserOpen()
+    const sessions = open ? sessionBrowserSessions() : []
+    const selectedIndex = open ? normalizeSessionBrowserIndex() : 0
+    const action = resolveSessionBrowserKeyAction({
+      open,
+      event,
+      sessionCount: sessions.length,
+      selectedIndex,
+    })
+    if (action.action === "ignore") {
       return false
     }
-    const sessions = sessionBrowserSessions()
-    if (event.name === "escape") {
+    if (action.action === "close") {
       closeSessionBrowserDialog()
       return true
     }
-    if (event.name === "up" || event.name === "down") {
+    if (action.action === "move") {
       if (sessions.length > 0) {
         setSessionBrowserIndex((index) => {
-          const next = event.name === "up" ? index - 1 : index + 1
-          return ((next % sessions.length) + sessions.length) % sessions.length
+          return nextSessionBrowserIndex(index, action.delta, sessions.length)
         })
         renderHotkeysOverlay()
       }
       return true
     }
-    const selectedIndex = normalizeSessionBrowserIndex()
-    const selected = sessions[selectedIndex]
-    if (!selected) {
+    if (action.action === "empty") {
       flashFooter("no sessions available", "error")
       return true
     }
-    if (event.name === "return" || event.name === "enter") {
-      const state = { ...waitingRoomState(), focus: "session" as const, sessionIndex: selectedIndex }
+    if (action.action === "submit") {
+      const state = { ...waitingRoomState(), focus: "session" as const, sessionIndex: action.selectedIndex }
       const decision = deriveWaitingRoomActivationDecision({
         state,
         sessions: availableSessions(),
@@ -1840,16 +1849,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       )
       return true
     }
-    const lifecycleAction = event.name === "a"
-      ? "archive"
-      : event.name === "d" || event.name === "delete"
-        ? "delete"
-        : null
-    if (lifecycleAction) {
-      void applyWaitingRoomSessionLifecycleAction(lifecycleAction, {
+    if (action.action === "lifecycle") {
+      void applyWaitingRoomSessionLifecycleAction(action.lifecycleAction, {
         ...waitingRoomState(),
         focus: "session",
-        sessionIndex: selectedIndex,
+        sessionIndex: action.selectedIndex,
       }).then(() => {
         const nextLength = sessionBrowserSessions().length
         if (nextLength === 0) {
