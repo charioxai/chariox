@@ -44,6 +44,12 @@ import {
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
 import { buildCliAutomationSnapshot } from "./cli-automation-snapshot.js"
 import {
+  nextAgentActivityLabels,
+  nextAgentBusyLatches,
+  readAgentBusyLatch,
+  shouldPreserveAgentActivityLabel as shouldPreserveAgentActivityLabelState,
+} from "./agent-activity-state.js"
+import {
   renderCliDialogOverlay,
   type CliDialogOverlayMode,
 } from "./cli-dialog-overlay.js"
@@ -1211,7 +1217,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const promptStateForAgent = (agentId: string | null | undefined) => agentPromptState(sessionState(), agentId)
   const agentQueuedDepth = (agentId: string | null | undefined) => promptStateForAgent(agentId)?.queued_prompts.length ?? 0
   const agentActivePrompt = (agentId: string | null | undefined) => promptStateForAgent(agentId)?.active_prompt ?? null
-  const agentBusyLatch = (agentId: string | null | undefined) => agentId ? (agentBusyLatches()[agentId] ?? false) : false
+  const agentBusyLatch = (agentId: string | null | undefined) => readAgentBusyLatch(agentBusyLatches(), agentId)
   const anyPromptWork = () => sessionHasPromptWork(sessionState())
   const hasPromptWorkByAgent = () => {
     const state: Record<string, boolean> = {}
@@ -1246,23 +1252,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return toolLabel ?? agentActivityLabel(agentId)
   }
   const setAgentBusyLatch = (agentId: string | null | undefined, busy: boolean) => {
-    if (!agentId) {
-      return
-    }
-    setAgentBusyLatches((current) => {
-      if ((current[agentId] ?? false) === busy) {
-        return current
-      }
-      if (busy) {
-        return {
-          ...current,
-          [agentId]: true,
-        }
-      }
-      const next = { ...current }
-      delete next[agentId]
-      return next
-    })
+    setAgentBusyLatches((current) => nextAgentBusyLatches(current, agentId, busy))
   }
   const markAgentBusy = (agentId: string | null | undefined) => {
     setAgentBusyLatch(agentId, true)
@@ -1296,21 +1286,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
   const shouldPreserveAgentActivityLabel = (agentId: string | null | undefined) => {
-    if (!agentId) {
-      return false
-    }
-    return streamingAgentId() === agentId
-      || agentHasPromptWork(sessionState(), agentId)
-      || sessionState().agents.some((agent) => agent.id === agentId && (agent.is_processing || agent.state === "Working"))
+    return shouldPreserveAgentActivityLabelState({
+      agentId,
+      session: sessionState(),
+      streamingAgentId: streamingAgentId(),
+    })
   }
   const setAgentActivityLabel = (agentId: string | null | undefined, nextLabel: string | null) => {
-    if (!agentId) {
-      return
-    }
-    setAgentActivityLabels((current) => ({
-      ...current,
-      [agentId]: nextLabel ?? (shouldPreserveAgentActivityLabel(agentId) ? (current[agentId] ?? null) : null),
-    }))
+    setAgentActivityLabels((current) => nextAgentActivityLabels(
+      current,
+      agentId,
+      nextLabel,
+      shouldPreserveAgentActivityLabel(agentId),
+    ))
   }
   const visibleTranscriptEntries = () => entries.filter((entry) => entry && !entry.hidden)
   const queueDepth = () => focusedQueueDepth()
