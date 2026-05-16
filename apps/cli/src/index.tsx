@@ -384,10 +384,12 @@ import { DEFAULT_THEME_REGISTRY, loadThemeRegistry } from "./theme-registry.js"
 import {
   deriveWaitingRoomActivationDecision,
   deriveWaitingRoomDeleteDecision,
+  deriveWaitingRoomKeyNavigationDecision,
   deriveWaitingRoomModelSelectionDecision,
   deriveWaitingRoomSessionLifecycleDecision,
   deriveWaitingRoomStateUpdate,
   deriveWaitingRoomVariantSelectionDecision,
+  waitingRoomSessionLifecycleActionForEvent,
   type WaitingRoomDeleteDecision,
   type WaitingRoomSessionLifecycleDecision,
   type WaitingRoomSessionLifecycleAction,
@@ -399,8 +401,6 @@ import {
 } from "./waiting-room-inventory-api.js"
 import {
   createWaitingRoomState,
-  cycleWaitingRoomValue,
-  moveWaitingRoomFocus,
   waitingRoomRemoteKernelCanDelete,
   waitingRoomRemoteKernelIsAttachable,
   type WaitingRoomFocus,
@@ -1787,25 +1787,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
       flashFooter(formatError(error), "error")
     }
-  }
-  const waitingRoomSessionLifecycleActionForEvent = (event: {
-    name: string
-    eventType?: string
-    ctrl?: boolean
-    meta?: boolean
-    alt?: boolean
-    super?: boolean
-  }): WaitingRoomSessionLifecycleAction | null => {
-    if (event.eventType === "release" || event.ctrl || event.meta || event.alt || event.super || promptInput?.focused) {
-      return null
-    }
-    if (event.name === "a") {
-      return "archive"
-    }
-    if (event.name === "d" || event.name === "delete") {
-      return "delete"
-    }
-    return null
   }
   const handleSessionBrowserKey = (event: {
     name: string
@@ -6982,46 +6963,33 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       commandCenterOpen: commandCenterOpen(),
       commandCenterQuery: commandCenterQuery(),
     })) {
-      const keyName = event.name === "up" || event.name === "down" || event.name === "left" || event.name === "right"
-        ? event.name
-        : null
-      if (keyName) {
-        const next = {
-          ...waitingRoomState(),
-          keyState: {
-            ...waitingRoomState().keyState,
-            [keyName]: event.eventType !== "release",
-          },
-        }
-        if (event.eventType !== "release") {
-          reconcileWaitingRoom(
-            keyName === "up"
-              ? moveWaitingRoomFocus(next, availableSessions(), -1, {
-                  relay: relayStatusState(),
-                  machines: remoteMachinesState(),
-                  kernels: remoteKernelsState(),
-                  terminals: terminalsState(),
-                  slices: slicesState(),
-                })
-              : keyName === "down"
-                ? moveWaitingRoomFocus(next, availableSessions(), 1, {
-                    relay: relayStatusState(),
-                    machines: remoteMachinesState(),
-                    kernels: remoteKernelsState(),
-                    terminals: terminalsState(),
-                    slices: slicesState(),
-                  })
-                : cycleWaitingRoomValue(next, availableSessions(), providerCatalogState(), keyName === "left" ? -1 : 1, themeRegistryState(), {
-                    slices: slicesState(),
-                  }),
-          )
-          return
-        }
-        setWaitingRoomState(next)
+      const keyNavigation = deriveWaitingRoomKeyNavigationDecision({
+        event,
+        state: waitingRoomState(),
+        sessions: availableSessions(),
+        catalog: providerCatalogState(),
+        remote: {
+          relay: relayStatusState(),
+          machines: remoteMachinesState(),
+          kernels: remoteKernelsState(),
+          terminals: terminalsState(),
+          slices: slicesState(),
+        },
+        themeRegistry: themeRegistryState(),
+      })
+      if (keyNavigation.action === "navigate") {
+        reconcileWaitingRoom(keyNavigation.nextState)
+        return
+      }
+      if (keyNavigation.action === "release") {
+        setWaitingRoomState(keyNavigation.nextState)
         rebuildTranscript()
         return
       }
-      const sessionLifecycleAction = waitingRoomSessionLifecycleActionForEvent(event)
+      const sessionLifecycleAction = waitingRoomSessionLifecycleActionForEvent({
+        event,
+        promptFocused: Boolean(promptInput?.focused),
+      })
       if (sessionLifecycleAction) {
         void applyWaitingRoomSessionLifecycleAction(sessionLifecycleAction)
         return

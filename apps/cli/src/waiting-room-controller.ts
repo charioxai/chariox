@@ -7,6 +7,8 @@ import {
 import type { SessionListEntry } from "./sessions.js"
 import type { ThemeRegistry } from "./theme-registry.js"
 import {
+  cycleWaitingRoomValue,
+  moveWaitingRoomFocus,
   normalizeWaitingRoomState,
   waitingRoomRemoteKernelCanDelete,
   waitingRoomRemoteMachineCanDelete,
@@ -42,6 +44,22 @@ export type WaitingRoomActivationDecision =
 
 export type WaitingRoomSessionLifecycleAction = "archive" | "delete"
 
+export type WaitingRoomKeyEvent = {
+  name: string
+  eventType?: string | undefined
+  ctrl?: boolean | undefined
+  meta?: boolean | undefined
+  alt?: boolean | undefined
+  super?: boolean | undefined
+}
+
+export type WaitingRoomArrowKey = "up" | "down" | "left" | "right"
+
+export type WaitingRoomKeyNavigationDecision =
+  | { action: "ignore" }
+  | { action: "release"; key: WaitingRoomArrowKey; nextState: WaitingRoomState }
+  | { action: "navigate"; key: WaitingRoomArrowKey; nextState: WaitingRoomState }
+
 export type WaitingRoomSessionLifecycleDecision =
   | { action: WaitingRoomSessionLifecycleAction; session: SessionListEntry }
   | { action: "archive-all"; sessions: SessionListEntry[] }
@@ -71,6 +89,85 @@ export type WaitingRoomVariantSelectionDecision =
       launch: WaitingRoomLaunchConfig
     }
   | { kind: "error"; message: string }
+
+export function deriveWaitingRoomKeyNavigationDecision(options: {
+  event: WaitingRoomKeyEvent
+  state: WaitingRoomState
+  sessions: SessionListEntry[]
+  catalog: ProviderCatalog
+  remote?: WaitingRoomRemoteState
+  themeRegistry?: ThemeRegistry
+}): WaitingRoomKeyNavigationDecision {
+  const key = waitingRoomArrowKeyForEvent(options.event)
+  if (!key) {
+    return { action: "ignore" }
+  }
+
+  const next = {
+    ...options.state,
+    keyState: {
+      ...options.state.keyState,
+      [key]: options.event.eventType !== "release",
+    },
+  }
+  if (options.event.eventType === "release") {
+    return { action: "release", key, nextState: next }
+  }
+  if (key === "up" || key === "down") {
+    return {
+      action: "navigate",
+      key,
+      nextState: moveWaitingRoomFocus(
+        next,
+        options.sessions,
+        key === "up" ? -1 : 1,
+        options.remote,
+      ),
+    }
+  }
+  return {
+    action: "navigate",
+    key,
+    nextState: cycleWaitingRoomValue(
+      next,
+      options.sessions,
+      options.catalog,
+      key === "left" ? -1 : 1,
+      options.themeRegistry,
+      options.remote,
+    ),
+  }
+}
+
+export function waitingRoomSessionLifecycleActionForEvent(options: {
+  event: WaitingRoomKeyEvent
+  promptFocused: boolean
+}): WaitingRoomSessionLifecycleAction | null {
+  const event = options.event
+  if (
+    event.eventType === "release"
+    || event.ctrl
+    || event.meta
+    || event.alt
+    || event.super
+    || options.promptFocused
+  ) {
+    return null
+  }
+  if (event.name === "a") {
+    return "archive"
+  }
+  if (event.name === "d" || event.name === "delete") {
+    return "delete"
+  }
+  return null
+}
+
+function waitingRoomArrowKeyForEvent(event: WaitingRoomKeyEvent): WaitingRoomArrowKey | null {
+  return event.name === "up" || event.name === "down" || event.name === "left" || event.name === "right"
+    ? event.name
+    : null
+}
 
 export function deriveWaitingRoomStateUpdate(options: {
   currentState: WaitingRoomState

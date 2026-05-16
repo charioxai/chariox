@@ -6,10 +6,12 @@ import { fallbackProviderCatalog } from "./provider-catalog.js"
 import {
   deriveWaitingRoomActivationDecision,
   deriveWaitingRoomDeleteDecision,
+  deriveWaitingRoomKeyNavigationDecision,
   deriveWaitingRoomModelSelectionDecision,
   deriveWaitingRoomSessionLifecycleDecision,
   deriveWaitingRoomStateUpdate,
   deriveWaitingRoomVariantSelectionDecision,
+  waitingRoomSessionLifecycleActionForEvent,
 } from "./waiting-room-controller.js"
 import type { SessionListEntry } from "./sessions.js"
 import { createWaitingRoomState, type WaitingRoomState } from "./waiting-room.js"
@@ -354,6 +356,66 @@ test("deriveWaitingRoomVariantSelectionDecision validates variants against the a
     kind: "error",
     message: "unknown variant: high",
   })
+})
+
+test("deriveWaitingRoomKeyNavigationDecision moves focus and tracks release state", () => {
+  const sessions = [session("session-1")]
+  const focused = deriveWaitingRoomKeyNavigationDecision({
+    event: { name: "down", eventType: "press" },
+    state: waitingRoomState(),
+    sessions,
+    catalog: catalog(),
+  })
+  assert.equal(focused.action, "navigate")
+  if (focused.action === "navigate") {
+    assert.equal(focused.nextState.focus, "provider")
+    assert.equal(focused.nextState.keyState.down, true)
+  }
+
+  const released = deriveWaitingRoomKeyNavigationDecision({
+    event: { name: "down", eventType: "release" },
+    state: waitingRoomState({ keyState: { up: false, down: true, left: false, right: false } }),
+    sessions,
+    catalog: catalog(),
+  })
+  assert.equal(released.action, "release")
+  if (released.action === "release") {
+    assert.equal(released.nextState.keyState.down, false)
+  }
+})
+
+test("deriveWaitingRoomKeyNavigationDecision cycles focused values", () => {
+  const decision = deriveWaitingRoomKeyNavigationDecision({
+    event: { name: "right", eventType: "press" },
+    state: waitingRoomState({ focus: "provider" }),
+    sessions: [],
+    catalog: catalog(),
+  })
+
+  assert.equal(decision.action, "navigate")
+  if (decision.action === "navigate") {
+    assert.equal(decision.nextState.providerId, "codex")
+    assert.equal(decision.nextState.keyState.right, true)
+  }
+})
+
+test("waitingRoomSessionLifecycleActionForEvent maps archive and delete keys", () => {
+  assert.equal(waitingRoomSessionLifecycleActionForEvent({
+    event: { name: "a", eventType: "press" },
+    promptFocused: false,
+  }), "archive")
+  assert.equal(waitingRoomSessionLifecycleActionForEvent({
+    event: { name: "delete", eventType: "press" },
+    promptFocused: false,
+  }), "delete")
+  assert.equal(waitingRoomSessionLifecycleActionForEvent({
+    event: { name: "d", eventType: "release" },
+    promptFocused: false,
+  }), null)
+  assert.equal(waitingRoomSessionLifecycleActionForEvent({
+    event: { name: "a", eventType: "press" },
+    promptFocused: true,
+  }), null)
 })
 
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
