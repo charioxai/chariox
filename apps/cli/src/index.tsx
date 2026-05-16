@@ -190,7 +190,7 @@ import {
   getSessionHistory,
   recordPromptInputHistory,
 } from "./session-history-api.js"
-import type { PromptMetaPart, PromptMetaTone } from "./prompt-meta.js"
+import type { PromptMetaPart } from "./prompt-meta.js"
 import { renderPromptMeta } from "./prompt-meta-renderer.js"
 import {
   backendProviderLabel,
@@ -337,12 +337,10 @@ import {
   showWorkspaceLink,
 } from "./workspace-link-api.js"
 import {
-  agentPaneStatusBadge,
-  formatSplitPaneFooterParts,
-  type StatusBadgeTone,
-} from "./split-pane-footer.js"
+  createSplitPaneFooterRenderState,
+  renderSplitPaneFooters as renderSplitPaneFootersView,
+} from "./split-pane-footer-renderer.js"
 import {
-  renderStatusBadgeLabel,
   renderStatusBadgeParts,
 } from "./status-badge-renderer.js"
 import { syncAuxiliaryPane } from "./response-layout-render.js"
@@ -499,20 +497,6 @@ type PendingPromptAttachment = {
 type FooterFlash = {
   message: string
   tone: "info" | "error"
-}
-
-type SplitPaneFooterTextGroup = {
-  agentText?: TextRenderable
-  agentDividerText?: TextRenderable
-  providerText?: TextRenderable
-  providerDividerText?: TextRenderable
-  modelText?: TextRenderable
-  modelDividerText?: TextRenderable
-  variantText?: TextRenderable
-  variantDividerText?: TextRenderable
-  modeText?: TextRenderable
-  modeDividerText?: TextRenderable
-  permissionText?: TextRenderable
 }
 
 const DEBUG_LOGS_ENABLED = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
@@ -847,10 +831,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const responseAuxiliaryInteractionBoxes: Array<BoxRenderable | undefined> = []
   let responsePrimaryFooterBox: BoxRenderable | undefined
   const responseAuxiliaryFooterBoxes: Array<BoxRenderable | undefined> = []
-  let responsePrimaryFooterParts: SplitPaneFooterTextGroup = {}
-  const responseAuxiliaryFooterParts: Array<SplitPaneFooterTextGroup> = []
-  let responsePrimaryFooterBadgeTexts: TextRenderable[] = []
-  const responseAuxiliaryFooterBadgeTexts: Array<TextRenderable[]> = []
+  const splitPaneFooterRenderState = createSplitPaneFooterRenderState()
   const responseAuxiliaryAgentIds: Array<string | null> = []
   const interactionChoiceSelection = new Map<string, number>()
   const interactionCustomReplies = new Map<string, string>()
@@ -3944,60 +3925,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const ensureSplitPaneFooterRenderables = (
-    footerBox: BoxRenderable | undefined,
-    badgeTexts: TextRenderable[],
-    parts: SplitPaneFooterTextGroup,
-    assignParts: (value: SplitPaneFooterTextGroup) => void,
-    assignBadgeTexts: (value: TextRenderable[]) => void,
-  ) => {
-    if (!footerBox || parts.agentText) {
-      return
-    }
-    footerBox.flexDirection = "row"
-    footerBox.gap = 1
-    const badgeBox = new BoxRenderable(renderer, {
-      flexDirection: "row",
-      flexShrink: 0,
-    })
-    const infoBox = new BoxRenderable(renderer, {
-      flexDirection: "row",
-      flexShrink: 0,
-    })
-    const nextBadgeTexts = Array.from({ length: STATUS_BADGE_WIDTH }, () => new TextRenderable(renderer, { wrapMode: "none" }))
-    for (const text of nextBadgeTexts) {
-      badgeBox.add(text)
-    }
-    const nextParts: SplitPaneFooterTextGroup = {
-      agentText: new TextRenderable(renderer, { wrapMode: "none" }),
-      agentDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
-      providerText: new TextRenderable(renderer, { wrapMode: "none" }),
-      providerDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
-      modelText: new TextRenderable(renderer, { wrapMode: "none" }),
-      modelDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
-      variantText: new TextRenderable(renderer, { wrapMode: "none" }),
-      variantDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
-      modeText: new TextRenderable(renderer, { wrapMode: "none" }),
-      modeDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
-      permissionText: new TextRenderable(renderer, { wrapMode: "none" }),
-    }
-    infoBox.add(nextParts.agentText)
-    infoBox.add(nextParts.agentDividerText)
-    infoBox.add(nextParts.providerText)
-    infoBox.add(nextParts.providerDividerText)
-    infoBox.add(nextParts.modelText)
-    infoBox.add(nextParts.modelDividerText)
-    infoBox.add(nextParts.variantText)
-    infoBox.add(nextParts.variantDividerText)
-    infoBox.add(nextParts.modeText)
-    infoBox.add(nextParts.modeDividerText)
-    infoBox.add(nextParts.permissionText)
-    footerBox.add(badgeBox)
-    footerBox.add(infoBox)
-    assignParts(nextParts)
-    assignBadgeTexts(nextBadgeTexts)
-  }
-
   const setTextRenderable = (
     text: TextRenderable | undefined,
     content: string,
@@ -4012,12 +3939,27 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     text.attributes = attributes
   }
 
-  const renderStatusBadgeTexts = (
-    texts: TextRenderable[],
-    label: string,
-    tone: StatusBadgeTone,
-  ) => {
-    renderStatusBadgeLabel(texts, label, tone, STATUS_BADGE_WIDTH, workingAnimationFrame())
+  const renderSplitPaneFooters = () => {
+    renderSplitPaneFootersView({
+      renderer,
+      state: splitPaneFooterRenderState,
+      primaryBox: responsePrimaryFooterBox,
+      auxiliaryBoxes: responseAuxiliaryFooterBoxes,
+      showAgentFooters: isAttached() && !workflowScreenActive() && responseVisibleAgents().length > 0,
+      maxAgentsPerScreen: maxAgentsPerScreen(),
+      visibleAgents: responseVisibleAgents(),
+      focusedAgentId: focusedAgentId(),
+      providerRun: providerRunState(),
+      currentProviderSelection: currentProviderSelection(),
+      agentActivityLabels: agentActivityLabels(),
+      hasPromptWorkByAgent: hasPromptWorkByAgent(),
+      streamingAgentId: streamingAgentId(),
+      agentBusyLatch,
+      sessionConfigValues: sessionState().config_state?.values,
+      agentLocationLabel,
+      badgeWidth: STATUS_BADGE_WIDTH,
+      animationFrame: workingAnimationFrame(),
+    })
   }
 
   const ensureStatusLabelTextCount = (count: number) => {
@@ -4038,151 +3980,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const renderSplitPaneFooters = () => {
-    const showAgentFooters = isAttached() && !workflowScreenActive() && responseVisibleAgents().length > 0
-    ensureSplitPaneFooterRenderables(
-      responsePrimaryFooterBox,
-      responsePrimaryFooterBadgeTexts,
-      responsePrimaryFooterParts,
-      (value) => {
-        responsePrimaryFooterParts = value
-      },
-      (value) => {
-        responsePrimaryFooterBadgeTexts = value
-      },
-    )
-    for (let slotIndex = 0; slotIndex < maxAgentsPerScreen() - 1; slotIndex += 1) {
-      ensureSplitPaneFooterRenderables(
-        responseAuxiliaryFooterBoxes[slotIndex],
-        responseAuxiliaryFooterBadgeTexts[slotIndex] ?? [],
-        responseAuxiliaryFooterParts[slotIndex] ?? {},
-        (value) => {
-          responseAuxiliaryFooterParts[slotIndex] = value
-        },
-        (value) => {
-          responseAuxiliaryFooterBadgeTexts[slotIndex] = value
-        },
-      )
-    }
-
-    if (!showAgentFooters) {
-      renderStatusBadgeTexts(responsePrimaryFooterBadgeTexts, "", "idle")
-      setTextRenderable(responsePrimaryFooterParts.agentText, "", theme.textMuted)
-      setTextRenderable(responsePrimaryFooterParts.agentDividerText, "", theme.textMuted)
-      setTextRenderable(responsePrimaryFooterParts.providerText, "", theme.textMuted)
-      setTextRenderable(responsePrimaryFooterParts.providerDividerText, "", theme.textMuted)
-      setTextRenderable(responsePrimaryFooterParts.modelText, "", theme.textMuted)
-      setTextRenderable(responsePrimaryFooterParts.modelDividerText, "", theme.textMuted)
-      setTextRenderable(responsePrimaryFooterParts.variantText, "", theme.textMuted)
-      setTextRenderable(responsePrimaryFooterParts.variantDividerText, "", theme.textMuted)
-      setTextRenderable(responsePrimaryFooterParts.modeText, "", theme.textMuted)
-      setTextRenderable(responsePrimaryFooterParts.modeDividerText, "", theme.textMuted)
-      setTextRenderable(responsePrimaryFooterParts.permissionText, "", theme.textMuted)
-      responsePrimaryFooterBox?.requestRender()
-      for (let slotIndex = 0; slotIndex < maxAgentsPerScreen() - 1; slotIndex += 1) {
-        renderStatusBadgeTexts(responseAuxiliaryFooterBadgeTexts[slotIndex] ?? [], "", "idle")
-        const parts = responseAuxiliaryFooterParts[slotIndex]
-        setTextRenderable(parts?.agentText, "", theme.textMuted)
-        setTextRenderable(parts?.agentDividerText, "", theme.textMuted)
-        setTextRenderable(parts?.providerText, "", theme.textMuted)
-        setTextRenderable(parts?.providerDividerText, "", theme.textMuted)
-        setTextRenderable(parts?.modelText, "", theme.textMuted)
-        setTextRenderable(parts?.modelDividerText, "", theme.textMuted)
-        setTextRenderable(parts?.variantText, "", theme.textMuted)
-        setTextRenderable(parts?.variantDividerText, "", theme.textMuted)
-        setTextRenderable(parts?.modeText, "", theme.textMuted)
-        setTextRenderable(parts?.modeDividerText, "", theme.textMuted)
-        setTextRenderable(parts?.permissionText, "", theme.textMuted)
-        responseAuxiliaryFooterBoxes[slotIndex]?.requestRender()
-      }
-      return
-    }
-
-    const providerRun = providerRunState()
-    const visibleAgents = responseVisibleAgents()
-    const renderFooter = (
-      agent: AgentInstance | null | undefined,
-      footerBox: BoxRenderable | undefined,
-      parts: SplitPaneFooterTextGroup | undefined,
-      badgeTexts: TextRenderable[],
-    ) => {
-      const selectionOverride = agent?.id === focusedAgentId()
-        ? currentProviderSelection()
-        : null
-      const badge = agentPaneStatusBadge(
-        agent ?? null,
-        agent ? agentActivityLabels()[agent.id] ?? null : null,
-        agent ? hasPromptWorkByAgent()[agent.id] ?? false : false,
-        agent?.id === streamingAgentId(),
-        agent ? agentBusyLatch(agent.id) : false,
-      )
-      const focused = agent?.id === focusedAgentId()
-      renderStatusBadgeTexts(badgeTexts, badge.label, badge.tone)
-      const activeRun = providerRun && providerRun.agent_instance_id === agent?.id
-        ? {
-            agentInstanceId: providerRun.agent_instance_id,
-            model: providerRun.model,
-            variant: providerRun.variant,
-          }
-        : null
-      const nextParts = formatSplitPaneFooterParts(
-        agent
-          ? {
-              ...agent,
-              execution_mode: agent.execution_mode_override
-                ?? ((sessionState().config_state?.values?.["agents.mode"] as "build" | "plan" | undefined) ?? "build"),
-              permission_level: agent.permission_level_override
-                ?? ((sessionState().config_state?.values?.["agents.permissions"] as "required" | "yolo" | undefined) ?? "yolo"),
-              location_label: agentLocationLabel(agent),
-            }
-          : null,
-        activeRun,
-        null,
-        selectionOverride
-          ? { model: selectionOverride.model, variant: selectionOverride.effort }
-          : undefined,
-      )
-      const partTones = nextParts.map((part) => part.tone)
-      const partTexts = nextParts.map((part) => part.text)
-      const setPart = (
-        text: TextRenderable | undefined,
-        content: string,
-        tone: PromptMetaTone | undefined,
-        bold = false,
-      ) => {
-        setTextRenderable(
-          text,
-          content,
-          tone ? promptMetaToneColor(tone) : theme.textMuted,
-          bold ? TextAttributes.BOLD : TextAttributes.NONE,
-        )
-      }
-      setPart(parts?.agentText, partTexts[0] ?? "", partTones[0], focused)
-      setTextRenderable(parts?.agentDividerText, partTexts[1] ? " • " : "", theme.textMuted)
-      setPart(parts?.providerText, partTexts[1] ?? "", partTones[1], focused)
-      setTextRenderable(parts?.providerDividerText, partTexts[2] ? " • " : "", theme.textMuted)
-      setPart(parts?.modelText, partTexts[2] ?? "", partTones[2], focused)
-      setTextRenderable(parts?.modelDividerText, partTexts[3] ? " • " : "", theme.textMuted)
-      setPart(parts?.variantText, partTexts[3] ?? "", partTones[3], focused)
-      setTextRenderable(parts?.variantDividerText, partTexts[4] ? " • " : "", theme.textMuted)
-      setPart(parts?.modeText, partTexts[4] ?? "", partTones[4], focused)
-      setTextRenderable(parts?.modeDividerText, partTexts[5] ? " • " : "", theme.textMuted)
-      setPart(parts?.permissionText, partTexts[5] ?? "", partTones[5], focused)
-      footerBox?.requestRender()
-    }
-
-    renderFooter(visibleAgents[0] ?? null, responsePrimaryFooterBox, responsePrimaryFooterParts, responsePrimaryFooterBadgeTexts)
-    for (let slotIndex = 0; slotIndex < maxAgentsPerScreen() - 1; slotIndex += 1) {
-      renderFooter(
-        visibleAgents[slotIndex + 1] ?? null,
-        responseAuxiliaryFooterBoxes[slotIndex],
-        responseAuxiliaryFooterParts[slotIndex],
-        responseAuxiliaryFooterBadgeTexts[slotIndex] ?? [],
-      )
-    }
-    responsePrimaryFooterBox?.requestRender()
-  }
-
   const renderAgentInteractions = () => {
     renderAgentInteractionStrips({
       renderer,
@@ -4200,8 +3997,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       customEditing: (interactionId) => interactionCustomEditing.has(interactionId),
     })
   }
-
-  const promptMetaToneColor = (tone: PromptMetaTone) => theme[tone]
 
   const setPromptMetaRenderables = (parts: PromptMetaPart[]) => {
     renderPromptMeta({
