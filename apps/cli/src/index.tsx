@@ -54,8 +54,11 @@ import {
 } from "./agent-activity-state.js"
 import {
   renderCliDialogOverlay,
-  type CliDialogOverlayMode,
 } from "./cli-dialog-overlay.js"
+import {
+  cliDialogOverlayIsOpen,
+  resolveCliDialogOverlayMode,
+} from "./cli-dialog-overlay-state.js"
 import {
   computeTranscriptRebuildScrollTop,
   evaluateTranscriptScrollMonitor,
@@ -2805,28 +2808,29 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     return index
   }
+  const dialogOverlayState = () => ({
+    hotkeysOpen: hotkeysOpen(),
+    terminalPairingOpen: terminalPairingOpen(),
+    sessionBrowserOpen: sessionBrowserOpen(),
+  })
+  const dialogOverlayOpen = () => cliDialogOverlayIsOpen(dialogOverlayState())
+  const closeActiveDialogOverlay = () => {
+    const mode = resolveCliDialogOverlayMode(dialogOverlayState())
+    if (mode === "session-browser") {
+      closeSessionBrowserDialog()
+    } else if (mode === "terminal-pairing") {
+      closeTerminalPairingDialog()
+    } else if (mode === "hotkeys") {
+      closeHotkeys()
+    }
+  }
   const renderHotkeysOverlay = () => {
-    const mode: CliDialogOverlayMode = sessionBrowserOpen()
-      ? "session-browser"
-      : terminalPairingOpen()
-        ? "terminal-pairing"
-        : hotkeysOpen()
-          ? "hotkeys"
-          : "closed"
     renderCliDialogOverlay({
       overlayBox: hotkeysOverlayBox,
       renderer,
       dimensions: dimensions(),
-      mode,
-      onDismiss: () => {
-        if (sessionBrowserOpen()) {
-          closeSessionBrowserDialog()
-        } else if (terminalPairingOpen()) {
-          closeTerminalPairingDialog()
-        } else {
-          closeHotkeys()
-        }
-      },
+      mode: resolveCliDialogOverlayMode(dialogOverlayState()),
+      onDismiss: closeActiveDialogOverlay,
       sessions: sessionBrowserSessions(),
       normalizeSessionBrowserIndex,
       terminalPairing: terminalPairingState(),
@@ -6723,22 +6727,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (handleHotkeysToggleShortcut("keyboard", event)) {
       return
     }
-    if (hotkeysOpen() && event.name === "escape") {
+    if (dialogOverlayOpen() && event.name === "escape") {
       event.preventDefault()
       event.stopPropagation()
-      closeHotkeys()
-      return
-    }
-    if (sessionBrowserOpen() && event.name === "escape") {
-      event.preventDefault()
-      event.stopPropagation()
-      closeSessionBrowserDialog()
-      return
-    }
-    if (terminalPairingOpen() && event.name === "escape") {
-      event.preventDefault()
-      event.stopPropagation()
-      closeTerminalPairingDialog()
+      closeActiveDialogOverlay()
       return
     }
     if (event.ctrl && event.name === "e") {
@@ -6753,7 +6745,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       void (activePrompt() ? requestPromptStop() : requestExit())
       return
     }
-    if (hotkeysOpen() || terminalPairingOpen() || sessionBrowserOpen()) {
+    if (dialogOverlayOpen()) {
       event.preventDefault()
       event.stopPropagation()
     }
@@ -6828,14 +6820,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!event) {
       return
     }
-    if (event.eventType !== "release" && (hotkeysOpen() || terminalPairingOpen() || sessionBrowserOpen()) && event.name === "escape") {
-      if (sessionBrowserOpen()) {
-        closeSessionBrowserDialog()
-      } else if (terminalPairingOpen()) {
-        closeTerminalPairingDialog()
-      } else {
-        closeHotkeys()
-      }
+    if (event.eventType !== "release" && dialogOverlayOpen() && event.name === "escape") {
+      closeActiveDialogOverlay()
       return
     }
     if (handleSessionBrowserKey(event)) {
@@ -6855,7 +6841,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     if (event.eventType !== "release" && event.ctrl && event.name === "p") {
-      if (hotkeysOpen() || terminalPairingOpen() || sessionBrowserOpen()) {
+      if (dialogOverlayOpen()) {
         return
       }
       toggleWorkspaceScreen()
@@ -6863,7 +6849,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     if (shouldCycleFocusOnTabEvent(event, {
       attached: isAttached(),
-      hotkeysOpen: hotkeysOpen() || terminalPairingOpen() || sessionBrowserOpen(),
+      hotkeysOpen: dialogOverlayOpen(),
       promptFocused: Boolean(promptInput?.focused),
       commandCenterOpen: commandCenterOpen(),
       commandCenterQuery: commandCenterQuery(),
@@ -6882,7 +6868,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       void (activePrompt() ? requestPromptStop() : requestExit())
       return
     }
-    if (hotkeysOpen() || terminalPairingOpen() || sessionBrowserOpen()) {
+    if (dialogOverlayOpen()) {
       return
     }
     if (event.eventType !== "release" && promptInput?.focused) {
@@ -6903,7 +6889,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     if (shouldHandleWaitingRoomKeyEvent(event, {
       attached: isAttached(),
-      hotkeysOpen: hotkeysOpen() || terminalPairingOpen() || sessionBrowserOpen(),
+      hotkeysOpen: dialogOverlayOpen(),
       promptFocused: Boolean(promptInput?.focused),
       commandCenterOpen: commandCenterOpen(),
       commandCenterQuery: commandCenterQuery(),
