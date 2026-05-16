@@ -174,12 +174,17 @@ import {
   parsePromptAttachmentCommand,
   resolvePromptAttachmentEdit,
   type ParsedPromptAttachment,
-  type PromptAttachmentKind,
 } from "./prompt-attachments.js"
 import {
   captureScreenshot,
   storeTransferredFile,
 } from "./prompt-attachment-api.js"
+import {
+  addPendingPromptAttachments as addPendingPromptAttachmentsState,
+  filterPendingPromptAttachmentsForText,
+  removePendingPromptAttachmentToken as removePendingPromptAttachmentTokenState,
+  type PendingPromptAttachment,
+} from "./prompt-attachment-state.js"
 import {
   preparePromptAttachmentsForSubmit,
   promptAttachmentTransferIsForced,
@@ -497,15 +502,6 @@ type PromptQueueItem = {
   target_agent_id?: string | null
   prompt: string
   status: string
-}
-
-type PendingPromptAttachment = {
-  id: string
-  url: string
-  mime: string
-  filename: string
-  kind: PromptAttachmentKind
-  token: string
 }
 
 type FooterFlash = {
@@ -3077,13 +3073,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     openHotkeys()
   }
-  const nextAttachmentToken = (kind: PromptAttachmentKind) => {
-    const label = promptAttachmentTokenKind(kind)
-    const count = pendingAttachments().filter((file) => promptAttachmentTokenKind(file.kind) === label).length + 1
-    return `[${label} ${count}]`
-  }
   const syncPendingPromptAttachmentsFromText = (value: string) => {
-    setPendingAttachments((current) => current.filter((file) => value.includes(file.token)))
+    setPendingAttachments((current) => filterPendingPromptAttachmentsForText(current, value))
     refreshPromptAttachmentHighlights()
   }
   const insertPromptAttachmentTokens = (tokens: string[], at: number) => {
@@ -3112,23 +3103,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     ;(renderer as { requestRender?: () => void }).requestRender?.()
   }
   const addPendingPromptAttachments = (files: Array<Omit<PendingPromptAttachment, "token">>, at: number) => {
-    const existing = new Set(pendingAttachments().map((file) => file.url))
-    const next = files.filter((file) => !existing.has(file.url))
-    if (next.length === 0) {
+    const result = addPendingPromptAttachmentsState(pendingAttachments(), files)
+    if (result.addedAttachments.length === 0) {
       return false
     }
-    const counts = {
-      image: pendingAttachments().filter((file) => promptAttachmentTokenKind(file.kind) === "image").length,
-      pdf: pendingAttachments().filter((file) => promptAttachmentTokenKind(file.kind) === "pdf").length,
-      file: pendingAttachments().filter((file) => promptAttachmentTokenKind(file.kind) === "file").length,
-    }
-    const attachments = next.map((file) => {
-      const kind = promptAttachmentTokenKind(file.kind)
-      counts[kind] += 1
-      return { ...file, token: `[${kind} ${counts[kind]}]` }
-    })
-    setPendingAttachments((current) => [...current, ...attachments])
-    insertPromptAttachmentTokens(attachments.map((file) => file.token), at)
+    setPendingAttachments(result.nextAttachments)
+    insertPromptAttachmentTokens(result.addedAttachments.map((file) => file.token), at)
     refreshPromptAttachmentHighlights()
     updateSessionChrome()
     ;(renderer as { requestRender?: () => void }).requestRender?.()
@@ -3136,24 +3116,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
   const removePromptAttachmentToken = (token: string) => {
     const current = promptInput?.plainText ?? promptTextSnapshot
-    const index = current.indexOf(token)
-    if (index === -1) {
-      setPendingAttachments((files) => files.filter((file) => file.token !== token))
+    const result = removePendingPromptAttachmentTokenState({
+      attachments: pendingAttachments(),
+      text: current,
+      token,
+    })
+    setPendingAttachments(result.nextAttachments)
+    if (!result.tokenFound) {
       refreshPromptAttachmentHighlights()
       return
     }
-    let start = index
-    let end = index + token.length
-    if (start > 0 && current[start - 1] === " " && (end === current.length || current[end] === " " || current[end] === "\n")) {
-      start -= 1
-    } else if (end < current.length && current[end] === " ") {
-      end += 1
-    }
-    const next = `${current.slice(0, start)}${current.slice(end)}`
-    setPendingAttachments((files) => files.filter((file) => file.token !== token))
-    setPromptText(next)
+    setPromptText(result.nextText)
     if (promptInput) {
-      promptInput.cursorOffset = start
+      promptInput.cursorOffset = result.cursorOffset ?? promptInput.cursorOffset
     }
   }
   const removePromptAttachmentsForEdit = (action: "backspace" | "delete") => {
