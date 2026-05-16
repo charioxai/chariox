@@ -1,8 +1,6 @@
-import path from "node:path"
 import process from "node:process"
 import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
-import { pathToFileURL } from "node:url"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
@@ -187,14 +185,9 @@ import {
 } from "./preferences.js"
 import {
   extractDroppedPromptAttachments,
-  parsePromptAttachmentCommand,
-  type ParsedPromptAttachment,
 } from "./prompt-attachments.js"
 import { createPromptAttachmentController } from "./prompt-attachment-controller.js"
-import {
-  captureScreenshot,
-  storeTransferredFile,
-} from "./prompt-attachment-api.js"
+import { createPromptAttachmentIntakeController } from "./prompt-attachment-intake-controller.js"
 import {
   type PendingPromptAttachment,
 } from "./prompt-attachment-state.js"
@@ -3006,50 +2999,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     openHotkeys()
   }
-  const storePromptAttachment = async (file: ParsedPromptAttachment) => {
-    const attachment = attachmentState()
-    if (!attachment) {
-      throw new Error("no active attachment available for storing prompt attachments")
-    }
-    const artifact = await storeTransferredFile(client, sessionState().id, attachment.id, file.path, file.filename)
-    return {
-      id: artifact.artifact_id,
-      url: pathToFileURL(artifact.stored_path).href,
-      mime: file.mime,
-      filename: artifact.display_name,
-      kind: file.kind,
-    }
-  }
-  const attachPromptFiles = async (files: ParsedPromptAttachment[], at = promptInput?.cursorOffset ?? promptTextSnapshot.length) => {
-    const stored = []
-    for (const file of files) {
-      stored.push(await storePromptAttachment(file))
-    }
-    addPendingPromptAttachments(stored, at)
-    if (files.length > 0) {
-      flashFooter(`attached ${files.length} file${files.length === 1 ? "" : "s"}`, "info")
-    }
-  }
-  const capturePromptScreenshot = async () => {
-    const attachment = attachmentState()
-    if (!attachment) {
-      flashFooter("attach to a session before capturing screenshots", "error")
-      return
-    }
-    const result = await captureScreenshot(client, sessionState().id, attachment.id)
-    if (result.status !== "Captured" || !result.artifact_path) {
-      flashFooter(result.message, "error")
-      return
-    }
-    addPendingPromptAttachments([{
-      id: `screenshot-${Date.now()}`,
-      url: pathToFileURL(result.artifact_path).href,
-      mime: "image/png",
-      filename: path.basename(result.artifact_path),
-      kind: "image",
-    }], promptInput?.cursorOffset ?? promptTextSnapshot.length)
-    flashFooter("attached screenshot", "info")
-  }
   const handlePromptContentChange = () => {
     if (!promptInput) {
       return
@@ -3104,29 +3053,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         promptDropPending = false
       })
   }
-  const handleAttachmentCommand = async (commandLine: string) => {
-    const value = commandLine.replace(/^\/attach\s*/, "").trim()
-    if (!value) {
-      flashFooter("usage: /attach <path...> | /attach clear | /attach screenshot", "error")
-      return
-    }
-    if (value === "clear") {
-      clearPendingPromptAttachments()
-      flashFooter("cleared prompt attachments", "info")
-      return
-    }
-    if (value === "screenshot") {
-      await capturePromptScreenshot()
-      return
-    }
-    const files = parsePromptAttachmentCommand(value, process.cwd())
-    if (!files || files.length === 0) {
-      flashFooter("drop or specify images, PDFs, or text files", "error")
-      return
-    }
-    await attachPromptFiles(files)
-  }
-
   const expandedTurnIdsForAgent = (agentId: string | null | undefined) => agentId ? (expandedTurnIdsByAgent()[agentId] ?? []) : []
 
   const applyVisibleTranscriptState = (
@@ -3346,6 +3272,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       updateSessionChrome()
     }, 10_000)
   }
+
+  const promptAttachmentIntakeController = createPromptAttachmentIntakeController({
+    client,
+    cwd: () => process.cwd(),
+    sessionState,
+    attachmentState,
+    promptInsertOffset: () => promptInput?.cursorOffset ?? promptTextSnapshot.length,
+    addPendingPromptAttachments,
+    clearPendingPromptAttachments,
+    flashFooter,
+  })
+  const attachPromptFiles = promptAttachmentIntakeController.attachFiles
+  const handleAttachmentCommand = promptAttachmentIntakeController.handleCommand
 
   const sessionBrowserController = createSessionBrowserController({
     isOpen: sessionBrowserOpen,
