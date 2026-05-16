@@ -65,6 +65,7 @@ import {
   shouldSubmitExactCommandCenterMatch,
   type CommandCenterItem,
 } from "./command-center.js"
+import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
 import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
 import { copyTextToClipboard } from "./clipboard.js"
@@ -343,7 +344,7 @@ import {
 import { syncAuxiliaryPane } from "./response-layout-render.js"
 import { createRenderScheduler } from "./render-scheduler.js"
 import { bootstrapSession } from "./session-bootstrap.js"
-import { applyTheme, createTranscriptSyntaxStyle, EmptyBorder, setThemeRegistry, SplitBorder, theme } from "./theme.js"
+import { applyTheme, createTranscriptSyntaxStyle, setThemeRegistry, theme } from "./theme.js"
 import { DEFAULT_THEME_REGISTRY, loadThemeRegistry } from "./theme-registry.js"
 import {
   deriveWaitingRoomActivationDecision,
@@ -2227,16 +2228,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     renderCommandCenter()
   }
   const commandCenterOpen = () => commandCenterItems().length > 0 && commandCenterQuery().startsWith("/")
-  const positionCommandCenter = () => {
-    if (!commandCenterBox) {
-      return
-    }
-    commandCenterBox.position = "absolute"
-    commandCenterBox.left = 0
-    commandCenterBox.right = 0
-    commandCenterBox.bottom = (promptInput?.height ?? 1) + COMMAND_CENTER_OVERLAY_FOOTPRINT
-    commandCenterBox.zIndex = 10
-  }
   const selectCommandCenterItem = async (item: CommandCenterItem) => {
     if (item.kind === "command") {
       try {
@@ -2443,80 +2434,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return true
   }
   const renderCommandCenter = () => {
-    if (!commandCenterBox) {
-      return
-    }
-    positionCommandCenter()
-    for (const child of [...commandCenterBox.getChildren()]) {
-      commandCenterBox.remove(child.id)
-      child.destroyRecursively()
-    }
-    if (!commandCenterOpen()) {
-      commandCenterBox.requestRender()
-      return
-    }
-
-    const panel = new BoxRenderable(renderer, {
-      flexDirection: "column",
-      border: ["left"],
-      borderColor: theme.primary,
-      customBorderChars: SplitBorder.customBorderChars,
-      paddingLeft: 1,
-      paddingTop: 1,
-      paddingBottom: 1,
-      backgroundColor: theme.backgroundPanel,
-      gap: 0,
+    renderCommandCenterOverlay({
+      box: commandCenterBox,
+      renderer,
+      open: commandCenterOpen(),
+      items: commandCenterItems(),
+      selectedIndex: commandCenterIndex(),
+      visibleRowCount: commandCenterVisibleRowCount(),
+      promptHeight: promptInput?.height ?? 1,
+      overlayFootprint: COMMAND_CENTER_OVERLAY_FOOTPRINT,
     })
-
-    const items = commandCenterItems()
-    const selectedIndex = Math.min(commandCenterIndex(), Math.max(0, items.length - 1))
-    const visibleRowCount = commandCenterVisibleRowCount()
-    const windowStart = Math.max(0, Math.min(selectedIndex - Math.floor(visibleRowCount / 2), Math.max(0, items.length - visibleRowCount)))
-    const visibleItems = items.slice(windowStart, windowStart + visibleRowCount)
-
-    if (windowStart > 0) {
-      panel.add(new TextRenderable(renderer, {
-        content: `  ${windowStart} more above`,
-        fg: theme.textMuted,
-        wrapMode: "none",
-      }))
-    }
-
-    for (const [offset, item] of visibleItems.entries()) {
-      const index = windowStart + offset
-      const selected = index === selectedIndex
-      const row = new BoxRenderable(renderer, {
-        flexDirection: "row",
-        justifyContent: "space-between",
-        paddingLeft: 1,
-        paddingRight: 1,
-        ...(selected ? { backgroundColor: theme.primary } : {}),
-      })
-      row.add(new TextRenderable(renderer, {
-        content: item.kind === "group" ? `${item.label} >` : item.label,
-        fg: selected ? theme.background : theme.text,
-        attributes: selected ? TextAttributes.BOLD : TextAttributes.NONE,
-        wrapMode: "none",
-      }))
-      row.add(new TextRenderable(renderer, {
-        content: item.description,
-        fg: selected ? theme.background : theme.textMuted,
-        wrapMode: "none",
-      }))
-      panel.add(row)
-    }
-
-    const hiddenBelow = items.length - (windowStart + visibleItems.length)
-    if (hiddenBelow > 0) {
-      panel.add(new TextRenderable(renderer, {
-        content: `  ${hiddenBelow} more below`,
-        fg: theme.textMuted,
-        wrapMode: "none",
-      }))
-    }
-
-    commandCenterBox.add(panel)
-    commandCenterBox.requestRender()
   }
   const cancelPendingTurnCompletion = () => {
     if (pendingTurnCompletion) {
