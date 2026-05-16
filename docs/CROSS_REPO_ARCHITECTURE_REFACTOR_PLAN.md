@@ -32,6 +32,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: CLI workflow command handling is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI command coordinator, automation flow, overlays, interaction strips, status badges, and prompt chrome rendering are responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI split-pane footer rendering is responsibility-owned; CLI tests pass.
+- Latest verified batch: CLI status indicator chrome rendering is responsibility-owned; CLI tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build, focused API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Full Cloud API test is blocked by dirty Cloud web client changes; full kernel test currently fails in dirty slice/private-relay tests outside these slices.
 
 ## Responsibility Rule

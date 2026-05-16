@@ -341,8 +341,9 @@ import {
   renderSplitPaneFooters as renderSplitPaneFootersView,
 } from "./split-pane-footer-renderer.js"
 import {
-  renderStatusBadgeParts,
-} from "./status-badge-renderer.js"
+  createStatusIndicatorRenderState,
+  renderStatusIndicator as renderStatusIndicatorView,
+} from "./status-indicator-renderer.js"
 import { syncAuxiliaryPane } from "./response-layout-render.js"
 import { createRenderScheduler } from "./render-scheduler.js"
 import { bootstrapSession } from "./session-bootstrap.js"
@@ -863,9 +864,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let footerSummaryText: TextRenderable | undefined
   let footerFlashText: TextRenderable | undefined
   let historyLoadingText: TextRenderable | undefined
-  let statusOpenText: TextRenderable | undefined
-  let statusCloseText: TextRenderable | undefined
-  let statusLabelTexts: TextRenderable[] = []
+  const statusIndicatorRenderState = createStatusIndicatorRenderState()
   let closing = false
   let exitCleanupFailed = false
   const degradedPollers = new Set<string>()
@@ -3912,17 +3911,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       footerSummaryBox.add(footerSummaryText)
       footerSummaryBox.add(footerFlashText)
     }
-    if (statusIndicatorBox && !statusOpenText) {
-      statusOpenText = new TextRenderable(renderer, { content: "", fg: theme.textMuted, wrapMode: "none" })
-      statusCloseText = new TextRenderable(renderer, { content: "", fg: theme.textMuted, wrapMode: "none" })
-      statusIndicatorBox.add(statusOpenText)
-      statusLabelTexts = Array.from({ length: STATUS_BADGE_WIDTH }, () => {
-        const text = new TextRenderable(renderer, { wrapMode: "none" })
-        statusIndicatorBox!.add(text)
-        return text
-      })
-      statusIndicatorBox.add(statusCloseText)
-    }
   }
 
   const setTextRenderable = (
@@ -3960,24 +3948,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       badgeWidth: STATUS_BADGE_WIDTH,
       animationFrame: workingAnimationFrame(),
     })
-  }
-
-  const ensureStatusLabelTextCount = (count: number) => {
-    if (!statusIndicatorBox) {
-      return
-    }
-    const moveCloseText = Boolean(statusCloseText && statusLabelTexts.length < count)
-    if (statusCloseText && moveCloseText) {
-      statusIndicatorBox.remove(statusCloseText.id)
-    }
-    while (statusLabelTexts.length < count) {
-      const text = new TextRenderable(renderer, { wrapMode: "none" })
-      statusLabelTexts.push(text)
-      statusIndicatorBox.add(text)
-    }
-    if (statusCloseText && moveCloseText) {
-      statusIndicatorBox.add(statusCloseText)
-    }
   }
 
   const renderAgentInteractions = () => {
@@ -4086,22 +4056,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const renderStatusIndicator = () => {
     ensureChromeRenderables()
-    if (!isAttached()) {
+    const attached = isAttached()
+    const badge = attached ? focusedStatusBadge() : null
+    if (!badge) {
       lastLoggedFocusedBadgeState = null
-      setTextRenderable(statusOpenText, "", theme.textMuted)
-      ensureStatusLabelTextCount(STATUS_BADGE_WIDTH)
-      renderStatusBadgeParts(statusLabelTexts, [], STATUS_BADGE_WIDTH, workingAnimationFrame())
-      setTextRenderable(statusCloseText, "", theme.textMuted)
-      statusIndicatorBox?.requestRender()
-      return
+    } else {
+      logFocusedBadgeChange(badge)
     }
-    const badge = focusedStatusBadge()
-    logFocusedBadgeChange(badge)
-    setTextRenderable(statusOpenText, "", theme.textMuted)
-    ensureStatusLabelTextCount(Math.max(STATUS_BADGE_WIDTH, badge.label.length))
-    renderStatusBadgeParts(statusLabelTexts, badge.parts, Math.max(STATUS_BADGE_WIDTH, badge.label.length), workingAnimationFrame())
-    setTextRenderable(statusCloseText, "", theme.textMuted)
-    statusIndicatorBox?.requestRender()
+    renderStatusIndicatorView({
+      renderer,
+      box: statusIndicatorBox,
+      state: statusIndicatorRenderState,
+      attached,
+      badge,
+      badgeWidth: STATUS_BADGE_WIDTH,
+      animationFrame: workingAnimationFrame(),
+    })
   }
 
   const applyResponseLayout = () => {
