@@ -8,6 +8,7 @@ import {
   clampScrollTop,
   findPrependedHistoryMergedHeadId,
   findTurnPromptScrollTarget,
+  promptTurnNavigationDirectionForKey,
 } from "./history-viewport.js"
 
 test("findPrependedHistoryMergedHeadId returns the current head id when prepended history stitches into it", () => {
@@ -98,4 +99,35 @@ test("findTurnPromptScrollTarget navigates between prompt anchors", () => {
   assert.equal(findTurnPromptScrollTarget(prompts, 25, "previous"), 0)
   assert.equal(findTurnPromptScrollTarget(prompts, 25, "next"), 47)
   assert.equal(findTurnPromptScrollTarget(prompts, 95, "next"), 90)
+})
+
+test("promptTurnNavigationDirectionForKey requires shift arrows and an empty prompt", () => {
+  assert.equal(promptTurnNavigationDirectionForKey({
+    attached: true,
+    keyName: "up",
+    eventType: "press",
+    shift: true,
+    promptText: "",
+  }), "previous")
+  assert.equal(promptTurnNavigationDirectionForKey({
+    attached: true,
+    keyName: "down",
+    eventType: "press",
+    shift: true,
+    promptText: "draft",
+  }), null)
+  assert.equal(promptTurnNavigationDirectionForKey({
+    attached: true,
+    keyName: "down",
+    eventType: "release",
+    shift: true,
+    promptText: "",
+  }), null)
+  assert.equal(promptTurnNavigationDirectionForKey({
+    attached: false,
+    keyName: "down",
+    eventType: "press",
+    shift: true,
+    promptText: "",
+  }), null)
 })

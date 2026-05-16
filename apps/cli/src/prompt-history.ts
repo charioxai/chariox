@@ -30,6 +30,11 @@ export type PromptHistoryKeyPolicy = {
   shift?: boolean | undefined
 }
 
+export type PromptHistoryNavigationKeyPolicy = PromptHistoryKeyPolicy & {
+  navigationIndex: number | null
+  navigationDraft: string | null
+}
+
 export type PromptContentChangePolicy = {
   currentText: string
   previousSnapshot: string
@@ -73,6 +78,19 @@ export function promptHistoryDirectionForKey(
     return "next"
   }
   return null
+}
+
+export function resolvePromptHistoryKeyNavigation(
+  options: PromptHistoryNavigationKeyPolicy,
+): PromptHistoryDirection | null {
+  const direction = promptHistoryDirectionForKey(options)
+  if (!direction) {
+    return null
+  }
+  if (direction === "next" && options.navigationIndex === null && options.navigationDraft === null) {
+    return null
+  }
+  return direction
 }
 
 export function cursorIsOnFirstPromptLine(text: string, cursorOffset: number): boolean {

@@ -103,3 +103,25 @@ export function findTurnPromptScrollTarget(
   const nextIndex = Math.min(promptOffsets.length - 1, currentIndex + 1)
   return promptOffsets[nextIndex] ?? null
 }
+
+export function promptTurnNavigationDirectionForKey(options: {
+  attached: boolean
+  keyName: string
+  eventType?: string | undefined
+  shift?: boolean | undefined
+  promptText?: string | undefined
+}): "previous" | "next" | null {
+  if (!options.attached || options.eventType === "release") {
+    return null
+  }
+  if (!options.shift || (options.promptText ?? "").trim()) {
+    return null
+  }
+  if (options.keyName === "up") {
+    return "previous"
+  }
+  if (options.keyName === "down") {
+    return "next"
+  }
+  return null
+}

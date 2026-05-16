@@ -9,6 +9,7 @@ import {
   isProgrammaticPromptContentEcho,
   navigatePromptHistory,
   promptHistoryDirectionForKey,
+  resolvePromptHistoryKeyNavigation,
   pushPromptHistoryEntry,
 } from "./prompt-history.js"
 
@@ -272,4 +273,37 @@ test("prompt cursor line helpers clamp offsets", () => {
   assert.equal(cursorIsOnFirstPromptLine("first\nsecond", 999), false)
   assert.equal(cursorIsOnLastPromptLine("first\nsecond", -10), false)
   assert.equal(cursorIsOnLastPromptLine("first\nsecond", 999), true)
+})
+
+test("resolvePromptHistoryKeyNavigation ignores next with no active navigation", () => {
+  assert.equal(resolvePromptHistoryKeyNavigation({
+    attached: true,
+    promptFocused: true,
+    commandCenterOpen: false,
+    keyName: "down",
+    currentText: "",
+    cursorOffset: 0,
+    navigationIndex: null,
+    navigationDraft: null,
+  }), null)
+  assert.equal(resolvePromptHistoryKeyNavigation({
+    attached: true,
+    promptFocused: true,
+    commandCenterOpen: false,
+    keyName: "down",
+    currentText: "",
+    cursorOffset: 0,
+    navigationIndex: 0,
+    navigationDraft: null,
+  }), "next")
+  assert.equal(resolvePromptHistoryKeyNavigation({
+    attached: true,
+    promptFocused: true,
+    commandCenterOpen: false,
+    keyName: "up",
+    currentText: "",
+    cursorOffset: 0,
+    navigationIndex: null,
+    navigationDraft: null,
+  }), "previous")
 })

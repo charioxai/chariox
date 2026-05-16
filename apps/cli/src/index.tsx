@@ -81,7 +81,7 @@ import { validateProviderNamespaceSubmit } from "./provider-namespace-submit-pol
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent, shouldHandleWaitingRoomKeyEvent } from "./hotkeys.js"
 import { buildHotkeySections } from "./hotkey-help.js"
-import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
+import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget, promptTurnNavigationDirectionForKey } from "./history-viewport.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
@@ -266,7 +266,7 @@ import {
   maxPromptInputHistorySequence,
   navigatePromptHistory,
   promptHistoryEntryListsEqual,
-  promptHistoryDirectionForKey,
+  resolvePromptHistoryKeyNavigation,
   pushPromptHistoryEntry,
 } from "./prompt-history.js"
 import {
@@ -6846,7 +6846,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     preventDefault?: () => void
     stopPropagation?: () => void
   }) => {
-    const direction = promptHistoryDirectionForKey({
+    const direction = resolvePromptHistoryKeyNavigation({
       attached: isAttached(),
       promptFocused: Boolean(promptInput?.focused),
       commandCenterOpen: commandCenterOpen(),
@@ -6858,11 +6858,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       meta: event.meta,
       alt: event.alt,
       shift: event.shift,
+      navigationIndex: promptHistoryIndex(),
+      navigationDraft: promptHistoryDraft(),
     })
     if (!direction) {
-      return false
-    }
-    if (direction === "next" && promptHistoryIndex() === null && promptHistoryDraft() === null) {
       return false
     }
     const handled = navigatePromptHistoryInput(direction)
@@ -6873,13 +6872,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return handled
   }
   const shouldNavigatePromptTurns = (event: { name: string; eventType: string; shift?: boolean }) => {
-    if (!isAttached() || event.eventType === "release") {
-      return false
-    }
-    if (event.name !== "up" && event.name !== "down") {
-      return false
-    }
-    return Boolean(event.shift) && !(promptInput?.plainText.trim())
+    return promptTurnNavigationDirectionForKey({
+      attached: isAttached(),
+      keyName: event.name,
+      eventType: event.eventType,
+      shift: event.shift,
+      promptText: promptInput?.plainText,
+    }) !== null
   }
   const navigatePromptTurns = (direction: "previous" | "next") => {
     if (!transcriptScrollbox) {
