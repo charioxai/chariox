@@ -410,9 +410,11 @@ import { submitWorkspaceShellCommand as submitWorkspaceShellCommandWithDeps } fr
 import { createWorkflowController, deriveWorkflowSelectionState } from "./workflow-controller.js"
 import {
   deriveWorkflowPromptState,
+  formatWorkflowInvocationPrompt,
   formatWorkflowPromptPlaceholder,
   isWorkflowCommandInput,
   resolveActiveWorkflowRun,
+  validateWorkflowPromptSubmit,
 } from "./workflow-prompt-state.js"
 import { WorkspaceLayout } from "./workspace-layout.js"
 import {
@@ -6522,27 +6524,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
 
     if (workflowScreenShowing()) {
-      const workflowPrompt = workflowPromptState()
-      if (!workflowPrompt.enabled) {
-        flashFooter(`prompt disabled: ${workflowPrompt.disabledReason ?? "workflow prompt unavailable"}`, "info")
+      const submitDecision = validateWorkflowPromptSubmit({
+        state: workflowPromptState(),
+        pendingAttachmentCount: pendingAttachments().length,
+      })
+      if (!submitDecision.ok) {
+        flashFooter(submitDecision.message, submitDecision.tone)
         return
       }
-      if (pendingAttachments().length > 0) {
-        flashFooter("workflow endpoint prompts do not support attachments", "error")
-        return
-      }
-      if (!workflowPrompt.workflow || !workflowPrompt.endpoint) {
-        flashFooter("workflow prompt target unavailable", "error")
-        return
-      }
-      const workflowInvocationPrompt = rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`
+      const workflowInvocationPrompt = formatWorkflowInvocationPrompt(rawPrompt)
 
       let submissionUi: SubmittedPromptUiSnapshot | null = null
       try {
         submissionUi = beginSubmittedPromptUi(rawPrompt)
         const payload = await invokeWorkflowEndpoint(
-          workflowPrompt.workflow.id,
-          workflowPrompt.endpoint.id,
+          submitDecision.workflowId,
+          submitDecision.endpointId,
           workflowInvocationPrompt,
         )
         if ("workflow_run" in payload) {

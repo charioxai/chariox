@@ -10,6 +10,16 @@ export type WorkflowPromptState = {
   disabledReason: string | null
 }
 
+export type WorkflowPromptSubmitDecision = {
+  ok: true
+  workflowId: string
+  endpointId: string
+} | {
+  ok: false
+  message: string
+  tone: "error" | "info"
+}
+
 export function resolveActiveWorkflowRun(
   workflowId: string,
   workflowRuns: readonly WorkflowRun[],
@@ -105,6 +115,42 @@ export function deriveWorkflowPromptState(options: {
 
 export function isWorkflowCommandInput(value: string) {
   return value.startsWith("/")
+}
+
+export function validateWorkflowPromptSubmit(options: {
+  state: WorkflowPromptState
+  pendingAttachmentCount: number
+}): WorkflowPromptSubmitDecision {
+  if (!options.state.enabled) {
+    return {
+      ok: false,
+      message: `prompt disabled: ${options.state.disabledReason ?? "workflow prompt unavailable"}`,
+      tone: "info",
+    }
+  }
+  if (options.pendingAttachmentCount > 0) {
+    return {
+      ok: false,
+      message: "workflow endpoint prompts do not support attachments",
+      tone: "error",
+    }
+  }
+  if (!options.state.workflow || !options.state.endpoint) {
+    return {
+      ok: false,
+      message: "workflow prompt target unavailable",
+      tone: "error",
+    }
+  }
+  return {
+    ok: true,
+    workflowId: options.state.workflow.id,
+    endpointId: options.state.endpoint.id,
+  }
+}
+
+export function formatWorkflowInvocationPrompt(rawPrompt: string) {
+  return rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`
 }
 
 export function formatWorkflowPromptPlaceholder(options: {

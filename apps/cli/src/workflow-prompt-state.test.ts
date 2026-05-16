@@ -4,9 +4,11 @@ import test from "node:test"
 import type { WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import {
   deriveWorkflowPromptState,
+  formatWorkflowInvocationPrompt,
   formatWorkflowPromptPlaceholder,
   isWorkflowCommandInput,
   resolveActiveWorkflowRun,
+  validateWorkflowPromptSubmit,
 } from "./workflow-prompt-state.js"
 
 test("resolveActiveWorkflowRun returns the newest non-terminal run", () => {
@@ -111,6 +113,57 @@ test("isWorkflowCommandInput requires slash as the first character", () => {
   assert.equal(isWorkflowCommandInput("/workflow run"), true)
   assert.equal(isWorkflowCommandInput(" /workflow run"), false)
   assert.equal(isWorkflowCommandInput("hello"), false)
+})
+
+test("validateWorkflowPromptSubmit returns footer decisions", () => {
+  const enabledState = deriveWorkflowPromptState({
+    workflowScreenActive: true,
+    workflows: [workflow({
+      endpoints: [{ id: "endpoint-1", alias: "start", entry_node_id: "node-1" }],
+    })],
+    workflowRuns: [workflowRun({ id: "run-1", status: "Running" })],
+    selectedWorkflowId: "workflow-1",
+    selectedWorkflowNodeId: "node-1",
+  })
+
+  assert.deepEqual(validateWorkflowPromptSubmit({
+    state: enabledState,
+    pendingAttachmentCount: 0,
+  }), {
+    ok: true,
+    workflowId: "workflow-1",
+    endpointId: "endpoint-1",
+  })
+
+  assert.deepEqual(validateWorkflowPromptSubmit({
+    state: enabledState,
+    pendingAttachmentCount: 1,
+  }), {
+    ok: false,
+    message: "workflow endpoint prompts do not support attachments",
+    tone: "error",
+  })
+
+  const disabledState = deriveWorkflowPromptState({
+    workflowScreenActive: true,
+    workflows: [workflow({ endpoints: [] })],
+    workflowRuns: [],
+    selectedWorkflowId: "workflow-1",
+    selectedWorkflowNodeId: "node-1",
+  })
+  assert.deepEqual(validateWorkflowPromptSubmit({
+    state: disabledState,
+    pendingAttachmentCount: 0,
+  }), {
+    ok: false,
+    message: "prompt disabled: no workflow endpoints configured",
+    tone: "info",
+  })
+})
+
+test("formatWorkflowInvocationPrompt terminates endpoint prompts", () => {
+  assert.equal(formatWorkflowInvocationPrompt("hello"), "hello\n")
+  assert.equal(formatWorkflowInvocationPrompt("hello\n"), "hello\n")
 })
 
 function workflow(overrides: Partial<WorkflowDefinition> = {}): WorkflowDefinition {
