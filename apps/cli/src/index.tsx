@@ -44,6 +44,10 @@ import {
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
 import { buildCliAutomationSnapshot } from "./cli-automation-snapshot.js"
 import {
+  renderCliDialogOverlay,
+  type CliDialogOverlayMode,
+} from "./cli-dialog-overlay.js"
+import {
   computeTranscriptRebuildScrollTop,
   evaluateTranscriptScrollMonitor,
   nextWaitingRoomIntroStep,
@@ -302,9 +306,6 @@ import {
   formatSessionList,
   selectAttachableSession,
   sessionBrowserSortTime,
-  sessionBrowserStatus,
-  sessionBrowserTimestamp,
-  sessionBrowserTitle,
   type SessionListEntry,
 } from "./sessions.js"
 import {
@@ -401,7 +402,6 @@ import {
   configureRelay,
   connectKernelCloudRelay,
   createTerminalPairingLink,
-  formatPairingExpiry,
   formatTerminalTypeLabel,
   getRelayStatus,
   issueKernelCloudRelayClientToken,
@@ -411,7 +411,6 @@ import {
   pollCloudRelayLogin,
   renderTerminalPairingQr,
   startCloudRelayLogin,
-  wrapPairingLink,
   type RelayStatusView,
   type TerminalPairingLinkView,
   type TerminalTypeView,
@@ -466,7 +465,6 @@ const CHROME_UPDATE_THROTTLE_MS = 48
 const TURN_COMPLETION_QUIET_MS = 1_500
 const COMMAND_CENTER_OVERLAY_FOOTPRINT = 3
 const ATTACHED_PROMPT_PLACEHOLDER = "Write your next prompt here"
-const HOTKEY_DIALOG_WIDTH = 72
 
 type PendingWaitingRoomSessionAction = {
   action: WaitingRoomSessionLifecycleAction
@@ -2998,251 +2996,33 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return index
   }
   const renderHotkeysOverlay = () => {
-    if (!hotkeysOverlayBox) {
-      return
-    }
-    for (const child of [...hotkeysOverlayBox.getChildren()]) {
-      hotkeysOverlayBox.remove(child.id)
-      child.destroyRecursively()
-    }
-    if (!hotkeysOpen() && !terminalPairingOpen() && !sessionBrowserOpen()) {
-      hotkeysOverlayBox.requestRender()
-      return
-    }
-
-    const scrim = new BoxRenderable(renderer, {
-      position: "absolute",
-      left: 0,
-      top: 0,
-      width: dimensions().width,
-      height: dimensions().height,
-      alignItems: "center",
-      paddingTop: Math.max(1, Math.floor(dimensions().height / 5)),
-      backgroundColor: RGBA.fromInts(0, 0, 0, 150),
+    const mode: CliDialogOverlayMode = sessionBrowserOpen()
+      ? "session-browser"
+      : terminalPairingOpen()
+        ? "terminal-pairing"
+        : hotkeysOpen()
+          ? "hotkeys"
+          : "closed"
+    renderCliDialogOverlay({
+      overlayBox: hotkeysOverlayBox,
+      renderer,
+      dimensions: dimensions(),
+      mode,
+      onDismiss: () => {
+        if (sessionBrowserOpen()) {
+          closeSessionBrowserDialog()
+        } else if (terminalPairingOpen()) {
+          closeTerminalPairingDialog()
+        } else {
+          closeHotkeys()
+        }
+      },
+      sessions: sessionBrowserSessions(),
+      normalizeSessionBrowserIndex,
+      terminalPairing: terminalPairingState(),
+      terminalPairingQrLines: terminalPairingQrLines(),
+      hotkeySections: hotkeySections(),
     })
-    scrim.onMouseUp = () => {
-      if (sessionBrowserOpen()) {
-        closeSessionBrowserDialog()
-      } else if (terminalPairingOpen()) {
-        closeTerminalPairingDialog()
-      } else {
-        closeHotkeys()
-      }
-    }
-
-    if (sessionBrowserOpen()) {
-      const sessions = sessionBrowserSessions()
-      const panel = new BoxRenderable(renderer, {
-        width: Math.min(112, Math.max(78, Math.floor(dimensions().width * 0.78))),
-        maxWidth: dimensions().width - 4,
-        backgroundColor: theme.backgroundPanel,
-        paddingTop: 1,
-        paddingBottom: 1,
-        paddingLeft: 2,
-        paddingRight: 2,
-        flexDirection: "column",
-        gap: 1,
-      })
-      panel.onMouseUp = (event) => {
-        event.stopPropagation()
-      }
-      const header = new BoxRenderable(renderer, {
-        flexDirection: "row",
-        justifyContent: "space-between",
-      })
-      header.add(new TextRenderable(renderer, {
-        content: "All Sessions",
-        attributes: TextAttributes.BOLD,
-        fg: theme.text,
-      }))
-      header.add(new TextRenderable(renderer, {
-        content: "Enter opens • A/D confirm • Esc closes",
-        fg: theme.textMuted,
-      }))
-      panel.add(header)
-      if (sessions.length === 0) {
-        panel.add(new TextRenderable(renderer, {
-          content: "No sessions available.",
-          fg: theme.textMuted,
-        }))
-      } else {
-        const index = normalizeSessionBrowserIndex()
-        const statusWidth = Math.max("Status".length, ...sessions.map((session) => sessionBrowserStatus(session).length))
-        const lastUsedWidth = Math.max("Last used".length, "0000-00-00 00:00 UTC".length)
-        const createdAtWidth = Math.max("Created at".length, "0000-00-00 00:00 UTC".length)
-        panel.add(new TextRenderable(renderer, {
-          content: `  ${"Session".padEnd(30, " ")} ${"Status".padEnd(statusWidth, " ")}  ${"Last used".padEnd(lastUsedWidth, " ")}  ${"Created at".padEnd(createdAtWidth, " ")}`,
-          fg: theme.textMuted,
-          wrapMode: "none",
-        }))
-        const maxRows = Math.max(4, Math.min(14, dimensions().height - 12))
-        const start = Math.min(Math.max(0, index - maxRows + 1), Math.max(0, sessions.length - maxRows))
-        for (const [offset, session] of sessions.slice(start, start + maxRows).entries()) {
-          const rowIndex = start + offset
-          const selected = rowIndex === index
-          const title = sessionBrowserTitle(session)
-          const content = `${selected ? ">" : " "} ${title.padEnd(30, " ")} ${sessionBrowserStatus(session).padEnd(statusWidth, " ")}  ${sessionBrowserTimestamp(session.last_used_at_ms ?? null).padEnd(lastUsedWidth, " ")}  ${sessionBrowserTimestamp(session.created_at_ms ?? null).padEnd(createdAtWidth, " ")}`
-          panel.add(new TextRenderable(renderer, {
-            content,
-            fg: selected ? theme.primary : theme.text,
-            ...(selected ? { attributes: TextAttributes.BOLD } : {}),
-            wrapMode: "none",
-          }))
-        }
-        if (sessions.length > maxRows) {
-          panel.add(new TextRenderable(renderer, {
-            content: `${start + 1}-${Math.min(sessions.length, start + maxRows)} of ${sessions.length}`,
-            fg: theme.textMuted,
-          }))
-        }
-      }
-      scrim.add(panel)
-      hotkeysOverlayBox.add(scrim)
-      hotkeysOverlayBox.requestRender()
-      return
-    }
-
-    if (terminalPairingOpen()) {
-      const pairing = terminalPairingState()
-      const panel = new BoxRenderable(renderer, {
-        width: Math.min(96, Math.max(72, Math.floor(dimensions().width * 0.72))),
-        maxWidth: dimensions().width - 4,
-        backgroundColor: theme.backgroundPanel,
-        paddingTop: 1,
-        paddingBottom: 1,
-        paddingLeft: 2,
-        paddingRight: 2,
-        flexDirection: "column",
-        gap: 1,
-      })
-      panel.onMouseUp = (event) => {
-        event.stopPropagation()
-      }
-      const header = new BoxRenderable(renderer, {
-        flexDirection: "row",
-        justifyContent: "space-between",
-      })
-      header.add(new TextRenderable(renderer, {
-        content: "Add New Terminal",
-        attributes: TextAttributes.BOLD,
-        fg: theme.text,
-      }))
-      header.add(new TextRenderable(renderer, {
-        content: "Esc closes",
-        fg: theme.textMuted,
-      }))
-      panel.add(header)
-      if (!pairing) {
-        panel.add(new TextRenderable(renderer, {
-          content: "Creating pairing link...",
-          fg: theme.textMuted,
-        }))
-      } else {
-        panel.add(new TextRenderable(renderer, {
-          content: `Type: ${formatTerminalTypeLabel(pairing.terminal_type)}   Code: ${pairing.pairing_code}`,
-          fg: theme.primary,
-          attributes: TextAttributes.BOLD,
-        }))
-        panel.add(new TextRenderable(renderer, {
-          content: `Expires: ${formatPairingExpiry(pairing.expires_at_ms)}`,
-          fg: theme.textMuted,
-        }))
-        const qr = terminalPairingQrLines()
-        if (qr.length > 0) {
-          panel.add(new TextRenderable(renderer, {
-            content: qr.join("\n"),
-            fg: theme.text,
-          }))
-        }
-        panel.add(new TextRenderable(renderer, {
-          content: "Pairing link",
-          fg: theme.primary,
-          attributes: TextAttributes.BOLD,
-        }))
-        for (const line of wrapPairingLink(pairing.pairing_link, Math.max(36, Math.min(88, dimensions().width - 10)))) {
-          panel.add(new TextRenderable(renderer, {
-            content: line,
-            fg: theme.text,
-          }))
-        }
-      }
-      scrim.add(panel)
-      hotkeysOverlayBox.add(scrim)
-      hotkeysOverlayBox.requestRender()
-      return
-    }
-
-    const panel = new BoxRenderable(renderer, {
-      width: HOTKEY_DIALOG_WIDTH,
-      maxWidth: dimensions().width - 4,
-      backgroundColor: theme.backgroundPanel,
-      paddingTop: 1,
-      paddingBottom: 1,
-      paddingLeft: 2,
-      paddingRight: 2,
-      flexDirection: "column",
-      gap: 1,
-    })
-    panel.onMouseUp = (event) => {
-      event.stopPropagation()
-    }
-
-    const header = new BoxRenderable(renderer, {
-      flexDirection: "row",
-      justifyContent: "space-between",
-    })
-    header.add(new TextRenderable(renderer, {
-      content: "Hotkeys",
-      attributes: TextAttributes.BOLD,
-      fg: theme.text,
-    }))
-    header.add(new TextRenderable(renderer, {
-      content: "Esc closes",
-      fg: theme.textMuted,
-    }))
-    panel.add(header)
-    panel.add(new TextRenderable(renderer, {
-      content: `${HOTKEY_TOGGLE_LABEL} toggles this list.`,
-      fg: theme.textMuted,
-    }))
-
-    for (const section of hotkeySections()) {
-      const sectionBox = new BoxRenderable(renderer, {
-        flexDirection: "column",
-        gap: 1,
-      })
-      sectionBox.add(new TextRenderable(renderer, {
-        content: section.title,
-        attributes: TextAttributes.BOLD,
-        fg: theme.primary,
-      }))
-      for (const item of section.items) {
-        const row = new BoxRenderable(renderer, {
-          flexDirection: "row",
-          gap: 2,
-        })
-        const keys = new BoxRenderable(renderer, {
-          width: 22,
-          flexShrink: 0,
-        })
-        keys.add(new TextRenderable(renderer, {
-          content: item.keys,
-          attributes: TextAttributes.BOLD,
-          fg: theme.text,
-        }))
-        row.add(keys)
-        row.add(new TextRenderable(renderer, {
-          content: item.description,
-          fg: theme.textMuted,
-        }))
-        sectionBox.add(row)
-      }
-      panel.add(sectionBox)
-    }
-
-    scrim.add(panel)
-    hotkeysOverlayBox.add(scrim)
-    hotkeysOverlayBox.requestRender()
   }
   const closeHotkeys = () => {
     if (!hotkeysOpen()) {
