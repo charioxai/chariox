@@ -518,6 +518,7 @@ import {
   type TranscriptSurfaceTone,
 } from "./transcript-render.js"
 import { reconcileMountedTranscriptPane } from "./transcript-pane-reconcile.js"
+import { createTranscriptRetentionController } from "./transcript-retention-controller.js"
 import {
   buildEmptyTranscriptRenderable,
   buildLoadingTranscriptRenderable,
@@ -2117,44 +2118,30 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     scrollTranscriptToBottom()
   }
 
-  const removeTranscriptRenderable = (entryId: number) => {
-    const renderable = transcriptRenderables.get(entryId)
-    if (!renderable || !transcriptScrollbox) {
-      return
-    }
-    transcriptScrollbox.remove(renderable.wrapper.id)
-    renderable.wrapper.destroyRecursively()
-    transcriptRenderables.delete(entryId)
-  }
-
-  const enforceTranscriptRetention = () => {
-    const currentEntries = entries.slice()
-    let totalChars = currentEntries.reduce((sum, entry) => sum + entry.text.length, 0)
-    let removeCount = 0
-
-    while (
-      currentEntries.length - removeCount > LIVE_TRANSCRIPT_LIMIT
-      || (totalChars > LIVE_TRANSCRIPT_MAX_CHARS && removeCount < currentEntries.length - 1)
-    ) {
-      totalChars -= currentEntries[removeCount]?.text.length ?? 0
-      removeCount += 1
-    }
-
-    if (removeCount === 0) {
-      return
-    }
-
-    const removed = currentEntries.slice(0, removeCount)
-    const kept = currentEntries.slice(removeCount)
-    for (const entry of removed) {
-      removeTranscriptRenderable(entry.id)
-      if (entry.mergeKey) {
-        tools.delete(entry.mergeKey)
+  const transcriptRetentionController = createTranscriptRetentionController({
+    entries: () => entries.slice(),
+    setEntries: (nextEntries) => {
+      setEntries(reconcile(nextEntries))
+    },
+    renderables: transcriptRenderables,
+    removeFromScrollbox: (renderableId) => {
+      if (!transcriptScrollbox) {
+        return false
       }
-    }
-    setEntries(reconcile(kept))
-    transcriptScrollbox?.requestRender()
-  }
+      transcriptScrollbox.remove(renderableId)
+      return true
+    },
+    requestScrollboxRender: () => {
+      transcriptScrollbox?.requestRender()
+    },
+    deleteTool: (mergeKey) => {
+      tools.delete(mergeKey)
+    },
+    maxEntries: LIVE_TRANSCRIPT_LIMIT,
+    maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
+  })
+  const removeTranscriptRenderable = transcriptRetentionController.removeRenderable
+  const enforceTranscriptRetention = transcriptRetentionController.enforce
 
   const footerFlashController = createFooterFlashController({
     delayMs: 10_000,
