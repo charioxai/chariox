@@ -739,7 +739,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     BoxRenderable,
     ToolTranscriptUpdate
   >()
-  let hotkeysOverlayBox: BoxRenderable | undefined
   const statusIndicatorRenderState = createStatusIndicatorRenderState()
   const closingStateController = createCliClosingStateController()
   const primaryTranscriptRuntimeStore = createPrimaryTranscriptRuntimeStoreController<
@@ -1515,7 +1514,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const hotkeySections = sessionBrowserProjectionController.hotkeySections
   const sessionBrowserSessions = sessionBrowserProjectionController.sessions
   const normalizeSessionBrowserIndex = sessionBrowserProjectionController.normalizeIndex
-  const dialogOverlayController = createCliDialogOverlayController({
+  const dialogOverlayController = createCliDialogOverlayController<CliDialogFocusTarget, BoxRenderable>({
     getOpenState: () => ({
       hotkeysOpen: hotkeysOpen(),
       terminalPairingOpen: terminalPairingOpen(),
@@ -1536,9 +1535,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getWaitingRoomSessionIndex: () => waitingRoomState().sessionIndex,
     setSessionBrowserIndex,
     clampSessionBrowserIndex,
-    renderOverlay: (mode, onDismiss) => {
+    renderOverlay: (mode, onDismiss, overlayBox) => {
       renderCliDialogOverlay({
-        overlayBox: hotkeysOverlayBox,
+        overlayBox,
         renderer,
         dimensions: dimensions(),
         mode,
@@ -4240,7 +4239,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         updateSessionChrome()
       }}
       onHotkeysOverlayBoxRef={(value) => {
-        hotkeysOverlayBox = value
+        dialogOverlayController.assignOverlayBox(value)
         renderHotkeysOverlay()
       }}
     />

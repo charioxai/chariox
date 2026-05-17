@@ -13,7 +13,7 @@ import {
 import type { FooterFlash } from "./footer-flash-controller.js"
 import type { TerminalPairingLinkView } from "./relay-api.js"
 
-type CliDialogOverlayControllerDeps<TFocus extends CliDialogFocusTarget> = {
+type CliDialogOverlayControllerDeps<TFocus extends CliDialogFocusTarget, TBox = unknown> = {
   getOpenState: () => CliDialogOverlayOpenState
   getCurrentFocus: () => TFocus | null
   getPromptFocus: () => TFocus | null | undefined
@@ -28,7 +28,7 @@ type CliDialogOverlayControllerDeps<TFocus extends CliDialogFocusTarget> = {
   getWaitingRoomSessionIndex: () => number
   setSessionBrowserIndex: (index: number) => void
   clampSessionBrowserIndex: (index: number, sessionCount: number) => number
-  renderOverlay: (mode: CliDialogOverlayMode, onDismiss: () => void) => void
+  renderOverlay: (mode: CliDialogOverlayMode, onDismiss: () => void, overlayBox: TBox | undefined) => void
   createTerminalPairingLink: () => Promise<TerminalPairingLinkView>
   renderTerminalPairingQr: (pairingLink: string) => Promise<string[]>
   flashFooter: (message: string, tone: FooterFlash["tone"]) => void
@@ -37,9 +37,10 @@ type CliDialogOverlayControllerDeps<TFocus extends CliDialogFocusTarget> = {
   formatError?: (error: unknown) => string
 }
 
-export type CliDialogOverlayController = {
+export type CliDialogOverlayController<TBox = unknown> = {
   isOpen(): boolean
   savedFocusDebug(): CliDialogFocusSnapshot | null
+  assignOverlayBox(value: TBox | undefined): void
   closeActive(): void
   render(): void
   closeHotkeys(): void
@@ -51,22 +52,26 @@ export type CliDialogOverlayController = {
   toggleHotkeys(): void
 }
 
-export function createCliDialogOverlayController<TFocus extends CliDialogFocusTarget>(
-  deps: CliDialogOverlayControllerDeps<TFocus>,
-): CliDialogOverlayController {
+export function createCliDialogOverlayController<TFocus extends CliDialogFocusTarget, TBox = unknown>(
+  deps: CliDialogOverlayControllerDeps<TFocus, TBox>,
+): CliDialogOverlayController<TBox> {
   const formatError = deps.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
   let savedFocus: TFocus | null = null
+  let overlayBox: TBox | undefined
 
   const focusSnapshot = (target: TFocus | null | undefined) => deps.describeFocus?.(target) ?? null
   const focusType = (target: TFocus | null | undefined) => focusSnapshot(target)?.type ?? "none"
   const mode = () => resolveCliDialogOverlayMode(deps.getOpenState())
 
-  const controller: CliDialogOverlayController = {
+  const controller: CliDialogOverlayController<TBox> = {
     isOpen() {
       return cliDialogOverlayIsOpen(deps.getOpenState())
     },
     savedFocusDebug() {
       return focusSnapshot(savedFocus)
+    },
+    assignOverlayBox(value) {
+      overlayBox = value
     },
     closeActive() {
       const activeMode = mode()
@@ -79,7 +84,7 @@ export function createCliDialogOverlayController<TFocus extends CliDialogFocusTa
       }
     },
     render() {
-      deps.renderOverlay(mode(), controller.closeActive)
+      deps.renderOverlay(mode(), controller.closeActive, overlayBox)
     },
     closeHotkeys() {
       if (!deps.getOpenState().hotkeysOpen) {

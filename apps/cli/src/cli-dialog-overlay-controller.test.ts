@@ -10,12 +10,14 @@ test("dialog overlay controller opens and closes hotkeys with focus restore", ()
   const harness = createHarness()
   const controller = createCliDialogOverlayController(harness.deps)
 
+  controller.assignOverlayBox("dialog-box")
   controller.openHotkeys()
 
   assert.equal(harness.hotkeysOpen(), true)
   assert.equal(harness.currentFocus.blurCount, 1)
   assert.equal(controller.savedFocusDebug()?.id, "current")
   assert.deepEqual(harness.renderModes(), ["hotkeys"])
+  assert.deepEqual(harness.renderBoxes(), ["dialog-box"])
 
   controller.closeHotkeys()
   assert.equal(harness.hotkeysOpen(), false)
@@ -110,6 +112,7 @@ function createHarness(options: {
   let terminalPairingQrLines: string[] = []
   let sessionBrowserIndex = 0
   const renderModes: CliDialogOverlayMode[] = []
+  const renderBoxes: Array<string | undefined> = []
   const focusRestores: Array<() => void> = []
   const footerMessages: Array<{ message: string; tone: "info" | "error" }> = []
   const currentFocus = new MockFocusTarget("current")
@@ -151,8 +154,9 @@ function createHarness(options: {
       sessionBrowserIndex = index
     },
     clampSessionBrowserIndex: (index: number, sessionCount: number) => Math.max(0, Math.min(index, sessionCount - 1)),
-    renderOverlay: (mode: CliDialogOverlayMode) => {
+    renderOverlay: (mode: CliDialogOverlayMode, _onDismiss: () => void, overlayBox: string | undefined) => {
       renderModes.push(mode)
+      renderBoxes.push(overlayBox)
     },
     createTerminalPairingLink: options.createTerminalPairingLink ?? (async () => pairingLink()),
     renderTerminalPairingQr: async () => ["qr"],
@@ -172,6 +176,7 @@ function createHarness(options: {
     terminalPairingQrLines: () => terminalPairingQrLines,
     sessionBrowserIndex: () => sessionBrowserIndex,
     renderModes: () => renderModes,
+    renderBoxes: () => renderBoxes,
     footerMessages: () => footerMessages,
     flushFocusRestores: () => {
       while (focusRestores.length > 0) {
