@@ -303,6 +303,7 @@ import {
 import { createPromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
 import { createResponseLayoutController } from "./response-layout-controller.js"
 import { createResponsePaneProjectionController } from "./response-pane-projection-controller.js"
+import { createResponsePaneRenderRefStoreController } from "./response-pane-render-ref-store-controller.js"
 import { createResponsePaneRenderScheduleController } from "./response-pane-render-schedule-controller.js"
 import {
   splitPaneAuxiliaryAgentIds,
@@ -715,22 +716,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const setDirectoryTreeState = (_value: null) => {}
   let promptInput: TextareaRenderable | undefined
   let transcriptScrollbox: ScrollBoxRenderable | undefined
-  let responseLayoutBox: BoxRenderable | undefined
-  const responseRowBoxes: Array<BoxRenderable | undefined> = []
-  const paneGridBorderRows: Array<BoxRenderable | undefined> = []
-  let paneGridBottomBorderRow: BoxRenderable | undefined
-  const paneGridHorizontalSegments: Array<Array<BoxRenderable | undefined>> = []
-  const paneGridBottomHorizontalSegments: Array<BoxRenderable | undefined> = []
-  const paneGridJunctionTexts: Array<Array<TextRenderable | undefined>> = []
-  const paneGridBottomJunctionTexts: Array<TextRenderable | undefined> = []
-  const paneGridVerticalSegments: Array<Array<BoxRenderable | undefined>> = []
-  let responsePrimaryPane: BoxRenderable | undefined
-  const responseAuxiliaryPanes: Array<BoxRenderable | undefined> = []
-  const responseAuxiliaryScrollboxes: Array<ScrollBoxRenderable | undefined> = []
-  let responsePrimaryInteractionBox: BoxRenderable | undefined
-  const responseAuxiliaryInteractionBoxes: Array<BoxRenderable | undefined> = []
-  let responsePrimaryFooterBox: BoxRenderable | undefined
-  const responseAuxiliaryFooterBoxes: Array<BoxRenderable | undefined> = []
+  const responsePaneRenderRefStore = createResponsePaneRenderRefStoreController<
+    BoxRenderable,
+    ScrollBoxRenderable,
+    TextRenderable
+  >()
   const splitPaneFooterRenderState = createSplitPaneFooterRenderState()
   const interactionChoiceStore = createInteractionChoiceStoreController()
   const agentPaneRuntimeStore = createAgentPaneRuntimeStoreController<
@@ -843,7 +833,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const renderHistoryLoadingIndicator = historyLoadingRenderController.render
   const responsePaneRenderScheduleController = createResponsePaneRenderScheduleController({
-    responseLayoutBox: () => responseLayoutBox,
+    responseLayoutBox: responsePaneRenderRefStore.getLayoutBox,
     historyLoadingBox: historyLoadingRenderController.getBox,
     requestTree: (renderable) => renderScheduler.requestTree(renderable),
     requestRoot: () => renderScheduler.requestRoot(),
@@ -1937,8 +1927,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const splitPaneFooterRenderController = createSplitPaneFooterRenderController({
     renderer,
     state: splitPaneFooterRenderState,
-    primaryBox: () => responsePrimaryFooterBox,
-    auxiliaryBoxes: () => responseAuxiliaryFooterBoxes,
+    primaryBox: responsePaneRenderRefStore.getPrimaryFooterBox,
+    auxiliaryBoxes: responsePaneRenderRefStore.getAuxiliaryFooterBoxes,
     isAttached,
     workflowScreenActive: () => workflowScreenActive(),
     maxAgentsPerScreen,
@@ -1960,8 +1950,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const agentInteractionStripController = createAgentInteractionStripController({
     renderer,
-    primaryBox: () => responsePrimaryInteractionBox,
-    auxiliaryBoxes: () => responseAuxiliaryInteractionBoxes,
+    primaryBox: responsePaneRenderRefStore.getPrimaryInteractionBox,
+    auxiliaryBoxes: responsePaneRenderRefStore.getAuxiliaryInteractionBoxes,
     visibleAgents: responseVisibleAgents,
     maxAgentsPerScreen,
     focusedAgentId,
@@ -2025,25 +2015,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const renderStatusIndicator = statusIndicatorController.render
 
   const responseLayoutController = createResponseLayoutController({
-    getRefs: () => ({
-      layoutBox: responseLayoutBox,
-      primaryPane: responsePrimaryPane,
-      primaryInteractionBox: responsePrimaryInteractionBox,
-      primaryFooterBox: responsePrimaryFooterBox,
+    getRefs: () => responsePaneRenderRefStore.snapshot({
       primaryScrollbox: transcriptScrollbox,
       historyLoadingBox: historyLoadingRenderController.getBox(),
-      auxiliaryPanes: responseAuxiliaryPanes,
-      auxiliaryInteractionBoxes: responseAuxiliaryInteractionBoxes,
-      auxiliaryFooterBoxes: responseAuxiliaryFooterBoxes,
-      auxiliaryScrollboxes: responseAuxiliaryScrollboxes,
-      rowBoxes: responseRowBoxes,
-      borderRows: paneGridBorderRows,
-      horizontalSegments: paneGridHorizontalSegments,
-      verticalSegments: paneGridVerticalSegments,
-      junctionTexts: paneGridJunctionTexts,
-      bottomBorderRow: paneGridBottomBorderRow,
-      bottomHorizontalSegments: paneGridBottomHorizontalSegments,
-      bottomJunctionTexts: paneGridBottomJunctionTexts,
     }),
     getSplit: splitAgentResponseMode,
     getVisibleAgents: responseVisibleAgents,
@@ -4100,47 +4074,44 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onResponseSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
       onFooterMouseUp={handlePromptSelectionSurfaceMouseUp}
       onResponseLayoutBoxRef={(value) => {
-        responseLayoutBox = value
+        responsePaneRenderRefStore.assignLayoutBox(value)
         logViewDebug("mounted response layout box")
         applyResponseLayout()
       }}
       onResponseRowBoxRef={(index, value) => {
-        responseRowBoxes[index] = value
+        responsePaneRenderRefStore.assignRowBox(index, value)
         applyResponseLayout()
       }}
       onPaneGridBorderRowRef={(index, value) => {
-        paneGridBorderRows[index] = value
+        responsePaneRenderRefStore.assignBorderRow(index, value)
         applyResponseLayout()
       }}
       onPaneGridBottomBorderRowRef={(value) => {
-        paneGridBottomBorderRow = value
+        responsePaneRenderRefStore.assignBottomBorderRow(value)
         applyResponseLayout()
       }}
       onPaneGridHorizontalSegmentRef={(rowIndex, segmentIndex, value) => {
-        paneGridHorizontalSegments[rowIndex] ??= []
-        paneGridHorizontalSegments[rowIndex][segmentIndex] = value
+        responsePaneRenderRefStore.assignHorizontalSegment(rowIndex, segmentIndex, value)
         applyResponseLayout()
       }}
       onPaneGridBottomHorizontalSegmentRef={(segmentIndex, value) => {
-        paneGridBottomHorizontalSegments[segmentIndex] = value
+        responsePaneRenderRefStore.assignBottomHorizontalSegment(segmentIndex, value)
         applyResponseLayout()
       }}
       onPaneGridJunctionTextRef={(rowIndex, junctionIndex, value) => {
-        paneGridJunctionTexts[rowIndex] ??= []
-        paneGridJunctionTexts[rowIndex][junctionIndex] = value
+        responsePaneRenderRefStore.assignJunctionText(rowIndex, junctionIndex, value)
         applyResponseLayout()
       }}
       onPaneGridBottomJunctionTextRef={(junctionIndex, value) => {
-        paneGridBottomJunctionTexts[junctionIndex] = value
+        responsePaneRenderRefStore.assignBottomJunctionText(junctionIndex, value)
         applyResponseLayout()
       }}
       onPaneGridVerticalSegmentRef={(rowIndex, segmentIndex, value) => {
-        paneGridVerticalSegments[rowIndex] ??= []
-        paneGridVerticalSegments[rowIndex][segmentIndex] = value
+        responsePaneRenderRefStore.assignVerticalSegment(rowIndex, segmentIndex, value)
         applyResponseLayout()
       }}
       onResponsePrimaryPaneRef={(value) => {
-        responsePrimaryPane = value
+        responsePaneRenderRefStore.assignPrimaryPane(value)
         logViewDebug("mounted response primary pane")
         applyResponseLayout()
       }}
@@ -4156,36 +4127,36 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         ensureBackgroundPollersStarted()
       }}
       onResponsePrimaryInteractionBoxRef={(value) => {
-        responsePrimaryInteractionBox = value
+        responsePaneRenderRefStore.assignPrimaryInteractionBox(value)
         renderAgentInteractions()
         applyResponseLayout()
       }}
       onResponsePrimaryFooterBoxRef={(value) => {
-        responsePrimaryFooterBox = value
+        responsePaneRenderRefStore.assignPrimaryFooterBox(value)
         renderSplitPaneFooters()
         applyResponseLayout()
       }}
       onResponseAuxiliaryPaneRef={(index, value) => {
-        responseAuxiliaryPanes[index] = value
+        responsePaneRenderRefStore.assignAuxiliaryPane(index, value)
         logViewDebug("mounted response auxiliary pane", {
           pane_index: index + 1,
         })
         applyResponseLayout()
       }}
       onResponseAuxiliaryScrollboxRef={(index, value) => {
-        responseAuxiliaryScrollboxes[index] = value
+        responsePaneRenderRefStore.assignAuxiliaryScrollbox(index, value)
         logViewDebug("mounted response auxiliary scrollbox", {
           pane_index: index + 1,
         })
         applyResponseLayout()
       }}
       onResponseAuxiliaryInteractionBoxRef={(index, value) => {
-        responseAuxiliaryInteractionBoxes[index] = value
+        responsePaneRenderRefStore.assignAuxiliaryInteractionBox(index, value)
         renderAgentInteractions()
         applyResponseLayout()
       }}
       onResponseAuxiliaryFooterBoxRef={(index, value) => {
-        responseAuxiliaryFooterBoxes[index] = value
+        responsePaneRenderRefStore.assignAuxiliaryFooterBox(index, value)
         renderSplitPaneFooters()
         applyResponseLayout()
       }}
