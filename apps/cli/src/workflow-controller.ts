@@ -1,22 +1,16 @@
 import type {
   RuntimeSession,
   WorkflowDefinition,
-  WorkflowEndpointDefinition,
-  WorkflowWatchdogDefinition,
 } from "./cli-types.js"
 import {
   aliasWorkflowRequest,
   createWorkflowRequest,
-  createWorkflowWatchdogRequest,
-  listWorkflowWatchdogsRequest,
   listWorkflowsRequest,
-  removeWorkflowWatchdogRequest,
   resolveWorkflowRequest,
   setWorkflowFlushContextRequest,
   setWorkflowIntermediateOutputSchemaRequest,
   setWorkflowLaunchPolicyRequest,
   setWorkflowRunOutputSchemaRequest,
-  setWorkflowWatchdogEnabledRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
@@ -24,6 +18,7 @@ import { createWorkflowRuntimeController } from "./workflow-runtime-controller.j
 import { createWorkflowScreenController } from "./workflow-screen-controller.js"
 import { createWorkflowSessionStateController } from "./workflow-session-state.js"
 import { createWorkflowTopologyController } from "./workflow-topology-controller.js"
+import { createWorkflowWatchdogController } from "./workflow-watchdog-controller.js"
 
 export {
   createWorkflowSelectionSyncController,
@@ -73,6 +68,11 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     sessionId: () => deps.sessionState().id,
     applyWorkflowSessionRefresh: workflowSessionState.applyWorkflowSessionRefresh,
   })
+  const workflowWatchdogs = createWorkflowWatchdogController({
+    sendRequest: deps.sendRequest,
+    sessionId: () => deps.sessionState().id,
+    applyWorkflowSessionRefresh: workflowSessionState.applyWorkflowSessionRefresh,
+  })
 
   const createWorkflow = async (alias?: string | null) => {
     const response = await deps.sendRequest(createWorkflowRequest(deps.sessionState().id, alias))
@@ -111,60 +111,6 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       deps.applyResponseLayout()
     }
     return payload.workflow
-  }
-
-  const createWorkflowWatchdog = async (
-    workflowRef: string,
-    endpointRef: string,
-    intervalSeconds: number,
-    invocationPrompt: string,
-    policy: "skip" | "queue",
-    maxWakeups?: number | null,
-  ) => {
-    const response = await deps.sendRequest(
-      createWorkflowWatchdogRequest(
-        deps.sessionState().id,
-        workflowRef,
-        endpointRef,
-        intervalSeconds,
-        invocationPrompt,
-        policy,
-        maxWakeups,
-      ),
-    )
-    const payload = expectVariant<{
-      watchdog: WorkflowWatchdogDefinition
-      workflow: WorkflowDefinition
-      endpoint: WorkflowEndpointDefinition
-      session: RuntimeSession
-    }>(response, "WorkflowWatchdogCreated")
-    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
-    return payload
-  }
-
-  const listWorkflowWatchdogs = async (workflowRef?: string | null) => {
-    const response = await deps.sendRequest(listWorkflowWatchdogsRequest(deps.sessionState().id, workflowRef))
-    return expectVariant<{ watchdogs: WorkflowWatchdogDefinition[] }>(response, "WorkflowWatchdogsListed")
-  }
-
-  const setWorkflowWatchdogEnabled = async (watchdogRef: string, enabled: boolean) => {
-    const response = await deps.sendRequest(setWorkflowWatchdogEnabledRequest(deps.sessionState().id, watchdogRef, enabled))
-    const payload = expectVariant<{ watchdog: WorkflowWatchdogDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowWatchdogUpdated",
-    )
-    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
-    return payload
-  }
-
-  const removeWorkflowWatchdog = async (watchdogRef: string) => {
-    const response = await deps.sendRequest(removeWorkflowWatchdogRequest(deps.sessionState().id, watchdogRef))
-    const payload = expectVariant<{ watchdog: WorkflowWatchdogDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowWatchdogRemoved",
-    )
-    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
-    return payload
   }
 
   const setWorkflowLaunchPolicy = async (policy: "reject" | "queue") => {
@@ -236,16 +182,13 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     ...workflowScreen,
     ...workflowRuntime,
     ...workflowTopology,
+    ...workflowWatchdogs,
     replaceWorkflowDefinitions: workflowSessionState.replaceWorkflowDefinitions,
     upsertWorkflowDefinition: workflowSessionState.upsertWorkflowDefinition,
     createWorkflow,
     listWorkflows,
     resolveWorkflow,
     assignWorkflowAlias,
-    createWorkflowWatchdog,
-    listWorkflowWatchdogs,
-    setWorkflowWatchdogEnabled,
-    removeWorkflowWatchdog,
     setWorkflowFlushContext,
     setWorkflowRunOutputSchema,
     setWorkflowIntermediateOutputSchema,
