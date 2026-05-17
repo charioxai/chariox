@@ -63,6 +63,7 @@ import {
   computeTranscriptRebuildScrollTop,
   nextWaitingRoomIntroStep,
 } from "./background-effects.js"
+import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
 import {
   executeSlashCommand,
 } from "./commands.js"
@@ -5487,7 +5488,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     terminalOutputRecordQueue.clearTimer()
   })
 
-  let pollersStarted = false
   const onResize = () => {
     if (isAttached()) {
       void maybeResize(client, sessionState().id)
@@ -5928,44 +5928,45 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
 
-  const ensureBackgroundPollersStarted = () => {
-    if (pollersStarted) {
-      logViewDebug("ensure pollers:already started")
-      return
-    }
-    if (!promptInput || !transcriptScrollbox) {
-      logViewDebug("ensure pollers:missing refs", {
-        has_prompt_input: Boolean(promptInput),
-      })
-      return
-    }
-    pollersStarted = true
-    logViewDebug("ensure pollers:starting")
-    rebuildTranscript()
-    syncPromptPlaceholder()
-    if (isAttached()) {
-      promptInput.focus()
-    } else {
-      promptInput.blur()
-    }
-    lastTranscriptScrollTop = transcriptScrollbox.scrollTop
-    process.stdout.on("resize", onResize)
-    if (supportsKernelEventStream) {
-      appLogger?.info("starting kernel event stream")
-      void syncKernelEventSubscription()
-    } else {
-      appLogger?.info("starting background pollers")
-      void pollOutput()
-      void pollNotices()
-      void pollSessionState()
-    }
-    startConnectionWatchdog()
-  }
+  const backgroundPollerStartupController = createBackgroundPollerStartupController({
+    logger: appLogger,
+    ready: () => Boolean(promptInput && transcriptScrollbox),
+    promptMounted: () => Boolean(promptInput),
+    transcriptScrollTop: () => transcriptScrollbox?.scrollTop ?? 0,
+    setLastTranscriptScrollTop: (scrollTop) => {
+      lastTranscriptScrollTop = scrollTop
+    },
+    isAttached,
+    rebuildTranscript,
+    syncPromptPlaceholder,
+    focusPrompt: () => {
+      promptInput?.focus()
+    },
+    blurPrompt: () => {
+      promptInput?.blur()
+    },
+    addResizeListener: () => {
+      process.stdout.on("resize", onResize)
+    },
+    removeResizeListener: () => {
+      process.stdout.off("resize", onResize)
+    },
+    supportsKernelEventStream: () => supportsKernelEventStream,
+    syncKernelEventSubscription,
+    pollOutput,
+    pollNotices,
+    pollSessionState,
+    startConnectionWatchdog,
+    stopConnectionWatchdog: () => {
+      connectionHealthWatchdogController.stop()
+    },
+    logViewDebug,
+  })
+  const ensureBackgroundPollersStarted = backgroundPollerStartupController.ensureStarted
 
   onCleanup(() => {
     closing = true
-    connectionHealthWatchdogController.stop()
-    process.stdout.off("resize", onResize)
+    backgroundPollerStartupController.stop()
   })
 
   onCleanup(() => {
