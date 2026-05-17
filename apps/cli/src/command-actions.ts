@@ -69,8 +69,8 @@ type FooterTone = "info" | "error"
 export { parseRequestedViewLayout } from "./selection-command-handlers.js"
 export {
   formatAgentListSummary,
-  formatAgentSubstituteSummary,
 } from "./agent-command-handlers.js"
+export { formatAgentSubstituteSummary } from "./agent-substitute-command-handlers.js"
 export {
   formatAgentCapabilityGrants,
   parseMcpInstallConfig,
