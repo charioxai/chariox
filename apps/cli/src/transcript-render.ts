@@ -15,22 +15,20 @@ import type { TranscriptEntry } from "./cli-types.js"
 import { transcriptEntryPadding } from "./transcript-entry-style.js"
 import { theme, TranscriptSeparatorBorder } from "./theme.js"
 import {
-  buildApplyPatchNewPreview,
   normalizeMarkdownFenceInfoStrings,
   shouldRenderTranscriptAsMarkdown,
   splitInlineCodeSpans,
 } from "./transcript.js"
+import { buildApplyPatchTranscriptContent } from "./transcript-apply-patch-render.js"
 import {
   readTranscriptApplyPatch,
   shouldRenderCollapsedTranscriptBlob,
   transcriptRenderMode,
-  type TranscriptApplyPatchFiles,
 } from "./transcript-render-mode.js"
 import {
   transcriptAccent,
   transcriptBodyColor,
   transcriptInlineCodeColor,
-  transcriptSurfacePalette,
   transcriptTextColor,
   transcriptUsesSeparator,
   type TranscriptSurfaceTone,
@@ -177,7 +175,7 @@ function buildExpandedTranscriptContent(
 ) {
   const patch = readTranscriptApplyPatch(entry)
   if (patch) {
-    buildApplyPatchTranscriptContent(renderer, body, patch, transcriptSyntax, surfaceTone)
+    buildApplyPatchTranscriptContent(renderer, body, patch, surfaceTone)
     return { textRenderable: null, markdownRenderable: null }
   }
 
@@ -259,85 +257,6 @@ function buildBlobToggleLabel(renderer: RenderContext, content: string, onClick:
     }, 0)
   }
   return text
-}
-
-function buildApplyPatchTranscriptContent(
-  renderer: RenderContext,
-  body: BoxRenderable,
-  files: TranscriptApplyPatchFiles,
-  transcriptSyntax: SyntaxStyle,
-  surfaceTone: TranscriptSurfaceTone,
-) {
-  const palette = transcriptSurfacePalette(surfaceTone)
-  body.flexDirection = "column"
-  body.gap = 0
-  body.add(
-    new TextRenderable(renderer, {
-      content: `patch · ${files.length} ${files.length === 1 ? "file" : "files"}`,
-      fg: theme.secondary,
-      attributes: TextAttributes.BOLD,
-      wrapMode: "word",
-    }),
-  )
-
-  for (const file of files) {
-    const block = new BoxRenderable(renderer, {
-      width: "100%",
-      flexDirection: "column",
-      border: ["bottom"],
-      customBorderChars: TranscriptSeparatorBorder.customBorderChars,
-      borderColor: theme.borderSubtle,
-      paddingLeft: 0,
-    })
-    block.add(
-      new TextRenderable(renderer, {
-        content: file.title,
-        fg: file.kind === "delete" ? theme.error : file.kind === "add" ? theme.success : theme.text,
-        attributes: TextAttributes.BOLD,
-        wrapMode: "word",
-      }),
-    )
-    buildApplyPatchNewOnlyContent(renderer, block, file, palette.element)
-    body.add(block)
-  }
-}
-
-function buildApplyPatchNewOnlyContent(
-  renderer: RenderContext,
-  block: BoxRenderable,
-  file: TranscriptApplyPatchFiles[number],
-  contextBg: RGBA,
-) {
-  const preview = buildApplyPatchNewPreview(file)
-  const text = new TextRenderable(renderer, {
-    fg: theme.text,
-    wrapMode: "none",
-    bg: contextBg,
-  })
-  for (const [index, line] of preview.entries()) {
-    if (index > 0) {
-      text.add("\n")
-    }
-    if (line.kind === "added") {
-      text.add(TextNodeRenderable.fromString(`+ ${line.text}`, {
-        fg: theme.success,
-        bg: RGBA.fromHex("#102616"),
-      }))
-      continue
-    }
-    if (line.kind === "meta") {
-      text.add(TextNodeRenderable.fromString(line.text, {
-        fg: theme.textMuted,
-        attributes: TextAttributes.BOLD,
-      }))
-      continue
-    }
-    text.add(TextNodeRenderable.fromString(`  ${line.text}`, {
-      fg: theme.text,
-      bg: contextBg,
-    }))
-  }
-  block.add(text)
 }
 
 function appendAttachmentChip(text: TextRenderable, mime: string, filename: string) {
