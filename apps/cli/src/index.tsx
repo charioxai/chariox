@@ -205,6 +205,7 @@ import {
 } from "./prompt-submission-ui-controller.js"
 import { createPromptSubmitCoordinator } from "./prompt-submit-coordinator.js"
 import { createNormalPromptSubmitController } from "./normal-prompt-submit-controller.js"
+import { createPollerDegradationController } from "./poller-degradation-controller.js"
 import {
   createPromptTextController,
 } from "./prompt-text-controller.js"
@@ -881,7 +882,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let historyLoadingText: TextRenderable | undefined
   const statusIndicatorRenderState = createStatusIndicatorRenderState()
   let closing = false
-  const degradedPollers = new Set<string>()
   const tools = new Map<string, ToolTranscriptUpdate>()
   const activeToolLabels = new Map<string, string>()
   const transcriptRenderables = new Map<number, TranscriptEntryRenderable>()
@@ -5509,40 +5509,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const markPollerDegraded = (operation: string, message: string) => {
-    const wasHealthy = degradedPollers.size === 0
-    degradedPollers.add(operation)
-    setDaemonDisconnected(true)
-    appLogger?.warn("poller entered degraded mode", {
-      operation,
-      degraded_pollers: [...degradedPollers],
-    })
-    setStatusLine(message)
-    updateSessionChrome()
-    if (wasHealthy) {
-      appendNotice(message, "warning")
-    }
-  }
-
-  const markPollerRecovered = (operation: string, failureCount: number) => {
-    if (failureCount === 0) {
-      return
-    }
-    const wasDegraded = degradedPollers.delete(operation)
-    if (wasDegraded) {
-      appLogger?.info("poller recovered", {
-        operation,
-        degraded_pollers: [...degradedPollers],
-        prior_failures: failureCount,
-      })
-    }
-    if (wasDegraded && degradedPollers.size === 0) {
-      setDaemonDisconnected(false)
-      setStatusLine(DEFAULT_CONNECTED_STATUS)
-      updateSessionChrome()
-      appendNotice("Reconnected to the Arroba daemon.")
-    }
-  }
+  const pollerDegradationController = createPollerDegradationController({
+    connectedStatusLine: DEFAULT_CONNECTED_STATUS,
+    logger: appLogger,
+    setDaemonDisconnected,
+    setStatusLine,
+    updateSessionChrome,
+    appendNotice,
+  })
+  const markPollerDegraded = pollerDegradationController.markDegraded
+  const markPollerRecovered = pollerDegradationController.markRecovered
 
   const connectionHealthWatchdogController = createConnectionHealthWatchdogController({
     now: Date.now,
