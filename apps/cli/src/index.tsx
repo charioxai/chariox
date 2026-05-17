@@ -432,6 +432,7 @@ import { createWaitingRoomRefreshIntervalController } from "./waiting-room-refre
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomFocus, WaitingRoomState } from "./waiting-room-types.js"
 import { createWaitingRoomTransitionController } from "./waiting-room-transition-controller.js"
+import { createWaitingRoomHiddenKernelController } from "./waiting-room-hidden-kernel-controller.js"
 import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifecycle-action-controller.js"
 import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
 import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
@@ -630,7 +631,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [slicesState, setSlicesState] = createSignal<SliceRecord[]>([])
   const [terminalsState, setTerminalsState] = createSignal<TerminalView[]>([])
   const [waitingRoomInventoryStatus, setWaitingRoomInventoryStatus] = createSignal<"loading" | "ready" | "error">("loading")
-  const hiddenWaitingRoomKernelIds = new Set<string>(initialPreferences.ui?.hiddenRemoteKernelIds ?? [])
+  const waitingRoomHiddenKernelController = createWaitingRoomHiddenKernelController({
+    initialHiddenKernelIds: initialPreferences.ui?.hiddenRemoteKernelIds ?? [],
+    persistHiddenKernelIds: (hiddenKernelIds) => {
+      void saveUiPreferences({ hiddenRemoteKernelIds: hiddenKernelIds })
+      setPreferencesState((current) => mergeUiPreferences(current, { hiddenRemoteKernelIds: hiddenKernelIds }))
+    },
+  })
   const [waitingRoomCloudNotice, setWaitingRoomCloudNotice] = createSignal<string | null>(null)
   const [terminalPairingOpen, setTerminalPairingOpen] = createSignal(false)
   const [terminalPairingState, setTerminalPairingState] = createSignal<TerminalPairingLinkView | null>(null)
@@ -1081,7 +1088,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setInventoryStatus: setWaitingRoomInventoryStatus,
     getWaitingRoomState: waitingRoomState,
     getInventory: () => getWaitingRoomInventory(client),
-    isKernelHidden: (kernelId) => hiddenWaitingRoomKernelIds.has(kernelId),
+    isKernelHidden: waitingRoomHiddenKernelController.isKernelHidden,
     setAvailableSessions,
     setRelayStatus: setRelayStatusState,
     setRemoteMachines: setRemoteMachinesState,
@@ -1132,12 +1139,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setRemoteMachines: setRemoteMachinesState,
     getRemoteKernels: remoteKernelsState,
     setRemoteKernels: setRemoteKernelsState,
-    hideRemoteKernel: (kernelId) => {
-      hiddenWaitingRoomKernelIds.add(kernelId)
-      const hiddenKernelIds = [...hiddenWaitingRoomKernelIds].sort()
-      void saveUiPreferences({ hiddenRemoteKernelIds: hiddenKernelIds })
-      setPreferencesState((current) => mergeUiPreferences(current, { hiddenRemoteKernelIds: hiddenKernelIds }))
-    },
+    hideRemoteKernel: waitingRoomHiddenKernelController.hideKernel,
     invalidateInventory: waitingRoomInventoryRefreshController.invalidate,
     reconcileWaitingRoom,
     refreshWaitingRoomData: () => refreshWaitingRoomData(),
