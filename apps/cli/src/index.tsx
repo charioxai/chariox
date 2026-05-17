@@ -162,6 +162,9 @@ import {
   createCliRuntimeDebugLogger,
 } from "./cli-runtime-debug-logger.js"
 import {
+  createCliUiBatchController,
+} from "./cli-ui-batch-controller.js"
+import {
   bootstrapCloudRelayProfile,
 } from "./cloud-relay.js"
 import { createCliExitController } from "./cli-exit-controller.js"
@@ -319,6 +322,7 @@ import {
 } from "./session-chrome-summary-renderer.js"
 import {
   createSessionChromeUpdateController,
+  type SessionChromeUpdateController,
 } from "./session-chrome-update-controller.js"
 import {
   activeInteractionForAgent as activeInteractionForAgentForSession,
@@ -780,7 +784,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       lastTranscriptScrollTop = scrollTop
     },
   })
-  let uiBatchDepth = 0
+  let sessionChromeUpdateController: SessionChromeUpdateController
+  const uiBatchController = createCliUiBatchController({
+    batch,
+    flushDeferredUpdates: () => {
+      transcriptRenderDeferralController.flush()
+      sessionChromeUpdateController.flushDeferred()
+    },
+  })
   // Connection resilience tracking
   const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
   const agentFocusTransitionController = createAgentFocusTransitionController()
@@ -801,7 +812,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
   })
   const transcriptRenderDeferralController = createTranscriptRenderDeferralController({
-    isBatched: () => uiBatchDepth > 0,
+    isBatched: uiBatchController.isBatched,
     getRenderable: () => transcriptScrollbox,
     requestRender: (renderable) => {
       renderScheduler.requestRenderable(renderable)
@@ -2112,19 +2123,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const setHistoryLoadingState = loadingStateController.setHistoryLoadingState
   const setSessionHydratingState = loadingStateController.setSessionHydratingState
 
-  const flushDeferredUiUpdates = () => {
-    transcriptRenderDeferralController.flush()
-    sessionChromeUpdateController.flushDeferred()
-  }
-
-  const runUiBatch = (callback: () => void) => {
-    uiBatchDepth += 1
-    batch(callback)
-    uiBatchDepth -= 1
-    if (uiBatchDepth === 0) {
-      flushDeferredUiUpdates()
-    }
-  }
+  const runUiBatch = uiBatchController.run
 
   const renderStatusIndicator = () => {
     const attached = isAttached()
@@ -2281,11 +2280,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getStreamingAgentId: streamingAgentId,
   })
 
-  const sessionChromeUpdateController = createSessionChromeUpdateController({
+  sessionChromeUpdateController = createSessionChromeUpdateController({
     delayMs: CHROME_UPDATE_THROTTLE_MS,
     scheduleTimer: startTimeout,
     clearTimer: clearTimeout,
-    isBatched: () => uiBatchDepth > 0,
+    isBatched: uiBatchController.isBatched,
     applyUpdate: sessionChromeRenderController.apply,
   })
   const renderSessionChromeBoundary = sessionChromeUpdateController.flush
