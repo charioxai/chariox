@@ -68,8 +68,7 @@ import {
 import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
-import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
-import { validateProviderNamespaceSubmit } from "./provider-namespace-submit-policy.js"
+import { createProviderNamespaceSubmitController } from "./provider-namespace-submit-controller.js"
 import { createClipboardController } from "./clipboard-controller.js"
 import {
   createFooterFlashController,
@@ -5245,6 +5244,51 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     formatError,
   })
 
+  const providerNamespaceSubmitController = createProviderNamespaceSubmitController({
+    getFocusedProvider: focusedBackendProvider,
+    workflowScreenShowing,
+    getPendingAttachmentCount: () => pendingAttachments().length,
+    waitForPendingAgentFocusTransition,
+    getFocusedAgentId: focusedAgentId,
+    clearActiveToolLabels: () => activeToolLabels.clear(),
+    setProviderActivityLabel,
+    setActiveStatusLabel,
+    getAttachment: attachmentState,
+    getSessionId: () => sessionState().id,
+    clearPromptText: () => promptTextController.clear(),
+    beginSubmittedPromptUi,
+    renderPromptTranscript,
+    appendUserPrompt,
+    submitProviderNamespacePrompt: (attachmentId, targetAgentId, forwardedPrompt) =>
+      submitPromptWithRecovery(
+        client,
+        sessionState().id,
+        attachmentId,
+        targetAgentId,
+        forwardedPrompt,
+        [],
+        options,
+        appLogger,
+      ),
+    applySessionState,
+    setStreamingAgentId,
+    setWorking,
+    updateSessionChrome,
+    recordPromptAreaHistoryEntry,
+    clearCommandCenter,
+    restoreFailedPromptUi,
+    getSubmittingAgentId: () => submittingAgentId,
+    clearAgentBusy,
+    setSubmittingAgentId: (agentId) => {
+      submittingAgentId = agentId
+    },
+    setSubmitting,
+    setFatalError,
+    flashFooter,
+    logError: (message, fields) => appLogger?.error(message, fields),
+    formatError,
+  })
+
   const submitPrompt = async () => {
     if (!promptInput) {
       return
@@ -5274,10 +5318,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const allowSlashCommandSubmission = !workflowScreenShowing() || isWorkflowCommandInput(rawPrompt)
-    const providerNamespaceCommand = parseProviderNamespaceCommand(
-      rawPrompt,
-      focusedBackendProvider(),
-    )
     const handledCommand = await slashCommandSubmitController.submit(rawPrompt, {
       allowSlashCommandSubmission,
       trimmedPrompt: trimmed,
@@ -5285,65 +5325,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (handledCommand) {
       return
     }
-    if (providerNamespaceCommand) {
-      const submitDecision = validateProviderNamespaceSubmit({
-        command: providerNamespaceCommand,
-        focusedProvider: focusedBackendProvider(),
-        workflowScreenShowing: workflowScreenShowing(),
-        pendingAttachmentCount: pendingAttachments().length,
-      })
-      if (!submitDecision.ok) {
-        flashFooter(submitDecision.message, "error")
-        return
-      }
-
-      let submissionUi: SubmittedPromptUiSnapshot | null = null
-      try {
-        await waitForPendingAgentFocusTransition()
-        const targetAgentId = focusedAgentId()
-        activeToolLabels.clear()
-        setProviderActivityLabel(null)
-        setActiveStatusLabel(null)
-        const attachment = attachmentState()
-        if (!attachment) {
-          flashFooter("No session attached.", "error")
-          promptTextController.clear()
-          return
-        }
-        submissionUi = beginSubmittedPromptUi(rawPrompt)
-        appendUserPrompt(renderPromptTranscript(providerNamespaceCommand.raw), targetAgentId)
-        const forwardedPrompt = `${submitDecision.forwardedCommand}\n`
-        const submission = await submitPromptWithRecovery(
-          client,
-          sessionState().id,
-          attachment.id,
-          targetAgentId,
-          forwardedPrompt,
-          [],
-          options,
-          appLogger,
-        )
-        const payload = submission.payload
-        const submittedTargetAgentId = submission.targetAgentId ?? targetAgentId
-        applySessionState(payload.session)
-        setStreamingAgentId(submittedTargetAgentId)
-        setWorking(true)
-        updateSessionChrome()
-        recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
-        clearCommandCenter()
-      } catch (error) {
-        appLogger?.error("provider namespace command failed", {
-          command: providerNamespaceCommand.raw,
-          error: formatError(error),
-        })
-        restoreFailedPromptUi(submissionUi)
-        clearAgentBusy(submittingAgentId)
-        submittingAgentId = null
-        setSubmitting(false)
-        setWorking(false)
-        setFatalError(formatError(error))
-        updateSessionChrome()
-      }
+    if (await providerNamespaceSubmitController.submit(rawPrompt)) {
       return
     }
     if (!isAttached()) {
