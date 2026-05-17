@@ -10,6 +10,7 @@ import type {
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { ResolvedAgentReference } from "./session-agent-resolver.js"
+import { createWorkflowCommandContext } from "./workflow-command-context.js"
 import {
   handleWorkflowEdgeCommand,
   handleWorkflowEdgeShorthandCommand,
@@ -184,7 +185,7 @@ export async function handleWorkflowSlashCommand(
   deps: WorkflowCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "workflow" }>,
 ): Promise<void> {
-  const context = workflowCommandContext(deps)
+  const context = createWorkflowCommandContext(deps)
 
   if (!deps.isAttached()) {
     deps.flashFooter("must be attached to a session to manage workflows", "error")
@@ -284,31 +285,4 @@ export async function handleWorkflowSlashCommand(
   }
 
   await handleWorkflowAliasCommand(deps, args)
-}
-
-type WorkflowCommandContext = ReturnType<typeof workflowCommandContext>
-
-function workflowCommandContext(deps: WorkflowCommandHandlerDeps) {
-  const selectedWorkflowRef = () => deps.selectedWorkflowId?.() ?? null
-  const workflowRefOrSelected = (workflowRef: string | null | undefined) => workflowRef ?? selectedWorkflowRef()
-  const isKnownWorkflowReference = (reference: string | undefined) => {
-    if (!reference) {
-      return false
-    }
-    if (reference === selectedWorkflowRef()) {
-      return true
-    }
-    return (deps.sessionState().workflows ?? []).some((workflow) => (
-      workflow.id === reference || workflow.alias === reference
-    ))
-  }
-  const firstWorkflowArgIsExplicit = (workflowRef: string | undefined) => (
-    !selectedWorkflowRef() || isKnownWorkflowReference(workflowRef)
-  )
-  return {
-    firstWorkflowArgIsExplicit,
-    isKnownWorkflowReference,
-    selectedWorkflowRef,
-    workflowRefOrSelected,
-  }
 }
