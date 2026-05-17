@@ -4,7 +4,7 @@ import {
   TextRenderable,
 } from "@opentui/core"
 
-import type { CommandCenterItem } from "./command-center.js"
+import type { CommandCenterItem } from "./command-center-types.js"
 import { SplitBorder, theme } from "./theme.js"
 
 type RenderCommandCenterOptions = {

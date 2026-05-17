@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { CommandCenterItem } from "./command-center.js"
+import type { CommandCenterItem } from "./command-center-types.js"
 import {
   commandCenterCompletionText,
   commandCenterExecutionCommand,

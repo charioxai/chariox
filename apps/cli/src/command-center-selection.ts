@@ -1,4 +1,4 @@
-import type { CommandCenterItem } from "./command-center.js"
+import type { CommandCenterItem } from "./command-center-types.js"
 import { parseSlashCommand } from "./commands.js"
 
 export function commandCenterCompletionText(item: CommandCenterItem): string {

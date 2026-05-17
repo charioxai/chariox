@@ -2,13 +2,13 @@ import {
   buildCommandCenterItems,
   nextCommandCenterIndex,
   shouldSubmitExactCommandCenterMatch,
-  type CommandCenterItem,
 } from "./command-center.js"
 import {
   commandCenterCompletionText,
   commandCenterExecutionCommand,
   shouldBypassCommandCenterSubmitSelection,
 } from "./command-center-selection.js"
+import type { CommandCenterItem } from "./command-center-types.js"
 import type { BackendProviderId, ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 
