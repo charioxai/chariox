@@ -73,7 +73,6 @@ import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import {
   shouldRefreshAgentPanesForSessionChange as shouldRefreshAgentPanesForSessionChangeState,
-  trimAgentPaneEntries,
 } from "./agent-pane-state.js"
 import { createAgentPaneRefreshController } from "./agent-pane-refresh-controller.js"
 import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
@@ -81,6 +80,7 @@ import { createAgentPaneStoreController } from "./agent-pane-store-controller.js
 import { createAgentPaneTranscriptEntryController } from "./agent-pane-transcript-entry-controller.js"
 import { createAgentPaneTranscriptInteractionController } from "./agent-pane-transcript-interaction-controller.js"
 import { createAgentPaneTranscriptRenderController } from "./agent-pane-transcript-render-controller.js"
+import { createAgentPaneTranscriptRetentionController } from "./agent-pane-transcript-retention-controller.js"
 import { createAgentPaneTranscriptStreamController } from "./agent-pane-transcript-stream-controller.js"
 import { createAgentPaneStreamingCommitController } from "./agent-pane-streaming-commit-controller.js"
 import { createProviderNamespaceSubmitController } from "./provider-namespace-submit-controller.js"
@@ -2226,14 +2226,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const reconcileMountedAuxiliaryTranscript = agentPaneTranscriptRenderController.reconcileMountedTranscript
   const pruneAuxiliaryAgentPanes = agentPaneTranscriptRenderController.prunePanes
 
-  const trimLiveAgentPaneEntries = (agentId: string, nextEntries: TranscriptEntry[]) => trimAgentPaneEntries({
-    entries: nextEntries,
+  const agentPaneTranscriptRetentionController = createAgentPaneTranscriptRetentionController({
     maxEntries: LIVE_TRANSCRIPT_LIMIT,
     maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
-    onTrimmedMergeKey: (mergeKey) => {
+    deleteToolForMergeKey: (agentId, mergeKey) => {
       auxiliaryAgentPaneTools(agentId).delete(mergeKey)
     },
   })
+  const trimLiveAgentPaneEntries = agentPaneTranscriptRetentionController.trimLiveEntries
 
   const agentPaneStreamingCommitController = createAgentPaneStreamingCommitController({
     trimLiveAgentPaneEntries,
