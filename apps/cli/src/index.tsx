@@ -35,9 +35,9 @@ import {
 import {
   startCliAutomationServer,
   stopCliAutomationServer,
-  type CliAutomationServer,
 } from "./cli-automation.js"
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
+import { createCliAutomationServerController } from "./cli-automation-server-controller.js"
 import { buildCliAutomationSnapshot } from "./cli-automation-snapshot.js"
 import {
   deriveAllAgentsBusyState,
@@ -5468,37 +5468,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     sleep,
   })
 
-  const automationSocketPath = options.automationSocket
-  let automationServer: CliAutomationServer | null = null
-  if (automationSocketPath) {
-    void startCliAutomationServer({
-      socketPath: automationSocketPath,
-      handleRequest: handleAutomationRequest,
-      formatError,
-      onListening: (socketPath) => {
-        appLogger?.info("cli automation socket listening", { socket_path: socketPath })
-      },
-    })
-      .then((server) => {
-        automationServer = server
-      })
-      .catch((error) => {
-        appLogger?.error("failed to start cli automation socket", {
-          socket_path: automationSocketPath,
-          error: formatError(error),
-        })
-        flashFooter(`automation socket failed: ${formatError(error)}`, "error")
-      })
-  }
+  const automationServerController = createCliAutomationServerController({
+    socketPath: options.automationSocket,
+    handleRequest: handleAutomationRequest,
+    startServer: startCliAutomationServer,
+    stopServer: stopCliAutomationServer,
+    formatError,
+    logger: appLogger,
+    flashFooter,
+  })
+  automationServerController.start()
   process.on("SIGINT", handleSigint)
   process.stdin.on("data", handleStdinData)
   onCleanup(() => {
     process.off("SIGINT", handleSigint)
     process.stdin.off("data", handleStdinData)
-    if (automationServer && automationSocketPath) {
-      stopCliAutomationServer(automationServer, automationSocketPath)
-      automationServer = null
-    }
+    automationServerController.stop()
     terminalOutputRecordQueue.clearTimer()
   })
 
