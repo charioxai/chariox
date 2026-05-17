@@ -403,6 +403,7 @@ import {
   createSplitPaneFooterRenderState,
   renderSplitPaneFooters as renderSplitPaneFootersView,
 } from "./split-pane-footer-renderer.js"
+import { createSplitPaneFooterRenderController } from "./split-pane-footer-render-controller.js"
 import {
   createStatusIndicatorRenderState,
   renderStatusIndicator as renderStatusIndicatorView,
@@ -1947,28 +1948,29 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const flushPendingTerminalRecords = terminalOutputRecordQueue.flush
   const queueTerminalOutputRecords = terminalOutputRecordQueue.queue
 
-  const renderSplitPaneFooters = () => {
-    renderSplitPaneFootersView({
-      renderer,
-      state: splitPaneFooterRenderState,
-      primaryBox: responsePrimaryFooterBox,
-      auxiliaryBoxes: responseAuxiliaryFooterBoxes,
-      showAgentFooters: isAttached() && !workflowScreenActive() && responseVisibleAgents().length > 0,
-      maxAgentsPerScreen: maxAgentsPerScreen(),
-      visibleAgents: responseVisibleAgents(),
-      focusedAgentId: focusedAgentId(),
-      providerRun: providerRunState(),
-      currentProviderSelection: currentProviderSelection(),
-      agentActivityLabels: agentActivityLabels(),
-      hasPromptWorkByAgent: hasPromptWorkByAgent(),
-      streamingAgentId: streamingAgentId(),
-      agentBusyLatch,
-      sessionConfigValues: sessionState().config_state?.values,
-      agentLocationLabel,
-      badgeWidth: STATUS_BADGE_WIDTH,
-      animationFrame: workingAnimationFrame(),
-    })
-  }
+  const splitPaneFooterRenderController = createSplitPaneFooterRenderController({
+    renderer,
+    state: splitPaneFooterRenderState,
+    primaryBox: () => responsePrimaryFooterBox,
+    auxiliaryBoxes: () => responseAuxiliaryFooterBoxes,
+    isAttached,
+    workflowScreenActive: () => workflowScreenActive(),
+    maxAgentsPerScreen,
+    visibleAgents: responseVisibleAgents,
+    focusedAgentId,
+    providerRun: providerRunState,
+    currentProviderSelection,
+    agentActivityLabels,
+    hasPromptWorkByAgent,
+    streamingAgentId,
+    agentBusyLatch,
+    sessionConfigValues: () => sessionState().config_state?.values,
+    agentLocationLabel,
+    badgeWidth: STATUS_BADGE_WIDTH,
+    animationFrame: workingAnimationFrame,
+    renderFooters: renderSplitPaneFootersView,
+  })
+  const renderSplitPaneFooters = splitPaneFooterRenderController.render
 
   const agentInteractionStripController = createAgentInteractionStripController({
     renderer,

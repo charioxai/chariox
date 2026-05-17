@@ -46,7 +46,7 @@ type ProviderSelection = {
   effort: string
 }
 
-type SplitPaneFooterRenderOptions = {
+export type SplitPaneFooterRenderOptions = {
   renderer: ConstructorParameters<typeof BoxRenderable>[0]
   state: SplitPaneFooterRenderState
   primaryBox: BoxRenderable | undefined
