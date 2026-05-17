@@ -226,6 +226,7 @@ import {
 } from "./prompt-text-controller.js"
 import { createPromptTurnNavigationController } from "./prompt-turn-navigation-controller.js"
 import { createPromptStopController } from "./prompt-stop-controller.js"
+import { createPrimaryTranscriptRenderController } from "./primary-transcript-render-controller.js"
 import {
   createTurnCompletionController,
 } from "./turn-completion-controller.js"
@@ -517,7 +518,6 @@ import {
   type TranscriptEntryRenderable,
   type TranscriptSurfaceTone,
 } from "./transcript-render.js"
-import { reconcileMountedTranscriptPane } from "./transcript-pane-reconcile.js"
 import { createTranscriptRetentionController } from "./transcript-retention-controller.js"
 import { createTranscriptEventController } from "./transcript-event-controller.js"
 import { createTranscriptStateController } from "./transcript-state-controller.js"
@@ -2901,146 +2901,70 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const mountTranscriptEntry = (entry: TranscriptEntry, requestRender = true) => {
-    if (!transcriptScrollbox) {
-      return
-    }
-
-    if (emptyTranscriptRenderable) {
-      transcriptScrollbox.remove(emptyTranscriptRenderable.id)
-      emptyTranscriptRenderable.destroyRecursively()
-      emptyTranscriptRenderable = undefined
-    }
-
-    const renderable = buildTranscriptEntryRenderable(
+  const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({
+    getScrollbox: () => transcriptScrollbox,
+    getEmptyRenderable: () => emptyTranscriptRenderable,
+    setEmptyRenderable: (renderable) => {
+      emptyTranscriptRenderable = renderable
+    },
+    renderables: transcriptRenderables,
+    visibleEntries: visibleTranscriptEntries,
+    workflowScreenActive: () => workflowScreenActive(),
+    showWorkflowOutline: () => isAttached() && workflowScreenActive(),
+    buildWorkflowRenderable: () => buildWorkflowOutlineRenderable(renderer, {
+      workflows: sessionState().workflows ?? [],
+      agents: sessionState().agents,
+      workflowRuns: sessionState().workflow_runs ?? [],
+      selectedWorkflowId: selectedWorkflowId(),
+      selectedNodeId: selectedWorkflowNodeId(),
+      onSelectNode: (nodeId) => {
+        setSelectedWorkflowNodeId(nodeId)
+        rebuildTranscript()
+      },
+      inspector: workflowInspector(),
+      shellPane: {
+        entries: workspaceShellEntries(),
+        sessionId: workspaceShellContext().sessionId ?? null,
+        agentId: workspaceShellContext().agentId ?? null,
+      },
+    }),
+    buildEmptyRenderable: () => isAttached()
+      ? (sessionHydrating()
+          ? buildLoadingTranscriptRenderable(renderer)
+          : buildEmptyTranscriptRenderable(renderer))
+      : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState(), {
+        cloudNotice: waitingRoomCloudNotice(),
+        inventoryStatus: waitingRoomInventoryStatus(),
+        loadingFrame: waitingRoomState().introStep,
+        relay: relayStatusState(),
+        machines: remoteMachinesState(),
+        kernels: remoteKernelsState(),
+        terminals: terminalsState(),
+      }, waitingRoomTargets(), themeRegistryState()),
+    buildEntryRenderable: (entry) => buildTranscriptEntryRenderable(
       renderer,
       entry,
       transcriptSyntax,
       toggleTurn,
       toggleBlob,
       primaryTranscriptSurfaceTone(),
-    )
-    transcriptRenderables.set(entry.id, renderable)
-    transcriptScrollbox.add(renderable.wrapper)
-    if (requestRender) {
-      requestTranscriptRender()
-    }
-  }
-
-  const reconcileMountedTranscript = (currentEntries: TranscriptEntry[], nextEntries: TranscriptEntry[]) => {
-    if (workflowScreenActive()) {
-      rebuildTranscript()
-      return
-    }
-    reconcileMountedTranscriptPane({
-      scrollbox: transcriptScrollbox,
-      currentEntries,
-      nextEntries,
-      renderables: transcriptRenderables,
-      clampScrollTop,
-      rebuild: rebuildTranscript,
-      removeEmptyRenderable: () => {
-        if (!emptyTranscriptRenderable || !transcriptScrollbox) {
-          return
-        }
-        transcriptScrollbox.remove(emptyTranscriptRenderable.id)
-        emptyTranscriptRenderable.destroyRecursively()
-        emptyTranscriptRenderable = undefined
-      },
-      mountEntry: mountTranscriptEntry,
-      onScrollTop: (scrollTop) => {
-        lastTranscriptScrollTop = scrollTop
-      },
-    })
-  }
-
-  const updateTranscriptEntry = (entryId: number, text: string, sourceText?: string) => {
-    const renderable = transcriptRenderables.get(entryId)
-    if (!renderable) {
-      rebuildTranscript()
-      return
-    }
-    const previousMode = transcriptRenderMode(renderable.entry)
-    renderable.entry.text = text
-    if (sourceText !== undefined) {
-      renderable.entry.sourceText = sourceText
-    }
-    if (transcriptRenderMode(renderable.entry) !== previousMode) {
-      rebuildTranscript()
-      return
-    }
-    renderable.update(renderable.entry)
-    requestTranscriptRender()
-  }
-
-  const rebuildTranscript = () => {
-    logViewDebug("rebuild transcript:start", {
-      visible_entries: visibleTranscriptEntries().length,
-    })
-    if (!transcriptScrollbox) {
-      logViewDebug("rebuild transcript:missing scrollbox")
-      return
-    }
-
-    for (const child of [...transcriptScrollbox.getChildren()]) {
-      transcriptScrollbox.remove(child.id)
-      child.destroyRecursively()
-    }
-    transcriptRenderables.clear()
-    emptyTranscriptRenderable = undefined
-
-    const visibleEntries = visibleTranscriptEntries()
-    if (isAttached() && workflowScreenActive()) {
-      emptyTranscriptRenderable = buildWorkflowOutlineRenderable(renderer, {
-        workflows: sessionState().workflows ?? [],
-        agents: sessionState().agents,
-        workflowRuns: sessionState().workflow_runs ?? [],
-        selectedWorkflowId: selectedWorkflowId(),
-        selectedNodeId: selectedWorkflowNodeId(),
-        onSelectNode: (nodeId) => {
-          setSelectedWorkflowNodeId(nodeId)
-          rebuildTranscript()
-        },
-        inspector: workflowInspector(),
-        shellPane: {
-          entries: workspaceShellEntries(),
-          sessionId: workspaceShellContext().sessionId ?? null,
-          agentId: workspaceShellContext().agentId ?? null,
-        },
-      })
-      transcriptScrollbox.add(emptyTranscriptRenderable)
-      transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: 0 })
-    } else if (visibleEntries.length === 0) {
-      emptyTranscriptRenderable = isAttached()
-        ? (sessionHydrating()
-            ? buildLoadingTranscriptRenderable(renderer)
-            : buildEmptyTranscriptRenderable(renderer))
-        : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState(), {
-          cloudNotice: waitingRoomCloudNotice(),
-          inventoryStatus: waitingRoomInventoryStatus(),
-          loadingFrame: waitingRoomState().introStep,
-          relay: relayStatusState(),
-          machines: remoteMachinesState(),
-          kernels: remoteKernelsState(),
-          terminals: terminalsState(),
-        }, waitingRoomTargets(), themeRegistryState())
-      transcriptScrollbox.add(emptyTranscriptRenderable)
-      if (isAttached()) {
-        transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: 0 })
-      }
-    } else {
-      for (const entry of visibleEntries.filter((candidate) => !candidate.historyDeferred)) {
-        mountTranscriptEntry(entry, false)
-      }
-    }
-
-    transcriptScrollbox.requestRender()
-    ;(renderer as { requestRender?: () => void }).requestRender?.()
-    logViewDebug("rebuild transcript:complete", {
-      scroll_height: transcriptScrollbox.scrollHeight,
-      scroll_top: transcriptScrollbox.scrollTop,
-    })
-  }
+    ),
+    renderMode: transcriptRenderMode,
+    requestTranscriptRender,
+    requestRendererRender: () => {
+      ;(renderer as { requestRender?: () => void }).requestRender?.()
+    },
+    shouldResetEmptyScrollTop: isAttached,
+    clampScrollTop,
+    setLastScrollTop: (scrollTop) => {
+      lastTranscriptScrollTop = scrollTop
+    },
+    logViewDebug,
+  })
+  const mountTranscriptEntry = primaryTranscriptRenderController.mountEntry
+  const reconcileMountedTranscript = primaryTranscriptRenderController.reconcileMountedTranscript
+  const updateTranscriptEntry = primaryTranscriptRenderController.updateEntry
+  const rebuildTranscript = primaryTranscriptRenderController.rebuildTranscript
 
   const workflowNodeInstructionsEditorController = createWorkflowNodeInstructionsEditorController({
     getEditor: workflowNodeInstructionsEditor,
