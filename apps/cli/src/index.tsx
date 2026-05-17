@@ -61,7 +61,6 @@ import {
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import {
   computeTranscriptRebuildScrollTop,
-  nextWaitingRoomIntroStep,
 } from "./background-effects.js"
 import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
 import {
@@ -414,6 +413,7 @@ import {
   type RemoteMachineView,
 } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
+import { createWaitingRoomIntroAnimationController } from "./waiting-room-intro-animation-controller.js"
 import {
   createWaitingRoomState,
   type WaitingRoomFocus,
@@ -6018,21 +6018,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     clearInterval(workingAnimation)
   })
 
-  const waitingRoomAnimation = startInterval(() => {
-    const state = waitingRoomState()
-    const nextIntroStep = nextWaitingRoomIntroStep(isAttached(), state.introStep)
-    if (nextIntroStep === null) {
-      return
-    }
-    setWaitingRoomState({
-      ...state,
-      introStep: nextIntroStep,
-    })
-    rebuildTranscript()
-  }, 90)
+  const waitingRoomIntroAnimationController = createWaitingRoomIntroAnimationController({
+    intervalMs: 90,
+    scheduleInterval: startInterval,
+    clearInterval,
+    isAttached,
+    getWaitingRoomState: waitingRoomState,
+    setWaitingRoomState,
+    rebuildTranscript,
+  })
+  waitingRoomIntroAnimationController.start()
 
   onCleanup(() => {
-    clearInterval(waitingRoomAnimation)
+    waitingRoomIntroAnimationController.stop()
   })
 
   const relayMachineRefresh = startInterval(() => {
