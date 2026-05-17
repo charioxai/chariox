@@ -3,15 +3,34 @@ import {
   catalogModelOptions,
   type ProviderCatalog,
 } from "./provider-catalog.js"
+import type { SessionListEntry } from "./sessions.js"
 import {
+  DEFAULT_THEME_REGISTRY,
   normalizeThemeName,
   themeOptions,
   type ThemeRegistry,
 } from "./theme-registry.js"
 import { waitingRoomEfforts, waitingRoomModel } from "./waiting-room-choice.js"
 import { cycleWaitingRoomSliceSelectionId, waitingRoomSlices } from "./waiting-room-slices.js"
+import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 import { cycleWaitingRoomWorktreeSelectionId } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
+
+export function cycleWaitingRoomValue(
+  state: WaitingRoomState,
+  sessions: SessionListEntry[],
+  catalog: ProviderCatalog,
+  delta: number,
+  themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
+  remote: WaitingRoomRemoteState = {},
+) {
+  return cycleWaitingRoomFocusedValue(state, delta, {
+    catalog,
+    themeRegistry,
+    remote,
+    normalizeState: (next) => normalizeWaitingRoomState(next, sessions, catalog, themeRegistry, remote),
+  })
+}
 
 export function cycleWaitingRoomFocusedValue(
   state: WaitingRoomState,

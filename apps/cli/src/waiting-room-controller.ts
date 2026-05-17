@@ -14,7 +14,7 @@ import {
   waitingRoomRemoteMachineCanDelete,
 } from "./waiting-room-remote-rows.js"
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"
-import { cycleWaitingRoomValue } from "./waiting-room.js"
+import { cycleWaitingRoomValue } from "./waiting-room-value-cycling.js"
 import {
   type WaitingRoomRemoteState,
   type WaitingRoomState,
