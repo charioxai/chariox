@@ -1,6 +1,16 @@
-import os from "node:os"
 import path from "node:path"
-import { readdir, readFile } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
+import {
+  themeDirectories,
+  themeFiles,
+  type ThemeLoadOptions,
+  type ThemeLoadWarning,
+} from "./theme-file-source.js"
+
+export {
+  themeDirectories,
+  type ThemeLoadWarning,
+} from "./theme-file-source.js"
 
 export const DEFAULT_THEME_ID = "opencode"
 export const THEME_NAMES = [
@@ -66,17 +76,6 @@ export type ThemeDefinition = {
 export type ThemeRegistry = {
   themes: Map<ThemeName, ThemeDefinition>
   orderedIds: ThemeName[]
-}
-
-export type ThemeLoadWarning = {
-  path: string
-  message: string
-}
-
-type ThemeLoadOptions = {
-  workspace?: string | null
-  directories?: string[]
-  onWarning?: (warning: ThemeLoadWarning) => void
 }
 
 type PartialThemeTokenColors = Partial<Record<ThemeTokenKey, string>>
@@ -388,14 +387,6 @@ export function themeDefinition(value: unknown, registry: ThemeRegistry = DEFAUL
   return registry.themes.get(normalizeThemeName(value, registry)) ?? registry.themes.get(DEFAULT_THEME_ID)!
 }
 
-export function themeDirectories(workspace?: string | null) {
-  const directories = [path.join(configRoot(), "themes")]
-  if (workspace?.trim()) {
-    directories.push(path.join(workspace, ".arroba", "themes"))
-  }
-  return directories
-}
-
 export async function loadThemeRegistry(options: ThemeLoadOptions = {}): Promise<ThemeRegistry> {
   const directories = options.directories ?? themeDirectories(options.workspace)
   const customThemes: ThemeDefinition[] = []
@@ -661,25 +652,6 @@ function titleFromThemeId(id: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ") || id
-}
-
-async function themeFiles(directory: string) {
-  try {
-    return (await readdir(directory, { withFileTypes: true }))
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-      .map((entry) => path.join(directory, entry.name))
-      .sort((a, b) => a.localeCompare(b))
-  } catch {
-    return []
-  }
-}
-
-function configRoot() {
-  const xdg = process.env.XDG_CONFIG_HOME?.trim()
-  if (xdg) {
-    return path.join(xdg, "arroba")
-  }
-  return path.join(os.homedir(), ".arroba")
 }
 
 function optionalHex(value: unknown) {
