@@ -75,6 +75,7 @@ import {
   trimAgentPaneEntries,
 } from "./agent-pane-state.js"
 import { createAgentPaneRefreshController } from "./agent-pane-refresh-controller.js"
+import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
 import { createAgentPaneStoreController } from "./agent-pane-store-controller.js"
 import { createAgentPaneTranscriptEntryController } from "./agent-pane-transcript-entry-controller.js"
 import { createAgentPaneTranscriptInteractionController } from "./agent-pane-transcript-interaction-controller.js"
@@ -717,12 +718,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let responsePrimaryFooterBox: BoxRenderable | undefined
   const responseAuxiliaryFooterBoxes: Array<BoxRenderable | undefined> = []
   const splitPaneFooterRenderState = createSplitPaneFooterRenderState()
-  const responseAuxiliaryAgentIds: Array<string | null> = []
   const interactionChoiceStore = createInteractionChoiceStoreController()
-  const agentTranscriptScrollboxes = new Map<string, ScrollBoxRenderable>()
-  const agentTranscriptRenderables = new Map<string, Map<number, TranscriptEntryRenderable>>()
-  const agentEmptyTranscriptRenderables = new Map<string, BoxRenderable>()
-  const agentPaneTools = new Map<string, Map<string, ToolTranscriptUpdate>>()
+  const agentPaneRuntimeStore = createAgentPaneRuntimeStoreController<
+    ScrollBoxRenderable,
+    TranscriptEntryRenderable,
+    BoxRenderable,
+    ToolTranscriptUpdate
+  >()
   let promptStateBox: BoxRenderable | undefined
   let statusIndicatorBox: BoxRenderable | undefined
   let footerSummaryBox: BoxRenderable | undefined
@@ -865,7 +867,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getProviderRun: providerRunState,
     getVisibleTranscriptAgentId: visibleTranscriptAgentId,
     getActiveToolLabels: primaryTranscriptRuntimeStore.activeToolLabelValues,
-    getAgentPaneToolUpdates: (agentId) => agentPaneTools.get(agentId)?.values(),
+    getAgentPaneToolUpdates: agentPaneRuntimeStore.toolUpdatesForAgent,
     getAgentPanePreviews: agentPanePreviews,
     getAgentActivityLabels: agentActivityLabels,
     updateAgentActivityLabels: (updater) => {
@@ -2087,16 +2089,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     clearAuxiliaryAgentPane: (agentId) => {
       clearAuxiliaryAgentPane(agentId)
     },
-    unregisterAgentScrollbox: (agentId) => {
-      agentTranscriptScrollboxes.delete(agentId)
-    },
-    getCurrentAuxiliaryAgentId: (auxiliaryIndex) => responseAuxiliaryAgentIds[auxiliaryIndex] ?? null,
-    setCurrentAuxiliaryAgentId: (auxiliaryIndex, agentId) => {
-      responseAuxiliaryAgentIds[auxiliaryIndex] = agentId
-    },
-    registerAgentScrollbox: (agentId, scrollbox) => {
-      agentTranscriptScrollboxes.set(agentId, scrollbox)
-    },
+    unregisterAgentScrollbox: agentPaneRuntimeStore.unregisterScrollbox,
+    getCurrentAuxiliaryAgentId: agentPaneRuntimeStore.getCurrentAuxiliaryAgentId,
+    setCurrentAuxiliaryAgentId: agentPaneRuntimeStore.setCurrentAuxiliaryAgentId,
+    registerAgentScrollbox: agentPaneRuntimeStore.registerScrollbox,
     rebuildAuxiliaryAgentPane: (agentId) => {
       rebuildAuxiliaryAgentPane(agentId)
     },
@@ -2262,10 +2258,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const toggleAuxiliaryPaneBlob = agentPaneTranscriptInteractionController.toggleBlob
 
   const agentPaneTranscriptRenderController = createAgentPaneTranscriptRenderController({
-    scrollboxes: agentTranscriptScrollboxes,
-    entryRenderables: agentTranscriptRenderables,
-    emptyRenderables: agentEmptyTranscriptRenderables,
-    toolStates: agentPaneTools,
+    scrollboxes: agentPaneRuntimeStore.scrollboxes,
+    entryRenderables: agentPaneRuntimeStore.entryRenderables,
+    emptyRenderables: agentPaneRuntimeStore.emptyRenderables,
+    toolStates: agentPaneRuntimeStore.toolStates,
     paneEntries: (agentId) => agentPaneEntries()[agentId] ?? [],
     buildEmptyRenderable: () => buildEmptyTranscriptRenderable(renderer),
     buildEntryRenderable: (agentId, entry) => buildTranscriptEntryRenderable(
@@ -2497,7 +2493,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const clearAgentPaneRuntime = () => {
     agentPaneTranscriptRenderController.clearAll()
-    responseAuxiliaryAgentIds.length = 0
+    agentPaneRuntimeStore.clearCurrentAuxiliaryAgentIds()
   }
 
   const attachedSessionPrimeController = createAttachedSessionPrimeController({
