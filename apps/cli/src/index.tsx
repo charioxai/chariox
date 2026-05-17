@@ -14,7 +14,6 @@ import type {
   BootstrapState,
   PromptQueueItem,
   RuntimeAttachment,
-  RuntimeInteraction,
   RuntimeProviderRun,
   RuntimeSession,
   SessionHistoryCursor,
@@ -99,6 +98,9 @@ import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-cli
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
 import { createInteractionChoiceStoreController } from "./interaction-choice-store-controller.js"
+import {
+  createInteractionProjectionController,
+} from "./interaction-projection-controller.js"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { createKernelEventDispatchController } from "./kernel-event-dispatch-controller.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
@@ -337,7 +339,6 @@ import {
   type SessionChromeUpdateController,
 } from "./session-chrome-update-controller.js"
 import {
-  activeInteractionForAgent as activeInteractionForAgentForSession,
   agentHasPromptWork,
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
@@ -453,9 +454,11 @@ import {
   createWorkflowSelectionSyncController,
 } from "./workflow-controller.js"
 import {
-  buildWorkflowInspectorProjection,
   type WorkflowInspectorMode,
 } from "./workflow-inspector-projection.js"
+import {
+  createWorkflowInspectorController,
+} from "./workflow-inspector-controller.js"
 import {
   deriveWorkflowPromptState,
 } from "./workflow-prompt-state.js"
@@ -798,9 +801,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const multiAgentMode = responsePaneProjectionController.multiAgentMode
   const workflowScreenShowing = responsePaneProjectionController.workflowScreenShowing
   const splitAgentResponseMode = responsePaneProjectionController.splitAgentResponseMode
-  const activeInteractionForAgent = (agentId: string | null | undefined): RuntimeInteraction | null =>
-    activeInteractionForAgentForSession(sessionState(), agentId)
-  const focusedAgentInteraction = () => activeInteractionForAgent(focusedAgentId())
+  const interactionProjectionController = createInteractionProjectionController({
+    getSession: sessionState,
+    getFocusedAgentId: focusedAgentId,
+  })
+  const activeInteractionForAgent = interactionProjectionController.activeInteractionForAgent
+  const focusedAgentInteraction = interactionProjectionController.focusedAgentInteraction
   const workflowPromptState = createMemo(() => deriveWorkflowPromptState({
     workflowScreenActive: workflowScreenShowing(),
     workflows: sessionState().workflows ?? [],
@@ -873,17 +879,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const focusedBackendProvider = agentRuntimeProjectionController.focusedBackendProvider
   const focusedProviderRun = agentRuntimeProjectionController.focusedProviderRun
   const resolveSessionAgent = agentRuntimeProjectionController.resolveSessionAgent
-  const workflowInspector = () => buildWorkflowInspectorProjection({
-    session: sessionState(),
-    selectedWorkflowId: selectedWorkflowId(),
-    selectedWorkflowNodeId: selectedWorkflowNodeId(),
-    inspectorMode: workflowInspectorMode(),
-    nodeInstructionsEditor: workflowNodeInstructionsEditor(),
+  const workflowInspectorController = createWorkflowInspectorController({
+    getSession: sessionState,
+    getSelectedWorkflowId: selectedWorkflowId,
+    getSelectedWorkflowNodeId: selectedWorkflowNodeId,
+    getInspectorMode: workflowInspectorMode,
+    getNodeInstructionsEditor: workflowNodeInstructionsEditor,
     updateNodeInstructionsDraft: (draft) => workflowNodeInstructionsEditorController.updateDraft(draft),
     setNodeInstructionsInputRef: (editorRef) => {
       workflowNodeInstructionsEditorController.setInputRef(editorRef)
     },
   })
+  const workflowInspector = workflowInspectorController.project
   const promptStateForAgent = agentRuntimeProjectionController.promptStateForAgent
   const agentQueuedDepth = agentRuntimeProjectionController.agentQueuedDepth
   const agentActivePrompt = agentRuntimeProjectionController.agentActivePrompt
