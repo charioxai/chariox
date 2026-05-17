@@ -5,7 +5,6 @@ import type {
   RuntimeSession,
   SessionConfigState,
   WorkflowDefinition,
-  WorkflowEndpointDefinition,
   WorkflowNodeDefinition,
   WorkflowRun,
   WorkflowWatchdogDefinition,
@@ -46,6 +45,10 @@ import {
   isWorkflowSettingsCommand,
 } from "./workflow-settings-command-handlers.js"
 import { handleWorkflowTerminalCommand } from "./workflow-terminal-command-handler.js"
+import {
+  handleWorkflowWatchdogCommand,
+  type WorkflowWatchdogPayload,
+} from "./workflow-watchdog-command-handlers.js"
 
 type FooterTone = "info" | "error"
 
@@ -61,13 +64,6 @@ type WorkflowResolvePayload = {
 type WorkflowNodePayload = {
   node: WorkflowNodeDefinition
   workflow: WorkflowDefinition
-  session: RuntimeSession
-}
-
-type WorkflowWatchdogPayload = {
-  watchdog: WorkflowWatchdogDefinition
-  workflow?: WorkflowDefinition
-  endpoint?: WorkflowEndpointDefinition
   session: RuntimeSession
 }
 
@@ -543,141 +539,6 @@ async function handleWorkflowNodeCommand(
     "usage: /workflow node add [workflow-ref] <agent-id|all> | remove [workflow-ref] <node-id> | instructions ... | can-complete-run [workflow-ref] <node-id> <true|false> | can-emit-intermediate-output [workflow-ref] <node-id> <true|false> | intermediate-output-schema [workflow-ref] <node-id> <schema-ref|none> | max-turns [workflow-ref] <node-id> <count|none>",
     "error",
   )
-}
-
-async function handleWorkflowWatchdogCommand(
-  deps: WorkflowCommandHandlerDeps,
-  context: WorkflowCommandContext,
-  args: string[],
-): Promise<void> {
-  const action = args[1]
-  if (action === "add") {
-    if (!deps.createWorkflowWatchdog) {
-      deps.flashFooter("workflow watchdogs are unavailable in this build", "error")
-      return
-    }
-    const explicitWorkflowRef = args[4] === "every" ? args[2] : null
-    const workflowRef = context.workflowRefOrSelected(explicitWorkflowRef)
-    const endpointRef = explicitWorkflowRef ? args[3] : args[2]
-    const everyLiteral = explicitWorkflowRef ? args[4] : args[3]
-    const intervalLiteral = explicitWorkflowRef ? args[5] : args[4]
-    const optionStartIndex = explicitWorkflowRef ? 6 : 5
-    const hasPolicyArg = args[optionStartIndex] === "skip" || args[optionStartIndex] === "queue"
-    const policy = (hasPolicyArg ? args[optionStartIndex] : "skip") as "skip" | "queue"
-    const maxWakeupsKeyword = args[optionStartIndex + (hasPolicyArg ? 1 : 0)]
-    const hasMaxWakeupsArg = maxWakeupsKeyword === "max-wakeups"
-    const maxWakeupsLiteral = hasMaxWakeupsArg ? args[optionStartIndex + (hasPolicyArg ? 2 : 1)] : undefined
-    const maxWakeups = hasMaxWakeupsArg ? parseWatchdogMaxWakeups(maxWakeupsLiteral) : undefined
-    const prompt = args
-      .slice(optionStartIndex + (hasPolicyArg ? 1 : 0) + (hasMaxWakeupsArg ? 2 : 0))
-      .join(" ")
-      .trim() || "Run the workflow exactly as instructed."
-    if (!workflowRef || !endpointRef || everyLiteral !== "every") {
-      deps.flashFooter(
-        "usage: /workflow watchdog add [workflow-ref] <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [max-wakeups <n|null>] [prompt]",
-        "error",
-      )
-      return
-    }
-    const intervalSeconds = parseWatchdogIntervalSeconds(intervalLiteral)
-    if (!intervalSeconds) {
-      deps.flashFooter("watchdog interval must be like 30s, 5m, 1h, or 1d", "error")
-      return
-    }
-    if (hasMaxWakeupsArg && maxWakeups === undefined) {
-      deps.flashFooter("max-wakeups must be a positive integer or `null`", "error")
-      return
-    }
-    const payload = await deps.createWorkflowWatchdog(
-      workflowRef,
-      endpointRef,
-      intervalSeconds,
-      prompt,
-      policy,
-      maxWakeups,
-    )
-    deps.applySessionState(payload.session)
-    deps.selectWorkflowCanvas(payload.workflow?.id ?? workflowRef)
-    deps.flashFooter(`created workflow watchdog ${payload.watchdog.id}`, "info")
-    return
-  }
-  if (action === "list") {
-    if (!deps.listWorkflowWatchdogs) {
-      deps.flashFooter("workflow watchdogs are unavailable in this build", "error")
-      return
-    }
-    const workflowRef = args[2] ?? null
-    const payload = await deps.listWorkflowWatchdogs(workflowRef)
-    if (payload.watchdogs.length === 0) {
-      deps.flashFooter("no workflow watchdogs configured", "info")
-      return
-    }
-    deps.appendNotice(payload.watchdogs.map((watchdog) =>
-      `${watchdog.id} workflow=${watchdog.workflow_id} endpoint=${watchdog.endpoint_id} every=${watchdog.interval_seconds}s policy=${watchdog.policy} enabled=${String(watchdog.enabled)} wakeups=${watchdog.wakeups_executed}/${watchdog.max_wakeups ?? "unbounded"} next=${new Date(watchdog.next_run_at_ms).toISOString()}${watchdog.pending_run ? " pending=true" : ""}`
-    ).join("\n"))
-    deps.flashFooter(`listed ${payload.watchdogs.length} workflow watchdog(s)`, "info")
-    return
-  }
-  if (action === "enable" || action === "disable") {
-    if (!deps.setWorkflowWatchdogEnabled) {
-      deps.flashFooter("workflow watchdogs are unavailable in this build", "error")
-      return
-    }
-    const watchdogRef = args[2]
-    if (!watchdogRef) {
-      deps.flashFooter(`usage: /workflow watchdog ${action} <watchdog-ref>`, "error")
-      return
-    }
-    const payload = await deps.setWorkflowWatchdogEnabled(watchdogRef, action === "enable")
-    deps.applySessionState(payload.session)
-    deps.flashFooter(
-      `${action === "enable" ? "enabled" : "disabled"} workflow watchdog ${payload.watchdog.id}`,
-      "info",
-    )
-    return
-  }
-  if (action === "remove") {
-    if (!deps.removeWorkflowWatchdog) {
-      deps.flashFooter("workflow watchdogs are unavailable in this build", "error")
-      return
-    }
-    const watchdogRef = args[2]
-    if (!watchdogRef) {
-      deps.flashFooter("usage: /workflow watchdog remove <watchdog-ref>", "error")
-      return
-    }
-    const payload = await deps.removeWorkflowWatchdog(watchdogRef)
-    deps.applySessionState(payload.session)
-    deps.flashFooter(`removed workflow watchdog ${payload.watchdog.id}`, "info")
-    return
-  }
-  deps.flashFooter(
-    "usage: /workflow watchdog add [workflow-ref] <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [max-wakeups <n|null>] [prompt] | list [workflow-ref] | enable <watchdog-ref> | disable <watchdog-ref> | remove <watchdog-ref>",
-    "error",
-  )
-}
-
-function parseWatchdogIntervalSeconds(value: string | undefined): number | null {
-  if (!value) return null
-  const match = value.trim().toLowerCase().match(/^(\d+)(s|m|h|d)$/)
-  if (!match) return null
-  const amount = Number(match[1])
-  const unit = match[2]
-  if (!Number.isFinite(amount) || amount <= 0) return null
-  const multiplier = unit === "s" ? 1 : unit === "m" ? 60 : unit === "h" ? 3600 : 86400
-  return amount * multiplier
-}
-
-function parseWatchdogMaxWakeups(value: string | undefined): number | null | undefined {
-  if (value == null) return undefined
-  const normalized = value.trim().toLowerCase()
-  if (!normalized) return undefined
-  if (normalized === "null" || normalized === "unbounded") return null
-  const numeric = Number(normalized)
-  if (!Number.isFinite(numeric) || numeric <= 0 || !Number.isInteger(numeric)) {
-    return undefined
-  }
-  return numeric
 }
 
 async function addAllRemainingWorkflowNodes(
