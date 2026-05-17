@@ -194,9 +194,6 @@ import {
   type ArrobaPreferences,
   type MultiAgentResponseLayout,
 } from "./preferences.js"
-import {
-  extractDroppedPromptAttachments,
-} from "./prompt-attachments.js"
 import { createPromptAttachmentController } from "./prompt-attachment-controller.js"
 import { createPromptAttachmentIntakeController } from "./prompt-attachment-intake-controller.js"
 import {
@@ -262,6 +259,9 @@ import {
   hydrateTranscriptEntries,
   markDeferredHistoryEntries,
 } from "./transcript-history.js"
+import {
+  derivePromptContentChangeDecision,
+} from "./prompt-content-change-policy.js"
 import { buildPaneGridModel, type PaneGridTone } from "./response-pane-grid.js"
 import {
   responsePaneRowSlots,
@@ -271,7 +271,6 @@ import {
 import {
   extractPromptHistoryEntries,
   extractPromptInputHistoryEntries,
-  isProgrammaticPromptContentEcho,
   maxPromptInputHistorySequence,
   navigatePromptHistory,
   promptHistoryEntryListsEqual,
@@ -2921,48 +2920,49 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const value = promptInput.plainText
-    if (!isAttached()) {
-      promptTextSnapshot = value
-      syncCommandCenter(value)
-      return
-    }
-    if (isProgrammaticPromptContentEcho({
+    const decision = derivePromptContentChangeDecision({
+      attached: isAttached(),
       currentText: value,
       previousSnapshot: promptTextSnapshot,
       programmaticMutation: promptTextMuting,
       dropPending: promptDropPending,
-    })) {
-      promptTextSnapshot = value
-      syncCommandCenter(value)
+      promptHistoryActive: promptHistoryIndex() !== null || promptHistoryDraft() !== null,
+      sessionId: attachmentState()?.session_id,
+      cwd: process.cwd(),
+    })
+
+    if (decision.kind === "detached" || decision.kind === "programmatic") {
+      promptTextSnapshot = decision.nextSnapshot
+      syncCommandCenter(decision.commandCenterText)
       return
     }
-    if (promptHistoryIndex() !== null || promptHistoryDraft() !== null) {
+
+    if (decision.resetPromptHistory) {
       setPromptHistoryIndex(null)
       setPromptHistoryDraft(value)
     }
-    const drop = extractDroppedPromptAttachments(promptTextSnapshot, value, process.cwd())
-    if (!drop) {
-      syncPendingPromptAttachmentsFromText(value)
-      promptTextSnapshot = value
-      syncCommandCenter(value)
-      const sessionId = attachmentState()?.session_id
-      if (sessionId) {
-        schedulePromptDraftPersist(sessionId, value)
+
+    if (decision.kind === "text") {
+      syncPendingPromptAttachmentsFromText(decision.syncAttachmentText)
+      promptTextSnapshot = decision.nextSnapshot
+      syncCommandCenter(decision.commandCenterText)
+      if (decision.persistDraft) {
+        schedulePromptDraftPersist(decision.persistDraft.sessionId, decision.persistDraft.text)
       }
       return
     }
-    setPromptText(drop.nextText)
-    syncCommandCenter(drop.nextText)
-    const sessionId = attachmentState()?.session_id
-    if (sessionId) {
-      schedulePromptDraftPersist(sessionId, drop.nextText)
+
+    setPromptText(decision.nextPromptText)
+    syncCommandCenter(decision.commandCenterText)
+    if (decision.persistDraft) {
+      schedulePromptDraftPersist(decision.persistDraft.sessionId, decision.persistDraft.text)
     }
     promptDropPending = true
-    void attachPromptFiles(drop.files, drop.insertAt)
+    void attachPromptFiles(decision.files, decision.insertAt)
       .catch((error) => {
         appLogger?.warn("prompt attachment drop failed", {
           error: formatError(error),
-          paths: drop.files.map((file) => file.path),
+          paths: decision.files.map((file) => file.path),
         })
         flashFooter(`failed to attach files: ${formatError(error)}`, "error")
       })
