@@ -353,7 +353,6 @@ import {
   SESSION_NEW_ERROR_HINT,
   SESSION_NEW_FOOTER_HINT,
   SESSION_NEW_PLACEHOLDER,
-  formatSessionDisplayLabel,
   formatSessionList,
   selectAttachableSession,
   type SessionListEntry,
@@ -402,12 +401,9 @@ import { DEFAULT_THEME_REGISTRY, loadThemeRegistry } from "./theme-registry.js"
 import {
   deriveWaitingRoomActivationDecision,
   deriveWaitingRoomControlActivationDecision,
-  deriveWaitingRoomDeleteDecision,
   deriveWaitingRoomKeyNavigationDecision,
-  deriveWaitingRoomSessionLifecycleDecision,
   deriveWaitingRoomStateUpdate,
   waitingRoomSessionLifecycleActionForEvent,
-  type WaitingRoomSessionLifecycleAction,
 } from "./waiting-room-controller.js"
 import {
   getWaitingRoomInventory,
@@ -421,6 +417,7 @@ import {
   type WaitingRoomState,
 } from "./waiting-room.js"
 import { createWaitingRoomTransitionController } from "./waiting-room-transition-controller.js"
+import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifecycle-action-controller.js"
 import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
 import {
   primeWaitingRoomWorktreeInventory,
@@ -1609,136 +1606,47 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     warn: (message, fields) => appLogger?.warn(message, fields),
     formatError,
   })
-  const applyWaitingRoomSessionLifecycleAction = async (
-    action: WaitingRoomSessionLifecycleAction,
-    stateOverride?: WaitingRoomState,
-  ) => {
-    try {
-      if (!kernelConnected()) {
-        await connectDetachedKernelFromWaitingRoom()
-      }
-      const effectiveState = stateOverride ?? waitingRoomState()
-      const remote = {
-        cloudNotice: waitingRoomCloudNotice(),
-        inventoryStatus: waitingRoomInventoryStatus(),
-        loadingFrame: waitingRoomState().introStep,
-        relay: relayStatusState(),
-        machines: remoteMachinesState(),
-        kernels: remoteKernelsState(),
-        terminals: terminalsState(),
-      }
-      const decision = action === "delete"
-        ? deriveWaitingRoomDeleteDecision({
-            state: effectiveState,
-            sessions: availableSessions(),
-            catalog: providerCatalogState(),
-            remote,
-          })
-        : deriveWaitingRoomSessionLifecycleDecision({
-            action,
-            state: effectiveState,
-            sessions: availableSessions(),
-            catalog: providerCatalogState(),
-          })
-      if (decision.action === "error") {
-        waitingRoomLifecycleConfirmationController.clear()
-        flashFooter(decision.message, "error")
-        return
-      }
-
-      const confirmation = waitingRoomLifecycleConfirmationController.confirm(action, decision)
-      if (confirmation.action === "await-confirmation") {
-        flashFooter(confirmation.message, confirmation.tone)
-        return
-      }
-
-      if (decision.action === "archive") {
-        const updated = await archiveSessionById(client, decision.session.id)
-        setAvailableSessions(availableSessions().filter((candidate) => candidate.id !== updated.id))
-        waitingRoomInventoryRefreshController.invalidate()
-        reconcileWaitingRoom(waitingRoomState())
-        await refreshWaitingRoomData()
-        flashFooter(`archived session ${formatSessionDisplayLabel(updated)}`, "info")
-        return
-      }
-      if (decision.action === "archive-all") {
-        const archived = []
-        for (const session of decision.sessions) {
-          archived.push(await archiveSessionById(client, session.id))
-        }
-        const archivedIds = new Set(archived.map((session) => session.id))
-        setAvailableSessions(availableSessions().filter((candidate) => !archivedIds.has(candidate.id)))
-        waitingRoomInventoryRefreshController.invalidate()
-        reconcileWaitingRoom({ ...waitingRoomState(), focus: "new", sessionIndex: 0 })
-        await refreshWaitingRoomData()
-        if (sessionBrowserOpen()) {
-          closeSessionBrowserDialog()
-        }
-        flashFooter(`archived ${archived.length} session${archived.length === 1 ? "" : "s"}`, "info")
-        return
-      }
-      if (decision.action === "delete-session") {
-        const updated = await deleteSessionByRef(client, decision.session.id, pendingWorkspaceTarget())
-        setAvailableSessions(availableSessions().filter((candidate) => candidate.id !== updated.id))
-        waitingRoomInventoryRefreshController.invalidate()
-        reconcileWaitingRoom(waitingRoomState())
-        await refreshWaitingRoomData()
-        flashFooter(`deleted session ${formatSessionDisplayLabel(updated)}`, "error")
-        return
-      }
-      if (decision.action === "delete-all-sessions") {
-        const deleted = []
-        for (const session of decision.sessions) {
-          deleted.push(await deleteSessionByRef(client, session.id, pendingWorkspaceTarget()))
-        }
-        const deletedIds = new Set(deleted.map((session) => session.id))
-        setAvailableSessions(availableSessions().filter((candidate) => !deletedIds.has(candidate.id)))
-        waitingRoomInventoryRefreshController.invalidate()
-        reconcileWaitingRoom({ ...waitingRoomState(), focus: "new", sessionIndex: 0 })
-        await refreshWaitingRoomData()
-        if (sessionBrowserOpen()) {
-          closeSessionBrowserDialog()
-        }
-        flashFooter(`deleted ${deleted.length} session${deleted.length === 1 ? "" : "s"}`, "error")
-        return
-      }
-      if (decision.action === "delete") {
-        const updated = await deleteSessionByRef(client, decision.session.id, pendingWorkspaceTarget())
-        setAvailableSessions(availableSessions().filter((candidate) => candidate.id !== updated.id))
-        waitingRoomInventoryRefreshController.invalidate()
-        reconcileWaitingRoom(waitingRoomState())
-        await refreshWaitingRoomData()
-        flashFooter(`deleted session ${formatSessionDisplayLabel(updated)}`, "error")
-        return
-      }
-      if (decision.action === "delete-machine") {
-        const deleted = await forgetRemoteMachine(client, decision.machineId)
-        const deletedMachineId = deleted.machine_id || decision.machineId
-        setRemoteMachinesState(remoteMachinesState().filter((machine) => machine.machine_id !== deletedMachineId))
-        setRemoteKernelsState(remoteKernelsState().filter((kernel) => kernel.machine_id !== deletedMachineId))
-        waitingRoomInventoryRefreshController.invalidate()
-        reconcileWaitingRoom(waitingRoomState())
-        await refreshWaitingRoomData()
-        flashFooter(`deleted machine ${decision.label}`, "error")
-        return
-      }
-      if (decision.action === "delete-kernel") {
-        hiddenWaitingRoomKernelIds.add(decision.kernelId)
-        const hiddenKernelIds = [...hiddenWaitingRoomKernelIds].sort()
-        void saveUiPreferences({ hiddenRemoteKernelIds: hiddenKernelIds })
-        setPreferencesState((current) => mergeUiPreferences(current, { hiddenRemoteKernelIds: hiddenKernelIds }))
-        setRemoteKernelsState(remoteKernelsState().filter((kernel) => kernel.kernel_id !== decision.kernelId))
-        reconcileWaitingRoom(waitingRoomState())
-        flashFooter(`deleted kernel ${decision.label}`, "error")
-      }
-    } catch (error) {
-      appLogger?.warn("waiting room session lifecycle action failed", {
-        action,
-        error: formatError(error),
-      })
-      flashFooter(formatError(error), "error")
-    }
-  }
+  const waitingRoomLifecycleActionController = createWaitingRoomLifecycleActionController({
+    isKernelConnected: kernelConnected,
+    connectDetachedKernel: () => connectDetachedKernelFromWaitingRoom(),
+    getWaitingRoomState: waitingRoomState,
+    getRemoteState: () => ({
+      cloudNotice: waitingRoomCloudNotice(),
+      inventoryStatus: waitingRoomInventoryStatus(),
+      loadingFrame: waitingRoomState().introStep,
+      relay: relayStatusState(),
+      machines: remoteMachinesState(),
+      kernels: remoteKernelsState(),
+      terminals: terminalsState(),
+    }),
+    getAvailableSessions: availableSessions,
+    setAvailableSessions,
+    getProviderCatalog: providerCatalogState,
+    getWorkspaceTarget: pendingWorkspaceTarget,
+    confirmationController: waitingRoomLifecycleConfirmationController,
+    archiveSessionById: (sessionId) => archiveSessionById(client, sessionId),
+    deleteSessionByRef: (sessionRef, workspace) => deleteSessionByRef(client, sessionRef, workspace),
+    forgetRemoteMachine: (machineRef) => forgetRemoteMachine(client, machineRef),
+    getRemoteMachines: remoteMachinesState,
+    setRemoteMachines: setRemoteMachinesState,
+    getRemoteKernels: remoteKernelsState,
+    setRemoteKernels: setRemoteKernelsState,
+    hideRemoteKernel: (kernelId) => {
+      hiddenWaitingRoomKernelIds.add(kernelId)
+      const hiddenKernelIds = [...hiddenWaitingRoomKernelIds].sort()
+      void saveUiPreferences({ hiddenRemoteKernelIds: hiddenKernelIds })
+      setPreferencesState((current) => mergeUiPreferences(current, { hiddenRemoteKernelIds: hiddenKernelIds }))
+    },
+    invalidateInventory: waitingRoomInventoryRefreshController.invalidate,
+    reconcileWaitingRoom,
+    refreshWaitingRoomData: () => refreshWaitingRoomData(),
+    sessionBrowserOpen,
+    closeSessionBrowserDialog: () => closeSessionBrowserDialog(),
+    flashFooter: (message, tone) => flashFooter(message, tone),
+    warn: (message, fields) => appLogger?.warn(message, fields),
+    formatError,
+  })
+  const applyWaitingRoomSessionLifecycleAction = waitingRoomLifecycleActionController.applyAction
   const connectDetachedKernelFromWaitingRoom = async () => {
     appLogger?.info("connecting detached cli to configured kernel endpoint")
     flashFooter("connecting to kernel...", "info")
