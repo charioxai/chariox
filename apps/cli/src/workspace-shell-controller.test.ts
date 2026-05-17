@@ -5,7 +5,10 @@ import { createDefaultShellContext } from "@arroba/kernel-client/shell-core"
 
 import type { RuntimeSession } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import { submitWorkspaceShellCommand } from "./workspace-shell-controller.js"
+import {
+  deriveWorkspaceShellContextForSession,
+  submitWorkspaceShellCommand,
+} from "./workspace-shell-controller.js"
 import type { WorkspaceShellEntry } from "./workspace-shell.js"
 
 function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
@@ -26,6 +29,33 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     ...overrides,
   } as RuntimeSession
 }
+
+test("deriveWorkspaceShellContextForSession syncs attached session context without dropping shell defaults", () => {
+  const previous = createDefaultShellContext({
+    workspace: "old-workspace",
+    worktree: "old-worktree",
+    sessionId: "old-session",
+    attachmentId: "old-attachment",
+    agentId: "old-agent",
+  })
+
+  const next = deriveWorkspaceShellContextForSession(previous, session({
+    id: "s2",
+    workspace_id: "",
+    worktree_id: "next-worktree",
+    focused_agent_id: null,
+    agents: [{ id: "agent-1" } as RuntimeSession["agents"][number]],
+  }), "attachment-2")
+
+  assert.equal(next.workspace, "old-workspace")
+  assert.equal(next.worktree, "next-worktree")
+  assert.equal(next.sessionId, "s2")
+  assert.equal(next.attachmentId, "attachment-2")
+  assert.equal(next.agentId, "agent-1")
+  assert.equal(next.provider, previous.provider)
+  assert.equal(next.model, previous.model)
+  assert.equal(next.effort, previous.effort)
+})
 
 test("submitWorkspaceShellCommand records shell output and refreshes selected workflow", async () => {
   const initialContext = createDefaultShellContext({ sessionId: "s1" })

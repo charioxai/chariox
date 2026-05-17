@@ -439,7 +439,10 @@ import {
 import {
   type WorkspaceShellEntry,
 } from "./workspace-shell.js"
-import { submitWorkspaceShellCommand as submitWorkspaceShellCommandWithDeps } from "./workspace-shell-controller.js"
+import {
+  deriveWorkspaceShellContextForSession,
+  submitWorkspaceShellCommand as submitWorkspaceShellCommandWithDeps,
+} from "./workspace-shell-controller.js"
 import { createWorkflowController, deriveWorkflowSelectionState } from "./workflow-controller.js"
 import {
   deriveWorkflowPromptState,
@@ -971,14 +974,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const session = sessionState()
-    setWorkspaceShellContext((previous) => ({
-      ...previous,
-      workspace: session.workspace_id || previous.workspace,
-      worktree: session.worktree_id || previous.worktree,
-      sessionId: session.id,
-      attachmentId: attachmentState()?.id ?? previous.attachmentId,
-      agentId: session.focused_agent_id ?? session.agents[0]?.id ?? previous.agentId,
-    }))
+    setWorkspaceShellContext((previous) =>
+      deriveWorkspaceShellContextForSession(previous, session, attachmentState()?.id))
   })
   const primaryTranscriptSurfaceTone = () => resolveTranscriptSurfaceTone(splitAgentResponseMode(), responsePrimaryAgent()?.id === focusedAgentId())
   const auxiliaryTranscriptSurfaceTone = (agentId: string | null | undefined) => {

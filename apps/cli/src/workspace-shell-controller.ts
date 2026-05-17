@@ -17,6 +17,21 @@ export type WorkspaceShellSubmitResult = {
   context: ShellContext
 }
 
+export function deriveWorkspaceShellContextForSession(
+  previous: ShellContext,
+  session: RuntimeSession,
+  attachmentId: string | null | undefined,
+): ShellContext {
+  return {
+    ...previous,
+    workspace: session.workspace_id || previous.workspace,
+    worktree: session.worktree_id || previous.worktree,
+    sessionId: session.id,
+    attachmentId: attachmentId ?? previous.attachmentId,
+    agentId: session.focused_agent_id ?? session.agents[0]?.id ?? previous.agentId,
+  }
+}
+
 type WorkspaceShellSubmitDeps = {
   client: LocalIpcClient
   executeShellLine?: typeof executeShellLine
