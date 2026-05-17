@@ -192,6 +192,8 @@ import {
 import {
   createPromptDraftPersistController,
 } from "./prompt-draft-persist-controller.js"
+import { createPromptFocusRetentionController } from "./prompt-focus-retention-controller.js"
+import { createPromptSurfaceMouseController } from "./prompt-surface-mouse-controller.js"
 import {
   createPromptHistoryNavigationController,
 } from "./prompt-history-navigation-controller.js"
@@ -1962,14 +1964,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ? Math.max(6, dimensions().height - 11)
       : 6
   )
-  const retainPromptFocus = () => {
-    if (!isAttached()) {
-      return
-    }
-    startTimeout(() => {
+  const promptFocusRetentionController = createPromptFocusRetentionController({
+    delayMs: 0,
+    scheduleTimer: startTimeout,
+    isAttached,
+    focusPromptInput: () => {
       promptInput?.focus()
-    }, 0)
-  }
+    },
+  })
+  const retainPromptFocus = promptFocusRetentionController.retainFocus
   const promptHistoryNavigationController = createPromptHistoryNavigationController({
     getPromptText: promptTextController.currentText,
     getEntries: promptHistoryEntries,
@@ -2391,6 +2394,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const copyPromptSelection = clipboardController.copyPromptSelection
   const copySelection = clipboardController.copySelection
+  const promptSurfaceMouseController = createPromptSurfaceMouseController({
+    delayMs: 0,
+    scheduleTimer: startTimeout,
+    isPrimaryButton: (event: { button: MouseButton }) => event.button === MouseButton.LEFT,
+    copySelection,
+    retainPromptFocus,
+  })
+  const handlePromptSelectionSurfaceMouseUp = promptSurfaceMouseController.handleMouseUp
 
   const applySessionState = (nextSession: RuntimeSession) => {
     nextSession = normalizeRuntimeSession(nextSession)
@@ -6077,24 +6088,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       promptAreaBackground={promptAreaBackground()}
       promptKeyBindings={PROMPT_KEYBINDINGS}
       onRootMouseUp={retainPromptFocus}
-      onResponseSurfaceMouseUp={(event) => {
-        if (event.button !== MouseButton.LEFT) {
-          return
-        }
-        startTimeout(() => {
-          copySelection()
-          retainPromptFocus()
-        }, 0)
-      }}
-      onFooterMouseUp={(event) => {
-        if (event.button !== MouseButton.LEFT) {
-          return
-        }
-        startTimeout(() => {
-          copySelection()
-          retainPromptFocus()
-        }, 0)
-      }}
+      onResponseSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
+      onFooterMouseUp={handlePromptSelectionSurfaceMouseUp}
       onResponseLayoutBoxRef={(value) => {
         responseLayoutBox = value
         logViewDebug("mounted response layout box")
