@@ -91,6 +91,10 @@ import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntr
 import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
 import { validateProviderNamespaceSubmit } from "./provider-namespace-submit-policy.js"
 import { createClipboardController } from "./clipboard-controller.js"
+import {
+  createFooterFlashController,
+  type FooterFlash,
+} from "./footer-flash-controller.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent, shouldHandleWaitingRoomKeyEvent } from "./hotkeys.js"
 import { buildHotkeySections } from "./hotkey-help.js"
 import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget, promptTurnNavigationDirectionForKey } from "./history-viewport.js"
@@ -538,11 +542,6 @@ type PromptQueueItem = {
   status: string
 }
 
-type FooterFlash = {
-  message: string
-  tone: "info" | "error"
-}
-
 const DEBUG_LOGS_ENABLED = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
 const OPEN_CONSOLE_ON_ERROR = process.env.ARROBA_OPEN_CONSOLE_ON_ERROR === "1"
 let processLogger: ArrobaLogger | null = null
@@ -914,7 +913,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const transcriptRenderables = new Map<number, TranscriptEntryRenderable>()
   let transcriptSyntax = createTranscriptSyntaxStyle()
   let emptyTranscriptRenderable: BoxRenderable | undefined
-  let footerFlashTimeout: ReturnType<typeof startTimeout> | undefined
   let lastTranscriptScrollTop = 0
   let historyLoadGeneration = 0
   let pendingHistoryScrollRestore = 0
@@ -3121,18 +3119,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     transcriptScrollbox?.requestRender()
   }
 
-  const flashFooter = (message: string, tone: FooterFlash["tone"]) => {
-    if (footerFlashTimeout) {
-      clearTimeout(footerFlashTimeout)
-    }
-    setFooterFlash({ message, tone })
-    updateSessionChrome()
-    footerFlashTimeout = startTimeout(() => {
-      footerFlashTimeout = undefined
-      setFooterFlash(null)
-      updateSessionChrome()
-    }, 10_000)
-  }
+  const footerFlashController = createFooterFlashController({
+    delayMs: 10_000,
+    scheduleTimer: startTimeout,
+    clearTimer: clearTimeout,
+    setFooterFlash,
+    onFooterFlashChange: () => updateSessionChrome(),
+  })
+  const flashFooter = footerFlashController.flash
 
   const promptAttachmentIntakeController = createPromptAttachmentIntakeController({
     client,
@@ -7382,9 +7376,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   onCleanup(() => {
-    if (footerFlashTimeout) {
-      clearTimeout(footerFlashTimeout)
-    }
+    footerFlashController.clearTimer()
     clearPendingPromptDraftPersist()
     cancelPendingTurnCompletion()
     if (pendingSessionChromeFlush) {
