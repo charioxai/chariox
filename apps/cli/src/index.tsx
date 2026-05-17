@@ -359,6 +359,7 @@ import { createTerminalOutputRecordProcessor } from "./terminal-output-record-pr
 import { createTerminalExitController } from "./terminal-exit-controller.js"
 import { createTranscriptViewportController } from "./transcript-viewport-controller.js"
 import { createTranscriptRenderDeferralController } from "./transcript-render-deferral-controller.js"
+import { createTranscriptParserRegistration } from "./transcript-parser-registration.js"
 import { createWorkingAnimationController } from "./working-animation-controller.js"
 import {
   shouldRenderProviderStatus,
@@ -543,7 +544,12 @@ type PromptQueueItem = {
 const DEBUG_LOGS_ENABLED = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
 const OPEN_CONSOLE_ON_ERROR = process.env.ARROBA_OPEN_CONSOLE_ON_ERROR === "1"
 let processLogger: ArrobaLogger | null = null
-let transcriptParsersRegistered = false
+const transcriptParserRegistration = createTranscriptParserRegistration({
+  parsers: parserConfig.parsers,
+  addDefaultParsers: (parsers) => {
+    addDefaultParsers([...parsers])
+  },
+})
 
 function getLogger(component: string, fields: Record<string, unknown> = {}) {
   return processLogger?.child(component, fields) ?? null
@@ -568,7 +574,7 @@ async function main() {
     return
   }
 
-  ensureTranscriptParsersRegistered()
+  transcriptParserRegistration.ensureRegistered()
   processLogger = createProcessLogger("cli")
   getLogger("cli.main")?.info("starting cli process", { argv })
   const runtimeBootstrap = await bootstrapCliRuntime({
@@ -594,14 +600,6 @@ async function main() {
     },
   )
   getLogger("cli.main")?.info("render mounted")
-}
-
-function ensureTranscriptParsersRegistered() {
-  if (transcriptParsersRegistered) {
-    return
-  }
-  addDefaultParsers(parserConfig.parsers)
-  transcriptParsersRegistered = true
 }
 
 function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
