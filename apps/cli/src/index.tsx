@@ -66,6 +66,7 @@ import { createCliProcessLifecycleController } from "./cli-process-lifecycle-con
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
 import { createCommandCenterCommandExecutor } from "./command-center-command-executor.js"
+import { createCommandCenterLayoutController } from "./command-center-layout-controller.js"
 import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import {
@@ -88,7 +89,6 @@ import {
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 import { createHotkeyDebugReporter } from "./hotkey-debug-reporter.js"
 import { createHotkeysToggleController } from "./hotkeys-toggle-controller.js"
-import { buildHotkeySections } from "./hotkey-help.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { clampScrollTop } from "./history-viewport.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
@@ -119,8 +119,8 @@ import { createSessionBrowserController } from "./session-browser-controller.js"
 import { createSlashCommandSubmitController } from "./slash-command-submit-controller.js"
 import {
   clampSessionBrowserIndex,
-  sessionBrowserVisibleSessions,
 } from "./session-browser-key-policy.js"
+import { createSessionBrowserProjectionController } from "./session-browser-projection-controller.js"
 import {
   aliasAgent,
   cycleAgentFocus as cycleAgentFocusApi,
@@ -1184,7 +1184,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     workspacePath: pendingWorkspaceTarget(),
     worktreePath: pendingWorktreeTarget(),
   })
-  const commandCenterVisibleRowCount = () => Math.max(4, Math.min(10, dimensions().height - (promptInput?.height ?? 1) - 10))
+  const commandCenterLayoutController = createCommandCenterLayoutController({
+    terminalHeight: () => dimensions().height,
+    promptHeight: () => promptInput?.height ?? 1,
+  })
+  const commandCenterVisibleRowCount = commandCenterLayoutController.visibleRowCount
   const commandCenterController = createCommandCenterController({
     getProviderCatalog: providerCatalogState,
     getProviderCommandCatalogs: providerCommandCatalogState,
@@ -1493,16 +1497,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   createEffect(() => {
     void promptHistoryAttachmentController.sync()
   })
-  const hotkeySections = () => buildHotkeySections(isAttached())
-  const sessionBrowserSessions = () => sessionBrowserVisibleSessions(availableSessions())
-  const normalizeSessionBrowserIndex = () => {
-    const sessions = sessionBrowserSessions()
-    const index = clampSessionBrowserIndex(sessionBrowserIndex(), sessions.length)
-    if (index !== sessionBrowserIndex()) {
-      setSessionBrowserIndex(index)
-    }
-    return index
-  }
+  const sessionBrowserProjectionController = createSessionBrowserProjectionController({
+    isAttached,
+    availableSessions,
+    selectedIndex: sessionBrowserIndex,
+    setSelectedIndex: setSessionBrowserIndex,
+  })
+  const hotkeySections = sessionBrowserProjectionController.hotkeySections
+  const sessionBrowserSessions = sessionBrowserProjectionController.sessions
+  const normalizeSessionBrowserIndex = sessionBrowserProjectionController.normalizeIndex
   const dialogOverlayController = createCliDialogOverlayController({
     getOpenState: () => ({
       hotkeysOpen: hotkeysOpen(),
