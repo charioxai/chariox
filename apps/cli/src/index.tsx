@@ -739,7 +739,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     BoxRenderable,
     ToolTranscriptUpdate
   >()
-  let commandCenterBox: BoxRenderable | undefined
   let hotkeysOverlayBox: BoxRenderable | undefined
   const statusIndicatorRenderState = createStatusIndicatorRenderState()
   const closingStateController = createCliClosingStateController()
@@ -1204,7 +1203,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     promptHeight: () => promptInput?.height ?? 1,
   })
   const commandCenterVisibleRowCount = commandCenterLayoutController.visibleRowCount
-  const commandCenterController = createCommandCenterController({
+  const commandCenterController = createCommandCenterController<BoxRenderable>({
     getProviderCatalog: providerCatalogState,
     getProviderCommandCatalogs: providerCommandCatalogState,
     getCurrentProvider: () => normalizeBackendProviderId(currentProviderSelection().provider),
@@ -1217,9 +1216,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     onCommandError: (error) => {
       flashFooter(formatError(error), "error")
     },
-    render: (state) => {
+    render: (state, box) => {
       renderCommandCenterOverlay({
-        box: commandCenterBox,
+        box,
         renderer,
         open: state.open,
         items: state.items,
@@ -4192,7 +4191,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         applyResponseLayout()
       }}
       onCommandCenterBoxRef={(value) => {
-        commandCenterBox = value
+        commandCenterController.assignBox(value)
         renderCommandCenter()
       }}
       onPromptInputRef={(value) => {

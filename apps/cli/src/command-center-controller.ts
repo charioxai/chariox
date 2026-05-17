@@ -25,7 +25,7 @@ export type CommandCenterRenderState = {
   selectedIndex: number
 }
 
-type CommandCenterControllerOptions = {
+type CommandCenterControllerOptions<TBox = unknown> = {
   getProviderCatalog: () => ProviderCatalog
   getProviderCommandCatalogs: () => ProviderCommandCatalogs
   getCurrentProvider: () => BackendProviderId
@@ -36,15 +36,16 @@ type CommandCenterControllerOptions = {
   replacePromptText: (value: string) => void
   executeCommand: (value: string) => Promise<void>
   onCommandError: (error: unknown) => void
-  render: (state: CommandCenterRenderState) => void
+  render: (state: CommandCenterRenderState, box: TBox | undefined) => void
 }
 
-export type CommandCenterController = {
+export type CommandCenterController<TBox = unknown> = {
   query(): string
   items(): readonly CommandCenterItem[]
   selectedIndex(): number
   selectedItem(): CommandCenterItem | null
   open(): boolean
+  assignBox(value: TBox | undefined): void
   sync(value?: string): void
   clear(): void
   moveSelection(delta: number): void
@@ -53,12 +54,13 @@ export type CommandCenterController = {
   render(): void
 }
 
-export function createCommandCenterController(
-  options: CommandCenterControllerOptions,
-): CommandCenterController {
+export function createCommandCenterController<TBox = unknown>(
+  options: CommandCenterControllerOptions<TBox>,
+): CommandCenterController<TBox> {
   let query = ""
   let items: CommandCenterItem[] = []
   let selectedIndex = 0
+  let box: TBox | undefined
 
   const open = () => items.length > 0 && query.startsWith("/")
 
@@ -68,7 +70,7 @@ export function createCommandCenterController(
       query,
       items,
       selectedIndex,
-    })
+    }, box)
   }
 
   const replacePromptText = (value: string) => {
@@ -151,6 +153,9 @@ export function createCommandCenterController(
     },
     selectedItem,
     open,
+    assignBox(value) {
+      box = value
+    },
     sync,
     clear,
     moveSelection,

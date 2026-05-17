@@ -14,7 +14,8 @@ function createHarness(initialPrompt = "") {
   const executed: string[] = []
   const errors: unknown[] = []
   const renderStates: CommandCenterRenderState[] = []
-  const controller = createCommandCenterController({
+  const renderBoxes: Array<string | undefined> = []
+  const controller = createCommandCenterController<string>({
     getProviderCatalog: fallbackProviderCatalog,
     getProviderCommandCatalogs: fallbackProviderCommandCatalogs,
     getCurrentProvider: () => "opencode",
@@ -31,11 +32,12 @@ function createHarness(initialPrompt = "") {
     onCommandError: (error) => {
       errors.push(error)
     },
-    render: (state) => {
+    render: (state, box) => {
       renderStates.push({
         ...state,
         items: [...state.items],
       })
+      renderBoxes.push(box)
     },
   })
 
@@ -44,6 +46,7 @@ function createHarness(initialPrompt = "") {
     executed,
     errors,
     renderStates,
+    renderBoxes,
     get promptText() {
       return promptText
     },
@@ -79,12 +82,14 @@ function handledKey(name: string, overrides: Partial<CommandCenterKeyEvent> = {}
 test("command center controller syncs suggestions and render state", () => {
   const harness = createHarness("/")
 
+  harness.controller.assignBox("command-center-box")
   harness.controller.sync()
 
   assert.equal(harness.controller.query(), "/")
   assert.equal(harness.controller.open(), true)
   assert.equal(harness.controller.items().some((item) => item.label === "/provider"), true)
   assert.equal(harness.renderStates.at(-1)?.open, true)
+  assert.equal(harness.renderBoxes.at(-1), "command-center-box")
 })
 
 test("command center controller owns keyboard selection state", () => {
