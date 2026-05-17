@@ -289,8 +289,8 @@ import {
   markDeferredHistoryEntries,
 } from "./transcript-history.js"
 import {
-  derivePromptContentChangeDecision,
-} from "./prompt-content-change-policy.js"
+  createPromptContentChangeController,
+} from "./prompt-content-change-controller.js"
 import { createPromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
 import { buildPaneGridModel, type PaneGridTone } from "./response-pane-grid.js"
 import {
@@ -955,7 +955,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let hydratedPromptHistorySessionId: string | null | undefined
   let promptTextSnapshot = initialPromptDraft
   let promptTextMuting = false
-  let promptDropPending = false
   let submittingAgentId: string | null = null
   const renderScheduler = createRenderScheduler({
     schedule: (callback) => startTimeout(callback, 0),
@@ -2809,61 +2808,35 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     openHotkeys()
   }
-  const handlePromptContentChange = () => {
-    if (!promptInput) {
-      return
-    }
-    const value = promptInput.plainText
-    const decision = derivePromptContentChangeDecision({
-      attached: isAttached(),
-      currentText: value,
-      previousSnapshot: promptTextSnapshot,
-      programmaticMutation: promptTextMuting,
-      dropPending: promptDropPending,
-      promptHistoryActive: promptHistoryIndex() !== null || promptHistoryDraft() !== null,
-      sessionId: attachmentState()?.session_id,
-      cwd: process.cwd(),
-    })
-
-    if (decision.kind === "detached" || decision.kind === "programmatic") {
-      promptTextSnapshot = decision.nextSnapshot
-      syncCommandCenter(decision.commandCenterText)
-      return
-    }
-
-    if (decision.resetPromptHistory) {
+  const promptContentChangeController = createPromptContentChangeController({
+    getPromptText: () => promptInput?.plainText ?? null,
+    isAttached,
+    getPreviousSnapshot: () => promptTextSnapshot,
+    isProgrammaticMutation: () => promptTextMuting,
+    isPromptHistoryActive: () => promptHistoryIndex() !== null || promptHistoryDraft() !== null,
+    getSessionId: () => attachmentState()?.session_id,
+    getCwd: () => process.cwd(),
+    setPromptTextSnapshot: (text) => {
+      promptTextSnapshot = text
+    },
+    resetPromptHistory: (draft) => {
       setPromptHistoryIndex(null)
-      setPromptHistoryDraft(value)
-    }
-
-    if (decision.kind === "text") {
-      syncPendingPromptAttachmentsFromText(decision.syncAttachmentText)
-      promptTextSnapshot = decision.nextSnapshot
-      syncCommandCenter(decision.commandCenterText)
-      if (decision.persistDraft) {
-        schedulePromptDraftPersist(decision.persistDraft.sessionId, decision.persistDraft.text)
-      }
-      return
-    }
-
-    setPromptText(decision.nextPromptText)
-    syncCommandCenter(decision.commandCenterText)
-    if (decision.persistDraft) {
-      schedulePromptDraftPersist(decision.persistDraft.sessionId, decision.persistDraft.text)
-    }
-    promptDropPending = true
-    void attachPromptFiles(decision.files, decision.insertAt)
-      .catch((error) => {
-        appLogger?.warn("prompt attachment drop failed", {
-          error: formatError(error),
-          paths: decision.files.map((file) => file.path),
-        })
-        flashFooter(`failed to attach files: ${formatError(error)}`, "error")
+      setPromptHistoryDraft(draft)
+    },
+    syncPendingAttachmentsFromText: syncPendingPromptAttachmentsFromText,
+    setPromptText,
+    syncCommandCenter,
+    schedulePromptDraftPersist,
+    attachPromptFiles: (files, insertAt) => attachPromptFiles(files, insertAt),
+    onDropFailed: (error, files) => {
+      appLogger?.warn("prompt attachment drop failed", {
+        error: formatError(error),
+        paths: files.map((file) => file.path),
       })
-      .finally(() => {
-        promptDropPending = false
-      })
-  }
+      flashFooter(`failed to attach files: ${formatError(error)}`, "error")
+    },
+  })
+  const handlePromptContentChange = promptContentChangeController.handleChange
   const expandedTurnIdsForAgent = (agentId: string | null | undefined) => agentId ? (expandedTurnIdsByAgent()[agentId] ?? []) : []
 
   const applyVisibleTranscriptState = (
