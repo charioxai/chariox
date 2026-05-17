@@ -66,9 +66,7 @@ import {
 import { createCliLoadingStateController } from "./cli-loading-state-controller.js"
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
-import {
-  executeSlashCommand,
-} from "./commands.js"
+import { createCommandCenterCommandExecutor } from "./command-center-command-executor.js"
 import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
@@ -3549,105 +3547,32 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const recoverProviderRun = providerRecoveryController.recover
 
-  const executeCommandCenterCommand = async (value: string) => {
-    await executeSlashCommand(value, {
-      onExit: requestExit,
-      onWaiting: requestWaitingRoom,
-      onStop: requestPromptStop,
-      onAttachment: async (command) => {
-        await handleAttachmentCommand(command.raw)
-      },
-      onSession: handleSessionCommand,
-      onProvider: handleProviderCommand,
-      onModel: handleModelCommand,
-      onVariant: handleVariantCommand,
-      onView: handleViewCommand,
-      onAgent: async (command) => {
-        try {
-          await handleAgentCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onKernel: async (command) => {
-        try {
-          await handleKernelCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onMachine: async (command) => {
-        try {
-          await handleMachineCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onSlice: async (command) => {
-        try {
-          await handleSliceCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onRelay: async (command) => {
-        try {
-          await handleRelayCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onCloud: async (command) => {
-        try {
-          await handleCloudCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onConfig: async (command) => {
-        try {
-          await handleConfigCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onWorkspace: async (command) => {
-        try {
-          await handleWorkspaceCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onWorktree: async (command) => {
-        try {
-          await handleWorktreeCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onWorkflow: async (command) => {
-        try {
-          await handleWorkflowCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onMcp: async (command) => {
-        try {
-          await handleMcpCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onSkill: async (command) => {
-        try {
-          await handleSkillCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-    })
-  }
+  const commandCenterCommandExecutor = createCommandCenterCommandExecutor({
+    onExit: () => requestExit(),
+    onWaiting: () => requestWaitingRoom(),
+    onStop: () => requestPromptStop(),
+    handleAttachmentCommand,
+    onSession: handleSessionCommand,
+    onProvider: handleProviderCommand,
+    onModel: handleModelCommand,
+    onVariant: handleVariantCommand,
+    onView: handleViewCommand,
+    onAgent: handleAgentCommand,
+    onKernel: handleKernelCommand,
+    onMachine: handleMachineCommand,
+    onSlice: handleSliceCommand,
+    onRelay: handleRelayCommand,
+    onCloud: handleCloudCommand,
+    onConfig: handleConfigCommand,
+    onWorkspace: handleWorkspaceCommand,
+    onWorktree: handleWorktreeCommand,
+    onWorkflow: handleWorkflowCommand,
+    onMcp: handleMcpCommand,
+    onSkill: handleSkillCommand,
+    flashFooter,
+    formatError,
+  })
+  const executeCommandCenterCommand = commandCenterCommandExecutor.execute
 
   const exitController = createCliExitController({
     isClosing: () => closing,
