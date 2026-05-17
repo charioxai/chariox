@@ -36,7 +36,7 @@ import { createAssistantMessageCompletionController } from "./assistant-message-
 import { createAuthoritativeIdleController } from "./authoritative-idle-controller.js"
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
 import { createCliAutomationServerController } from "./cli-automation-server-controller.js"
-import { buildCliAutomationSnapshot } from "./cli-automation-snapshot.js"
+import { createCliAutomationSnapshotController } from "./cli-automation-snapshot-controller.js"
 import {
   ATTACHED_PROMPT_PLACEHOLDER,
   CHROME_UPDATE_THROTTLE_MS,
@@ -3677,41 +3677,40 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const handleStdinData = stdinKeyController.handleData
 
-  const automationSnapshot = () => {
-    return buildCliAutomationSnapshot({
-      workspaceScreenMode,
-      workflowScreenActive,
-      daemonDisconnected,
-      statusLine,
-      sessionState,
-      focusedAgentId,
-      agentActivityLabels,
-      hasPromptWorkByAgent,
-      streamingAgentId,
-      agentBusyLatch,
-      isAttached,
-      waitingRoomState,
-      availableSessions,
-      providerCatalogState,
-      waitingRoomCloudNotice,
-      waitingRoomInventoryStatus,
-      relayStatusState,
-      remoteMachinesState,
-      remoteKernelsState,
-      terminalsState,
-      slicesState,
-      waitingRoomTargets,
-      themeRegistryState,
-      selectedWorkflowId,
-      selectedWorkflowNodeId,
-      workspaceShellContext,
-      workspaceShellEntries,
-      footerFlash,
-      interactionChoiceSelection: (interactionId) => interactionChoiceSelection.get(interactionId) ?? 0,
-      interactionCustomReply: (interactionId) => interactionCustomReplies.get(interactionId) ?? "",
-      interactionCustomEditing: (interactionId) => interactionCustomEditing.has(interactionId),
-    })
-  }
+  const automationSnapshotController = createCliAutomationSnapshotController({
+    workspaceScreenMode,
+    workflowScreenActive,
+    daemonDisconnected,
+    statusLine,
+    sessionState,
+    focusedAgentId,
+    agentActivityLabels,
+    hasPromptWorkByAgent,
+    streamingAgentId,
+    agentBusyLatch,
+    isAttached,
+    waitingRoomState,
+    availableSessions,
+    providerCatalogState,
+    waitingRoomCloudNotice,
+    waitingRoomInventoryStatus,
+    relayStatusState,
+    remoteMachinesState,
+    remoteKernelsState,
+    terminalsState,
+    slicesState,
+    waitingRoomTargets,
+    themeRegistryState,
+    selectedWorkflowId,
+    selectedWorkflowNodeId,
+    workspaceShellContext,
+    workspaceShellEntries,
+    footerFlash,
+    getInteractionChoiceSelection: (interactionId) => interactionChoiceSelection.get(interactionId),
+    getInteractionCustomReply: (interactionId) => interactionCustomReplies.get(interactionId),
+    isInteractionCustomEditing: (interactionId) => interactionCustomEditing.has(interactionId),
+  })
+  const automationSnapshot = automationSnapshotController.snapshot
 
   const handleAutomationRequest = createCliAutomationActionHandler({
     client,
