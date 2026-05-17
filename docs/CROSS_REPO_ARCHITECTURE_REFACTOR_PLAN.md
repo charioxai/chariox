@@ -295,6 +295,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: Cloud pairing token consumption state is split from relay identity persistence; API build/tests pass.
 - Latest verified batch: Cloud account bootstrap persistence is split from repository composition, and browser dashboard reuses account resolution; API build/tests pass.
 - Latest verified batch: CLI silent-poll threshold is owned by runtime policy instead of the app coordinator; CLI lint/build/tests pass.
+- Latest verified batch: Cloud shared-session invite acceptance/membership persistence is split from invite creation/display/revocation; API build/tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
