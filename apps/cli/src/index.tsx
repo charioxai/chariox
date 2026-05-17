@@ -458,6 +458,7 @@ import {
   type WorkflowNodeInstructionsEditor,
 } from "./workflow-node-instructions-editor-controller.js"
 import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-controller.js"
+import { createWorkflowTerminalPanelController } from "./workflow-terminal-panel-controller.js"
 import { WorkspaceLayout } from "./workspace-layout.js"
 import {
   approveRemoteMachine,
@@ -3915,15 +3916,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const getWorkflowNodeInstructionsContext = workflowNodeInstructionsEditorController.context
   const getWorkflowNodeInstructionsDraft = workflowNodeInstructionsEditorController.draft
 
-  const openWorkflowTerminalPanel = (workflowId: string) => {
-    workflowNodeInstructionsEditorController.clear()
-    setWorkflowInspectorMode("terminal")
-    setSelectedWorkflowId(workflowId)
-    if (!workflowScreenShowing()) {
-      setWorkspaceScreenMode("workflow")
-    }
-    rebuildTranscript()
-  }
+  const openWorkflowTerminalPanel = createWorkflowTerminalPanelController({
+    clearNodeInstructionsEditor: workflowNodeInstructionsEditorController.clear,
+    setWorkflowInspectorMode,
+    setSelectedWorkflowId,
+    workflowScreenShowing,
+    setWorkspaceScreenMode,
+    rebuildTranscript,
+  }).open
 
   const replaceTranscriptEntries = (
     nextEntries: TranscriptEntry[],
