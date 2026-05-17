@@ -361,6 +361,7 @@ import { createTerminalResizeController } from "./terminal-resize-controller.js"
 import { createTranscriptViewportController } from "./transcript-viewport-controller.js"
 import { createTranscriptRenderDeferralController } from "./transcript-render-deferral-controller.js"
 import { createTranscriptParserRegistration } from "./transcript-parser-registration.js"
+import { createVisibleActivityLabelController } from "./visible-activity-label-controller.js"
 import { createWorkingAnimationController } from "./working-animation-controller.js"
 import {
   shouldRenderProviderStatus,
@@ -1886,9 +1887,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const markAssistantMessageCompleted = assistantMessageCompletionController.markCompleted
 
-  const syncVisibleActivityLabel = () => {
-    setActiveStatusLabel(focusedActivityLabel())
-  }
+  const visibleActivityLabelController = createVisibleActivityLabelController({
+    focusedActivityLabel,
+    setActiveStatusLabel,
+  })
+  const syncVisibleActivityLabel = visibleActivityLabelController.sync
 
   const transcriptStreamController = createTranscriptStreamController({
     entries: () => entries,
