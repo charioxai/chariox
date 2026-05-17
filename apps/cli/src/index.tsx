@@ -271,6 +271,7 @@ import {
   tryGetProviderRun,
   updateSessionConfig,
 } from "./provider-api.js"
+import { createProviderRecoveryController } from "./provider-recovery-controller.js"
 import {
   applyHistoryDeferral,
   hydrateTranscriptEntries,
@@ -937,7 +938,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let uiBatchDepth = 0
   // Connection resilience tracking
   const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
-  let providerRecoveryInFlight = false
   let kernelResyncInFlight: Promise<void> | null = null
   let kernelRestartRecoveryInFlight: Promise<void> | null = null
   let subscribedSessionId: string | null = null
@@ -5535,36 +5535,35 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     formatSessionList: (sessions, currentSessionId) => formatSessionList(sessions, currentSessionId ?? undefined),
   })
 
-  const recoverProviderRun = async (reason: string) => {
-    if (!isAttached() || providerRecoveryInFlight) {
-      return
-    }
-    providerRecoveryInFlight = true
-    try {
-      const run = await launchProviderRun(
-        client,
-        sessionState().id,
-        options.provider ?? "opencode",
-        options.accountProfile,
-        currentModelId(),
-        currentVariantId(),
-        focusedAgentId(),
-      )
-      setProviderRunState(run)
-      applySessionState(applyProviderRunProfileToSession(await getSessionState(client, sessionState().id), run))
-      await maybeResize(client, sessionState().id)
+  const providerRecoveryController = createProviderRecoveryController({
+    isAttached,
+    getSessionId: () => sessionState().id,
+    getProvider: () => options.provider ?? "opencode",
+    getAccountProfile: () => options.accountProfile,
+    getModel: currentModelId,
+    getEffort: currentVariantId,
+    getTargetAgentId: focusedAgentId,
+    launchProviderRun: ({ sessionId, provider, accountProfile, model, effort, targetAgentId }) =>
+      launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
+    getSessionState: (sessionId) => getSessionState(client, sessionId),
+    projectSession: applyProviderRunProfileToSession,
+    applyProviderRun: setProviderRunState,
+    applySession: applySessionState,
+    resizeSession: (sessionId) => maybeResize(client, sessionId),
+    onRecovered: (reason) => {
       setStatusLine("Recovered provider connection.")
       updateSessionChrome()
       flashFooter(`recovered provider run after ${reason}`, "info")
-    } catch (error) {
+    },
+    onRecoveryFailed: (reason, error) => {
       appLogger?.warn("provider recovery failed", {
         reason,
         error: formatError(error),
       })
-    } finally {
-      providerRecoveryInFlight = false
-    }
-  }
+    },
+  })
+
+  const recoverProviderRun = providerRecoveryController.recover
 
   const executeCommandCenterCommand = async (value: string) => {
     await executeSlashCommand(value, {
