@@ -1,7 +1,6 @@
 import { ARROBA_ASCII_ART, type SessionListEntry } from "./sessions.js"
 import {
   BACKEND_PROVIDER_IDS,
-  backendProviderLabel,
   catalogModelOptions,
   normalizeBackendProviderId,
   selectConfiguredModel,
@@ -20,12 +19,10 @@ import {
 } from "./theme-registry.js"
 import {
   cycleWaitingRoomWorktreeSelectionId,
-  describeWaitingRoomWorktreeSelection,
   normalizeWaitingRoomWorktreeSelectionId,
 } from "./waiting-room-worktrees.js"
 import {
   cycleWaitingRoomSliceSelectionId,
-  formatWaitingRoomSliceSelection,
   normalizeWaitingRoomSliceSelectionId,
   selectedWaitingRoomSliceRef,
   waitingRoomSelectedSlice,
@@ -47,6 +44,7 @@ import {
   waitingRoomRemoteMachines,
   waitingRoomRemoteRows,
 } from "./waiting-room-remote-rows.js"
+import { waitingRoomStartRows } from "./waiting-room-start-rows.js"
 import type { SliceRecord } from "./cli-types.js"
 
 export {
@@ -372,98 +370,20 @@ export function waitingRoomRows(
   const visibleSessions = waitingRoomSessions(sessions)
   const terminals = waitingRoomTerminals(remote)
   const terminalTitles = terminals.map(formatWaitingRoomTerminalTitle)
-  const selectedWorktreeLabel = describeWaitingRoomWorktreeSelection(
-    state.worktreeSelectionId,
-    targets?.worktreePath,
-  )
-  const selectedSliceLabel = formatWaitingRoomSliceSelection(state.sliceSelectionId, waitingRoomSlices(remote))
   const titleWidth = Math.max(
     waitingRoomSessionTitleWidth(sessions),
     ...terminalTitles.map((title) => Math.max(0, title.length)),
     "Add New Terminal".length,
   )
-  const rows: WaitingRoomRow[] = [
-    {
-      id: "new",
-      title: "Start New Session",
-      value: "Press Enter",
-      titleWidth,
-      indent: 0,
-      focused: state.focus === "new",
-      selectable: true,
-      scrollbar: "",
-    },
-    {
-      id: "provider",
-      title: "Provider",
-      value: formatBackendProviderLabel(choice.providerId),
-      titleWidth,
-      indent: 1,
-      focused: state.focus === "provider",
-      selectable: true,
-      scrollbar: "",
-    },
-    {
-      id: "model",
-      title: "Model",
-      value: choice.model ? formatWaitingRoomModelLabel(choice.model, modelOptions) : "No models available",
-      titleWidth,
-      indent: 1,
-      focused: state.focus === "model",
-      selectable: true,
-      scrollbar: "",
-    },
-    {
-      id: "effort",
-      title: "Variant",
-      value: choice.effort ? formatTitleCase(choice.effort) : "Default",
-      titleWidth,
-      indent: 1,
-      focused: state.focus === "effort",
-      selectable: true,
-      scrollbar: "",
-    },
-    {
-      id: "workspace",
-      title: "Workspace",
-      value: targets?.workspacePath ?? (inventoryLoading ? loadingText : "Set workspace path"),
-      titleWidth,
-      indent: 1,
-      focused: state.focus === "workspace",
-      selectable: true,
-      scrollbar: "",
-    },
-    {
-      id: "worktree",
-      title: "Worktree",
-      value: targets?.worktreePath ? selectedWorktreeLabel : inventoryLoading ? loadingText : selectedWorktreeLabel,
-      titleWidth,
-      indent: 1,
-      focused: state.focus === "worktree",
-      selectable: true,
-      scrollbar: "",
-    },
-    {
-      id: "slice",
-      title: "Slice",
-      value: inventoryLoading ? loadingText : selectedSliceLabel,
-      titleWidth,
-      indent: 1,
-      focused: state.focus === "slice",
-      selectable: true,
-      scrollbar: "",
-    },
-    {
-      id: "join-header",
-      title: "Join Existing Session",
-      value: inventoryLoading && visibleSessions.length === 0 ? loadingText : visibleSessions.length > 0 ? "Press Enter" : "",
-      titleWidth,
-      indent: 0,
-      focused: state.focus === "join-sessions",
-      selectable: true,
-      scrollbar: "",
-    },
-  ]
+  const rows: WaitingRoomRow[] = waitingRoomStartRows(state, choice, {
+    modelOptions,
+    remote,
+    ...(targets ? { targets } : {}),
+    inventoryLoading,
+    loadingText,
+    visibleSessionCount: visibleSessions.length,
+    titleWidth,
+  })
 
   rows.push(...waitingRoomSessionRows(state, sessions, { inventoryLoading, loadingText, titleWidth }))
 
@@ -516,22 +436,6 @@ function modulo(value: number, size: number) {
   return ((value % size) + size) % size
 }
 
-function formatTitleCase(value: string) {
-  return value.charAt(0).toUpperCase() + value.slice(1)
-}
-
 function normalizeBackendProvider(value: string): BackendProviderId {
   return normalizeBackendProviderId(value)
-}
-
-function formatBackendProviderLabel(providerId: BackendProviderId) {
-  return backendProviderLabel(providerId)
-}
-
-function formatWaitingRoomModelLabel(
-  model: CatalogModelOption,
-  options: CatalogModelOption[],
-) {
-  const providerCount = new Set(options.map((option) => option.providerId)).size
-  return providerCount <= 1 ? model.label : `${model.providerName} ${model.label}`
 }
