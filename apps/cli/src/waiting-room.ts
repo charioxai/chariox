@@ -29,6 +29,12 @@ import {
   waitingRoomTerminals,
 } from "./waiting-room-terminal-rows.js"
 import {
+  waitingRoomPreviewSessions,
+  waitingRoomSessionRows,
+  waitingRoomSessions,
+  waitingRoomSessionTitleWidth,
+} from "./waiting-room-session-rows.js"
+import {
   waitingRoomRemoteKernels,
   waitingRoomRemoteMachines,
   waitingRoomRemoteRows,
@@ -36,22 +42,17 @@ import {
 import type { SliceRecord } from "./cli-types.js"
 
 export {
+  MAX_VISIBLE_WAITING_ROOM_SESSIONS,
+  waitingRoomMenuMinWidth,
+  waitingRoomMenuTrailingPadding,
+  waitingRoomPreviewSessions,
+} from "./waiting-room-session-rows.js"
+export {
   waitingRoomRemoteKernelCanDelete,
   waitingRoomRemoteKernelIsAttachable,
   waitingRoomRemoteKernels,
   waitingRoomRemoteMachineCanDelete,
 } from "./waiting-room-remote-rows.js"
-
-export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = 2
-const WAITING_ROOM_ROW_TITLE_MIN_WIDTH = 24
-const WAITING_ROOM_STATUS_MIN_WIDTH = "Status".length
-const WAITING_ROOM_TIMESTAMP_MIN_WIDTH = "0000-00-00 00:00 UTC".length
-const WAITING_ROOM_MENU_TRAILING_PADDING = 2
-
-function formatWaitingRoomSessionTitle(session: SessionListEntry) {
-  const label = session.alias ? `${session.id} (${session.alias})` : session.id
-  return sessionHasActiveWork(session) ? `* ${label}` : label
-}
 
 export type WaitingRoomFocus =
   | "new"
@@ -390,11 +391,6 @@ export function waitingRoomRows(
   const loadingText = waitingRoomLoadingText(remote.loadingFrame)
   const modelOptions = catalogModelOptions(catalog, state.providerId)
   const visibleSessions = waitingRoomSessions(sessions)
-  const previewSessions = waitingRoomPreviewSessions(sessions)
-  const sessionWindow = { start: 0, count: previewSessions.length }
-  const sessionScrollbar = renderWaitingRoomScrollbar(sessionWindow.count, previewSessions.length, sessionWindow.start)
-  const windowSessions = previewSessions
-  const allSessionTitles = visibleSessions.map(formatWaitingRoomSessionTitle)
   const terminals = waitingRoomTerminals(remote)
   const terminalTitles = terminals.map(formatWaitingRoomTerminalTitle)
   const selectedWorktreeLabel = describeWaitingRoomWorktreeSelection(
@@ -402,23 +398,8 @@ export function waitingRoomRows(
     targets?.worktreePath,
   )
   const selectedSliceLabel = formatWaitingRoomSliceSelection(state.sliceSelectionId, waitingRoomSlices(remote))
-  const statusWidth = Math.max(
-    WAITING_ROOM_STATUS_MIN_WIDTH,
-    ...visibleSessions.map((session) => formatWaitingRoomSessionStatus(session).length),
-  )
-  const lastUsedWidth = Math.max(
-    "Last used".length,
-    WAITING_ROOM_TIMESTAMP_MIN_WIDTH,
-    ...visibleSessions.map((session) => formatSessionTimestamp(session.last_used_at_ms ?? null).length),
-  )
-  const createdAtWidth = Math.max(
-    "Created at".length,
-    WAITING_ROOM_TIMESTAMP_MIN_WIDTH,
-    ...visibleSessions.map((session) => formatSessionTimestamp(session.created_at_ms ?? null).length),
-  )
   const titleWidth = Math.max(
-    WAITING_ROOM_ROW_TITLE_MIN_WIDTH,
-    ...allSessionTitles.map((title) => Math.max(0, title.length)),
+    waitingRoomSessionTitleWidth(sessions),
     ...terminalTitles.map((title) => Math.max(0, title.length)),
     "Add New Terminal".length,
   )
@@ -505,64 +486,7 @@ export function waitingRoomRows(
     },
   ]
 
-  if (visibleSessions.length === 0 && inventoryLoading) {
-    rows.push({
-      id: "sessions-loading",
-      title: "Sessions",
-      value: loadingText,
-      titleWidth,
-      indent: 1,
-      focused: false,
-      selectable: false,
-      scrollbar: "",
-    })
-  } else if (visibleSessions.length === 0) {
-    rows.push({
-      id: "no-sessions",
-      title: "No sessions available",
-      value: "",
-      titleWidth,
-      indent: 1,
-      focused: false,
-      selectable: false,
-      scrollbar: "",
-    })
-  } else {
-    rows.push({
-      id: "session-header",
-      title: "Session",
-      value: "",
-      titleWidth,
-      columns: [
-        formatWaitingRoomColumnHeader("Status", statusWidth),
-        formatWaitingRoomColumnHeader("Last used", lastUsedWidth),
-        formatWaitingRoomColumnHeader("Created at", createdAtWidth),
-      ],
-      indent: 1,
-      focused: false,
-      selectable: false,
-      scrollbar: "",
-    })
-
-    for (const [offset, session] of windowSessions.entries()) {
-      const sessionIndex = visibleSessions.findIndex((candidate) => candidate.id === session.id)
-      rows.push({
-        id: `session:${session.id}`,
-        title: formatWaitingRoomSessionTitle(session),
-        value: formatWaitingRoomSessionStatus(session),
-        titleWidth,
-        columns: [
-          formatWaitingRoomColumn(formatWaitingRoomSessionStatus(session), statusWidth),
-          formatWaitingRoomColumn(formatSessionTimestamp(session.last_used_at_ms ?? null), lastUsedWidth),
-          formatWaitingRoomColumn(formatSessionTimestamp(session.created_at_ms ?? null), createdAtWidth),
-        ],
-        indent: 1,
-        focused: state.focus === "session" && state.sessionIndex === sessionIndex,
-        selectable: true,
-        scrollbar: sessionScrollbar[offset] ?? "",
-      })
-    }
-  }
+  rows.push(...waitingRoomSessionRows(state, sessions, { inventoryLoading, loadingText, titleWidth }))
 
   rows.push(
     ...waitingRoomRemoteRows(state, remote, titleWidth),
@@ -629,43 +553,6 @@ function waitingRoomLoadingText(frame = 0) {
   return `loading${".".repeat(Math.abs(frame) % 4)}`
 }
 
-export function waitingRoomMenuMinWidth(sessions: SessionListEntry[]) {
-  const visibleSessions = waitingRoomSessions(sessions)
-  const allSessionTitles = visibleSessions.map(formatWaitingRoomSessionTitle)
-
-  const statusWidth = Math.max(
-    WAITING_ROOM_STATUS_MIN_WIDTH,
-    ...visibleSessions.map((session) => formatWaitingRoomSessionStatus(session).length),
-  )
-  const lastUsedWidth = Math.max(
-    "Last used".length,
-    WAITING_ROOM_TIMESTAMP_MIN_WIDTH,
-    ...visibleSessions.map((session) => formatSessionTimestamp(session.last_used_at_ms ?? null).length),
-  )
-  const createdAtWidth = Math.max(
-    "Created at".length,
-    WAITING_ROOM_TIMESTAMP_MIN_WIDTH,
-    ...visibleSessions.map((session) => formatSessionTimestamp(session.created_at_ms ?? null).length),
-  )
-  const titleWidth = Math.max(
-    WAITING_ROOM_ROW_TITLE_MIN_WIDTH,
-    ...allSessionTitles.map((title) => Math.max(0, title.length)),
-  )
-
-  const titleWidthSpace = Math.max(0, titleWidth - 1)
-  const rowColumns = [
-    formatWaitingRoomColumnHeader("Status", statusWidth),
-    formatWaitingRoomColumnHeader("Last used", lastUsedWidth),
-    formatWaitingRoomColumnHeader("Created at", createdAtWidth),
-  ]
-  const row = ` ${"  ".repeat(1)}${"Session".padEnd(titleWidthSpace, " ")} ${rowColumns.join("  ")}${" ".repeat(WAITING_ROOM_MENU_TRAILING_PADDING)}`
-  return row.length
-}
-
-export function waitingRoomMenuTrailingPadding() {
-  return WAITING_ROOM_MENU_TRAILING_PADDING
-}
-
 export function arrobaArtFrame(step: number) {
   const progress = Math.max(0, Math.min(step, 12))
   return ARROBA_ASCII_ART.split("\n")
@@ -691,21 +578,6 @@ function modulo(value: number, size: number) {
     return 0
   }
   return ((value % size) + size) % size
-}
-
-function waitingRoomSessions(sessions: SessionListEntry[]) {
-  return sessions
-    .filter((session) => session.status !== "Ended")
-    .slice()
-    .sort((left, right) => sessionSortTime(right) - sessionSortTime(left))
-}
-
-export function waitingRoomPreviewSessions(sessions: SessionListEntry[]) {
-  return waitingRoomSessions(sessions).slice(0, MAX_VISIBLE_WAITING_ROOM_SESSIONS)
-}
-
-function sessionSortTime(session: SessionListEntry) {
-  return session.last_used_at_ms ?? session.created_at_ms ?? 0
 }
 
 function waitingRoomFocusTargets(sessions: SessionListEntry[], remote: WaitingRoomRemoteState = {}) {
@@ -754,72 +626,8 @@ function waitingRoomFocusTargets(sessions: SessionListEntry[], remote: WaitingRo
   }))
 }
 
-function waitingRoomSessionWindow(state: WaitingRoomState, sessions: SessionListEntry[]) {
-  const count = Math.min(MAX_VISIBLE_WAITING_ROOM_SESSIONS, sessions.length)
-  if (count === 0) {
-    return { start: 0, count: 0 }
-  }
-  const maxStart = Math.max(0, sessions.length - count)
-  const start = Math.min(Math.max(0, state.sessionIndex - count + 1), maxStart)
-  return { start, count }
-}
-
-function renderWaitingRoomScrollbar(visibleCount: number, totalCount: number, start: number) {
-  if (visibleCount === 0 || totalCount <= visibleCount) {
-    return []
-  }
-  const thumbSize = Math.max(1, Math.round((visibleCount * visibleCount) / totalCount))
-  const maxThumbOffset = Math.max(0, visibleCount - thumbSize)
-  const thumbOffset = totalCount === visibleCount
-    ? 0
-    : Math.round((start * maxThumbOffset) / Math.max(1, totalCount - visibleCount))
-  return Array.from({ length: visibleCount }, (_, index) => (
-    index >= thumbOffset && index < thumbOffset + thumbSize ? "#" : "|"
-  ))
-}
-
 function formatTitleCase(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1)
-}
-
-function formatSessionStatus(value: string) {
-  return formatTitleCase(value.toLowerCase())
-}
-
-function formatWaitingRoomSessionStatus(session: SessionListEntry) {
-  return sessionHasActiveWork(session) ? "Working" : formatSessionStatus(session.status)
-}
-
-function sessionHasActiveWork(session: SessionListEntry) {
-  const activity = session.activity
-  if (!activity) {
-    return false
-  }
-  return activity.working_agent_count > 0
-    || activity.active_prompt_count > 0
-    || activity.queued_prompt_count > 0
-}
-
-function formatSessionTimestamp(value: number | null) {
-  if (value === null) {
-    return "—"
-  }
-
-  const date = new Date(value)
-  const year = date.getUTCFullYear()
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0")
-  const day = String(date.getUTCDate()).padStart(2, "0")
-  const hours = String(date.getUTCHours()).padStart(2, "0")
-  const minutes = String(date.getUTCMinutes()).padStart(2, "0")
-  return `${year}-${month}-${day} ${hours}:${minutes} UTC`
-}
-
-function formatWaitingRoomColumnHeader(label: string, width: number) {
-  return label.padEnd(width, " ")
-}
-
-function formatWaitingRoomColumn(value: string, width: number) {
-  return value.padEnd(width, " ")
 }
 
 function normalizeBackendProvider(value: string): BackendProviderId {
