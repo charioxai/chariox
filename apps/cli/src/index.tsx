@@ -434,9 +434,9 @@ import {
   type RemoteKernelView,
   type RemoteMachineView,
 } from "./waiting-room-inventory-api.js"
+import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
 import {
   createWaitingRoomState,
-  waitingRoomRemoteKernelCanDelete,
   type WaitingRoomFocus,
   type WaitingRoomState,
 } from "./waiting-room.js"
@@ -1613,9 +1613,24 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       flashFooter(formatError(error), "error")
     }
   }
-  let waitingRoomDataRefresh: Promise<void> | null = null
-  let waitingRoomInventoryVersion: string | null = null
   const waitingRoomLifecycleConfirmationController = createWaitingRoomLifecycleConfirmationController()
+  const waitingRoomInventoryRefreshController = createWaitingRoomInventoryRefreshController({
+    isKernelConnected: kernelConnected,
+    getInventoryStatus: waitingRoomInventoryStatus,
+    setInventoryStatus: setWaitingRoomInventoryStatus,
+    getWaitingRoomState: waitingRoomState,
+    getInventory: () => getWaitingRoomInventory(client),
+    isKernelHidden: (kernelId) => hiddenWaitingRoomKernelIds.has(kernelId),
+    setAvailableSessions,
+    setRelayStatus: setRelayStatusState,
+    setRemoteMachines: setRemoteMachinesState,
+    setRemoteKernels: setRemoteKernelsState,
+    setTerminals: setTerminalsState,
+    setSlices: setSlicesState,
+    reconcileWaitingRoom,
+    warn: (message, fields) => appLogger?.warn(message, fields),
+    formatError,
+  })
   const applyWaitingRoomSessionLifecycleAction = async (
     action: WaitingRoomSessionLifecycleAction,
     stateOverride?: WaitingRoomState,
@@ -1662,7 +1677,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       if (decision.action === "archive") {
         const updated = await archiveSessionById(client, decision.session.id)
         setAvailableSessions(availableSessions().filter((candidate) => candidate.id !== updated.id))
-        waitingRoomInventoryVersion = null
+        waitingRoomInventoryRefreshController.invalidate()
         reconcileWaitingRoom(waitingRoomState())
         await refreshWaitingRoomData()
         flashFooter(`archived session ${formatSessionDisplayLabel(updated)}`, "info")
@@ -1675,7 +1690,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         }
         const archivedIds = new Set(archived.map((session) => session.id))
         setAvailableSessions(availableSessions().filter((candidate) => !archivedIds.has(candidate.id)))
-        waitingRoomInventoryVersion = null
+        waitingRoomInventoryRefreshController.invalidate()
         reconcileWaitingRoom({ ...waitingRoomState(), focus: "new", sessionIndex: 0 })
         await refreshWaitingRoomData()
         if (sessionBrowserOpen()) {
@@ -1687,7 +1702,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       if (decision.action === "delete-session") {
         const updated = await deleteSessionByRef(client, decision.session.id, pendingWorkspaceTarget())
         setAvailableSessions(availableSessions().filter((candidate) => candidate.id !== updated.id))
-        waitingRoomInventoryVersion = null
+        waitingRoomInventoryRefreshController.invalidate()
         reconcileWaitingRoom(waitingRoomState())
         await refreshWaitingRoomData()
         flashFooter(`deleted session ${formatSessionDisplayLabel(updated)}`, "error")
@@ -1700,7 +1715,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         }
         const deletedIds = new Set(deleted.map((session) => session.id))
         setAvailableSessions(availableSessions().filter((candidate) => !deletedIds.has(candidate.id)))
-        waitingRoomInventoryVersion = null
+        waitingRoomInventoryRefreshController.invalidate()
         reconcileWaitingRoom({ ...waitingRoomState(), focus: "new", sessionIndex: 0 })
         await refreshWaitingRoomData()
         if (sessionBrowserOpen()) {
@@ -1712,7 +1727,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       if (decision.action === "delete") {
         const updated = await deleteSessionByRef(client, decision.session.id, pendingWorkspaceTarget())
         setAvailableSessions(availableSessions().filter((candidate) => candidate.id !== updated.id))
-        waitingRoomInventoryVersion = null
+        waitingRoomInventoryRefreshController.invalidate()
         reconcileWaitingRoom(waitingRoomState())
         await refreshWaitingRoomData()
         flashFooter(`deleted session ${formatSessionDisplayLabel(updated)}`, "error")
@@ -1723,7 +1738,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         const deletedMachineId = deleted.machine_id || decision.machineId
         setRemoteMachinesState(remoteMachinesState().filter((machine) => machine.machine_id !== deletedMachineId))
         setRemoteKernelsState(remoteKernelsState().filter((kernel) => kernel.machine_id !== deletedMachineId))
-        waitingRoomInventoryVersion = null
+        waitingRoomInventoryRefreshController.invalidate()
         reconcileWaitingRoom(waitingRoomState())
         await refreshWaitingRoomData()
         flashFooter(`deleted machine ${decision.label}`, "error")
@@ -1753,7 +1768,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       getProviderCatalog(client, appLogger),
       getProviderCommandCatalogs(client, appLogger),
     ])
-    waitingRoomInventoryVersion = null
+    waitingRoomInventoryRefreshController.invalidate()
     setProviderCatalogState(catalog)
     setProviderCommandCatalogState(commandCatalogs)
     setKernelConnected(true)
@@ -1761,47 +1776,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     await refreshWaitingRoomData()
     flashFooter("connected to kernel", "info")
   }
-  const refreshWaitingRoomDataNow = async () => {
-    if (!kernelConnected()) {
-      return
-    }
-    if (waitingRoomInventoryStatus() !== "ready") {
-      setWaitingRoomInventoryStatus("loading")
-    }
-    const snapshot = await getWaitingRoomInventory(client).catch((error) => {
-      appLogger?.warn("waiting room inventory refresh failed", { error: formatError(error) })
-      setWaitingRoomInventoryStatus("error")
-      return null
-    })
-    if (!snapshot) {
-      return
-    }
-    setWaitingRoomInventoryStatus("ready")
-    if (snapshot.inventoryVersion === waitingRoomInventoryVersion) {
-      reconcileWaitingRoom(waitingRoomState())
-      return
-    }
-    waitingRoomInventoryVersion = snapshot.inventoryVersion
-    setAvailableSessions(snapshot.sessions)
-    setRelayStatusState(snapshot.relayStatus)
-    setRemoteMachinesState(snapshot.remoteMachines)
-    setRemoteKernelsState(snapshot.remoteKernels.filter((kernel) => (
-      !hiddenWaitingRoomKernelIds.has(kernel.kernel_id)
-      || !waitingRoomRemoteKernelCanDelete(kernel)
-    )))
-    setTerminalsState(snapshot.terminals)
-    setSlicesState(snapshot.slices)
-    reconcileWaitingRoom(waitingRoomState())
-  }
-  const refreshWaitingRoomData = async () => {
-    if (waitingRoomDataRefresh) {
-      return waitingRoomDataRefresh
-    }
-    waitingRoomDataRefresh = refreshWaitingRoomDataNow().finally(() => {
-      waitingRoomDataRefresh = null
-    })
-    return waitingRoomDataRefresh
-  }
+  const refreshWaitingRoomDataNow = waitingRoomInventoryRefreshController.refreshNow
+  const refreshWaitingRoomData = waitingRoomInventoryRefreshController.refresh
   const currentProviderSelection = () => deriveCurrentProviderSelection({
     providerRun: focusedProviderRun(),
     focusedAgent: focusedAgent(),
