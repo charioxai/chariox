@@ -71,9 +71,6 @@ import { createCommandCenterCommandExecutor } from "./command-center-command-exe
 import { createCommandCenterLayoutController } from "./command-center-layout-controller.js"
 import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
-import {
-  shouldRefreshAgentPanesForSessionChange as shouldRefreshAgentPanesForSessionChangeState,
-} from "./agent-pane-state.js"
 import { createAgentPaneRefreshController } from "./agent-pane-refresh-controller.js"
 import { createAgentPaneRuntimeResetController } from "./agent-pane-runtime-reset-controller.js"
 import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
@@ -840,16 +837,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     requestRoot: () => renderScheduler.requestRoot(),
   })
   const scheduleResponsePaneRepaint = responsePaneRenderScheduleController.scheduleRepaint
-  const shouldRefreshAgentPanesForSessionChange = (nextSession: RuntimeSession) => {
-    return shouldRefreshAgentPanesForSessionChangeState({
-      previousAgents: sessionState().agents,
-      nextAgents: nextSession.agents,
-      splitAgentResponseMode: splitAgentResponseMode(),
-      currentFocusedAgentId: focusedAgentId(),
-      nextFocusedAgentId: focusedAgentIdForSession(nextSession),
-    })
-  }
-
   const workflowSelectionSyncController = createWorkflowSelectionSyncController({
     workflows: () => sessionState().workflows ?? [],
     selectedWorkflowId,
@@ -2279,6 +2266,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   const agentPaneRefreshController = createAgentPaneRefreshController({
+    getCurrentAgents: () => sessionState().agents,
+    getFocusedAgentId: focusedAgentId,
     getExpandedTurnIdsByAgent: expandedTurnIdsByAgent,
     currentAgentPaneEntries,
     splitAgentResponseMode,
@@ -2301,6 +2290,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     rebuildAuxiliaryAgentPane,
   })
   const refreshAgentPanes = agentPaneRefreshController.refresh
+  const shouldRefreshAgentPanesForSessionChange = agentPaneRefreshController.shouldRefreshForSessionChange
 
   const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({
     getScrollbox: transcriptScrollboxRefController.current,

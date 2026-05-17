@@ -35,13 +35,41 @@ test("agent pane refresh does not rebuild auxiliary panes outside split mode", a
   assert.deepEqual(harness.calls.slice(-1), ["applyResponseLayout"])
 })
 
-function createHarness(options: { split: boolean }) {
+test("agent pane refresh controller owns session-change refresh decisions", () => {
+  const harness = createHarness({
+    split: false,
+    currentFocusedAgentId: "a",
+  })
+
+  assert.equal(harness.controller.shouldRefreshForSessionChange(session("b")), true)
+
+  const splitHarness = createHarness({
+    split: true,
+    currentFocusedAgentId: "a",
+  })
+
+  assert.equal(splitHarness.controller.shouldRefreshForSessionChange(session("b")), false)
+})
+
+function createHarness(options: {
+  split: boolean
+  currentFocusedAgentId?: string | null
+}): {
+  calls: string[]
+  loads: string[]
+  controller: ReturnType<typeof createAgentPaneRefreshController>
+  previews: Record<string, string>
+  replaced: { agentId: string | null; text: string[] } | null
+  rebuiltAuxiliaryAgentIds: string[]
+} {
   const calls: string[] = []
   const loads: string[] = []
   const rebuiltAuxiliaryAgentIds: string[] = []
   let previews: Record<string, string> = {}
   let replaced: { agentId: string | null; text: string[] } | null = null
   const controller = createAgentPaneRefreshController({
+    getCurrentAgents: () => [agent("a"), agent("b")],
+    getFocusedAgentId: () => options.currentFocusedAgentId ?? "a",
     getExpandedTurnIdsByAgent: () => ({}),
     currentAgentPaneEntries: () => [],
     splitAgentResponseMode: () => options.split,

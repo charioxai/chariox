@@ -5,7 +5,10 @@ import type {
   SessionHistoryPageEntry,
   TranscriptEntry,
 } from "./cli-types.js"
-import { refreshAgentPaneState } from "./agent-pane-state.js"
+import {
+  refreshAgentPaneState,
+  shouldRefreshAgentPanesForSessionChange,
+} from "./agent-pane-state.js"
 import {
   selectResponsePaneAgents,
   splitPaneAuxiliaryAgentIds,
@@ -19,6 +22,8 @@ import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries } from "./transcript-text.js"
 
 type AgentPaneRefreshControllerDeps = {
+  getCurrentAgents: () => readonly AgentInstance[]
+  getFocusedAgentId: () => string | null
   getExpandedTurnIdsByAgent: () => Record<string, number[]>
   currentAgentPaneEntries: (agentId: string) => TranscriptEntry[]
   splitAgentResponseMode: () => boolean
@@ -42,6 +47,16 @@ type AgentPaneRefreshControllerDeps = {
 export function createAgentPaneRefreshController(
   deps: AgentPaneRefreshControllerDeps,
 ) {
+  const shouldRefreshForSessionChange = (nextSession: RuntimeSession) => {
+    return shouldRefreshAgentPanesForSessionChange({
+      previousAgents: deps.getCurrentAgents(),
+      nextAgents: nextSession.agents,
+      splitAgentResponseMode: deps.splitAgentResponseMode(),
+      currentFocusedAgentId: deps.getFocusedAgentId(),
+      nextFocusedAgentId: nextSession.focused_agent_id ?? nextSession.agents[0]?.id ?? null,
+    })
+  }
+
   const refresh = async (session: RuntimeSession) => {
     const nextPaneState = await refreshAgentPaneState<AgentInstance, SessionHistoryPageEntry, TranscriptEntry, SessionHistoryCursor>({
       session,
@@ -93,5 +108,8 @@ export function createAgentPaneRefreshController(
     }
   }
 
-  return { refresh }
+  return {
+    refresh,
+    shouldRefreshForSessionChange,
+  }
 }
