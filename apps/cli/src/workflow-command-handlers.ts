@@ -14,6 +14,10 @@ import type {
 import type { ParsedSlashCommand } from "./commands.js"
 import type { ResolvedAgentReference } from "./session-agent-resolver.js"
 import {
+  handleWorkflowInvokeCommand,
+  type WorkflowRunInvokePayload,
+} from "./workflow-invoke-command-handler.js"
+import {
   handleWorkflowQueueCommand,
   type QueuedWorkflowLaunchPayload,
 } from "./workflow-queue-command-handlers.js"
@@ -42,12 +46,6 @@ type WorkflowResolvePayload = {
   workflow: WorkflowDefinition
 }
 
-type WorkflowEndpointPayload = {
-  endpoint: WorkflowEndpointDefinition
-  workflow: WorkflowDefinition
-  session: RuntimeSession
-}
-
 type WorkflowNodePayload = {
   node: WorkflowNodeDefinition
   workflow: WorkflowDefinition
@@ -60,11 +58,11 @@ type WorkflowEdgePayload = {
   session: RuntimeSession
 }
 
-type WorkflowRunInvokePayload = {
-  workflow: WorkflowDefinition
+type WorkflowEndpointPayload = {
   endpoint: WorkflowEndpointDefinition
+  workflow: WorkflowDefinition
   session: RuntimeSession
-} & ({ workflow_run: WorkflowRun } | { queued_launch: QueuedWorkflowLaunch })
+}
 
 type WorkflowWatchdogPayload = {
   watchdog: WorkflowWatchdogDefinition
@@ -273,35 +271,7 @@ export async function handleWorkflowSlashCommand(
   }
 
   if (subcommand === "run" || subcommand === "start") {
-    const firstArg = args[1]
-    const explicitWorkflowRef = context.firstWorkflowArgIsExplicit(firstArg) ? firstArg : null
-    const workflowRef = context.workflowRefOrSelected(explicitWorkflowRef)
-    const endpointRef = explicitWorkflowRef ? args[2] : firstArg
-    const prompt = args.slice(explicitWorkflowRef ? 3 : 2).join(" ").trim()
-    if (!workflowRef || !endpointRef) {
-      deps.flashFooter("usage: /workflow run|start [workflow-ref] <endpoint-ref> [prompt]", "error")
-      return
-    }
-    if (!deps.invokeWorkflowEndpoint) {
-      deps.flashFooter("workflow runtime commands unavailable", "error")
-      return
-    }
-    const payload = await deps.invokeWorkflowEndpoint(workflowRef, endpointRef, prompt || null)
-    deps.applySessionState(payload.session)
-    deps.upsertWorkflowDefinition(payload.workflow)
-    deps.selectWorkflowCanvas(payload.workflow.id)
-    deps.showWorkflowScreen()
-    if ("workflow_run" in payload) {
-      deps.flashFooter(
-        `started workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
-        "info",
-      )
-    } else {
-      deps.flashFooter(
-        `queued workflow launch ${payload.queued_launch.id}; active workflow run in session`,
-        "info",
-      )
-    }
+    await handleWorkflowInvokeCommand(deps, context, args)
     return
   }
 
