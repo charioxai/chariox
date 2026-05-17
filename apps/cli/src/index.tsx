@@ -164,7 +164,10 @@ import {
 import { deleteKernel } from "./kernel-api.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
-import { evaluateConnectionHealth, runPollingLoop } from "./polling-effects.js"
+import { runPollingLoop } from "./polling-effects.js"
+import {
+  createConnectionHealthWatchdogController,
+} from "./connection-health-watchdog-controller.js"
 import {
   bootstrapCloudRelayProfile,
 } from "./cloud-relay.js"
@@ -925,9 +928,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let pendingTranscriptRender = false
   let uiBatchDepth = 0
   // Connection resilience tracking
-  let lastDaemonActivityAt = Date.now()
-  let connectionWatchdogTimeout: ReturnType<typeof startTimeout> | undefined
-  let consecutiveSilentPolls = 0
   const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
   let providerRecoveryInFlight = false
   let kernelResyncInFlight: Promise<void> | null = null
@@ -6743,10 +6743,36 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
+  const connectionHealthWatchdogController = createConnectionHealthWatchdogController({
+    now: Date.now,
+    intervalMs: 250,
+    silenceWindowMs: 2000,
+    silentThreshold: SILENT_POLL_THRESHOLD,
+    scheduleInterval: startInterval,
+    clearInterval,
+    isClosing: () => closing,
+    isAttached,
+    isWorking: working,
+    onRecover: (decision) => {
+      appLogger?.warn("connection appears stale - no activity while working", {
+        consecutive_silent_polls: decision.nextConsecutiveSilentPolls,
+        time_since_last_activity_ms: decision.timeSinceLastActivityMs,
+      })
+      if (supportsKernelEventStream) {
+        void client.restartKernelEventStream().catch((error) => {
+          appLogger?.warn("kernel event stream restart failed", {
+            error: formatError(error),
+          })
+        })
+      } else {
+        void recoverProviderRun("stale connection - no activity received")
+      }
+    },
+  })
+
   // Track daemon activity for connection health monitoring
   const recordDaemonActivity = (activityType: string) => {
-    lastDaemonActivityAt = Date.now()
-    consecutiveSilentPolls = 0
+    connectionHealthWatchdogController.recordActivity()
     // If we were showing a stale connection warning, clear it
     if (daemonDisconnected()) {
       setDaemonDisconnected(false)
@@ -7103,50 +7129,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  // Check if connection appears stale (working but no data received)
-  const checkConnectionHealth = () => {
-    const decision = evaluateConnectionHealth({
-      attached: isAttached(),
-      working: working(),
-      now: Date.now(),
-      lastDaemonActivityAt,
-      consecutiveSilentPolls,
-      silentThreshold: SILENT_POLL_THRESHOLD,
-      silenceWindowMs: 2000,
-    })
-    consecutiveSilentPolls = decision.nextConsecutiveSilentPolls
-
-    if (decision.shouldRecover) {
-      appLogger?.warn("connection appears stale - no activity while working", {
-        consecutive_silent_polls: consecutiveSilentPolls,
-        time_since_last_activity_ms: decision.timeSinceLastActivityMs,
-      })
-      if (supportsKernelEventStream) {
-        void client.restartKernelEventStream().catch((error) => {
-          appLogger?.warn("kernel event stream restart failed", {
-            error: formatError(error),
-          })
-        })
-      } else {
-        void recoverProviderRun("stale connection - no activity received")
-      }
-      consecutiveSilentPolls = 0
-    }
-  }
-
-  const startConnectionWatchdog = () => {
-    if (connectionWatchdogTimeout) {
-      return
-    }
-    connectionWatchdogTimeout = startInterval(() => {
-      if (closing) {
-        clearInterval(connectionWatchdogTimeout)
-        connectionWatchdogTimeout = undefined
-        return
-      }
-      checkConnectionHealth()
-    }, 250)
-  }
+  const startConnectionWatchdog = connectionHealthWatchdogController.start
 
   const pollOutput = async () => {
     await runPollingLoop({
@@ -7345,6 +7328,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   onCleanup(() => {
     closing = true
+    connectionHealthWatchdogController.stop()
     process.stdout.off("resize", onResize)
   })
 
