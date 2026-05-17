@@ -188,7 +188,6 @@ import {
 } from "./cli-options.js"
 import { openExternalUrl } from "./external-url.js"
 import {
-  mergeSessionPromptState,
   mergeRelayCloudProfile,
   mergeUiPreferences,
   relayCloudProfile,
@@ -303,6 +302,7 @@ import {
 } from "./prompt-content-change-controller.js"
 import { createPromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
 import { createPromptInputRefController } from "./prompt-input-ref-controller.js"
+import { createPromptSessionStatePersistenceController } from "./prompt-session-state-persistence-controller.js"
 import { createResponseLayoutController } from "./response-layout-controller.js"
 import { createResponsePaneProjectionController } from "./response-pane-projection-controller.js"
 import { createResponsePaneRenderRefStoreController } from "./response-pane-render-ref-store-controller.js"
@@ -1295,16 +1295,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
   })
   const restorePromptHistory = promptHistoryRestoreController.restore
-  const persistSessionPromptState = async (
-    sessionId: string,
-    next: {
-      promptHistory?: readonly string[]
-      promptDraft?: string | null
+  const promptSessionStatePersistenceController = createPromptSessionStatePersistenceController({
+    updatePreferences: (updater) => {
+      setPreferencesState((current) => updater(current))
     },
-  ) => {
-    setPreferencesState((current) => mergeSessionPromptState(current, sessionId, next))
-    await saveSessionPromptState(sessionId, next)
-  }
+    savePromptState: saveSessionPromptState,
+  })
+  const persistSessionPromptState = promptSessionStatePersistenceController.persist
   const promptDraftPersistController = createPromptDraftPersistController({
     delayMs: 300,
     scheduleTimer: startTimeout,
