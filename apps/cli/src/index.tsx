@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, MouseButton, RGBA, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, MouseButton, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
@@ -282,7 +282,8 @@ import {
   createPromptContentChangeController,
 } from "./prompt-content-change-controller.js"
 import { createPromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
-import { buildPaneGridModel, type PaneGridTone } from "./response-pane-grid.js"
+import { buildPaneGridModel } from "./response-pane-grid.js"
+import { applyResponsePaneGridLayout } from "./response-pane-grid-layout.js"
 import {
   responsePaneRowSlots,
   selectResponsePaneAgents,
@@ -2353,20 +2354,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const flushPendingTerminalRecords = terminalOutputRecordQueue.flush
   const queueTerminalOutputRecords = terminalOutputRecordQueue.queue
 
-  const setTextRenderable = (
-    text: TextRenderable | undefined,
-    content: string,
-    fg: (typeof theme)[keyof typeof theme],
-    attributes = TextAttributes.NONE,
-  ) => {
-    if (!text) {
-      return
-    }
-    text.content = content
-    text.fg = fg
-    text.attributes = attributes
-  }
-
   const renderSplitPaneFooters = () => {
     renderSplitPaneFootersView({
       renderer,
@@ -2493,15 +2480,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const applyResponseLayout = () => {
     const primaryPane = responsePrimaryPane
-    if (!responseLayoutBox || !primaryPane) {
-      logViewDebug("apply response layout:missing refs", {
-        has_layout_box: Boolean(responseLayoutBox),
-        has_primary_pane: Boolean(primaryPane),
-        auxiliary_pane_count: responseAuxiliaryPanes.filter(Boolean).length,
-      })
-      return
-    }
-
     const split = splitAgentResponseMode()
     const visibleAgents = responseVisibleAgents()
     const paneRows = responsePaneRows()
@@ -2514,232 +2492,42 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       showWorkflowScreen,
     })
 
-    responseLayoutBox.flexDirection = "column"
-    responseLayoutBox.gap = 0
-
-    const borderColor = (tone: PaneGridTone) => tone === "focused" ? theme.primary : theme.borderSubtle
-
-    const layoutPane = (
-      pane: BoxRenderable | undefined,
-      interactionBox: BoxRenderable | undefined,
-      footerBox: BoxRenderable | undefined,
-      scrollbox: ScrollBoxRenderable | undefined,
-      focused: boolean,
-      visible: boolean,
-      showFooter: boolean,
-      defaultBackground: RGBA,
-    ) => {
-      if (!pane) {
-        return
-      }
-      pane.visible = visible
-      pane.flexDirection = "column"
-      pane.flexGrow = visible ? 1 : 0
-      pane.flexBasis = visible ? 0 : 0
-      pane.width = visible ? "auto" : 0
-      pane.minWidth = visible && split ? 0 : null
-      pane.maxWidth = null
-      pane.paddingLeft = 0
-      pane.paddingRight = 0
-      pane.paddingTop = 0
-      pane.paddingBottom = 0
-      pane.border = false
-      pane.borderColor = theme.borderSubtle
-      pane.backgroundColor = visible && split
-        ? transcriptSurfacePalette(resolveTranscriptSurfaceTone(true, focused)).panel
-        : defaultBackground
-      interactionBox && (interactionBox.visible = visible && Boolean(interactionBox.getChildren().length))
-      footerBox && (footerBox.visible = visible && showFooter)
-      if (scrollbox) {
-        scrollbox.backgroundColor = pane.backgroundColor
-        scrollbox.requestRender?.()
-      }
-      interactionBox?.requestRender?.()
-      pane.requestRender?.()
-      footerBox?.requestRender?.()
-    }
-
-    const applyBorderRowBox = (box: BoxRenderable | undefined, visible: boolean) => {
-      if (!box) {
-        return
-      }
-      box.visible = visible
-      box.height = visible ? 1 : 0
-      box.minHeight = visible ? 1 : 0
-      box.flexGrow = 0
-      box.flexShrink = 0
-      box.flexDirection = "row"
-      box.gap = 0
-      box.requestRender?.()
-    }
-
-    const applyHorizontalSegment = (
-      segmentBox: BoxRenderable | undefined,
-      visible: boolean,
-      tone: PaneGridTone,
-    ) => {
-      if (!segmentBox) {
-        return
-      }
-      segmentBox.visible = visible
-      segmentBox.height = 1
-      segmentBox.minHeight = 1
-      segmentBox.flexGrow = visible ? 1 : 0
-      segmentBox.flexBasis = 0
-      segmentBox.border = visible ? ["top"] : false
-      segmentBox.borderColor = borderColor(tone)
-      segmentBox.requestRender?.()
-    }
-
-    const applyVerticalSegment = (
-      segmentBox: BoxRenderable | undefined,
-      visible: boolean,
-      tone: PaneGridTone,
-    ) => {
-      if (!segmentBox) {
-        return
-      }
-      segmentBox.visible = visible
-      segmentBox.width = visible ? 1 : 0
-      segmentBox.minWidth = visible ? 1 : 0
-      segmentBox.flexGrow = 0
-      segmentBox.flexShrink = 0
-      segmentBox.border = visible ? ["left"] : false
-      segmentBox.borderColor = borderColor(tone)
-      segmentBox.requestRender?.()
-    }
-
-    const applyJunctionText = (
-      text: TextRenderable | undefined,
-      visible: boolean,
-      char: string,
-      tone: PaneGridTone,
-    ) => {
-      setTextRenderable(text, visible ? char : "", borderColor(tone))
-    }
-
-    paneGrid.rows.forEach((gridRow, rowIndex) => {
-      const rowBox = responseRowBoxes[rowIndex]
-      if (!rowBox) {
-        return
-      }
-      const borderRow = paneGrid.borderRows[rowIndex]
-      if (borderRow) {
-        applyBorderRowBox(paneGridBorderRows[rowIndex], borderRow.visible)
-        borderRow.horizontals.forEach((segment, segmentIndex) => {
-          applyHorizontalSegment(
-            paneGridHorizontalSegments[rowIndex]?.[segmentIndex],
-            segment.visible,
-            segment.tone,
-          )
+    const appliedPaneLayout = applyResponsePaneGridLayout({
+      layoutBox: responseLayoutBox,
+      primaryPane,
+      primaryInteractionBox: responsePrimaryInteractionBox,
+      primaryFooterBox: responsePrimaryFooterBox,
+      primaryScrollbox: transcriptScrollbox,
+      historyLoadingBox,
+      auxiliaryPanes: responseAuxiliaryPanes,
+      auxiliaryInteractionBoxes: responseAuxiliaryInteractionBoxes,
+      auxiliaryFooterBoxes: responseAuxiliaryFooterBoxes,
+      auxiliaryScrollboxes: responseAuxiliaryScrollboxes,
+      rowBoxes: responseRowBoxes,
+      borderRows: paneGridBorderRows,
+      horizontalSegments: paneGridHorizontalSegments,
+      verticalSegments: paneGridVerticalSegments,
+      junctionTexts: paneGridJunctionTexts,
+      bottomBorderRow: paneGridBottomBorderRow,
+      bottomHorizontalSegments: paneGridBottomHorizontalSegments,
+      bottomJunctionTexts: paneGridBottomJunctionTexts,
+      paneRows,
+      paneGrid,
+      split,
+      showWorkflowScreen,
+      theme,
+      emptyTextAttributes: TextAttributes.NONE,
+      panelBackgroundForFocus: (focused) => transcriptSurfacePalette(resolveTranscriptSurfaceTone(true, focused)).panel,
+      onMissingRefs: (details) => {
+        logViewDebug("apply response layout:missing refs", {
+          has_layout_box: details.hasLayoutBox,
+          has_primary_pane: details.hasPrimaryPane,
+          auxiliary_pane_count: details.auxiliaryPaneCount,
         })
-        borderRow.junctions.forEach((junction, junctionIndex) => {
-          applyJunctionText(
-            paneGridJunctionTexts[rowIndex]?.[junctionIndex],
-            junction.visible,
-            junction.char,
-            junction.tone,
-          )
-        })
-      }
-
-      rowBox.visible = rowIndex === 0 || gridRow.visible
-      rowBox.flexDirection = "row"
-      rowBox.gap = 0
-      rowBox.flexGrow = rowBox.visible ? 1 : 0
-      rowBox.flexBasis = 0
-      rowBox.border = false
-      rowBox.requestRender?.()
-
-      gridRow.verticals.forEach((segment, segmentIndex) => {
-        applyVerticalSegment(
-          paneGridVerticalSegments[rowIndex]?.[segmentIndex],
-          segment.visible,
-          segment.tone,
-        )
-      })
-
-      for (const slot of gridRow.slots) {
-        if (slot.paneIndex === 0) {
-          layoutPane(
-            primaryPane,
-            responsePrimaryInteractionBox,
-            responsePrimaryFooterBox,
-            transcriptScrollbox,
-            slot.focused,
-            true,
-            !showWorkflowScreen,
-            theme.backgroundPanel,
-          )
-          if (historyLoadingBox) {
-            historyLoadingBox.backgroundColor = primaryPane.backgroundColor
-            historyLoadingBox.borderColor = split && slot.focused ? theme.primary : theme.borderSubtle
-            historyLoadingBox.requestRender?.()
-          }
-          continue
-        }
-        const auxiliaryIndex = slot.paneIndex - 1
-        layoutPane(
-          responseAuxiliaryPanes[auxiliaryIndex],
-          responseAuxiliaryInteractionBoxes[auxiliaryIndex],
-          responseAuxiliaryFooterBoxes[auxiliaryIndex],
-          responseAuxiliaryScrollboxes[auxiliaryIndex],
-          slot.focused,
-          true,
-          Boolean(slot.agentId),
-          theme.backgroundElement,
-        )
-      }
-
-      for (const paneIndex of paneRows[rowIndex] ?? []) {
-        if (gridRow.slots.some((slot) => slot.paneIndex === paneIndex)) {
-          continue
-        }
-        if (paneIndex === 0) {
-          layoutPane(
-            primaryPane,
-            responsePrimaryInteractionBox,
-            responsePrimaryFooterBox,
-            transcriptScrollbox,
-            false,
-            false,
-            false,
-            theme.backgroundPanel,
-          )
-          continue
-        }
-        const auxiliaryIndex = paneIndex - 1
-        layoutPane(
-          responseAuxiliaryPanes[auxiliaryIndex],
-          responseAuxiliaryInteractionBoxes[auxiliaryIndex],
-          responseAuxiliaryFooterBoxes[auxiliaryIndex],
-          responseAuxiliaryScrollboxes[auxiliaryIndex],
-          false,
-          false,
-          false,
-          theme.backgroundElement,
-        )
-      }
+      },
     })
-
-    const bottomBorderRow = paneGrid.borderRows[paneGrid.rows.length]
-    if (bottomBorderRow) {
-      applyBorderRowBox(paneGridBottomBorderRow, bottomBorderRow.visible)
-      bottomBorderRow.horizontals.forEach((segment, segmentIndex) => {
-        applyHorizontalSegment(
-          paneGridBottomHorizontalSegments[segmentIndex],
-          segment.visible,
-          segment.tone,
-        )
-      })
-      bottomBorderRow.junctions.forEach((junction, junctionIndex) => {
-        applyJunctionText(
-          paneGridBottomJunctionTexts[junctionIndex],
-          junction.visible,
-          junction.char,
-          junction.tone,
-        )
-      })
+    if (!appliedPaneLayout) {
+      return
     }
 
     renderSplitPaneFooters()
