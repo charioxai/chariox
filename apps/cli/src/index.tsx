@@ -241,6 +241,7 @@ import { createPromptTurnNavigationController } from "./prompt-turn-navigation-c
 import { createPromptStopController } from "./prompt-stop-controller.js"
 import { createPrimaryTranscriptEntryController } from "./primary-transcript-entry-controller.js"
 import { createPrimaryTranscriptRenderController } from "./primary-transcript-render-controller.js"
+import { createPrimaryTranscriptRuntimeStoreController } from "./primary-transcript-runtime-store-controller.js"
 import {
   createTurnCompletionController,
 } from "./turn-completion-controller.js"
@@ -743,20 +744,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let historyLoadingText: TextRenderable | undefined
   const statusIndicatorRenderState = createStatusIndicatorRenderState()
   let closing = false
-  const tools = new Map<string, ToolTranscriptUpdate>()
-  const activeToolLabels = new Map<string, string>()
-  const transcriptRenderables = new Map<number, TranscriptEntryRenderable>()
+  const primaryTranscriptRuntimeStore = createPrimaryTranscriptRuntimeStoreController<
+    TranscriptEntryRenderable,
+    BoxRenderable,
+    ToolTranscriptUpdate
+  >()
   let transcriptSyntax = createTranscriptSyntaxStyle()
-  let emptyTranscriptRenderable: BoxRenderable | undefined
-  let lastTranscriptScrollTop = 0
   const historyScrollRestoreController = createHistoryScrollRestoreController({
     scheduleTimer: (callback, delayMs) => {
       startTimeout(callback, delayMs)
     },
     getScrollbox: () => transcriptScrollbox,
-    setLastScrollTop: (scrollTop) => {
-      lastTranscriptScrollTop = scrollTop
-    },
+    setLastScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
   })
   let sessionChromeUpdateController: SessionChromeUpdateController
   const uiBatchController = createCliUiBatchController({
@@ -865,7 +864,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getFocusedAgentId: focusedAgentId,
     getProviderRun: providerRunState,
     getVisibleTranscriptAgentId: visibleTranscriptAgentId,
-    getActiveToolLabels: () => activeToolLabels.values(),
+    getActiveToolLabels: primaryTranscriptRuntimeStore.activeToolLabelValues,
     getAgentPaneToolUpdates: (agentId) => agentPaneTools.get(agentId)?.values(),
     getAgentPanePreviews: agentPanePreviews,
     getAgentActivityLabels: agentActivityLabels,
@@ -1245,7 +1244,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }),
     completeTurn: () => {
       batch(() => {
-        activeToolLabels.clear()
+        primaryTranscriptRuntimeStore.clearActiveToolLabels()
         setAgentActivityLabels({})
         setStreamingAgentId(null)
         setSubmitting(false)
@@ -1631,9 +1630,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const transcriptViewportController = createTranscriptViewportController({
     getScrollbox: () => transcriptScrollbox,
     cancelHistoryScrollRestore: () => historyScrollRestoreController.cancel(),
-    setLastTranscriptScrollTop: (scrollTop) => {
-      lastTranscriptScrollTop = scrollTop
-    },
+    setLastTranscriptScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
   })
   const scrollTranscriptToBottom = transcriptViewportController.scrollToBottom
 
@@ -1691,7 +1688,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setEntries: (nextEntries) => {
       setEntries(reconcile(nextEntries))
     },
-    renderables: transcriptRenderables,
+    renderables: primaryTranscriptRuntimeStore.transcriptRenderables,
     removeFromScrollbox: (renderableId) => {
       if (!transcriptScrollbox) {
         return false
@@ -1702,9 +1699,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     requestScrollboxRender: () => {
       transcriptScrollbox?.requestRender()
     },
-    deleteTool: (mergeKey) => {
-      tools.delete(mergeKey)
-    },
+    deleteTool: primaryTranscriptRuntimeStore.deleteTool,
     maxEntries: LIVE_TRANSCRIPT_LIMIT,
     maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
   })
@@ -1813,9 +1808,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setActiveStatusLabel,
     getStatusLine: statusLine,
     setStatusLine,
-    clearActiveToolLabels: () => {
-      activeToolLabels.clear()
-    },
+    clearActiveToolLabels: primaryTranscriptRuntimeStore.clearActiveToolLabels,
     turnCompletion: turnCompletionController,
     cancelPendingTurnCompletion,
     promptStop: promptStopController,
@@ -1828,9 +1821,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const authoritativeIdleController = createAuthoritativeIdleController({
     batchUpdate: batch,
     resetTurnCompletion: turnCompletionController.reset,
-    clearActiveToolLabels: () => {
-      activeToolLabels.clear()
-    },
+    clearActiveToolLabels: primaryTranscriptRuntimeStore.clearActiveToolLabels,
     setAgentActivityLabels,
     setStreamingAgentId,
     setSubmitting,
@@ -1901,8 +1892,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
     entryCounter,
     currentTurnId: () => currentTurnId,
-    tools,
-    activeToolLabels,
+    tools: primaryTranscriptRuntimeStore.tools,
+    activeToolLabels: primaryTranscriptRuntimeStore.activeToolLabels,
     cancelPendingTurnCompletion,
     setWorking,
     setSubmitting,
@@ -2393,11 +2384,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({
     getScrollbox: () => transcriptScrollbox,
-    getEmptyRenderable: () => emptyTranscriptRenderable,
-    setEmptyRenderable: (renderable) => {
-      emptyTranscriptRenderable = renderable
-    },
-    renderables: transcriptRenderables,
+    getEmptyRenderable: primaryTranscriptRuntimeStore.getEmptyRenderable,
+    setEmptyRenderable: primaryTranscriptRuntimeStore.setEmptyRenderable,
+    renderables: primaryTranscriptRuntimeStore.transcriptRenderables,
     visibleEntries: visibleTranscriptEntries,
     workflowScreenActive: () => workflowScreenActive(),
     showWorkflowOutline: () => isAttached() && workflowScreenActive(),
@@ -2446,9 +2435,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
     shouldResetEmptyScrollTop: isAttached,
     clampScrollTop,
-    setLastScrollTop: (scrollTop) => {
-      lastTranscriptScrollTop = scrollTop
-    },
+    setLastScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
     logViewDebug,
   })
   const mountTranscriptEntry = primaryTranscriptRenderController.mountEntry
@@ -2486,9 +2473,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getEntries: () => entries.filter(Boolean),
     getVisibleTranscriptAgentId: visibleTranscriptAgentId,
     expandedTurnIdsForAgent,
-    clearToolState: () => {
-      tools.clear()
-    },
+    clearToolState: primaryTranscriptRuntimeStore.clearTools,
     setEntries: (nextEntries) => {
       setEntries(reconcile(nextEntries))
     },
@@ -2502,9 +2487,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setMountedTranscriptAgentId: (agentId) => {
       mountedTranscriptAgentId = agentId
     },
-    setLastScrollTop: (scrollTop) => {
-      lastTranscriptScrollTop = scrollTop
-    },
+    setLastScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
     rebuildTranscript,
     syncVisibleTranscriptPreview,
     restorePrependedHistory: (request) => historyScrollRestoreController.restorePrependedHistory(request),
@@ -2596,10 +2579,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     isAttached,
     isLoadingHistory: loadingHistory,
     hasMoreHistory: () => nextHistoryCursor() !== null,
-    getLastScrollTop: () => lastTranscriptScrollTop,
-    setLastScrollTop: (scrollTop) => {
-      lastTranscriptScrollTop = scrollTop
-    },
+    getLastScrollTop: primaryTranscriptRuntimeStore.getLastScrollTop,
+    setLastScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
     loadOlderHistory: () => transcriptHistoryLoadController.loadOlderPage(),
   })
 
@@ -2715,9 +2696,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     deriveDetachedCliTransitionState,
     deriveAttachedCliTransitionState,
     clearPendingPromptAttachments,
-    clearActiveToolLabels: () => {
-      activeToolLabels.clear()
-    },
+    clearActiveToolLabels: primaryTranscriptRuntimeStore.clearActiveToolLabels,
     clearWorkflows: () => {},
     clearAgentPaneRuntime,
     clearDirectoryTree: () => setDirectoryTreeState(null),
@@ -3430,7 +3409,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getPendingAttachmentCount: () => pendingAttachments().length,
     waitForPendingAgentFocusTransition,
     getFocusedAgentId: focusedAgentId,
-    clearActiveToolLabels: () => activeToolLabels.clear(),
+    clearActiveToolLabels: primaryTranscriptRuntimeStore.clearActiveToolLabels,
     setProviderActivityLabel,
     setActiveStatusLabel,
     getAttachment: attachmentState,
@@ -3473,7 +3452,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getPendingAttachments: pendingAttachments,
     waitForPendingAgentFocusTransition,
     getFocusedAgentId: focusedAgentId,
-    clearActiveToolLabels: () => activeToolLabels.clear(),
+    clearActiveToolLabels: primaryTranscriptRuntimeStore.clearActiveToolLabels,
     setProviderActivityLabel,
     setActiveStatusLabel,
     getAttachment: attachmentState,
@@ -3599,7 +3578,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getPromptText: () => promptInput ? promptTextController.currentText() : undefined,
     getPromptOffsets: () => visibleTranscriptEntries()
       .filter((entry) => entry.role === "user")
-      .map((entry) => transcriptRenderables.get(entry.id)?.wrapper.y ?? null)
+      .map((entry) => primaryTranscriptRuntimeStore.entryWrapperY(entry.id))
       .filter((offset): offset is number => offset !== null),
     getScrollState: () => transcriptScrollbox
       ? { left: transcriptScrollbox.scrollLeft, top: transcriptScrollbox.scrollTop }
@@ -3610,9 +3589,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     requestRender: () => {
       transcriptScrollbox?.requestRender()
     },
-    setLastTranscriptScrollTop: (scrollTop) => {
-      lastTranscriptScrollTop = scrollTop
-    },
+    setLastTranscriptScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
   })
   const waitingRoomKeyController = createWaitingRoomKeyController({
     isAttached,
@@ -4028,9 +4005,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     ready: () => Boolean(promptInput && transcriptScrollbox),
     promptMounted: () => Boolean(promptInput),
     transcriptScrollTop: () => transcriptScrollbox?.scrollTop ?? 0,
-    setLastTranscriptScrollTop: (scrollTop) => {
-      lastTranscriptScrollTop = scrollTop
-    },
+    setLastTranscriptScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
     isAttached,
     rebuildTranscript,
     syncPromptPlaceholder,
