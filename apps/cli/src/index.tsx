@@ -277,8 +277,7 @@ import {
   createPromptContentChangeController,
 } from "./prompt-content-change-controller.js"
 import { createPromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
-import { buildPaneGridModel } from "./response-pane-grid.js"
-import { applyResponsePaneGridLayout } from "./response-pane-grid-layout.js"
+import { createResponseLayoutController } from "./response-layout-controller.js"
 import {
   responsePaneRowSlots,
   selectResponsePaneAgents,
@@ -398,7 +397,6 @@ import {
   createStatusIndicatorRenderState,
   renderStatusIndicator as renderStatusIndicatorView,
 } from "./status-indicator-renderer.js"
-import { syncAuxiliaryPane } from "./response-layout-render.js"
 import { createRenderScheduler } from "./render-scheduler.js"
 import {
   createResponsePaneRepaintController,
@@ -2190,23 +2188,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
 
-  const applyResponseLayout = () => {
-    const primaryPane = responsePrimaryPane
-    const split = splitAgentResponseMode()
-    const visibleAgents = responseVisibleAgents()
-    const paneRows = responsePaneRows()
-    const showWorkflowScreen = workflowScreenActive()
-    const paneGrid = buildPaneGridModel({
-      paneRows,
-      visibleAgents,
-      focusedAgentId: focusedAgentId(),
-      split,
-      showWorkflowScreen,
-    })
-
-    const appliedPaneLayout = applyResponsePaneGridLayout({
+  const responseLayoutController = createResponseLayoutController({
+    getRefs: () => ({
       layoutBox: responseLayoutBox,
-      primaryPane,
+      primaryPane: responsePrimaryPane,
       primaryInteractionBox: responsePrimaryInteractionBox,
       primaryFooterBox: responsePrimaryFooterBox,
       primaryScrollbox: transcriptScrollbox,
@@ -2223,70 +2208,45 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       bottomBorderRow: paneGridBottomBorderRow,
       bottomHorizontalSegments: paneGridBottomHorizontalSegments,
       bottomJunctionTexts: paneGridBottomJunctionTexts,
-      paneRows,
-      paneGrid,
-      split,
-      showWorkflowScreen,
-      theme,
-      emptyTextAttributes: TextAttributes.NONE,
-      panelBackgroundForFocus: (focused) => transcriptSurfacePalette(resolveTranscriptSurfaceTone(true, focused)).panel,
-      onMissingRefs: (details) => {
-        logViewDebug("apply response layout:missing refs", {
-          has_layout_box: details.hasLayoutBox,
-          has_primary_pane: details.hasPrimaryPane,
-          auxiliary_pane_count: details.auxiliaryPaneCount,
-        })
-      },
-    })
-    if (!appliedPaneLayout) {
-      return
-    }
-
-    renderSplitPaneFooters()
-    renderAgentInteractions()
-
-    for (let auxiliaryIndex = 0; auxiliaryIndex < maxAgentsPerScreen() - 1; auxiliaryIndex += 1) {
-      const paneIndex = auxiliaryIndex + 1
-      syncAuxiliaryPane({
-        scrollbox: responseAuxiliaryScrollboxes[auxiliaryIndex],
-        nextAgentId: split ? (visibleAgents[auxiliaryIndex + 1]?.id ?? null) : null,
-        currentAgentId: responseAuxiliaryAgentIds[auxiliaryIndex] ?? null,
-        splitMode: split,
-        clearAuxiliaryAgentPane,
-        unregisterAgentScrollbox: (agentId) => {
-          agentTranscriptScrollboxes.delete(agentId)
-        },
-        assignCurrentAgentId: (value) => {
-          responseAuxiliaryAgentIds[auxiliaryIndex] = value
-        },
-        registerAgentScrollbox: (agentId, scrollbox) => {
-          agentTranscriptScrollboxes.set(agentId, scrollbox)
-        },
-        rebuildAuxiliaryAgentPane,
-        buildEmptyTranscriptRenderable: () => buildEmptyTranscriptRenderable(renderer),
-      })
-    }
-
-    const nextVisibleTranscriptAgentId = responsePaneSelection().visibleTranscriptAgentId
-    if (
-      nextVisibleTranscriptAgentId
-      && nextVisibleTranscriptAgentId !== mountedTranscriptAgentId
-    ) {
-      replaceTranscriptEntries(
-        (agentPaneEntries()[nextVisibleTranscriptAgentId] ?? []).map((entry) => ({ ...entry })),
-        nextVisibleTranscriptAgentId,
-      )
-    }
-
-    scheduleResponsePaneRepaint()
-
-    logViewDebug("apply response layout", {
-      split,
-      visible_agent_ids: visibleAgents.map((agent) => agent.id),
-      screen_index: responsePaneSelection().screenIndex,
-      screen_count: responsePaneSelection().screenCount,
-    })
-  }
+    }),
+    getSplit: splitAgentResponseMode,
+    getVisibleAgents: responseVisibleAgents,
+    getPaneRows: responsePaneRows,
+    getFocusedAgentId: focusedAgentId,
+    getShowWorkflowScreen: () => workflowScreenActive(),
+    getMaxAgentsPerScreen: maxAgentsPerScreen,
+    getResponsePaneSelection: responsePaneSelection,
+    getTheme: () => theme,
+    emptyTextAttributes: TextAttributes.NONE,
+    panelBackgroundForFocus: (focused) => transcriptSurfacePalette(resolveTranscriptSurfaceTone(true, focused)).panel,
+    renderSplitPaneFooters,
+    renderAgentInteractions,
+    clearAuxiliaryAgentPane: (agentId) => {
+      clearAuxiliaryAgentPane(agentId)
+    },
+    unregisterAgentScrollbox: (agentId) => {
+      agentTranscriptScrollboxes.delete(agentId)
+    },
+    getCurrentAuxiliaryAgentId: (auxiliaryIndex) => responseAuxiliaryAgentIds[auxiliaryIndex] ?? null,
+    setCurrentAuxiliaryAgentId: (auxiliaryIndex, agentId) => {
+      responseAuxiliaryAgentIds[auxiliaryIndex] = agentId
+    },
+    registerAgentScrollbox: (agentId, scrollbox) => {
+      agentTranscriptScrollboxes.set(agentId, scrollbox)
+    },
+    rebuildAuxiliaryAgentPane: (agentId) => {
+      rebuildAuxiliaryAgentPane(agentId)
+    },
+    buildEmptyTranscriptRenderable: () => buildEmptyTranscriptRenderable(renderer),
+    getMountedTranscriptAgentId: () => mountedTranscriptAgentId,
+    getAgentPaneEntries: (agentId) => agentPaneEntries()[agentId] ?? [],
+    replaceTranscriptEntries: (nextEntries, agentId) => {
+      replaceTranscriptEntries(nextEntries, agentId)
+    },
+    scheduleResponsePaneRepaint,
+    logViewDebug,
+  })
+  const applyResponseLayout = responseLayoutController.apply
 
   createEffect(() => {
     splitAgentResponseMode()
