@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, MouseButton, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type Renderable, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, MouseButton, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
@@ -54,13 +54,15 @@ import { createAgentFocusTransitionController } from "./agent-focus-transition-c
 import { formatAgentLabel, formatAgentLocationLabel } from "./agent-label.js"
 import { createAgentRuntimeProjectionController } from "./agent-runtime-projection-controller.js"
 import {
-  describeCliDialogFocusTarget,
   type CliDialogFocusTarget,
 } from "./cli-dialog-focus-controller.js"
 import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
 import {
   renderCliDialogOverlay,
 } from "./cli-dialog-overlay.js"
+import {
+  createCliRendererFocusController,
+} from "./cli-renderer-focus-controller.js"
 import { createCliLoadingStateController } from "./cli-loading-state-controller.js"
 import { createCliPollingController } from "./cli-polling-controller.js"
 import { createCliProcessLifecycleController } from "./cli-process-lifecycle-controller.js"
@@ -966,12 +968,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   createEffect(() => {
     logViewDebug("state changed")
   })
-  const describeRenderableDebug = (renderable: Renderable | null | undefined) => {
-    return describeCliDialogFocusTarget(renderable as CliDialogFocusTarget | null | undefined)
-  }
-  const currentFocusedRenderable = () => (
-    (renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null
-  )
+  const rendererFocusController = createCliRendererFocusController(renderer)
+  const describeRenderableDebug = rendererFocusController.describe
+  const currentFocusedRenderable = rendererFocusController.current
   const waitingRoomReconcileController = createWaitingRoomReconcileController({
     getCurrentState: waitingRoomState,
     setWaitingRoomState,
@@ -1502,9 +1501,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       terminalPairingOpen: terminalPairingOpen(),
       sessionBrowserOpen: sessionBrowserOpen(),
     }),
-    getCurrentFocus: () => currentFocusedRenderable() as CliDialogFocusTarget | null,
+    getCurrentFocus: currentFocusedRenderable,
     getPromptFocus: () => promptInputRefController.current() as CliDialogFocusTarget | null | undefined,
-    describeFocus: (target) => describeRenderableDebug(target as Renderable | null | undefined),
+    describeFocus: describeRenderableDebug,
     scheduleFocusRestore: (callback) => {
       startTimeout(callback, 1)
     },
@@ -1734,7 +1733,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     debugHotkey: hotkeyDebug,
     logDebug: (message, fields) => appLogger?.debug(message, fields),
     currentFocus: currentFocusedRenderable,
-    describeFocus: (focus) => describeRenderableDebug(focus as Renderable | null | undefined),
+    describeFocus: describeRenderableDebug,
     savedFocusDebug: () => dialogOverlayController.savedFocusDebug(),
   })
   const handleHotkeysToggleShortcut = hotkeysToggleController.handle
