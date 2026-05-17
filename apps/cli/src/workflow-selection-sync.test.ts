@@ -5,7 +5,7 @@ import type { WorkflowDefinition } from "./cli-types.js"
 import {
   createWorkflowSelectionSyncController,
   deriveWorkflowSelectionState,
-} from "./workflow-controller.js"
+} from "./workflow-selection-sync.js"
 
 test("deriveWorkflowSelectionState keeps a valid workflow and node selection", () => {
   const next = deriveWorkflowSelectionState(workflows(), "wf-2", "wf-2-node-1")

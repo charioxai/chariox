@@ -46,8 +46,12 @@ import { toggleWorkspaceScreenMode, type WorkspaceScreenMode } from "./workspace
 import {
   cycleWorkflowNodeId,
   resolveSelectedWorkflow,
-  resolveSelectedWorkflowNodeId,
 } from "./workflow-graph/index.js"
+
+export {
+  createWorkflowSelectionSyncController,
+  deriveWorkflowSelectionState,
+} from "./workflow-selection-sync.js"
 
 type WorkflowControllerDeps = {
   sendRequest: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -62,47 +66,6 @@ type WorkflowControllerDeps = {
   setWorkspaceScreenMode: (value: WorkspaceScreenMode) => void
   rebuildTranscript: () => void
   applyResponseLayout: () => void
-}
-
-type WorkflowSelectionSyncControllerDeps = {
-  workflows: () => WorkflowDefinition[]
-  selectedWorkflowId: () => string | null
-  selectedWorkflowNodeId: () => string | null
-  setSelectedWorkflowId: (value: string | null) => void
-  setSelectedWorkflowNodeId: (value: string | null) => void
-}
-
-export function deriveWorkflowSelectionState(
-  workflows: WorkflowDefinition[],
-  selectedWorkflowId: string | null,
-  selectedNodeId: string | null,
-) {
-  const workflow = resolveSelectedWorkflow(workflows, selectedWorkflowId)
-  return {
-    workflow,
-    workflowId: workflow?.id ?? null,
-    nodeId: resolveSelectedWorkflowNodeId(workflow, selectedNodeId),
-  }
-}
-
-export function createWorkflowSelectionSyncController(
-  deps: WorkflowSelectionSyncControllerDeps,
-) {
-  return {
-    sync() {
-      const nextSelection = deriveWorkflowSelectionState(
-        deps.workflows(),
-        deps.selectedWorkflowId(),
-        deps.selectedWorkflowNodeId(),
-      )
-      if (deps.selectedWorkflowId() !== nextSelection.workflowId) {
-        deps.setSelectedWorkflowId(nextSelection.workflowId)
-      }
-      if (deps.selectedWorkflowNodeId() !== nextSelection.nodeId) {
-        deps.setSelectedWorkflowNodeId(nextSelection.nodeId)
-      }
-    },
-  }
 }
 
 export function createWorkflowController(deps: WorkflowControllerDeps) {
