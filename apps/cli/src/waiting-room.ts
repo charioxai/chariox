@@ -24,6 +24,14 @@ import {
   normalizeWaitingRoomWorktreeSelectionId,
 } from "./waiting-room-worktrees.js"
 import {
+  cycleWaitingRoomSliceSelectionId,
+  formatWaitingRoomSliceSelection,
+  normalizeWaitingRoomSliceSelectionId,
+  selectedWaitingRoomSliceRef,
+  waitingRoomSelectedSlice,
+  waitingRoomSlices,
+} from "./waiting-room-slices.js"
+import {
   formatWaitingRoomTerminalTitle,
   waitingRoomTerminalRows,
   waitingRoomTerminals,
@@ -343,11 +351,13 @@ export function cycleWaitingRoomValue(
     }
   }
   if (state.focus === "slice") {
-    const options = waitingRoomSliceOptions({ slices: waitingRoomSlices(remote), selectionId: state.sliceSelectionId })
-    const index = Math.max(0, options.findIndex((option) => option.id === state.sliceSelectionId))
     return {
       ...state,
-      sliceSelectionId: options[modulo(index + delta, options.length)]?.id ?? "none",
+      sliceSelectionId: cycleWaitingRoomSliceSelectionId(
+        state.sliceSelectionId,
+        waitingRoomSlices(remote),
+        delta,
+      ),
     }
   }
   return state
@@ -504,49 +514,6 @@ export function waitingRoomRows(
   )
 
   return rows
-}
-
-function waitingRoomSlices(remote: WaitingRoomRemoteState = {}) {
-  return (remote.slices ?? [])
-    .slice()
-    .sort((left, right) => formatWaitingRoomSliceLabel(left).localeCompare(formatWaitingRoomSliceLabel(right)))
-}
-
-function waitingRoomSliceOptions(options: { slices: SliceRecord[]; selectionId?: string | null | undefined }) {
-  return [
-    { id: "none", slice: null },
-    ...options.slices.map((slice) => ({ id: slice.id, slice })),
-  ]
-}
-
-function normalizeWaitingRoomSliceSelectionId(selectionId: string | null | undefined, slices: SliceRecord[]) {
-  const normalized = selectionId?.trim() || "none"
-  if (normalized === "none") {
-    return "none"
-  }
-  return waitingRoomSliceOptions({ slices, selectionId: normalized }).some((option) => option.id === normalized)
-    ? normalized
-    : "none"
-}
-
-function waitingRoomSelectedSlice(selectionId: string | null | undefined, slices: SliceRecord[]) {
-  if (selectionId === "none") {
-    return null
-  }
-  return slices.find((slice) => slice.id === selectionId || slice.name === selectionId) ?? null
-}
-
-function selectedWaitingRoomSliceRef(selectionId: string | null | undefined, slices: SliceRecord[]) {
-  return waitingRoomSelectedSlice(selectionId, slices)?.id ?? null
-}
-
-function formatWaitingRoomSliceSelection(selectionId: string | null | undefined, slices: SliceRecord[]) {
-  const slice = waitingRoomSelectedSlice(selectionId, slices)
-  return slice ? formatWaitingRoomSliceLabel(slice) : "None"
-}
-
-function formatWaitingRoomSliceLabel(slice: SliceRecord) {
-  return slice.name || slice.id
 }
 
 function waitingRoomLoadingText(frame = 0) {
