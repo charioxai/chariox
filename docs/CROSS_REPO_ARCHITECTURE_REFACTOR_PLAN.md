@@ -307,6 +307,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: Cloud web/admin shell serving is split by route owner with shared shell-auth and dist-path helpers; API build/tests pass.
 - Latest verified batch: Cloud relay subscription, paired identity, and runtime-token admission policies are separate modules; API build/tests pass.
 - Latest verified batch: Cloud admin content counts and audit metadata are split from deactivation maintenance; API build/tests pass.
+- Latest verified batch: Cloud admin deactivate and purge mutations are separate repositories; API build/tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
