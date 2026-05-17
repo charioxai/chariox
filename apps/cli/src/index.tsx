@@ -203,6 +203,9 @@ import {
   createPromptDraftPersistController,
 } from "./prompt-draft-persist-controller.js"
 import {
+  createPromptInputHistoryRefreshController,
+} from "./prompt-input-history-refresh-controller.js"
+import {
   createTurnCompletionController,
 } from "./turn-completion-controller.js"
 import {
@@ -939,8 +942,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let hydratedPromptHistorySessionId: string | null | undefined
   let promptHistoryHydrationGeneration = 0
   let promptInputHistoryLatestSequence = 0
-  let promptInputHistoryRefreshInFlight: Promise<void> | null = null
-  let pendingPromptInputHistoryRefresh: ReturnType<typeof startTimeout> | undefined
   let promptTextSnapshot = initialPromptDraft
   let promptTextMuting = false
   let promptDropPending = false
@@ -2404,33 +2405,27 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
     })
   }
-  const refreshSharedPromptInputHistory = async (sessionId: string) => {
-    if (promptInputHistoryRefreshInFlight) {
-      return promptInputHistoryRefreshInFlight
-    }
-    promptInputHistoryRefreshInFlight = getPromptInputHistory(client, sessionId, promptInputHistoryLatestSequence, 500)
-      .then((history) => {
-        appendSharedPromptInputHistory(sessionId, history.entries)
+  const promptInputHistoryRefreshController = createPromptInputHistoryRefreshController({
+    delayMs: 1500,
+    scheduleTimer: startTimeout,
+    clearTimer: clearTimeout,
+    refreshHistory: async (sessionId) => {
+      const history = await getPromptInputHistory(client, sessionId, promptInputHistoryLatestSequence, 500)
+      appendSharedPromptInputHistory(sessionId, history.entries)
+    },
+    onRefreshError: (error, sessionId) => {
+      appLogger?.warn("failed to refresh shared prompt input history", {
+        session_id: sessionId,
+        error: formatError(error),
       })
-      .finally(() => {
-        promptInputHistoryRefreshInFlight = null
-      })
-    return promptInputHistoryRefreshInFlight
-  }
+    },
+  })
   const scheduleSharedPromptInputHistoryRefresh = () => {
     const sessionId = attachmentState()?.session_id
-    if (!sessionId || pendingPromptInputHistoryRefresh) {
+    if (!sessionId) {
       return
     }
-    pendingPromptInputHistoryRefresh = startTimeout(() => {
-      pendingPromptInputHistoryRefresh = undefined
-      void refreshSharedPromptInputHistory(sessionId).catch((error) => {
-        appLogger?.warn("failed to refresh shared prompt input history", {
-          session_id: sessionId,
-          error: formatError(error),
-        })
-      })
-    }, 1500)
+    promptInputHistoryRefreshController.schedule(sessionId)
   }
   const persistSessionPromptState = async (
     sessionId: string,
@@ -7395,9 +7390,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (pendingSessionChromeFlush) {
       clearTimeout(pendingSessionChromeFlush)
     }
-    if (pendingPromptInputHistoryRefresh) {
-      clearTimeout(pendingPromptInputHistoryRefresh)
-    }
+    promptInputHistoryRefreshController.clearTimer()
   })
 
   const disposeKernelEventHandler = supportsKernelEventStream
