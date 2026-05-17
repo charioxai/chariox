@@ -193,6 +193,7 @@ import {
   createPromptDraftPersistController,
 } from "./prompt-draft-persist-controller.js"
 import { createPromptFocusRetentionController } from "./prompt-focus-retention-controller.js"
+import { createPromptHistoryAttachmentController } from "./prompt-history-attachment-controller.js"
 import { createPromptSurfaceMouseController } from "./prompt-surface-mouse-controller.js"
 import {
   createPromptHistoryNavigationController,
@@ -917,7 +918,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let currentTurnId = computeCurrentTurnId(initialEntries)
   let nextTurnId = computeNextTurnId(initialEntries)
   let mountedTranscriptAgentId = initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id ?? null : null
-  let hydratedPromptHistorySessionId: string | null | undefined
   let submittingAgentId: string | null = null
   const promptTextController = createPromptTextController({
     initialText: initialPromptDraft,
@@ -2032,26 +2032,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const beginSubmittedPromptUi = promptSubmissionUiController.begin
   const restoreFailedPromptUi = promptSubmissionUiController.restore
-  createEffect(() => {
-    const attachedSessionId = attachmentState()?.session_id ?? null
-    if (attachedSessionId === hydratedPromptHistorySessionId) {
-      return
-    }
-    hydratedPromptHistorySessionId = attachedSessionId
-    restorePromptHistory(attachedSessionId)
-    if (!attachedSessionId) {
-      promptHistoryHydrationController.invalidate()
-      return
-    }
-    void hydratePromptHistoryFromSession(attachedSessionId).catch((error) => {
-      if (attachmentState()?.session_id !== attachedSessionId) {
-        return
-      }
+  const promptHistoryAttachmentController = createPromptHistoryAttachmentController({
+    getAttachedSessionId: () => attachmentState()?.session_id ?? null,
+    restorePromptHistory,
+    invalidateHydration: promptHistoryHydrationController.invalidate,
+    hydratePromptHistory: hydratePromptHistoryFromSession,
+    isCurrentSession: (sessionId) => attachmentState()?.session_id === sessionId,
+    warnHydrationError: (sessionId, error) => {
       appLogger?.warn("failed to hydrate prompt history from session history", {
-        session_id: attachedSessionId,
+        session_id: sessionId,
         error: formatError(error),
       })
-    })
+    },
+  })
+  createEffect(() => {
+    void promptHistoryAttachmentController.sync()
   })
   const hotkeySections = () => buildHotkeySections(isAttached())
   const sessionBrowserSessions = () => sessionBrowserVisibleSessions(availableSessions())
