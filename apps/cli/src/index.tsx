@@ -520,6 +520,7 @@ import {
 } from "./transcript-render.js"
 import { reconcileMountedTranscriptPane } from "./transcript-pane-reconcile.js"
 import { createTranscriptRetentionController } from "./transcript-retention-controller.js"
+import { createTranscriptStateController } from "./transcript-state-controller.js"
 import {
   buildEmptyTranscriptRenderable,
   buildLoadingTranscriptRenderable,
@@ -1954,71 +1955,37 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const handlePromptContentChange = promptContentChangeController.handleChange
   const expandedTurnIdsForAgent = (agentId: string | null | undefined) => agentId ? (expandedTurnIdsByAgent()[agentId] ?? []) : []
 
-  const applyVisibleTranscriptState = (
-    nextEntries: TranscriptEntry[],
-    agentId: string | null | undefined = visibleTranscriptAgentId(),
-    turnIds = expandedTurnIdsForAgent(agentId),
-  ) => {
-    const preparedEntries = applyTranscriptDisplayState(nextEntries, turnIds)
-    setEntries(reconcile(preparedEntries))
-    setEntryCounter(preparedEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
-    return preparedEntries
-  }
+  const transcriptStateController = createTranscriptStateController({
+    entries: () => entries.filter(Boolean),
+    setEntries: (nextEntries) => {
+      setEntries(reconcile(nextEntries))
+    },
+    entryCounter,
+    setEntryCounter,
+    currentTurnId: () => currentTurnId,
+    visibleTranscriptAgentId,
+    expandedTurnIdsForAgent,
+    setExpandedTurnState: (agentId, turnId, expanded) => {
+      setExpandedTurnState(agentId, turnId, expanded)
+    },
+    persistVisibleTranscriptEntries: (nextEntries) => {
+      persistVisibleTranscriptEntries(nextEntries)
+    },
+    reconcileMountedTranscript: (currentEntries, nextEntries) => {
+      reconcileMountedTranscript(currentEntries, nextEntries)
+    },
+    retainPromptFocus,
+    enforceTranscriptRetention: () => enforceTranscriptRetention(),
+  })
+  const applyVisibleTranscriptState = transcriptStateController.applyVisibleState
+  const toggleTurn = transcriptStateController.toggleTurn
+  const toggleBlob = transcriptStateController.toggleBlob
+  const appendEntry = transcriptStateController.appendEntry
 
   const findTurnAnchorEntryId = (turnId: number) => {
     return entries.find((entry) => entry.turnId === turnId && entry.role === "user")?.id
       ?? entries.find((entry) => entry.turnId === turnId && entry.role !== "turn_toggle")?.id
       ?? null
-  }
-
-  const toggleTurn = (turnId: number | null | undefined, toggleEntryId?: number) => {
-    if (!turnId) {
-      return
-    }
-    const currentEntries = entries.filter(Boolean)
-    const toggleEntry = resolveVisibleTurnToggle(currentEntries, turnId, toggleEntryId)
-    if (!toggleEntry) {
-      return
-    }
-    const agentId = visibleTranscriptAgentId()
-    const expanding = toggleEntry?.toggleMode === "expand"
-    setExpandedTurnState(agentId, turnId, expanding)
-    const nextEntries = applyTranscriptDisplayState(currentEntries, expanding
-      ? expandedTurnIdsForAgent(agentId).filter((value) => value !== turnId)
-      : [...expandedTurnIdsForAgent(agentId), turnId])
-    setEntries(reconcile(nextEntries))
-    setEntryCounter(nextEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
-    persistVisibleTranscriptEntries(nextEntries)
-    reconcileMountedTranscript(currentEntries, nextEntries)
-    retainPromptFocus()
-  }
-
-  const toggleBlob = (entryId: number, collapsed: boolean) => {
-    const currentEntries = entries.filter(Boolean)
-    const agentId = visibleTranscriptAgentId()
-    const nextEntries = setTranscriptBlobCollapsed(currentEntries, entryId, expandedTurnIdsForAgent(agentId), collapsed)
-    setEntries(reconcile(nextEntries))
-    setEntryCounter(nextEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
-    persistVisibleTranscriptEntries(nextEntries)
-    reconcileMountedTranscript(currentEntries, nextEntries)
-    retainPromptFocus()
-  }
-
-  const appendEntry = (entry: Omit<TranscriptEntry, "id">, turnIds = expandedTurnIdsForAgent(visibleTranscriptAgentId())) => {
-    const previousEntry = entries.at(-1)
-    if (shouldSkipConsecutiveTranscriptEntry(previousEntry, entry)) {
-      return
-    }
-    const currentEntries = entries.filter(Boolean)
-    const nextId = entryCounter() + 1
-    const nextEntry: TranscriptEntry = { id: nextId, ...entry }
-    if (nextEntry.turnId === undefined && currentTurnId !== null) {
-      nextEntry.turnId = currentTurnId
-    }
-    const nextEntries = applyVisibleTranscriptState([...currentEntries, nextEntry], visibleTranscriptAgentId(), turnIds)
-    persistVisibleTranscriptEntries(nextEntries)
-    reconcileMountedTranscript(currentEntries, nextEntries)
-    enforceTranscriptRetention()
   }
 
   const scrollTranscriptToBottom = () => {
