@@ -163,6 +163,7 @@ import { runLogViewer } from "./logs.js"
 import {
   createConnectionHealthWatchdogController,
 } from "./connection-health-watchdog-controller.js"
+import { createDaemonActivityController } from "./daemon-activity-controller.js"
 import {
   bootstrapCliRuntime,
 } from "./cli-runtime-bootstrap.js"
@@ -3805,15 +3806,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
   })
 
-  // Track daemon activity for connection health monitoring
-  const recordDaemonActivity = (activityType: string) => {
-    connectionHealthWatchdogController.recordActivity()
-    // If we were showing a stale connection warning, clear it
-    if (daemonDisconnected()) {
-      setDaemonDisconnected(false)
-      updateSessionChrome()
-    }
-  }
+  const daemonActivityController = createDaemonActivityController({
+    recordConnectionActivity: () => connectionHealthWatchdogController.recordActivity(),
+    daemonDisconnected,
+    setDaemonDisconnected,
+    updateSessionChrome,
+  })
+  const recordDaemonActivity = daemonActivityController.record
 
   const kernelEventController = createKernelEventController({
     recordDaemonActivity,
