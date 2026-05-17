@@ -184,6 +184,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: CLI transcript user/notice/error event appends are responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI transcript turn expansion state is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI auxiliary agent-pane transcript interactions are responsibility-owned; CLI tests pass.
+- Latest verified batch: CLI agent-pane streamed transcript ingestion is responsibility-owned; CLI tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule

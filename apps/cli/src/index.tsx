@@ -71,6 +71,7 @@ import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
 import { createAgentPaneTranscriptInteractionController } from "./agent-pane-transcript-interaction-controller.js"
+import { createAgentPaneTranscriptStreamController } from "./agent-pane-transcript-stream-controller.js"
 import { createProviderNamespaceSubmitController } from "./provider-namespace-submit-controller.js"
 import { createClipboardController } from "./clipboard-controller.js"
 import {
@@ -2989,76 +2990,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     )
   }
 
-  const appendProviderChunkToAgentPane = (
-    agentId: string,
-    role: TranscriptEntry["role"],
-    chunk: string,
-    mergeKey?: string,
-    sourceText?: string,
-  ) => {
-    const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-    const normalizedSource = sourceText?.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-    if (!normalized) {
-      return
-    }
-
-    const currentEntries = currentAgentPaneEntries(agentId).map((entry) => ({ ...entry }))
-    const nextEntries = currentEntries.map((entry) => ({ ...entry }))
-    if (mergeKey) {
-      for (let index = nextEntries.length - 1; index >= 0; index -= 1) {
-        const candidate = nextEntries[index]
-        if (candidate?.role !== role || candidate.mergeKey !== mergeKey) {
-          continue
-        }
-        if (role === "assistant" || role === "reasoning") {
-          candidate.text += normalized
-          if (normalizedSource !== undefined) {
-            candidate.sourceText = `${candidate.sourceText ?? ""}${normalizedSource}`
-          }
-        } else {
-          candidate.text = normalized
-          if (normalizedSource !== undefined) {
-            candidate.sourceText = normalizedSource
-          }
-        }
-        commitStreamingAgentPaneEntry(agentId, currentEntries, nextEntries, candidate.id)
-        return
-      }
-    }
-
-    const last = [...nextEntries].reverse().find((entry) => entry.role !== "turn_toggle")
-    if (!mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
-      last.text += normalized
-      commitStreamingAgentPaneEntry(agentId, currentEntries, nextEntries, last.id)
-      return
-    }
-
-    nextEntries.push({
-      id: nextEntries.reduce((max, entry) => Math.max(max, entry.id), 0) + 1,
-      role,
-      text: normalized,
-      ...(computeCurrentTurnId(nextEntries) !== null ? { turnId: computeCurrentTurnId(nextEntries)! } : {}),
-      ...(mergeKey ? { mergeKey } : {}),
-      ...(normalizedSource !== undefined ? { sourceText: normalizedSource } : {}),
-    })
-    setAgentTranscriptEntries(agentId, trimLiveAgentPaneEntries(agentId, nextEntries))
-  }
-
-  const appendToolUpdateToAgentPane = (agentId: string, chunk: string) => {
-    const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-    if (!normalized) {
-      return
-    }
-    const parsed = parseToolTranscriptUpdate(normalized)
-    if (parsed) {
-      const toolState = auxiliaryAgentPaneTools(agentId)
-      const merged = mergeToolTranscriptUpdate(toolState.get(parsed.id) ?? null, parsed)
-      toolState.set(parsed.id, merged)
-      appendProviderChunkToAgentPane(agentId, "tool", formatToolTranscriptUpdate(merged), parsed.id, JSON.stringify(merged))
-      return
-    }
-    appendProviderChunkToAgentPane(agentId, "tool", normalized, undefined, normalized)
-  }
+  const agentPaneTranscriptStreamController = createAgentPaneTranscriptStreamController({
+    currentAgentPaneEntries,
+    trimLiveAgentPaneEntries,
+    setAgentTranscriptEntries,
+    commitStreamingAgentPaneEntry,
+    toolStateForAgent: auxiliaryAgentPaneTools,
+  })
+  const appendProviderChunkToAgentPane = agentPaneTranscriptStreamController.appendProviderChunk
+  const appendToolUpdateToAgentPane = agentPaneTranscriptStreamController.appendToolUpdate
 
   createEffect(() => {
     if (!isAttached()) {
