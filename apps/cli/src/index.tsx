@@ -342,6 +342,7 @@ import {
 } from "./session-state.js"
 import { createSessionAttachmentController } from "./session-attachment-controller.js"
 import { createSessionLifecycleController } from "./session-lifecycle.js"
+import { createTranscriptHistoryLoadController } from "./transcript-history-load-controller.js"
 import {
   applyTranscriptDisplayState,
   collapseLatestTranscriptTurn,
@@ -934,7 +935,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       lastTranscriptScrollTop = scrollTop
     },
   })
-  let historyLoadGeneration = 0
   let pendingTranscriptRender = false
   let uiBatchDepth = 0
   // Connection resilience tracking
@@ -4994,6 +4994,26 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     applyDeferredBootstrap()
   })
 
+  const transcriptHistoryLoadController = createTranscriptHistoryLoadController({
+    isAttached,
+    isLoading: loadingHistory,
+    getCursor: nextHistoryCursor,
+    getSessionId: () => sessionState().id,
+    getVisibleAgentId: visibleTranscriptAgentId,
+    getEntryCounter: entryCounter,
+    setLoading: setHistoryLoadingState,
+    setNextCursor: setNextHistoryCursor,
+    loadPage: (sessionId, cursor, agentId) => getSessionHistory(client, sessionId, cursor, agentId),
+    prependEntries: prependTranscriptEntries,
+    flashError: (message) => {
+      flashFooter(message, "error")
+    },
+    logWarning: (message, fields) => {
+      appLogger?.warn(message, fields)
+    },
+    formatError,
+  })
+
   const {
     hydrateCurrentAttachedSession,
     finalizeAttachedSessionBinding,
@@ -5039,7 +5059,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       stopRequestInFlight = false
     },
     bumpHistoryLoadGeneration: () => {
-      historyLoadGeneration += 1
+      transcriptHistoryLoadController.bumpGeneration()
     },
     reconcileWaitingRoom,
     refreshWaitingRoomData,
@@ -5123,36 +5143,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   const loadOlderHistoryPage = async () => {
-    if (!isAttached() || loadingHistory() || nextHistoryCursor() === null) {
-      return
-    }
-
-    setHistoryLoadingState(true)
-    const generation = historyLoadGeneration
-    const sessionId = sessionState().id
-    const cursor = nextHistoryCursor()
-    const agentId = visibleTranscriptAgentId()
-    try {
-      let historyPage = await getSessionHistory(client, sessionId, cursor, agentId)
-      let hydratedEntries = hydrateTranscriptEntries(historyPage.entries)
-      while (hydratedEntries.length > 0 && hydratedEntries[0]?.role !== "user" && historyPage.next_cursor !== null) {
-        historyPage = await getSessionHistory(client, sessionId, historyPage.next_cursor, agentId)
-        hydratedEntries = [...hydrateTranscriptEntries(historyPage.entries), ...hydratedEntries]
-      }
-      if (generation !== historyLoadGeneration || !isAttached() || sessionState().id !== sessionId) {
-        return
-      }
-      const nextEntries = reindexTranscriptEntries(hydratedEntries, entryCounter())
-      await prependTranscriptEntries(nextEntries)
-      setNextHistoryCursor(historyPage.next_cursor)
+    const loaded = await transcriptHistoryLoadController.loadOlderPage()
+    if (loaded) {
       scheduleShortViewportHistoryCheck()
-    } catch (error) {
-      appLogger?.warn("older history load failed", {
-        error: formatError(error),
-      })
-      flashFooter("failed to load older history", "error")
-    } finally {
-      setHistoryLoadingState(false)
     }
   }
 
