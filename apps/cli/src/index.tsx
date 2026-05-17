@@ -31,6 +31,7 @@ import {
   startCliAutomationServer,
   stopCliAutomationServer,
 } from "./cli-automation.js"
+import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
 import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
 import { createAssistantMessageCompletionController } from "./assistant-message-completion-controller.js"
 import { createAuthoritativeIdleController } from "./authoritative-idle-controller.js"
@@ -1962,21 +1963,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
 
-  const renderAgentInteractions = () => {
-    renderAgentInteractionStrips({
-      renderer,
-      primaryBox: responsePrimaryInteractionBox,
-      auxiliaryBoxes: responseAuxiliaryInteractionBoxes,
-      visibleAgents: responseVisibleAgents(),
-      maxAgentsPerScreen: maxAgentsPerScreen(),
-      focusedAgentId: focusedAgentId(),
-      activeInteractionForAgent,
-      selectedChoiceIndex: interactionChoiceStore.selectedChoiceIndex,
-      setSelectedChoiceIndex: interactionChoiceStore.setSelectedIndex,
-      customReply: interactionChoiceStore.customReply,
-      customEditing: interactionChoiceStore.isCustomEditing,
-    })
-  }
+  const agentInteractionStripController = createAgentInteractionStripController({
+    renderer,
+    primaryBox: () => responsePrimaryInteractionBox,
+    auxiliaryBoxes: () => responseAuxiliaryInteractionBoxes,
+    visibleAgents: responseVisibleAgents,
+    maxAgentsPerScreen,
+    focusedAgentId,
+    activeInteractionForAgent,
+    selectedChoiceIndex: interactionChoiceStore.selectedChoiceIndex,
+    setSelectedChoiceIndex: interactionChoiceStore.setSelectedIndex,
+    customReply: interactionChoiceStore.customReply,
+    customEditing: interactionChoiceStore.isCustomEditing,
+    renderStrips: renderAgentInteractionStrips,
+  })
+  const renderAgentInteractions = agentInteractionStripController.render
 
   const setPromptMetaRenderables = (parts: PromptMetaPart[]) => {
     renderPromptMeta({

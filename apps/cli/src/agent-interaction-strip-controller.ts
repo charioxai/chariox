@@ -1,0 +1,60 @@
+import type { RuntimeInteraction } from "./cli-types.js"
+
+type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: string }> = {
+  renderer: TRenderer
+  primaryBox: TBox | undefined
+  auxiliaryBoxes: Array<TBox | undefined>
+  visibleAgents: Array<TAgent | null | undefined>
+  maxAgentsPerScreen: number
+  focusedAgentId: string | null
+  activeInteractionForAgent: (agentId: string | null | undefined) => RuntimeInteraction | null
+  selectedChoiceIndex: (interactionId: string) => number
+  setSelectedChoiceIndex: (interactionId: string, index: number) => void
+  customReply: (interactionId: string) => string
+  customEditing: (interactionId: string) => boolean
+}
+
+export type AgentInteractionStripControllerDeps<
+  TRenderer,
+  TBox,
+  TAgent extends { id: string },
+> = {
+  renderer: TRenderer
+  primaryBox: () => TBox | undefined
+  auxiliaryBoxes: () => Array<TBox | undefined>
+  visibleAgents: () => Array<TAgent | null | undefined>
+  maxAgentsPerScreen: () => number
+  focusedAgentId: () => string | null
+  activeInteractionForAgent: (agentId: string | null | undefined) => RuntimeInteraction | null
+  selectedChoiceIndex: (interactionId: string) => number
+  setSelectedChoiceIndex: (interactionId: string, index: number) => void
+  customReply: (interactionId: string) => string
+  customEditing: (interactionId: string) => boolean
+  renderStrips: (options: AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent>) => void
+}
+
+export function createAgentInteractionStripController<
+  TRenderer,
+  TBox,
+  TAgent extends { id: string },
+>(
+  deps: AgentInteractionStripControllerDeps<TRenderer, TBox, TAgent>,
+) {
+  return {
+    render() {
+      deps.renderStrips({
+        renderer: deps.renderer,
+        primaryBox: deps.primaryBox(),
+        auxiliaryBoxes: deps.auxiliaryBoxes(),
+        visibleAgents: deps.visibleAgents(),
+        maxAgentsPerScreen: deps.maxAgentsPerScreen(),
+        focusedAgentId: deps.focusedAgentId(),
+        activeInteractionForAgent: deps.activeInteractionForAgent,
+        selectedChoiceIndex: deps.selectedChoiceIndex,
+        setSelectedChoiceIndex: deps.setSelectedChoiceIndex,
+        customReply: deps.customReply,
+        customEditing: deps.customEditing,
+      })
+    },
+  }
+}
