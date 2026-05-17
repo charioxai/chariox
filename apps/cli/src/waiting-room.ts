@@ -1,48 +1,35 @@
 import { ARROBA_ASCII_ART, type SessionListEntry } from "./sessions.js"
 import {
   catalogModelOptions,
-  normalizeBackendProviderId,
-  selectConfiguredModel,
-  selectConfiguredVariant,
   type BackendProviderId,
   type ProviderCatalog,
 } from "./provider-catalog.js"
 import {
   DEFAULT_THEME_REGISTRY,
-  normalizeThemeName,
   themeLabel,
   type ThemeName,
   type ThemeRegistry,
 } from "./theme-registry.js"
-import {
-  normalizeWaitingRoomWorktreeSelectionId,
-} from "./waiting-room-worktrees.js"
-import {
-  normalizeWaitingRoomSliceSelectionId,
-  waitingRoomSlices,
-} from "./waiting-room-slices.js"
 import {
   formatWaitingRoomTerminalTitle,
   waitingRoomTerminalRows,
   waitingRoomTerminals,
 } from "./waiting-room-terminal-rows.js"
 import {
-  waitingRoomPreviewSessions,
   waitingRoomSessionRows,
   waitingRoomSessions,
   waitingRoomSessionTitleWidth,
 } from "./waiting-room-session-rows.js"
-import {
-  waitingRoomRemoteKernels,
-  waitingRoomRemoteMachines,
-  waitingRoomRemoteRows,
-} from "./waiting-room-remote-rows.js"
+import { waitingRoomRemoteRows } from "./waiting-room-remote-rows.js"
 import { waitingRoomStartRows } from "./waiting-room-start-rows.js"
 import {
   waitingRoomChoice,
-  waitingRoomEfforts,
 } from "./waiting-room-choice.js"
 import { cycleWaitingRoomFocusedValue } from "./waiting-room-value-cycling.js"
+import {
+  createWaitingRoomState,
+  normalizeWaitingRoomState,
+} from "./waiting-room-state.js"
 import type { SliceRecord } from "./cli-types.js"
 
 export {
@@ -57,6 +44,10 @@ export {
   waitingRoomEfforts,
   waitingRoomModel,
 } from "./waiting-room-choice.js"
+export {
+  createWaitingRoomState,
+  normalizeWaitingRoomState,
+} from "./waiting-room-state.js"
 export {
   waitingRoomRemoteKernelCanDelete,
   waitingRoomRemoteKernelIsAttachable,
@@ -170,83 +161,6 @@ export type WaitingRoomRow = {
   scrollbar: string
 }
 
-export function createWaitingRoomState(
-  sessions: SessionListEntry[],
-  catalog: ProviderCatalog,
-  providerId: BackendProviderId,
-  model: string,
-  effort: string,
-  themeId: unknown = "opencode",
-  themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
-): WaitingRoomState {
-  const selected = selectConfiguredModel(catalog, model, providerId)
-  return normalizeWaitingRoomState(
-    {
-      focus: "new",
-      sessionIndex: 0,
-      machineIndex: 0,
-      remoteKernelIndex: 0,
-      terminalIndex: 0,
-      worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(),
-      sliceSelectionId: "none",
-      providerId,
-      modelId: selected?.id ?? model,
-      effort: selectConfiguredVariant(selected, effort),
-      themeId: normalizeThemeName(themeId, themeRegistry),
-      introStep: 0,
-      keyState: { up: false, down: false, left: false, right: false },
-    },
-    sessions,
-    catalog,
-    themeRegistry,
-  )
-}
-
-export function normalizeWaitingRoomState(
-  state: WaitingRoomState,
-  sessions: SessionListEntry[],
-  catalog: ProviderCatalog,
-  themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
-  remote: WaitingRoomRemoteState = {},
-) {
-  const visibleSessions = waitingRoomSessions(sessions)
-  const previewSessions = waitingRoomPreviewSessions(sessions)
-  const remoteMachines = waitingRoomRemoteMachines(remote)
-  const remoteKernels = waitingRoomRemoteKernels(remote)
-  const terminals = waitingRoomTerminals(remote)
-  const slices = waitingRoomSlices(remote)
-  const providerId = normalizeBackendProvider(state.providerId)
-  const selected = selectConfiguredModel(catalog, state.modelId, providerId)
-  const efforts = waitingRoomEfforts(selected)
-  const focus = (visibleSessions.length === 0 && (state.focus === "session" || state.focus === "join-sessions"))
-    ? "new"
-    : previewSessions.length === 0 && state.focus === "session"
-      ? "join-sessions"
-    : remoteMachines.length === 0 && state.focus === "machine"
-      ? "relay"
-      : remoteKernels.length === 0 && state.focus === "remote-kernel"
-        ? "relay"
-        : terminals.length === 0 && state.focus === "terminal"
-          ? "add-terminal"
-        : slices.length === 0 && state.focus === "slice"
-          ? "worktree"
-        : state.focus
-  return {
-    ...state,
-    focus,
-    providerId,
-    sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
-    machineIndex: remoteMachines.length === 0 ? 0 : modulo(state.machineIndex, remoteMachines.length),
-    remoteKernelIndex: remoteKernels.length === 0 ? 0 : modulo(state.remoteKernelIndex, remoteKernels.length),
-    terminalIndex: terminals.length === 0 ? 0 : modulo(state.terminalIndex, terminals.length),
-    worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(state.worktreeSelectionId),
-    sliceSelectionId: normalizeWaitingRoomSliceSelectionId(state.sliceSelectionId, slices),
-    modelId: selected?.id ?? state.modelId,
-    effort: efforts.includes(state.effort) ? state.effort : efforts[0] ?? "",
-    themeId: normalizeThemeName(state.themeId, themeRegistry),
-  }
-}
-
 export function cycleWaitingRoomValue(
   state: WaitingRoomState,
   sessions: SessionListEntry[],
@@ -342,8 +256,4 @@ function modulo(value: number, size: number) {
     return 0
   }
   return ((value % size) + size) % size
-}
-
-function normalizeBackendProvider(value: string): BackendProviderId {
-  return normalizeBackendProviderId(value)
 }
