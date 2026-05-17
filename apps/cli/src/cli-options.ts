@@ -124,6 +124,17 @@ export function resolveConfiguredCloudRelayApiUrl(preferences: ArrobaPreferences
   return configured?.trim().replace(/\/+$/, "") || undefined
 }
 
+export function applyProviderPreferenceDefaults(options: CliOptions, preferences: ArrobaPreferences): CliOptions {
+  const configuredProviderPreferences = preferences.providers?.[options.provider ?? "opencode"]
+  if (options.model === "default") {
+    options.model = configuredProviderPreferences?.model ?? options.model
+  }
+  if (!options.effort.trim()) {
+    options.effort = configuredProviderPreferences?.effort ?? options.effort
+  }
+  return options
+}
+
 function validateOptions(options: CliOptions): void {
   if (options.createSession && options.sessionId) {
     throw new Error("--create-session cannot be used together with --session")

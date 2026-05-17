@@ -50,7 +50,7 @@ import {
   shouldPreserveAgentActivityLabel as shouldPreserveAgentActivityLabelState,
 } from "./agent-activity-state.js"
 import { createAgentFocusTransitionController } from "./agent-focus-transition-controller.js"
-import { formatAgentLabel } from "./agent-label.js"
+import { formatAgentLabel, formatAgentLocationLabel } from "./agent-label.js"
 import {
   describeCliDialogFocusTarget,
   type CliDialogFocusTarget,
@@ -153,6 +153,7 @@ import {
 } from "./cloud-relay.js"
 import { createCliExitController } from "./cli-exit-controller.js"
 import {
+  applyProviderPreferenceDefaults,
   defaultKernelEndpoint,
   parseArgs,
   resolveConfiguredCloudRelayApiUrl,
@@ -582,13 +583,7 @@ async function main() {
   getLogger("cli.main")?.info("starting cli process", { argv })
   const options = parseArgs(argv)
   const preferences = await loadPreferences()
-  const configuredProviderPreferences = preferences.providers?.[options.provider ?? "opencode"]
-  if (options.model === "default") {
-    options.model = configuredProviderPreferences?.model ?? options.model
-  }
-  if (!options.effort.trim()) {
-    options.effort = configuredProviderPreferences?.effort ?? options.effort
-  }
+  applyProviderPreferenceDefaults(options, preferences)
   const kernelEndpoint = options.relayUrl ?? options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint()
   const client = new LocalIpcClient(kernelEndpoint, options.relayUrl
     ? {
@@ -777,19 +772,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [terminalPairingQrLines, setTerminalPairingQrLines] = createSignal<string[]>([])
   const [sessionBrowserOpen, setSessionBrowserOpen] = createSignal(false)
 
-  const agentLocationLabel = (agent: AgentInstance | null | undefined): string | null => {
-    const remote = agent?.remote_execution
-    if (!remote) return null
-    const slice = slicesState().find((candidate) =>
-      candidate.worker_kernel_id === remote.worker_kernel_id
-      || candidate.worker_kernel_ref === remote.worker_kernel_id
-      || candidate.worker_machine_id === remote.worker_machine_id
-    )
-    if (slice) {
-      return `slice:${slice.name || slice.id}`
-    }
-    return `remote:${remote.worker_kernel_id}`
-  }
+  const agentLocationLabel = (agent: AgentInstance | null | undefined): string | null =>
+    formatAgentLocationLabel(agent, slicesState())
   const [sessionBrowserIndex, setSessionBrowserIndex] = createSignal(0)
   const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
     createWaitingRoomState(

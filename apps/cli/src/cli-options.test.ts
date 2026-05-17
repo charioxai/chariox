@@ -2,6 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 
 import {
+  applyProviderPreferenceDefaults,
   parseArgs,
   resolveConfiguredCloudRelayApiUrl,
 } from "./cli-options.js"
@@ -67,4 +68,37 @@ test("resolveConfiguredCloudRelayApiUrl prefers env and trims trailing slashes",
       process.env.ARROBA_CLOUD_API_URL = previous
     }
   }
+})
+
+test("applyProviderPreferenceDefaults fills default model and blank effort from provider preferences", () => {
+  const options = parseArgs(["--provider", "codex"])
+
+  assert.equal(
+    applyProviderPreferenceDefaults(options, {
+      providers: {
+        codex: {
+          model: "gpt-5.1",
+          effort: "high",
+        },
+      },
+    }).model,
+    "gpt-5.1",
+  )
+  assert.equal(options.effort, "high")
+})
+
+test("applyProviderPreferenceDefaults preserves explicit model and effort", () => {
+  const options = parseArgs(["--provider", "codex", "--model", "gpt-5.2", "--effort", "medium"])
+
+  applyProviderPreferenceDefaults(options, {
+    providers: {
+      codex: {
+        model: "gpt-5.1",
+        effort: "high",
+      },
+    },
+  })
+
+  assert.equal(options.model, "gpt-5.2")
+  assert.equal(options.effort, "medium")
 })
