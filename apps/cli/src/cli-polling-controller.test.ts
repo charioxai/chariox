@@ -1,0 +1,227 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import type {
+  RuntimeAttachment,
+  RuntimeProviderRun,
+  RuntimeSession,
+  TerminalOutputRecord,
+} from "./cli-types.js"
+import { createCliPollingController } from "./cli-polling-controller.js"
+import type { runPollingLoop } from "./polling-effects.js"
+
+type PollLoopOptions = Parameters<typeof runPollingLoop>[0]
+
+test("cli polling controller queues terminal output records and records activity", async () => {
+  const record: TerminalOutputRecord = { kind: "provider_output", bytes: [104, 105] }
+  const harness = createHarness({
+    pumpTerminalOutput: async () => [record],
+  })
+
+  await harness.controller.pollOutput()
+
+  assert.deepEqual(harness.loopOperations, ["polling terminal output"])
+  assert.deepEqual(harness.calls, [
+    "pumpTerminalOutput:session-1:attachment-1",
+    "activity:terminal_output",
+    "queue:1",
+  ])
+  assert.deepEqual(harness.queuedRecords, [record])
+})
+
+test("cli polling controller clears stale provider run on benign terminal-output miss", async () => {
+  const harness = createHarness({
+    providerRun: providerRun("run-1"),
+    pumpTerminalOutput: async () => {
+      throw new Error("Session has no active provider run")
+    },
+  })
+
+  await harness.controller.pollOutput()
+
+  assert.equal(harness.providerRun, null)
+  assert.deepEqual(harness.calls, [
+    "pumpTerminalOutput:session-1:attachment-1",
+    "setProviderRun:null",
+    "updateSessionChrome",
+  ])
+})
+
+test("cli polling controller appends runtime notices", async () => {
+  const harness = createHarness({
+    pollRuntimeNotices: async () => [{ message: "heads up" }],
+  })
+
+  await harness.controller.pollNotices()
+
+  assert.deepEqual(harness.calls, [
+    "pollRuntimeNotices:session-1:attachment-1",
+    "activity:runtime_notices",
+    "notice:heads up",
+  ])
+})
+
+test("cli polling controller refreshes session state and provider run metadata", async () => {
+  const refreshedRun = providerRun("run-2", { model: "next-model" })
+  const nextSession = session({
+    active_provider_run_id: refreshedRun.id,
+    active_prompt: null,
+  })
+  const harness = createHarness({
+    sessionState: session({ active_prompt: activePrompt() }),
+    nextSession,
+    providerRun: providerRun("run-1"),
+    shouldRefreshAgentPanesForSessionChange: () => false,
+    tryGetProviderRun: async () => refreshedRun,
+  })
+
+  await harness.controller.pollSessionState()
+
+  assert.equal(harness.providerRun?.id, refreshedRun.id)
+  assert.deepEqual(harness.calls, [
+    "getSessionState:session-1",
+    "activity:session_state_poll",
+    "applySessionState:session-1",
+    "refreshAgentPanes:session-1",
+    "tryGetProviderRun:run-2",
+    "providerDebug:session poll refreshed provider run:run-2:run_changed",
+    "setProviderRun:run-2",
+    "applySessionState:session-1",
+    "updateSessionChrome",
+  ])
+})
+
+function createHarness(options: {
+  attachment?: RuntimeAttachment | null
+  sessionState?: RuntimeSession
+  nextSession?: RuntimeSession
+  providerRun?: RuntimeProviderRun | null
+  pumpTerminalOutput?: () => Promise<TerminalOutputRecord[]>
+  pollRuntimeNotices?: () => Promise<{ message: string }[]>
+  shouldRefreshAgentPanesForSessionChange?: (session: RuntimeSession) => boolean
+  tryGetProviderRun?: (providerRunId: string) => Promise<RuntimeProviderRun | null>
+} = {}) {
+  const calls: string[] = []
+  const loopOperations: string[] = []
+  const queuedRecords: TerminalOutputRecord[] = []
+  const harness = {
+    calls,
+    loopOperations,
+    queuedRecords,
+    attachment: options.attachment === undefined ? { id: "attachment-1", session_id: "session-1" } : options.attachment,
+    sessionState: options.sessionState ?? session(),
+    providerRun: options.providerRun ?? null,
+    controller: null as ReturnType<typeof createCliPollingController> | null,
+  }
+  harness.controller = createCliPollingController({
+    runPollingLoop: async (loopOptions: PollLoopOptions) => {
+      loopOperations.push(loopOptions.operation)
+      await loopOptions.task()
+    },
+    isClosing: () => false,
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    isSessionUnavailableError: () => false,
+    getPollRecoveryDecision: () => ({ retry: false, delayMs: 0, message: "fatal" }),
+    onSessionUnavailable: () => calls.push("sessionUnavailable"),
+    onMarkRecovered: () => {},
+    onMarkDegraded: () => {},
+    onFatalError: () => calls.push("fatal"),
+    sleep: async () => {},
+    isAttached: () => harness.attachment !== null,
+    getAttachment: () => harness.attachment,
+    getSession: () => harness.sessionState,
+    getProviderRun: () => harness.providerRun,
+    setProviderRun: (run) => {
+      calls.push(`setProviderRun:${run?.id ?? "null"}`)
+      harness.providerRun = run
+    },
+    updateSessionChrome: () => calls.push("updateSessionChrome"),
+    recordDaemonActivity: (activityType) => calls.push(`activity:${activityType}`),
+    queueTerminalOutputRecords: (records) => {
+      calls.push(`queue:${records.length}`)
+      queuedRecords.push(...records)
+    },
+    pumpTerminalOutput: async (sessionId, attachmentId) => {
+      calls.push(`pumpTerminalOutput:${sessionId}:${attachmentId}`)
+      return options.pumpTerminalOutput?.() ?? []
+    },
+    pollRuntimeNotices: async (sessionId, attachmentId) => {
+      calls.push(`pollRuntimeNotices:${sessionId}:${attachmentId}`)
+      return options.pollRuntimeNotices?.() ?? []
+    },
+    appendNotice: (message) => calls.push(`notice:${message}`),
+    sessionHasPromptWork: (nextSession) => Boolean(nextSession.active_prompt || nextSession.queued_prompts.length > 0),
+    getSessionState: async (sessionId) => {
+      calls.push(`getSessionState:${sessionId}`)
+      return options.nextSession ?? harness.sessionState
+    },
+    projectSession: (nextSession) => nextSession,
+    shouldRefreshAgentPanesForSessionChange: options.shouldRefreshAgentPanesForSessionChange ?? (() => false),
+    applySessionState: (nextSession) => {
+      calls.push(`applySessionState:${nextSession.id}`)
+      harness.sessionState = nextSession
+    },
+    refreshAgentPanes: async (nextSession) => {
+      calls.push(`refreshAgentPanes:${nextSession.id}`)
+    },
+    tryGetProviderRun: async (providerRunId) => {
+      calls.push(`tryGetProviderRun:${providerRunId}`)
+      return options.tryGetProviderRun?.(providerRunId) ?? null
+    },
+    sameProviderRun: (left, right) => left.id === right.id,
+    logProviderRunDebug: (message, run, fields) => {
+      calls.push(`providerDebug:${message}:${run?.id ?? "null"}:${fields?.refresh_reason ?? ""}`)
+    },
+    recoverProviderRun: (reason) => calls.push(`recoverProviderRun:${reason}`),
+  })
+  return harness as typeof harness & {
+    controller: ReturnType<typeof createCliPollingController>
+  }
+}
+
+function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
+  return {
+    id: "session-1",
+    workspace_id: "/workspace",
+    worktree_id: "/workspace",
+    created_at_ms: 1,
+    status: "Created",
+    active_provider_run_id: null,
+    attachment_ids: [],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: null,
+    max_agents: 1,
+    agents: [],
+    config_state: { values: {} } as RuntimeSession["config_state"],
+    ...overrides,
+  }
+}
+
+function activePrompt() {
+  return {
+    id: "prompt-1",
+    source_attachment_id: "attachment-1",
+    prompt: "build",
+    status: "running",
+  }
+}
+
+function providerRun(
+  id: string,
+  overrides: Partial<RuntimeProviderRun> = {},
+): RuntimeProviderRun {
+  return {
+    id,
+    session_id: "session-1",
+    agent_instance_id: null,
+    adapter_key: "opencode",
+    provider: "opencode",
+    account_profile: "default",
+    model: "model",
+    variant: null,
+    usage_tokens_total: null,
+    state: "running",
+    ...overrides,
+  }
+}

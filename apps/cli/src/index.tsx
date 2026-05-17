@@ -64,6 +64,7 @@ import {
   renderCliDialogOverlay,
 } from "./cli-dialog-overlay.js"
 import { createCliLoadingStateController } from "./cli-loading-state-controller.js"
+import { createCliPollingController } from "./cli-polling-controller.js"
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
 import { createCommandCenterCommandExecutor } from "./command-center-command-executor.js"
@@ -150,7 +151,6 @@ import { createKernelRestartRecoveryController } from "./kernel-restart-recovery
 import { createKernelResyncController } from "./kernel-resync-controller.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
-import { runPollingLoop } from "./polling-effects.js"
 import {
   createConnectionHealthWatchdogController,
 } from "./connection-health-watchdog-controller.js"
@@ -4394,166 +4394,50 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const startConnectionWatchdog = connectionHealthWatchdogController.start
 
-  const pollOutput = async () => {
-    await runPollingLoop({
-      operation: "polling terminal output",
-      intervalMs: 50,
-      isClosing: () => closing,
-      logger: appLogger,
-      formatError,
-      isSessionUnavailableError,
-      getPollRecoveryDecision,
-      onSessionUnavailable: () => {
-        transitionToNoSession("Current session is no longer available.")
-      },
-      onMarkRecovered: markPollerRecovered,
-      onMarkDegraded: markPollerDegraded,
-      onFatalError: (error) => {
-        if (error instanceof Error && /local transport/i.test(error.message)) {
-          setDaemonDisconnected(true)
-        }
-        setFatalError(formatError(error))
-        updateSessionChrome()
-      },
-      task: async () => {
-      const attachment = attachmentState()
-      if (!attachment) {
-        return
+  const pollingController = createCliPollingController({
+    isClosing: () => closing,
+    logger: appLogger,
+    formatError,
+    isSessionUnavailableError,
+    getPollRecoveryDecision,
+    onSessionUnavailable: () => {
+      transitionToNoSession("Current session is no longer available.")
+    },
+    onMarkRecovered: markPollerRecovered,
+    onMarkDegraded: markPollerDegraded,
+    onFatalError: (error) => {
+      if (error instanceof Error && /local transport/i.test(error.message)) {
+        setDaemonDisconnected(true)
       }
-      let records: TerminalOutputRecord[]
-      try {
-        records = await pumpTerminalOutput(client, sessionState().id, attachment.id)
-      } catch (error) {
-        const message = formatError(error)
-        if (/has no active provider run/i.test(message) && !sessionHasPromptWork(sessionState())) {
-          setProviderRunState(null)
-          updateSessionChrome()
-          return
-        }
-        throw error
-      }
-      if (records.length > 0) {
-        recordDaemonActivity("terminal_output")
-      }
-      queueTerminalOutputRecords(records)
-      },
-      sleep,
-    })
-  }
-
-  const pollNotices = async () => {
-    await runPollingLoop({
-      operation: "polling runtime notices",
-      intervalMs: 150,
-      isClosing: () => closing,
-      logger: appLogger,
-      formatError,
-      isSessionUnavailableError,
-      getPollRecoveryDecision,
-      onSessionUnavailable: () => {
-        transitionToNoSession("Current session is no longer available.")
-      },
-      onMarkRecovered: markPollerRecovered,
-      onMarkDegraded: markPollerDegraded,
-      onFatalError: (error) => {
-        if (error instanceof Error && /local transport/i.test(error.message)) {
-          setDaemonDisconnected(true)
-        }
-        setFatalError(formatError(error))
-        updateSessionChrome()
-      },
-      task: async () => {
-      const attachment = attachmentState()
-      if (!attachment) {
-        return
-      }
-      const notices = await pollRuntimeNotices(client, sessionState().id, attachment.id)
-      recordDaemonActivity("runtime_notices")
-      for (const notice of notices) {
-        appendNotice(notice.message)
-      }
-      },
-      sleep,
-    })
-  }
-
-  const pollSessionState = async () => {
-    await runPollingLoop({
-      operation: "polling session state",
-      intervalMs: 250,
-      isClosing: () => closing,
-      logger: appLogger,
-      formatError,
-      isSessionUnavailableError,
-      getPollRecoveryDecision,
-      onSessionUnavailable: () => {
-        transitionToNoSession("Current session is no longer available.")
-      },
-      onMarkRecovered: markPollerRecovered,
-      onMarkDegraded: markPollerDegraded,
-      onFatalError: (error) => {
-        if (error instanceof Error && /local transport/i.test(error.message)) {
-          setDaemonDisconnected(true)
-        }
-        setFatalError(formatError(error))
-        updateSessionChrome()
-      },
-      task: async () => {
-      if (!isAttached()) {
-        return
-      }
-      const previousSession = sessionState()
-      const session = await getSessionState(client, sessionState().id)
-      recordDaemonActivity("session_state_poll")
-      const projectedSession = applyProviderRunProfileToSession(session, providerRunState())
-      const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(projectedSession)
-      const promptJustCompleted = sessionHasPromptWork(previousSession) && !sessionHasPromptWork(projectedSession)
-      applySessionState(projectedSession)
-      if (shouldRefreshPanes || promptJustCompleted) {
-        await refreshAgentPanes(projectedSession)
-      }
-      if (session.active_provider_run_id) {
-        const activeRun = providerRunState()
-        const run = await tryGetProviderRun(client, session.active_provider_run_id, appLogger)
-        if (run && (!activeRun || !sameProviderRun(activeRun, run))) {
-          logProviderRunDebug("session poll refreshed provider run", run, {
-            session_id: session.id,
-            previous_provider_run_id: activeRun?.id ?? null,
-            previous_model: activeRun?.model ?? null,
-            previous_variant: activeRun?.variant ?? null,
-            previous_usage_tokens_total: activeRun?.usage_tokens_total ?? null,
-            refresh_reason: !activeRun
-              ? "missing_run"
-              : activeRun.id !== session.active_provider_run_id
-                ? "run_changed"
-                : activeRun.usage_tokens_total !== run.usage_tokens_total
-                  ? "usage_changed"
-                  : activeRun.model !== run.model
-                    ? "model_changed"
-                    : activeRun.variant !== run.variant
-                      ? "variant_changed"
-                      : activeRun.state !== run.state
-                        ? "state_changed"
-                        : "metadata_changed",
-          })
-          setProviderRunState(run)
-          applySessionState(applyProviderRunProfileToSession(sessionState(), run))
-          updateSessionChrome()
-        }
-      } else if (providerRunState()) {
-        logProviderRunDebug("session poll cleared provider run", providerRunState(), {
-          session_id: session.id,
-        })
-        setProviderRunState(null)
-        updateSessionChrome()
-        if (sessionHasPromptWork(session)) {
-          void recoverProviderRun("missing active provider run")
-        }
-      }
-      },
-      sleep,
-    })
-  }
+      setFatalError(formatError(error))
+      updateSessionChrome()
+    },
+    sleep,
+    isAttached,
+    getAttachment: attachmentState,
+    getSession: sessionState,
+    getProviderRun: providerRunState,
+    setProviderRun: setProviderRunState,
+    updateSessionChrome,
+    recordDaemonActivity,
+    queueTerminalOutputRecords,
+    pumpTerminalOutput: (sessionId, attachmentId) => pumpTerminalOutput(client, sessionId, attachmentId),
+    pollRuntimeNotices: (sessionId, attachmentId) => pollRuntimeNotices(client, sessionId, attachmentId),
+    appendNotice: (message) => appendNotice(message),
+    sessionHasPromptWork,
+    getSessionState: (sessionId) => getSessionState(client, sessionId),
+    projectSession: applyProviderRunProfileToSession,
+    shouldRefreshAgentPanesForSessionChange,
+    applySessionState,
+    refreshAgentPanes,
+    tryGetProviderRun: (providerRunId) => tryGetProviderRun(client, providerRunId, appLogger),
+    sameProviderRun,
+    logProviderRunDebug,
+    recoverProviderRun,
+  })
+  const pollOutput = pollingController.pollOutput
+  const pollNotices = pollingController.pollNotices
+  const pollSessionState = pollingController.pollSessionState
 
   const backgroundPollerStartupController = createBackgroundPollerStartupController({
     logger: appLogger,
