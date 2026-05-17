@@ -72,6 +72,7 @@ import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
 import { createAgentPaneTranscriptEntryController } from "./agent-pane-transcript-entry-controller.js"
 import { createAgentPaneTranscriptInteractionController } from "./agent-pane-transcript-interaction-controller.js"
+import { createAgentPaneTranscriptRenderController } from "./agent-pane-transcript-render-controller.js"
 import { createAgentPaneTranscriptStreamController } from "./agent-pane-transcript-stream-controller.js"
 import { createProviderNamespaceSubmitController } from "./provider-namespace-submit-controller.js"
 import { createClipboardController } from "./clipboard-controller.js"
@@ -2709,24 +2710,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAgentPanePreview(agentId, formatTranscriptPreview(persistedEntries))
   }
 
-  const auxiliaryAgentPaneRenderables = (agentId: string) => {
-    let renderables = agentTranscriptRenderables.get(agentId)
-    if (!renderables) {
-      renderables = new Map<number, TranscriptEntryRenderable>()
-      agentTranscriptRenderables.set(agentId, renderables)
-    }
-    return renderables
-  }
-
-  const auxiliaryAgentPaneTools = (agentId: string) => {
-    let toolState = agentPaneTools.get(agentId)
-    if (!toolState) {
-      toolState = new Map<string, ToolTranscriptUpdate>()
-      agentPaneTools.set(agentId, toolState)
-    }
-    return toolState
-  }
-
   const currentAgentPaneEntries = (agentId: string) => {
     return selectCurrentAgentPaneEntries({
       agentId,
@@ -2767,96 +2750,37 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const toggleAuxiliaryPaneTurn = agentPaneTranscriptInteractionController.toggleTurn
   const toggleAuxiliaryPaneBlob = agentPaneTranscriptInteractionController.toggleBlob
 
-  const clearAuxiliaryAgentPane = (agentId: string) => {
-    const scrollbox = agentTranscriptScrollboxes.get(agentId)
-    if (scrollbox) {
-      for (const child of [...scrollbox.getChildren()]) {
-        scrollbox.remove(child.id)
-        child.destroyRecursively()
-      }
-      scrollbox.requestRender()
-    }
-    agentTranscriptRenderables.delete(agentId)
-    agentEmptyTranscriptRenderables.delete(agentId)
-  }
-
-  const rebuildAuxiliaryAgentPane = (agentId: string) => {
-    const scrollbox = agentTranscriptScrollboxes.get(agentId)
-    if (!scrollbox) {
-      return
-    }
-
-    clearAuxiliaryAgentPane(agentId)
-
-    const paneEntries = agentPaneEntries()[agentId] ?? []
-    if (paneEntries.length === 0) {
-      const empty = buildEmptyTranscriptRenderable(renderer)
-      agentEmptyTranscriptRenderables.set(agentId, empty)
-      scrollbox.add(empty)
-      scrollbox.requestRender()
-      return
-    }
-
-    const renderables = auxiliaryAgentPaneRenderables(agentId)
-    const surfaceTone = auxiliaryTranscriptSurfaceTone(agentId)
-    for (const entry of paneEntries.filter((candidate) => !candidate.historyDeferred)) {
-      const renderable = buildTranscriptEntryRenderable(
-        renderer,
-        entry,
-        transcriptSyntax,
-        (turnId, nextToggleEntryId) => toggleAuxiliaryPaneTurn(agentId, turnId, nextToggleEntryId),
-        (entryId, collapsed) => toggleAuxiliaryPaneBlob(agentId, entryId, collapsed),
-        surfaceTone,
-      )
-      renderables.set(entry.id, renderable)
-      scrollbox.add(renderable.wrapper)
-    }
-    scrollbox.requestRender()
-  }
-
-  const mountAuxiliaryTranscriptEntry = (agentId: string, entry: TranscriptEntry, requestRender = true) => {
-    const scrollbox = agentTranscriptScrollboxes.get(agentId)
-    if (!scrollbox) {
-      return
-    }
-
-    const empty = agentEmptyTranscriptRenderables.get(agentId)
-    if (empty) {
-      scrollbox.remove(empty.id)
-      empty.destroyRecursively()
-      agentEmptyTranscriptRenderables.delete(agentId)
-    }
-
-    const renderable = buildTranscriptEntryRenderable(
+  const agentPaneTranscriptRenderController = createAgentPaneTranscriptRenderController({
+    scrollboxes: agentTranscriptScrollboxes,
+    entryRenderables: agentTranscriptRenderables,
+    emptyRenderables: agentEmptyTranscriptRenderables,
+    toolStates: agentPaneTools,
+    paneEntries: (agentId) => agentPaneEntries()[agentId] ?? [],
+    buildEmptyRenderable: () => buildEmptyTranscriptRenderable(renderer),
+    buildEntryRenderable: (agentId, entry) => buildTranscriptEntryRenderable(
       renderer,
       entry,
       transcriptSyntax,
       (turnId, nextToggleEntryId) => toggleAuxiliaryPaneTurn(agentId, turnId, nextToggleEntryId),
       (entryId, collapsed) => toggleAuxiliaryPaneBlob(agentId, entryId, collapsed),
       auxiliaryTranscriptSurfaceTone(agentId),
-    )
-    auxiliaryAgentPaneRenderables(agentId).set(entry.id, renderable)
-    scrollbox.add(renderable.wrapper)
-    if (requestRender) {
-      scrollbox.requestRender()
-    }
-  }
-
-  const updateAuxiliaryTranscriptEntry = (agentId: string, nextEntry: TranscriptEntry) => {
-    const renderable = auxiliaryAgentPaneRenderables(agentId).get(nextEntry.id)
-    if (!renderable) {
-      rebuildAuxiliaryAgentPane(agentId)
-      return
-    }
-    const previousMode = transcriptRenderMode(renderable.entry)
-    if (transcriptRenderMode(nextEntry) !== previousMode) {
-      rebuildAuxiliaryAgentPane(agentId)
-      return
-    }
-    renderable.entry = nextEntry
-    renderable.update(nextEntry)
-    renderScheduler.requestRenderable(agentTranscriptScrollboxes.get(agentId))
-  }
+    ),
+    renderMode: transcriptRenderMode,
+    requestRenderable: (renderable) => renderScheduler.requestRenderable(renderable),
+    clampScrollTop,
+    activeAgentIdsForSession: (session: RuntimeSession) => splitPaneAuxiliaryAgentIds(
+      session.agents,
+      session.focused_agent_id,
+      true,
+      maxAgentsPerScreen(),
+    ),
+  })
+  const auxiliaryAgentPaneTools = agentPaneTranscriptRenderController.toolStateForAgent
+  const clearAuxiliaryAgentPane = agentPaneTranscriptRenderController.clearPane
+  const rebuildAuxiliaryAgentPane = agentPaneTranscriptRenderController.rebuildPane
+  const updateAuxiliaryTranscriptEntry = agentPaneTranscriptRenderController.updateEntry
+  const reconcileMountedAuxiliaryTranscript = agentPaneTranscriptRenderController.reconcileMountedTranscript
+  const pruneAuxiliaryAgentPanes = agentPaneTranscriptRenderController.prunePanes
 
   const trimLiveAgentPaneEntries = (agentId: string, nextEntries: TranscriptEntry[]) => trimAgentPaneEntries({
     entries: nextEntries,
@@ -2891,62 +2815,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     reconcileMountedAuxiliaryTranscript(agentId, currentEntries, sanitizedEntries)
-  }
-
-  const reconcileMountedAuxiliaryTranscript = (
-    agentId: string,
-    currentEntries: TranscriptEntry[],
-    nextEntries: TranscriptEntry[],
-  ) => {
-    reconcileMountedTranscriptPane({
-      scrollbox: agentTranscriptScrollboxes.get(agentId),
-      currentEntries,
-      nextEntries,
-      renderables: auxiliaryAgentPaneRenderables(agentId),
-      clampScrollTop,
-      rebuild: () => rebuildAuxiliaryAgentPane(agentId),
-      removeEmptyRenderable: () => {
-        const empty = agentEmptyTranscriptRenderables.get(agentId)
-        if (!empty) {
-          return
-        }
-        agentTranscriptScrollboxes.get(agentId)?.remove(empty.id)
-        empty.destroyRecursively()
-        agentEmptyTranscriptRenderables.delete(agentId)
-      },
-      mountEntry: (entry, requestRender) => mountAuxiliaryTranscriptEntry(agentId, entry, requestRender),
-    })
-  }
-
-  const pruneAuxiliaryAgentPanes = (session: RuntimeSession) => {
-    const activeAgentIds = new Set(
-      splitPaneAuxiliaryAgentIds(
-        session.agents,
-        session.focused_agent_id,
-        true,
-        maxAgentsPerScreen(),
-      ),
-    )
-    for (const agentId of agentTranscriptScrollboxes.keys()) {
-      if (!activeAgentIds.has(agentId)) {
-        agentTranscriptScrollboxes.delete(agentId)
-      }
-    }
-    for (const agentId of agentTranscriptRenderables.keys()) {
-      if (!activeAgentIds.has(agentId)) {
-        agentTranscriptRenderables.delete(agentId)
-      }
-    }
-    for (const agentId of agentEmptyTranscriptRenderables.keys()) {
-      if (!activeAgentIds.has(agentId)) {
-        agentEmptyTranscriptRenderables.delete(agentId)
-      }
-    }
-    for (const agentId of agentPaneTools.keys()) {
-      if (!activeAgentIds.has(agentId)) {
-        agentPaneTools.delete(agentId)
-      }
-    }
   }
 
   const syncVisibleTranscriptPreview = agentPaneTranscriptEntryController.syncVisibleTranscriptPreview
@@ -3346,10 +3214,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const clearAgentPaneRuntime = () => {
-    agentTranscriptScrollboxes.clear()
-    agentTranscriptRenderables.clear()
-    agentEmptyTranscriptRenderables.clear()
-    agentPaneTools.clear()
+    agentPaneTranscriptRenderController.clearAll()
     responseAuxiliaryAgentIds.length = 0
   }
 
