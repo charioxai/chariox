@@ -81,14 +81,7 @@ import { clampScrollTop, findTurnPromptScrollTarget, promptTurnNavigationDirecti
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
-import {
-  appendInteractionCustomReply,
-  deleteInteractionCustomReply,
-  interactionCustomChoiceIndex,
-  nextInteractionChoiceIndex,
-  resolveInteractionChoiceKeyAction,
-  resolveInteractionChoiceSubmission,
-} from "./interaction-choice-state.js"
+import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import { runClaudeNativeTui } from "./native-tui/claude.js"
@@ -5387,134 +5380,40 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     await promptStopController.request()
   }
 
-  const submitFocusedInteractionChoice = async (choiceIndex?: number) => {
-    const interaction = focusedAgentInteraction()
-    if (!interaction || !isAttached()) {
-      return false
-    }
-    const submitDecision = resolveInteractionChoiceSubmission({
-      interaction,
-      requestedIndex: choiceIndex,
-      selectedIndex: interactionChoiceSelection.get(interaction.id),
-      customReply: interactionCustomReplies.get(interaction.id) ?? "",
-    })
-    if (submitDecision.action === "unavailable") {
-      return false
-    }
-    if (submitDecision.action === "edit_custom") {
-      interactionCustomEditing.add(interaction.id)
-      renderAgentInteractions()
-      applyResponseLayout()
-      return true
-    }
-    interactionChoiceSelection.set(interaction.id, submitDecision.selectedIndex)
-    try {
-      const session = await respondToInteraction(
-        client,
-        sessionState().id,
-        interaction.id,
-        submitDecision.choiceId,
-        submitDecision.customReply,
-      )
-      applySessionState(session)
-      interactionCustomReplies.delete(interaction.id)
-      interactionCustomEditing.delete(interaction.id)
-      flashFooter("interaction answered", "info")
-      return true
-    } catch (error) {
-      flashFooter(formatError(error), "error")
-      return true
-    }
-  }
-
-  const cycleFocusedInteractionChoice = (delta: number) => {
-    const interaction = focusedAgentInteraction()
-    if (!interaction) {
-      return false
-    }
-    const currentIndex = interactionChoiceSelection.get(interaction.id) ?? 0
-    const nextIndex = nextInteractionChoiceIndex({ interaction, currentIndex, delta })
-    if (nextIndex === null) {
-      return false
-    }
-    interactionChoiceSelection.set(interaction.id, nextIndex)
-    if (interaction.custom_choice && nextIndex !== interactionCustomChoiceIndex(interaction)) {
-      interactionCustomEditing.delete(interaction.id)
-    }
-    renderAgentInteractions()
-    applyResponseLayout()
-    return true
-  }
-
-  const handleFocusedInteractionKey = (event: {
-    name: string
-    eventType?: string
-    ctrl?: boolean
-    meta?: boolean
-    alt?: boolean
-    preventDefault?: () => void
-    stopPropagation?: () => void
-  }) => {
-    const interaction = focusedAgentInteraction()
-    if (!interaction || event.eventType === "release") {
-      return false
-    }
-    const keyAction = resolveInteractionChoiceKeyAction({
-      interaction,
-      event,
-      selectedIndex: interactionChoiceSelection.get(interaction.id) ?? 0,
-      customEditing: interactionCustomEditing.has(interaction.id),
-      customReply: interactionCustomReplies.get(interaction.id) ?? "",
-    })
-    if (keyAction.action === "ignore") {
-      return false
-    }
-    if (keyAction.consumeEvent) {
-      event.preventDefault?.()
-      event.stopPropagation?.()
-    }
-    if (keyAction.action === "handled") {
-      return true
-    }
-    if (keyAction.action === "cancel_custom_edit") {
-      interactionCustomEditing.delete(interaction.id)
-      renderAgentInteractions()
-      applyResponseLayout()
-      return true
-    }
-    if (keyAction.action === "delete_custom_reply") {
-      interactionCustomReplies.set(interaction.id, deleteInteractionCustomReply(interactionCustomReplies.get(interaction.id) ?? ""))
-      renderAgentInteractions()
-      applyResponseLayout()
-      return true
-    }
-    if (keyAction.action === "append_custom_reply") {
-      const current = interactionCustomReplies.get(interaction.id) ?? ""
-      interactionCustomReplies.set(interaction.id, appendInteractionCustomReply({
-        current,
-        input: keyAction.input,
-        maxLength: interaction.custom_choice?.max_length,
-      }))
-      renderAgentInteractions()
-      applyResponseLayout()
-      return true
-    }
-    if (keyAction.action === "cycle") {
-      return cycleFocusedInteractionChoice(keyAction.delta)
-    }
-    if (keyAction.action === "begin_custom_edit") {
-      interactionChoiceSelection.set(interaction.id, keyAction.selectedIndex)
-      interactionCustomEditing.add(interaction.id)
-      renderAgentInteractions()
-      applyResponseLayout()
-      return true
-    }
-    if (keyAction.action === "submit") {
-      void submitFocusedInteractionChoice(keyAction.choiceIndex)
-      return true
-    }
-    return false
-  }
+  const focusedInteractionChoiceController = createFocusedInteractionChoiceController({
+    getFocusedInteraction: focusedAgentInteraction,
+    isAttached,
+    getSessionId: () => sessionState().id,
+    getSelectedIndex: (interactionId) => interactionChoiceSelection.get(interactionId),
+    setSelectedIndex: (interactionId, index) => {
+      interactionChoiceSelection.set(interactionId, index)
+    },
+    getCustomReply: (interactionId) => interactionCustomReplies.get(interactionId) ?? "",
+    setCustomReply: (interactionId, reply) => {
+      interactionCustomReplies.set(interactionId, reply)
+    },
+    clearCustomReply: (interactionId) => {
+      interactionCustomReplies.delete(interactionId)
+    },
+    isCustomEditing: (interactionId) => interactionCustomEditing.has(interactionId),
+    setCustomEditing: (interactionId, editing) => {
+      if (editing) {
+        interactionCustomEditing.add(interactionId)
+      } else {
+        interactionCustomEditing.delete(interactionId)
+      }
+    },
+    renderAgentInteractions,
+    applyResponseLayout,
+    respondToInteraction: (sessionId, interactionId, choiceId, customReply) =>
+      respondToInteraction(client, sessionId, interactionId, choiceId, customReply),
+    applySessionState,
+    flashFooter,
+    formatError,
+  })
+  const submitFocusedInteractionChoice = focusedInteractionChoiceController.submitChoice
+  const cycleFocusedInteractionChoice = focusedInteractionChoiceController.cycleChoice
+  const handleFocusedInteractionKey = focusedInteractionChoiceController.handleKey
 
   useKeyboard((event) => {
     if (handleHotkeysToggleShortcut("keyboard", event)) {
