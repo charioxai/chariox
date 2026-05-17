@@ -12,7 +12,6 @@ import { createStore, reconcile } from "solid-js/store"
 import type {
   AgentInstance,
   BootstrapState,
-  CliOptions,
   RuntimeAttachment,
   RuntimeInteraction,
   RuntimeProviderRun,
@@ -89,7 +88,6 @@ import { createHistoryScrollRestoreController } from "./history-scroll-restore-c
 import { clampScrollTop } from "./history-viewport.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
-import { LocalIpcClient } from "./ipc.js"
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
@@ -158,26 +156,17 @@ import {
   createConnectionHealthWatchdogController,
 } from "./connection-health-watchdog-controller.js"
 import {
+  bootstrapCliRuntime,
+} from "./cli-runtime-bootstrap.js"
+import {
   bootstrapCloudRelayProfile,
 } from "./cloud-relay.js"
 import { createCliExitController } from "./cli-exit-controller.js"
 import {
-  applyProviderPreferenceDefaults,
-  defaultKernelEndpoint,
-  parseArgs,
   resolveConfiguredCloudRelayApiUrl,
 } from "./cli-options.js"
 import { openExternalUrl } from "./external-url.js"
 import {
-  inferWorkspaceTargetsFromLaunchDirectory,
-} from "./workspace-launch-targets.js"
-import {
-  isKernelEndpointReachable,
-  isKernelEndpointUnavailableError,
-  isNoArgDefaultKernelLaunch,
-} from "./kernel-endpoint.js"
-import {
-  loadPreferences,
   mergeSessionPromptState,
   mergeRelayCloudProfile,
   mergeUiPreferences,
@@ -260,13 +249,11 @@ import type { PromptMetaPart } from "./prompt-meta.js"
 import { renderPromptMeta } from "./prompt-meta-renderer.js"
 import {
   type BackendProviderId,
-  fallbackProviderCatalog,
   isBackendProviderId,
   normalizeBackendProviderId,
   type ProviderCatalog,
 } from "./provider-catalog.js"
 import {
-  fallbackProviderCommandCatalogs,
   type ProviderCommandCatalogs,
 } from "./provider-command-catalog.js"
 import { createProviderActivityController } from "./provider-activity-controller.js"
@@ -286,7 +273,6 @@ import {
 } from "./provider-api.js"
 import { createProviderSelectionController } from "./provider-selection-controller.js"
 import { createProviderRecoveryController } from "./provider-recovery-controller.js"
-import { hydrateTranscriptEntries } from "./transcript-history.js"
 import {
   createPromptContentChangeController,
 } from "./prompt-content-change-controller.js"
@@ -354,7 +340,6 @@ import {
   applyTranscriptDisplayState,
 } from "./transcript-display.js"
 import {
-  reindexTranscriptEntries,
   trimSingleTrailingNewline,
 } from "./transcript-text.js"
 import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
@@ -418,9 +403,8 @@ import { createRenderScheduler } from "./render-scheduler.js"
 import {
   createResponsePaneRepaintController,
 } from "./response-pane-repaint-controller.js"
-import { bootstrapSession } from "./session-bootstrap.js"
 import { applyTheme, createTranscriptSyntaxStyle, setThemeRegistry, theme } from "./theme.js"
-import { DEFAULT_THEME_REGISTRY, loadThemeRegistry } from "./theme-registry.js"
+import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
 import { createWaitingRoomActivationController } from "./waiting-room-activation-controller.js"
 import { createWaitingRoomReconcileController } from "./waiting-room-reconcile-controller.js"
 import {
@@ -437,9 +421,6 @@ import { createWaitingRoomTransitionController } from "./waiting-room-transition
 import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifecycle-action-controller.js"
 import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
 import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
-import {
-  primeWaitingRoomWorktreeInventory,
-} from "./waiting-room-worktrees.js"
 import {
   resolveWorkspaceVisibleAgents,
   resolveWorkspaceVisibleTranscriptAgentId,
@@ -585,106 +566,16 @@ async function main() {
   ensureTranscriptParsersRegistered()
   processLogger = createProcessLogger("cli")
   getLogger("cli.main")?.info("starting cli process", { argv })
-  const options = parseArgs(argv)
-  const preferences = await loadPreferences()
-  applyProviderPreferenceDefaults(options, preferences)
-  const kernelEndpoint = options.relayUrl ?? options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint()
-  const client = new LocalIpcClient(kernelEndpoint, options.relayUrl
-    ? {
-      relayAuthToken: options.relayToken,
-      targetDaemonId: options.targetDaemonId,
-      targetDaemonAlias: options.targetDaemonAlias,
-    }
-    : undefined)
-  const inferredTargets = await inferWorkspaceTargetsFromLaunchDirectory(process.cwd())
-  const workspace = options.workspace ?? inferredTargets.workspace
-  const worktree = options.worktree ?? inferredTargets.worktree
-  await primeWaitingRoomWorktreeInventory({
+  const runtimeBootstrap = await bootstrapCliRuntime({
+    argv,
     cwd: process.cwd(),
-    workspacePath: workspace,
-    currentWorktreePath: worktree,
+    logger: getLogger("cli.main"),
   })
-  const themeRegistry = await loadThemeRegistry({
-    workspace,
-    onWarning: (warning) => {
-      getLogger("cli.main")?.warn("skipping custom theme", warning)
-    },
-  })
-  if (options.deleteSessionRef) {
-    await deleteSessionByRef(client, options.deleteSessionRef, workspace)
+  if (runtimeBootstrap.kind === "deleted_session") {
     return
   }
-  getLogger("cli.main")?.info("bootstrapping cli session", {
-    kernel_endpoint: kernelEndpoint,
-    workspace_id: workspace,
-    worktree_id: worktree,
-    client_id: options.clientId,
-  })
-  if (!options.detached && isNoArgDefaultKernelLaunch(argv) && !(await isKernelEndpointReachable(kernelEndpoint))) {
-    getLogger("cli.main")?.warn("default local kernel unavailable; launching detached waiting room", {
-      kernel_endpoint: kernelEndpoint,
-    })
-    options.detached = true
-  }
-  let bootstrap: BootstrapState
-  if (options.detached) {
-    bootstrap = buildDetachedBootstrap(client, options, preferences)
-  } else {
-    try {
-      bootstrap = await bootstrapSession(client, options, workspace, worktree, preferences, {
-        logger: getLogger("cli.main"),
-        listSessions,
-        getProviderCatalog,
-        getProviderCommandCatalogs,
-        createSession,
-        resolveSession,
-        attachToSession,
-        getSessionState,
-        launchProviderRun,
-        tryGetProviderRun,
-        catchUpAttachedSession,
-        getSessionHistory,
-        getPromptInputHistory,
-        resolveVisibleAgentId: (session, nextPreferences) => {
-          const focusedAgentId = session.focused_agent_id ?? session.agents[0]?.id ?? null
-          return selectResponsePaneAgents(
-            session.agents,
-            focusedAgentId,
-            sessionResponseLayout(session, nextPreferences.ui?.multiAgentResponseLayout) === "split",
-            resolveMaxAgentsPerScreen(nextPreferences.ui?.maxAgentsPerScreen),
-          ).visibleTranscriptAgentId
-        },
-        prepareHistoryEntries: (entries, session) =>
-          reindexTranscriptEntries(
-            hydrateTranscriptEntries(entries),
-            0,
-          ),
-      })
-    } catch (error) {
-      if (!isNoArgDefaultKernelLaunch(argv) || !isKernelEndpointUnavailableError(error)) {
-        throw error
-      }
-      getLogger("cli.main")?.warn("default local kernel unavailable; launching detached waiting room", {
-        kernel_endpoint: kernelEndpoint,
-        error: formatError(error),
-      })
-      options.detached = true
-      bootstrap = buildDetachedBootstrap(client, options, preferences)
-    }
-  }
-  bootstrap.themeRegistry = themeRegistry
-  if (bootstrap.binding) {
-    getLogger("cli.main")?.info("bootstrapped cli session", {
-      session_id: bootstrap.binding.session.id,
-      attachment_id: bootstrap.binding.attachment.id,
-      created_session: bootstrap.binding.createdSession,
-    })
-    await maybeResize(client, bootstrap.binding.session.id)
-  } else {
-    getLogger("cli.main")?.info("starting cli without attached session")
-  }
   await render(
-    () => <ArrobaCliApp bootstrap={bootstrap} />, 
+    () => <ArrobaCliApp bootstrap={runtimeBootstrap.bootstrap} />,
     {
       targetFps: 60,
       gatherStats: false,
@@ -698,22 +589,6 @@ async function main() {
     },
   )
   getLogger("cli.main")?.info("render mounted")
-}
-
-function buildDetachedBootstrap(
-  client: LocalIpcClient,
-  options: CliOptions,
-  preferences: BootstrapState["preferences"],
-): BootstrapState {
-  return {
-    client,
-    binding: null,
-    sessions: [],
-    providerCatalog: fallbackProviderCatalog(),
-    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
-    options,
-    preferences,
-  }
 }
 
 function ensureTranscriptParsersRegistered() {
