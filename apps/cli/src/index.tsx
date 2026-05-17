@@ -69,11 +69,11 @@ import { createCommandCenterCommandExecutor } from "./command-center-command-exe
 import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import {
-  selectCurrentAgentPaneEntries,
   shouldRefreshAgentPanesForSessionChange as shouldRefreshAgentPanesForSessionChangeState,
   trimAgentPaneEntries,
 } from "./agent-pane-state.js"
 import { createAgentPaneRefreshController } from "./agent-pane-refresh-controller.js"
+import { createAgentPaneStoreController } from "./agent-pane-store-controller.js"
 import { createAgentPaneTranscriptEntryController } from "./agent-pane-transcript-entry-controller.js"
 import { createAgentPaneTranscriptInteractionController } from "./agent-pane-transcript-interaction-controller.js"
 import { createAgentPaneTranscriptRenderController } from "./agent-pane-transcript-render-controller.js"
@@ -2195,67 +2195,36 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     sessionChromeUpdateController.request(sessionChromeRenderController.shouldThrottle())
   }
 
-  const setAgentPanePreview = (agentId: string, text: string) => {
-    setAgentPanePreviews((current) => ({
-      ...current,
-      [agentId]: text,
-    }))
-  }
-
-  const persistVisibleTranscriptEntries = (nextEntries: TranscriptEntry[]) => {
-    const agentId = visibleTranscriptAgentId()
-    if (!isAttached() || !agentId) {
-      return
-    }
-
-    const persistedEntries = nextEntries.map((entry) => ({ ...entry }))
-    setAgentPaneEntries((current) => ({
-      ...current,
-      [agentId]: persistedEntries,
-    }))
-    setAgentPanePreview(agentId, formatTranscriptPreview(persistedEntries))
-  }
-
-  const setAgentTranscriptEntries = (
-    agentId: string,
-    nextEntries: TranscriptEntry[],
-    turnIds = expandedTurnIdsForAgent(agentId),
-  ) => {
-    const previousPaneEntries = agentPaneEntries()[agentId] ?? []
-    const sanitizedEntries = applyTranscriptDisplayState(nextEntries.filter(Boolean), turnIds)
-    commitAgentPaneEntries(agentId, sanitizedEntries)
-    if (splitAgentResponseMode() && agentId === responsePrimaryAgent()?.id) {
-      replaceTranscriptEntries(sanitizedEntries.map((entry) => ({ ...entry })), agentId)
-    }
-    if (splitAgentResponseMode() && visibleAuxiliaryAgentIds().includes(agentId)) {
+  const agentPaneStoreController = createAgentPaneStoreController({
+    isAttached,
+    getVisibleTranscriptAgentId: visibleTranscriptAgentId,
+    getVisibleTranscriptEntries: () => entries.filter(Boolean),
+    getPaneEntriesByAgent: agentPaneEntries,
+    updatePaneEntries: (updater) => {
+      setAgentPaneEntries((current) => updater(current))
+    },
+    updatePanePreviews: (updater) => {
+      setAgentPanePreviews((current) => updater(current))
+    },
+    getSessionAgents: () => sessionState().agents,
+    getFocusedAgentId: focusedAgentId,
+    getMaxAgentsPerScreen: maxAgentsPerScreen,
+    splitAgentResponseMode,
+    getPrimaryAgentId: () => responsePrimaryAgent()?.id ?? null,
+    expandedTurnIdsForAgent,
+    replaceTranscriptEntries: (nextEntries, agentId) => {
+      replaceTranscriptEntries(nextEntries, agentId)
+    },
+    reconcileMountedAuxiliaryTranscript: (agentId, previousPaneEntries, sanitizedEntries) => {
       reconcileMountedAuxiliaryTranscript(agentId, previousPaneEntries, sanitizedEntries)
-    }
-  }
-
-  const visibleAuxiliaryAgentIds = () => splitPaneAuxiliaryAgentIds(
-    sessionState().agents,
-    focusedAgentId(),
-    true,
-    maxAgentsPerScreen(),
-  )
-
-  const commitAgentPaneEntries = (agentId: string, nextEntries: TranscriptEntry[]) => {
-    const persistedEntries = nextEntries.map((entry) => ({ ...entry }))
-    setAgentPaneEntries((current) => ({
-      ...current,
-      [agentId]: persistedEntries,
-    }))
-    setAgentPanePreview(agentId, formatTranscriptPreview(persistedEntries))
-  }
-
-  const currentAgentPaneEntries = (agentId: string) => {
-    return selectCurrentAgentPaneEntries({
-      agentId,
-      visibleAgentId: visibleTranscriptAgentId(),
-      visibleEntries: entries.filter(Boolean),
-      paneEntriesByAgent: agentPaneEntries(),
-    })
-  }
+    },
+  })
+  const setAgentPanePreview = agentPaneStoreController.setAgentPanePreview
+  const persistVisibleTranscriptEntries = agentPaneStoreController.persistVisibleTranscriptEntries
+  const setAgentTranscriptEntries = agentPaneStoreController.setAgentTranscriptEntries
+  const visibleAuxiliaryAgentIds = agentPaneStoreController.visibleAuxiliaryAgentIds
+  const commitAgentPaneEntries = agentPaneStoreController.commitAgentPaneEntries
+  const currentAgentPaneEntries = agentPaneStoreController.currentAgentPaneEntries
 
   const agentPaneTranscriptEntryController = createAgentPaneTranscriptEntryController({
     currentAgentPaneEntries,
