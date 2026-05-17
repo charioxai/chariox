@@ -1,0 +1,125 @@
+import { LocalIpcClient } from "@arroba/kernel-client/ipc"
+import {
+  authenticateWorkflowPublicationSenderRequest,
+  getWorkflowRunRequest,
+  invokeWorkflowEndpointRequest,
+  redeemWorkflowPublicationPairCodeRequest,
+} from "@arroba/kernel-client/ipc-requests"
+import type {
+  WorkflowPublicationSenderCredential,
+  WorkflowPublicationTrustedSender,
+} from "@arroba/kernel-client/kernel-types"
+
+import type {
+  ConnectorKind,
+  NormalizedInvocation,
+  WorkflowInvocationResult,
+  WorkflowPublicationConfig,
+  WorkflowRun,
+} from "./publication-types.js"
+import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
+
+export function defaultKernelEndpoint() {
+  return process.env.ARROBA_KERNEL_URL ?? `ws://${process.env.ARROBA_KERNEL_HOST ?? "127.0.0.1"}:${process.env.ARROBA_KERNEL_PORT ?? "43118"}`
+}
+
+export async function invokeKernelWorkflow(
+  publication: WorkflowPublicationConfig,
+  invocation: NormalizedInvocation,
+): Promise<WorkflowInvocationResult> {
+  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
+  try {
+    const prompt = JSON.stringify(invocation, null, 2)
+    const response = await client.send<Record<string, unknown>>(invokeWorkflowEndpointRequest(
+      publication.session_id,
+      publication.workflow_ref,
+      publication.endpoint_ref,
+      prompt,
+    ))
+    if ("WorkflowRunQueued" in response) {
+      return { accepted: true, queued: true, response: response.WorkflowRunQueued }
+    }
+    const invoked = response.WorkflowRunInvoked as { workflow_run: WorkflowRun } | undefined
+    if (!invoked?.workflow_run) {
+      throw new Error(`unexpected workflow invoke response: ${JSON.stringify(response)}`)
+    }
+    if ((publication.mode ?? "sync") === "async") {
+      return { accepted: true, workflow_run: invoked.workflow_run }
+    }
+    const workflowRun = await waitForWorkflowRun(client, publication, invoked.workflow_run.id)
+    return { accepted: true, workflow_run: workflowRun }
+  } finally {
+    await client.close().catch(() => {})
+  }
+}
+
+export async function redeemPublicationPairCode(
+  publication: WorkflowPublicationConfig,
+  pairCode: string,
+  displayName?: string | null,
+): Promise<WorkflowPublicationSenderCredential> {
+  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
+  try {
+    const response = await client.send<Record<string, unknown>>(redeemWorkflowPublicationPairCodeRequest(
+      publication.session_id,
+      publication.publication_id,
+      pairCode,
+      displayName ?? null,
+      ["http"],
+    ))
+    const payload = response.WorkflowPublicationSenderPaired as { sender_credential?: WorkflowPublicationSenderCredential } | undefined
+    if (!payload?.sender_credential) {
+      throw new Error(`unexpected publication pair response: ${JSON.stringify(response)}`)
+    }
+    return payload.sender_credential
+  } finally {
+    await client.close().catch(() => {})
+  }
+}
+
+export async function authenticatePublicationSender(
+  publication: WorkflowPublicationConfig,
+  credential: string,
+  transport: ConnectorKind,
+): Promise<WorkflowPublicationTrustedSender> {
+  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
+  try {
+    const response = await client.send<Record<string, unknown>>(authenticateWorkflowPublicationSenderRequest(
+      publication.session_id,
+      publication.publication_id,
+      credential,
+      transport,
+    ))
+    const payload = response.WorkflowPublicationSenderAuthenticated as { sender?: WorkflowPublicationTrustedSender } | undefined
+    if (!payload?.sender) {
+      throw new Error(`unexpected publication sender auth response: ${JSON.stringify(response)}`)
+    }
+    return payload.sender
+  } finally {
+    await client.close().catch(() => {})
+  }
+}
+
+async function waitForWorkflowRun(
+  client: LocalIpcClient,
+  publication: WorkflowPublicationConfig,
+  workflowRunId: string,
+) {
+  const timeoutMs = publication.sync_timeout_ms ?? 30_000
+  const pollMs = publication.poll_ms ?? 500
+  const deadline = Date.now() + timeoutMs
+  let latest: WorkflowRun | null = null
+  while (Date.now() < deadline) {
+    const response = await client.send<Record<string, unknown>>(
+      getWorkflowRunRequest(publication.session_id, workflowRunId),
+    )
+    latest = (response.WorkflowRun as { workflow_run: WorkflowRun } | undefined)?.workflow_run ?? null
+    if (latest && isTerminalWorkflowRunStatus(latest.status)) return latest
+    await sleep(pollMs)
+  }
+  return latest ?? { id: workflowRunId, status: "unknown" }
+}
+
+async function sleep(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}

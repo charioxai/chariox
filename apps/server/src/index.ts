@@ -12,189 +12,47 @@ import { WebSocket as WsSocket, WebSocketServer, type RawData } from "ws"
 import { LocalIpcClient } from "@arroba/kernel-client/ipc"
 import type {
   WorkflowPublicationDefinition,
-  WorkflowPublicationSenderCredential,
-  WorkflowPublicationTrustedSender,
 } from "@arroba/kernel-client/kernel-types"
 import {
-  authenticateWorkflowPublicationSenderRequest,
   getWorkflowPublicationRequest,
   getWorkflowRunRequest,
-  invokeWorkflowEndpointRequest,
-  redeemWorkflowPublicationPairCodeRequest,
 } from "@arroba/kernel-client/ipc-requests"
 
+import {
+  authenticatePublicationSender,
+  defaultKernelEndpoint,
+  invokeKernelWorkflow,
+  redeemPublicationPairCode,
+} from "./kernel-publication-client.js"
 import { createProcessLogger } from "./logging.js"
+import type {
+  ApiKeyPrincipal,
+  ArrobaAuthConfig,
+  AuthConfig,
+  BearerPrincipal,
+  ConnectorConfig,
+  ConnectorKind,
+  ExternalIdentityBinding,
+  GatewayDeps,
+  GatewayRequest,
+  InputSchema,
+  KernelLookupClient,
+  NormalizedInvocation,
+  ParserConfig,
+  PrincipalRef,
+  PublicationInvocationOptions,
+  TlsConfig,
+  VerifiedExternalIdentity,
+  WorkflowInvocationResult,
+  WorkflowPublicationConfig,
+  WorkflowRun,
+} from "./publication-types.js"
+import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 
-type ParserKind =
-  | "json"
-  | "query_params"
-  | "headers"
-  | "regex"
-  | "path_template"
-  | "webhook"
-  | "custom_command"
-
-type AuthConfig =
-  | { mode: "anonymous" }
-  | { mode: "bearer"; token_env: string; principal?: PrincipalRef }
-  | { mode: "api_key"; header: string; key_env: string; principal?: PrincipalRef }
-  | ArrobaAuthConfig
-
-type PrincipalRef = {
-  id: string
-  type?: "user" | "team" | "sender" | "service" | "anonymous"
-  teams?: string[]
-  display_name?: string
-  allowed_connectors?: ConnectorKind[]
-}
-
-type ExternalIdentityBinding = {
-  connector: ConnectorKind
-  external_id: string
-  principal: PrincipalRef
-}
-
-type BearerPrincipal = {
-  token_env: string
-  principal: PrincipalRef
-}
-
-type ApiKeyPrincipal = {
-  header: string
-  key_env: string
-  principal: PrincipalRef
-}
-
-type ConnectorKind = "http" | "slack" | "discord" | "telegram" | "whatsapp" | "signal"
-
-type ConnectorConfig =
-  | { kind: "http"; principal?: PrincipalRef }
-  | { kind: "slack"; signing_secret_env?: string }
-  | { kind: "discord"; public_key_env?: string }
-  | { kind: "telegram"; webhook_secret_env?: string }
-  | { kind: "whatsapp"; app_secret_env?: string; verify_token_env?: string }
-  | { kind: "signal"; webhook_secret_env?: string }
-
-type ArrobaAuthConfig = {
-  mode: "arroba"
-  allow_anonymous?: boolean
-  anonymous_principal?: PrincipalRef
-  paired_senders?: PairedSendersAuthConfig
-  bearer_tokens?: BearerPrincipal[]
-  api_keys?: ApiKeyPrincipal[]
-  external_identities?: ExternalIdentityBinding[]
-  connectors?: ConnectorConfig[]
-}
-
-type PairedSendersAuthConfig = {
-  enabled?: boolean
-  header?: string
-  transport?: ConnectorKind
-  pair_endpoint?: boolean
-}
-
-type ParserConfig = {
-  kind: ParserKind
-  source?: "body" | "path" | "query" | "headers" | "request"
-  pattern?: string
-  template?: string
-  command?: string
-  args?: string[]
-}
-
-type InputSchema = {
-  type?: "object"
-  required?: string[]
-  properties?: Record<string, { type?: "string" | "number" | "boolean" | "object" | "array" }>
-}
-
-type TlsConfig = {
-  enabled?: boolean
-  key_file?: string
-  cert_file?: string
-}
-
-export type WorkflowPublicationConfig = {
-  publication_id: string
-  session_id: string
-  workflow_ref: string
-  endpoint_ref: string
-  kernel_endpoint?: string
-  route?: string
-  methods?: Array<"GET" | "POST">
-  auth?: AuthConfig
-  parser?: ParserConfig
-  input_schema?: InputSchema
-  tls?: TlsConfig
-  mode?: "sync" | "async"
-  sync_timeout_ms?: number
-  poll_ms?: number
-}
-
-type NormalizedInvocation = {
-  publication_id: string
-  request_id: string
-  caller: Record<string, unknown>
-  input: unknown
-  mode: "sync" | "async"
-}
-
-type WorkflowRun = {
-  id: string
-  status: string
-  workflow_id?: string
-  endpoint_id?: string
-  final_output?: { message: string; artifacts?: unknown[] } | null
-}
-
-type WorkflowInvocationResult = {
-  accepted: boolean
-  queued?: boolean
-  workflow_run?: WorkflowRun
-  response?: unknown
-}
-
-type GatewayDeps = {
-  invokeWorkflow?: (invocation: NormalizedInvocation) => Promise<WorkflowInvocationResult>
-  redeemPublicationPairCode?: (
-    publication: WorkflowPublicationConfig,
-    pairCode: string,
-    displayName?: string | null,
-  ) => Promise<WorkflowPublicationSenderCredential>
-  authenticatePublicationSender?: (
-    publication: WorkflowPublicationConfig,
-    credential: string,
-    transport: ConnectorKind,
-  ) => Promise<WorkflowPublicationTrustedSender>
-}
-
-export type PublicationInvocationOptions = {
-  input: unknown
-  caller?: Record<string, unknown>
-  mode?: "sync" | "async"
-  requestIdPrefix?: string
-  deps?: Pick<GatewayDeps, "invokeWorkflow">
-}
-
-type KernelLookupClient = {
-  send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
-  close?: () => Promise<void>
-}
-
-type VerifiedExternalIdentity = {
-  connector: ConnectorKind
-  external_id: string
-  metadata?: Record<string, unknown>
-}
-
-type GatewayRequest = {
-  method: string
-  url: string
-  headers: Record<string, string | string[] | undefined>
-  body?: unknown
-  query?: unknown
-  raw: unknown
-}
+export type {
+  PublicationInvocationOptions,
+  WorkflowPublicationConfig,
+} from "./publication-types.js"
 
 export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDeps = {}) => {
   const processLogger = createProcessLogger("workflow-gateway")
@@ -409,36 +267,6 @@ function sendWebSocketJson(webSocket: WsSocket, payload: unknown) {
   }
 }
 
-async function invokeKernelWorkflow(
-  publication: WorkflowPublicationConfig,
-  invocation: NormalizedInvocation,
-): Promise<WorkflowInvocationResult> {
-  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
-  try {
-    const prompt = JSON.stringify(invocation, null, 2)
-    const response = await client.send<Record<string, unknown>>(invokeWorkflowEndpointRequest(
-      publication.session_id,
-      publication.workflow_ref,
-      publication.endpoint_ref,
-      prompt,
-    ))
-    if ("WorkflowRunQueued" in response) {
-      return { accepted: true, queued: true, response: response.WorkflowRunQueued }
-    }
-    const invoked = response.WorkflowRunInvoked as { workflow_run: WorkflowRun } | undefined
-    if (!invoked?.workflow_run) {
-      throw new Error(`unexpected workflow invoke response: ${JSON.stringify(response)}`)
-    }
-    if ((publication.mode ?? "sync") === "async") {
-      return { accepted: true, workflow_run: invoked.workflow_run }
-    }
-    const workflowRun = await waitForWorkflowRun(client, publication, invoked.workflow_run.id)
-    return { accepted: true, workflow_run: workflowRun }
-  } finally {
-    await client.close().catch(() => {})
-  }
-}
-
 export async function invokePublicationInput(
   publication: WorkflowPublicationConfig,
   options: PublicationInvocationOptions,
@@ -457,73 +285,6 @@ export async function invokePublicationInput(
   return options.deps?.invokeWorkflow
     ? await options.deps.invokeWorkflow(invocation)
     : await invokeKernelWorkflow(publication, invocation)
-}
-
-async function redeemPublicationPairCode(
-  publication: WorkflowPublicationConfig,
-  pairCode: string,
-  displayName?: string | null,
-): Promise<WorkflowPublicationSenderCredential> {
-  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
-  try {
-    const response = await client.send<Record<string, unknown>>(redeemWorkflowPublicationPairCodeRequest(
-      publication.session_id,
-      publication.publication_id,
-      pairCode,
-      displayName ?? null,
-      ["http"],
-    ))
-    const payload = response.WorkflowPublicationSenderPaired as { sender_credential?: WorkflowPublicationSenderCredential } | undefined
-    if (!payload?.sender_credential) {
-      throw new Error(`unexpected publication pair response: ${JSON.stringify(response)}`)
-    }
-    return payload.sender_credential
-  } finally {
-    await client.close().catch(() => {})
-  }
-}
-
-async function authenticatePublicationSender(
-  publication: WorkflowPublicationConfig,
-  credential: string,
-  transport: ConnectorKind,
-): Promise<WorkflowPublicationTrustedSender> {
-  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
-  try {
-    const response = await client.send<Record<string, unknown>>(authenticateWorkflowPublicationSenderRequest(
-      publication.session_id,
-      publication.publication_id,
-      credential,
-      transport,
-    ))
-    const payload = response.WorkflowPublicationSenderAuthenticated as { sender?: WorkflowPublicationTrustedSender } | undefined
-    if (!payload?.sender) {
-      throw new Error(`unexpected publication sender auth response: ${JSON.stringify(response)}`)
-    }
-    return payload.sender
-  } finally {
-    await client.close().catch(() => {})
-  }
-}
-
-async function waitForWorkflowRun(
-  client: LocalIpcClient,
-  publication: WorkflowPublicationConfig,
-  workflowRunId: string,
-) {
-  const timeoutMs = publication.sync_timeout_ms ?? 30_000
-  const pollMs = publication.poll_ms ?? 500
-  const deadline = Date.now() + timeoutMs
-  let latest: WorkflowRun | null = null
-  while (Date.now() < deadline) {
-    const response = await client.send<Record<string, unknown>>(
-      getWorkflowRunRequest(publication.session_id, workflowRunId),
-    )
-    latest = (response.WorkflowRun as { workflow_run: WorkflowRun } | undefined)?.workflow_run ?? null
-    if (latest && isTerminalWorkflowRunStatus(latest.status)) return latest
-    await sleep(pollMs)
-  }
-  return latest ?? { id: workflowRunId, status: "unknown" }
 }
 
 function forwardWorkflowResult(reply: { code: (code: number) => unknown; headers: (headers: Record<string, string>) => unknown }, result: WorkflowInvocationResult) {
@@ -1177,10 +938,6 @@ function readRequiredEnv(name: string) {
   return value
 }
 
-function defaultKernelEndpoint() {
-  return process.env.ARROBA_KERNEL_URL ?? `ws://${process.env.ARROBA_KERNEL_HOST ?? "127.0.0.1"}:${process.env.ARROBA_KERNEL_PORT ?? "43118"}`
-}
-
 function defaultPublicationConfig(): WorkflowPublicationConfig {
   const config: WorkflowPublicationConfig = {
     publication_id: process.env.ARROBA_PUBLICATION_ID ?? "default",
@@ -1237,10 +994,6 @@ async function runCommand(command: string, args: string[], input: string): Promi
     })
     child.stdin.end(input)
   })
-}
-
-function isTerminalWorkflowRunStatus(status: string) {
-  return ["completed", "failed", "stopped"].includes(status.toLowerCase())
 }
 
 async function sleep(ms: number) {
