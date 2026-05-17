@@ -82,6 +82,7 @@ import { createAgentPaneTranscriptEntryController } from "./agent-pane-transcrip
 import { createAgentPaneTranscriptInteractionController } from "./agent-pane-transcript-interaction-controller.js"
 import { createAgentPaneTranscriptRenderController } from "./agent-pane-transcript-render-controller.js"
 import { createAgentPaneTranscriptStreamController } from "./agent-pane-transcript-stream-controller.js"
+import { createAgentPaneStreamingCommitController } from "./agent-pane-streaming-commit-controller.js"
 import { createProviderNamespaceSubmitController } from "./provider-namespace-submit-controller.js"
 import { createProviderPromptProjectionController } from "./provider-prompt-projection-controller.js"
 import { createClipboardController } from "./clipboard-controller.js"
@@ -352,9 +353,6 @@ import { createSessionStateApplyController } from "./session-state-apply-control
 import { createSessionAttachmentController } from "./session-attachment-controller.js"
 import { createSessionLifecycleController } from "./session-lifecycle.js"
 import { createTranscriptHistoryLoadController } from "./transcript-history-load-controller.js"
-import {
-  applyTranscriptDisplayState,
-} from "./transcript-display.js"
 import {
   trimSingleTrailingNewline,
 } from "./transcript-text.js"
@@ -2237,31 +2235,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
   })
 
-  const commitStreamingAgentPaneEntry = (
-    agentId: string,
-    currentEntries: TranscriptEntry[],
-    nextEntries: TranscriptEntry[],
-    updatedEntryId: number,
-  ) => {
-    const sanitizedEntries = applyTranscriptDisplayState(
-      trimLiveAgentPaneEntries(agentId, nextEntries).filter(Boolean),
-      expandedTurnIdsForAgent(agentId),
-    )
-    commitAgentPaneEntries(agentId, sanitizedEntries)
-    if (splitAgentResponseMode() && agentId === responsePrimaryAgent()?.id) {
-      replaceTranscriptEntries(sanitizedEntries.map((entry) => ({ ...entry })), agentId)
-      return
-    }
-    if (!splitAgentResponseMode() || !visibleAuxiliaryAgentIds().includes(agentId)) {
-      return
-    }
-    const updatedEntry = sanitizedEntries.find((entry) => entry.id === updatedEntryId)
-    if (updatedEntry) {
-      updateAuxiliaryTranscriptEntry(agentId, updatedEntry)
-      return
-    }
-    reconcileMountedAuxiliaryTranscript(agentId, currentEntries, sanitizedEntries)
-  }
+  const agentPaneStreamingCommitController = createAgentPaneStreamingCommitController({
+    trimLiveAgentPaneEntries,
+    expandedTurnIdsForAgent,
+    commitAgentPaneEntries,
+    splitAgentResponseMode,
+    getResponsePrimaryAgentId: () => responsePrimaryAgent()?.id ?? null,
+    replaceTranscriptEntries: (nextEntries, agentId) => {
+      replaceTranscriptEntries(nextEntries, agentId)
+    },
+    visibleAuxiliaryAgentIds,
+    updateAuxiliaryTranscriptEntry,
+    reconcileMountedAuxiliaryTranscript,
+  })
+  const commitStreamingAgentPaneEntry = agentPaneStreamingCommitController.commitStreamingEntry
 
   const syncVisibleTranscriptPreview = agentPaneTranscriptEntryController.syncVisibleTranscriptPreview
   const appendAgentPanePreview = agentPaneTranscriptEntryController.appendPreview
