@@ -44,6 +44,7 @@ import {
 } from "./ipc-requests.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
 import { createWorkflowScreenController } from "./workflow-screen-controller.js"
+import { createWorkflowSessionStateController } from "./workflow-session-state.js"
 
 export {
   createWorkflowSelectionSyncController,
@@ -78,22 +79,12 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     rebuildTranscript: deps.rebuildTranscript,
     applyResponseLayout: deps.applyResponseLayout,
   })
-
-  const replaceWorkflowDefinitions = (workflows: WorkflowDefinition[]) => {
-    deps.applySessionState({
-      ...deps.sessionState(),
-      workflows,
-    })
-  }
-
-  const upsertWorkflowDefinition = (workflow: WorkflowDefinition) => {
-    const currentWorkflows = deps.sessionState().workflows ?? []
-    const existingIndex = currentWorkflows.findIndex((entry) => entry.id === workflow.id)
-    const workflows = existingIndex === -1
-      ? [...currentWorkflows, workflow]
-      : currentWorkflows.map((entry, index) => (index === existingIndex ? workflow : entry))
-    replaceWorkflowDefinitions(workflows)
-  }
+  const workflowSessionState = createWorkflowSessionStateController({
+    sessionState: deps.sessionState,
+    applySessionState: deps.applySessionState,
+    rebuildTranscript: deps.rebuildTranscript,
+    applyResponseLayout: deps.applyResponseLayout,
+  })
 
   const createWorkflow = async (alias?: string | null) => {
     const response = await deps.sendRequest(createWorkflowRequest(deps.sessionState().id, alias))
@@ -305,9 +296,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
         endpoint: WorkflowEndpointDefinition
         session: RuntimeSession
       }>(response, "WorkflowRunInvoked")
-      deps.applySessionState(payload.session)
-      deps.rebuildTranscript()
-      deps.applyResponseLayout()
+      workflowSessionState.applyWorkflowSessionRefresh(payload.session)
       return payload
     }
     const payload = expectVariant<{
@@ -316,9 +305,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       endpoint: WorkflowEndpointDefinition
       session: RuntimeSession
     }>(response, "WorkflowRunQueued")
-    deps.applySessionState(payload.session)
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
+    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
     return payload
   }
 
@@ -347,9 +334,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       endpoint: WorkflowEndpointDefinition
       session: RuntimeSession
     }>(response, "WorkflowWatchdogCreated")
-    deps.applySessionState(payload.session)
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
+    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
     return payload
   }
 
@@ -364,9 +349,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       response,
       "WorkflowWatchdogUpdated",
     )
-    deps.applySessionState(payload.session)
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
+    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
     return payload
   }
 
@@ -376,9 +359,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       response,
       "WorkflowWatchdogRemoved",
     )
-    deps.applySessionState(payload.session)
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
+    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
     return payload
   }
 
@@ -390,9 +371,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       response,
       "WorkflowLaunchPolicyUpdated",
     )
-    deps.applySessionState(payload.session)
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
+    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
     return payload
   }
 
@@ -411,9 +390,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       response,
       "WorkflowFlushContextUpdated",
     )
-    deps.applySessionState(payload.session)
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
+    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
     return payload
   }
 
@@ -428,9 +405,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       response,
       "WorkflowRunOutputSchemaUpdated",
     )
-    deps.applySessionState(payload.session)
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
+    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
     return payload
   }
 
@@ -449,9 +424,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       response,
       "WorkflowIntermediateOutputSchemaUpdated",
     )
-    deps.applySessionState(payload.session)
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
+    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
     return payload
   }
 
@@ -474,9 +447,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       response,
       "QueuedWorkflowLaunchRemoved",
     )
-    deps.applySessionState(payload.session)
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
+    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
     return payload
   }
 
@@ -488,9 +459,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       response,
       "QueuedWorkflowLaunchesCleared",
     )
-    deps.applySessionState(payload.session)
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
+    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
     return payload
   }
 
@@ -511,9 +480,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       response,
       "WorkflowRunCancelled",
     )
-    deps.applySessionState(payload.session)
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
+    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
     return payload
   }
 
@@ -523,16 +490,14 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       response,
       "WorkflowRunResumed",
     )
-    deps.applySessionState(payload.session)
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
+    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
     return payload
   }
 
   return {
     ...workflowScreen,
-    replaceWorkflowDefinitions,
-    upsertWorkflowDefinition,
+    replaceWorkflowDefinitions: workflowSessionState.replaceWorkflowDefinitions,
+    upsertWorkflowDefinition: workflowSessionState.upsertWorkflowDefinition,
     createWorkflow,
     listWorkflows,
     resolveWorkflow,
