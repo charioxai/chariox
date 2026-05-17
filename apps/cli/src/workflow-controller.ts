@@ -1,15 +1,6 @@
-import type {
-  RuntimeSession,
-  WorkflowDefinition,
-} from "./cli-types.js"
-import {
-  aliasWorkflowRequest,
-  createWorkflowRequest,
-  listWorkflowsRequest,
-  resolveWorkflowRequest,
-} from "./ipc-requests.js"
-import { expectVariant } from "./ipc-response.js"
+import type { RuntimeSession } from "./cli-types.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
+import { createWorkflowDefinitionController } from "./workflow-definition-controller.js"
 import { createWorkflowRuntimeController } from "./workflow-runtime-controller.js"
 import { createWorkflowScreenController } from "./workflow-screen-controller.js"
 import { createWorkflowSessionStateController } from "./workflow-session-state.js"
@@ -75,45 +66,15 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     sessionId: () => deps.sessionState().id,
     applyWorkflowSessionRefresh: workflowSessionState.applyWorkflowSessionRefresh,
   })
-
-  const createWorkflow = async (alias?: string | null) => {
-    const response = await deps.sendRequest(createWorkflowRequest(deps.sessionState().id, alias))
-    const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowCreated",
-    )
-    deps.applySessionState(payload.session)
-    deps.setSelectedWorkflowId(payload.workflow.id)
-    deps.setSelectedWorkflowNodeId(null)
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
-    return payload
-  }
-
-  const listWorkflows = async () => {
-    const response = await deps.sendRequest(listWorkflowsRequest(deps.sessionState().id))
-    const payload = expectVariant<{ workflows: WorkflowDefinition[] }>(response, "WorkflowsListed")
-    return payload.workflows
-  }
-
-  const resolveWorkflow = async (workflowRef: string) => {
-    const response = await deps.sendRequest(resolveWorkflowRequest(deps.sessionState().id, workflowRef))
-    return expectVariant<{ workflow: WorkflowDefinition }>(response, "WorkflowResolved")
-  }
-
-  const assignWorkflowAlias = async (workflowId: string, alias: string) => {
-    const response = await deps.sendRequest(aliasWorkflowRequest(deps.sessionState().id, workflowId, alias))
-    const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowAliased",
-    )
-    deps.applySessionState(payload.session)
-    if (payload.workflow) {
-      deps.rebuildTranscript()
-      deps.applyResponseLayout()
-    }
-    return payload.workflow
-  }
+  const workflowDefinitions = createWorkflowDefinitionController({
+    sendRequest: deps.sendRequest,
+    sessionId: () => deps.sessionState().id,
+    applySessionState: deps.applySessionState,
+    setSelectedWorkflowId: deps.setSelectedWorkflowId,
+    setSelectedWorkflowNodeId: deps.setSelectedWorkflowNodeId,
+    rebuildTranscript: deps.rebuildTranscript,
+    applyResponseLayout: deps.applyResponseLayout,
+  })
 
   return {
     ...workflowScreen,
@@ -121,11 +82,8 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     ...workflowTopology,
     ...workflowWatchdogs,
     ...workflowSettings,
+    ...workflowDefinitions,
     replaceWorkflowDefinitions: workflowSessionState.replaceWorkflowDefinitions,
     upsertWorkflowDefinition: workflowSessionState.upsertWorkflowDefinition,
-    createWorkflow,
-    listWorkflows,
-    resolveWorkflow,
-    assignWorkflowAlias,
   }
 }

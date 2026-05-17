@@ -94,6 +94,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: CLI workflow runtime invoke/queue/run requests are responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI workflow watchdog requests are responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI workflow settings requests are responsibility-owned; CLI tests pass.
+- Latest verified batch: CLI workflow definition metadata requests are responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI prompt-history attachment hydration lifecycle is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI workflow node instructions editor lifecycle is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI provider recovery relaunch/reapply flow is responsibility-owned; CLI tests pass.
