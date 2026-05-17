@@ -51,18 +51,13 @@ import {
 } from "./agent-activity-state.js"
 import { createAgentFocusTransitionController } from "./agent-focus-transition-controller.js"
 import {
-  captureCliDialogFocus,
   describeCliDialogFocusTarget,
-  restoreCliDialogFocus,
   type CliDialogFocusTarget,
 } from "./cli-dialog-focus-controller.js"
+import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
 import {
   renderCliDialogOverlay,
 } from "./cli-dialog-overlay.js"
-import {
-  cliDialogOverlayIsOpen,
-  resolveCliDialogOverlayMode,
-} from "./cli-dialog-overlay-state.js"
 import {
   computeTranscriptRebuildScrollTop,
   nextWaitingRoomIntroStep,
@@ -856,7 +851,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const setCenterMode = (_mode: "transcript") => {}
   const setDirectoryTreeState = (_value: null) => {}
   let promptInput: TextareaRenderable | undefined
-  let hotkeysFocus: Renderable | null = null
   let transcriptScrollbox: ScrollBoxRenderable | undefined
   let responseLayoutBox: BoxRenderable | undefined
   const responseRowBoxes: Array<BoxRenderable | undefined> = []
@@ -1478,13 +1472,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       current_focus: describeRenderableDebug(currentFocusedRenderable()),
     })
     toggleHotkeys()
-    hotkeyDebug(`shortcut ${source} finished open=${hotkeysOpen()} saved=${describeRenderableDebug(hotkeysFocus)?.type ?? "none"}`)
+    hotkeyDebug(`shortcut ${source} finished open=${hotkeysOpen()} saved=${dialogOverlayController.savedFocusDebug()?.type ?? "none"}`)
     appLogger?.debug("finished toggling hotkeys via shortcut", {
       source,
       reason: hotkeysToggle.reason,
       previous_hotkeys_open: previousHotkeysOpen,
       hotkeys_open: hotkeysOpen(),
-      saved_focus: describeRenderableDebug(hotkeysFocus),
+      saved_focus: dialogOverlayController.savedFocusDebug(),
       current_focus: describeRenderableDebug(currentFocusedRenderable()),
     })
     return true
@@ -2175,191 +2169,58 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     return index
   }
-  const dialogOverlayState = () => ({
-    hotkeysOpen: hotkeysOpen(),
-    terminalPairingOpen: terminalPairingOpen(),
-    sessionBrowserOpen: sessionBrowserOpen(),
+  const dialogOverlayController = createCliDialogOverlayController({
+    getOpenState: () => ({
+      hotkeysOpen: hotkeysOpen(),
+      terminalPairingOpen: terminalPairingOpen(),
+      sessionBrowserOpen: sessionBrowserOpen(),
+    }),
+    getCurrentFocus: () => currentFocusedRenderable() as CliDialogFocusTarget | null,
+    getPromptFocus: () => promptInput as CliDialogFocusTarget | null | undefined,
+    describeFocus: (target) => describeRenderableDebug(target as Renderable | null | undefined),
+    scheduleFocusRestore: (callback) => {
+      startTimeout(callback, 1)
+    },
+    setHotkeysOpen,
+    setTerminalPairingOpen,
+    setSessionBrowserOpen,
+    setTerminalPairing: setTerminalPairingState,
+    setTerminalPairingQrLines,
+    getSessionCount: () => sessionBrowserSessions().length,
+    getWaitingRoomSessionIndex: () => waitingRoomState().sessionIndex,
+    setSessionBrowserIndex,
+    clampSessionBrowserIndex,
+    renderOverlay: (mode, onDismiss) => {
+      renderCliDialogOverlay({
+        overlayBox: hotkeysOverlayBox,
+        renderer,
+        dimensions: dimensions(),
+        mode,
+        onDismiss,
+        sessions: sessionBrowserSessions(),
+        normalizeSessionBrowserIndex,
+        terminalPairing: terminalPairingState(),
+        terminalPairingQrLines: terminalPairingQrLines(),
+        hotkeySections: hotkeySections(),
+      })
+    },
+    createTerminalPairingLink: () => createTerminalPairingLink(client, "cli"),
+    renderTerminalPairingQr,
+    flashFooter: (message, tone) => flashFooter(message, tone),
+    debugHotkey: (message) => hotkeyDebug(message),
+    logDebug: (message, fields) => appLogger?.debug(message, fields),
+    formatError,
   })
-  const dialogOverlayOpen = () => cliDialogOverlayIsOpen(dialogOverlayState())
-  const closeActiveDialogOverlay = () => {
-    const mode = resolveCliDialogOverlayMode(dialogOverlayState())
-    if (mode === "session-browser") {
-      closeSessionBrowserDialog()
-    } else if (mode === "terminal-pairing") {
-      closeTerminalPairingDialog()
-    } else if (mode === "hotkeys") {
-      closeHotkeys()
-    }
-  }
-  const renderHotkeysOverlay = () => {
-    renderCliDialogOverlay({
-      overlayBox: hotkeysOverlayBox,
-      renderer,
-      dimensions: dimensions(),
-      mode: resolveCliDialogOverlayMode(dialogOverlayState()),
-      onDismiss: closeActiveDialogOverlay,
-      sessions: sessionBrowserSessions(),
-      normalizeSessionBrowserIndex,
-      terminalPairing: terminalPairingState(),
-      terminalPairingQrLines: terminalPairingQrLines(),
-      hotkeySections: hotkeySections(),
-    })
-  }
-  const captureDialogFocus = () => {
-    const focused = currentFocusedRenderable()
-    hotkeysFocus = captureCliDialogFocus(
-      focused as CliDialogFocusTarget | null,
-      promptInput as CliDialogFocusTarget | null | undefined,
-    ) as Renderable | null
-    return focused
-  }
-  const restoreDialogFocusLater = (
-    restoreTarget: Renderable | null,
-    onRestored?: () => void,
-    onSkipped?: () => void,
-  ) => {
-    startTimeout(() => {
-      const restored = restoreCliDialogFocus(restoreTarget as CliDialogFocusTarget | null)
-      if (restored) {
-        onRestored?.()
-      } else {
-        onSkipped?.()
-      }
-      hotkeysFocus = null
-    }, 1)
-  }
-  const closeHotkeys = () => {
-    if (!hotkeysOpen()) {
-      return
-    }
-    const restoreTarget = hotkeysFocus
-    hotkeyDebug(`close start open=${hotkeysOpen()} saved=${describeRenderableDebug(restoreTarget)?.type ?? "none"} current=${describeRenderableDebug(currentFocusedRenderable())?.type ?? "none"}`)
-    appLogger?.debug("closing hotkeys overlay", {
-      hotkeys_open: hotkeysOpen(),
-      restore_focus: describeRenderableDebug(restoreTarget),
-      current_focus: describeRenderableDebug(currentFocusedRenderable()),
-    })
-    setHotkeysOpen(false)
-    renderHotkeysOverlay()
-    restoreDialogFocusLater(
-      restoreTarget,
-      () => {
-        hotkeyDebug(`close restored saved=${describeRenderableDebug(restoreTarget)?.type ?? "none"} current=${describeRenderableDebug(currentFocusedRenderable())?.type ?? "none"}`)
-        appLogger?.debug("hotkeys overlay restored focus", {
-          restore_focus: describeRenderableDebug(restoreTarget),
-          current_focus: describeRenderableDebug(currentFocusedRenderable()),
-        })
-      },
-      () => {
-        hotkeyDebug(`close skip-restore saved=${describeRenderableDebug(restoreTarget)?.type ?? "none"}`)
-        appLogger?.debug("hotkeys overlay skipped focus restore", {
-          restore_focus: describeRenderableDebug(restoreTarget),
-          current_focus: describeRenderableDebug(currentFocusedRenderable()),
-        })
-      },
-    )
-  }
-  const closeTerminalPairingDialog = () => {
-    if (!terminalPairingOpen()) {
-      return
-    }
-    const restoreTarget = hotkeysFocus
-    setTerminalPairingOpen(false)
-    renderHotkeysOverlay()
-    restoreDialogFocusLater(restoreTarget)
-  }
-  const closeSessionBrowserDialog = () => {
-    if (!sessionBrowserOpen()) {
-      return
-    }
-    const restoreTarget = hotkeysFocus
-    setSessionBrowserOpen(false)
-    renderHotkeysOverlay()
-    restoreDialogFocusLater(restoreTarget)
-  }
-  const openHotkeys = () => {
-    if (hotkeysOpen()) {
-      return
-    }
-    const focused = captureDialogFocus()
-    hotkeyDebug(`open start current=${describeRenderableDebug(focused)?.type ?? "none"} saved=${describeRenderableDebug(hotkeysFocus)?.type ?? "none"}`)
-    appLogger?.debug("opening hotkeys overlay", {
-      hotkeys_open: hotkeysOpen(),
-      current_focus: describeRenderableDebug(focused),
-      saved_focus: describeRenderableDebug(hotkeysFocus),
-    })
-    hotkeyDebug(`open blurred saved=${describeRenderableDebug(hotkeysFocus)?.type ?? "none"} current=${describeRenderableDebug(currentFocusedRenderable())?.type ?? "none"}`)
-    appLogger?.debug("hotkeys overlay blurred saved focus", {
-      saved_focus: describeRenderableDebug(hotkeysFocus),
-      current_focus: describeRenderableDebug(currentFocusedRenderable()),
-    })
-    setHotkeysOpen(true)
-    renderHotkeysOverlay()
-    hotkeyDebug(`open done open=${hotkeysOpen()} saved=${describeRenderableDebug(hotkeysFocus)?.type ?? "none"}`)
-    appLogger?.debug("hotkeys overlay opened", {
-      hotkeys_open: hotkeysOpen(),
-      saved_focus: describeRenderableDebug(hotkeysFocus),
-      current_focus: describeRenderableDebug(currentFocusedRenderable()),
-    })
-  }
-  const openTerminalPairingDialog = async () => {
-    if (terminalPairingOpen()) {
-      return
-    }
-    captureDialogFocus()
-    setTerminalPairingState(null)
-    setTerminalPairingQrLines([])
-    setHotkeysOpen(false)
-    setTerminalPairingOpen(true)
-    renderHotkeysOverlay()
-    try {
-      const pairing = await createTerminalPairingLink(client, "cli")
-      const qrLines = await renderTerminalPairingQr(pairing.pairing_link)
-      setTerminalPairingState(pairing)
-      setTerminalPairingQrLines(qrLines)
-      renderHotkeysOverlay()
-      flashFooter("terminal pairing link created", "info")
-    } catch (error) {
-      closeTerminalPairingDialog()
-      flashFooter(formatError(error), "error")
-    }
-  }
-  const openSessionBrowserDialog = () => {
-    if (sessionBrowserOpen()) {
-      return
-    }
-    const sessions = sessionBrowserSessions()
-    if (sessions.length === 0) {
-      flashFooter("no sessions available to join", "error")
-      return
-    }
-    captureDialogFocus()
-    setHotkeysOpen(false)
-    setTerminalPairingOpen(false)
-    setSessionBrowserIndex(clampSessionBrowserIndex(waitingRoomState().sessionIndex, sessions.length))
-    setSessionBrowserOpen(true)
-    renderHotkeysOverlay()
-    flashFooter("select a session to open, archive, or delete", "info")
-  }
-  const toggleHotkeys = () => {
-    hotkeyDebug(`toggle open=${hotkeysOpen()} current=${describeRenderableDebug(currentFocusedRenderable())?.type ?? "none"}`)
-    appLogger?.debug("toggleHotkeys invoked", {
-      hotkeys_open: hotkeysOpen(),
-      saved_focus: describeRenderableDebug(hotkeysFocus),
-      current_focus: describeRenderableDebug(currentFocusedRenderable()),
-    })
-    if (hotkeysOpen()) {
-      closeHotkeys()
-      return
-    }
-    if (terminalPairingOpen()) {
-      closeTerminalPairingDialog()
-    }
-    if (sessionBrowserOpen()) {
-      closeSessionBrowserDialog()
-    }
-    openHotkeys()
-  }
+  const dialogOverlayOpen = dialogOverlayController.isOpen
+  const closeActiveDialogOverlay = dialogOverlayController.closeActive
+  const renderHotkeysOverlay = dialogOverlayController.render
+  const closeHotkeys = dialogOverlayController.closeHotkeys
+  const closeTerminalPairingDialog = dialogOverlayController.closeTerminalPairing
+  const closeSessionBrowserDialog = dialogOverlayController.closeSessionBrowser
+  const openHotkeys = dialogOverlayController.openHotkeys
+  const openTerminalPairingDialog = dialogOverlayController.openTerminalPairing
+  const openSessionBrowserDialog = dialogOverlayController.openSessionBrowser
+  const toggleHotkeys = dialogOverlayController.toggleHotkeys
   const promptContentChangeController = createPromptContentChangeController({
     getPromptText: () => promptInput ? promptTextController.currentText() : null,
     isAttached,
