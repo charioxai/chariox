@@ -164,6 +164,7 @@ import {
 import { deleteKernel } from "./kernel-api.js"
 import { createKernelEventSubscriptionController } from "./kernel-event-subscription-controller.js"
 import { createKernelRestartRecoveryController } from "./kernel-restart-recovery-controller.js"
+import { createKernelResyncController } from "./kernel-resync-controller.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
 import { runPollingLoop } from "./polling-effects.js"
@@ -940,7 +941,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let uiBatchDepth = 0
   // Connection resilience tracking
   const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
-  let kernelResyncInFlight: Promise<void> | null = null
   let lastLoggedFocusedBadgeState: string | null = null
   const agentFocusTransitionController = createAgentFocusTransitionController()
   let currentTurnId = computeCurrentTurnId(initialEntries)
@@ -6856,62 +6856,52 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const resyncAttachedKernelState = async (reason: string) => {
-    if (kernelResyncInFlight) {
-      return kernelResyncInFlight
-    }
-    kernelResyncInFlight = (async () => {
-      const attachment = attachmentState()
-      if (!attachment || !isAttached()) {
-        return
-      }
-      const sessionId = sessionState().id
+  const kernelResyncController = createKernelResyncController({
+    getAttachment: attachmentState,
+    isAttached,
+    getSessionId: () => sessionState().id,
+    getSessionStateSnapshot: sessionState,
+    catchUpAttachedSession: (sessionId, attachmentId, session) =>
+      catchUpAttachedSession(client, sessionId, attachmentId, session, appLogger),
+    getSessionState: (sessionId) => getSessionState(client, sessionId),
+    getActiveProviderRunId: (session) => session.active_provider_run_id ?? null,
+    getProviderRunState: providerRunState,
+    tryGetProviderRun: (providerRunId) => tryGetProviderRun(client, providerRunId, appLogger),
+    sameProviderRun,
+    projectSession: applyProviderRunProfileToSession,
+    shouldRefreshAgentPanesForSessionChange,
+    sessionHasPromptWork,
+    applySession: applySessionState,
+    applyProviderRun: setProviderRunState,
+    refreshAgentPanes,
+    clearLocalBusyStateForAuthoritativeIdle,
+    onProviderRunCleared: (run, sessionId, reason) => {
+      logProviderRunDebug("kernel resync cleared provider run", run, {
+        session_id: sessionId,
+        reason,
+      })
+    },
+    onProviderRunRefreshed: (run, sessionId, previousProviderRunId, reason) => {
+      logProviderRunDebug("kernel resync refreshed provider run", run, {
+        session_id: sessionId,
+        previous_provider_run_id: previousProviderRunId,
+        reason,
+      })
+    },
+    onResyncStart: (sessionId, attachmentId, reason) => {
       appLogger?.info("resyncing attached kernel state", {
         reason,
         session_id: sessionId,
-        attachment_id: attachment.id,
+        attachment_id: attachmentId,
       })
-      await catchUpAttachedSession(client, sessionId, attachment.id, sessionState(), appLogger)
-      const previousSession = sessionState()
-      const nextSession = await getSessionState(client, sessionId)
-      if (!isAttached() || sessionState().id !== sessionId) {
-        return
-      }
-      const projectedSession = applyProviderRunProfileToSession(nextSession, providerRunState())
-      const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(projectedSession)
-      const promptJustCompleted = sessionHasPromptWork(previousSession) && !sessionHasPromptWork(projectedSession)
-      applySessionState(projectedSession)
-      if (!nextSession.active_provider_run_id) {
-        const activeRun = providerRunState()
-        if (activeRun) {
-          logProviderRunDebug("kernel resync cleared provider run", activeRun, {
-            session_id: nextSession.id,
-            reason,
-          })
-          setProviderRunState(null)
-        }
-      } else {
-        const activeRun = providerRunState()
-        const run = await tryGetProviderRun(client, nextSession.active_provider_run_id, appLogger)
-        if (run && (!activeRun || !sameProviderRun(activeRun, run))) {
-          logProviderRunDebug("kernel resync refreshed provider run", run, {
-            session_id: nextSession.id,
-            previous_provider_run_id: activeRun?.id ?? null,
-            reason,
-          })
-          setProviderRunState(run)
-          applySessionState(applyProviderRunProfileToSession(sessionState(), run))
-        }
-      }
-      if (shouldRefreshPanes || promptJustCompleted || reason === "transport_resumed" || reason === "replay_gap") {
-        await refreshAgentPanes(sessionState())
-      }
-      clearLocalBusyStateForAuthoritativeIdle(sessionState())
+    },
+    onResyncComplete: (reason) => {
       recordDaemonActivity(`kernel_resync_${reason}`)
       setDaemonDisconnected(false)
       setStatusLine(DEFAULT_CONNECTED_STATUS)
       updateSessionChrome()
-    })().catch((error) => {
+    },
+    onResyncFailed: (reason, error) => {
       appLogger?.warn("attached kernel resync failed", {
         reason,
         error: formatError(error),
@@ -6919,11 +6909,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setDaemonDisconnected(true)
       setStatusLine("Waiting to reconnect to the Arroba kernel.")
       updateSessionChrome()
-    }).finally(() => {
-      kernelResyncInFlight = null
-    })
-    return kernelResyncInFlight
-  }
+    },
+  })
+
+  const resyncAttachedKernelState = (reason: string) => kernelResyncController.resync(reason)
 
   const handleKernelEvent = async (event: KernelEvent) => {
     switch (event.event) {
