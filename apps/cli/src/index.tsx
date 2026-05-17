@@ -330,6 +330,7 @@ import {
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
 import { createSessionAttachmentController } from "./session-attachment-controller.js"
+import { resolveSessionAgentReference } from "./session-agent-resolver.js"
 import { createSessionLifecycleController } from "./session-lifecycle.js"
 import { createTranscriptHistoryLoadController } from "./transcript-history-load-controller.js"
 import {
@@ -1027,26 +1028,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return run && run.agent_instance_id === agentId ? run : null
   }
   const resolveSessionAgent = (reference?: string | null) => {
-    const normalizedReference = reference?.trim() ?? ""
-    if (!normalizedReference) {
-      const agent = focusedAgent()
-      return agent
-        ? { agent, error: null }
-        : { agent: null, error: "no focused agent available" }
-    }
-
-    const matches = sessionState().agents.filter((agent) => {
-      return agent.id === normalizedReference
-        || agent.agent_ref === normalizedReference
-        || agent.alias === normalizedReference
-    })
-    if (matches.length === 1) {
-      return { agent: matches[0], error: null }
-    }
-    if (matches.length > 1) {
-      return { agent: null, error: `multiple agents match '${normalizedReference}'` }
-    }
-    return { agent: null, error: `agent '${normalizedReference}' not found` }
+    return resolveSessionAgentReference(sessionState(), focusedAgentId(), reference)
   }
   const workflowInspector = () => buildWorkflowInspectorProjection({
     session: sessionState(),

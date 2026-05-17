@@ -12,6 +12,7 @@ import type {
   WorkflowWatchdogDefinition,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
+import type { ResolvedAgentReference } from "./session-agent-resolver.js"
 import { readFile } from "node:fs/promises"
 import { resolve as resolvePath } from "node:path"
 
@@ -19,11 +20,6 @@ const WORKFLOW_MAX_TURNS_CONFIG_KEY = "workflow.max_turns"
 const WORKFLOW_LAUNCH_POLICY_CONFIG_KEY = "workflow.launch_policy"
 
 type FooterTone = "info" | "error"
-
-type ResolvedAgentReference = {
-  agent: AgentInstance | null
-  error?: string
-}
 
 type WorkflowCreatePayload = {
   workflow: WorkflowDefinition

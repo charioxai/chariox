@@ -6,13 +6,9 @@ import type {
   SkillImportOutcome,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
+import type { ResolvedAgentReference } from "./session-agent-resolver.js"
 
 type FooterTone = "info" | "error"
-
-type ResolvedAgentReference = {
-  agent: AgentInstance | null
-  error?: string
-}
 
 export type CapabilityCommandHandlerDeps = {
   flashFooter: (message: string, tone: FooterTone) => void

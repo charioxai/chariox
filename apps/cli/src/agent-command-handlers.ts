@@ -12,16 +12,12 @@ import {
 } from "./command-worktree-placement.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
+import type { ResolvedAgentReference } from "./session-agent-resolver.js"
 
 const SESSION_AGENT_MODE_CONFIG_KEY = "agents.mode"
 const SESSION_AGENT_PERMISSION_CONFIG_KEY = "agents.permissions"
 
 type FooterTone = "info" | "error"
-
-type ResolvedAgentReference = {
-  agent: AgentInstance | null
-  error?: string
-}
 
 type AgentCyclePayload = {
   agent: AgentInstance | null
