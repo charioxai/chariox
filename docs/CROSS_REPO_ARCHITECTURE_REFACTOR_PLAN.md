@@ -274,6 +274,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: CLI prompt-meta ref callbacks and chrome update hook are controller-owned; CLI tests pass.
 - Latest verified batch: Cloud compatibility HTTP adapter delegates relay routes to a domain adapter handler; API build/tests pass.
 - Latest verified batch: Cloud compatibility HTTP adapter delegates device-login and session-invite routes to domain handlers; API build/tests pass.
+- Latest verified batch: Cloud compatibility HTTP adapter now composes account, managed-history, pairing, relay, auth, and invite handlers; API build/tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
