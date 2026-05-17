@@ -23,7 +23,6 @@ import type {
   RuntimeSession,
   SessionHistoryCursor,
   SessionHistoryEntry,
-  SessionHistoryPageEntry,
   SliceRecord,
   TerminalOutputRecord,
   TranscriptEntry,
@@ -72,7 +71,8 @@ import {
 } from "./commands.js"
 import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
-import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
+import { selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
+import { createAgentPaneRefreshController } from "./agent-pane-refresh-controller.js"
 import { createAgentPaneTranscriptEntryController } from "./agent-pane-transcript-entry-controller.js"
 import { createAgentPaneTranscriptInteractionController } from "./agent-pane-transcript-interaction-controller.js"
 import { createAgentPaneTranscriptRenderController } from "./agent-pane-transcript-render-controller.js"
@@ -285,10 +285,7 @@ import {
 } from "./provider-api.js"
 import { createProviderSelectionController } from "./provider-selection-controller.js"
 import { createProviderRecoveryController } from "./provider-recovery-controller.js"
-import {
-  hydrateTranscriptEntries,
-  stitchPrependedHistory,
-} from "./transcript-history.js"
+import { hydrateTranscriptEntries } from "./transcript-history.js"
 import {
   createPromptContentChangeController,
 } from "./prompt-content-change-controller.js"
@@ -2706,59 +2703,29 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAgentPanePreview(agentId, formatTranscriptPreview(currentEntries))
   })
 
-  const refreshAgentPanes = async (session: RuntimeSession) => {
-    const nextPaneState = await refreshAgentPaneState<AgentInstance, SessionHistoryPageEntry, TranscriptEntry, SessionHistoryCursor>({
-      session,
-      hasPromptWork: sessionHasPromptWork(session),
-      expandedTurnIdsByAgent: expandedTurnIdsByAgent(),
-      currentPaneEntriesByAgent: Object.fromEntries(
-        session.agents.map((agent) => [agent.id, currentAgentPaneEntries(agent.id)]),
-      ),
-      resolveVisibleAgentId: (agents, focusedAgentId) =>
-        selectResponsePaneAgents(
-          agents,
-          focusedAgentId,
-          splitAgentResponseMode(),
-          maxAgentsPerScreen(),
-        ).visibleTranscriptAgentId,
-      loadHistoryPage: async (agentId, cursor) => {
-        const historyPage = await getSessionHistory(client, session.id, cursor, agentId)
-        return {
-          entries: historyPage.entries,
-          nextCursor: historyPage.next_cursor,
-        }
-      },
-      hydrateEntries: hydrateTranscriptEntries,
-      stitchPrependedHistory,
-      collapseHistoricalTurns: (entries) => entries,
-      applyExpandedTurns,
-      reindexEntries: reindexTranscriptEntries,
-      formatPreview: formatTranscriptPreview,
-      preserveExpandedTurnIds: true,
-    })
-
-    pruneAuxiliaryAgentPanes(session)
-    setExpandedTurnIdsByAgent(nextPaneState.expandedTurnIdsByAgent)
-    setAgentPanePreviews(nextPaneState.previews)
-    setAgentPaneEntries(nextPaneState.paneEntries)
-    setNextHistoryCursor(nextPaneState.visibleCursor)
-    replaceTranscriptEntries(
-      (nextPaneState.visibleAgentId ? nextPaneState.paneEntries[nextPaneState.visibleAgentId] : nextPaneState.visibleEntries)
-        ?.map((entry) => ({ ...entry })) ?? [],
-      nextPaneState.visibleAgentId,
-    )
-    applyResponseLayout()
-    if (splitAgentResponseMode()) {
-      for (const agentId of splitPaneAuxiliaryAgentIds(
-        session.agents,
-        session.focused_agent_id,
-        true,
-        maxAgentsPerScreen(),
-      )) {
-        rebuildAuxiliaryAgentPane(agentId)
+  const agentPaneRefreshController = createAgentPaneRefreshController({
+    getExpandedTurnIdsByAgent: expandedTurnIdsByAgent,
+    currentAgentPaneEntries,
+    splitAgentResponseMode,
+    maxAgentsPerScreen,
+    loadHistoryPage: async (sessionId, agentId, cursor) => {
+      const historyPage = await getSessionHistory(client, sessionId, cursor, agentId)
+      return {
+        entries: historyPage.entries,
+        nextCursor: historyPage.next_cursor,
       }
-    }
-  }
+    },
+    pruneAuxiliaryAgentPanes,
+    setExpandedTurnIdsByAgent,
+    setAgentPanePreviews,
+    setAgentPaneEntries,
+    setNextHistoryCursor,
+    applyExpandedTurns,
+    replaceTranscriptEntries: (entries, agentId) => replaceTranscriptEntries(entries, agentId),
+    applyResponseLayout,
+    rebuildAuxiliaryAgentPane,
+  })
+  const refreshAgentPanes = agentPaneRefreshController.refresh
 
   const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({
     getScrollbox: () => transcriptScrollbox,
