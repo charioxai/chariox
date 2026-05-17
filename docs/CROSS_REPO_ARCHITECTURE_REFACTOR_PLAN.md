@@ -286,6 +286,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: Cloud shared-session member listing/projection is split from invite lifecycle persistence; API build/tests pass.
 - Latest verified batch: Cloud managed-history policy persistence is split from record/search/export persistence; API build/tests pass.
 - Latest verified batch: Cloud managed-history record append, search, and export persistence are responsibility-owned modules; API build/tests pass.
+- Latest verified batch: Cloud admin paired-identity revocation mechanics are split from admin lifecycle orchestration; API build/tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
