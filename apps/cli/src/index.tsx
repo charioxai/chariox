@@ -63,6 +63,7 @@ import { createCliDialogOverlayController } from "./cli-dialog-overlay-controlle
 import {
   renderCliDialogOverlay,
 } from "./cli-dialog-overlay.js"
+import { createCliLoadingStateController } from "./cli-loading-state-controller.js"
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
 import {
@@ -2276,26 +2277,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
 
-  const setHistoryLoadingState = (next: boolean) => {
-    setLoadingHistory(next)
-    renderHistoryLoadingIndicator()
-  }
-
-  const setSessionHydratingState = (next: boolean) => {
-    if (sessionHydrating() === next) {
-      return
-    }
-    setSessionHydrating(next)
-    if (isAttached() && visibleTranscriptEntries().length === 0 && !workflowScreenActive()) {
-      rebuildTranscript()
-      return
-    }
-    requestTranscriptRender()
-  }
-
   const requestTranscriptRender = () => {
     transcriptRenderDeferralController.request()
   }
+
+  const loadingStateController = createCliLoadingStateController({
+    getSessionHydrating: sessionHydrating,
+    setSessionHydrating,
+    setLoadingHistory,
+    renderHistoryLoadingIndicator,
+    isAttached,
+    visibleTranscriptEntryCount: () => visibleTranscriptEntries().length,
+    workflowScreenActive: () => workflowScreenActive(),
+    rebuildTranscript: () => rebuildTranscript(),
+    requestTranscriptRender,
+  })
+  const setHistoryLoadingState = loadingStateController.setHistoryLoadingState
+  const setSessionHydratingState = loadingStateController.setSessionHydratingState
 
   const flushDeferredUiUpdates = () => {
     transcriptRenderDeferralController.flush()
