@@ -43,6 +43,7 @@ import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
 import { createCliAutomationServerController } from "./cli-automation-server-controller.js"
 import { buildCliAutomationSnapshot } from "./cli-automation-snapshot.js"
 import { createDeferredBootstrapController } from "./deferred-bootstrap-controller.js"
+import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
 import {
   deriveAllAgentsBusyState,
   deriveFocusedActivityLabel,
@@ -1320,6 +1321,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     warn: (message, fields) => appLogger?.warn(message, fields),
     formatError,
   })
+  const refreshWaitingRoomDataNow = waitingRoomInventoryRefreshController.refreshNow
+  const refreshWaitingRoomData = waitingRoomInventoryRefreshController.refresh
+  const detachedKernelConnectController = createDetachedKernelConnectController({
+    logInfo: (message, fields) => appLogger?.info(message, fields),
+    flashFooter: (message, tone) => flashFooter(message, tone),
+    getProviderCatalog: () => getProviderCatalog(client, appLogger),
+    getProviderCommandCatalogs: () => getProviderCommandCatalogs(client, appLogger),
+    invalidateWaitingRoomInventory: waitingRoomInventoryRefreshController.invalidate,
+    setProviderCatalog: setProviderCatalogState,
+    setProviderCommandCatalogs: setProviderCommandCatalogState,
+    setKernelConnected,
+    setDaemonDisconnected,
+    refreshWaitingRoomData,
+  })
+  const connectDetachedKernelFromWaitingRoom = detachedKernelConnectController.connect
   const waitingRoomLifecycleActionController = createWaitingRoomLifecycleActionController({
     isKernelConnected: kernelConnected,
     connectDetachedKernel: () => connectDetachedKernelFromWaitingRoom(),
@@ -1361,23 +1377,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     formatError,
   })
   const applyWaitingRoomSessionLifecycleAction = waitingRoomLifecycleActionController.applyAction
-  const connectDetachedKernelFromWaitingRoom = async () => {
-    appLogger?.info("connecting detached cli to configured kernel endpoint")
-    flashFooter("connecting to kernel...", "info")
-    const [catalog, commandCatalogs] = await Promise.all([
-      getProviderCatalog(client, appLogger),
-      getProviderCommandCatalogs(client, appLogger),
-    ])
-    waitingRoomInventoryRefreshController.invalidate()
-    setProviderCatalogState(catalog)
-    setProviderCommandCatalogState(commandCatalogs)
-    setKernelConnected(true)
-    setDaemonDisconnected(false)
-    await refreshWaitingRoomData()
-    flashFooter("connected to kernel", "info")
-  }
-  const refreshWaitingRoomDataNow = waitingRoomInventoryRefreshController.refreshNow
-  const refreshWaitingRoomData = waitingRoomInventoryRefreshController.refresh
   const currentProviderSelection = () => deriveCurrentProviderSelection({
     providerRun: focusedProviderRun(),
     focusedAgent: focusedAgent(),
