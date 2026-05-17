@@ -75,6 +75,11 @@ import {
   shouldSubmitExactCommandCenterMatch,
   type CommandCenterItem,
 } from "./command-center.js"
+import {
+  commandCenterCompletionText,
+  commandCenterExecutionCommand,
+  shouldBypassCommandCenterSubmitSelection,
+} from "./command-center-selection.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
 import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
@@ -2106,113 +2111,42 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     renderCommandCenter()
   }
   const commandCenterOpen = () => commandCenterItems().length > 0 && commandCenterQuery().startsWith("/")
+  const replacePromptTextFromCommandCenter = (value: string) => {
+    setPromptText(value)
+    if (promptInput) {
+      promptInput.cursorOffset = value.length
+    }
+    syncPromptTextSnapshot()
+  }
   const selectCommandCenterItem = async (item: CommandCenterItem) => {
-    if (item.kind === "command") {
-      try {
+    const command = commandCenterExecutionCommand(item)
+    if (command === null) {
+      const completionText = commandCenterCompletionText(item)
+      replacePromptTextFromCommandCenter(completionText)
+      syncCommandCenter(completionText)
+      return
+    }
+
+    const clearsBeforeExecution = item.kind === "command" || item.kind === "group"
+    try {
+      if (clearsBeforeExecution) {
         clearCommandCenter()
-        setPromptText("")
-        syncPromptTextSnapshot()
-        await executeCommandCenterCommand(item.value)
-      } catch (error) {
-        flashFooter(formatError(error), "error")
+        replacePromptTextFromCommandCenter("")
       }
-      return
-    }
-    if (item.kind === "group") {
-      if (!item.value.endsWith(" ")) {
-        try {
-          clearCommandCenter()
-          setPromptText("")
-          syncPromptTextSnapshot()
-          await executeCommandCenterCommand(item.value)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-        return
-      }
-      setPromptText(item.value)
-      if (promptInput) {
-        promptInput.cursorOffset = item.value.length
-      }
-      syncPromptTextSnapshot()
-      syncCommandCenter(item.value)
-      return
-    }
-    if (item.kind === "provider") {
-      try {
-        await executeCommandCenterCommand(`/provider ${item.value}`)
-      } catch (error) {
-        flashFooter(formatError(error), "error")
-      } finally {
-        setPromptText("")
-        syncPromptTextSnapshot()
-        syncCommandCenter("")
-      }
-      return
-    }
-    if (item.kind === "model") {
-      try {
-        await executeCommandCenterCommand(`/model ${item.value}`)
-      } catch (error) {
-        flashFooter(formatError(error), "error")
-      } finally {
-        setPromptText("")
-        syncPromptTextSnapshot()
-        syncCommandCenter("")
-      }
-      return
-    }
-    if (item.kind === "variant") {
-      try {
-        await executeCommandCenterCommand(`/variant ${item.value}`)
-      } catch (error) {
-        flashFooter(formatError(error), "error")
-      } finally {
-        setPromptText("")
-        syncPromptTextSnapshot()
+      await executeCommandCenterCommand(command)
+    } catch (error) {
+      flashFooter(formatError(error), "error")
+    } finally {
+      if (!clearsBeforeExecution) {
+        replacePromptTextFromCommandCenter("")
         syncCommandCenter("")
       }
     }
   }
   const completeCommandCenterItem = (item: CommandCenterItem) => {
-    if (item.kind === "command" || item.kind === "group") {
-      setPromptText(item.value)
-      if (promptInput) {
-        promptInput.cursorOffset = item.value.length
-      }
-      syncPromptTextSnapshot()
-      syncCommandCenter(item.value)
-      return
-    }
-    if (item.kind === "provider") {
-      const command = `/provider ${item.value}`
-      setPromptText(command)
-      if (promptInput) {
-        promptInput.cursorOffset = command.length
-      }
-      syncPromptTextSnapshot()
-      syncCommandCenter(command)
-      return
-    }
-    if (item.kind === "model") {
-      const command = `/model ${item.value}`
-      setPromptText(command)
-      if (promptInput) {
-        promptInput.cursorOffset = command.length
-      }
-      syncPromptTextSnapshot()
-      syncCommandCenter(command)
-      return
-    }
-    if (item.kind === "variant") {
-      const command = `/variant ${item.value}`
-      setPromptText(command)
-      if (promptInput) {
-        promptInput.cursorOffset = command.length
-      }
-      syncPromptTextSnapshot()
-      syncCommandCenter(command)
-    }
+    const completionText = commandCenterCompletionText(item)
+    replacePromptTextFromCommandCenter(completionText)
+    syncCommandCenter(completionText)
   }
   const moveCommandCenterSelection = (delta: number) => {
     const items = commandCenterItems()
@@ -2282,23 +2216,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return false
   }
   const selectCommandCenterFromSubmit = () => {
-    const isSessionAliasPrompt = (prompt: string) => {
-      const command = parseSlashCommand(prompt)
-      if (!command || command.kind !== "session" || command.action === null) {
-        return false
-      }
-      const action = command.action.toLowerCase()
-      if (action === "new" || action === "create" || action === "attach" || action === "list" || action === "ls" || action === "delete") {
-        return false
-      }
-      return true
-    }
     const item = selectedCommandCenterItem()
     if (!item) {
       return false
     }
     const currentPrompt = promptInput?.plainText ?? ""
-    if (isSessionAliasPrompt(currentPrompt)) {
+    if (shouldBypassCommandCenterSubmitSelection(currentPrompt)) {
       return false
     }
     // Leaf commands like `/session attach ` should submit once fully typed.
