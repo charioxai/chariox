@@ -9,16 +9,12 @@ import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentu
 import { batch, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 
-import {
-  normalizeRuntimeSession,
-} from "./cli-types.js"
 import type {
   AgentInstance,
   BootstrapState,
   CliOptions,
   RuntimeAttachment,
   RuntimeInteraction,
-  RuntimeNoticeRecord,
   RuntimeProviderRun,
   RuntimeSession,
   SessionHistoryCursor,
@@ -89,10 +85,11 @@ import { createHistoryScrollRestoreController } from "./history-scroll-restore-c
 import { clampScrollTop } from "./history-viewport.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
-import { KernelEvent, LocalIpcClient } from "./ipc.js"
+import { LocalIpcClient } from "./ipc.js"
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
+import { createKernelEventDispatchController } from "./kernel-event-dispatch-controller.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
@@ -4283,65 +4280,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const resyncAttachedKernelState = (reason: string) => kernelResyncController.resync(reason)
 
-  const handleKernelEvent = async (event: KernelEvent) => {
-    switch (event.event) {
-      case "terminal_output":
-        recordDaemonActivity("kernel_terminal_output")
-        queueTerminalOutputRecords(event.records as TerminalOutputRecord[])
-        return
-      case "runtime_notices":
-        kernelEventController.applyRuntimeNotices(event.notices as RuntimeNoticeRecord[])
-        return
-      case "assistant_message_completed":
-        kernelEventController.applyAssistantMessageCompleted(event)
-        return
-      case "session_snapshot":
-        recordDaemonActivity("kernel_session_snapshot")
-        scheduleSharedPromptInputHistoryRefresh()
-        await applyKernelSessionSnapshot(
-          normalizeRuntimeSession({
-            ...(event.session as RuntimeSession),
-            ...((event.agent_activity && typeof event.agent_activity === "object")
-              ? { agent_activity: event.agent_activity }
-              : {}),
-          } as RuntimeSession),
-          (event.provider_run as RuntimeProviderRun | null) ?? null,
-        )
-        return
-      case "heartbeat":
-        recordDaemonActivity("kernel_heartbeat")
-        scheduleSharedPromptInputHistoryRefresh()
-        return
-      case "session_unavailable":
-        await handleKernelSessionUnavailable(event.message)
-        return
-      case "relay_status_changed":
-        void refreshWaitingRoomData()
-        return
-      case "remote_machines_changed":
-        void refreshWaitingRoomData()
-        return
-      case "waiting_room_inventory_changed":
-        void refreshWaitingRoomData()
-        return
-      case "transport_resumed":
-        kernelEventController.applyTransportResumed()
-        scheduleSharedPromptInputHistoryRefresh()
-        void resyncAttachedKernelState("transport_resumed")
-        return
-      case "replay_gap":
-        recordDaemonActivity("kernel_replay_gap")
-        appendNotice("Missed retained kernel events, refreshed session state.", "warning")
-        flashFooter("Missed retained kernel events, refreshed session state.", "info")
-        void resyncAttachedKernelState("replay_gap")
-        return
-      case "transport_closed":
-        kernelEventController.applyTransportClosed(event.message)
-        void recoverAttachedSessionAfterKernelRestart()
-        return
-    }
-  }
-
   const handleKernelSessionUnavailable = async (message: string) => {
     const sessionId = sessionState().id
     if (isAttached() && sessionId) {
@@ -4372,6 +4310,24 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     await transitionToNoSession(message)
   }
+
+  const kernelEventDispatchController = createKernelEventDispatchController({
+    recordDaemonActivity,
+    queueTerminalOutputRecords,
+    applyRuntimeNotices: kernelEventController.applyRuntimeNotices,
+    applyAssistantMessageCompleted: kernelEventController.applyAssistantMessageCompleted,
+    applyKernelSessionSnapshot,
+    scheduleSharedPromptInputHistoryRefresh,
+    handleKernelSessionUnavailable,
+    refreshWaitingRoomData,
+    applyTransportResumed: kernelEventController.applyTransportResumed,
+    resyncAttachedKernelState,
+    appendNotice,
+    flashFooter,
+    applyTransportClosed: kernelEventController.applyTransportClosed,
+    recoverAttachedSessionAfterKernelRestart,
+  })
+  const handleKernelEvent = kernelEventDispatchController.handleKernelEvent
 
   const startConnectionWatchdog = connectionHealthWatchdogController.start
 
