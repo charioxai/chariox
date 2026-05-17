@@ -314,6 +314,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: Cloud relay services depend on narrow repository contracts and relay persistence input modules; API build/tests pass.
 - Latest verified batch: Cloud device-login service depends on a narrow repository contract and device-login persistence input module; API build/tests pass.
 - Latest verified batch: Cloud browser-session service depends on a narrow repository contract and browser-session persistence input module; API build/tests pass.
+- Latest verified batch: Cloud session-invite service depends on a narrow repository contract and session-invite persistence input module; API build/tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
