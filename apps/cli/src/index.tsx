@@ -74,7 +74,7 @@ import {
   createFooterFlashController,
   type FooterFlash,
 } from "./footer-flash-controller.js"
-import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent, shouldHandleWaitingRoomKeyEvent } from "./hotkeys.js"
+import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent } from "./hotkeys.js"
 import { buildHotkeySections } from "./hotkey-help.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { clampScrollTop, findTurnPromptScrollTarget, promptTurnNavigationDirectionForKey } from "./history-viewport.js"
@@ -401,9 +401,7 @@ import { DEFAULT_THEME_REGISTRY, loadThemeRegistry } from "./theme-registry.js"
 import {
   deriveWaitingRoomActivationDecision,
   deriveWaitingRoomControlActivationDecision,
-  deriveWaitingRoomKeyNavigationDecision,
   deriveWaitingRoomStateUpdate,
-  waitingRoomSessionLifecycleActionForEvent,
 } from "./waiting-room-controller.js"
 import {
   getWaitingRoomInventory,
@@ -419,6 +417,7 @@ import {
 import { createWaitingRoomTransitionController } from "./waiting-room-transition-controller.js"
 import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifecycle-action-controller.js"
 import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
+import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
 import {
   primeWaitingRoomWorktreeInventory,
 } from "./waiting-room-worktrees.js"
@@ -5381,6 +5380,33 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     transcriptScrollbox.requestRender()
     lastTranscriptScrollTop = transcriptScrollbox.scrollTop
   }
+  const waitingRoomKeyController = createWaitingRoomKeyController({
+    isAttached,
+    hotkeysOpen: dialogOverlayOpen,
+    promptFocused: () => Boolean(promptInput?.focused),
+    commandCenterOpen,
+    commandCenterQuery: () => commandCenterController.query(),
+    getWaitingRoomState: waitingRoomState,
+    getSessions: availableSessions,
+    getProviderCatalog: providerCatalogState,
+    getRemoteState: () => ({
+      relay: relayStatusState(),
+      machines: remoteMachinesState(),
+      kernels: remoteKernelsState(),
+      terminals: terminalsState(),
+      slices: slicesState(),
+    }),
+    getThemeRegistry: themeRegistryState,
+    reconcileWaitingRoom,
+    setWaitingRoomState,
+    rebuildTranscript,
+    applyLifecycleAction: (action) => {
+      void applyWaitingRoomSessionLifecycleAction(action)
+    },
+    activateWaitingRoom: () => {
+      void activateWaitingRoom()
+    },
+  })
   const handleStdinData = (chunk: Buffer | string) => {
     const event = parseKeypress(chunk, { useKittyKeyboard: true })
     if (!event) {
@@ -5453,47 +5479,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       navigatePromptTurns(event.name === "up" ? "previous" : "next")
       return
     }
-    if (shouldHandleWaitingRoomKeyEvent(event, {
-      attached: isAttached(),
-      hotkeysOpen: dialogOverlayOpen(),
-      promptFocused: Boolean(promptInput?.focused),
-      commandCenterOpen: commandCenterOpen(),
-      commandCenterQuery: commandCenterController.query(),
-    })) {
-      const keyNavigation = deriveWaitingRoomKeyNavigationDecision({
-        event,
-        state: waitingRoomState(),
-        sessions: availableSessions(),
-        catalog: providerCatalogState(),
-        remote: {
-          relay: relayStatusState(),
-          machines: remoteMachinesState(),
-          kernels: remoteKernelsState(),
-          terminals: terminalsState(),
-          slices: slicesState(),
-        },
-        themeRegistry: themeRegistryState(),
-      })
-      if (keyNavigation.action === "navigate") {
-        reconcileWaitingRoom(keyNavigation.nextState)
-        return
-      }
-      if (keyNavigation.action === "release") {
-        setWaitingRoomState(keyNavigation.nextState)
-        rebuildTranscript()
-        return
-      }
-      const sessionLifecycleAction = waitingRoomSessionLifecycleActionForEvent({
-        event,
-        promptFocused: Boolean(promptInput?.focused),
-      })
-      if (sessionLifecycleAction) {
-        void applyWaitingRoomSessionLifecycleAction(sessionLifecycleAction)
-        return
-      }
-      if (event.eventType !== "release" && (event.name === "return" || event.name === "enter")) {
-        void activateWaitingRoom()
-      }
+    if (waitingRoomKeyController.handleKey(event)) {
+      return
     }
   }
 
