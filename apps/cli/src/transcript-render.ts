@@ -22,6 +22,21 @@ import {
   shouldRenderTranscriptAsMarkdown,
   splitInlineCodeSpans,
 } from "./transcript.js"
+import {
+  transcriptAccent,
+  transcriptBodyColor,
+  transcriptInlineCodeColor,
+  transcriptSurfacePalette,
+  transcriptTextColor,
+  transcriptUsesSeparator,
+  type TranscriptSurfaceTone,
+} from "./transcript-render-theme.js"
+
+export {
+  resolveTranscriptSurfaceTone,
+  transcriptSurfacePalette,
+  type TranscriptSurfaceTone,
+} from "./transcript-render-theme.js"
 
 type RenderContext = ConstructorParameters<typeof BoxRenderable>[0]
 
@@ -30,8 +45,6 @@ export type TranscriptEntryRenderable = {
   wrapper: BoxRenderable
   update: (entry: TranscriptEntry) => void
 }
-
-export type TranscriptSurfaceTone = "default" | "focused" | "faded"
 
 export function buildTranscriptEntryRenderable(
   renderer: RenderContext,
@@ -156,32 +169,6 @@ export function transcriptRenderMode(entry: TranscriptEntry) {
     return "markdown"
   }
   return "text"
-}
-
-export function resolveTranscriptSurfaceTone(splitActive: boolean, focused: boolean): TranscriptSurfaceTone {
-  if (!splitActive) {
-    return "default"
-  }
-  return focused ? "focused" : "faded"
-}
-
-export function transcriptSurfacePalette(surfaceTone: TranscriptSurfaceTone) {
-  if (surfaceTone === "focused") {
-    return {
-      panel: theme.backgroundPanel,
-      element: theme.backgroundElement,
-    }
-  }
-  if (surfaceTone === "faded") {
-    return {
-      panel: RGBA.fromHex("#171717"),
-      element: RGBA.fromHex("#202020"),
-    }
-  }
-  return {
-    panel: theme.backgroundPanel,
-    element: theme.backgroundElement,
-  }
 }
 
 export function renderPromptTranscript(prompt: string) {
@@ -486,92 +473,4 @@ function applyToolTranscriptTextContent(text: TextRenderable, entry: TranscriptE
       ),
     )
   }
-}
-
-function transcriptAccent(entry: TranscriptEntry) {
-  if (entry.role === "user") {
-    return theme.primary
-  }
-  if (entry.role === "reasoning") {
-    return theme.accent
-  }
-  if (entry.role === "tool") {
-    return theme.secondary
-  }
-  if (entry.role === "error") {
-    return theme.error
-  }
-  if (entry.role === "status") {
-    return theme.info
-  }
-  if (entry.role === "notice") {
-    return entry.emphasis === "error"
-      ? theme.error
-      : entry.emphasis === "warning"
-        ? theme.warning
-        : theme.textMuted
-  }
-  if (entry.role === "turn_toggle") {
-    return theme.info
-  }
-  return theme.borderSubtle
-}
-
-function transcriptUsesSeparator(entry: TranscriptEntry) {
-  return entry.role === "user"
-}
-
-function transcriptBodyColor(entry: TranscriptEntry, surfaceTone: TranscriptSurfaceTone = "default") {
-  const palette = transcriptSurfacePalette(surfaceTone)
-  if (entry.role === "status") {
-    return null
-  }
-  if (entry.role === "error") {
-    return palette.panel
-  }
-  return entry.role === "assistant" || entry.role === "reasoning"
-    ? palette.panel
-    : palette.element
-}
-
-function transcriptTextColor(entry: TranscriptEntry) {
-  if (entry.role === "user") {
-    return theme.text
-  }
-  if (entry.role === "reasoning") {
-    return theme.textMuted
-  }
-  if (entry.role === "tool") {
-    return theme.secondary
-  }
-  if (entry.role === "error") {
-    return theme.error
-  }
-  if (entry.role === "status") {
-    return theme.info
-  }
-  if (entry.role === "notice") {
-    return entry.emphasis === "error"
-      ? theme.error
-      : entry.emphasis === "warning"
-        ? theme.warning
-        : theme.textMuted
-  }
-  if (entry.role === "turn_toggle") {
-    return theme.info
-  }
-  return theme.text
-}
-
-function transcriptInlineCodeColor(entry: TranscriptEntry) {
-  if (entry.role === "tool" || entry.role === "status" || entry.role === "error" || entry.role === "turn_toggle") {
-    return theme.primary
-  }
-  if (entry.role === "user") {
-    return theme.text
-  }
-  if (entry.role === "notice") {
-    return entry.emphasis === "error" ? theme.warning : theme.info
-  }
-  return theme.info
 }
