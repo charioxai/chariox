@@ -750,7 +750,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     TranscriptEntryRenderable,
     BoxRenderable,
     ToolTranscriptUpdate
-  >()
+  >({
+    initialMountedTranscriptAgentId: initialBinding
+      ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id ?? null
+      : null,
+  })
   let transcriptSyntax = createTranscriptSyntaxStyle()
   const historyScrollRestoreController = createHistoryScrollRestoreController({
     scheduleTimer: (callback, delayMs) => {
@@ -772,7 +776,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const agentFocusTransitionController = createAgentFocusTransitionController()
   let currentTurnId = computeCurrentTurnId(initialEntries)
   let nextTurnId = computeNextTurnId(initialEntries)
-  let mountedTranscriptAgentId = initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id ?? null : null
   let submittingAgentId: string | null = null
   const promptTextController = createPromptTextController({
     initialText: initialPromptDraft,
@@ -2097,7 +2100,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       rebuildAuxiliaryAgentPane(agentId)
     },
     buildEmptyTranscriptRenderable: () => buildEmptyTranscriptRenderable(renderer),
-    getMountedTranscriptAgentId: () => mountedTranscriptAgentId,
+    getMountedTranscriptAgentId: primaryTranscriptRuntimeStore.getMountedTranscriptAgentId,
     getAgentPaneEntries: (agentId) => agentPaneEntries()[agentId] ?? [],
     replaceTranscriptEntries: (nextEntries, agentId) => {
       replaceTranscriptEntries(nextEntries, agentId)
@@ -2344,7 +2347,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     const agentId = responsePrimaryAgent()?.id ?? null
     const currentEntries = entries.filter(Boolean).map((entry) => ({ ...entry }))
-    if (!agentId || agentId !== mountedTranscriptAgentId) {
+    if (!agentId || agentId !== primaryTranscriptRuntimeStore.getMountedTranscriptAgentId()) {
       return
     }
     setAgentPaneEntries((current) => ({
@@ -2480,9 +2483,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setNextTurnId: (turnId) => {
       nextTurnId = turnId
     },
-    setMountedTranscriptAgentId: (agentId) => {
-      mountedTranscriptAgentId = agentId
-    },
+    setMountedTranscriptAgentId: primaryTranscriptRuntimeStore.setMountedTranscriptAgentId,
     setLastScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
     rebuildTranscript,
     syncVisibleTranscriptPreview,

@@ -4,16 +4,21 @@ export type PrimaryTranscriptRuntimeEntryRenderable = {
   }
 }
 
+export type PrimaryTranscriptRuntimeStoreOptions = {
+  initialMountedTranscriptAgentId?: string | null
+}
+
 export function createPrimaryTranscriptRuntimeStoreController<
   TEntryRenderable extends PrimaryTranscriptRuntimeEntryRenderable,
   TEmptyRenderable,
   TToolUpdate,
->() {
+>(options: PrimaryTranscriptRuntimeStoreOptions = {}) {
   const tools = new Map<string, TToolUpdate>()
   const activeToolLabels = new Map<string, string>()
   const transcriptRenderables = new Map<number, TEntryRenderable>()
   let emptyTranscriptRenderable: TEmptyRenderable | undefined
   let lastTranscriptScrollTop = 0
+  let mountedTranscriptAgentId = options.initialMountedTranscriptAgentId ?? null
 
   const setEmptyRenderable = (renderable: TEmptyRenderable | undefined) => {
     emptyTranscriptRenderable = renderable
@@ -25,6 +30,10 @@ export function createPrimaryTranscriptRuntimeStoreController<
 
   const entryWrapperY = (entryId: number) => transcriptRenderables.get(entryId)?.wrapper.y ?? null
 
+  const setMountedTranscriptAgentId = (agentId: string | null) => {
+    mountedTranscriptAgentId = agentId
+  }
+
   return {
     tools,
     activeToolLabels,
@@ -33,6 +42,8 @@ export function createPrimaryTranscriptRuntimeStoreController<
     setEmptyRenderable,
     getLastScrollTop: () => lastTranscriptScrollTop,
     setLastScrollTop,
+    getMountedTranscriptAgentId: () => mountedTranscriptAgentId,
+    setMountedTranscriptAgentId,
     clearTools: () => {
       tools.clear()
     },
