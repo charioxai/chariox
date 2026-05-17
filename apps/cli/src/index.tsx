@@ -64,9 +64,6 @@ import {
 } from "./background-effects.js"
 import {
   executeSlashCommand,
-  parseSlashCommand,
-  shouldClearCommandCenterForSlashCommand,
-  type ParsedSlashCommand,
 } from "./commands.js"
 import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
@@ -113,6 +110,7 @@ import {
   listCloudSessionMembers,
 } from "./cloud-session-api.js"
 import { createSessionBrowserController } from "./session-browser-controller.js"
+import { createSlashCommandSubmitController } from "./slash-command-submit-controller.js"
 import {
   clampSessionBrowserIndex,
   sessionBrowserVisibleSessions,
@@ -5170,6 +5168,40 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const restoreTerminalAndExit = terminalExitController.restoreAndExit
 
+  const slashCommandSubmitController = createSlashCommandSubmitController({
+    isAttached,
+    getSessionId: () => sessionState().id,
+    recordPromptAreaHistoryEntry,
+    clearPromptText: () => promptTextController.clear(),
+    setPromptHistoryIndex,
+    setPromptHistoryDraft,
+    clearCommandCenter,
+    flashFooter,
+    logError: (message, fields) => appLogger?.error(message, fields),
+    formatError,
+    onExit: requestExit,
+    onWaiting: requestWaitingRoom,
+    onStop: () => requestPromptStop(),
+    handleAttachmentCommand: handleAttachmentCommand,
+    handleSessionCommand,
+    handleProviderCommand,
+    handleModelCommand,
+    handleVariantCommand,
+    handleViewCommand,
+    handleAgentCommand,
+    handleKernelCommand,
+    handleMachineCommand,
+    handleSliceCommand,
+    handleRelayCommand,
+    handleCloudCommand,
+    handleConfigCommand,
+    handleWorkspaceCommand,
+    handleWorktreeCommand,
+    handleWorkflowCommand,
+    handleMcpCommand,
+    handleSkillCommand,
+  })
+
   const submitWorkspaceShellCommand = async (rawPrompt: string) => {
     return submitWorkspaceShellCommandWithDeps(rawPrompt, {
       client,
@@ -5235,161 +5267,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       rawPrompt,
       focusedBackendProvider(),
     )
-    const slashCommand = allowSlashCommandSubmission ? parseSlashCommand(rawPrompt) : null
-    if (slashCommand && isAttached()) {
-      recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
-    }
-    const handledCommand = allowSlashCommandSubmission
-      ? await executeSlashCommand(rawPrompt, {
-      onExit: requestExit,
-      onWaiting: requestWaitingRoom,
-      onStop: requestPromptStop,
-      onAttachment: async (command) => {
-        try {
-          await handleAttachmentCommand(command.raw)
-        } catch (error) {
-          appLogger?.error("attachment command failed", {
-            command: trimmed,
-            error: formatError(error),
-          })
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onSession: async (command) => {
-        try {
-          const handled = await handleSessionCommand(command)
-          if (!handled) {
-            flashFooter("unknown /session command", "error")
-          }
-        } catch (error) {
-          appLogger?.error("session command failed", {
-            command: trimmed,
-            error: formatError(error),
-          })
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onProvider: async (command) => {
-        try {
-          await handleProviderCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onModel: async (command) => {
-        try {
-          await handleModelCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onVariant: async (command) => {
-        try {
-          await handleVariantCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onView: async (command) => {
-        try {
-          await handleViewCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onAgent: async (command) => {
-        try {
-          await handleAgentCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onKernel: async (command) => {
-        try {
-          await handleKernelCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onMachine: async (command) => {
-        try {
-          await handleMachineCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onSlice: async (command) => {
-        try {
-          await handleSliceCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onRelay: async (command) => {
-        try {
-          await handleRelayCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onCloud: async (command) => {
-        try {
-          await handleCloudCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onConfig: async (command) => {
-        try {
-          await handleConfigCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onWorkspace: async (command) => {
-        try {
-          await handleWorkspaceCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onWorktree: async (command) => {
-        try {
-          await handleWorktreeCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onWorkflow: async (command) => {
-        try {
-          await handleWorkflowCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onMcp: async (command) => {
-        try {
-          await handleMcpCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
-      onSkill: async (command) => {
-        try {
-          await handleSkillCommand(command)
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-      },
+    const handledCommand = await slashCommandSubmitController.submit(rawPrompt, {
+      allowSlashCommandSubmission,
+      trimmedPrompt: trimmed,
     })
-      : null
     if (handledCommand) {
-      promptTextController.clear()
-      setPromptHistoryIndex(null)
-      setPromptHistoryDraft(null)
-      if (shouldClearCommandCenterForSlashCommand(handledCommand)) {
-        clearCommandCenter()
-      }
       return
     }
     if (providerNamespaceCommand) {
