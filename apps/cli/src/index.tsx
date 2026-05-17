@@ -161,7 +161,10 @@ import { createKernelRestartRecoveryController } from "./kernel-restart-recovery
 import { createKernelResyncController } from "./kernel-resync-controller.js"
 import { createKernelSessionSnapshotController } from "./kernel-session-snapshot-controller.js"
 import { createKernelSessionUnavailableController } from "./kernel-session-unavailable-controller.js"
-import { createProcessLogger, type ArrobaLogger } from "./logging.js"
+import {
+  createCliProcessLoggerRegistry,
+  formatCliError,
+} from "./cli-process-logging.js"
 import { runLogViewer } from "./logs.js"
 import {
   createConnectionHealthWatchdogController,
@@ -306,7 +309,6 @@ import {
 import {
   STATUS_BADGE_WIDTH,
   DEFAULT_CONNECTED_STATUS,
-  describeCliError,
   getExitCleanupDecision,
   getPollRecoveryDecision,
   getProviderActivityLabel,
@@ -532,17 +534,15 @@ import parserConfig from "./parsers-config.js"
 
 const DEBUG_LOGS_ENABLED = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
 const OPEN_CONSOLE_ON_ERROR = process.env.ARROBA_OPEN_CONSOLE_ON_ERROR === "1"
-let processLogger: ArrobaLogger | null = null
+const processLoggers = createCliProcessLoggerRegistry()
+const getLogger = processLoggers.getLogger
+const formatError = formatCliError
 const transcriptParserRegistration = createTranscriptParserRegistration({
   parsers: parserConfig.parsers,
   addDefaultParsers: (parsers) => {
     addDefaultParsers([...parsers])
   },
 })
-
-function getLogger(component: string, fields: Record<string, unknown> = {}) {
-  return processLogger?.child(component, fields) ?? null
-}
 
 async function main() {
   const argv = process.argv.slice(2)
@@ -564,7 +564,7 @@ async function main() {
   }
 
   transcriptParserRegistration.ensureRegistered()
-  processLogger = createProcessLogger("cli")
+  processLoggers.initialize("cli")
   getLogger("cli.main")?.info("starting cli process", { argv })
   const runtimeBootstrap = await bootstrapCliRuntime({
     argv,
@@ -4474,10 +4474,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }}
     />
   )
-}
-
-function formatError(error: unknown): string {
-  return describeCliError(error)
 }
 
 void main().catch((error) => {
