@@ -38,6 +38,7 @@ import { createAuthoritativeIdleController } from "./authoritative-idle-controll
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
 import { createCliAutomationServerController } from "./cli-automation-server-controller.js"
 import { createCliAutomationSnapshotController } from "./cli-automation-snapshot-controller.js"
+import { createCliClosingStateController } from "./cli-closing-state-controller.js"
 import {
   ATTACHED_PROMPT_PLACEHOLDER,
   CHROME_UPDATE_THROTTLE_MS,
@@ -747,7 +748,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let hotkeysOverlayBox: BoxRenderable | undefined
   let historyLoadingText: TextRenderable | undefined
   const statusIndicatorRenderState = createStatusIndicatorRenderState()
-  let closing = false
+  const closingStateController = createCliClosingStateController()
   const primaryTranscriptRuntimeStore = createPrimaryTranscriptRuntimeStoreController<
     TranscriptEntryRenderable,
     BoxRenderable,
@@ -2639,7 +2640,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const syncKernelEventSubscription = () => kernelEventSubscriptionController.sync()
   const kernelRestartRecoveryController = createKernelRestartRecoveryController({
-    isClosing: () => closing,
+    isClosing: closingStateController.isClosing,
     isAttached,
     isDisconnected: daemonDisconnected,
     getSessionId: () => sessionState().id,
@@ -3197,10 +3198,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const executeCommandCenterCommand = commandCenterCommandExecutor.execute
 
   const exitController = createCliExitController({
-    isClosing: () => closing,
-    setClosing: (value) => {
-      closing = value
-    },
+    isClosing: closingStateController.isClosing,
+    setClosing: closingStateController.setClosing,
     getCreatedSession: createdSessionState,
     getConnectedClientCount: connectedClientCount,
     getAttachment: attachmentState,
@@ -3252,7 +3251,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const requestExit = exitController.requestExit
 
   const waitingRoomTransitionController = createWaitingRoomTransitionController({
-    isClosing: () => closing,
+    isClosing: closingStateController.isClosing,
     getCreatedSession: createdSessionState,
     getConnectedClientCount: connectedClientCount,
     getAttachment: attachmentState,
@@ -3747,7 +3746,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     silentThreshold: SILENT_POLL_THRESHOLD,
     scheduleInterval: startInterval,
     clearInterval,
-    isClosing: () => closing,
+    isClosing: closingStateController.isClosing,
     isAttached,
     isWorking: working,
     onRecover: (decision) => {
@@ -3939,7 +3938,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const startConnectionWatchdog = connectionHealthWatchdogController.start
 
   const pollingController = createCliPollingController({
-    isClosing: () => closing,
+    isClosing: closingStateController.isClosing,
     logger: appLogger,
     formatError,
     isSessionUnavailableError,
@@ -4018,7 +4017,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const ensureBackgroundPollersStarted = backgroundPollerStartupController.ensureStarted
 
   onCleanup(() => {
-    closing = true
+    closingStateController.markClosing()
     backgroundPollerStartupController.stop()
   })
 
