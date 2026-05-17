@@ -62,37 +62,3 @@ export function buildCommandCenterItems(input: string, context: CommandCenterCon
 
   return filterCommandCenterItems(buildCommandCenterRootItems(context), normalized.slice(1).toLowerCase())
 }
-
-export function shouldSubmitExactCommandCenterMatch(item: CommandCenterItem, currentPrompt: string) {
-  if (item.kind !== "command") {
-    return false
-  }
-  if (!item.value.endsWith(" ")) {
-    return currentPrompt.trim() === item.value
-  }
-  return currentPrompt.startsWith(item.value) || currentPrompt === item.value.trim()
-}
-
-export function nextCommandCenterIndex(
-  currentIndex: number,
-  items: CommandCenterItem[],
-  input: string,
-  previousInput?: string,
-) {
-  if (items.length === 0) {
-    return 0
-  }
-
-  if (previousInput !== input) {
-    const normalized = input.trim()
-    const exactGroupIndex = items.findIndex((item) => (
-      item.kind === "group"
-      && (normalized === item.value.trim() || input === item.value)
-    ))
-    if (exactGroupIndex >= 0) {
-      return exactGroupIndex
-    }
-  }
-
-  return Math.max(0, Math.min(currentIndex, items.length - 1))
-}

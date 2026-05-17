@@ -1,11 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import {
-  buildCommandCenterItems,
-  nextCommandCenterIndex,
-  shouldSubmitExactCommandCenterMatch,
-} from "./command-center.js"
+import { buildCommandCenterItems } from "./command-center.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 
@@ -251,38 +247,6 @@ test("buildCommandCenterItems exposes workflow add node all shorthand", () => {
   assert.equal(items[0]?.value, "/workflow add node all")
 })
 
-test("nextCommandCenterIndex selects exact parent groups instead of preserving stale child indexes", () => {
-  const items = buildCommandCenterItems("/workflow", {
-    providerCatalog: fallbackProviderCatalog(),
-    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
-    currentProvider: "opencode",
-    focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
-    currentVariant: "high",
-  })
-
-  assert.equal(items[0]?.kind, "group")
-  assert.equal(items[0]?.label, "/workflow")
-  assert.equal(items[2]?.kind, "command")
-  assert.equal(nextCommandCenterIndex(2, items, "/workflow"), 0)
-  assert.equal(nextCommandCenterIndex(2, items, "/workflow "), 0)
-})
-
-test("nextCommandCenterIndex preserves selection when the same exact query is resynced", () => {
-  const items = buildCommandCenterItems("/workflow", {
-    providerCatalog: fallbackProviderCatalog(),
-    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
-    currentProvider: "opencode",
-    focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
-    currentVariant: "high",
-  })
-
-  assert.equal(items[0]?.kind, "group")
-  assert.equal(items[2]?.kind, "command")
-  assert.equal(nextCommandCenterIndex(2, items, "/workflow", "/workflow"), 2)
-})
-
 test("buildCommandCenterItems exposes the focused provider namespace", () => {
   const items = buildCommandCenterItems("/codex", {
     providerCatalog: fallbackProviderCatalog(),
@@ -307,30 +271,4 @@ test("buildCommandCenterItems lets root slash search surface parent groups from 
   })
 
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/provider"), true)
-})
-
-test("shouldSubmitExactCommandCenterMatch submits leaf commands but not parent groups", () => {
-  assert.equal(shouldSubmitExactCommandCenterMatch({
-    id: "session-attach",
-    label: "attach",
-    description: "Attach to an existing session",
-    kind: "command",
-    value: "/session attach ",
-  }, "/session attach"), true)
-
-  assert.equal(shouldSubmitExactCommandCenterMatch({
-    id: "workflow",
-    label: "/workflow",
-    description: "Inspect, edit, and run workflows",
-    kind: "group",
-    value: "/workflow ",
-  }, "/workflow"), false)
-
-  assert.equal(shouldSubmitExactCommandCenterMatch({
-    id: "agent-list",
-    label: "list",
-    description: "List all agents in the session",
-    kind: "command",
-    value: "/agent list",
-  }, "/agent list"), true)
 })

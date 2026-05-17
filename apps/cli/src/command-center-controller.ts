@@ -1,12 +1,10 @@
-import {
-  buildCommandCenterItems,
-  nextCommandCenterIndex,
-  shouldSubmitExactCommandCenterMatch,
-} from "./command-center.js"
+import { buildCommandCenterItems } from "./command-center.js"
 import {
   commandCenterCompletionText,
   commandCenterExecutionCommand,
+  nextCommandCenterIndex,
   shouldBypassCommandCenterSubmitSelection,
+  shouldSubmitExactCommandCenterMatch,
 } from "./command-center-selection.js"
 import type { CommandCenterItem } from "./command-center-types.js"
 import type { BackendProviderId, ProviderCatalog } from "./provider-catalog.js"

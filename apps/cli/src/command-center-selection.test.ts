@@ -5,7 +5,9 @@ import type { CommandCenterItem } from "./command-center-types.js"
 import {
   commandCenterCompletionText,
   commandCenterExecutionCommand,
+  nextCommandCenterIndex,
   shouldBypassCommandCenterSubmitSelection,
+  shouldSubmitExactCommandCenterMatch,
 } from "./command-center-selection.js"
 
 const commandItem: CommandCenterItem = {
@@ -56,6 +58,50 @@ test("command center execution command distinguishes executable and expandable g
     kind: "group",
     value: "/workflow",
   }), "/workflow")
+})
+
+test("command center index selects exact parent groups instead of preserving stale child indexes", () => {
+  const items: CommandCenterItem[] = [
+    {
+      id: "workflow",
+      label: "/workflow",
+      description: "Workflow commands",
+      kind: "group",
+      value: "/workflow ",
+    },
+    commandItem,
+    {
+      id: "workflow-new",
+      label: "new",
+      description: "Create a workflow",
+      kind: "command",
+      value: "/workflow new ",
+    },
+  ]
+
+  assert.equal(nextCommandCenterIndex(2, items, "/workflow"), 0)
+  assert.equal(nextCommandCenterIndex(2, items, "/workflow "), 0)
+  assert.equal(nextCommandCenterIndex(2, items, "/workflow", "/workflow"), 2)
+})
+
+test("command center exact submit matching submits leaf commands but not parent groups", () => {
+  assert.equal(shouldSubmitExactCommandCenterMatch({
+    id: "session-attach",
+    label: "attach",
+    description: "Attach to an existing session",
+    kind: "command",
+    value: "/session attach ",
+  }, "/session attach"), true)
+
+  assert.equal(shouldSubmitExactCommandCenterMatch({
+    id: "workflow",
+    label: "/workflow",
+    description: "Inspect, edit, and run workflows",
+    kind: "group",
+    value: "/workflow ",
+  }, "/workflow"), false)
+
+  assert.equal(shouldSubmitExactCommandCenterMatch(commandItem, "/agent list"), true)
 })
 
 test("command center submit selection bypasses session alias prompts", () => {
