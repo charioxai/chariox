@@ -66,9 +66,7 @@ import {
 } from "./cli-dialog-overlay-state.js"
 import {
   computeTranscriptRebuildScrollTop,
-  evaluateTranscriptScrollMonitor,
   nextWaitingRoomIntroStep,
-  shouldLoadShortViewportHistory,
 } from "./background-effects.js"
 import {
   executeSlashCommand,
@@ -353,6 +351,7 @@ import {
   trimSingleTrailingNewline,
 } from "./transcript-text.js"
 import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
+import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
 import {
   createTerminalOutputRecordQueue,
 } from "./terminal-output-record-queue.js"
@@ -4999,6 +4998,29 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
     formatError,
   })
+  const transcriptHistoryAutoloadController = createTranscriptHistoryAutoloadController({
+    scheduleTimer: (callback, delayMs) => {
+      startTimeout(callback, delayMs)
+    },
+    getScrollbox: () => transcriptScrollbox,
+    isScrollRestoring: () => historyScrollRestoreController.isRestoring(),
+    isAttached,
+    isLoadingHistory: loadingHistory,
+    hasMoreHistory: () => nextHistoryCursor() !== null,
+    getLastScrollTop: () => lastTranscriptScrollTop,
+    setLastScrollTop: (scrollTop) => {
+      lastTranscriptScrollTop = scrollTop
+    },
+    loadOlderHistory: async () => {
+      const loaded = await transcriptHistoryLoadController.loadOlderPage()
+      if (loaded) {
+        scheduleShortViewportHistoryCheck()
+      }
+    },
+  })
+  function scheduleShortViewportHistoryCheck() {
+    transcriptHistoryAutoloadController.scheduleShortViewportCheck()
+  }
 
   const {
     hydrateCurrentAttachedSession,
@@ -5127,13 +5149,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       )
     },
   })
-
-  const loadOlderHistoryPage = async () => {
-    const loaded = await transcriptHistoryLoadController.loadOlderPage()
-    if (loaded) {
-      scheduleShortViewportHistoryCheck()
-    }
-  }
 
   const {
     workflowScreenActive,
@@ -6616,43 +6631,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const monitorTranscriptScroll = () => {
-    const scrollbox = transcriptScrollbox
-    const decision = evaluateTranscriptScrollMonitor({
-      hasScrollbox: Boolean(scrollbox),
-      pendingHistoryScrollRestore: historyScrollRestoreController.isRestoring() ? 1 : 0,
-      currentScrollTop: scrollbox?.scrollTop ?? 0,
-      lastTranscriptScrollTop,
-      hasMoreHistory: nextHistoryCursor() !== null,
-      loadingHistory: loadingHistory(),
-    })
-    if (decision.shouldLoadOlderHistory) {
-      void loadOlderHistoryPage()
-    }
-    lastTranscriptScrollTop = decision.nextLastScrollTop
-  }
-
-  const maybeLoadOlderHistoryForShortViewport = () => {
-    const scrollbox = transcriptScrollbox
-    if (shouldLoadShortViewportHistory({
-      hasScrollbox: Boolean(scrollbox),
-      attached: isAttached(),
-      loadingHistory: loadingHistory(),
-      hasMoreHistory: nextHistoryCursor() !== null,
-      scrollTop: scrollbox?.scrollTop ?? 0,
-      scrollHeight: scrollbox?.scrollHeight ?? 0,
-      viewportHeight: scrollbox?.height ?? 0,
-    })) {
-      void loadOlderHistoryPage()
-    }
-  }
-
-  const scheduleShortViewportHistoryCheck = () => {
-    startTimeout(() => {
-      maybeLoadOlderHistoryForShortViewport()
-    }, 0)
-  }
-
   const markPollerDegraded = (operation: string, message: string) => {
     const wasHealthy = degradedPollers.size === 0
     degradedPollers.add(operation)
@@ -7305,7 +7283,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   const transcriptScrollMonitor = startInterval(() => {
-    monitorTranscriptScroll()
+    transcriptHistoryAutoloadController.monitorScroll()
   }, 75)
 
   onCleanup(() => {
