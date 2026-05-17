@@ -453,6 +453,10 @@ import {
   formatWorkflowPromptPlaceholder,
   resolveActiveWorkflowRun,
 } from "./workflow-prompt-state.js"
+import {
+  createWorkflowNodeInstructionsEditorController,
+  type WorkflowNodeInstructionsEditor,
+} from "./workflow-node-instructions-editor-controller.js"
 import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-controller.js"
 import { WorkspaceLayout } from "./workspace-layout.js"
 import {
@@ -837,11 +841,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [selectedWorkflowId, setSelectedWorkflowId] = createSignal<string | null>(initialSession.workflows?.[0]?.id ?? null)
   const [selectedWorkflowNodeId, setSelectedWorkflowNodeId] = createSignal<string | null>(null)
   const [workflowInspectorMode, setWorkflowInspectorMode] = createSignal<"runtime" | "terminal">("runtime")
-  type WorkflowNodeInstructionsEditor = {
-    workflowId: string
-    nodeId: string
-    draft: string
-  }
   const [workflowNodeInstructionsEditor, setWorkflowNodeInstructionsEditor] = createSignal<WorkflowNodeInstructionsEditor | null>(null)
   const setCenterMode = (_mode: "transcript") => {}
   const setDirectoryTreeState = (_value: null) => {}
@@ -889,7 +888,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let promptMetaUsageBarCloseText: TextRenderable | undefined
   let promptMetaUsagePercentText: TextRenderable | undefined
   let commandCenterBox: BoxRenderable | undefined
-  let workflowNodeInstructionsInput: TextareaRenderable | undefined
   let hotkeysOverlayBox: BoxRenderable | undefined
   const sessionChromeSummaryRenderState = createSessionChromeSummaryRenderState()
   let historyLoadingText: TextRenderable | undefined
@@ -1071,9 +1069,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       draft: editor.draft ?? "",
       placeholder: "Type system instructions for this node",
       hint: "Use /workflow node instructions save to persist. /workflow node instructions close to discard.",
-      onDraftChange: (draft: string) => updateWorkflowNodeInstructionsDraft(draft),
+      onDraftChange: (draft: string) => workflowNodeInstructionsEditorController.updateDraft(draft),
       onEditorRef: (editorRef: TextareaRenderable | null) => {
-        workflowNodeInstructionsInput = editorRef ?? undefined
+        workflowNodeInstructionsEditorController.setInputRef(editorRef)
       },
     }
   }
@@ -3901,52 +3899,24 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
 
-  const openWorkflowNodeInstructionsEditor = (workflowId: string, nodeId: string, draft: string) => {
-    setWorkflowNodeInstructionsEditor({ workflowId, nodeId, draft })
-    if (!workflowScreenShowing()) {
-      setWorkspaceScreenMode("workflow")
-    }
-    rebuildTranscript()
-    startTimeout(() => {
-      workflowNodeInstructionsInput?.focus()
-    }, 0)
-  }
-
-  const closeWorkflowNodeInstructionsEditor = () => {
-    if (!workflowNodeInstructionsEditor()) {
-      return
-    }
-    setWorkflowNodeInstructionsEditor(null)
-    workflowNodeInstructionsInput = undefined
-    if (workflowScreenShowing()) {
-      rebuildTranscript()
-    }
-    promptInput?.focus()
-  }
-
-  const updateWorkflowNodeInstructionsDraft = (draft: string) => {
-    const editor = workflowNodeInstructionsEditor()
-    if (!editor) {
-      return
-    }
-    setWorkflowNodeInstructionsEditor({ ...editor, draft })
-  }
-
-  const getWorkflowNodeInstructionsContext = () => {
-    const editor = workflowNodeInstructionsEditor()
-    if (!editor) {
-      return null
-    }
-    return { workflowId: editor.workflowId, nodeId: editor.nodeId }
-  }
-
-  const getWorkflowNodeInstructionsDraft = () => workflowNodeInstructionsEditor()?.draft ?? ""
+  const workflowNodeInstructionsEditorController = createWorkflowNodeInstructionsEditorController({
+    getEditor: workflowNodeInstructionsEditor,
+    setEditor: setWorkflowNodeInstructionsEditor,
+    workflowScreenShowing,
+    setWorkspaceScreenMode,
+    rebuildTranscript,
+    scheduleTimer: startTimeout,
+    focusPromptInput: () => {
+      promptInput?.focus()
+    },
+  })
+  const openWorkflowNodeInstructionsEditor = workflowNodeInstructionsEditorController.open
+  const closeWorkflowNodeInstructionsEditor = workflowNodeInstructionsEditorController.close
+  const getWorkflowNodeInstructionsContext = workflowNodeInstructionsEditorController.context
+  const getWorkflowNodeInstructionsDraft = workflowNodeInstructionsEditorController.draft
 
   const openWorkflowTerminalPanel = (workflowId: string) => {
-    if (workflowNodeInstructionsEditor()) {
-      setWorkflowNodeInstructionsEditor(null)
-      workflowNodeInstructionsInput = undefined
-    }
+    workflowNodeInstructionsEditorController.clear()
     setWorkflowInspectorMode("terminal")
     setSelectedWorkflowId(workflowId)
     if (!workflowScreenShowing()) {
