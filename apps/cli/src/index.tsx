@@ -361,6 +361,7 @@ import {
 import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
 import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
 import { createTranscriptScrollMonitorController } from "./transcript-scroll-monitor-controller.js"
+import { createTranscriptScrollboxRefController } from "./transcript-scrollbox-ref-controller.js"
 import {
   createTerminalOutputRecordQueue,
 } from "./terminal-output-record-queue.js"
@@ -716,7 +717,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const setCenterMode = (_mode: "transcript") => {}
   const setDirectoryTreeState = (_value: null) => {}
   const promptInputRefController = createPromptInputRefController<TextareaRenderable>()
-  let transcriptScrollbox: ScrollBoxRenderable | undefined
+  const transcriptScrollboxRefController = createTranscriptScrollboxRefController<ScrollBoxRenderable>()
   const responsePaneRenderRefStore = createResponsePaneRenderRefStoreController<
     BoxRenderable,
     ScrollBoxRenderable,
@@ -748,7 +749,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     scheduleTimer: (callback, delayMs) => {
       startTimeout(callback, delayMs)
     },
-    getScrollbox: () => transcriptScrollbox,
+    getScrollbox: transcriptScrollboxRefController.current,
     setLastScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
   })
   let sessionChromeUpdateController: SessionChromeUpdateController
@@ -781,7 +782,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const transcriptRenderDeferralController = createTranscriptRenderDeferralController({
     isBatched: uiBatchController.isBatched,
-    getRenderable: () => transcriptScrollbox,
+    getRenderable: transcriptScrollboxRefController.current,
     requestRender: (renderable) => {
       renderScheduler.requestRenderable(renderable)
     },
@@ -962,7 +963,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     isAttached,
     getAgentCount: () => sessionState().agents.length,
     getFocusedAgentId: focusedAgentId,
-    hasTranscriptScrollbox: () => Boolean(transcriptScrollbox),
+    hasTranscriptScrollbox: transcriptScrollboxRefController.hasScrollbox,
     getVisibleTranscriptAgentId: visibleTranscriptAgentId,
   })
   const logProviderRunDebug = runtimeDebugLogger.logProviderRun
@@ -1624,7 +1625,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const appendEntry = transcriptStateController.appendEntry
 
   const transcriptViewportController = createTranscriptViewportController({
-    getScrollbox: () => transcriptScrollbox,
+    getScrollbox: transcriptScrollboxRefController.current,
     cancelHistoryScrollRestore: () => historyScrollRestoreController.cancel(),
     setLastTranscriptScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
   })
@@ -1680,15 +1681,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
     renderables: primaryTranscriptRuntimeStore.transcriptRenderables,
     removeFromScrollbox: (renderableId) => {
-      if (!transcriptScrollbox) {
-        return false
-      }
-      transcriptScrollbox.remove(renderableId)
-      return true
+      return transcriptScrollboxRefController.remove(renderableId)
     },
-    requestScrollboxRender: () => {
-      transcriptScrollbox?.requestRender()
-    },
+    requestScrollboxRender: transcriptScrollboxRefController.requestRender,
     deleteTool: primaryTranscriptRuntimeStore.deleteTool,
     maxEntries: LIVE_TRANSCRIPT_LIMIT,
     maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
@@ -2017,7 +2012,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const responseLayoutController = createResponseLayoutController({
     getRefs: () => responsePaneRenderRefStore.snapshot({
-      primaryScrollbox: transcriptScrollbox,
+      primaryScrollbox: transcriptScrollboxRefController.current(),
       historyLoadingBox: historyLoadingRenderController.getBox(),
     }),
     getSplit: splitAgentResponseMode,
@@ -2323,7 +2318,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const refreshAgentPanes = agentPaneRefreshController.refresh
 
   const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({
-    getScrollbox: () => transcriptScrollbox,
+    getScrollbox: transcriptScrollboxRefController.current,
     getEmptyRenderable: primaryTranscriptRuntimeStore.getEmptyRenderable,
     setEmptyRenderable: primaryTranscriptRuntimeStore.setEmptyRenderable,
     renderables: primaryTranscriptRuntimeStore.transcriptRenderables,
@@ -2409,7 +2404,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }).open
 
   const primaryTranscriptEntryController = createPrimaryTranscriptEntryController({
-    getScrollbox: () => transcriptScrollbox,
+    getScrollbox: transcriptScrollboxRefController.current,
     getEntries: () => entries.filter(Boolean),
     getVisibleTranscriptAgentId: visibleTranscriptAgentId,
     expandedTurnIdsForAgent,
@@ -2508,7 +2503,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     scheduleTimer: (callback, delayMs) => {
       startTimeout(callback, delayMs)
     },
-    getScrollbox: () => transcriptScrollbox,
+    getScrollbox: transcriptScrollboxRefController.current,
     isScrollRestoring: () => historyScrollRestoreController.isRestoring(),
     isAttached,
     isLoadingHistory: loadingHistory,
@@ -3508,15 +3503,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       .filter((entry) => entry.role === "user")
       .map((entry) => primaryTranscriptRuntimeStore.entryWrapperY(entry.id))
       .filter((offset): offset is number => offset !== null),
-    getScrollState: () => transcriptScrollbox
-      ? { left: transcriptScrollbox.scrollLeft, top: transcriptScrollbox.scrollTop }
-      : null,
-    scrollTo: (position) => {
-      transcriptScrollbox?.scrollTo(position)
-    },
-    requestRender: () => {
-      transcriptScrollbox?.requestRender()
-    },
+    getScrollState: transcriptScrollboxRefController.scrollState,
+    scrollTo: transcriptScrollboxRefController.scrollTo,
+    requestRender: transcriptScrollboxRefController.requestRender,
     setLastTranscriptScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
   })
   const waitingRoomKeyController = createWaitingRoomKeyController({
@@ -3930,9 +3919,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const backgroundPollerStartupController = createBackgroundPollerStartupController({
     logger: appLogger,
-    ready: () => promptInputRefController.hasInput() && Boolean(transcriptScrollbox),
+    ready: () => promptInputRefController.hasInput() && transcriptScrollboxRefController.hasScrollbox(),
     promptMounted: promptInputRefController.hasInput,
-    transcriptScrollTop: () => transcriptScrollbox?.scrollTop ?? 0,
+    transcriptScrollTop: () => transcriptScrollboxRefController.scrollTop(0),
     setLastTranscriptScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
     isAttached,
     rebuildTranscript,
@@ -4122,7 +4111,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         renderHistoryLoadingIndicator()
       }}
       onTranscriptScrollboxRef={(value) => {
-        transcriptScrollbox = value
+        transcriptScrollboxRefController.assignScrollbox(value)
         logViewDebug("mounted primary transcript scrollbox")
         rebuildTranscript()
         ensureBackgroundPollersStarted()
