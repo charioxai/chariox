@@ -24,6 +24,7 @@ import {
   type WorkflowRunCancelPayload,
   type WorkflowRunResumePayload,
 } from "./workflow-run-command-handlers.js"
+import { handleWorkflowTerminalCommand } from "./workflow-terminal-command-handler.js"
 import { readFile } from "node:fs/promises"
 import { resolve as resolvePath } from "node:path"
 
@@ -492,17 +493,11 @@ export async function handleWorkflowSlashCommand(
   }
 
   if (subcommand === "terminal") {
-    const workflowRef = context.workflowRefOrSelected(args[1]) ?? deps.sessionState().workflows?.[0]?.id ?? null
-    if (!workflowRef) {
-      deps.flashFooter("usage: /workflow terminal [workflow-ref]", "error")
-      return
-    }
-    const payload = await deps.resolveWorkflow(workflowRef)
-    deps.upsertWorkflowDefinition(payload.workflow)
-    deps.selectWorkflowCanvas(payload.workflow.id)
-    deps.showWorkflowScreen()
-    deps.openWorkflowTerminalPanel?.(payload.workflow.id)
-    deps.flashFooter(`opened workflow terminal for ${payload.workflow.id}`, "info")
+    await handleWorkflowTerminalCommand({
+      ...deps,
+      sessionWorkflows: () => deps.sessionState().workflows ?? [],
+      workflowRefOrSelected: context.workflowRefOrSelected,
+    }, args)
     return
   }
 
