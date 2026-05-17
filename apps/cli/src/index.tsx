@@ -149,6 +149,7 @@ import { deleteKernel } from "./kernel-api.js"
 import { createKernelEventSubscriptionController } from "./kernel-event-subscription-controller.js"
 import { createKernelRestartRecoveryController } from "./kernel-restart-recovery-controller.js"
 import { createKernelResyncController } from "./kernel-resync-controller.js"
+import { createKernelSessionSnapshotController } from "./kernel-session-snapshot-controller.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
 import {
@@ -4207,42 +4208,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     markAssistantMessageCompleted,
   })
 
-  const applyKernelSessionSnapshot = async (
-    nextSession: RuntimeSession,
-    nextProviderRun: RuntimeProviderRun | null,
-  ) => {
-    const previousSession = sessionState()
-    const projectedSession = applyProviderRunProfileToSession(nextSession, nextProviderRun ?? providerRunState())
-    const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(projectedSession)
-    const promptJustCompleted = sessionHasPromptWork(previousSession) && !sessionHasPromptWork(projectedSession)
-
-    applySessionState(projectedSession)
-
-    const activeRun = providerRunState()
-    if (nextProviderRun) {
-      if (!activeRun || !sameProviderRun(activeRun, nextProviderRun)) {
-        logProviderRunDebug("kernel event refreshed provider run", nextProviderRun, {
-          session_id: nextSession.id,
-          previous_provider_run_id: activeRun?.id ?? null,
-        })
-        setProviderRunState(nextProviderRun)
-        updateSessionChrome()
-      }
-    } else if (activeRun) {
-      logProviderRunDebug("kernel event cleared provider run", activeRun, {
-        session_id: nextSession.id,
-      })
-      setProviderRunState(null)
-      updateSessionChrome()
-      if (!supportsKernelEventStream && sessionHasPromptWork(projectedSession)) {
-        void recoverProviderRun("missing active provider run")
-      }
-    }
-
-    if (shouldRefreshPanes || promptJustCompleted) {
-      await refreshAgentPanes(projectedSession)
-    }
-  }
+  const kernelSessionSnapshotController = createKernelSessionSnapshotController({
+    getSession: sessionState,
+    getProviderRun: providerRunState,
+    projectSession: applyProviderRunProfileToSession,
+    shouldRefreshAgentPanesForSessionChange,
+    sessionHasPromptWork,
+    applySessionState,
+    sameProviderRun,
+    logProviderRunDebug,
+    setProviderRun: setProviderRunState,
+    updateSessionChrome,
+    supportsKernelEventStream: () => supportsKernelEventStream,
+    recoverProviderRun,
+    refreshAgentPanes,
+  })
+  const applyKernelSessionSnapshot = kernelSessionSnapshotController.apply
 
   const kernelResyncController = createKernelResyncController({
     getAttachment: attachmentState,
