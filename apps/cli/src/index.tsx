@@ -174,6 +174,7 @@ import {
 import {
   bootstrapCloudRelayProfile,
 } from "./cloud-relay.js"
+import { createCliExitController } from "./cli-exit-controller.js"
 import {
   defaultKernelEndpoint,
   parseArgs,
@@ -921,7 +922,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let historyLoadingText: TextRenderable | undefined
   const statusIndicatorRenderState = createStatusIndicatorRenderState()
   let closing = false
-  let exitCleanupFailed = false
   const degradedPollers = new Set<string>()
   const tools = new Map<string, ToolTranscriptUpdate>()
   const activeToolLabels = new Map<string, string>()
@@ -5743,64 +5743,60 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
 
-  const requestExit = async () => {
-    if (closing && exitCleanupFailed) {
+  const exitController = createCliExitController({
+    isClosing: () => closing,
+    setClosing: (value) => {
+      closing = value
+    },
+    getCreatedSession: createdSessionState,
+    getConnectedClientCount: connectedClientCount,
+    getAttachment: attachmentState,
+    getSessionId: () => sessionState().id,
+    getPromptDraft: persistablePromptDraft,
+    syncPromptTextSnapshot,
+    flushPromptDraftPersist: flushPendingPromptDraftPersist,
+    persistSessionPromptDraft: (sessionId, promptDraft) =>
+      persistSessionPromptState(sessionId, { promptDraft }),
+    shouldEndSessionOnExit: shouldEndSessionOnCliExit,
+    archiveSession: async (sessionId) => {
+      await archiveSessionById(client, sessionId)
+    },
+    detachAttachment: (attachmentId) => detachSessionAttachment(client, attachmentId),
+    getCleanupDecision: getExitCleanupDecision,
+    restoreTerminalAndExit: (exitCode) => restoreTerminalAndExit(exitCode),
+    onForceExitAfterCleanupFailure: () => {
       appLogger?.warn("forcing cli exit after prior cleanup failure")
-      await restoreTerminalAndExit(1)
-      return
-    }
-    if (closing) {
-      return
-    }
-    closing = true
-    appLogger?.info("requested cli exit", {
-      created_session: createdSessionState(),
-    })
-    try {
-      syncPromptTextSnapshot()
-      await flushPendingPromptDraftPersist().catch((error) => {
-        appLogger?.warn("failed to flush prompt draft during exit", {
-          error: formatError(error),
-        })
+    },
+    onExitRequested: (createdSession) => {
+      appLogger?.info("requested cli exit", {
+        created_session: createdSession,
       })
-      const sessionId = attachmentState()?.session_id
-      if (sessionId) {
-        await persistSessionPromptState(sessionId, {
-          promptDraft: persistablePromptDraft(),
-        }).catch((error) => {
-          appLogger?.warn("failed to persist prompt draft during exit", {
-            session_id: sessionId,
-            error: formatError(error),
-          })
-        })
-      }
-      const attachment = attachmentState()
-      if (!attachment) {
-        exitCleanupFailed = false
-      } else if (shouldEndSessionOnCliExit(createdSessionState(), connectedClientCount())) {
-        await archiveSessionById(client, sessionState().id)
-      } else {
-        await detachSessionAttachment(client, attachment.id)
-      }
-      exitCleanupFailed = false
-    } catch (error) {
-      const decision = getExitCleanupDecision(error, exitCleanupFailed)
-      exitCleanupFailed = true
-      closing = false
+    },
+    onPromptDraftFlushFailed: (error) => {
+      appLogger?.warn("failed to flush prompt draft during exit", {
+        error: formatError(error),
+      })
+    },
+    onPromptDraftPersistFailed: (sessionId, error) => {
+      appLogger?.warn("failed to persist prompt draft during exit", {
+        session_id: sessionId,
+        error: formatError(error),
+      })
+    },
+    onCleanupFailed: (decision, error) => {
       appLogger?.warn("exit cleanup failed", {
         error: formatError(error),
         will_exit: decision.exit,
       })
       appendNotice(decision.message, "warning")
       setStatusLine(decision.message)
-      if (decision.exit) {
-        await restoreTerminalAndExit(decision.exitCode)
-      }
-      return
-    }
-    appLogger?.info("cli exit cleanup completed")
-    await restoreTerminalAndExit(0)
-  }
+    },
+    onCleanupCompleted: () => {
+      appLogger?.info("cli exit cleanup completed")
+    },
+  })
+
+  const requestExit = exitController.requestExit
 
   const requestWaitingRoom = async () => {
     if (closing) {
