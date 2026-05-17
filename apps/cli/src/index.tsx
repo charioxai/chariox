@@ -339,6 +339,9 @@ import {
 } from "./transcript-text.js"
 import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
 import {
+  createTerminalOutputRecordQueue,
+} from "./terminal-output-record-queue.js"
+import {
   formatToolTranscriptUpdate,
   mergeToolTranscriptUpdate,
   parseToolTranscriptUpdate,
@@ -917,8 +920,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let pendingTranscriptRender = false
   let pendingSplitPaneRefresh = 0
   let uiBatchDepth = 0
-  let pendingTerminalRecordFlush: ReturnType<typeof startTimeout> | undefined
-  let pendingTerminalRecords: TerminalOutputRecord[] = []
   // Connection resilience tracking
   let lastDaemonActivityAt = Date.now()
   let connectionWatchdogTimeout: ReturnType<typeof startTimeout> | undefined
@@ -2252,8 +2253,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     hasActivePrompt: () => Boolean(activePrompt()),
     getDelayMs: (lastTurnActivityAt) => getTurnCompletionDelayMs({
       sessionHasPromptWork: sessionHasPromptWork(sessionState()),
-      pendingTerminalRecordCount: pendingTerminalRecords.length,
-      pendingTerminalRecordFlush: Boolean(pendingTerminalRecordFlush),
+      pendingTerminalRecordCount: terminalOutputRecordQueue.pendingCount(),
+      pendingTerminalRecordFlush: terminalOutputRecordQueue.hasPendingFlush(),
       lastTurnActivityAt,
       now: Date.now(),
       quietWindowMs: TURN_COMPLETION_QUIET_MS,
@@ -3459,36 +3460,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     kernelEventController.processTerminalOutputRecord(record)
   }
 
-  const flushPendingTerminalRecords = () => {
-    if (pendingTerminalRecordFlush) {
-      clearTimeout(pendingTerminalRecordFlush)
-      pendingTerminalRecordFlush = undefined
-    }
-    if (pendingTerminalRecords.length === 0) {
-      return
-    }
-    const records = pendingTerminalRecords
-    pendingTerminalRecords = []
-    runUiBatch(() => {
-      for (const record of records) {
-        processTerminalOutputRecord(record)
-      }
-    })
-  }
-
-  const queueTerminalOutputRecords = (records: TerminalOutputRecord[]) => {
-    if (records.length === 0) {
-      return
-    }
-    pendingTerminalRecords.push(...records)
-    if (pendingTerminalRecordFlush) {
-      return
-    }
-    pendingTerminalRecordFlush = startTimeout(() => {
-      pendingTerminalRecordFlush = undefined
-      flushPendingTerminalRecords()
-    }, STREAM_BATCH_WINDOW_MS)
-  }
+  const terminalOutputRecordQueue = createTerminalOutputRecordQueue<ReturnType<typeof startTimeout>, TerminalOutputRecord>({
+    delayMs: STREAM_BATCH_WINDOW_MS,
+    scheduleTimer: startTimeout,
+    clearTimer: clearTimeout,
+    processRecords(records) {
+      runUiBatch(() => {
+        for (const record of records) {
+          processTerminalOutputRecord(record)
+        }
+      })
+    },
+  })
+  const flushPendingTerminalRecords = terminalOutputRecordQueue.flush
+  const queueTerminalOutputRecords = terminalOutputRecordQueue.queue
 
   const setTextRenderable = (
     text: TextRenderable | undefined,
@@ -6714,10 +6699,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       stopCliAutomationServer(automationServer, automationSocketPath)
       automationServer = null
     }
-    if (pendingTerminalRecordFlush) {
-      clearTimeout(pendingTerminalRecordFlush)
-      pendingTerminalRecordFlush = undefined
-    }
+    terminalOutputRecordQueue.clearTimer()
   })
 
   let pollersStarted = false
