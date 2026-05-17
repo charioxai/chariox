@@ -17,11 +17,15 @@ import { theme, TranscriptSeparatorBorder } from "./theme.js"
 import {
   buildApplyPatchNewPreview,
   normalizeMarkdownFenceInfoStrings,
-  parseToolTranscriptUpdate,
-  readApplyPatchFiles,
   shouldRenderTranscriptAsMarkdown,
   splitInlineCodeSpans,
 } from "./transcript.js"
+import {
+  readTranscriptApplyPatch,
+  shouldRenderCollapsedTranscriptBlob,
+  transcriptRenderMode,
+  type TranscriptApplyPatchFiles,
+} from "./transcript-render-mode.js"
 import {
   transcriptAccent,
   transcriptBodyColor,
@@ -31,6 +35,10 @@ import {
   transcriptUsesSeparator,
   type TranscriptSurfaceTone,
 } from "./transcript-render-theme.js"
+
+export {
+  transcriptRenderMode,
+} from "./transcript-render-mode.js"
 
 export {
   resolveTranscriptSurfaceTone,
@@ -155,29 +163,9 @@ export function buildTranscriptEntryRenderable(
   return { entry, wrapper, update }
 }
 
-export function transcriptRenderMode(entry: TranscriptEntry) {
-  if (shouldRenderCollapsedTranscriptBlob(entry)) {
-    return "blob-collapsed"
-  }
-  if (entry.role === "turn_toggle") {
-    return "turn-toggle"
-  }
-  if (readTranscriptApplyPatch(entry)) {
-    return "patch"
-  }
-  if (shouldRenderTranscriptAsMarkdown(entry.role, entry.text)) {
-    return "markdown"
-  }
-  return "text"
-}
-
 export function renderPromptTranscript(prompt: string) {
   const text = prompt.trimEnd()
   return text ? `${text}\n` : ""
-}
-
-function shouldRenderCollapsedTranscriptBlob(entry: TranscriptEntry) {
-  return entry.blobCollapsible === true && entry.blobCollapsed !== false
 }
 
 function buildExpandedTranscriptContent(
@@ -273,19 +261,10 @@ function buildBlobToggleLabel(renderer: RenderContext, content: string, onClick:
   return text
 }
 
-function readTranscriptApplyPatch(entry: TranscriptEntry) {
-  const parsed = parseToolTranscriptUpdate(entry.sourceText ?? entry.text)
-  if (!parsed) {
-    return null
-  }
-  const files = readApplyPatchFiles(parsed)
-  return files.length > 0 ? files : null
-}
-
 function buildApplyPatchTranscriptContent(
   renderer: RenderContext,
   body: BoxRenderable,
-  files: ReturnType<typeof readApplyPatchFiles>,
+  files: TranscriptApplyPatchFiles,
   transcriptSyntax: SyntaxStyle,
   surfaceTone: TranscriptSurfaceTone,
 ) {
@@ -326,7 +305,7 @@ function buildApplyPatchTranscriptContent(
 function buildApplyPatchNewOnlyContent(
   renderer: RenderContext,
   block: BoxRenderable,
-  file: ReturnType<typeof readApplyPatchFiles>[number],
+  file: TranscriptApplyPatchFiles[number],
   contextBg: RGBA,
 ) {
   const preview = buildApplyPatchNewPreview(file)
