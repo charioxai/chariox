@@ -16,7 +16,6 @@ import type {
   AgentInstance,
   BootstrapState,
   CliOptions,
-  PromptInputHistoryPage,
   RuntimeAttachment,
   RuntimeInteraction,
   RuntimeNoticeRecord,
@@ -216,6 +215,7 @@ import {
 import {
   createPromptInputHistoryRefreshController,
 } from "./prompt-input-history-refresh-controller.js"
+import { createPromptInputHistoryController } from "./prompt-input-history-controller.js"
 import { createPromptStopController } from "./prompt-stop-controller.js"
 import {
   createTurnCompletionController,
@@ -294,9 +294,7 @@ import {
 import {
   extractPromptHistoryEntries,
   navigatePromptHistory,
-  promptHistoryEntryListsEqual,
   resolvePromptHistoryKeyNavigation,
-  pushPromptHistoryEntry,
 } from "./prompt-history.js"
 import {
   STATUS_BADGE_WIDTH,
@@ -949,7 +947,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let nextTurnId = computeNextTurnId(initialEntries)
   let mountedTranscriptAgentId = initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id ?? null : null
   let hydratedPromptHistorySessionId: string | null | undefined
-  let promptInputHistoryLatestSequence = 0
   let promptTextSnapshot = initialPromptDraft
   let promptTextMuting = false
   let promptDropPending = false
@@ -2367,90 +2364,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     promptTextSnapshot = nextDraft
     setPromptText(nextDraft)
   }
-  const promptHistoryHydrationController = createPromptHistoryHydrationController({
-    loadHistory: (sessionId) => getPromptInputHistory(client, sessionId),
-    isCurrentSession: (sessionId) => attachmentState()?.session_id === sessionId,
-    applyHistory: async (sessionId, nextEntries, latestSequence) => {
-      promptInputHistoryLatestSequence = latestSequence
-      setPromptHistoryEntries(nextEntries)
-      setPromptHistoryIndex(null)
-      setPromptHistoryDraft(null)
-      setPreferencesState((current) => mergeSessionPromptState(current, sessionId, {
-        promptHistory: nextEntries,
-      }))
-      await saveSessionPromptState(sessionId, { promptHistory: nextEntries })
-    },
-  })
-  const hydratePromptHistoryFromSession = (sessionId: string): Promise<void> =>
-    promptHistoryHydrationController.hydrate(sessionId)
-  const appendSharedPromptInputHistory = (
-    sessionId: string,
-    entries: readonly PromptInputHistoryPage["entries"][number][],
-  ) => {
-    if (attachmentState()?.session_id !== sessionId || entries.length === 0) {
-      return
-    }
-    const currentEntries = promptHistoryEntries()
-    let nextEntries = currentEntries
-    for (const entry of [...entries].sort((left, right) => left.sequence - right.sequence)) {
-      promptInputHistoryLatestSequence = Math.max(promptInputHistoryLatestSequence, entry.sequence)
-      nextEntries = pushPromptHistoryEntry(nextEntries, entry.text)
-    }
-    if (promptHistoryEntryListsEqual(nextEntries, currentEntries)) {
-      return
-    }
-    setPromptHistoryEntries(nextEntries)
-    void persistSessionPromptState(sessionId, {
-      promptHistory: nextEntries,
-    }).catch((error) => {
-      appLogger?.warn("failed to persist shared prompt input history", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    })
-  }
-  const appendPromptEchoToSharedHistory = (text: string) => {
-    const sessionId = attachmentState()?.session_id
-    if (!sessionId) {
-      return
-    }
-    const currentEntries = promptHistoryEntries()
-    const nextPromptHistoryEntries = pushPromptHistoryEntry(currentEntries, text)
-    if (promptHistoryEntryListsEqual(nextPromptHistoryEntries, currentEntries)) {
-      return
-    }
-    setPromptHistoryEntries(nextPromptHistoryEntries)
-    void persistSessionPromptState(sessionId, {
-      promptHistory: nextPromptHistoryEntries,
-    }).catch((error) => {
-      appLogger?.warn("failed to persist prompt echo history", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    })
-  }
-  const promptInputHistoryRefreshController = createPromptInputHistoryRefreshController({
-    delayMs: 1500,
-    scheduleTimer: startTimeout,
-    clearTimer: clearTimeout,
-    refreshHistory: async (sessionId) => {
-      const history = await getPromptInputHistory(client, sessionId, promptInputHistoryLatestSequence, 500)
-      appendSharedPromptInputHistory(sessionId, history.entries)
-    },
-    onRefreshError: (error, sessionId) => {
-      appLogger?.warn("failed to refresh shared prompt input history", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    },
-  })
-  const scheduleSharedPromptInputHistoryRefresh = () => {
-    const sessionId = attachmentState()?.session_id
-    if (!sessionId) {
-      return
-    }
-    promptInputHistoryRefreshController.schedule(sessionId)
-  }
   const persistSessionPromptState = async (
     sessionId: string,
     next: {
@@ -2478,48 +2391,84 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const flushPendingPromptDraftPersist = promptDraftPersistController.flush
   const schedulePromptDraftPersist = promptDraftPersistController.schedule
   const clearPromptDraftPersistQueue = promptDraftPersistController.clearPending
+  const promptInputHistoryController = createPromptInputHistoryController({
+    getCurrentSessionId: () => attachmentState()?.session_id ?? null,
+    getAttachmentId: () => attachmentState()?.id ?? null,
+    getEntries: promptHistoryEntries,
+    setEntries: setPromptHistoryEntries,
+    resetNavigation: () => {
+      setPromptHistoryIndex(null)
+      setPromptHistoryDraft(null)
+    },
+    clearDraftPersistQueue: clearPromptDraftPersistQueue,
+    persistPromptState: persistSessionPromptState,
+    recordPromptInputHistory: (sessionId, attachmentId, kind, text) =>
+      recordPromptInputHistory(client, sessionId, attachmentId, kind, text),
+    onSharedHistoryPersistFailed: (sessionId, error) => {
+      appLogger?.warn("failed to persist shared prompt input history", {
+        session_id: sessionId,
+        error: formatError(error),
+      })
+    },
+    onPromptEchoPersistFailed: (sessionId, error) => {
+      appLogger?.warn("failed to persist prompt echo history", {
+        session_id: sessionId,
+        error: formatError(error),
+      })
+    },
+    onPromptStatePersistFailed: (sessionId, error) => {
+      appLogger?.warn("failed to persist session prompt state", {
+        session_id: sessionId,
+        error: formatError(error),
+      })
+    },
+    onRecordSharedHistoryFailed: (sessionId, error) => {
+      appLogger?.warn("failed to record shared prompt input history", {
+        session_id: sessionId,
+        error: formatError(error),
+      })
+    },
+  })
+  const promptHistoryHydrationController = createPromptHistoryHydrationController({
+    loadHistory: (sessionId) => getPromptInputHistory(client, sessionId),
+    isCurrentSession: (sessionId) => attachmentState()?.session_id === sessionId,
+    applyHistory: async (sessionId, nextEntries, latestSequence) => {
+      await promptInputHistoryController.replaceFromHydration(sessionId, nextEntries, latestSequence)
+    },
+  })
+  const hydratePromptHistoryFromSession = (sessionId: string): Promise<void> =>
+    promptHistoryHydrationController.hydrate(sessionId)
+  const appendSharedPromptInputHistory = promptInputHistoryController.appendShared
+  const appendPromptEchoToSharedHistory = promptInputHistoryController.appendEcho
+  const promptInputHistoryRefreshController = createPromptInputHistoryRefreshController({
+    delayMs: 1500,
+    scheduleTimer: startTimeout,
+    clearTimer: clearTimeout,
+    refreshHistory: async (sessionId) => {
+      const history = await getPromptInputHistory(client, sessionId, promptInputHistoryController.latestSequence(), 500)
+      appendSharedPromptInputHistory(sessionId, history.entries)
+    },
+    onRefreshError: (error, sessionId) => {
+      appLogger?.warn("failed to refresh shared prompt input history", {
+        session_id: sessionId,
+        error: formatError(error),
+      })
+    },
+  })
+  const scheduleSharedPromptInputHistoryRefresh = () => {
+    const sessionId = attachmentState()?.session_id
+    if (!sessionId) {
+      return
+    }
+    promptInputHistoryRefreshController.schedule(sessionId)
+  }
   const persistablePromptDraft = () => {
     if (promptHistoryDraft() !== null) {
       return promptHistoryDraft() ?? ""
     }
     return promptInput?.plainText ?? promptTextSnapshot
   }
-  const recordPromptAreaHistoryEntry = (sessionId: string | null, rawPrompt: string) => {
-    if (!sessionId) {
-      return
-    }
-    const nextPromptHistoryEntries = pushPromptHistoryEntry(promptHistoryEntries(), rawPrompt)
-    setPromptHistoryEntries(nextPromptHistoryEntries)
-    setPromptHistoryIndex(null)
-    setPromptHistoryDraft(null)
-    clearPromptDraftPersistQueue()
-    void persistSessionPromptState(sessionId, {
-      promptHistory: nextPromptHistoryEntries,
-      promptDraft: "",
-    }).catch((error) => {
-      appLogger?.warn("failed to persist session prompt state", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    })
-    const attachmentId = attachmentState()?.id ?? null
-    if (rawPrompt.trimStart().startsWith("/")) {
-      void recordPromptInputHistory(
-        client,
-        sessionId,
-        attachmentId,
-        "command",
-        rawPrompt.trimEnd(),
-      ).then((entry) => {
-        appendSharedPromptInputHistory(sessionId, [entry])
-      }).catch((error) => {
-        appLogger?.warn("failed to record shared prompt input history", {
-          session_id: sessionId,
-          error: formatError(error),
-        })
-      })
-    }
-  }
+  const recordPromptAreaHistoryEntry = promptInputHistoryController.recordPromptAreaEntry
   const syncPromptTextSnapshot = () => {
     promptTextSnapshot = promptInput?.plainText ?? ""
   }
