@@ -39,6 +39,7 @@ import {
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
 import { createCliAutomationServerController } from "./cli-automation-server-controller.js"
 import { buildCliAutomationSnapshot } from "./cli-automation-snapshot.js"
+import { createDeferredBootstrapController } from "./deferred-bootstrap-controller.js"
 import {
   deriveAllAgentsBusyState,
   deriveFocusedActivityLabel,
@@ -3056,63 +3057,35 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setNextHistoryCursor(historyPage.next_cursor)
   }
 
-  const applyDeferredBootstrap = () => {
-    const deferred = props.bootstrap.deferred
-    if (!deferred) {
-      return
-    }
-
-    void deferred.providerCatalog?.then((catalog) => {
-      setProviderCatalogState(catalog)
-      updateSessionChrome()
-    }).catch((error) => {
-      appLogger?.warn("failed to hydrate provider catalog after bootstrap", {
-        error: formatError(error),
-      })
-    })
-
-    void deferred.providerCommandCatalogs?.then((catalogs) => {
-      setProviderCommandCatalogState(catalogs)
-    }).catch((error) => {
-      appLogger?.warn("failed to hydrate provider command catalog after bootstrap", {
-        error: formatError(error),
-      })
-    })
-
-    void deferred.attachedHistory?.then(async (history) => {
-      if (attachmentState()?.session_id !== history.sessionId) {
-        return
-      }
-      setPromptHistoryEntries(history.promptHistoryEntries)
+  const deferredBootstrapController = createDeferredBootstrapController({
+    getDeferred: () => props.bootstrap.deferred,
+    currentAttachmentSessionId: () => attachmentState()?.session_id ?? null,
+    currentTranscriptEntryCount: () => entries.filter(Boolean).length,
+    entryCounter,
+    setProviderCatalog: setProviderCatalogState,
+    setProviderCommandCatalogs: setProviderCommandCatalogState,
+    updateSessionChrome,
+    setPromptHistoryEntries,
+    resetPromptHistoryNavigation: () => {
       setPromptHistoryIndex(null)
       setPromptHistoryDraft(null)
-      if (!history.visibleAgentId) {
-        setNextHistoryCursor(history.nextHistoryCursor)
-        return
-      }
-      const visibleAgentId = history.visibleAgentId
-      const preparedEntries = history.historyEntries.map((entry) => ({ ...entry }))
-      if (preparedEntries.length === 0) {
-        setNextHistoryCursor(history.nextHistoryCursor)
-        return
-      }
+    },
+    setNextHistoryCursor,
+    setAgentPaneEntries: (agentId, nextEntries) => {
       setAgentPaneEntries((current) => ({
         ...current,
-        [visibleAgentId]: preparedEntries.map((entry) => ({ ...entry })),
+        [agentId]: nextEntries,
       }))
-      setAgentPanePreview(visibleAgentId, formatTranscriptPreview(preparedEntries))
-      if (entries.filter(Boolean).length === 0) {
-        replaceTranscriptEntries(preparedEntries, visibleAgentId)
-      } else {
-        await prependTranscriptEntries(reindexTranscriptEntries(preparedEntries, entryCounter()))
-      }
-      setNextHistoryCursor(history.nextHistoryCursor)
-    }).catch((error) => {
-      appLogger?.warn("failed to hydrate attached history after bootstrap", {
-        error: formatError(error),
-      })
-    })
-  }
+    },
+    setAgentPanePreview,
+    replaceTranscriptEntries,
+    prependTranscriptEntries,
+    logWarning: (message, fields) => {
+      appLogger?.warn(message, fields)
+    },
+    formatError,
+  })
+  const applyDeferredBootstrap = deferredBootstrapController.apply
 
   onMount(() => {
     applyDeferredBootstrap()
