@@ -66,6 +66,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: Cloud API service is thin composition; account, admin, billing, dashboard, and managed-history wiring live in domain facades; API build/tests pass.
 - Latest verified batch: Cloud API service composition guardrail prevents direct domain use-case imports/regrowth; API build/tests pass.
 - Latest verified batch: Cloud API repository contract is a compatibility aggregate over domain repository interfaces; API build/tests pass.
+- Latest verified batch: Cloud API Prisma repository factory composes focused domain facets with guardrails; API build/tests pass.
 - Latest verified batch: CLI command-center selection/submission policy is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI dialog overlay focus capture/restore policy is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI prompt content-change/drop policy is responsibility-owned; CLI tests pass.
