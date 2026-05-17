@@ -517,6 +517,7 @@ import { createTranscriptRetentionController } from "./transcript-retention-cont
 import { createTranscriptEventController } from "./transcript-event-controller.js"
 import { createTranscriptStateController } from "./transcript-state-controller.js"
 import { createTranscriptStreamController } from "./transcript-stream-controller.js"
+import { createTranscriptSyntaxStyleController } from "./transcript-syntax-style-controller.js"
 import { createTranscriptTurnStateController } from "./transcript-turn-state-controller.js"
 import { createTranscriptTurnExpansionController } from "./transcript-turn-expansion-controller.js"
 import {
@@ -765,7 +766,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id ?? null
       : null,
   })
-  let transcriptSyntax = createTranscriptSyntaxStyle()
+  const transcriptSyntaxStyleController = createTranscriptSyntaxStyleController({
+    createStyle: createTranscriptSyntaxStyle,
+  })
   const historyScrollRestoreController = createHistoryScrollRestoreController({
     scheduleTimer: (callback, delayMs) => {
       startTimeout(callback, delayMs)
@@ -1019,7 +1022,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
     applyTheme,
     resetTranscriptSyntax: () => {
-      transcriptSyntax = createTranscriptSyntaxStyle()
+      transcriptSyntaxStyleController.reset()
     },
     bumpThemeRevision: () => {
       setThemeRevision((revision) => revision + 1)
@@ -2267,7 +2270,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     buildEntryRenderable: (agentId, entry) => buildTranscriptEntryRenderable(
       renderer,
       entry,
-      transcriptSyntax,
+      transcriptSyntaxStyleController.current(),
       (turnId, nextToggleEntryId) => toggleAuxiliaryPaneTurn(agentId, turnId, nextToggleEntryId),
       (entryId, collapsed) => toggleAuxiliaryPaneBlob(agentId, entryId, collapsed),
       auxiliaryTranscriptSurfaceTone(agentId),
@@ -2419,7 +2422,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     buildEntryRenderable: (entry) => buildTranscriptEntryRenderable(
       renderer,
       entry,
-      transcriptSyntax,
+      transcriptSyntaxStyleController.current(),
       toggleTurn,
       toggleBlob,
       primaryTranscriptSurfaceTone(),
