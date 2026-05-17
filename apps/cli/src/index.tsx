@@ -82,6 +82,7 @@ import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } fr
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
+import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import { runClaudeNativeTui } from "./native-tui/claude.js"
@@ -5289,33 +5290,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const cycleFocusedInteractionChoice = focusedInteractionChoiceController.cycleChoice
   const handleFocusedInteractionKey = focusedInteractionChoiceController.handleKey
 
-  useKeyboard((event) => {
-    if (handleHotkeysToggleShortcut("keyboard", event)) {
-      return
-    }
-    if (dialogOverlayOpen() && event.name === "escape") {
-      event.preventDefault()
-      event.stopPropagation()
-      closeActiveDialogOverlay()
-      return
-    }
-    if (event.ctrl && event.name === "e") {
-      event.preventDefault()
-      event.stopPropagation()
+  const globalKeyboardShortcutController = createGlobalKeyboardShortcutController({
+    handleHotkeysToggleShortcut,
+    dialogOverlayOpen,
+    closeActiveDialogOverlay,
+    requestExit: () => {
       void requestExit()
-      return
-    }
-    if (event.ctrl && event.name === "c") {
-      event.preventDefault()
-      event.stopPropagation()
-      void (activePrompt() ? requestPromptStop() : requestExit())
-      return
-    }
-    if (dialogOverlayOpen()) {
-      event.preventDefault()
-      event.stopPropagation()
-    }
+    },
+    requestPromptStop: () => {
+      void requestPromptStop()
+    },
+    activePrompt,
   })
+  useKeyboard(globalKeyboardShortcutController.handleKey)
 
   const handleSigint = () => {
     void (activePrompt() ? requestPromptStop() : requestExit())
