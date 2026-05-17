@@ -293,6 +293,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: Cloud pairing token creation is split from relay client/machine pairing persistence; API build/tests pass.
 - Latest verified batch: Cloud browser dashboard projection/freshness sorting is split from dashboard persistence; API build/tests pass.
 - Latest verified batch: Cloud pairing token consumption state is split from relay identity persistence; API build/tests pass.
+- Latest verified batch: Cloud account bootstrap persistence is split from repository composition, and browser dashboard reuses account resolution; API build/tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
