@@ -11,7 +11,7 @@ type RenderCommandCenterOptions = {
   box: BoxRenderable | undefined
   renderer: ConstructorParameters<typeof BoxRenderable>[0]
   open: boolean
-  items: CommandCenterItem[]
+  items: readonly CommandCenterItem[]
   selectedIndex: number
   visibleRowCount: number
   promptHeight: number

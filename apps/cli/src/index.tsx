@@ -73,17 +73,7 @@ import {
   shouldClearCommandCenterForSlashCommand,
   type ParsedSlashCommand,
 } from "./commands.js"
-import {
-  buildCommandCenterItems,
-  nextCommandCenterIndex,
-  shouldSubmitExactCommandCenterMatch,
-  type CommandCenterItem,
-} from "./command-center.js"
-import {
-  commandCenterCompletionText,
-  commandCenterExecutionCommand,
-  shouldBypassCommandCenterSubmitSelection,
-} from "./command-center-selection.js"
+import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
 import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
@@ -828,9 +818,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const initialWorktreeTarget = initialSession.worktree_id || options.worktree || initialWorkspaceTarget
   const [pendingWorkspaceTarget, setPendingWorkspaceTarget] = createSignal(initialWorkspaceTarget)
   const [pendingWorktreeTarget, setPendingWorktreeTarget] = createSignal(initialWorktreeTarget)
-  const [commandCenterQuery, setCommandCenterQuery] = createSignal("")
-  const [commandCenterItems, setCommandCenterItems] = createSignal<CommandCenterItem[]>([])
-  const [commandCenterIndex, setCommandCenterIndex] = createSignal(0)
   const [multiAgentResponseLayout, setMultiAgentResponseLayout] = createSignal<MultiAgentResponseLayout>(
     sessionResponseLayout(initialSession, preferencesState().ui?.multiAgentResponseLayout),
   )
@@ -2143,157 +2130,39 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     workspacePath: pendingWorkspaceTarget(),
     worktreePath: pendingWorktreeTarget(),
   })
-  const syncCommandCenter = (value = promptTextController.currentText()) => {
-    const previousValue = commandCenterQuery()
-    setCommandCenterQuery(value)
-    const items = buildCommandCenterItems(value, {
-      providerCatalog: providerCatalogState(),
-      providerCommandCatalogs: providerCommandCatalogState(),
-      currentProvider: normalizeBackendProviderId(currentProviderSelection().provider),
-      focusedProvider: focusedBackendProvider(),
-      currentModel: currentModelId(),
-      currentVariant: currentVariantId(),
-    })
-    setCommandCenterItems(items)
-    setCommandCenterIndex((index) => nextCommandCenterIndex(index, items, value, previousValue))
-    renderCommandCenter()
-  }
-  const commandCenterOpen = () => commandCenterItems().length > 0 && commandCenterQuery().startsWith("/")
-  const replacePromptTextFromCommandCenter = (value: string) => {
-    setPromptText(value)
-    if (promptInput) {
-      promptInput.cursorOffset = value.length
-    }
-    syncPromptTextSnapshot()
-  }
-  const selectCommandCenterItem = async (item: CommandCenterItem) => {
-    const command = commandCenterExecutionCommand(item)
-    if (command === null) {
-      const completionText = commandCenterCompletionText(item)
-      replacePromptTextFromCommandCenter(completionText)
-      syncCommandCenter(completionText)
-      return
-    }
-
-    const clearsBeforeExecution = item.kind === "command" || item.kind === "group"
-    try {
-      if (clearsBeforeExecution) {
-        clearCommandCenter()
-        replacePromptTextFromCommandCenter("")
-      }
-      await executeCommandCenterCommand(command)
-    } catch (error) {
-      flashFooter(formatError(error), "error")
-    } finally {
-      if (!clearsBeforeExecution) {
-        replacePromptTextFromCommandCenter("")
-        syncCommandCenter("")
-      }
-    }
-  }
-  const completeCommandCenterItem = (item: CommandCenterItem) => {
-    const completionText = commandCenterCompletionText(item)
-    replacePromptTextFromCommandCenter(completionText)
-    syncCommandCenter(completionText)
-  }
-  const moveCommandCenterSelection = (delta: number) => {
-    const items = commandCenterItems()
-    if (items.length === 0) {
-      return
-    }
-    setCommandCenterIndex((index) => (index + delta + items.length) % items.length)
-  }
-  const clearCommandCenter = () => {
-    setCommandCenterQuery("")
-    setCommandCenterItems([])
-    setCommandCenterIndex(0)
-    renderCommandCenter()
-  }
-  const selectedCommandCenterItem = () => commandCenterItems()[commandCenterIndex()] ?? commandCenterItems()[0] ?? null
   const commandCenterVisibleRowCount = () => Math.max(4, Math.min(10, dimensions().height - (promptInput?.height ?? 1) - 10))
-  const handleCommandCenterKey = (event: {
-    name: string
-    ctrl?: boolean
-    eventType?: string
-    preventDefault?: () => void
-    stopPropagation?: () => void
-  }) => {
-    if (!commandCenterOpen() || event.eventType === "release") {
-      return false
-    }
-    if (event.name === "up" || (event.ctrl && event.name === "p")) {
-      event.preventDefault?.()
-      event.stopPropagation?.()
-      moveCommandCenterSelection(-1)
-      renderCommandCenter()
-      return true
-    }
-    if (event.name === "down" || (event.ctrl && event.name === "n")) {
-      event.preventDefault?.()
-      event.stopPropagation?.()
-      moveCommandCenterSelection(1)
-      renderCommandCenter()
-      return true
-    }
-    if (event.name === "escape") {
-      event.preventDefault?.()
-      event.stopPropagation?.()
-      clearCommandCenter()
-      return true
-    }
-    if (event.name === "return" || event.name === "enter") {
-      const item = selectedCommandCenterItem()
-      if (!item) {
-        return false
-      }
-      event.preventDefault?.()
-      event.stopPropagation?.()
-      void selectCommandCenterItem(item)
-      return true
-    }
-    if (event.name === "tab") {
-      const item = selectedCommandCenterItem()
-      if (!item) {
-        return false
-      }
-      event.preventDefault?.()
-      event.stopPropagation?.()
-      completeCommandCenterItem(item)
-      return true
-    }
-    return false
-  }
-  const selectCommandCenterFromSubmit = () => {
-    const item = selectedCommandCenterItem()
-    if (!item) {
-      return false
-    }
-    const currentPrompt = promptTextController.currentText()
-    if (shouldBypassCommandCenterSubmitSelection(currentPrompt)) {
-      return false
-    }
-    // Leaf commands like `/session attach ` should submit once fully typed.
-    // Parent groups like `/workflow` should expand to their subcommands instead.
-    if (shouldSubmitExactCommandCenterMatch(item, currentPrompt)) {
-      clearCommandCenter()
-      syncCommandCenter("")
-      return false
-    }
-    void selectCommandCenterItem(item)
-    return true
-  }
-  const renderCommandCenter = () => {
-    renderCommandCenterOverlay({
-      box: commandCenterBox,
-      renderer,
-      open: commandCenterOpen(),
-      items: commandCenterItems(),
-      selectedIndex: commandCenterIndex(),
-      visibleRowCount: commandCenterVisibleRowCount(),
-      promptHeight: promptInput?.height ?? 1,
-      overlayFootprint: COMMAND_CENTER_OVERLAY_FOOTPRINT,
-    })
-  }
+  const commandCenterController = createCommandCenterController({
+    getProviderCatalog: providerCatalogState,
+    getProviderCommandCatalogs: providerCommandCatalogState,
+    getCurrentProvider: () => normalizeBackendProviderId(currentProviderSelection().provider),
+    getFocusedProvider: focusedBackendProvider,
+    getCurrentModel: currentModelId,
+    getCurrentVariant: currentVariantId,
+    getPromptText: promptTextController.currentText,
+    replacePromptText: promptTextController.setText,
+    executeCommand: (command) => executeCommandCenterCommand(command),
+    onCommandError: (error) => {
+      flashFooter(formatError(error), "error")
+    },
+    render: (state) => {
+      renderCommandCenterOverlay({
+        box: commandCenterBox,
+        renderer,
+        open: state.open,
+        items: state.items,
+        selectedIndex: state.selectedIndex,
+        visibleRowCount: commandCenterVisibleRowCount(),
+        promptHeight: promptInput?.height ?? 1,
+        overlayFootprint: COMMAND_CENTER_OVERLAY_FOOTPRINT,
+      })
+    },
+  })
+  const syncCommandCenter = commandCenterController.sync
+  const commandCenterOpen = commandCenterController.open
+  const clearCommandCenter = commandCenterController.clear
+  const handleCommandCenterKey = commandCenterController.handleKey
+  const selectCommandCenterFromSubmit = commandCenterController.selectFromSubmit
+  const renderCommandCenter = commandCenterController.render
   const turnCompletionController = createTurnCompletionController({
     now: Date.now,
     scheduleTimer: startTimeout,
@@ -6387,7 +6256,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       hotkeysOpen: dialogOverlayOpen(),
       promptFocused: Boolean(promptInput?.focused),
       commandCenterOpen: commandCenterOpen(),
-      commandCenterQuery: commandCenterQuery(),
+      commandCenterQuery: commandCenterController.query(),
     })) {
       if (workflowScreenActive()) {
         cycleWorkflowCanvasNode()
@@ -6427,7 +6296,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       hotkeysOpen: dialogOverlayOpen(),
       promptFocused: Boolean(promptInput?.focused),
       commandCenterOpen: commandCenterOpen(),
-      commandCenterQuery: commandCenterQuery(),
+      commandCenterQuery: commandCenterController.query(),
     })) {
       const keyNavigation = deriveWaitingRoomKeyNavigationDecision({
         event,
