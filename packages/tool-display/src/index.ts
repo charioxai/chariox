@@ -1,174 +1,32 @@
-export type ToolTranscriptUpdate = {
-  id: string
-  tool?: string
-  status?: string
-  title?: string
-  description?: string
-  text?: string
-  input?: unknown
-  output?: string
-  error?: string
-  raw?: string
-}
+import { guessPathFenceLanguage } from "./language.js"
+import type {
+  ApplyPatchFile,
+  ToolDisplay,
+  ToolDisplayBlock,
+  ToolDisplayPatchLine,
+  ToolTranscriptUpdate,
+} from "./types.js"
 
-export type InlineCodeSpan = {
-  text: string
-  code: boolean
-}
-
-export type ToolDisplayStatus = "running" | "completed" | "error" | "cancelled" | string
-
-export type ToolDisplayBlock =
-  | { kind: "text"; text: string }
-  | { kind: "code"; language: string; text: string }
-  | { kind: "patch"; files: ToolDisplayPatchFile[] }
-  | { kind: "json"; value: unknown }
-  | { kind: "table"; columns: string[]; rows: string[][] }
-
-export type ToolDisplayPatchLine = {
-  kind: "context" | "added" | "removed" | "meta"
-  text: string
-}
-
-export type ToolDisplayPatchFile = ApplyPatchFile & {
-  previewLines: ToolDisplayPatchLine[]
-}
-
-export type ToolDisplay = {
-  version: 1
-  tool: string
-  status?: ToolDisplayStatus | undefined
-  title: string
-  summary: string
-  collapsed: {
-    title: string
-    summary: string
-  }
-  blocks: ToolDisplayBlock[]
-}
-
-export function guessPathFenceLanguage(filePath: string | null | undefined): string {
-  if (!filePath) {
-    return "text"
-  }
-  const lower = filePath.toLowerCase()
-  const name = lower.split(/[\\/]/).pop() ?? lower
-  if (name === ".env") return "dotenv"
-  if (name === "dockerfile") return "dockerfile"
-  if (name === "makefile") return "makefile"
-  if (lower.endsWith(".tsx") || lower.endsWith(".mtsx") || lower.endsWith(".ctsx")) return "typescriptreact"
-  if (lower.endsWith(".ts") || lower.endsWith(".mts") || lower.endsWith(".cts")) return "typescript"
-  if (lower.endsWith(".jsx")) return "javascriptreact"
-  if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) return "javascript"
-  if (lower.endsWith(".html.erb") || lower.endsWith(".js.erb") || lower.endsWith(".json.erb")) return "erb"
-  if (lower.endsWith(".json")) return "json"
-  if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown"
-  if (lower.endsWith(".rs")) return "rust"
-  if (lower.endsWith(".py")) return "python"
-  if (lower.endsWith(".go")) return "go"
-  if (lower.endsWith(".java")) return "java"
-  if (lower.endsWith(".kt") || lower.endsWith(".kts")) return "kotlin"
-  if (lower.endsWith(".swift")) return "swift"
-  if (lower.endsWith(".css")) return "css"
-  if (lower.endsWith(".scss")) return "scss"
-  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html"
-  if (lower.endsWith(".xml")) return "xml"
-  if (lower.endsWith(".yml") || lower.endsWith(".yaml")) return "yaml"
-  if (lower.endsWith(".toml")) return "toml"
-  if (lower.endsWith(".sh") || lower.endsWith(".bash") || lower.endsWith(".zsh")) return "shellscript"
-  if (lower.endsWith(".sql")) return "sql"
-  if (lower.endsWith(".tf")) return "terraform"
-  if (lower.endsWith(".tfvars")) return "terraform-vars"
-  if (lower.endsWith(".diff") || lower.endsWith(".patch")) return "diff"
-  return "text"
-}
-
-export function mergeToolTranscriptUpdate(
-  previous: ToolTranscriptUpdate | null,
-  next: ToolTranscriptUpdate,
-) {
-  const merged: ToolTranscriptUpdate = { id: next.id }
-  const tool = next.tool ?? previous?.tool
-  const status = next.status ?? previous?.status
-  const title = next.title ?? previous?.title
-  const description = next.description ?? previous?.description
-  const text = next.text ?? previous?.text
-  const input = next.input ?? previous?.input
-  const output = next.output ?? previous?.output
-  const error = next.error ?? previous?.error
-  const raw = next.raw ?? previous?.raw
-
-  if (tool !== undefined) merged.tool = tool
-  if (status !== undefined) merged.status = status
-  if (title !== undefined) merged.title = title
-  if (description !== undefined) merged.description = description
-  if (text !== undefined) merged.text = text
-  if (input !== undefined) merged.input = input
-  if (output !== undefined) merged.output = output
-  if (error !== undefined) merged.error = error
-  if (raw !== undefined) merged.raw = raw
-
-  return merged
-}
-
-export function shouldRenderProviderStatus(text: string) {
-  return !/^OpenCode is (?:idle\.?|thinking\.\.\.)$/i.test(text.trim())
-}
-
-export function splitInlineCodeSpans(text: string): InlineCodeSpan[] {
-  const spans: InlineCodeSpan[] = []
-  let cursor = 0
-
-  while (cursor < text.length) {
-    const start = text.indexOf("`", cursor)
-    if (start === -1) {
-      break
-    }
-    const end = text.indexOf("`", start + 1)
-    if (end === -1) {
-      break
-    }
-
-    if (start > cursor) {
-      spans.push({ text: text.slice(cursor, start), code: false })
-    }
-    spans.push({ text: text.slice(start + 1, end), code: true })
-    cursor = end + 1
-  }
-
-  if (cursor < text.length || spans.length === 0) {
-    spans.push({ text: text.slice(cursor), code: false })
-  }
-
-  return spans.filter((span) => span.text.length > 0)
-}
-
-export function shouldSkipConsecutiveTranscriptEntry(
-  previous: { role: string; text: string; emphasis?: string | undefined } | null | undefined,
-  next: { role: string; text: string; emphasis?: string | undefined },
-) {
-  if (!previous) {
-    return false
-  }
-  if (next.role !== "error" && next.role !== "notice") {
-    return false
-  }
-  return previous.role === next.role
-    && previous.text === next.text
-    && previous.emphasis === next.emphasis
-}
-
-export function parseToolTranscriptUpdate(chunk: string): ToolTranscriptUpdate | null {
-  try {
-    const parsed = JSON.parse(chunk) as Partial<ToolTranscriptUpdate>
-    if (typeof parsed.id !== "string") {
-      return null
-    }
-    return parsed as ToolTranscriptUpdate
-  } catch {
-    return null
-  }
-}
+export {
+  guessPathFenceLanguage,
+} from "./language.js"
+export type {
+  ApplyPatchFile,
+  InlineCodeSpan,
+  ToolDisplay,
+  ToolDisplayBlock,
+  ToolDisplayPatchFile,
+  ToolDisplayPatchLine,
+  ToolDisplayStatus,
+  ToolTranscriptUpdate,
+} from "./types.js"
+export {
+  mergeToolTranscriptUpdate,
+  parseToolTranscriptUpdate,
+  shouldRenderProviderStatus,
+  shouldSkipConsecutiveTranscriptEntry,
+  splitInlineCodeSpans,
+} from "./transcript-update.js"
 
 export function formatToolTranscriptUpdate(update: ToolTranscriptUpdate) {
   for (const formatter of [
@@ -424,13 +282,6 @@ type WebFetchInput = {
 }
 
 const TOOL_BLOB_VISIBLE_LINES = 10
-
-export type ApplyPatchFile = {
-  kind: "add" | "delete" | "update" | "move"
-  filePath: string
-  title: string
-  diff: string | null
-}
 
 type ApplyPatchInput = {
   patchText?: unknown
