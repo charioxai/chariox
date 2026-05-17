@@ -362,6 +362,7 @@ import {
 } from "./terminal-output-record-queue.js"
 import { createTerminalOutputRecordProcessor } from "./terminal-output-record-processor.js"
 import { createTerminalExitController } from "./terminal-exit-controller.js"
+import { createTranscriptViewportController } from "./transcript-viewport-controller.js"
 import { createTranscriptRenderDeferralController } from "./transcript-render-deferral-controller.js"
 import { createWorkingAnimationController } from "./working-animation-controller.js"
 import {
@@ -1993,22 +1994,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const toggleBlob = transcriptStateController.toggleBlob
   const appendEntry = transcriptStateController.appendEntry
 
-  const findTurnAnchorEntryId = (turnId: number) => {
-    return entries.find((entry) => entry.turnId === turnId && entry.role === "user")?.id
-      ?? entries.find((entry) => entry.turnId === turnId && entry.role !== "turn_toggle")?.id
-      ?? null
-  }
-
-  const scrollTranscriptToBottom = () => {
-    if (!transcriptScrollbox) {
-      return
-    }
-    historyScrollRestoreController.cancel()
-    const maxScrollTop = Math.max(0, transcriptScrollbox.scrollHeight - transcriptScrollbox.height)
-    transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: maxScrollTop })
-    transcriptScrollbox.requestRender()
-    lastTranscriptScrollTop = transcriptScrollbox.scrollTop
-  }
+  const transcriptViewportController = createTranscriptViewportController({
+    getScrollbox: () => transcriptScrollbox,
+    cancelHistoryScrollRestore: () => historyScrollRestoreController.cancel(),
+    setLastTranscriptScrollTop: (scrollTop) => {
+      lastTranscriptScrollTop = scrollTop
+    },
+  })
+  const scrollTranscriptToBottom = transcriptViewportController.scrollToBottom
 
   const trackAgentFocusTransition = <T,>(operation: () => Promise<T>): Promise<T> =>
     agentFocusTransitionController.track(operation)
