@@ -200,6 +200,9 @@ import {
   type PendingPromptAttachment,
 } from "./prompt-attachment-state.js"
 import {
+  createPromptDraftPersistController,
+} from "./prompt-draft-persist-controller.js"
+import {
   preparePromptAttachmentsForSubmit,
   promptAttachmentTransferIsForced,
 } from "./prompt-attachment-transfer.js"
@@ -940,9 +943,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let promptTextSnapshot = initialPromptDraft
   let promptTextMuting = false
   let promptDropPending = false
-  let pendingPromptDraftPersist: ReturnType<typeof startTimeout> | undefined
-  let pendingPromptDraftSessionId: string | null = null
-  let pendingPromptDraftValue = ""
   let submittingAgentId: string | null = null
   const renderScheduler = createRenderScheduler({
     schedule: (callback) => startTimeout(callback, 0),
@@ -2457,12 +2457,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
     }, 1500)
   }
-  const clearPendingPromptDraftPersist = () => {
-    if (pendingPromptDraftPersist) {
-      clearTimeout(pendingPromptDraftPersist)
-      pendingPromptDraftPersist = undefined
-    }
-  }
   const persistSessionPromptState = async (
     sessionId: string,
     next: {
@@ -2473,43 +2467,28 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setPreferencesState((current) => mergeSessionPromptState(current, sessionId, next))
     await saveSessionPromptState(sessionId, next)
   }
-  const flushPendingPromptDraftPersist = async () => {
-    clearPendingPromptDraftPersist()
-    if (!pendingPromptDraftSessionId) {
-      return
-    }
-    const sessionId = pendingPromptDraftSessionId
-    const promptDraft = pendingPromptDraftValue
-    pendingPromptDraftSessionId = null
-    pendingPromptDraftValue = ""
-    await persistSessionPromptState(sessionId, { promptDraft })
-  }
+  const promptDraftPersistController = createPromptDraftPersistController({
+    delayMs: 300,
+    scheduleTimer: startTimeout,
+    clearTimer: clearTimeout,
+    persistPromptDraft: ({ sessionId, promptDraft }) =>
+      persistSessionPromptState(sessionId, { promptDraft }),
+    onPersistError: (error, request) => {
+      appLogger?.warn("failed to persist prompt draft", {
+        session_id: request.sessionId,
+        error: formatError(error),
+      })
+    },
+  })
+  const clearPendingPromptDraftPersist = promptDraftPersistController.clearTimer
+  const flushPendingPromptDraftPersist = promptDraftPersistController.flush
+  const schedulePromptDraftPersist = promptDraftPersistController.schedule
+  const clearPromptDraftPersistQueue = promptDraftPersistController.clearPending
   const persistablePromptDraft = () => {
     if (promptHistoryDraft() !== null) {
       return promptHistoryDraft() ?? ""
     }
     return promptInput?.plainText ?? promptTextSnapshot
-  }
-  const schedulePromptDraftPersist = (sessionId: string, promptDraft: string) => {
-    pendingPromptDraftSessionId = sessionId
-    pendingPromptDraftValue = promptDraft
-    clearPendingPromptDraftPersist()
-    pendingPromptDraftPersist = startTimeout(() => {
-      pendingPromptDraftPersist = undefined
-      const queuedSessionId = pendingPromptDraftSessionId
-      if (!queuedSessionId) {
-        return
-      }
-      const queuedDraft = pendingPromptDraftValue
-      pendingPromptDraftSessionId = null
-      pendingPromptDraftValue = ""
-      void persistSessionPromptState(queuedSessionId, { promptDraft: queuedDraft }).catch((error) => {
-        appLogger?.warn("failed to persist prompt draft", {
-          session_id: queuedSessionId,
-          error: formatError(error),
-        })
-      })
-    }, 300)
   }
   const recordPromptAreaHistoryEntry = (sessionId: string | null, rawPrompt: string) => {
     if (!sessionId) {
@@ -2519,9 +2498,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setPromptHistoryEntries(nextPromptHistoryEntries)
     setPromptHistoryIndex(null)
     setPromptHistoryDraft(null)
-    pendingPromptDraftSessionId = null
-    pendingPromptDraftValue = ""
-    clearPendingPromptDraftPersist()
+    clearPromptDraftPersistQueue()
     void persistSessionPromptState(sessionId, {
       promptHistory: nextPromptHistoryEntries,
       promptDraft: "",
@@ -2659,9 +2636,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     setPromptHistoryIndex(null)
     setPromptHistoryDraft(null)
-    pendingPromptDraftSessionId = null
-    pendingPromptDraftValue = ""
-    clearPendingPromptDraftPersist()
+    clearPromptDraftPersistQueue()
     if (promptInput) {
       promptTextMuting = true
       promptInput.clear()
