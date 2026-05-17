@@ -361,6 +361,7 @@ import { createTranscriptHistoryAutoloadController } from "./transcript-history-
 import {
   createTerminalOutputRecordQueue,
 } from "./terminal-output-record-queue.js"
+import { createTerminalExitController } from "./terminal-exit-controller.js"
 import { createTranscriptRenderDeferralController } from "./transcript-render-deferral-controller.js"
 import {
   formatToolTranscriptUpdate,
@@ -5847,25 +5848,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const requestWaitingRoom = waitingRoomTransitionController.requestWaitingRoom
 
-  const restoreTerminalAndExit = async (exitCode: number) => {
-    try {
-      renderer.disableKittyKeyboard()
-    } catch {}
-    try {
-      renderer.disableStdoutInterception()
-    } catch {}
-    try {
-      if (!renderer.isDestroyed) {
-        renderer.destroy()
-      }
-    } catch (error) {
+  const terminalExitController = createTerminalExitController({
+    renderer,
+    sleep,
+    exitProcess: (exitCode) => process.exit(exitCode),
+    onRendererDestroyFailed: (error) => {
       appLogger?.warn("renderer destroy failed during exit", {
         error: formatError(error),
       })
-    }
-    await sleep(25)
-    process.exit(exitCode)
-  }
+    },
+  })
+
+  const restoreTerminalAndExit = terminalExitController.restoreAndExit
 
   const submitWorkspaceShellCommand = async (rawPrompt: string) => {
     return submitWorkspaceShellCommandWithDeps(rawPrompt, {
