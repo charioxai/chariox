@@ -18,7 +18,7 @@ type TranscriptHistoryAutoloadControllerOptions = {
   hasMoreHistory: () => boolean
   getLastScrollTop: () => number
   setLastScrollTop: (scrollTop: number) => void
-  loadOlderHistory: () => Promise<void> | void
+  loadOlderHistory: () => Promise<boolean | void> | boolean | void
 }
 
 export type TranscriptHistoryAutoloadController = {
@@ -30,11 +30,16 @@ export type TranscriptHistoryAutoloadController = {
 export function createTranscriptHistoryAutoloadController(
   options: TranscriptHistoryAutoloadControllerOptions,
 ): TranscriptHistoryAutoloadController {
+  let controller: TranscriptHistoryAutoloadController
   const requestLoad = () => {
-    void options.loadOlderHistory()
+    void Promise.resolve(options.loadOlderHistory()).then((loaded) => {
+      if (loaded === true) {
+        controller.scheduleShortViewportCheck()
+      }
+    })
   }
 
-  const controller: TranscriptHistoryAutoloadController = {
+  controller = {
     monitorScroll() {
       const scrollbox = options.getScrollbox()
       const decision = evaluateTranscriptScrollMonitor({

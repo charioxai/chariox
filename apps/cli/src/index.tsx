@@ -2702,16 +2702,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setLastScrollTop: (scrollTop) => {
       lastTranscriptScrollTop = scrollTop
     },
-    loadOlderHistory: async () => {
-      const loaded = await transcriptHistoryLoadController.loadOlderPage()
-      if (loaded) {
-        scheduleShortViewportHistoryCheck()
-      }
-    },
+    loadOlderHistory: () => transcriptHistoryLoadController.loadOlderPage(),
   })
-  function scheduleShortViewportHistoryCheck() {
-    transcriptHistoryAutoloadController.scheduleShortViewportCheck()
-  }
 
   const {
     hydrateCurrentAttachedSession,
@@ -2901,9 +2893,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       finalizeAttachedSessionBinding({ sessionId, attachmentId, session }),
     setAvailableSessions,
     listSessions: () => listSessions(client),
-    scheduleShortViewportHistoryCheck: () => {
-      scheduleShortViewportHistoryCheck()
-    },
+    scheduleShortViewportHistoryCheck: () => transcriptHistoryAutoloadController.scheduleShortViewportCheck(),
     detachAttachment: (attachmentId) => detachSessionAttachment(client, attachmentId),
     syncKernelEventSubscription,
     formatError,
