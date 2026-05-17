@@ -60,9 +60,6 @@ import {
   renderCliDialogOverlay,
 } from "./cli-dialog-overlay.js"
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
-import {
-  computeTranscriptRebuildScrollTop,
-} from "./background-effects.js"
 import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
 import {
   executeSlashCommand,
@@ -226,6 +223,7 @@ import {
 } from "./prompt-text-controller.js"
 import { createPromptTurnNavigationController } from "./prompt-turn-navigation-controller.js"
 import { createPromptStopController } from "./prompt-stop-controller.js"
+import { createPrimaryTranscriptEntryController } from "./primary-transcript-entry-controller.js"
 import { createPrimaryTranscriptRenderController } from "./primary-transcript-render-controller.js"
 import {
   createTurnCompletionController,
@@ -2987,90 +2985,36 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     rebuildTranscript,
   }).open
 
-  const replaceTranscriptEntries = (
-    nextEntries: TranscriptEntry[],
-    transcriptAgentId: string | null = visibleTranscriptAgentId(),
-  ) => {
-    const scrollbox = transcriptScrollbox
-    const previousScrollTop = scrollbox?.scrollTop ?? 0
-    const previousScrollHeight = scrollbox?.scrollHeight ?? 0
-    const previousViewportHeight = scrollbox?.height ?? 0
-    const sanitizedEntries = applyTranscriptDisplayState(nextEntries.filter(Boolean), expandedTurnIdsForAgent(transcriptAgentId))
-    tools.clear()
-    currentTurnId = computeCurrentTurnId(sanitizedEntries)
-    nextTurnId = computeNextTurnId(sanitizedEntries)
-    setEntries(reconcile(sanitizedEntries))
-    setEntryCounter(sanitizedEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
-    rebuildTranscript()
-    mountedTranscriptAgentId = transcriptAgentId
-    if (scrollbox && transcriptScrollbox === scrollbox) {
-      const nextScrollTop = computeTranscriptRebuildScrollTop({
-        previousScrollTop,
-        previousScrollHeight,
-        nextScrollHeight: scrollbox.scrollHeight,
-        viewportHeight: previousViewportHeight,
-      })
-      scrollbox.scrollTo({ x: scrollbox.scrollLeft, y: nextScrollTop })
-      scrollbox.requestRender()
-      lastTranscriptScrollTop = scrollbox.scrollTop
-    } else {
-      lastTranscriptScrollTop = transcriptScrollbox?.scrollTop ?? 0
-    }
-    syncVisibleTranscriptPreview(transcriptAgentId, sanitizedEntries)
-  }
-
-  const prependTranscriptEntries = async (nextEntries: TranscriptEntry[]) => {
-    const sanitizedEntries = nextEntries.filter(Boolean)
-    if (sanitizedEntries.length === 0) {
-      return
-    }
-
-    const currentEntries = entries.filter(Boolean)
-    const previousScrollHeight = transcriptScrollbox?.scrollHeight ?? 0
-    const previousScrollTop = transcriptScrollbox?.scrollTop ?? 0
-    const previousViewportHeight = transcriptScrollbox?.height ?? 0
-    const nextCombinedEntries = applyTranscriptDisplayState(
-      stitchPrependedHistory(sanitizedEntries, currentEntries),
-      expandedTurnIdsForAgent(visibleTranscriptAgentId()),
-    )
-    currentTurnId = computeCurrentTurnId(nextCombinedEntries)
-    nextTurnId = computeNextTurnId(nextCombinedEntries)
-    setEntries(reconcile(nextCombinedEntries))
-    setEntryCounter(nextCombinedEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
-    rebuildTranscript()
-    if (transcriptScrollbox) {
-      const scrollbox = transcriptScrollbox
-      await historyScrollRestoreController.restorePrependedHistory({
-        scrollbox,
-        previousScrollTop,
-        previousScrollHeight,
-        previousViewportHeight,
-      })
-    }
-  }
-
-  const resolveOlderHistoryChunk = async (cursor: SessionHistoryCursor | null) => {
-    let nextCursor = cursor
-    let resolvedEntries: TranscriptEntry[] = []
-    const agentId = visibleTranscriptAgentId()
-
-    while (nextCursor !== null) {
-      const historyPage = await getSessionHistory(client, sessionState().id, nextCursor, agentId)
-      const hydratedEntries = reindexTranscriptEntries(hydrateTranscriptEntries(historyPage.entries), entryCounter())
-      resolvedEntries = resolvedEntries.length === 0
-        ? hydratedEntries
-        : stitchPrependedHistory(hydratedEntries, resolvedEntries)
-      nextCursor = historyPage.next_cursor
-      if (resolvedEntries.length === 0 || resolvedEntries[0]?.role === "user" || nextCursor === null) {
-        break
-      }
-    }
-
-    return {
-      entries: resolvedEntries,
-      nextCursor,
-    }
-  }
+  const primaryTranscriptEntryController = createPrimaryTranscriptEntryController({
+    getScrollbox: () => transcriptScrollbox,
+    getEntries: () => entries.filter(Boolean),
+    getVisibleTranscriptAgentId: visibleTranscriptAgentId,
+    expandedTurnIdsForAgent,
+    clearToolState: () => {
+      tools.clear()
+    },
+    setEntries: (nextEntries) => {
+      setEntries(reconcile(nextEntries))
+    },
+    setEntryCounter,
+    setCurrentTurnId: (turnId) => {
+      currentTurnId = turnId
+    },
+    setNextTurnId: (turnId) => {
+      nextTurnId = turnId
+    },
+    setMountedTranscriptAgentId: (agentId) => {
+      mountedTranscriptAgentId = agentId
+    },
+    setLastScrollTop: (scrollTop) => {
+      lastTranscriptScrollTop = scrollTop
+    },
+    rebuildTranscript,
+    syncVisibleTranscriptPreview,
+    restorePrependedHistory: (request) => historyScrollRestoreController.restorePrependedHistory(request),
+  })
+  const replaceTranscriptEntries = primaryTranscriptEntryController.replaceEntries
+  const prependTranscriptEntries = primaryTranscriptEntryController.prependEntries
 
   const clearAgentPaneRuntime = () => {
     agentPaneTranscriptRenderController.clearAll()
