@@ -7,16 +7,13 @@ import {
   createWorkflowRequest,
   listWorkflowsRequest,
   resolveWorkflowRequest,
-  setWorkflowFlushContextRequest,
-  setWorkflowIntermediateOutputSchemaRequest,
-  setWorkflowLaunchPolicyRequest,
-  setWorkflowRunOutputSchemaRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
 import { createWorkflowRuntimeController } from "./workflow-runtime-controller.js"
 import { createWorkflowScreenController } from "./workflow-screen-controller.js"
 import { createWorkflowSessionStateController } from "./workflow-session-state.js"
+import { createWorkflowSettingsController } from "./workflow-settings-controller.js"
 import { createWorkflowTopologyController } from "./workflow-topology-controller.js"
 import { createWorkflowWatchdogController } from "./workflow-watchdog-controller.js"
 
@@ -73,6 +70,11 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     sessionId: () => deps.sessionState().id,
     applyWorkflowSessionRefresh: workflowSessionState.applyWorkflowSessionRefresh,
   })
+  const workflowSettings = createWorkflowSettingsController({
+    sendRequest: deps.sendRequest,
+    sessionId: () => deps.sessionState().id,
+    applyWorkflowSessionRefresh: workflowSessionState.applyWorkflowSessionRefresh,
+  })
 
   const createWorkflow = async (alias?: string | null) => {
     const response = await deps.sendRequest(createWorkflowRequest(deps.sessionState().id, alias))
@@ -113,85 +115,17 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     return payload.workflow
   }
 
-  const setWorkflowLaunchPolicy = async (policy: "reject" | "queue") => {
-    const response = await deps.sendRequest(
-      setWorkflowLaunchPolicyRequest(deps.sessionState().id, policy),
-    )
-    const payload = expectVariant<{ session: RuntimeSession }>(
-      response,
-      "WorkflowLaunchPolicyUpdated",
-    )
-    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
-    return payload
-  }
-
-  const setWorkflowFlushContext = async (
-    workflowRef: string,
-    flushAgentContextBeforeRun: boolean,
-  ) => {
-    const response = await deps.sendRequest(
-      setWorkflowFlushContextRequest(
-        deps.sessionState().id,
-        workflowRef,
-        flushAgentContextBeforeRun,
-      ),
-    )
-    const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowFlushContextUpdated",
-    )
-    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
-    return payload
-  }
-
-  const setWorkflowRunOutputSchema = async (
-    workflowRef: string,
-    runOutputSchemaRef: string | null,
-  ) => {
-    const response = await deps.sendRequest(
-      setWorkflowRunOutputSchemaRequest(deps.sessionState().id, workflowRef, runOutputSchemaRef),
-    )
-    const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowRunOutputSchemaUpdated",
-    )
-    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
-    return payload
-  }
-
-  const setWorkflowIntermediateOutputSchema = async (
-    workflowRef: string,
-    intermediateOutputSchemaRef: string | null,
-  ) => {
-    const response = await deps.sendRequest(
-      setWorkflowIntermediateOutputSchemaRequest(
-        deps.sessionState().id,
-        workflowRef,
-        intermediateOutputSchemaRef,
-      ),
-    )
-    const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowIntermediateOutputSchemaUpdated",
-    )
-    workflowSessionState.applyWorkflowSessionRefresh(payload.session)
-    return payload
-  }
-
   return {
     ...workflowScreen,
     ...workflowRuntime,
     ...workflowTopology,
     ...workflowWatchdogs,
+    ...workflowSettings,
     replaceWorkflowDefinitions: workflowSessionState.replaceWorkflowDefinitions,
     upsertWorkflowDefinition: workflowSessionState.upsertWorkflowDefinition,
     createWorkflow,
     listWorkflows,
     resolveWorkflow,
     assignWorkflowAlias,
-    setWorkflowFlushContext,
-    setWorkflowRunOutputSchema,
-    setWorkflowIntermediateOutputSchema,
-    setWorkflowLaunchPolicy,
   }
 }
