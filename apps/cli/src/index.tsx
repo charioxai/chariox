@@ -159,6 +159,9 @@ import {
   bootstrapCliRuntime,
 } from "./cli-runtime-bootstrap.js"
 import {
+  createCliRuntimeDebugLogger,
+} from "./cli-runtime-debug-logger.js"
+import {
   bootstrapCloudRelayProfile,
 } from "./cloud-relay.js"
 import { createCliExitController } from "./cli-exit-controller.js"
@@ -305,7 +308,6 @@ import {
   derivePromptMetaState,
   derivePromptUsageState,
   deriveSessionStatusMode,
-  type FocusedStatusBadge,
   type SessionStatusMode,
 } from "./session-chrome-state.js"
 import {
@@ -781,7 +783,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let uiBatchDepth = 0
   // Connection resilience tracking
   const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
-  let lastLoggedFocusedBadgeState: string | null = null
   const agentFocusTransitionController = createAgentFocusTransitionController()
   let currentTurnId = computeCurrentTurnId(initialEntries)
   let nextTurnId = computeNextTurnId(initialEntries)
@@ -1009,65 +1010,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     focusedBusy: focusedAgentBusy(),
     agents: allAgentsBusyState(),
   })
-  const logProviderRunDebug = (message: string, run: RuntimeProviderRun | null, fields: Record<string, unknown> = {}) => {
-    appLogger?.debug(message, {
-      provider_run_id: run?.id ?? null,
-      provider: run?.provider ?? null,
-      provider_model: run?.model ?? null,
-      provider_variant: run?.variant ?? null,
-      provider_usage_tokens_total: run?.usage_tokens_total ?? null,
-      provider_state: run?.state ?? null,
-      ...fields,
-    })
-  }
-  const logViewDebug = (phase: string, fields: Record<string, unknown> = {}) => {
-    if (!DEBUG_LOGS_ENABLED) {
-      return
-    }
-    appLogger?.debug(`view debug: ${phase}`, {
-      layout: multiAgentResponseLayout(),
-      layout_is_split: multiAgentResponseLayout() === "split",
-      split_active: splitAgentResponseMode(),
-      attached: isAttached(),
-      center_mode: "transcript",
-      agent_count: sessionState().agents.length,
-      focused_agent_id: focusedAgentId(),
-      has_transcript_scrollbox: Boolean(transcriptScrollbox),
-      ...fields,
-    })
-  }
-  const logVisibleTranscriptOutput = (
-    role: TranscriptEntry["role"],
-    text: string,
-    merged: boolean,
-    mergeKey?: string,
-  ) => {
-    if (!["assistant", "reasoning", "tool", "error", "status"].includes(role)) {
-      return
-    }
-    appLogger?.info("applied visible transcript output", {
-      role,
-      merged,
-      merge_key: mergeKey ?? null,
-      focused_agent_id: focusedAgentId(),
-      visible_agent_id: visibleTranscriptAgentId(),
-      preview: text.replace(/\s+/g, " ").trim().slice(0, 160),
-    })
-  }
-  const logFocusedBadgeChange = (badge: FocusedStatusBadge) => {
-    const nextState = `${badge.label}:${badge.parts.map((part) => `${part.label}:${part.tone}`).join("|")}`
-    if (lastLoggedFocusedBadgeState === nextState) {
-      return
-    }
-    lastLoggedFocusedBadgeState = nextState
-    appLogger?.info("focused status badge changed", {
-      label: badge.label,
-      tone: badge.tone,
-      parts: badge.parts,
-      focused_agent_id: focusedAgentId(),
-      visible_agent_id: visibleTranscriptAgentId(),
-    })
-  }
+  const runtimeDebugLogger = createCliRuntimeDebugLogger({
+    logger: appLogger,
+    debugLogsEnabled: DEBUG_LOGS_ENABLED,
+    getResponseLayout: multiAgentResponseLayout,
+    splitAgentResponseMode,
+    isAttached,
+    getAgentCount: () => sessionState().agents.length,
+    getFocusedAgentId: focusedAgentId,
+    hasTranscriptScrollbox: () => Boolean(transcriptScrollbox),
+    getVisibleTranscriptAgentId: visibleTranscriptAgentId,
+  })
+  const logProviderRunDebug = runtimeDebugLogger.logProviderRun
+  const logViewDebug = runtimeDebugLogger.logView
+  const logVisibleTranscriptOutput = runtimeDebugLogger.logVisibleTranscriptOutput
+  const logFocusedBadgeChange = runtimeDebugLogger.logFocusedBadgeChange
   createEffect(() => {
     logViewDebug("state changed")
   })
@@ -2173,7 +2130,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const attached = isAttached()
     const badge = attached ? focusedStatusBadge() : null
     if (!badge) {
-      lastLoggedFocusedBadgeState = null
+      runtimeDebugLogger.resetFocusedBadgeChange()
     } else {
       logFocusedBadgeChange(badge)
     }
