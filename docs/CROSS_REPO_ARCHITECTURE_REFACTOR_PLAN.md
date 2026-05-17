@@ -303,6 +303,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: Cloud account/email normalization is split from account bootstrap persistence; API build/tests pass.
 - Latest verified batch: Cloud account bootstrap now delegates identity upsert, relay realm creation, and subscription seeding; API build/tests pass.
 - Latest verified batch: Cloud browser session creation and logout revocation are separate repository modules; API build/tests pass.
+- Latest verified batch: Cloud browser security registration is split from browser identity/session helpers; API build/tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
