@@ -200,6 +200,7 @@ import { createPromptInputHistoryController } from "./prompt-input-history-contr
 import {
   createPromptSubmissionUiController,
 } from "./prompt-submission-ui-controller.js"
+import { createPromptSubmitCoordinator } from "./prompt-submit-coordinator.js"
 import { createNormalPromptSubmitController } from "./normal-prompt-submit-controller.js"
 import {
   createPromptTextController,
@@ -350,7 +351,6 @@ import {
 } from "./transcript.js"
 import {
   decideBootstrapAction,
-  SESSION_NEW_ERROR_HINT,
   SESSION_NEW_FOOTER_HINT,
   SESSION_NEW_PLACEHOLDER,
   formatSessionList,
@@ -428,7 +428,6 @@ import {
   type WorkspaceScreenMode,
 } from "./workspace-screen.js"
 import {
-  isWorkspaceShellCommand,
   type WorkspaceShellEntry,
 } from "./workspace-shell.js"
 import { submitWorkspaceShellCommand as submitWorkspaceShellCommandWithDeps } from "./workspace-shell-controller.js"
@@ -436,7 +435,6 @@ import { createWorkflowController, deriveWorkflowSelectionState } from "./workfl
 import {
   deriveWorkflowPromptState,
   formatWorkflowPromptPlaceholder,
-  isWorkflowCommandInput,
   resolveActiveWorkflowRun,
 } from "./workflow-prompt-state.js"
 import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-controller.js"
@@ -5231,58 +5229,26 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     formatError,
   })
 
-  const submitPrompt = async () => {
-    if (!promptInput) {
-      return
-    }
-
-    ensureBackgroundPollersStarted()
-
-    const rawPrompt = promptInput.plainText
-    const trimmed = rawPrompt.trim()
-    if (!trimmed && pendingAttachments().length === 0) {
-      promptTextController.clear()
-      return
-    }
-    if (workflowScreenShowing() && isWorkspaceShellCommand(rawPrompt)) {
-      try {
-        await submitWorkspaceShellCommand(rawPrompt)
-      } catch (error) {
-        flashFooter(formatError(error), "error")
-      } finally {
-        promptTextController.clear()
-      }
-      return
-    }
-    if (workflowNodeInstructionsEditor() && !trimmed.startsWith("/")) {
-      flashFooter("instructions editor is open; type in the I/O panel and use /workflow node instructions save", "info")
-      promptTextController.clear()
-      return
-    }
-    const allowSlashCommandSubmission = !workflowScreenShowing() || isWorkflowCommandInput(rawPrompt)
-    const handledCommand = await slashCommandSubmitController.submit(rawPrompt, {
-      allowSlashCommandSubmission,
-      trimmedPrompt: trimmed,
-    })
-    if (handledCommand) {
-      return
-    }
-    if (await providerNamespaceSubmitController.submit(rawPrompt)) {
-      return
-    }
-    if (!isAttached()) {
-      flashFooter(SESSION_NEW_ERROR_HINT, "error")
-      promptTextController.clear()
-      return
-    }
-
-    if (workflowScreenShowing()) {
-      await workflowPromptSubmitController.submit(rawPrompt)
-      return
-    }
-
-    await normalPromptSubmitController.submit(rawPrompt)
-  }
+  const promptSubmitCoordinator = createPromptSubmitCoordinator({
+    getPromptText: () => promptInput?.plainText,
+    ensureBackgroundPollersStarted: () => ensureBackgroundPollersStarted(),
+    getPendingAttachmentCount: () => pendingAttachments().length,
+    clearPromptText: () => promptTextController.clear(),
+    workflowScreenShowing,
+    submitWorkspaceShellCommand: async (rawPrompt) => {
+      await submitWorkspaceShellCommand(rawPrompt)
+    },
+    workflowNodeInstructionsEditorOpen: () => Boolean(workflowNodeInstructionsEditor()),
+    submitSlashCommand: async (rawPrompt, submitOptions) =>
+      Boolean(await slashCommandSubmitController.submit(rawPrompt, submitOptions)),
+    submitProviderNamespacePrompt: (rawPrompt) => providerNamespaceSubmitController.submit(rawPrompt),
+    isAttached,
+    submitWorkflowPrompt: (rawPrompt) => workflowPromptSubmitController.submit(rawPrompt),
+    submitNormalPrompt: (rawPrompt) => normalPromptSubmitController.submit(rawPrompt),
+    flashFooter,
+    formatError,
+  })
+  const submitPrompt = promptSubmitCoordinator.submit
 
   const requestPromptStop = async () => {
     await promptStopController.request()
