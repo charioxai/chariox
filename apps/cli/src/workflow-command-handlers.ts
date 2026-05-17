@@ -17,6 +17,13 @@ import {
   handleWorkflowQueueCommand,
   type QueuedWorkflowLaunchPayload,
 } from "./workflow-queue-command-handlers.js"
+import {
+  handleWorkflowRunCancelCommand,
+  handleWorkflowRunResumeCommand,
+  handleWorkflowRunsCommand,
+  type WorkflowRunCancelPayload,
+  type WorkflowRunResumePayload,
+} from "./workflow-run-command-handlers.js"
 import { readFile } from "node:fs/promises"
 import { resolve as resolvePath } from "node:path"
 
@@ -57,16 +64,6 @@ type WorkflowRunInvokePayload = {
   endpoint: WorkflowEndpointDefinition
   session: RuntimeSession
 } & ({ workflow_run: WorkflowRun } | { queued_launch: QueuedWorkflowLaunch })
-
-type WorkflowRunCancelPayload = {
-  workflow_run: WorkflowRun
-  session: RuntimeSession
-}
-
-type WorkflowRunResumePayload = {
-  workflow_run: WorkflowRun
-  session: RuntimeSession
-}
 
 type WorkflowWatchdogPayload = {
   watchdog: WorkflowWatchdogDefinition
@@ -480,56 +477,17 @@ export async function handleWorkflowSlashCommand(
   }
 
   if (subcommand === "runs") {
-    if (!deps.listWorkflowRuns) {
-      deps.flashFooter("workflow runtime commands unavailable", "error")
-      return
-    }
-    const workflowRef = args[1] ?? null
-    const workflowRuns = await deps.listWorkflowRuns(workflowRef)
-    deps.flashFooter(
-      workflowRuns.length === 0
-        ? (workflowRef ? `no workflow runs for ${workflowRef}` : "no workflow runs in session")
-        : `workflow runs: ${workflowRuns.map(formatWorkflowRunSummary).join(", ")}`,
-      "info",
-    )
+    await handleWorkflowRunsCommand(deps, args)
     return
   }
 
   if (subcommand === "cancel") {
-    const workflowRunRef = args[1]
-    if (!workflowRunRef) {
-      deps.flashFooter("usage: /workflow cancel <run-ref>", "error")
-      return
-    }
-    if (!deps.cancelWorkflowRun) {
-      deps.flashFooter("workflow runtime commands unavailable", "error")
-      return
-    }
-    const payload = await deps.cancelWorkflowRun(workflowRunRef)
-    deps.applySessionState(payload.session)
-    deps.flashFooter(
-      `cancelled workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
-      "info",
-    )
+    await handleWorkflowRunCancelCommand(deps, args)
     return
   }
 
   if (subcommand === "resume") {
-    const workflowRunRef = args[1]
-    if (!workflowRunRef) {
-      deps.flashFooter("usage: /workflow resume <run-ref>", "error")
-      return
-    }
-    if (!deps.resumeWorkflowRun) {
-      deps.flashFooter("workflow runtime commands unavailable", "error")
-      return
-    }
-    const payload = await deps.resumeWorkflowRun(workflowRunRef)
-    deps.applySessionState(payload.session)
-    deps.flashFooter(
-      `resumed workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
-      "info",
-    )
+    await handleWorkflowRunResumeCommand(deps, args)
     return
   }
 
@@ -1175,13 +1133,6 @@ function parseWatchdogMaxWakeups(value: string | undefined): number | null | und
     return undefined
   }
   return numeric
-}
-
-function formatWorkflowRunSummary(workflowRun: WorkflowRun): string {
-  const failureSummary = (workflowRun.failure_events?.length ?? 0) > 0
-    ? `, failures ${workflowRun.failure_events?.length ?? 0}`
-    : ""
-  return `${workflowRun.id} [${String(workflowRun.status).toLowerCase()}${failureSummary}]`
 }
 
 function hasDuplicateWorkflowEdge(
