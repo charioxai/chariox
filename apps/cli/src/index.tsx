@@ -71,6 +71,7 @@ import {
 } from "./cli-dialog-overlay.js"
 import { createCliLoadingStateController } from "./cli-loading-state-controller.js"
 import { createCliPollingController } from "./cli-polling-controller.js"
+import { createCliProcessLifecycleController } from "./cli-process-lifecycle-controller.js"
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
 import { createCommandCenterCommandExecutor } from "./command-center-command-executor.js"
@@ -3834,15 +3835,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     logger: appLogger,
     flashFooter,
   })
-  automationServerController.start()
-  process.on("SIGINT", handleSigint)
-  process.stdin.on("data", handleStdinData)
-  onCleanup(() => {
-    process.off("SIGINT", handleSigint)
-    process.stdin.off("data", handleStdinData)
-    automationServerController.stop()
-    terminalOutputRecordQueue.clearTimer()
+  const processLifecycleController = createCliProcessLifecycleController({
+    handleSigint,
+    handleStdinData,
+    startAutomationServer: () => automationServerController.start(),
+    stopAutomationServer: () => automationServerController.stop(),
+    onSigint: (handler) => process.on("SIGINT", handler),
+    offSigint: (handler) => process.off("SIGINT", handler),
+    onStdinData: (handler) => process.stdin.on("data", handler),
+    offStdinData: (handler) => process.stdin.off("data", handler),
+    clearTerminalOutputRecordTimer: () => terminalOutputRecordQueue.clearTimer(),
   })
+  processLifecycleController.start()
+  onCleanup(processLifecycleController.stop)
 
   const onResize = () => {
     if (isAttached()) {
