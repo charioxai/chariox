@@ -740,7 +740,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     ToolTranscriptUpdate
   >()
   let promptStateBox: BoxRenderable | undefined
-  let statusIndicatorBox: BoxRenderable | undefined
   let footerSummaryBox: BoxRenderable | undefined
   let historyLoadingBox: BoxRenderable | undefined
   let commandCenterBox: BoxRenderable | undefined
@@ -2017,16 +2016,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const runUiBatch = uiBatchController.run
 
-  const statusIndicatorController = createStatusIndicatorController({
+  const statusIndicatorController = createStatusIndicatorController<BoxRenderable>({
     isAttached,
     getBadge: focusedStatusBadge,
     getAnimationFrame: workingAnimationFrame,
     resetFocusedBadgeChange: runtimeDebugLogger.resetFocusedBadgeChange,
     logFocusedBadgeChange,
-    renderIndicator: ({ attached, badge, animationFrame }) => {
+    renderIndicator: ({ box, attached, badge, animationFrame }) => {
       renderStatusIndicatorView({
         renderer,
-        box: statusIndicatorBox,
+        box,
         state: statusIndicatorRenderState,
         attached,
         badge,
@@ -4246,7 +4245,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onPromptMetaUsageBarCloseTextRef={assignPromptMetaRef("usageBarCloseText")}
       onPromptMetaUsagePercentTextRef={assignPromptMetaRef("usagePercentText")}
       onStatusIndicatorBoxRef={(value) => {
-        statusIndicatorBox = value
+        statusIndicatorController.assignBox(value)
         updateSessionChrome()
       }}
       onFooterSummaryBoxRef={(value) => {

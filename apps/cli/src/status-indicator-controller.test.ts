@@ -7,8 +7,13 @@ import { createStatusIndicatorController } from "./status-indicator-controller.j
 test("status indicator controller logs and renders attached badges", () => {
   const badge = focusedBadge("WORKING")
   const logged: FocusedStatusBadge[] = []
-  const rendered: Array<{ attached: boolean; badge: FocusedStatusBadge | null; animationFrame: number }> = []
-  const controller = createStatusIndicatorController({
+  const rendered: Array<{
+    box: string | undefined
+    attached: boolean
+    badge: FocusedStatusBadge | null
+    animationFrame: number
+  }> = []
+  const controller = createStatusIndicatorController<string>({
     isAttached: () => true,
     getBadge: () => badge,
     getAnimationFrame: () => 3,
@@ -23,10 +28,11 @@ test("status indicator controller logs and renders attached badges", () => {
     },
   })
 
+  controller.assignBox("status-box")
   controller.render()
 
   assert.deepEqual(logged, [badge])
-  assert.deepEqual(rendered, [{ attached: true, badge, animationFrame: 3 }])
+  assert.deepEqual(rendered, [{ box: "status-box", attached: true, badge, animationFrame: 3 }])
 })
 
 test("status indicator controller clears badge state when detached or badge-less", () => {
