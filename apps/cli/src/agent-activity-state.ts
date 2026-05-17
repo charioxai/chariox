@@ -2,7 +2,7 @@ import type { RuntimeSession } from "./cli-types.js"
 import { getToolActivityLabel } from "./runtime.js"
 import { agentHasPromptWork } from "./session-state.js"
 
-type ToolActivityUpdate = {
+export type ToolActivityUpdate = {
   tool?: string | null
   status?: string | null
 }

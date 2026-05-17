@@ -49,18 +49,9 @@ import {
 } from "./cli-runtime-tuning.js"
 import { createDeferredBootstrapController } from "./deferred-bootstrap-controller.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
-import {
-  deriveAllAgentsBusyState,
-  deriveFocusedActivityLabel,
-  deriveFocusedAgentBusy,
-  nextAgentActivityLabels,
-  nextAgentBusyLatches,
-  readAgentBusyLatch,
-  resolveActiveToolLabelForAgent,
-  shouldPreserveAgentActivityLabel as shouldPreserveAgentActivityLabelState,
-} from "./agent-activity-state.js"
 import { createAgentFocusTransitionController } from "./agent-focus-transition-controller.js"
 import { formatAgentLabel, formatAgentLocationLabel } from "./agent-label.js"
+import { createAgentRuntimeProjectionController } from "./agent-runtime-projection-controller.js"
 import {
   describeCliDialogFocusTarget,
   type CliDialogFocusTarget,
@@ -271,7 +262,6 @@ import type { PromptMetaPart } from "./prompt-meta.js"
 import { renderPromptMeta } from "./prompt-meta-renderer.js"
 import {
   type BackendProviderId,
-  isBackendProviderId,
   normalizeBackendProviderId,
   type ProviderCatalog,
 } from "./provider-catalog.js"
@@ -335,20 +325,16 @@ import {
 import {
   activeInteractionForAgent as activeInteractionForAgentForSession,
   agentHasPromptWork,
-  agentPromptState,
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
   buildDetachedSessionState,
   focusedAgentIdForSession,
-  focusedProviderRunForAgent,
-  promptWorkByAgent,
   sessionHasPromptWork,
   sessionResponseLayout,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
 import { createSessionStateApplyController } from "./session-state-apply-controller.js"
 import { createSessionAttachmentController } from "./session-attachment-controller.js"
-import { resolveSessionAgentReference } from "./session-agent-resolver.js"
 import { createSessionLifecycleController } from "./session-lifecycle.js"
 import { createTranscriptHistoryLoadController } from "./transcript-history-load-controller.js"
 import {
@@ -864,19 +850,32 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   createEffect(() => {
     workflowSelectionSyncController.sync()
   })
-  const agentPanePreview = (agentId: string) => agentPanePreviews()[agentId] ?? ""
-  const agentActivityLabel = (agentId: string | null | undefined) => (agentId ? agentActivityLabels()[agentId] ?? null : null)
-  const focusedAgent = () => sessionState().agents.find((agent) => agent.id === focusedAgentId()) ?? null
-  const focusedBackendProvider = (): BackendProviderId | null => {
-    const provider = focusedAgent()?.provider
-    return provider && isBackendProviderId(provider) ? provider : null
-  }
-  const focusedProviderRun = () => {
-    return focusedProviderRunForAgent(providerRunState(), focusedAgentId())
-  }
-  const resolveSessionAgent = (reference?: string | null) => {
-    return resolveSessionAgentReference(sessionState(), focusedAgentId(), reference)
-  }
+  const agentRuntimeProjectionController = createAgentRuntimeProjectionController({
+    getSession: sessionState,
+    getFocusedAgentId: focusedAgentId,
+    getProviderRun: providerRunState,
+    getVisibleTranscriptAgentId: visibleTranscriptAgentId,
+    getActiveToolLabels: () => activeToolLabels.values(),
+    getAgentPaneToolUpdates: (agentId) => agentPaneTools.get(agentId)?.values(),
+    getAgentPanePreviews: agentPanePreviews,
+    getAgentActivityLabels: agentActivityLabels,
+    updateAgentActivityLabels: (updater) => {
+      setAgentActivityLabels((current) => updater(current))
+    },
+    getAgentBusyLatches: agentBusyLatches,
+    updateAgentBusyLatches: (updater) => {
+      setAgentBusyLatches((current) => updater(current))
+    },
+    getSubmitting: submitting,
+    getSubmittingAgentId: () => submittingAgentId,
+    getStreamingAgentId: streamingAgentId,
+  })
+  const agentPanePreview = agentRuntimeProjectionController.agentPanePreview
+  const agentActivityLabel = agentRuntimeProjectionController.agentActivityLabel
+  const focusedAgent = agentRuntimeProjectionController.focusedAgent
+  const focusedBackendProvider = agentRuntimeProjectionController.focusedBackendProvider
+  const focusedProviderRun = agentRuntimeProjectionController.focusedProviderRun
+  const resolveSessionAgent = agentRuntimeProjectionController.resolveSessionAgent
   const workflowInspector = () => buildWorkflowInspectorProjection({
     session: sessionState(),
     selectedWorkflowId: selectedWorkflowId(),
@@ -888,77 +887,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       workflowNodeInstructionsEditorController.setInputRef(editorRef)
     },
   })
-  const promptStateForAgent = (agentId: string | null | undefined) => agentPromptState(sessionState(), agentId)
-  const agentQueuedDepth = (agentId: string | null | undefined) => promptStateForAgent(agentId)?.queued_prompts.length ?? 0
-  const agentActivePrompt = (agentId: string | null | undefined) => promptStateForAgent(agentId)?.active_prompt ?? null
-  const agentBusyLatch = (agentId: string | null | undefined) => readAgentBusyLatch(agentBusyLatches(), agentId)
-  const anyPromptWork = () => sessionHasPromptWork(sessionState())
-  const hasPromptWorkByAgent = () => promptWorkByAgent(sessionState())
-  const focusedPromptState = () => promptStateForAgent(focusedAgentId())
-  const focusedQueueDepth = () => agentQueuedDepth(focusedAgentId())
-  const focusedActivePrompt = () => agentActivePrompt(focusedAgentId())
-  const activeToolLabelForAgent = (agentId: string | null | undefined) => {
-    return resolveActiveToolLabelForAgent({
-      agentId,
-      visibleTranscriptAgentId: visibleTranscriptAgentId(),
-      activeToolLabels: activeToolLabels.values(),
-      agentPaneToolUpdates: agentId ? agentPaneTools.get(agentId)?.values() : null,
-    })
-  }
-  const focusedActivityLabel = () => {
-    const agentId = focusedAgentId()
-    const toolLabel = activeToolLabelForAgent(agentId)
-    return deriveFocusedActivityLabel({
-      focusedAgentId: agentId,
-      activeToolLabel: toolLabel,
-      agentActivityLabel: agentActivityLabel(agentId),
-    })
-  }
-  const setAgentBusyLatch = (agentId: string | null | undefined, busy: boolean) => {
-    setAgentBusyLatches((current) => nextAgentBusyLatches(current, agentId, busy))
-  }
-  const markAgentBusy = (agentId: string | null | undefined) => {
-    setAgentBusyLatch(agentId, true)
-  }
-  const clearAgentBusy = (agentId: string | null | undefined) => {
-    setAgentBusyLatch(agentId, false)
-  }
-  const focusedAgentBusy = () => {
-    return deriveFocusedAgentBusy({
-      focusedAgentId: focusedAgentId(),
-      submitting: submitting(),
-      submittingAgentId,
-      session: sessionState(),
-      streamingAgentId: streamingAgentId(),
-      focusedActivityLabel: focusedActivityLabel(),
-      agentBusyLatches: agentBusyLatches(),
-    })
-  }
-  const allAgentsBusyState = () => {
-    return deriveAllAgentsBusyState({
-      submitting: submitting(),
-      submittingAgentId,
-      session: sessionState(),
-      streamingAgentId: streamingAgentId(),
-      agentActivityLabels: agentActivityLabels(),
-      agentBusyLatches: agentBusyLatches(),
-    })
-  }
-  const shouldPreserveAgentActivityLabel = (agentId: string | null | undefined) => {
-    return shouldPreserveAgentActivityLabelState({
-      agentId,
-      session: sessionState(),
-      streamingAgentId: streamingAgentId(),
-    })
-  }
-  const setAgentActivityLabel = (agentId: string | null | undefined, nextLabel: string | null) => {
-    setAgentActivityLabels((current) => nextAgentActivityLabels(
-      current,
-      agentId,
-      nextLabel,
-      shouldPreserveAgentActivityLabel(agentId),
-    ))
-  }
+  const promptStateForAgent = agentRuntimeProjectionController.promptStateForAgent
+  const agentQueuedDepth = agentRuntimeProjectionController.agentQueuedDepth
+  const agentActivePrompt = agentRuntimeProjectionController.agentActivePrompt
+  const agentBusyLatch = agentRuntimeProjectionController.agentBusyLatch
+  const anyPromptWork = agentRuntimeProjectionController.anyPromptWork
+  const hasPromptWorkByAgent = agentRuntimeProjectionController.hasPromptWorkByAgent
+  const focusedPromptState = agentRuntimeProjectionController.focusedPromptState
+  const focusedQueueDepth = agentRuntimeProjectionController.focusedQueueDepth
+  const focusedActivePrompt = agentRuntimeProjectionController.focusedActivePrompt
+  const activeToolLabelForAgent = agentRuntimeProjectionController.activeToolLabelForAgent
+  const focusedActivityLabel = agentRuntimeProjectionController.focusedActivityLabel
+  const markAgentBusy = agentRuntimeProjectionController.markAgentBusy
+  const clearAgentBusy = agentRuntimeProjectionController.clearAgentBusy
+  const focusedAgentBusy = agentRuntimeProjectionController.focusedAgentBusy
+  const allAgentsBusyState = agentRuntimeProjectionController.allAgentsBusyState
+  const setAgentActivityLabel = agentRuntimeProjectionController.setAgentActivityLabel
   const visibleTranscriptEntries = () => entries.filter((entry) => entry && !entry.hidden)
   const queueDepth = () => focusedQueueDepth()
   const connectedClientCount = () => sessionState().attachment_ids.length
