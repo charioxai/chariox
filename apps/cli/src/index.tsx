@@ -300,7 +300,6 @@ import {
   getProviderActivityLabel,
   getSessionStatusLabel,
   getTurnCompletionDelayMs,
-  getToolActivityLabel,
   shouldEndSessionOnCliExit,
 } from "./runtime.js"
 import {
@@ -521,6 +520,7 @@ import {
 import { reconcileMountedTranscriptPane } from "./transcript-pane-reconcile.js"
 import { createTranscriptRetentionController } from "./transcript-retention-controller.js"
 import { createTranscriptStateController } from "./transcript-state-controller.js"
+import { createTranscriptStreamController } from "./transcript-stream-controller.js"
 import {
   buildEmptyTranscriptRenderable,
   buildLoadingTranscriptRenderable,
@@ -2300,130 +2300,36 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setActiveStatusLabel(focusedActivityLabel())
   }
 
-  const syncActiveToolLabel = (update: ToolTranscriptUpdate) => {
-    const label = getToolActivityLabel(update.tool)
-    const terminal = update.status === "completed" || update.status === "error" || update.status === "cancelled"
-
-    activeToolLabels.delete(update.id)
-    if (label && !terminal) {
-      activeToolLabels.set(update.id, label)
-    }
-
-    syncVisibleActivityLabel()
-  }
-
-  const appendProviderChunk = (
-    role: TranscriptEntry["role"],
-    chunk: string,
-    mergeKey?: string,
-    sourceText?: string,
-  ) => {
-    const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-    const normalizedSource = sourceText?.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-    if (!normalized) {
-      return
-    }
-    cancelPendingTurnCompletion()
-    setWorking(true)
-    setSubmitting(false)
-    const currentEntries = entries.filter(Boolean).map((entry) => ({ ...entry }))
-    const nextEntries = currentEntries.map((entry) => ({ ...entry }))
-    let merged = false
-    let mergedEntryId: number | null = null
-    let mergedEntryText: string | null = null
-    let mergedEntrySourceText: string | undefined
-
-    if (mergeKey) {
-      for (let index = nextEntries.length - 1; index >= 0; index -= 1) {
-        const candidate = nextEntries[index]
-        if (candidate?.role !== role || candidate.mergeKey !== mergeKey) {
-          continue
-        }
-        if (role === "assistant" || role === "reasoning") {
-          candidate.text += normalized
-          if (normalizedSource !== undefined) {
-            candidate.sourceText = `${candidate.sourceText ?? ""}${normalizedSource}`
-          }
-        } else {
-          candidate.text = normalized
-          if (normalizedSource !== undefined) {
-            candidate.sourceText = normalizedSource
-          }
-        }
-        merged = true
-        mergedEntryId = candidate.id
-        mergedEntryText = candidate.text
-        mergedEntrySourceText = candidate.sourceText
-        break
-      }
-    }
-
-    if (!merged) {
-      const last = [...nextEntries].reverse().find((entry) => entry.role !== "turn_toggle")
-      if (!mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
-        last.text += normalized
-        merged = true
-        mergedEntryId = last.id
-        mergedEntryText = last.text
-        mergedEntrySourceText = last.sourceText
-      }
-    }
-
-    if (merged && mergedEntryId !== null && mergedEntryText !== null) {
+  const transcriptStreamController = createTranscriptStreamController({
+    entries: () => entries,
+    setEntries: (nextEntries) => {
       setEntries(reconcile(nextEntries))
+    },
+    entryCounter,
+    currentTurnId: () => currentTurnId,
+    tools,
+    activeToolLabels,
+    cancelPendingTurnCompletion,
+    setWorking,
+    setSubmitting,
+    updateSessionChrome: () => updateSessionChrome(),
+    syncVisibleActivityLabel,
+    applyVisibleTranscriptState,
+    persistVisibleTranscriptEntries: (nextEntries) => {
       persistVisibleTranscriptEntries(nextEntries)
-      updateTranscriptEntry(mergedEntryId, mergedEntryText, mergedEntrySourceText)
-      logVisibleTranscriptOutput(role, mergedEntryText, true, mergeKey)
-      enforceTranscriptRetention()
-      maybeScheduleConfirmedTurnCompletion()
-      return
-    }
-
-    if (!merged) {
-      const nextEntry: TranscriptEntry = {
-        id: entryCounter() + 1,
-        role,
-        text: normalized,
-      }
-      if (currentTurnId !== null) {
-        nextEntry.turnId = currentTurnId
-      }
-      if (mergeKey) {
-        nextEntry.mergeKey = mergeKey
-      }
-      if (normalizedSource !== undefined) {
-        nextEntry.sourceText = normalizedSource
-      }
-      nextEntries.push(nextEntry)
-    }
-
-    const preparedEntries = applyVisibleTranscriptState(nextEntries)
-    persistVisibleTranscriptEntries(preparedEntries)
-    reconcileMountedTranscript(currentEntries, preparedEntries)
-    const loggedEntry = [...preparedEntries].reverse().find((entry) => entry.role === role && (mergeKey ? entry.mergeKey === mergeKey : true))
-    logVisibleTranscriptOutput(role, loggedEntry?.text ?? normalized, merged, mergeKey)
-    enforceTranscriptRetention()
-    maybeScheduleConfirmedTurnCompletion()
-  }
-
-  const appendToolUpdate = (chunk: string) => {
-    const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-    if (!normalized) {
-      return
-    }
-    cancelPendingTurnCompletion()
-    setWorking(true)
-    updateSessionChrome()
-    const parsed = parseToolTranscriptUpdate(normalized)
-    if (parsed) {
-      const merged = mergeToolTranscriptUpdate(tools.get(parsed.id) ?? null, parsed)
-      tools.set(parsed.id, merged)
-      syncActiveToolLabel(merged)
-      appendProviderChunk("tool", formatToolTranscriptUpdate(merged), parsed.id, JSON.stringify(merged))
-      return
-    }
-    appendProviderChunk("tool", normalized, undefined, normalized)
-  }
+    },
+    reconcileMountedTranscript: (currentEntries, nextEntries) => {
+      reconcileMountedTranscript(currentEntries, nextEntries)
+    },
+    updateTranscriptEntry: (entryId, text, sourceText) => {
+      updateTranscriptEntry(entryId, text, sourceText)
+    },
+    logVisibleTranscriptOutput,
+    enforceTranscriptRetention,
+    maybeScheduleConfirmedTurnCompletion,
+  })
+  const appendProviderChunk = transcriptStreamController.appendProviderChunk
+  const appendToolUpdate = transcriptStreamController.appendToolUpdate
 
   const processTerminalOutputRecord = (record: TerminalOutputRecord) => {
     if (record.kind === "prompt_echo") {
