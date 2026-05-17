@@ -1,0 +1,136 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import { createAssistantMessageCompletionController } from "./assistant-message-completion-controller.js"
+import type { TranscriptEntry } from "./cli-types.js"
+
+test("assistant completion controller finalizes the visible transcript turn", () => {
+  const harness = completionHarness({
+    entries: turnEntries(),
+    expandedTurnIdsByAgent: { "agent-1": [1, 3] },
+  })
+
+  harness.controller.markCompleted("agent-1")
+
+  assert.deepEqual(harness.expandedTurnIdsByAgent["agent-1"], [3])
+  assert.deepEqual(harness.setEntryBatches.at(-1)?.map((entry) => [entry.role, entry.text]), [
+    ["user", "Investigate"],
+    ["turn_toggle", "click to collapse"],
+    ["tool", "tool output"],
+    ["assistant", "done"],
+  ])
+  assert.equal(harness.entryCounter, 4)
+  assert.equal(harness.persistedEntries.at(-1)?.length, 4)
+  assert.deepEqual(harness.reconciled, [{ current: ["Investigate", "tool output", "done"], next: ["Investigate", "click to collapse", "tool output", "done"] }])
+  assert.deepEqual(harness.calls.slice(-3), ["busy:agent-1", "turn:confirm", "turn:schedule"])
+})
+
+test("assistant completion controller finalizes an off-focus split pane", () => {
+  const harness = completionHarness({
+    split: true,
+    visibleAgentId: "agent-1",
+    entries: turnEntries("visible"),
+    paneEntries: {
+      "agent-2": turnEntries("auxiliary"),
+    },
+    expandedTurnIdsByAgent: { "agent-2": [1] },
+  })
+
+  harness.controller.markCompleted("agent-2")
+
+  assert.deepEqual(harness.expandedTurnIdsByAgent["agent-2"], [])
+  assert.deepEqual(harness.agentTranscriptEntries, [{
+    agentId: "agent-2",
+    entries: ["auxiliary", "tool output", "done"],
+  }])
+  assert.deepEqual(harness.setEntryBatches, [])
+  assert.deepEqual(harness.calls.slice(-3), ["busy:agent-2", "turn:confirm", "turn:schedule"])
+})
+
+test("assistant completion controller still clears busy state and confirms without an agent", () => {
+  const harness = completionHarness({
+    visibleAgentId: null,
+    entries: [],
+  })
+
+  harness.controller.markCompleted(null)
+
+  assert.deepEqual(harness.expandedTurnIdsByAgent, {})
+  assert.deepEqual(harness.setEntryBatches, [])
+  assert.deepEqual(harness.calls, ["busy:null", "turn:confirm", "turn:schedule"])
+})
+
+function completionHarness(options: {
+  split?: boolean
+  visibleAgentId?: string | null
+  entries?: TranscriptEntry[]
+  paneEntries?: Record<string, TranscriptEntry[]>
+  expandedTurnIdsByAgent?: Record<string, number[]>
+} = {}) {
+  const harness = {
+    split: options.split ?? false,
+    visibleAgentId: options.visibleAgentId === undefined ? "agent-1" : options.visibleAgentId,
+    entries: options.entries ?? [],
+    paneEntries: options.paneEntries ?? {},
+    expandedTurnIdsByAgent: options.expandedTurnIdsByAgent ?? {},
+    setEntryBatches: [] as TranscriptEntry[][],
+    persistedEntries: [] as TranscriptEntry[][],
+    reconciled: [] as Array<{ current: string[]; next: string[] }>,
+    agentTranscriptEntries: [] as Array<{ agentId: string; entries: string[] }>,
+    entryCounter: 0,
+    calls: [] as string[],
+    controller: null as ReturnType<typeof createAssistantMessageCompletionController> | null,
+  }
+  harness.controller = createAssistantMessageCompletionController({
+    entries: () => harness.entries,
+    visibleTranscriptAgentId: () => harness.visibleAgentId,
+    splitAgentResponseMode: () => harness.split,
+    currentAgentPaneEntries: (agentId) => harness.paneEntries[agentId] ?? [],
+    expandedTurnIdsForAgent: (agentId) => agentId ? harness.expandedTurnIdsByAgent[agentId] ?? [] : [],
+    setExpandedTurnIdsForAgent: (agentId, turnIds) => {
+      harness.expandedTurnIdsByAgent[agentId] = turnIds
+    },
+    setEntries: (entries) => {
+      harness.entries = entries
+      harness.setEntryBatches.push(entries)
+    },
+    setEntryCounter: (value) => {
+      harness.entryCounter = value
+    },
+    persistVisibleTranscriptEntries: (entries) => {
+      harness.persistedEntries.push(entries)
+    },
+    reconcileMountedTranscript: (currentEntries, nextEntries) => {
+      harness.reconciled.push({
+        current: currentEntries.map((entry) => entry.text),
+        next: nextEntries.map((entry) => entry.text),
+      })
+    },
+    setAgentTranscriptEntries: (agentId, entries) => {
+      harness.agentTranscriptEntries.push({
+        agentId,
+        entries: entries.map((entry) => entry.text),
+      })
+    },
+    clearAgentBusy: (agentId) => {
+      harness.calls.push(`busy:${agentId ?? "null"}`)
+    },
+    confirmTurnCompletion: () => {
+      harness.calls.push("turn:confirm")
+    },
+    maybeScheduleConfirmedTurnCompletion: () => {
+      harness.calls.push("turn:schedule")
+    },
+  })
+  return harness as typeof harness & {
+    controller: ReturnType<typeof createAssistantMessageCompletionController>
+  }
+}
+
+function turnEntries(promptText = "Investigate"): TranscriptEntry[] {
+  return [
+    { id: 1, role: "user", text: promptText, turnId: 1 },
+    { id: 2, role: "tool", text: "tool output", turnId: 1 },
+    { id: 3, role: "assistant", text: "done", turnId: 1 },
+  ]
+}

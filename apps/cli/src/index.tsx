@@ -37,6 +37,7 @@ import {
   stopCliAutomationServer,
 } from "./cli-automation.js"
 import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
+import { createAssistantMessageCompletionController } from "./assistant-message-completion-controller.js"
 import { createAuthoritativeIdleController } from "./authoritative-idle-controller.js"
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
 import { createCliAutomationServerController } from "./cli-automation-server-controller.js"
@@ -2256,34 +2257,36 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     updateSessionChrome()
   }
 
-  const markAssistantMessageCompleted = (_agentId: string | null | undefined) => {
-    const completionAgentId = _agentId ?? visibleTranscriptAgentId()
-    const turnId = completionAgentId && splitAgentResponseMode() && completionAgentId !== visibleTranscriptAgentId()
-      ? computeCurrentTurnId(currentAgentPaneEntries(completionAgentId))
-      : computeCurrentTurnId(entries.filter(Boolean))
-    if (completionAgentId && turnId !== null) {
-      const nextExpandedTurnIds = [...new Set([...expandedTurnIdsForAgent(completionAgentId), turnId])]
-        .filter((value) => value !== turnId)
-        .sort((left, right) => left - right)
+  const assistantMessageCompletionController = createAssistantMessageCompletionController({
+    entries: () => entries.filter(Boolean),
+    visibleTranscriptAgentId,
+    splitAgentResponseMode,
+    currentAgentPaneEntries: (agentId) => currentAgentPaneEntries(agentId),
+    expandedTurnIdsForAgent,
+    setExpandedTurnIdsForAgent: (agentId, turnIds) => {
       setExpandedTurnIdsByAgent((current) => ({
         ...current,
-        [completionAgentId]: nextExpandedTurnIds,
+        [agentId]: turnIds,
       }))
-      if (completionAgentId === visibleTranscriptAgentId()) {
-        const currentEntries = entries.filter(Boolean)
-        const nextEntries = applyTranscriptDisplayState(currentEntries, nextExpandedTurnIds)
-        setEntries(reconcile(nextEntries))
-        setEntryCounter(nextEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
-        persistVisibleTranscriptEntries(nextEntries)
-        reconcileMountedTranscript(currentEntries, nextEntries)
-      } else {
-        setAgentTranscriptEntries(completionAgentId, currentAgentPaneEntries(completionAgentId))
-      }
-    }
-    clearAgentBusy(completionAgentId)
-    turnCompletionController.confirm()
-    maybeScheduleConfirmedTurnCompletion()
-  }
+    },
+    setEntries: (nextEntries) => {
+      setEntries(reconcile(nextEntries))
+    },
+    setEntryCounter,
+    persistVisibleTranscriptEntries: (nextEntries) => {
+      persistVisibleTranscriptEntries(nextEntries)
+    },
+    reconcileMountedTranscript: (currentEntries, nextEntries) => {
+      reconcileMountedTranscript(currentEntries, nextEntries)
+    },
+    setAgentTranscriptEntries: (agentId, nextEntries) => {
+      setAgentTranscriptEntries(agentId, nextEntries)
+    },
+    clearAgentBusy,
+    confirmTurnCompletion: turnCompletionController.confirm,
+    maybeScheduleConfirmedTurnCompletion,
+  })
+  const markAssistantMessageCompleted = assistantMessageCompletionController.markCompleted
 
   const syncVisibleActivityLabel = () => {
     setActiveStatusLabel(focusedActivityLabel())
