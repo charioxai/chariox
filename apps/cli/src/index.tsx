@@ -301,6 +301,7 @@ import {
   createPromptContentChangeController,
 } from "./prompt-content-change-controller.js"
 import { createPromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
+import { createPromptInputRefController } from "./prompt-input-ref-controller.js"
 import { createResponseLayoutController } from "./response-layout-controller.js"
 import { createResponsePaneProjectionController } from "./response-pane-projection-controller.js"
 import { createResponsePaneRenderRefStoreController } from "./response-pane-render-ref-store-controller.js"
@@ -714,7 +715,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [workflowNodeInstructionsEditor, setWorkflowNodeInstructionsEditor] = createSignal<WorkflowNodeInstructionsEditor | null>(null)
   const setCenterMode = (_mode: "transcript") => {}
   const setDirectoryTreeState = (_value: null) => {}
-  let promptInput: TextareaRenderable | undefined
+  const promptInputRefController = createPromptInputRefController<TextareaRenderable>()
   let transcriptScrollbox: ScrollBoxRenderable | undefined
   const responsePaneRenderRefStore = createResponsePaneRenderRefStoreController<
     BoxRenderable,
@@ -768,7 +769,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const promptSubmissionAgentStateController = createPromptSubmissionAgentStateController()
   const promptTextController = createPromptTextController({
     initialText: initialPromptDraft,
-    getPromptInput: () => promptInput ?? null,
+    getPromptInput: promptInputRefController.currentOrNull,
     refreshHighlights: () => refreshPromptAttachmentHighlights(),
   })
   const renderScheduler = createRenderScheduler({
@@ -1045,7 +1046,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleCloudCommand: () => handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] }),
     setPromptText: (text) => setPromptText(text),
     focusPrompt: () => {
-      promptInput?.focus()
+      promptInputRefController.focus()
     },
     syncCommandCenter: (text) => syncCommandCenter(text),
     openTerminalPairingDialog: () => openTerminalPairingDialog(),
@@ -1189,7 +1190,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const commandCenterLayoutController = createCommandCenterLayoutController({
     terminalHeight: () => dimensions().height,
-    promptHeight: () => promptInput?.height ?? 1,
+    promptHeight: () => promptInputRefController.height(1),
   })
   const commandCenterVisibleRowCount = commandCenterLayoutController.visibleRowCount
   const commandCenterController = createCommandCenterController<BoxRenderable>({
@@ -1213,7 +1214,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         items: state.items,
         selectedIndex: state.selectedIndex,
         visibleRowCount: commandCenterVisibleRowCount(),
-        promptHeight: promptInput?.height ?? 1,
+        promptHeight: promptInputRefController.height(1),
         overlayFootprint: COMMAND_CENTER_OVERLAY_FOOTPRINT,
       })
     },
@@ -1397,7 +1398,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const recordPromptAreaHistoryEntry = promptInputHistoryController.recordPromptAreaEntry
   const syncPromptTextSnapshot = promptTextController.syncSnapshot
   const promptAttachmentHighlightController = createPromptAttachmentHighlightController({
-    getPromptInput: () => promptInput ?? null,
+    getPromptInput: promptInputRefController.currentOrNull,
     getPendingAttachments: pendingAttachments,
     styleIdForKind: (kind) => promptAttachmentTokenStyleIds[promptAttachmentTokenKind(kind)],
   })
@@ -1412,7 +1413,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     scheduleTimer: startTimeout,
     isAttached,
     focusPromptInput: () => {
-      promptInput?.focus()
+      promptInputRefController.focus()
     },
   })
   const retainPromptFocus = promptFocusRetentionController.retainFocus
@@ -1430,7 +1431,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const navigatePromptHistoryInput = promptHistoryNavigationController.navigate
   const promptPlaceholderSyncController = createPromptPlaceholderSyncController({
-    getPromptInput: () => promptInput ?? null,
+    getPromptInput: promptInputRefController.currentOrNull,
     getPlaceholder: promptPlaceholder,
   })
   const syncPromptPlaceholder = promptPlaceholderSyncController.sync
@@ -1439,7 +1440,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     syncPromptPlaceholder()
   })
   const promptAttachmentController = createPromptAttachmentController({
-    getPromptInput: () => promptInput ?? null,
+    getPromptInput: promptInputRefController.currentOrNull,
     getPromptText: promptTextController.currentText,
     setPromptText,
     pendingAttachments,
@@ -1511,7 +1512,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       sessionBrowserOpen: sessionBrowserOpen(),
     }),
     getCurrentFocus: () => currentFocusedRenderable() as CliDialogFocusTarget | null,
-    getPromptFocus: () => promptInput as CliDialogFocusTarget | null | undefined,
+    getPromptFocus: () => promptInputRefController.current() as CliDialogFocusTarget | null | undefined,
     describeFocus: (target) => describeRenderableDebug(target as Renderable | null | undefined),
     scheduleFocusRestore: (callback) => {
       startTimeout(callback, 1)
@@ -1557,7 +1558,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const openSessionBrowserDialog = dialogOverlayController.openSessionBrowser
   const toggleHotkeys = dialogOverlayController.toggleHotkeys
   const promptContentChangeController = createPromptContentChangeController({
-    getPromptText: () => promptInput ? promptTextController.currentText() : null,
+    getPromptText: () => promptInputRefController.hasInput() ? promptTextController.currentText() : null,
     isAttached,
     getPreviousSnapshot: promptTextController.snapshot,
     isProgrammaticMutation: promptTextController.isProgrammaticMutation,
@@ -1755,7 +1756,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const clipboardController = createClipboardController({
     renderer,
-    promptInput: () => promptInput ?? null,
+    promptInput: promptInputRefController.currentOrNull,
     flashFooter,
     logWarning: (message, fields) => appLogger?.warn(message, fields),
     formatError,
@@ -2390,7 +2391,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     rebuildTranscript,
     scheduleTimer: startTimeout,
     focusPromptInput: () => {
-      promptInput?.focus()
+      promptInputRefController.focus()
     },
   })
   const openWorkflowNodeInstructionsEditor = workflowNodeInstructionsEditorController.open
@@ -2648,14 +2649,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
     },
     clearPromptInput: () => {
-      promptInput?.clear()
+      promptInputRefController.clear()
     },
     syncPromptTextSnapshot,
     blurPromptInput: () => {
-      promptInput?.blur()
+      promptInputRefController.blur()
     },
     focusPromptInput: () => {
-      promptInput?.focus()
+      promptInputRefController.focus()
     },
     layoutPreference: () => preferencesState().ui?.multiAgentResponseLayout ?? null,
     setMultiAgentResponseLayout,
@@ -3422,7 +3423,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   const promptSubmitCoordinator = createPromptSubmitCoordinator({
-    getPromptText: () => promptInput?.plainText,
+    getPromptText: promptInputRefController.plainText,
     ensureBackgroundPollersStarted: () => ensureBackgroundPollersStarted(),
     getPendingAttachmentCount: () => pendingAttachments().length,
     clearPromptText: () => promptTextController.clear(),
@@ -3490,7 +3491,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleFocusedInteractionKey,
     handleCommandCenterKey,
     isAttached,
-    promptFocused: () => Boolean(promptInput?.focused),
+    promptFocused: promptInputRefController.isFocused,
     commandCenterOpen,
     currentPromptText: () => promptTextController.currentText(),
     promptCursorOffset: () => promptTextController.cursorOffset(),
@@ -3502,7 +3503,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const handlePromptKeyDown = promptKeyDownController.handleKeyDown
   const promptTurnNavigationController = createPromptTurnNavigationController({
     isAttached,
-    getPromptText: () => promptInput ? promptTextController.currentText() : undefined,
+    getPromptText: () => promptInputRefController.hasInput() ? promptTextController.currentText() : undefined,
     getPromptOffsets: () => visibleTranscriptEntries()
       .filter((entry) => entry.role === "user")
       .map((entry) => primaryTranscriptRuntimeStore.entryWrapperY(entry.id))
@@ -3521,7 +3522,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const waitingRoomKeyController = createWaitingRoomKeyController({
     isAttached,
     hotkeysOpen: dialogOverlayOpen,
-    promptFocused: () => Boolean(promptInput?.focused),
+    promptFocused: promptInputRefController.isFocused,
     commandCenterOpen,
     commandCenterQuery: () => commandCenterController.query(),
     getWaitingRoomState: waitingRoomState,
@@ -3554,7 +3555,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       void requestExit()
     },
     handleFocusedInteractionKey,
-    promptFocused: () => Boolean(promptInput?.focused),
+    promptFocused: promptInputRefController.isFocused,
     commandCenterOpen,
     commandCenterQuery: () => commandCenterController.query(),
     clearCommandCenter,
@@ -3929,18 +3930,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const backgroundPollerStartupController = createBackgroundPollerStartupController({
     logger: appLogger,
-    ready: () => Boolean(promptInput && transcriptScrollbox),
-    promptMounted: () => Boolean(promptInput),
+    ready: () => promptInputRefController.hasInput() && Boolean(transcriptScrollbox),
+    promptMounted: promptInputRefController.hasInput,
     transcriptScrollTop: () => transcriptScrollbox?.scrollTop ?? 0,
     setLastTranscriptScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
     isAttached,
     rebuildTranscript,
     syncPromptPlaceholder,
     focusPrompt: () => {
-      promptInput?.focus()
+      promptInputRefController.focus()
     },
     blurPrompt: () => {
-      promptInput?.blur()
+      promptInputRefController.blur()
     },
     addResizeListener: () => {
       process.stdout.on("resize", onResize)
@@ -4165,8 +4166,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         renderCommandCenter()
       }}
       onPromptInputRef={(value) => {
-        promptInput = value
-        value.syntaxStyle = promptAttachmentTokenStyle
+        promptInputRefController.assignInput(value)
+        promptInputRefController.setSyntaxStyle(promptAttachmentTokenStyle)
         syncPromptPlaceholder()
         if (promptTextController.snapshot()) {
           setPromptText(promptTextController.snapshot())
