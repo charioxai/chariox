@@ -319,6 +319,9 @@ import {
   renderSessionChromeSummary,
 } from "./session-chrome-summary-renderer.js"
 import {
+  createSessionChromeUpdateController,
+} from "./session-chrome-update-controller.js"
+import {
   agentHasPromptWork,
   agentPromptState,
   deriveAttachedCliTransitionState,
@@ -916,8 +919,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let lastTranscriptScrollTop = 0
   let historyLoadGeneration = 0
   let pendingHistoryScrollRestore = 0
-  let pendingSessionChromeUpdate = false
-  let pendingSessionChromeFlush: ReturnType<typeof startTimeout> | undefined
   let pendingTranscriptRender = false
   let pendingSplitPaneRefresh = 0
   let uiBatchDepth = 0
@@ -3573,27 +3574,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     renderScheduler.requestRenderable(transcriptScrollbox)
   }
 
-  const flushScheduledSessionChromeUpdate = () => {
-    if (pendingSessionChromeFlush) {
-      clearTimeout(pendingSessionChromeFlush)
-      pendingSessionChromeFlush = undefined
-    }
-    applySessionChromeUpdate()
-  }
-
-  const renderSessionChromeBoundary = () => {
-    flushScheduledSessionChromeUpdate()
-  }
-
   const flushDeferredUiUpdates = () => {
     if (pendingTranscriptRender) {
       pendingTranscriptRender = false
       renderScheduler.requestRenderable(transcriptScrollbox)
     }
-    if (pendingSessionChromeUpdate) {
-      pendingSessionChromeUpdate = false
-      flushScheduledSessionChromeUpdate()
-    }
+    sessionChromeUpdateController.flushDeferred()
   }
 
   const runUiBatch = (callback: () => void) => {
@@ -3971,10 +3957,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const applySessionChromeUpdate = () => {
-    if (uiBatchDepth > 0) {
-      pendingSessionChromeUpdate = true
-      return
-    }
     syncPromptPlaceholder()
     renderSessionChromeSummary({
       renderer,
@@ -4009,22 +3991,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     || Boolean(streamingAgentId())
   )
 
+  const sessionChromeUpdateController = createSessionChromeUpdateController({
+    delayMs: CHROME_UPDATE_THROTTLE_MS,
+    scheduleTimer: startTimeout,
+    clearTimer: clearTimeout,
+    isBatched: () => uiBatchDepth > 0,
+    applyUpdate: applySessionChromeUpdate,
+  })
+  const renderSessionChromeBoundary = sessionChromeUpdateController.flush
   const updateSessionChrome = () => {
-    if (uiBatchDepth > 0) {
-      pendingSessionChromeUpdate = true
-      return
-    }
-    if (!shouldThrottleSessionChrome()) {
-      flushScheduledSessionChromeUpdate()
-      return
-    }
-    if (pendingSessionChromeFlush) {
-      return
-    }
-    pendingSessionChromeFlush = startTimeout(() => {
-      pendingSessionChromeFlush = undefined
-      applySessionChromeUpdate()
-    }, CHROME_UPDATE_THROTTLE_MS)
+    sessionChromeUpdateController.request(shouldThrottleSessionChrome())
   }
 
   const setAgentPanePreview = (agentId: string, text: string) => {
@@ -7379,9 +7355,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     footerFlashController.clearTimer()
     clearPendingPromptDraftPersist()
     cancelPendingTurnCompletion()
-    if (pendingSessionChromeFlush) {
-      clearTimeout(pendingSessionChromeFlush)
-    }
+    sessionChromeUpdateController.clearTimer()
     promptInputHistoryRefreshController.clearTimer()
   })
 
