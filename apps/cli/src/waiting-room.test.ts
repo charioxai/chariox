@@ -4,7 +4,6 @@ import test from "node:test"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import {
   MAX_VISIBLE_WAITING_ROOM_SESSIONS,
-  arrobaArtFrame,
   createWaitingRoomState,
   cycleWaitingRoomValue,
   moveWaitingRoomFocus,
@@ -447,11 +446,4 @@ test("waiting room keeps session metadata column widths stable across scroll win
   const secondWindowHeader = secondWindow.find((row) => row.id === "session-header")?.columns
   const secondWindowWidths = secondWindowHeader?.map((column) => column.length)
   assert.deepEqual(secondWindowWidths, firstWindowWidths)
-})
-
-test("arrobaArtFrame resolves to the clean logo after the intro completes", () => {
-  const first = arrobaArtFrame(0)
-  const last = arrobaArtFrame(12)
-  assert.notEqual(first, last)
-  assert.equal(last.includes("____"), true)
 })
