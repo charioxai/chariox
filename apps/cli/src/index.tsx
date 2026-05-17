@@ -93,6 +93,7 @@ import {
   type FooterFlash,
 } from "./footer-flash-controller.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
+import { createHotkeyDebugReporter } from "./hotkey-debug-reporter.js"
 import { createHotkeysToggleController } from "./hotkeys-toggle-controller.js"
 import { buildHotkeySections } from "./hotkey-help.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
@@ -1827,13 +1828,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const handleSessionBrowserKey = sessionBrowserController.handleKey
 
-  const hotkeyDebug = (message: string) => {
-    appLogger?.debug("hotkeys footer debug", { detail: message })
-    if (!DEBUG_LOGS_ENABLED) {
-      return
-    }
-    flashFooter(`[hotkeys] ${message}`, "info")
-  }
+  const hotkeyDebugReporter = createHotkeyDebugReporter({
+    debugLogsEnabled: DEBUG_LOGS_ENABLED,
+    logDebug: (message, fields) => appLogger?.debug(message, fields),
+    flashFooter,
+  })
+  const hotkeyDebug = hotkeyDebugReporter.report
   const hotkeysToggleController = createHotkeysToggleController({
     hotkeysOpen,
     toggleHotkeys,
