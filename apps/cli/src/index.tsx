@@ -70,6 +70,7 @@ import {
 import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
+import { createAgentPaneTranscriptEntryController } from "./agent-pane-transcript-entry-controller.js"
 import { createAgentPaneTranscriptInteractionController } from "./agent-pane-transcript-interaction-controller.js"
 import { createAgentPaneTranscriptStreamController } from "./agent-pane-transcript-stream-controller.js"
 import { createProviderNamespaceSubmitController } from "./provider-namespace-submit-controller.js"
@@ -362,7 +363,6 @@ import {
   formatToolTranscriptUpdate,
   mergeToolTranscriptUpdate,
   parseToolTranscriptUpdate,
-  shouldSkipConsecutiveTranscriptEntry,
   shouldRenderProviderStatus,
   type ToolTranscriptUpdate,
 } from "./transcript.js"
@@ -502,7 +502,6 @@ import {
   stopSlice,
 } from "./slice-api.js"
 import {
-  appendPreviewLine,
   computeCurrentTurnId,
   computeNextTurnId,
   formatTranscriptPreview,
@@ -2737,10 +2736,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
 
-  const hasTrailingUserPrompt = (agentId: string, text: string) => {
-    const lastEntry = currentAgentPaneEntries(agentId).at(-1)
-    return lastEntry?.role === "user" && trimSingleTrailingNewline(lastEntry.text) === trimSingleTrailingNewline(text)
-  }
+  const agentPaneTranscriptEntryController = createAgentPaneTranscriptEntryController({
+    currentAgentPaneEntries,
+    visibleTranscriptAgentId,
+    visibleTranscriptEntries: () => entries.filter(Boolean),
+    expandedTurnIdsForAgent,
+    setAgentPanePreview,
+    updateAgentPanePreviews: (updater) => {
+      setAgentPanePreviews((current) => updater(current))
+    },
+    trimLiveAgentPaneEntries: (agentId, nextEntries) => trimLiveAgentPaneEntries(agentId, nextEntries),
+    setAgentTranscriptEntries: (agentId, nextEntries, turnIds) => {
+      setAgentTranscriptEntries(agentId, nextEntries, turnIds ? [...turnIds] : undefined)
+    },
+  })
+  const hasTrailingUserPrompt = agentPaneTranscriptEntryController.hasTrailingUserPrompt
 
   const agentPaneTranscriptInteractionController = createAgentPaneTranscriptInteractionController({
     currentAgentPaneEntries,
@@ -2939,56 +2949,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const syncVisibleTranscriptPreview = (
-    agentId: string | null = visibleTranscriptAgentId(),
-    previewEntries: readonly TranscriptEntry[] = entries.filter(Boolean),
-  ) => {
-    if (!agentId) {
-      return
-    }
-    setAgentPanePreview(agentId, formatTranscriptPreview([...previewEntries]))
-  }
-
-  const appendAgentPanePreview = (agentId: string | null | undefined, line: string) => {
-    if (!agentId) {
-      return
-    }
-    const normalized = line.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
-    if (!normalized) {
-      return
-    }
-    setAgentPanePreviews((current) => ({
-      ...current,
-      [agentId]: appendPreviewLine(current[agentId] ?? "", normalized),
-    }))
-  }
-
-  const appendTranscriptEntryToAgentPane = (
-    agentId: string,
-    entry: Omit<TranscriptEntry, "id">,
-    turnIds = expandedTurnIdsForAgent(agentId),
-  ) => {
-    const currentEntries = currentAgentPaneEntries(agentId).map((item) => ({ ...item }))
-    const previousEntry = currentEntries.at(-1)
-    if (shouldSkipConsecutiveTranscriptEntry(previousEntry, entry)) {
-      return
-    }
-    const nextEntry: TranscriptEntry = {
-      id: currentEntries.reduce((max, current) => Math.max(max, current.id), 0) + 1,
-      ...entry,
-    }
-    if (nextEntry.turnId === undefined) {
-      const activeTurnId = computeCurrentTurnId(currentEntries)
-      if (activeTurnId !== null) {
-        nextEntry.turnId = activeTurnId
-      }
-    }
-    setAgentTranscriptEntries(
-      agentId,
-      trimLiveAgentPaneEntries(agentId, [...currentEntries, nextEntry]),
-      turnIds,
-    )
-  }
+  const syncVisibleTranscriptPreview = agentPaneTranscriptEntryController.syncVisibleTranscriptPreview
+  const appendAgentPanePreview = agentPaneTranscriptEntryController.appendPreview
+  const appendTranscriptEntryToAgentPane = agentPaneTranscriptEntryController.appendEntry
 
   const agentPaneTranscriptStreamController = createAgentPaneTranscriptStreamController({
     currentAgentPaneEntries,
