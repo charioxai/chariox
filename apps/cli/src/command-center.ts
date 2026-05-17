@@ -1,6 +1,4 @@
-import type { BackendProviderId, ProviderCatalog } from "./provider-catalog.js"
 import {
-  type ProviderCommandCatalogs,
   providerNamespace,
   providerSupportsNamespaceCommands,
 } from "./provider-command-catalog.js"
@@ -10,31 +8,17 @@ import {
   buildProviderNamespaceItems,
   buildVariantItems,
   buildViewItems,
-  providerNamespaceRootItem,
-  providerNamespaceScopeNode,
 } from "./command-center-dynamic-items.js"
 import { filterCommandCenterItems } from "./command-center-search.js"
+import type { CommandCenterContext } from "./command-center-context.js"
+import { buildCommandCenterRootItems } from "./command-center-root-items.js"
+import { buildScopedCommandCenterItems } from "./command-center-scoped-items.js"
 import { COMMAND_TREE } from "./command-center-tree.js"
-import {
-  collectCommandNodes,
-  findDeepestScope,
-  mapNodeToItem,
-  mapRootGroup,
-} from "./command-center-tree-projection.js"
 import type { CommandCenterItem } from "./command-center-types.js"
 
 export type { CommandCenterItem } from "./command-center-types.js"
 
-type CommandContext = {
-  providerCatalog: ProviderCatalog
-  providerCommandCatalogs: ProviderCommandCatalogs
-  currentProvider: BackendProviderId
-  focusedProvider: BackendProviderId | null
-  currentModel: string
-  currentVariant: string
-}
-
-export function buildCommandCenterItems(input: string, context: CommandContext): CommandCenterItem[] {
+export function buildCommandCenterItems(input: string, context: CommandCenterContext): CommandCenterItem[] {
   if (!input.startsWith("/")) {
     return []
   }
@@ -45,7 +29,7 @@ export function buildCommandCenterItems(input: string, context: CommandContext):
   }
 
   if (normalized === "/") {
-    return rootItems(context)
+    return buildCommandCenterRootItems(context)
   }
 
   if (normalized.startsWith("/provider ")) {
@@ -71,12 +55,12 @@ export function buildCommandCenterItems(input: string, context: CommandContext):
     }
   }
 
-  const scoped = buildScopedCommandItems(normalized, context)
+  const scoped = buildScopedCommandCenterItems(normalized, context)
   if (scoped) {
     return scoped
   }
 
-  return filterCommandCenterItems(rootItems(context), normalized.slice(1).toLowerCase())
+  return filterCommandCenterItems(buildCommandCenterRootItems(context), normalized.slice(1).toLowerCase())
 }
 
 export function shouldSubmitExactCommandCenterMatch(item: CommandCenterItem, currentPrompt: string) {
@@ -111,41 +95,4 @@ export function nextCommandCenterIndex(
   }
 
   return Math.max(0, Math.min(currentIndex, items.length - 1))
-}
-
-function rootItems(context: CommandContext) {
-  const rootNodes = COMMAND_TREE
-    .filter((node) => node.id !== "misc")
-    .map((node) => mapRootGroup(node))
-  if (context.focusedProvider && providerSupportsNamespaceCommands(context.focusedProvider)) {
-    rootNodes.push(providerNamespaceRootItem(context.focusedProvider, context.providerCommandCatalogs))
-  }
-  const miscNodes = COMMAND_TREE.find((node) => node.id === "misc")?.children?.map(mapNodeToItem) ?? []
-  return [...rootNodes, ...miscNodes]
-}
-
-function buildScopedCommandItems(input: string, context: CommandContext) {
-  const scopeNodes = context.focusedProvider && providerSupportsNamespaceCommands(context.focusedProvider)
-    ? [
-      ...COMMAND_TREE,
-      providerNamespaceScopeNode(context.focusedProvider, context.providerCommandCatalogs),
-    ]
-    : COMMAND_TREE
-  const nodes = collectCommandNodes(scopeNodes)
-  const exactCommand = nodes.find((node) => !node.children?.length && input === node.value)
-  if (exactCommand && input.endsWith(" ")) {
-    return []
-  }
-
-  const scope = findDeepestScope(input, scopeNodes.filter((node) => node.value !== "/"))
-  if (!scope) {
-    return null
-  }
-
-  const query = input.slice(scope.node.value.length).trim().toLowerCase()
-  if (scope.node.children?.length) {
-    const items = [mapNodeToItem(scope.node), ...scope.node.children.map(mapNodeToItem)]
-    return query ? filterCommandCenterItems(items, query) : items
-  }
-  return null
 }

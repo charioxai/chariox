@@ -1,4 +1,4 @@
-import { backendProviderLabel, catalogModelOptions, type BackendProviderId, type ProviderCatalog } from "./provider-catalog.js"
+import { backendProviderLabel, catalogModelOptions, type BackendProviderId } from "./provider-catalog.js"
 import {
   type ProviderCommandCatalogs,
   providerNamespace,
@@ -6,14 +6,8 @@ import {
 } from "./provider-command-catalog.js"
 import { filterCommandCenterItems } from "./command-center-search.js"
 import { mapNodeToItem, type CommandNode } from "./command-center-tree-projection.js"
+import type { CommandCenterDynamicContext } from "./command-center-context.js"
 import type { CommandCenterItem } from "./command-center-types.js"
-
-export type CommandCenterDynamicContext = {
-  providerCatalog: ProviderCatalog
-  currentProvider: BackendProviderId
-  currentModel: string
-  currentVariant: string
-}
 
 export function providerNamespaceRootItem(
   provider: BackendProviderId,
