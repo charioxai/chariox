@@ -42,11 +42,8 @@ import {
   setWorkflowWatchdogEnabledRequest,
   updateWorkflowNodeInstructionsRequest,
 } from "./ipc-requests.js"
-import { toggleWorkspaceScreenMode, type WorkspaceScreenMode } from "./workspace-screen.js"
-import {
-  cycleWorkflowNodeId,
-  resolveSelectedWorkflow,
-} from "./workflow-graph/index.js"
+import type { WorkspaceScreenMode } from "./workspace-screen.js"
+import { createWorkflowScreenController } from "./workflow-screen-controller.js"
 
 export {
   createWorkflowSelectionSyncController,
@@ -69,45 +66,18 @@ type WorkflowControllerDeps = {
 }
 
 export function createWorkflowController(deps: WorkflowControllerDeps) {
-  const workflowScreenActive = () => deps.isAttached() && deps.workspaceScreenMode() === "workflow"
-  const selectedWorkflow = () => resolveSelectedWorkflow(deps.sessionState().workflows ?? [], deps.selectedWorkflowId())
-
-  const toggleWorkspaceScreen = () => {
-    if (!deps.isAttached()) {
-      return
-    }
-    deps.setWorkspaceScreenMode(toggleWorkspaceScreenMode(deps.workspaceScreenMode()))
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
-  }
-
-  const showWorkflowScreen = () => {
-    if (!deps.isAttached() || workflowScreenActive()) {
-      return
-    }
-    deps.setWorkspaceScreenMode("workflow")
-    deps.rebuildTranscript()
-    deps.applyResponseLayout()
-  }
-
-  const selectWorkflowCanvas = (workflowId: string | null) => {
-    deps.setSelectedWorkflowId(workflowId)
-    deps.setSelectedWorkflowNodeId(null)
-    if (workflowScreenActive()) {
-      deps.rebuildTranscript()
-    }
-  }
-
-  const cycleWorkflowCanvasNode = (step = 1) => {
-    const nextNodeId = cycleWorkflowNodeId(selectedWorkflow(), deps.selectedWorkflowNodeId(), step)
-    if (nextNodeId === deps.selectedWorkflowNodeId()) {
-      return
-    }
-    deps.setSelectedWorkflowNodeId(nextNodeId)
-    if (workflowScreenActive()) {
-      deps.rebuildTranscript()
-    }
-  }
+  const workflowScreen = createWorkflowScreenController({
+    isAttached: deps.isAttached,
+    workflows: () => deps.sessionState().workflows ?? [],
+    selectedWorkflowId: deps.selectedWorkflowId,
+    setSelectedWorkflowId: deps.setSelectedWorkflowId,
+    selectedWorkflowNodeId: deps.selectedWorkflowNodeId,
+    setSelectedWorkflowNodeId: deps.setSelectedWorkflowNodeId,
+    workspaceScreenMode: deps.workspaceScreenMode,
+    setWorkspaceScreenMode: deps.setWorkspaceScreenMode,
+    rebuildTranscript: deps.rebuildTranscript,
+    applyResponseLayout: deps.applyResponseLayout,
+  })
 
   const replaceWorkflowDefinitions = (workflows: WorkflowDefinition[]) => {
     deps.applySessionState({
@@ -560,12 +530,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
   }
 
   return {
-    workflowScreenActive,
-    selectedWorkflow,
-    toggleWorkspaceScreen,
-    showWorkflowScreen,
-    selectWorkflowCanvas,
-    cycleWorkflowCanvasNode,
+    ...workflowScreen,
     replaceWorkflowDefinitions,
     upsertWorkflowDefinition,
     createWorkflow,
