@@ -78,6 +78,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: CLI transcript-history auto-load triggers are responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI transcript render deferral is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI prompt cancellation in-flight handling is responsibility-owned; CLI tests pass.
+- Latest verified batch: CLI ambient interval ownership is split by transcript, working-animation, and waiting-room refresh responsibility; CLI tests pass.
 - Latest verified batch: CLI provider recovery relaunch/reapply flow is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI kernel event subscription scope tracking is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI kernel restart reattachment/backoff recovery is responsibility-owned; CLI tests pass.

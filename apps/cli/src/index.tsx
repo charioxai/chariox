@@ -340,11 +340,13 @@ import {
 } from "./transcript-text.js"
 import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
 import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
+import { createTranscriptScrollMonitorController } from "./transcript-scroll-monitor-controller.js"
 import {
   createTerminalOutputRecordQueue,
 } from "./terminal-output-record-queue.js"
 import { createTerminalExitController } from "./terminal-exit-controller.js"
 import { createTranscriptRenderDeferralController } from "./transcript-render-deferral-controller.js"
+import { createWorkingAnimationController } from "./working-animation-controller.js"
 import {
   formatToolTranscriptUpdate,
   mergeToolTranscriptUpdate,
@@ -414,6 +416,7 @@ import {
 } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
 import { createWaitingRoomIntroAnimationController } from "./waiting-room-intro-animation-controller.js"
+import { createWaitingRoomRefreshIntervalController } from "./waiting-room-refresh-interval-controller.js"
 import {
   createWaitingRoomState,
   type WaitingRoomFocus,
@@ -5996,26 +5999,36 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   })
 
-  const transcriptScrollMonitor = startInterval(() => {
-    transcriptHistoryAutoloadController.monitorScroll()
-  }, 75)
+  const transcriptScrollMonitorController = createTranscriptScrollMonitorController({
+    intervalMs: 75,
+    scheduleInterval: startInterval,
+    clearInterval,
+    monitorScroll: () => {
+      transcriptHistoryAutoloadController.monitorScroll()
+    },
+  })
+  transcriptScrollMonitorController.start()
 
   onCleanup(() => {
-    clearInterval(transcriptScrollMonitor)
+    transcriptScrollMonitorController.stop()
   })
 
-  const workingAnimation = startInterval(() => {
-    setWorkingAnimationFrame((value) => value + 1)
-    if (sessionStatusMode() === "working") {
-      updateSessionChrome()
-    }
-    if (splitAgentResponseMode()) {
-      renderSplitPaneFooters()
-    }
-  }, 120)
+  const workingAnimationController = createWorkingAnimationController({
+    intervalMs: 120,
+    scheduleInterval: startInterval,
+    clearInterval,
+    incrementFrame: () => {
+      setWorkingAnimationFrame((value) => value + 1)
+    },
+    sessionStatusMode,
+    splitAgentResponseMode,
+    updateSessionChrome,
+    renderSplitPaneFooters,
+  })
+  workingAnimationController.start()
 
   onCleanup(() => {
-    clearInterval(workingAnimation)
+    workingAnimationController.stop()
   })
 
   const waitingRoomIntroAnimationController = createWaitingRoomIntroAnimationController({
@@ -6033,12 +6046,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     waitingRoomIntroAnimationController.stop()
   })
 
-  const relayMachineRefresh = startInterval(() => {
-    void refreshWaitingRoomData()
-  }, 2_500)
+  const waitingRoomRefreshIntervalController = createWaitingRoomRefreshIntervalController({
+    intervalMs: 2_500,
+    scheduleInterval: startInterval,
+    clearInterval,
+    refreshWaitingRoomData,
+  })
+  waitingRoomRefreshIntervalController.start()
 
   onCleanup(() => {
-    clearInterval(relayMachineRefresh)
+    waitingRoomRefreshIntervalController.stop()
   })
 
   onMount(() => {
