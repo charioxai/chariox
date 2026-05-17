@@ -50,6 +50,7 @@ import {
   shouldPreserveAgentActivityLabel as shouldPreserveAgentActivityLabelState,
 } from "./agent-activity-state.js"
 import { createAgentFocusTransitionController } from "./agent-focus-transition-controller.js"
+import { formatAgentLabel } from "./agent-label.js"
 import {
   describeCliDialogFocusTarget,
   type CliDialogFocusTarget,
@@ -449,9 +450,12 @@ import {
   createWorkflowSelectionSyncController,
 } from "./workflow-controller.js"
 import {
+  buildWorkflowInspectorProjection,
+  type WorkflowInspectorMode,
+} from "./workflow-inspector-projection.js"
+import {
   deriveWorkflowPromptState,
   formatWorkflowPromptPlaceholder,
-  resolveActiveWorkflowRun,
 } from "./workflow-prompt-state.js"
 import {
   createWorkflowNodeInstructionsEditorController,
@@ -841,7 +845,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [workspaceShellEntryCounter, setWorkspaceShellEntryCounter] = createSignal(0)
   const [selectedWorkflowId, setSelectedWorkflowId] = createSignal<string | null>(initialSession.workflows?.[0]?.id ?? null)
   const [selectedWorkflowNodeId, setSelectedWorkflowNodeId] = createSignal<string | null>(null)
-  const [workflowInspectorMode, setWorkflowInspectorMode] = createSignal<"runtime" | "terminal">("runtime")
+  const [workflowInspectorMode, setWorkflowInspectorMode] = createSignal<WorkflowInspectorMode>("runtime")
   const [workflowNodeInstructionsEditor, setWorkflowNodeInstructionsEditor] = createSignal<WorkflowNodeInstructionsEditor | null>(null)
   const setCenterMode = (_mode: "transcript") => {}
   const setDirectoryTreeState = (_value: null) => {}
@@ -1022,12 +1026,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const agentId = focusedAgentId()
     return run && run.agent_instance_id === agentId ? run : null
   }
-  const formatAgentLabel = (agent: AgentInstance | null | undefined) => {
-    if (!agent) {
-      return ""
-    }
-    return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
-  }
   const resolveSessionAgent = (reference?: string | null) => {
     const normalizedReference = reference?.trim() ?? ""
     if (!normalizedReference) {
@@ -1050,168 +1048,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     return { agent: null, error: `agent '${normalizedReference}' not found` }
   }
-  const workflowNodeInstructionsInspector = () => {
-    const editor = workflowNodeInstructionsEditor()
-    if (!editor) {
-      return null
-    }
-    const workflow = sessionState().workflows?.find((entry) => entry.id === editor.workflowId) ?? null
-    const node = workflow?.nodes?.find((entry) => entry.id === editor.nodeId) ?? null
-    const agent = node ? sessionState().agents.find((entry) => entry.id === node.agent_id) ?? null : null
-    const workflowLabel = workflow?.alias ? `${workflow.id} (${workflow.alias})` : editor.workflowId
-    const agentLabel = agent ? formatAgentLabel(agent) : node?.agent_id ?? "unknown"
-    return {
-      title: "Node Instructions",
-      meta: [
-        `Workflow: ${workflowLabel}`,
-        `Node: ${node?.id ?? editor.nodeId}`,
-        `Agent: ${agentLabel}`,
-      ],
-      draft: editor.draft ?? "",
-      placeholder: "Type system instructions for this node",
-      hint: "Use /workflow node instructions save to persist. /workflow node instructions close to discard.",
-      onDraftChange: (draft: string) => workflowNodeInstructionsEditorController.updateDraft(draft),
-      onEditorRef: (editorRef: TextareaRenderable | null) => {
-        workflowNodeInstructionsEditorController.setInputRef(editorRef)
-      },
-    }
-  }
-  const workflowRuntimeInspector = () => {
-    const workflow = sessionState().workflows?.find((entry) => entry.id === selectedWorkflowId()) ?? null
-    if (!workflow) {
-      return null
-    }
-    const selectedNodeId = selectedWorkflowNodeId()
-    const selectedNode = workflow.nodes?.find((entry) => entry.id === selectedNodeId) ?? null
-    const selectedAgent = selectedNode
-      ? sessionState().agents.find((entry) => entry.id === selectedNode.agent_id) ?? null
-      : null
-    const workflowRun = resolveActiveWorkflowRun(workflow.id, sessionState().workflow_runs ?? [])
-      ?? [...(sessionState().workflow_runs ?? [])]
-        .filter((entry) => entry.workflow_id === workflow.id)
-        .sort((left, right) => right.created_at_ms - left.created_at_ms)[0]
-      ?? null
-    const workflowLabel = workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id
-    const meta = [
-      `Workflow: ${workflowLabel}`,
-      `Selected node: ${selectedNode?.id ?? "-"}`,
-      `Agent: ${selectedAgent ? formatAgentLabel(selectedAgent) : selectedNode?.agent_id ?? "-"}`,
-      `Run: ${workflowRun?.id ?? "-"}`,
-      `Run status: ${String(workflowRun?.status ?? "idle").toLowerCase()}`,
-    ]
-    const nodeRuns = workflowRun?.node_runs ?? []
-    const selectedNodeRun = selectedNode
-      ? [...nodeRuns].filter((entry) => entry.node_id === selectedNode.id).sort((left, right) => right.created_at_ms - left.created_at_ms)[0] ?? null
-      : null
-    const failureEvents = workflowRun?.failure_events ?? []
-    const selectedNodeFailures = selectedNodeRun
-      ? failureEvents.filter((entry) => entry.source_node_run_id === selectedNodeRun.id)
-      : []
-    const workflowWatchdogs = (sessionState().workflow_watchdogs ?? [])
-      .filter((entry) => entry.workflow_id === workflow.id)
-      .sort((left, right) => left.next_run_at_ms - right.next_run_at_ms)
-    const lines: string[] = []
-    lines.push(`Watchdogs: ${workflowWatchdogs.length}`)
-    if (workflowWatchdogs.length > 0) {
-      lines.push("")
-      lines.push("Watchdogs")
-      for (const watchdog of workflowWatchdogs.slice(0, 8)) {
-        lines.push(`- ${watchdog.id} endpoint=${watchdog.endpoint_id} every=${watchdog.interval_seconds}s policy=${watchdog.policy} enabled=${String(watchdog.enabled)}`)
-        lines.push(`  next: ${new Date(watchdog.next_run_at_ms).toISOString()}`)
-        if (watchdog.last_status) {
-          lines.push(`  last: ${watchdog.last_status}`)
-        }
-        if (watchdog.pending_run) {
-          lines.push("  pending: true")
-        }
-      }
-    }
-    lines.push("")
-    lines.push(`Failure events: ${failureEvents.length}`)
-    if (selectedNodeRun) {
-      lines.push("")
-      lines.push("Selected node run")
-      lines.push(`- id: ${selectedNodeRun.id}`)
-      lines.push(`- status: ${String(selectedNodeRun.status).toLowerCase()}`)
-      lines.push(`- summary: ${selectedNodeRun.summary ?? "-"}`)
-      if (selectedNodeRun.turn_envelope) {
-        lines.push(`- turn state: ${selectedNodeRun.turn_envelope.state}`)
-        lines.push(`- delivery token: ${selectedNodeRun.turn_envelope.delivery_token}`)
-        if (selectedNodeRun.turn_envelope.mailbox_content) {
-          lines.push("")
-          lines.push("Mailbox snapshot")
-          lines.push(selectedNodeRun.turn_envelope.mailbox_content)
-        }
-        if (selectedNodeRun.turn_envelope.handoff_payloads_json) {
-          lines.push("")
-          lines.push("Handoff snapshot")
-          lines.push(selectedNodeRun.turn_envelope.handoff_payloads_json)
-        }
-        const runtimeToolCalls = selectedNodeRun.turn_envelope.runtime_tool_calls ?? []
-        if (runtimeToolCalls.length > 0) {
-          lines.push("")
-          lines.push("Runtime tool calls")
-          for (const call of runtimeToolCalls.slice(-10)) {
-            lines.push(`- ${call.tool_name} @ ${new Date(call.timestamp_ms).toISOString()} ok=${String(call.ok)}`)
-            lines.push(`  args: ${call.arguments_json}`)
-            if (call.result_json) {
-              lines.push(`  result: ${call.result_json}`)
-            }
-          }
-        }
-      }
-    }
-    if (selectedNodeFailures.length > 0) {
-      lines.push("")
-      lines.push("Selected node failure events")
-      for (const failure of selectedNodeFailures) {
-        lines.push(`- ${String(failure.kind).toLowerCase()} @ ${new Date(failure.timestamp_ms).toISOString()}`)
-        lines.push(`  ${failure.message}`)
-        if (failure.edge_ids.length > 0) {
-          lines.push(`  edges: ${failure.edge_ids.join(", ")}`)
-        }
-      }
-    } else if (failureEvents.length > 0) {
-      lines.push("")
-      lines.push("Recent workflow failure events")
-      for (const failure of failureEvents.slice(-5).reverse()) {
-        lines.push(`- ${String(failure.kind).toLowerCase()} @ ${new Date(failure.timestamp_ms).toISOString()}`)
-        lines.push(`  ${failure.message}`)
-      }
-    } else {
-      lines.push("")
-      lines.push("No failure events recorded for the current workflow run.")
-    }
-    return {
-      title: "Workflow Runtime",
-      meta,
-      body: lines.join("\n"),
-      hint: "Use /workflow runs, /workflow cancel, and /workflow resume to manage the current run.",
-    }
-  }
-  const workflowTerminalInspector = () => {
-    const workflow = sessionState().workflows?.find((entry) => entry.id === selectedWorkflowId()) ?? null
-    if (!workflow) {
-      return null
-    }
-    const workflowLabel = workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id
-    const consoleState = (sessionState().workflow_consoles ?? []).find((entry) => entry.workflow_id === workflow.id) ?? null
-    const body = (consoleState?.entries ?? []).map((entry) => entry.text ?? "").join("")
-    return {
-      title: "Workflow Terminal",
-      meta: [
-        `Workflow: ${workflowLabel}`,
-        `Entries: ${consoleState?.entries?.length ?? 0}`,
-      ],
-      body: body.length > 0 ? body : "No workflow terminal output yet.",
-      hint: "Use /workflow terminal [workflow-ref] to keep this console visible while the workflow runs.",
-    }
-  }
-  const workflowInspector = () => workflowNodeInstructionsEditor()
-    ? workflowNodeInstructionsInspector()
-    : workflowInspectorMode() === "terminal"
-      ? workflowTerminalInspector()
-      : workflowRuntimeInspector()
+  const workflowInspector = () => buildWorkflowInspectorProjection({
+    session: sessionState(),
+    selectedWorkflowId: selectedWorkflowId(),
+    selectedWorkflowNodeId: selectedWorkflowNodeId(),
+    inspectorMode: workflowInspectorMode(),
+    nodeInstructionsEditor: workflowNodeInstructionsEditor(),
+    updateNodeInstructionsDraft: (draft) => workflowNodeInstructionsEditorController.updateDraft(draft),
+    setNodeInstructionsInputRef: (editorRef) => {
+      workflowNodeInstructionsEditorController.setInputRef(editorRef)
+    },
+  })
   const promptStateForAgent = (agentId: string | null | undefined) => agentPromptState(sessionState(), agentId)
   const agentQueuedDepth = (agentId: string | null | undefined) => promptStateForAgent(agentId)?.queued_prompts.length ?? 0
   const agentActivePrompt = (agentId: string | null | undefined) => promptStateForAgent(agentId)?.active_prompt ?? null
