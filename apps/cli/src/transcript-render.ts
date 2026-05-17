@@ -1,22 +1,23 @@
-import { setTimeout as startTimeout } from "node:timers"
-
 import {
   BoxRenderable,
   MarkdownRenderable,
-  MouseButton,
-  TextAttributes,
   TextRenderable,
   type SyntaxStyle,
 } from "@opentui/core"
 
 import type { TranscriptEntry } from "./cli-types.js"
 import { transcriptEntryPadding } from "./transcript-entry-style.js"
-import { theme, TranscriptSeparatorBorder } from "./theme.js"
+import { TranscriptSeparatorBorder } from "./theme.js"
 import {
   normalizeMarkdownFenceInfoStrings,
   shouldRenderTranscriptAsMarkdown,
 } from "./transcript.js"
 import { buildApplyPatchTranscriptContent } from "./transcript-apply-patch-render.js"
+import {
+  buildBlobToggleLabel,
+  buildCollapsedTranscriptBlob,
+  buildTurnToggleContent,
+} from "./transcript-interaction-render.js"
 import {
   readTranscriptApplyPatch,
   shouldRenderCollapsedTranscriptBlob,
@@ -196,62 +197,4 @@ function buildExpandedTranscriptContent(
   applyTranscriptTextContent(text, entry)
   body.add(text)
   return { textRenderable: text, markdownRenderable: null }
-}
-
-function buildTurnToggleContent(
-  renderer: RenderContext,
-  body: BoxRenderable,
-  entry: TranscriptEntry,
-  onToggleTurn: (turnId: number | null | undefined, toggleEntryId?: number) => void,
-) {
-  const text = new TextRenderable(renderer, {
-    fg: transcriptTextColor(entry),
-    wrapMode: "word",
-  })
-  text.onMouseUp = (event) => {
-    if (event.button !== MouseButton.LEFT) {
-      return
-    }
-    event.stopPropagation()
-    startTimeout(() => {
-      onToggleTurn(entry.turnId, entry.id)
-    }, 0)
-  }
-  applyTranscriptTextContent(text, entry)
-  body.add(text)
-}
-
-function buildCollapsedTranscriptBlob(
-  renderer: RenderContext,
-  body: BoxRenderable,
-  entry: TranscriptEntry,
-  onToggleBlob: (entryId: number, collapsed: boolean) => void,
-) {
-  body.add(
-    new TextRenderable(renderer, {
-      content: [entry.blobTitle, entry.blobSummary].filter(Boolean).join("  "),
-      fg: transcriptTextColor(entry),
-      wrapMode: "word",
-      attributes: TextAttributes.BOLD,
-    }),
-  )
-  body.add(buildBlobToggleLabel(renderer, "click to expand", () => onToggleBlob(entry.id, false)))
-}
-
-function buildBlobToggleLabel(renderer: RenderContext, content: string, onClick: () => void) {
-  const text = new TextRenderable(renderer, {
-    content,
-    fg: theme.textMuted,
-    wrapMode: "word",
-  })
-  text.onMouseUp = (event) => {
-    if (event.button !== MouseButton.LEFT) {
-      return
-    }
-    event.stopPropagation()
-    startTimeout(() => {
-      onClick()
-    }, 0)
-  }
-  return text
 }
