@@ -418,10 +418,9 @@ import { bootstrapSession } from "./session-bootstrap.js"
 import { applyTheme, createTranscriptSyntaxStyle, setThemeRegistry, theme } from "./theme.js"
 import { DEFAULT_THEME_REGISTRY, loadThemeRegistry } from "./theme-registry.js"
 import {
-  deriveWaitingRoomActivationDecision,
-  deriveWaitingRoomControlActivationDecision,
   deriveWaitingRoomStateUpdate,
 } from "./waiting-room-controller.js"
+import { createWaitingRoomActivationController } from "./waiting-room-activation-controller.js"
 import {
   getWaitingRoomInventory,
   type RemoteKernelView,
@@ -1264,83 +1263,46 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     syncCommandCenter()
     return update.normalizedState
   }
-  const activateWaitingRoom = async () => {
-    try {
-      if (!kernelConnected()) {
-        await connectDetachedKernelFromWaitingRoom()
-      }
-      const remote = {
-        relay: relayStatusState(),
-        machines: remoteMachinesState(),
-        kernels: remoteKernelsState(),
-        terminals: terminalsState(),
-        slices: slicesState(),
-      }
-      const controlDecision = deriveWaitingRoomControlActivationDecision({
-        state: waitingRoomState(),
-        workspacePath: pendingWorkspaceTarget(),
-        worktreePath: pendingWorktreeTarget(),
-        remote,
-      })
-      if (controlDecision.action !== "none") {
-        if (controlDecision.action === "cloud") {
-          await handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
-          return
-        }
-        if (controlDecision.action === "stage-command") {
-          setPromptText(controlDecision.command)
-          promptInput?.focus()
-          syncCommandCenter(controlDecision.command)
-          flashFooter(controlDecision.message, "info")
-          return
-        }
-        if (controlDecision.action === "open-terminal-pairing") {
-          await openTerminalPairingDialog()
-          return
-        }
-        if (controlDecision.action === "open-session-browser") {
-          openSessionBrowserDialog()
-          return
-        }
-        flashFooter(controlDecision.message, controlDecision.action === "error" ? "error" : "info")
-        return
-      }
-      const decision = deriveWaitingRoomActivationDecision({
-        state: waitingRoomState(),
-        sessions: availableSessions(),
-        catalog: providerCatalogState(),
-        currentProvider: (options.provider ?? "opencode") as BackendProviderId,
-        currentModel: options.model,
-        remote,
-      })
-      if (decision.action === "create") {
-        const session = await createSession(client, pendingWorkspaceTarget(), pendingWorktreeTarget(), undefined, {
-          provider: decision.launch.provider,
-          model: decision.launch.model,
-          effort: decision.launch.effort,
-          account_profile: options.accountProfile,
-          execution_mode: "build",
-          permission_level: "yolo",
-        }, decision.launch.sliceRef)
-        await attachBinding(session, true, decision.launch)
-        flashFooter(`created session ${session.alias ?? session.id}`, "info")
-        return
-      }
-      if (decision.action === "join") {
-        await attachBinding(decision.session, false, decision.launch)
-        flashFooter(`attached to session ${decision.session.alias ?? decision.session.id}`, "info")
-        return
-      }
-      if (decision.action === "error") {
-        flashFooter(decision.message, "error")
-      }
-    } catch (error) {
-      appLogger?.warn("waiting room activation failed", {
-        error: formatError(error),
-      })
-      flashFooter(formatError(error), "error")
-    }
-  }
+  const waitingRoomActivationController = createWaitingRoomActivationController({
+    isKernelConnected: kernelConnected,
+    connectKernel: () => connectDetachedKernelFromWaitingRoom(),
+    getWaitingRoomState: waitingRoomState,
+    getRemoteState: () => ({
+      relay: relayStatusState(),
+      machines: remoteMachinesState(),
+      kernels: remoteKernelsState(),
+      terminals: terminalsState(),
+      slices: slicesState(),
+    }),
+    getWorkspaceTarget: pendingWorkspaceTarget,
+    getWorktreeTarget: pendingWorktreeTarget,
+    getAvailableSessions: availableSessions,
+    getProviderCatalog: providerCatalogState,
+    getCurrentProvider: () => (options.provider ?? "opencode") as BackendProviderId,
+    getCurrentModel: () => options.model,
+    getAccountProfile: () => options.accountProfile,
+    handleCloudCommand: () => handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] }),
+    setPromptText: (text) => setPromptText(text),
+    focusPrompt: () => {
+      promptInput?.focus()
+    },
+    syncCommandCenter: (text) => syncCommandCenter(text),
+    openTerminalPairingDialog: () => openTerminalPairingDialog(),
+    openSessionBrowserDialog: () => openSessionBrowserDialog(),
+    createSession: (workspacePath, worktreePath, launch) => createSession(client, workspacePath, worktreePath, undefined, {
+      provider: launch.provider,
+      model: launch.model,
+      effort: launch.effort,
+      account_profile: launch.account_profile,
+      execution_mode: launch.execution_mode,
+      permission_level: launch.permission_level,
+    }, launch.sliceRef),
+    attachBinding: (session, createdSession, launch) => attachBinding(session, createdSession, launch),
+    flashFooter: (message, tone) => flashFooter(message, tone),
+    warn: (message, fields) => appLogger?.warn(message, fields),
+    formatError,
+  })
+  const activateWaitingRoom = waitingRoomActivationController.activate
   const waitingRoomLifecycleConfirmationController = createWaitingRoomLifecycleConfirmationController()
   const waitingRoomInventoryRefreshController = createWaitingRoomInventoryRefreshController({
     isKernelConnected: kernelConnected,
