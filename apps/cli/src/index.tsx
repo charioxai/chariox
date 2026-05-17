@@ -446,6 +446,7 @@ import {
   type WaitingRoomFocus,
   type WaitingRoomState,
 } from "./waiting-room.js"
+import { createWaitingRoomTransitionController } from "./waiting-room-transition-controller.js"
 import {
   primeWaitingRoomWorktreeInventory,
 } from "./waiting-room-worktrees.js"
@@ -5798,48 +5799,53 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const requestExit = exitController.requestExit
 
-  const requestWaitingRoom = async () => {
-    if (closing) {
-      return
-    }
-    appLogger?.info("requested waiting room", {
-      created_session: createdSessionState(),
-    })
-    try {
-      syncPromptTextSnapshot()
-      await flushPendingPromptDraftPersist().catch((error) => {
-        appLogger?.warn("failed to flush prompt draft during waiting-room transition", {
-          error: formatError(error),
-        })
+  const waitingRoomTransitionController = createWaitingRoomTransitionController({
+    isClosing: () => closing,
+    getCreatedSession: createdSessionState,
+    getConnectedClientCount: connectedClientCount,
+    getAttachment: attachmentState,
+    getSessionId: () => sessionState().id,
+    getPromptDraft: persistablePromptDraft,
+    syncPromptTextSnapshot,
+    flushPromptDraftPersist: flushPendingPromptDraftPersist,
+    persistSessionPromptDraft: (sessionId, promptDraft) =>
+      persistSessionPromptState(sessionId, { promptDraft }),
+    shouldEndSessionOnExit: shouldEndSessionOnCliExit,
+    archiveSession: async (sessionId) => {
+      await archiveSessionById(client, sessionId)
+    },
+    detachAttachment: (attachmentId) => detachSessionAttachment(client, attachmentId),
+    transitionToWaitingRoom: (message) => {
+      void transitionToNoSession(message)
+    },
+    onWaitingRoomRequested: (createdSession) => {
+      appLogger?.info("requested waiting room", {
+        created_session: createdSession,
       })
-      const sessionId = attachmentState()?.session_id
-      if (sessionId) {
-        await persistSessionPromptState(sessionId, {
-          promptDraft: persistablePromptDraft(),
-        }).catch((error) => {
-          appLogger?.warn("failed to persist prompt draft during waiting-room transition", {
-            session_id: sessionId,
-            error: formatError(error),
-          })
-        })
-      }
-      const attachment = attachmentState()
-      if (attachment) {
-        if (shouldEndSessionOnCliExit(createdSessionState(), connectedClientCount())) {
-          await archiveSessionById(client, sessionState().id)
-        } else {
-          await detachSessionAttachment(client, attachment.id)
-        }
-      }
-    } catch (error) {
+    },
+    onPromptDraftFlushFailed: (error) => {
+      appLogger?.warn("failed to flush prompt draft during waiting-room transition", {
+        error: formatError(error),
+      })
+    },
+    onPromptDraftPersistFailed: (sessionId, error) => {
+      appLogger?.warn("failed to persist prompt draft during waiting-room transition", {
+        session_id: sessionId,
+        error: formatError(error),
+      })
+    },
+    onCleanupFailed: (error) => {
       appLogger?.warn("waiting room cleanup failed", {
         error: formatError(error),
       })
       appendNotice(formatError(error), "warning")
-    }
-    transitionToNoSession("Returned to waiting room.")
-    appLogger?.info("waiting room transition completed")
-  }
+    },
+    onTransitionCompleted: () => {
+      appLogger?.info("waiting room transition completed")
+    },
+  })
+
+  const requestWaitingRoom = waitingRoomTransitionController.requestWaitingRoom
 
   const restoreTerminalAndExit = async (exitCode: number) => {
     try {
