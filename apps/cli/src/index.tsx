@@ -87,6 +87,7 @@ import { createAgentPaneTranscriptInteractionController } from "./agent-pane-tra
 import { createAgentPaneTranscriptRenderController } from "./agent-pane-transcript-render-controller.js"
 import { createAgentPaneTranscriptStreamController } from "./agent-pane-transcript-stream-controller.js"
 import { createProviderNamespaceSubmitController } from "./provider-namespace-submit-controller.js"
+import { createProviderPromptProjectionController } from "./provider-prompt-projection-controller.js"
 import { createClipboardController } from "./clipboard-controller.js"
 import {
   createFooterFlashController,
@@ -319,11 +320,8 @@ import {
 } from "./runtime.js"
 import {
   applyProviderRunProfileToSession,
-  deriveCurrentProviderSelection,
   deriveFooterHint,
   deriveFocusedStatusBadge,
-  derivePromptMetaState,
-  derivePromptUsageState,
   deriveSessionStatusMode,
   type SessionStatusMode,
 } from "./session-chrome-state.js"
@@ -1194,14 +1192,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     formatError,
   })
   const applyWaitingRoomSessionLifecycleAction = waitingRoomLifecycleActionController.applyAction
-  const currentProviderSelection = () => deriveCurrentProviderSelection({
-    providerRun: focusedProviderRun(),
-    focusedAgent: focusedAgent(),
-    waitingRoomState: waitingRoomState(),
-    defaultProvider: options.provider ?? "opencode",
-    defaultModel: options.model,
-    defaultEffort: options.effort,
+  const providerPromptProjectionController = createProviderPromptProjectionController({
+    getProviderRun: focusedProviderRun,
+    getFocusedAgent: focusedAgent,
+    getWaitingRoomState: waitingRoomState,
+    getDefaults: () => ({
+      provider: options.provider ?? "opencode",
+      model: options.model,
+      effort: options.effort,
+    }),
+    getProviderCatalog: providerCatalogState,
   })
+  const currentProviderSelection = providerPromptProjectionController.currentProviderSelection
   const providerSelectionController = createProviderSelectionController({
     currentProviderSelection,
     waitingRoomState,
@@ -1236,20 +1238,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const applyProviderSelection = providerSelectionController.applyProviderSelection
   const applyModelSelection = providerSelectionController.applyModelSelection
   const applyVariantSelection = providerSelectionController.applyVariantSelection
-  const promptMetaParts = (): PromptMetaPart[] => derivePromptMetaState({
-    providerRun: focusedProviderRun(),
-    focusedAgent: focusedAgent(),
-    waitingRoomState: waitingRoomState(),
-    defaultProvider: options.provider ?? "opencode",
-    defaultModel: options.model,
-    defaultEffort: options.effort,
-  })
-  const promptUsageMeta = () => derivePromptUsageState({
-    providerRun: focusedProviderRun(),
-    catalog: providerCatalogState(),
-  })
-  const currentModelId = () => currentProviderSelection().model
-  const currentVariantId = () => currentProviderSelection().effort
+  const promptMetaParts = providerPromptProjectionController.promptMetaParts
+  const promptUsageMeta = providerPromptProjectionController.promptUsageMeta
+  const currentModelId = providerPromptProjectionController.currentModelId
+  const currentVariantId = providerPromptProjectionController.currentVariantId
   const waitingRoomTargets = () => ({
     workspacePath: pendingWorkspaceTarget(),
     worktreePath: pendingWorktreeTarget(),
