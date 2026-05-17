@@ -262,7 +262,7 @@ import {
   getSessionHistory,
   recordPromptInputHistory,
 } from "./session-history-api.js"
-import type { PromptMetaPart } from "./prompt-meta.js"
+import { createPromptMetaRenderController } from "./prompt-meta-render-controller.js"
 import { renderPromptMeta } from "./prompt-meta-renderer.js"
 import {
   type BackendProviderId,
@@ -1979,8 +1979,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const renderAgentInteractions = agentInteractionStripController.render
 
-  const setPromptMetaRenderables = (parts: PromptMetaPart[]) => {
-    renderPromptMeta({
+  const promptMetaRenderController = createPromptMetaRenderController({
+    refs: () => ({
       providerText: promptMetaProviderText,
       providerDividerText: promptMetaProviderDividerText,
       modelText: promptMetaModelText,
@@ -1993,8 +1993,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       usageBarEmptyText: promptMetaUsageBarEmptyText,
       usageBarCloseText: promptMetaUsageBarCloseText,
       usagePercentText: promptMetaUsagePercentText,
-    }, parts, promptUsageMeta())
-  }
+    }),
+    getUsage: promptUsageMeta,
+    renderMeta: renderPromptMeta,
+  })
+  const setPromptMetaRenderables = promptMetaRenderController.setRenderables
 
   const renderHistoryLoadingIndicator = () => {
     renderHistoryLoadingIndicatorView({
