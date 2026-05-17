@@ -97,7 +97,8 @@ import {
 } from "./footer-flash-controller.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent, shouldHandleWaitingRoomKeyEvent } from "./hotkeys.js"
 import { buildHotkeySections } from "./hotkey-help.js"
-import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget, promptTurnNavigationDirectionForKey } from "./history-viewport.js"
+import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
+import { clampScrollTop, findTurnPromptScrollTarget, promptTurnNavigationDirectionForKey } from "./history-viewport.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
@@ -923,8 +924,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let transcriptSyntax = createTranscriptSyntaxStyle()
   let emptyTranscriptRenderable: BoxRenderable | undefined
   let lastTranscriptScrollTop = 0
+  const historyScrollRestoreController = createHistoryScrollRestoreController({
+    scheduleTimer: (callback, delayMs) => {
+      startTimeout(callback, delayMs)
+    },
+    getScrollbox: () => transcriptScrollbox,
+    setLastScrollTop: (scrollTop) => {
+      lastTranscriptScrollTop = scrollTop
+    },
+  })
   let historyLoadGeneration = 0
-  let pendingHistoryScrollRestore = 0
   let pendingTranscriptRender = false
   let uiBatchDepth = 0
   // Connection resilience tracking
@@ -2989,7 +2998,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!transcriptScrollbox) {
       return
     }
-    pendingHistoryScrollRestore = 0
+    historyScrollRestoreController.cancel()
     const maxScrollTop = Math.max(0, transcriptScrollbox.scrollHeight - transcriptScrollbox.height)
     transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: maxScrollTop })
     transcriptScrollbox.requestRender()
@@ -4864,38 +4873,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     rebuildTranscript()
     if (transcriptScrollbox) {
       const scrollbox = transcriptScrollbox
-      const restoreToken = ++pendingHistoryScrollRestore
-      await new Promise<void>((resolve) => {
-        const restoreScroll = (remainingAttempts: number, lastHeight = -1, stableFrames = 0) => {
-          if (!transcriptScrollbox || scrollbox !== transcriptScrollbox || restoreToken !== pendingHistoryScrollRestore) {
-            pendingHistoryScrollRestore = 0
-            resolve()
-            return
-          }
-
-          const nextScrollTop = computePrependedHistoryScrollTop(
-            previousScrollTop,
-            previousScrollHeight,
-            scrollbox.scrollHeight,
-            previousViewportHeight,
-          )
-          scrollbox.scrollTo({ x: scrollbox.scrollLeft, y: nextScrollTop })
-          scrollbox.requestRender()
-          lastTranscriptScrollTop = scrollbox.scrollTop
-
-          const closeEnough = Math.abs(scrollbox.scrollTop - nextScrollTop) <= 1
-          const nextStableFrames = scrollbox.scrollHeight === lastHeight ? stableFrames + 1 : 0
-          if ((closeEnough && nextStableFrames >= 1) || remainingAttempts <= 1) {
-            pendingHistoryScrollRestore = 0
-            resolve()
-            return
-          }
-
-          startTimeout(() => restoreScroll(remainingAttempts - 1, scrollbox.scrollHeight, nextStableFrames), 16)
-        }
-
-        scrollbox.requestRender()
-        startTimeout(() => restoreScroll(10), 0)
+      await historyScrollRestoreController.restorePrependedHistory({
+        scrollbox,
+        previousScrollTop,
+        previousScrollHeight,
+        previousViewportHeight,
       })
     }
   }
@@ -6675,7 +6657,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const scrollbox = transcriptScrollbox
     const decision = evaluateTranscriptScrollMonitor({
       hasScrollbox: Boolean(scrollbox),
-      pendingHistoryScrollRestore,
+      pendingHistoryScrollRestore: historyScrollRestoreController.isRestoring() ? 1 : 0,
       currentScrollTop: scrollbox?.scrollTop ?? 0,
       lastTranscriptScrollTop,
       hasMoreHistory: nextHistoryCursor() !== null,
