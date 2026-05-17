@@ -300,9 +300,8 @@ import {
 } from "./prompt-content-change-controller.js"
 import { createPromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
 import { createResponseLayoutController } from "./response-layout-controller.js"
+import { createResponsePaneProjectionController } from "./response-pane-projection-controller.js"
 import {
-  responsePaneRowSlots,
-  selectResponsePaneAgents,
   splitPaneAuxiliaryAgentIds,
 } from "./response-panes.js"
 import {
@@ -440,8 +439,6 @@ import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifec
 import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
 import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
 import {
-  resolveWorkspaceVisibleAgents,
-  resolveWorkspaceVisibleTranscriptAgentId,
   type WorkspaceScreenMode,
 } from "./workspace-screen.js"
 import {
@@ -807,9 +804,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const isAttached = () => attachmentState() !== null
   const focusedAgentId = () => focusedAgentIdForSession(sessionState())
-  const multiAgentMode = () => isAttached() && sessionState().agents.length > 1
-  const workflowScreenShowing = () => isAttached() && workspaceScreenMode() === "workflow"
-  const splitAgentResponseMode = () => isAttached() && sessionState().agents.length > 1 && multiAgentResponseLayout() === "split"
+  const responsePaneProjectionController = createResponsePaneProjectionController({
+    isAttached,
+    getSession: sessionState,
+    getFocusedAgentId: focusedAgentId,
+    getWorkspaceScreenMode: workspaceScreenMode,
+    getResponseLayout: multiAgentResponseLayout,
+    getMaxAgentsPerScreen: maxAgentsPerScreen,
+    workflowScreenActive: () => workflowScreenActive(),
+  })
+  const multiAgentMode = responsePaneProjectionController.multiAgentMode
+  const workflowScreenShowing = responsePaneProjectionController.workflowScreenShowing
+  const splitAgentResponseMode = responsePaneProjectionController.splitAgentResponseMode
   const activeInteractionForAgent = (agentId: string | null | undefined): RuntimeInteraction | null =>
     activeInteractionForAgentForSession(sessionState(), agentId)
   const focusedAgentInteraction = () => activeInteractionForAgent(focusedAgentId())
@@ -820,20 +826,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     selectedWorkflowId: selectedWorkflowId(),
     selectedWorkflowNodeId: selectedWorkflowNodeId(),
   }))
-  const responsePaneSelection = () => selectResponsePaneAgents(
-    sessionState().agents,
-    focusedAgentId(),
-    splitAgentResponseMode(),
-    maxAgentsPerScreen(),
-  )
-  const responsePaneAgentSignature = () => sessionState().agents.map((agent) => agent.id).join(",")
-  const responsePrimaryAgent = () => workflowScreenActive() ? null : responsePaneSelection().primary
-  const responseVisibleAgents = () => resolveWorkspaceVisibleAgents(workspaceScreenMode(), responsePaneSelection().visibleAgents)
-  const visibleTranscriptAgentId = () => resolveWorkspaceVisibleTranscriptAgentId(
-    workspaceScreenMode(),
-    responsePaneSelection().visibleTranscriptAgentId,
-  )
-  const responsePaneRows = () => responsePaneRowSlots(maxAgentsPerScreen())
+  const responsePaneSelection = responsePaneProjectionController.responsePaneSelection
+  const responsePaneAgentSignature = responsePaneProjectionController.responsePaneAgentSignature
+  const responsePrimaryAgent = responsePaneProjectionController.responsePrimaryAgent
+  const responseVisibleAgents = responsePaneProjectionController.responseVisibleAgents
+  const visibleTranscriptAgentId = responsePaneProjectionController.visibleTranscriptAgentId
+  const responsePaneRows = responsePaneProjectionController.responsePaneRows
   createEffect(() => {
     if (!isAttached()) {
       return
@@ -842,10 +840,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setWorkspaceShellContext((previous) =>
       deriveWorkspaceShellContextForSession(previous, session, attachmentState()?.id))
   })
-  const primaryTranscriptSurfaceTone = () => resolveTranscriptSurfaceTone(splitAgentResponseMode(), responsePrimaryAgent()?.id === focusedAgentId())
-  const auxiliaryTranscriptSurfaceTone = (agentId: string | null | undefined) => {
-    return resolveTranscriptSurfaceTone(splitAgentResponseMode(), Boolean(agentId) && agentId === focusedAgentId())
-  }
+  const primaryTranscriptSurfaceTone = responsePaneProjectionController.primaryTranscriptSurfaceTone
+  const auxiliaryTranscriptSurfaceTone = responsePaneProjectionController.auxiliaryTranscriptSurfaceTone
   const scheduleResponsePaneRepaint = () => {
     renderScheduler.requestTree(responseLayoutBox)
     renderScheduler.requestTree(historyLoadingBox)
