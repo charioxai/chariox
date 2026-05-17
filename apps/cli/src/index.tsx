@@ -205,6 +205,9 @@ import {
   type MultiAgentResponseLayout,
 } from "./preferences.js"
 import { createPromptAttachmentController } from "./prompt-attachment-controller.js"
+import {
+  createPromptAttachmentHighlightController,
+} from "./prompt-attachment-highlight-controller.js"
 import { createPromptAttachmentIntakeController } from "./prompt-attachment-intake-controller.js"
 import {
   type PendingPromptAttachment,
@@ -2477,24 +2480,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const syncPromptTextSnapshot = () => {
     promptTextSnapshot = promptInput?.plainText ?? ""
   }
-  const refreshPromptAttachmentHighlights = () => {
-    if (!promptInput) {
-      return
-    }
-    promptInput.clearAllHighlights()
-    const value = promptInput.plainText
-    for (const file of pendingAttachments()) {
-      let start = value.indexOf(file.token)
-      while (start !== -1) {
-        promptInput.addHighlightByCharRange({
-          start,
-          end: start + file.token.length,
-          styleId: promptAttachmentTokenStyleIds[promptAttachmentTokenKind(file.kind)],
-        })
-        start = value.indexOf(file.token, start + file.token.length)
-      }
-    }
-  }
+  const promptAttachmentHighlightController = createPromptAttachmentHighlightController({
+    getPromptInput: () => promptInput ?? null,
+    getPendingAttachments: pendingAttachments,
+    styleIdForKind: (kind) => promptAttachmentTokenStyleIds[promptAttachmentTokenKind(kind)],
+  })
+  const refreshPromptAttachmentHighlights = promptAttachmentHighlightController.refresh
   const setPromptText = (value: string) => {
     if (!promptInput) {
       promptTextSnapshot = value
