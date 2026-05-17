@@ -216,6 +216,10 @@ import {
   createPromptInputHistoryRefreshController,
 } from "./prompt-input-history-refresh-controller.js"
 import { createPromptInputHistoryController } from "./prompt-input-history-controller.js"
+import {
+  createPromptSubmissionUiController,
+  type SubmittedPromptUiSnapshot,
+} from "./prompt-submission-ui-controller.js"
 import { createPromptStopController } from "./prompt-stop-controller.js"
 import {
   createTurnCompletionController,
@@ -2565,58 +2569,38 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const addPendingPromptAttachments = promptAttachmentController.addStoredFiles
   const removePromptAttachmentsForEdit = promptAttachmentController.removeForEdit
 
-  type SubmittedPromptUiSnapshot = {
-    rawPrompt: string
-    attachments: PendingPromptAttachment[]
-    sessionId: string | null
-  }
-
-  const beginSubmittedPromptUi = (rawPrompt: string): SubmittedPromptUiSnapshot => {
-    const snapshot: SubmittedPromptUiSnapshot = {
-      rawPrompt,
-      attachments: pendingAttachments().map((file) => ({ ...file })),
-      sessionId: attachmentState()?.session_id ?? null,
-    }
-    setPromptHistoryIndex(null)
-    setPromptHistoryDraft(null)
-    clearPromptDraftPersistQueue()
-    if (promptInput) {
-      promptTextMuting = true
-      promptInput.clear()
-      promptInput.cursorOffset = 0
-      promptTextSnapshot = ""
-      promptTextMuting = false
-    } else {
-      setPromptText("")
-    }
-    syncPromptTextSnapshot()
-    clearPendingPromptAttachments()
-    syncCommandCenter("")
-    retainPromptFocus()
-    clearCommandCenter()
-    if (snapshot.sessionId) {
-      schedulePromptDraftPersist(snapshot.sessionId, "")
-    }
-    return snapshot
-  }
-
-  const restoreFailedPromptUi = (snapshot: SubmittedPromptUiSnapshot | null | undefined) => {
-    if (!snapshot) {
-      return
-    }
-    setPromptHistoryIndex(null)
-    setPromptHistoryDraft(null)
-    setPendingAttachments(snapshot.attachments.map((file) => ({ ...file })))
-    setPromptText(snapshot.rawPrompt)
-    syncPromptTextSnapshot()
-    refreshPromptAttachmentHighlights()
-    syncCommandCenter(snapshot.rawPrompt)
-    retainPromptFocus()
-    if (snapshot.sessionId) {
-      schedulePromptDraftPersist(snapshot.sessionId, snapshot.rawPrompt)
-    }
-    updateSessionChrome()
-  }
+  const promptSubmissionUiController = createPromptSubmissionUiController({
+    getSessionId: () => attachmentState()?.session_id ?? null,
+    getPendingAttachments: pendingAttachments,
+    resetPromptHistoryNavigation: () => {
+      setPromptHistoryIndex(null)
+      setPromptHistoryDraft(null)
+    },
+    clearDraftPersistQueue: clearPromptDraftPersistQueue,
+    clearPromptText: () => {
+      if (promptInput) {
+        promptTextMuting = true
+        promptInput.clear()
+        promptInput.cursorOffset = 0
+        promptTextSnapshot = ""
+        promptTextMuting = false
+      } else {
+        setPromptText("")
+      }
+    },
+    setPromptText,
+    syncPromptTextSnapshot,
+    clearPendingAttachments: clearPendingPromptAttachments,
+    setPendingAttachments: (attachments) => setPendingAttachments(attachments),
+    refreshAttachmentHighlights: refreshPromptAttachmentHighlights,
+    syncCommandCenter,
+    retainPromptFocus,
+    clearCommandCenter,
+    schedulePromptDraftPersist,
+    updateSessionChrome: () => updateSessionChrome(),
+  })
+  const beginSubmittedPromptUi = promptSubmissionUiController.begin
+  const restoreFailedPromptUi = promptSubmissionUiController.restore
   createEffect(() => {
     const attachedSessionId = attachmentState()?.session_id ?? null
     if (attachedSessionId === hydratedPromptHistorySessionId) {
