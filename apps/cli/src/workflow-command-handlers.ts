@@ -27,6 +27,10 @@ import {
   type WorkflowRunInvokePayload,
 } from "./workflow-invoke-command-handler.js"
 import {
+  handleWorkflowNodeInstructionsCommand,
+  type WorkflowNodeInstructionsPayload,
+} from "./workflow-node-instructions-command-handler.js"
+import {
   handleWorkflowQueueCommand,
   type QueuedWorkflowLaunchPayload,
 } from "./workflow-queue-command-handlers.js"
@@ -42,8 +46,6 @@ import {
   isWorkflowSettingsCommand,
 } from "./workflow-settings-command-handlers.js"
 import { handleWorkflowTerminalCommand } from "./workflow-terminal-command-handler.js"
-import { readFile } from "node:fs/promises"
-import { resolve as resolvePath } from "node:path"
 
 type FooterTone = "info" | "error"
 
@@ -148,7 +150,7 @@ export type WorkflowCommandHandlerDeps = {
     workflowRef: string,
     nodeId: string,
     instructions: string | null,
-  ) => Promise<WorkflowNodePayload>
+  ) => Promise<WorkflowNodeInstructionsPayload>
   setWorkflowNodeCanCompleteRun?: (
     workflowRef: string,
     nodeId: string,
@@ -541,93 +543,6 @@ async function handleWorkflowNodeCommand(
     "usage: /workflow node add [workflow-ref] <agent-id|all> | remove [workflow-ref] <node-id> | instructions ... | can-complete-run [workflow-ref] <node-id> <true|false> | can-emit-intermediate-output [workflow-ref] <node-id> <true|false> | intermediate-output-schema [workflow-ref] <node-id> <schema-ref|none> | max-turns [workflow-ref] <node-id> <count|none>",
     "error",
   )
-}
-
-async function handleWorkflowNodeInstructionsCommand(
-  deps: WorkflowCommandHandlerDeps,
-  context: WorkflowCommandContext,
-  args: string[],
-): Promise<void> {
-  const instructionsAction = args[2]
-  if (!instructionsAction) {
-    deps.flashFooter(
-      "usage: /workflow node instructions show|set|save|close [workflow-ref] <node-id> [file]",
-      "error",
-    )
-    return
-  }
-  if (instructionsAction === "close") {
-    deps.closeWorkflowNodeInstructionsEditor?.()
-    deps.flashFooter("closed node instructions editor", "info")
-    return
-  }
-  if (instructionsAction === "save") {
-    const contextState = deps.getWorkflowNodeInstructionsContext?.()
-    if (!contextState || !deps.updateWorkflowNodeInstructions || !deps.getWorkflowNodeInstructionsDraft) {
-      deps.flashFooter("no workflow node instructions editor is open", "error")
-      return
-    }
-    const payload = await deps.updateWorkflowNodeInstructions(
-      contextState.workflowId,
-      contextState.nodeId,
-      deps.getWorkflowNodeInstructionsDraft(),
-    )
-    deps.applySessionState(payload.session)
-    deps.upsertWorkflowDefinition(payload.workflow)
-    deps.closeWorkflowNodeInstructionsEditor?.()
-    deps.flashFooter(`saved node instructions for ${payload.node.id}`, "info")
-    return
-  }
-  const explicitWorkflowRef = context.firstWorkflowArgIsExplicit(args[3]) ? args[3] : null
-  const instructionsWorkflowRef = context.workflowRefOrSelected(explicitWorkflowRef)
-  const nodeId = explicitWorkflowRef ? args[4] : args[3]
-  const fileRef = explicitWorkflowRef ? args[5] : args[4]
-  if (!instructionsWorkflowRef || !nodeId) {
-    deps.flashFooter(
-      "usage: /workflow node instructions show|set [workflow-ref] <node-id> [file]",
-      "error",
-    )
-    return
-  }
-  const resolved = await deps.resolveWorkflow(instructionsWorkflowRef)
-  deps.upsertWorkflowDefinition(resolved.workflow)
-  const node = resolved.workflow.nodes?.find((entry) => entry.id === nodeId)
-  if (!node) {
-    deps.flashFooter(`workflow node ${nodeId} not found`, "error")
-    return
-  }
-  if (instructionsAction === "show") {
-    deps.openWorkflowNodeInstructionsEditor?.(
-      resolved.workflow.id,
-      node.id,
-      node.instructions ?? "",
-    )
-    deps.selectWorkflowCanvas(resolved.workflow.id)
-    deps.flashFooter(`opened node ${node.id} instructions in the I/O panel`, "info")
-    return
-  }
-  if (instructionsAction !== "set") {
-    deps.flashFooter(
-      "usage: /workflow node instructions show|set|save|close [workflow-ref] <node-id> [file]",
-      "error",
-    )
-    return
-  }
-  if (fileRef) {
-    if (!deps.updateWorkflowNodeInstructions) {
-      deps.flashFooter("workflow instructions unavailable", "error")
-      return
-    }
-    const content = await readFile(resolvePath(deps.currentWorkspaceTarget(), fileRef), "utf8")
-    const payload = await deps.updateWorkflowNodeInstructions(resolved.workflow.id, node.id, content)
-    deps.applySessionState(payload.session)
-    deps.upsertWorkflowDefinition(payload.workflow)
-    deps.flashFooter(`updated node instructions for ${payload.node.id}`, "info")
-    return
-  }
-  deps.openWorkflowNodeInstructionsEditor?.(resolved.workflow.id, node.id, node.instructions ?? "")
-  deps.selectWorkflowCanvas(resolved.workflow.id)
-  deps.flashFooter("editing node instructions in the I/O panel; submit text then /workflow node instructions save", "info")
 }
 
 async function handleWorkflowWatchdogCommand(
