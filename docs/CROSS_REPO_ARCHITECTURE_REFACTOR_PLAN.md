@@ -20,6 +20,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Remote managed-I/O dispatch now separates composition, outbound leased-worker forwarding, home-kernel admission/routing, forwarded reads, forwarded text edit/write, and forwarded patch/delete/move mutations. History requests now separate session transcript, prompt-input history, archive query/search, and semantic search mapping. Workspace repo files now separate listing projection, file content loading, and shared timing.
 - Latest verified batch: BrowserKernelClient transport, browser kernel request builders, history kernel bridge, and CLI Cloud command/worktree placement policies are responsibility-owned modules; Cloud web and CLI tests pass.
 - Latest verified batch: CLI Cloud session collaboration command handling is responsibility-owned; CLI tests pass.
+- Latest verified batch: CLI relay-cloud profile command handling is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI provider auth/process command handling is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI model/variant/view selection is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI user config command handling is responsibility-owned; CLI tests pass.
