@@ -37,6 +37,7 @@ import {
   stopCliAutomationServer,
 } from "./cli-automation.js"
 import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
+import { createAuthoritativeIdleController } from "./authoritative-idle-controller.js"
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
 import { createCliAutomationServerController } from "./cli-automation-server-controller.js"
 import { buildCliAutomationSnapshot } from "./cli-automation-snapshot.js"
@@ -334,7 +335,6 @@ import {
   derivePromptLifecycleTransition,
   buildDetachedSessionState,
   deriveSessionTransitionState,
-  sessionHasProcessingAgent,
   sessionHasPromptWork,
   sessionResponseLayout,
   shouldConfirmIdleTurnCompletion,
@@ -2223,28 +2223,30 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const clearLocalBusyStateForAuthoritativeIdle = (nextSession: RuntimeSession) => {
-    if (sessionHasPromptWork(nextSession) || sessionHasProcessingAgent(nextSession)) {
-      return
-    }
-    batch(() => {
-      turnCompletionController.reset()
+  const authoritativeIdleController = createAuthoritativeIdleController({
+    batchUpdate: batch,
+    resetTurnCompletion: turnCompletionController.reset,
+    clearActiveToolLabels: () => {
       activeToolLabels.clear()
-      setAgentActivityLabels({})
-      setStreamingAgentId(null)
-      setSubmitting(false)
+    },
+    setAgentActivityLabels,
+    setStreamingAgentId,
+    setSubmitting,
+    clearSubmittingAgentId: () => {
       submittingAgentId = null
-      promptStopController.reset()
-      setAgentBusyLatches({})
-      setProviderActivityLabel(null)
-      setActiveStatusLabel(null)
-      setWorking(false)
-      if (statusLine() === "Cancellation requested.") {
-        setStatusLine(DEFAULT_CONNECTED_STATUS)
-      }
-    })
-    renderSessionChromeBoundary()
-  }
+    },
+    resetPromptStop: promptStopController.reset,
+    setAgentBusyLatches,
+    setProviderActivityLabel,
+    setActiveStatusLabel,
+    setWorking,
+    getStatusLine: statusLine,
+    setStatusLine,
+    renderSessionChromeBoundary: () => {
+      renderSessionChromeBoundary()
+    },
+  })
+  const clearLocalBusyStateForAuthoritativeIdle = authoritativeIdleController.clear
 
   const applyProviderActivity = (active: boolean) => {
     if (active) {
