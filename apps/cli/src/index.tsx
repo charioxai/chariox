@@ -195,6 +195,7 @@ import {
 import {
   createPromptHistoryNavigationController,
 } from "./prompt-history-navigation-controller.js"
+import { createPromptKeyDownController } from "./prompt-keydown-controller.js"
 import {
   createPromptInputHistoryRefreshController,
 } from "./prompt-input-history-refresh-controller.js"
@@ -277,7 +278,6 @@ import {
 } from "./response-panes.js"
 import {
   extractPromptHistoryEntries,
-  resolvePromptHistoryKeyNavigation,
 } from "./prompt-history.js"
 import {
   STATUS_BADGE_WIDTH,
@@ -5308,41 +5308,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const handleSigint = () => {
     void (activePrompt() ? requestPromptStop() : requestExit())
   }
-  const handlePromptHistoryKey = (event: {
-    name: string
-    eventType?: string
-    ctrl?: boolean
-    meta?: boolean
-    alt?: boolean
-    shift?: boolean
-    preventDefault?: () => void
-    stopPropagation?: () => void
-  }) => {
-    const direction = resolvePromptHistoryKeyNavigation({
-      attached: isAttached(),
-      promptFocused: Boolean(promptInput?.focused),
-      commandCenterOpen: commandCenterOpen(),
-      keyName: event.name,
-      currentText: promptTextController.currentText(),
-      cursorOffset: promptTextController.cursorOffset(),
-      eventType: event.eventType,
-      ctrl: event.ctrl,
-      meta: event.meta,
-      alt: event.alt,
-      shift: event.shift,
-      navigationIndex: promptHistoryIndex(),
-      navigationDraft: promptHistoryDraft(),
-    })
-    if (!direction) {
-      return false
-    }
-    const handled = navigatePromptHistoryInput(direction)
-    if (handled) {
-      event.preventDefault?.()
-      event.stopPropagation?.()
-    }
-    return handled
-  }
+  const promptKeyDownController = createPromptKeyDownController({
+    handleFocusedInteractionKey,
+    handleCommandCenterKey,
+    isAttached,
+    promptFocused: () => Boolean(promptInput?.focused),
+    commandCenterOpen,
+    currentPromptText: () => promptTextController.currentText(),
+    promptCursorOffset: () => promptTextController.cursorOffset(),
+    promptHistoryIndex,
+    promptHistoryDraft,
+    navigatePromptHistoryInput,
+    handleHotkeysToggleShortcut,
+  })
+  const handlePromptKeyDown = promptKeyDownController.handleKeyDown
   const promptTurnNavigationController = createPromptTurnNavigationController({
     isAttached,
     getPromptText: () => promptInput ? promptTextController.currentText() : undefined,
@@ -6244,18 +6223,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         refreshPromptAttachmentHighlights()
         ensureBackgroundPollersStarted()
       }}
-      onPromptKeyDown={(event) => {
-        if (handleFocusedInteractionKey(event)) {
-          return
-        }
-        if (handleCommandCenterKey(event)) {
-          return
-        }
-        if (handlePromptHistoryKey(event)) {
-          return
-        }
-        handleHotkeysToggleShortcut("textarea", event)
-      }}
+      onPromptKeyDown={handlePromptKeyDown}
       onPromptContentChange={handlePromptContentChange}
       onPromptSubmit={() => {
         if (focusedAgentInteraction()) {
