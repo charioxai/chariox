@@ -361,6 +361,7 @@ import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState }
 import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
 import { createTranscriptScrollMonitorController } from "./transcript-scroll-monitor-controller.js"
 import { createTranscriptScrollboxRefController } from "./transcript-scrollbox-ref-controller.js"
+import { createTranscriptEntryProjectionController } from "./transcript-entry-projection-controller.js"
 import {
   createTerminalOutputRecordQueue,
 } from "./terminal-output-record-queue.js"
@@ -909,7 +910,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const focusedAgentBusy = agentRuntimeProjectionController.focusedAgentBusy
   const allAgentsBusyState = agentRuntimeProjectionController.allAgentsBusyState
   const setAgentActivityLabel = agentRuntimeProjectionController.setAgentActivityLabel
-  const visibleTranscriptEntries = () => entries.filter((entry) => entry && !entry.hidden)
+  const transcriptEntryProjectionController = createTranscriptEntryProjectionController({
+    getEntries: () => entries,
+  })
+  const visibleTranscriptEntries = transcriptEntryProjectionController.visibleEntries
   const queueDepth = () => focusedQueueDepth()
   const connectedClientCount = () => sessionState().attachment_ids.length
   const activePrompt = () => focusedActivePrompt()
@@ -1588,7 +1592,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const applyExpandedTurns = transcriptTurnExpansionController.applyExpandedTurns
 
   const transcriptStateController = createTranscriptStateController({
-    entries: () => entries.filter(Boolean),
+    entries: transcriptEntryProjectionController.renderableEntries,
     setEntries: (nextEntries) => {
       setEntries(reconcile(nextEntries))
     },
@@ -1820,7 +1824,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const applyProviderActivity = providerActivityController.apply
 
   const assistantMessageCompletionController = createAssistantMessageCompletionController({
-    entries: () => entries.filter(Boolean),
+    entries: transcriptEntryProjectionController.renderableEntries,
     visibleTranscriptAgentId,
     splitAgentResponseMode,
     currentAgentPaneEntries: (agentId) => currentAgentPaneEntries(agentId),
@@ -1970,7 +1974,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setLoadingHistory,
     renderHistoryLoadingIndicator,
     isAttached,
-    visibleTranscriptEntryCount: () => visibleTranscriptEntries().length,
+    visibleTranscriptEntryCount: transcriptEntryProjectionController.visibleEntryCount,
     workflowScreenActive: () => workflowScreenActive(),
     rebuildTranscript: () => rebuildTranscript(),
     requestTranscriptRender,
@@ -2127,7 +2131,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const agentPaneStoreController = createAgentPaneStoreController({
     isAttached,
     getVisibleTranscriptAgentId: visibleTranscriptAgentId,
-    getVisibleTranscriptEntries: () => entries.filter(Boolean),
+    getVisibleTranscriptEntries: transcriptEntryProjectionController.renderableEntries,
     getPaneEntriesByAgent: agentPaneEntries,
     updatePaneEntries: (updater) => {
       setAgentPaneEntries((current) => updater(current))
@@ -2158,7 +2162,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const agentPaneTranscriptEntryController = createAgentPaneTranscriptEntryController({
     currentAgentPaneEntries,
     visibleTranscriptAgentId,
-    visibleTranscriptEntries: () => entries.filter(Boolean),
+    visibleTranscriptEntries: transcriptEntryProjectionController.renderableEntries,
     expandedTurnIdsForAgent,
     setAgentPanePreview,
     updateAgentPanePreviews: (updater) => {
@@ -2261,7 +2265,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const agentId = responsePrimaryAgent()?.id ?? null
-    const currentEntries = entries.filter(Boolean).map((entry) => ({ ...entry }))
+    const currentEntries = transcriptEntryProjectionController.renderableEntries().map((entry) => ({ ...entry }))
     if (!agentId || agentId !== primaryTranscriptRuntimeStore.getMountedTranscriptAgentId()) {
       return
     }
@@ -2387,7 +2391,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const primaryTranscriptEntryController = createPrimaryTranscriptEntryController({
     getScrollbox: transcriptScrollboxRefController.current,
-    getEntries: () => entries.filter(Boolean),
+    getEntries: transcriptEntryProjectionController.renderableEntries,
     getVisibleTranscriptAgentId: visibleTranscriptAgentId,
     expandedTurnIdsForAgent,
     clearToolState: primaryTranscriptRuntimeStore.clearTools,
@@ -2432,7 +2436,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const deferredBootstrapController = createDeferredBootstrapController({
     getDeferred: () => props.bootstrap.deferred,
     currentAttachmentSessionId: () => attachmentState()?.session_id ?? null,
-    currentTranscriptEntryCount: () => entries.filter(Boolean).length,
+    currentTranscriptEntryCount: () => transcriptEntryProjectionController.renderableEntries().length,
     entryCounter,
     setProviderCatalog: setProviderCatalogState,
     setProviderCommandCatalogs: setProviderCommandCatalogState,
