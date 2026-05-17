@@ -147,6 +147,7 @@ import { createKernelEventSubscriptionController } from "./kernel-event-subscrip
 import { createKernelRestartRecoveryController } from "./kernel-restart-recovery-controller.js"
 import { createKernelResyncController } from "./kernel-resync-controller.js"
 import { createKernelSessionSnapshotController } from "./kernel-session-snapshot-controller.js"
+import { createKernelSessionUnavailableController } from "./kernel-session-unavailable-controller.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
 import {
@@ -4280,36 +4281,35 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const resyncAttachedKernelState = (reason: string) => kernelResyncController.resync(reason)
 
-  const handleKernelSessionUnavailable = async (message: string) => {
-    const sessionId = sessionState().id
-    if (isAttached() && sessionId) {
-      try {
-        const nextSession = await getSessionState(client, sessionId)
-        const nextAttachment = await attachToSession(client, sessionId, options.clientId)
-        if (!isAttached() || sessionState().id !== sessionId) {
-          return
-        }
-        setAttachmentState(nextAttachment)
-        applySessionState(applyProviderRunProfileToSession(nextSession, providerRunState()))
-        kernelEventSubscriptionController.reset()
-        await syncKernelEventSubscription()
-        await refreshAgentPanes(sessionState())
-        clearLocalBusyStateForAuthoritativeIdle(sessionState())
-        recordDaemonActivity("kernel_session_unavailable_recovered")
-        setDaemonDisconnected(false)
-        setStatusLine(DEFAULT_CONNECTED_STATUS)
-        updateSessionChrome()
-        return
-      } catch (error) {
-        appLogger?.debug("session unavailable confirmed by state lookup failure", {
-          session_id: sessionId,
-          message,
-          error: formatError(error),
-        })
-      }
-    }
-    await transitionToNoSession(message)
-  }
+  const kernelSessionUnavailableController = createKernelSessionUnavailableController({
+    isAttached,
+    getSession: sessionState,
+    getProviderRun: providerRunState,
+    getSessionState: (sessionId) => getSessionState(client, sessionId),
+    attachToSession: (sessionId) => attachToSession(client, sessionId, options.clientId),
+    applyAttachment: setAttachmentState,
+    projectSession: applyProviderRunProfileToSession,
+    applySession: applySessionState,
+    resetKernelEventSubscription: kernelEventSubscriptionController.reset,
+    syncKernelEventSubscription,
+    refreshAgentPanes,
+    clearLocalBusyStateForAuthoritativeIdle,
+    recordDaemonActivity,
+    onRecovered: () => {
+      setDaemonDisconnected(false)
+      setStatusLine(DEFAULT_CONNECTED_STATUS)
+      updateSessionChrome()
+    },
+    onStateLookupFailed: (sessionId, message, error) => {
+      appLogger?.debug("session unavailable confirmed by state lookup failure", {
+        session_id: sessionId,
+        message,
+        error: formatError(error),
+      })
+    },
+    transitionToNoSession,
+  })
+  const handleKernelSessionUnavailable = kernelSessionUnavailableController.handle
 
   const kernelEventDispatchController = createKernelEventDispatchController({
     recordDaemonActivity,
