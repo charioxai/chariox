@@ -95,6 +95,7 @@ import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } fr
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
+import { createInteractionChoiceStoreController } from "./interaction-choice-store-controller.js"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { createKernelEventDispatchController } from "./kernel-event-dispatch-controller.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
@@ -711,9 +712,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const responseAuxiliaryFooterBoxes: Array<BoxRenderable | undefined> = []
   const splitPaneFooterRenderState = createSplitPaneFooterRenderState()
   const responseAuxiliaryAgentIds: Array<string | null> = []
-  const interactionChoiceSelection = new Map<string, number>()
-  const interactionCustomReplies = new Map<string, string>()
-  const interactionCustomEditing = new Set<string>()
+  const interactionChoiceStore = createInteractionChoiceStoreController()
   const agentTranscriptScrollboxes = new Map<string, ScrollBoxRenderable>()
   const agentTranscriptRenderables = new Map<string, Map<number, TranscriptEntryRenderable>>()
   const agentEmptyTranscriptRenderables = new Map<string, BoxRenderable>()
@@ -1972,12 +1971,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       maxAgentsPerScreen: maxAgentsPerScreen(),
       focusedAgentId: focusedAgentId(),
       activeInteractionForAgent,
-      selectedChoiceIndex: (interactionId) => interactionChoiceSelection.get(interactionId) ?? 0,
-      setSelectedChoiceIndex: (interactionId, index) => {
-        interactionChoiceSelection.set(interactionId, index)
-      },
-      customReply: (interactionId) => interactionCustomReplies.get(interactionId) ?? "",
-      customEditing: (interactionId) => interactionCustomEditing.has(interactionId),
+      selectedChoiceIndex: interactionChoiceStore.selectedChoiceIndex,
+      setSelectedChoiceIndex: interactionChoiceStore.setSelectedIndex,
+      customReply: interactionChoiceStore.customReply,
+      customEditing: interactionChoiceStore.isCustomEditing,
     })
   }
 
@@ -3534,25 +3531,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getFocusedInteraction: focusedAgentInteraction,
     isAttached,
     getSessionId: () => sessionState().id,
-    getSelectedIndex: (interactionId) => interactionChoiceSelection.get(interactionId),
-    setSelectedIndex: (interactionId, index) => {
-      interactionChoiceSelection.set(interactionId, index)
-    },
-    getCustomReply: (interactionId) => interactionCustomReplies.get(interactionId) ?? "",
-    setCustomReply: (interactionId, reply) => {
-      interactionCustomReplies.set(interactionId, reply)
-    },
-    clearCustomReply: (interactionId) => {
-      interactionCustomReplies.delete(interactionId)
-    },
-    isCustomEditing: (interactionId) => interactionCustomEditing.has(interactionId),
-    setCustomEditing: (interactionId, editing) => {
-      if (editing) {
-        interactionCustomEditing.add(interactionId)
-      } else {
-        interactionCustomEditing.delete(interactionId)
-      }
-    },
+    getSelectedIndex: interactionChoiceStore.getSelectedIndex,
+    setSelectedIndex: interactionChoiceStore.setSelectedIndex,
+    getCustomReply: interactionChoiceStore.customReply,
+    setCustomReply: interactionChoiceStore.setCustomReply,
+    clearCustomReply: interactionChoiceStore.clearCustomReply,
+    isCustomEditing: interactionChoiceStore.isCustomEditing,
+    setCustomEditing: interactionChoiceStore.setCustomEditing,
     renderAgentInteractions,
     applyResponseLayout,
     respondToInteraction: (sessionId, interactionId, choiceId, customReply) =>
@@ -3709,9 +3694,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     workspaceShellContext,
     workspaceShellEntries,
     footerFlash,
-    getInteractionChoiceSelection: (interactionId) => interactionChoiceSelection.get(interactionId),
-    getInteractionCustomReply: (interactionId) => interactionCustomReplies.get(interactionId),
-    isInteractionCustomEditing: (interactionId) => interactionCustomEditing.has(interactionId),
+    getInteractionChoiceSelection: interactionChoiceStore.getSelectedIndex,
+    getInteractionCustomReply: interactionChoiceStore.getStoredCustomReply,
+    isInteractionCustomEditing: interactionChoiceStore.isCustomEditing,
   })
   const automationSnapshot = automationSnapshotController.snapshot
 
