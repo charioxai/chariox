@@ -5,7 +5,8 @@ import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { createSessionBrowserController, type SessionBrowserControllerDeps } from "./session-browser-controller.js"
 import { clampSessionBrowserIndex, sessionBrowserVisibleSessions } from "./session-browser-key-policy.js"
 import type { SessionListEntry } from "./sessions.js"
-import { createWaitingRoomState, type WaitingRoomState } from "./waiting-room.js"
+import { createWaitingRoomState } from "./waiting-room-state.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 
 test("session browser controller moves selection and requests a rerender", () => {
   const harness = createHarness({ selectedIndex: 0 })

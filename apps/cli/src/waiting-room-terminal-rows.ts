@@ -4,7 +4,7 @@ import type {
   WaitingRoomState,
   WaitingRoomTerminal,
   WaitingRoomTerminalType,
-} from "./waiting-room.js"
+} from "./waiting-room-types.js"
 
 export function waitingRoomTerminalRows(
   state: Pick<WaitingRoomState, "focus" | "terminalIndex">,

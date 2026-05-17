@@ -19,7 +19,7 @@ import type {
   WaitingRoomRow,
   WaitingRoomState,
   WaitingRoomTargetState,
-} from "./waiting-room.js"
+} from "./waiting-room-types.js"
 
 export function waitingRoomRows(
   state: WaitingRoomState,

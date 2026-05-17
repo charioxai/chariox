@@ -8,7 +8,7 @@ import { waitingRoomChoice, waitingRoomEfforts, waitingRoomModel } from "./waiti
 import type {
   WaitingRoomRemoteState,
   WaitingRoomState,
-} from "./waiting-room.js"
+} from "./waiting-room-types.js"
 
 test("waiting room choice projects selected session, remote inventory, terminal, and slice", () => {
   const catalog = fallbackProviderCatalog()

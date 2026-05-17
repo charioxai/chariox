@@ -6,7 +6,8 @@ import { createProviderSelectionController } from "./provider-selection-controll
 import { fallbackProviderCatalog, type BackendProviderId } from "./provider-catalog.js"
 import type { ArrobaPreferences } from "./preferences.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
-import { createWaitingRoomState, type WaitingRoomState } from "./waiting-room.js"
+import { createWaitingRoomState } from "./waiting-room-state.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 
 test("provider selection controller applies detached model selection to waiting room state", async () => {
   const harness = createHarness({ attached: false })

@@ -428,11 +428,8 @@ import {
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
 import { createWaitingRoomIntroAnimationController } from "./waiting-room-intro-animation-controller.js"
 import { createWaitingRoomRefreshIntervalController } from "./waiting-room-refresh-interval-controller.js"
-import {
-  createWaitingRoomState,
-  type WaitingRoomFocus,
-  type WaitingRoomState,
-} from "./waiting-room.js"
+import { createWaitingRoomState } from "./waiting-room-state.js"
+import type { WaitingRoomFocus, WaitingRoomState } from "./waiting-room-types.js"
 import { createWaitingRoomTransitionController } from "./waiting-room-transition-controller.js"
 import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifecycle-action-controller.js"
 import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"

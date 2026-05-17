@@ -6,18 +6,20 @@ import {
 } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import type { ThemeRegistry } from "./theme-registry.js"
+import { waitingRoomChoice } from "./waiting-room-choice.js"
+import { moveWaitingRoomFocus } from "./waiting-room-focus-targets.js"
 import {
-  cycleWaitingRoomValue,
-  moveWaitingRoomFocus,
-  normalizeWaitingRoomState,
   waitingRoomRemoteKernelCanDelete,
   waitingRoomRemoteKernelIsAttachable,
   waitingRoomRemoteMachineCanDelete,
-  waitingRoomChoice,
+} from "./waiting-room-remote-rows.js"
+import { normalizeWaitingRoomState } from "./waiting-room-state.js"
+import { cycleWaitingRoomValue } from "./waiting-room.js"
+import {
   type WaitingRoomRemoteState,
   type WaitingRoomState,
   type WaitingRoomTerminalType,
-} from "./waiting-room.js"
+} from "./waiting-room-types.js"
 import {
   clearStagedWaitingRoomWorktreeSelection,
   stageWaitingRoomWorktreeSelection,

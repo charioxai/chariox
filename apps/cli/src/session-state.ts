@@ -10,7 +10,7 @@ import {
 } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import { reconcileWorkingStateFromSession, resolveStreamingAgentId } from "./runtime.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export const NO_SESSION_ID = "no-session"
 export const SESSION_CONFIG_RESPONSE_LAYOUT_KEY = "ui.multiAgentResponseLayout"

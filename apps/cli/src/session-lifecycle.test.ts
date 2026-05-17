@@ -7,7 +7,7 @@ import type {
   DetachedCliTransitionState,
 } from "./session-state.js"
 import { createSessionLifecycleController } from "./session-lifecycle.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { ProviderPreferences } from "./preferences.js"
 
 const cliOptions: CliOptions = {

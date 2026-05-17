@@ -15,7 +15,8 @@ import {
   waitingRoomSessionLifecycleActionForEvent,
 } from "./waiting-room-controller.js"
 import type { SessionListEntry } from "./sessions.js"
-import { createWaitingRoomState, type WaitingRoomState } from "./waiting-room.js"
+import { createWaitingRoomState } from "./waiting-room-state.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 import {
   __setWaitingRoomWorktreeInventoryForTest,
   resolvePendingWaitingRoomWorktreePath,

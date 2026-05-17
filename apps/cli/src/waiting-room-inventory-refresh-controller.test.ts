@@ -4,7 +4,8 @@ import test from "node:test"
 import type { SliceRecord, WaitingRoomPublicSessionSummary } from "./cli-types.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
-import { createWaitingRoomState, type WaitingRoomState } from "./waiting-room.js"
+import { createWaitingRoomState } from "./waiting-room-state.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 import type {
   RemoteKernelView,
   RemoteMachineView,

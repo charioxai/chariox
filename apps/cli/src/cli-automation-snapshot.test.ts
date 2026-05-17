@@ -6,7 +6,7 @@ import type { ShellContext } from "@arroba/kernel-client/shell-core"
 import type { AgentInstance, RuntimeSession } from "./cli-types.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
-import { createWaitingRoomState } from "./waiting-room.js"
+import { createWaitingRoomState } from "./waiting-room-state.js"
 
 test("buildCliAutomationSnapshot projects session and interaction state for automation", () => {
   const catalog = fallbackProviderCatalog()

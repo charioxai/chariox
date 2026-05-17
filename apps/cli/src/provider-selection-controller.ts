@@ -16,7 +16,7 @@ import {
 } from "./provider-catalog.js"
 import { providerRunUsesNativeTui } from "./provider-api.js"
 import type { ThemeRegistry } from "./theme-registry.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 import {
   deriveWaitingRoomModelSelectionDecision,
   deriveWaitingRoomVariantSelectionDecision,

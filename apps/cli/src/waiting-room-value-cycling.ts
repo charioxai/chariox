@@ -11,7 +11,7 @@ import {
 import { waitingRoomEfforts, waitingRoomModel } from "./waiting-room-choice.js"
 import { cycleWaitingRoomSliceSelectionId, waitingRoomSlices } from "./waiting-room-slices.js"
 import { cycleWaitingRoomWorktreeSelectionId } from "./waiting-room-worktrees.js"
-import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 
 export function cycleWaitingRoomFocusedValue(
   state: WaitingRoomState,

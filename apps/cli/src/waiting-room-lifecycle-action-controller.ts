@@ -4,7 +4,7 @@ import type {
 } from "./cli-types.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import { formatSessionDisplayLabel, type SessionListEntry } from "./sessions.js"
-import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import type { WaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
 import {
   deriveWaitingRoomDeleteDecision,

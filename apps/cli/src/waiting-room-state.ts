@@ -26,7 +26,7 @@ import {
 } from "./waiting-room-slices.js"
 import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
 import { normalizeWaitingRoomWorktreeSelectionId } from "./waiting-room-worktrees.js"
-import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 
 export function createWaitingRoomState(
   sessions: SessionListEntry[],

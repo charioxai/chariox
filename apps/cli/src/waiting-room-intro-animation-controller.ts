@@ -1,5 +1,5 @@
 import { nextWaitingRoomIntroStep } from "./background-effects.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export type WaitingRoomIntroAnimationControllerDeps<TimerHandle> = {
   intervalMs: number

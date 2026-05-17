@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { createWaitingRoomIntroAnimationController } from "./waiting-room-intro-animation-controller.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 
 test("waiting room intro animation advances while detached", () => {
   const harness = createHarness()

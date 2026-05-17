@@ -14,11 +14,8 @@ import type {
   RemoteKernelView,
   RemoteMachineView,
 } from "./waiting-room-inventory-api.js"
-import {
-  waitingRoomRows,
-  type WaitingRoomState,
-  type WaitingRoomTargetState,
-} from "./waiting-room.js"
+import { waitingRoomRows } from "./waiting-room-rows.js"
+import type { WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import {
   renderWorkspaceShellTranscript,
   type WorkspaceShellEntry,

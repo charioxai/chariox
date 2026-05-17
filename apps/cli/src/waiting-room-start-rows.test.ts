@@ -4,7 +4,7 @@ import test from "node:test"
 import type { SliceRecord } from "./cli-types.js"
 import { catalogModelOptions, fallbackProviderCatalog } from "./provider-catalog.js"
 import { waitingRoomStartRows } from "./waiting-room-start-rows.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 
 test("waiting room start rows render configuration labels and join action", () => {
   const catalog = fallbackProviderCatalog()

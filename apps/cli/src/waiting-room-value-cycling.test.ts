@@ -8,8 +8,8 @@ import { cycleWaitingRoomFocusedValue } from "./waiting-room-value-cycling.js"
 import {
   createWaitingRoomState,
   normalizeWaitingRoomState,
-  type WaitingRoomState,
-} from "./waiting-room.js"
+} from "./waiting-room-state.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 
 test("waiting room focused value cycling normalizes provider and model changes", () => {
   const catalog = fallbackProviderCatalog()

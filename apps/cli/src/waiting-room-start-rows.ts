@@ -5,7 +5,7 @@ import {
 } from "./provider-catalog.js"
 import { formatWaitingRoomSliceSelection, waitingRoomSlices } from "./waiting-room-slices.js"
 import { describeWaitingRoomWorktreeSelection } from "./waiting-room-worktrees.js"
-import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room.js"
+import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 
 export type WaitingRoomStartRowsChoice = {
   providerId: BackendProviderId

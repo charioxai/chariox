@@ -6,7 +6,7 @@ import {
   resolveSessionBrowserKeyAction,
   type SessionBrowserKeyEvent,
 } from "./session-browser-key-policy.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 import {
   deriveWaitingRoomActivationDecision,
   type WaitingRoomLaunchConfig,

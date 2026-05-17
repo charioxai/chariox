@@ -2,7 +2,7 @@ import { shouldHandleWaitingRoomKeyEvent } from "./hotkeys.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import type { ThemeRegistry } from "./theme-registry.js"
-import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import {
   deriveWaitingRoomKeyNavigationDecision,
   waitingRoomSessionLifecycleActionForEvent,

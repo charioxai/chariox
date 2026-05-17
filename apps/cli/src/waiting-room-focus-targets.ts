@@ -3,7 +3,7 @@ import { waitingRoomRemoteKernels, waitingRoomRemoteMachines } from "./waiting-r
 import { waitingRoomPreviewSessions, waitingRoomSessions } from "./waiting-room-session-rows.js"
 import { waitingRoomSlices } from "./waiting-room-slices.js"
 import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
-import type { WaitingRoomFocus, WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomFocus, WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 
 export type WaitingRoomFocusTarget = {
   focus: WaitingRoomFocus

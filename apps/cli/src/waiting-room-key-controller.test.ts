@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 import {
   createWaitingRoomKeyController,
   type WaitingRoomKeyControllerDeps,

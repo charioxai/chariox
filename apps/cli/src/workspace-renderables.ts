@@ -17,7 +17,7 @@ import type { ProviderCatalog } from "./provider-catalog.js"
 import { SESSION_NEW_HELP_TEXT, type SessionListEntry } from "./sessions.js"
 import { SplitBorder, theme } from "./theme.js"
 import type { ThemeRegistry } from "./theme-registry.js"
-import type { WaitingRoomRemoteState, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room.js"
+import type { WaitingRoomRemoteState, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import {
   arrobaArtFrame,
   waitingRoomMenuMinWidth,

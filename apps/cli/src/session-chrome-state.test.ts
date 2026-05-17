@@ -14,7 +14,7 @@ import {
   deriveSessionStatusMode,
   deriveVisibleActivityLabel,
 } from "./session-chrome-state.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 
 test("applyProviderRunProfileToSession overlays accepted run profile onto the matching agent", () => {
   const projected = applyProviderRunProfileToSession(

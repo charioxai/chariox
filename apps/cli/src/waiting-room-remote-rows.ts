@@ -4,7 +4,7 @@ import type {
   WaitingRoomRemoteState,
   WaitingRoomRow,
   WaitingRoomState,
-} from "./waiting-room.js"
+} from "./waiting-room-types.js"
 
 export function waitingRoomRemoteRows(
   state: Pick<WaitingRoomState, "focus" | "machineIndex" | "remoteKernelIndex">,

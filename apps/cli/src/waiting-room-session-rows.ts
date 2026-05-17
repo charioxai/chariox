@@ -1,5 +1,5 @@
 import type { SessionListEntry } from "./sessions.js"
-import type { WaitingRoomRow, WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
 
 export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = 2
 

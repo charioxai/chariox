@@ -5,7 +5,7 @@ import type { SliceRecord } from "./cli-types.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import { createWaitingRoomState, normalizeWaitingRoomState } from "./waiting-room-state.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 
 test("waiting room state creation normalizes provider model, variant, and theme", () => {
   const catalog = fallbackProviderCatalog()

@@ -11,7 +11,7 @@ import type {
 } from "./session-state.js"
 import { sessionResponseLayout } from "./session-state.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { SessionListEntry } from "./sessions.js"
 
 type ProviderCatalog = Record<string, unknown>

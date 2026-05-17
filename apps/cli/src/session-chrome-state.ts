@@ -10,7 +10,7 @@ import {
 import { chooseVisibleActivityLabel, getSessionStatusLabel } from "./runtime.js"
 import type { StatusBadgeTone } from "./split-pane-footer.js"
 import { agentPaneStatusBadge, type SplitPaneFooterAgent } from "./split-pane-footer.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export type SessionStatusMode = "idle" | "working" | "disconnected"
 export type StatusBadgePart = {

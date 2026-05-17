@@ -15,7 +15,7 @@ import {
   waitingRoomSlices,
 } from "./waiting-room-slices.js"
 import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
-import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 
 export function waitingRoomModel(state: WaitingRoomState, catalog: ProviderCatalog) {
   return catalogModelOptions(catalog, state.providerId).find((option) => option.id === state.modelId) ?? null

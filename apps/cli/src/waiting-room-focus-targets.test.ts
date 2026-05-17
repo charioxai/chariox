@@ -4,7 +4,7 @@ import test from "node:test"
 import type { SliceRecord } from "./cli-types.js"
 import type { SessionListEntry } from "./sessions.js"
 import { moveWaitingRoomFocus, waitingRoomFocusTargets } from "./waiting-room-focus-targets.js"
-import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 
 test("waiting room focus targets preserve menu order and sorted session indexes", () => {
   const sessions = [
