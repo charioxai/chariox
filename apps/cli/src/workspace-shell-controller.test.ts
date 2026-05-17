@@ -6,6 +6,7 @@ import { createDefaultShellContext } from "@arroba/kernel-client/shell-core"
 import type { RuntimeSession } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import {
+  createWorkspaceShellSubmitController,
   deriveWorkspaceShellContextForSession,
   submitWorkspaceShellCommand,
 } from "./workspace-shell-controller.js"
@@ -144,4 +145,29 @@ test("submitWorkspaceShellCommand rejects empty shell marker before executing", 
   assert.equal(result.output, "usage: @ <arroba-shell command>")
   assert.equal(result.context, context)
   assert.deepEqual(footerFlash, { message: "usage: @ <arroba-shell command>", tone: "error" })
+})
+
+test("workspace shell submit controller binds submit dependencies", async () => {
+  const context = createDefaultShellContext()
+  const controller = createWorkspaceShellSubmitController({
+    client: {} as LocalIpcClient,
+    executeShellLine: async (_line, currentContext) => ({ ok: true, context: currentContext }),
+    workspaceShellContext: () => context,
+    setWorkspaceShellContext: () => {},
+    nextEntryId: () => 1,
+    setWorkspaceShellEntries: () => {},
+    sessionState: () => session(),
+    refreshSessionState: async () => session(),
+    applySessionState: () => {},
+    selectedWorkflowId: () => null,
+    setSelectedWorkflowId: () => {},
+    setSelectedWorkflowNodeId: () => {},
+    rebuildTranscript: () => {},
+    flashFooter: () => {},
+  })
+
+  const result = await controller.submit("@ help")
+
+  assert.equal(result.ok, true)
+  assert.equal(result.context, context)
 })

@@ -50,6 +50,18 @@ type WorkspaceShellSubmitDeps = {
   onSessionRefreshError?: (sessionId: string, error: unknown) => void
 }
 
+export function createWorkspaceShellSubmitController(
+  deps: WorkspaceShellSubmitDeps,
+): {
+  submit: (rawPrompt: string) => Promise<WorkspaceShellSubmitResult>
+} {
+  return {
+    submit(rawPrompt) {
+      return submitWorkspaceShellCommand(rawPrompt, deps)
+    },
+  }
+}
+
 export async function submitWorkspaceShellCommand(
   rawPrompt: string,
   deps: WorkspaceShellSubmitDeps,

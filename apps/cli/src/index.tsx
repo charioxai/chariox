@@ -448,8 +448,8 @@ import {
   type WorkspaceShellEntry,
 } from "./workspace-shell.js"
 import {
+  createWorkspaceShellSubmitController,
   deriveWorkspaceShellContextForSession,
-  submitWorkspaceShellCommand as submitWorkspaceShellCommandWithDeps,
 } from "./workspace-shell-controller.js"
 import {
   createWorkflowController,
@@ -3268,37 +3268,36 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleSkillCommand,
   })
 
-  const submitWorkspaceShellCommand = async (rawPrompt: string) => {
-    return submitWorkspaceShellCommandWithDeps(rawPrompt, {
-      client,
-      workspaceShellContext,
-      setWorkspaceShellContext: (context) => {
-        setWorkspaceShellContext(context)
-      },
-      nextEntryId: () => {
-        const id = workspaceShellEntryCounter() + 1
-        setWorkspaceShellEntryCounter((counter) => counter + 1)
-        return id
-      },
-      setWorkspaceShellEntries: (updater) => {
-        setWorkspaceShellEntries(updater)
-      },
-      sessionState,
-      refreshSessionState: (sessionId) => getSessionState(client, sessionId),
-      applySessionState,
-      selectedWorkflowId,
-      setSelectedWorkflowId,
-      setSelectedWorkflowNodeId,
-      rebuildTranscript,
-      flashFooter,
-      onSessionRefreshError: (sessionId, error) => {
-        appLogger?.warn("workspace shell session refresh failed", {
-          session_id: sessionId,
-          error: formatError(error),
-        })
-      },
-    })
-  }
+  const workspaceShellSubmitController = createWorkspaceShellSubmitController({
+    client,
+    workspaceShellContext,
+    setWorkspaceShellContext: (context) => {
+      setWorkspaceShellContext(context)
+    },
+    nextEntryId: () => {
+      const id = workspaceShellEntryCounter() + 1
+      setWorkspaceShellEntryCounter((counter) => counter + 1)
+      return id
+    },
+    setWorkspaceShellEntries: (updater) => {
+      setWorkspaceShellEntries(updater)
+    },
+    sessionState,
+    refreshSessionState: (sessionId) => getSessionState(client, sessionId),
+    applySessionState,
+    selectedWorkflowId,
+    setSelectedWorkflowId,
+    setSelectedWorkflowNodeId,
+    rebuildTranscript,
+    flashFooter,
+    onSessionRefreshError: (sessionId, error) => {
+      appLogger?.warn("workspace shell session refresh failed", {
+        session_id: sessionId,
+        error: formatError(error),
+      })
+    },
+  })
+  const submitWorkspaceShellCommand = workspaceShellSubmitController.submit
 
   const workflowPromptSubmitController = createWorkflowPromptSubmitController({
     getWorkflowPromptState: workflowPromptState,
