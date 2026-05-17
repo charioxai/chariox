@@ -212,6 +212,7 @@ import {
 import {
   createPromptInputHistoryRefreshController,
 } from "./prompt-input-history-refresh-controller.js"
+import { createPromptStopController } from "./prompt-stop-controller.js"
 import {
   createTurnCompletionController,
 } from "./turn-completion-controller.js"
@@ -865,7 +866,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [workflowNodeInstructionsEditor, setWorkflowNodeInstructionsEditor] = createSignal<WorkflowNodeInstructionsEditor | null>(null)
   const setCenterMode = (_mode: "transcript") => {}
   const setDirectoryTreeState = (_value: null) => {}
-  let stopRequestInFlight = false
   let promptInput: TextareaRenderable | undefined
   let hotkeysFocus: Renderable | null = null
   let transcriptScrollbox: ScrollBoxRenderable | undefined
@@ -1335,6 +1335,27 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const queueDepth = () => focusedQueueDepth()
   const connectedClientCount = () => sessionState().attachment_ids.length
   const activePrompt = () => focusedActivePrompt()
+  const promptStopController = createPromptStopController({
+    getAttachment: attachmentState,
+    getActivePrompt: activePrompt,
+    getSessionId: () => sessionState().id,
+    getFallbackStreamingAgentId: streamingAgentId,
+    cancelActivePrompt: (sessionId, attachmentId) => cancelActivePrompt(client, sessionId, attachmentId),
+    onCancellationRequested: (targetAgentId) => {
+      appLogger?.info("requested active prompt cancellation")
+      setStatusLine("Cancellation requested.")
+      setStreamingAgentId(targetAgentId)
+      setWorking(true)
+      updateSessionChrome()
+    },
+    onCancellationFailed: (error) => {
+      appLogger?.error("active prompt cancellation failed", {
+        error: formatError(error),
+      })
+      setFatalError(formatError(error))
+      updateSessionChrome()
+    },
+  })
   const resolveTerminalRecordAgentId = (record: TerminalOutputRecord) => {
     return resolveTerminalRecordAgentIdFromState({
       record,
@@ -3205,7 +3226,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (promptLifecycle.activePromptChanged) {
       setSubmitting(false)
       submittingAgentId = null
-      stopRequestInFlight = false
+      promptStopController.reset()
     }
     for (const settledAgentId of promptLifecycle.settledAgentIds) {
       clearAgentBusy(settledAgentId)
@@ -3227,7 +3248,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     if (!transition.nextHasPromptWork) {
       setSubmitting(false)
-      stopRequestInFlight = false
+      promptStopController.reset()
     }
     syncVisibleActivityLabel()
     updateSessionChrome()
@@ -3252,7 +3273,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setStreamingAgentId(null)
       setSubmitting(false)
       submittingAgentId = null
-      stopRequestInFlight = false
+      promptStopController.reset()
       setAgentBusyLatches({})
       setProviderActivityLabel(null)
       setActiveStatusLabel(null)
@@ -5064,7 +5085,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     refreshResponseLayout: applyResponseLayout,
     resetWorkspaceScreen: () => setWorkspaceScreenMode("agents"),
     resetStopRequestInFlight: () => {
-      stopRequestInFlight = false
+      promptStopController.reset()
     },
     bumpHistoryLoadGeneration: () => {
       transcriptHistoryLoadController.bumpGeneration()
@@ -6168,27 +6189,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const requestPromptStop = async () => {
-    const attachment = attachmentState()
-    if (stopRequestInFlight || !activePrompt() || !attachment) {
-      return
-    }
-
-    stopRequestInFlight = true
-    try {
-      await cancelActivePrompt(client, sessionState().id, attachment.id)
-      appLogger?.info("requested active prompt cancellation")
-      setStatusLine("Cancellation requested.")
-      setStreamingAgentId(activePrompt()?.target_agent_id ?? streamingAgentId())
-      setWorking(true)
-      updateSessionChrome()
-    } catch (error) {
-      stopRequestInFlight = false
-      appLogger?.error("active prompt cancellation failed", {
-        error: formatError(error),
-      })
-      setFatalError(formatError(error))
-      updateSessionChrome()
-    }
+    await promptStopController.request()
   }
 
   const submitFocusedInteractionChoice = async (choiceIndex?: number) => {
