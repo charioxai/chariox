@@ -226,6 +226,9 @@ import {
   createPromptSubmissionUiController,
   type SubmittedPromptUiSnapshot,
 } from "./prompt-submission-ui-controller.js"
+import {
+  createPromptTextController,
+} from "./prompt-text-controller.js"
 import { createPromptStopController } from "./prompt-stop-controller.js"
 import {
   createTurnCompletionController,
@@ -956,9 +959,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let nextTurnId = computeNextTurnId(initialEntries)
   let mountedTranscriptAgentId = initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id ?? null : null
   let hydratedPromptHistorySessionId: string | null | undefined
-  let promptTextSnapshot = initialPromptDraft
-  let promptTextMuting = false
   let submittingAgentId: string | null = null
+  const promptTextController = createPromptTextController({
+    initialText: initialPromptDraft,
+    getPromptInput: () => promptInput ?? null,
+    refreshHighlights: () => refreshPromptAttachmentHighlights(),
+  })
   const renderScheduler = createRenderScheduler({
     schedule: (callback) => startTimeout(callback, 0),
     clearSchedule: clearTimeout,
@@ -2137,7 +2143,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     workspacePath: pendingWorkspaceTarget(),
     worktreePath: pendingWorktreeTarget(),
   })
-  const syncCommandCenter = (value = promptInput?.plainText ?? promptTextSnapshot) => {
+  const syncCommandCenter = (value = promptTextController.currentText()) => {
     const previousValue = commandCenterQuery()
     setCommandCenterQuery(value)
     const items = buildCommandCenterItems(value, {
@@ -2262,7 +2268,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!item) {
       return false
     }
-    const currentPrompt = promptInput?.plainText ?? ""
+    const currentPrompt = promptTextController.currentText()
     if (shouldBypassCommandCenterSubmitSelection(currentPrompt)) {
       return false
     }
@@ -2369,7 +2375,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setPromptHistoryEntries(nextEntries)
     setPromptHistoryIndex(null)
     setPromptHistoryDraft(null)
-    promptTextSnapshot = nextDraft
     setPromptText(nextDraft)
   }
   const persistSessionPromptState = async (
@@ -2474,30 +2479,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (promptHistoryDraft() !== null) {
       return promptHistoryDraft() ?? ""
     }
-    return promptInput?.plainText ?? promptTextSnapshot
+    return promptTextController.currentText()
   }
   const recordPromptAreaHistoryEntry = promptInputHistoryController.recordPromptAreaEntry
-  const syncPromptTextSnapshot = () => {
-    promptTextSnapshot = promptInput?.plainText ?? ""
-  }
+  const syncPromptTextSnapshot = promptTextController.syncSnapshot
   const promptAttachmentHighlightController = createPromptAttachmentHighlightController({
     getPromptInput: () => promptInput ?? null,
     getPendingAttachments: pendingAttachments,
     styleIdForKind: (kind) => promptAttachmentTokenStyleIds[promptAttachmentTokenKind(kind)],
   })
   const refreshPromptAttachmentHighlights = promptAttachmentHighlightController.refresh
-  const setPromptText = (value: string) => {
-    if (!promptInput) {
-      promptTextSnapshot = value
-      return
-    }
-    promptTextMuting = true
-    promptInput.setText(value)
-    promptInput.cursorOffset = value.length
-    promptTextSnapshot = value
-    refreshPromptAttachmentHighlights()
-    promptTextMuting = false
-  }
+  const setPromptText = promptTextController.setText
   const promptInputMaxHeight = () => (
     isAttached()
       ? Math.max(6, dimensions().height - 11)
@@ -2512,7 +2504,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }, 0)
   }
   const promptHistoryNavigationController = createPromptHistoryNavigationController({
-    getPromptText: () => promptInput?.plainText ?? promptTextSnapshot,
+    getPromptText: promptTextController.currentText,
     getEntries: promptHistoryEntries,
     getNavigationIndex: promptHistoryIndex,
     getNavigationDraft: promptHistoryDraft,
@@ -2536,7 +2528,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const promptAttachmentController = createPromptAttachmentController({
     getPromptInput: () => promptInput ?? null,
-    getPromptText: () => promptInput?.plainText ?? promptTextSnapshot,
+    getPromptText: promptTextController.currentText,
     setPromptText,
     pendingAttachments,
     setPendingAttachments: (attachments) => setPendingAttachments(attachments),
@@ -2560,15 +2552,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
     clearDraftPersistQueue: clearPromptDraftPersistQueue,
     clearPromptText: () => {
-      if (promptInput) {
-        promptTextMuting = true
-        promptInput.clear()
-        promptInput.cursorOffset = 0
-        promptTextSnapshot = ""
-        promptTextMuting = false
-      } else {
-        setPromptText("")
-      }
+      promptTextController.clear()
     },
     setPromptText,
     syncPromptTextSnapshot,
@@ -2800,16 +2784,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     openHotkeys()
   }
   const promptContentChangeController = createPromptContentChangeController({
-    getPromptText: () => promptInput?.plainText ?? null,
+    getPromptText: () => promptInput ? promptTextController.currentText() : null,
     isAttached,
-    getPreviousSnapshot: () => promptTextSnapshot,
-    isProgrammaticMutation: () => promptTextMuting,
+    getPreviousSnapshot: promptTextController.snapshot,
+    isProgrammaticMutation: promptTextController.isProgrammaticMutation,
     isPromptHistoryActive: () => promptHistoryIndex() !== null || promptHistoryDraft() !== null,
     getSessionId: () => attachmentState()?.session_id,
     getCwd: () => process.cwd(),
-    setPromptTextSnapshot: (text) => {
-      promptTextSnapshot = text
-    },
+    setPromptTextSnapshot: promptTextController.setSnapshot,
     resetPromptHistory: (draft) => {
       setPromptHistoryIndex(null)
       setPromptHistoryDraft(draft)
@@ -3031,7 +3013,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     cwd: () => process.cwd(),
     sessionState,
     attachmentState,
-    promptInsertOffset: () => promptInput?.cursorOffset ?? promptTextSnapshot.length,
+    promptInsertOffset: promptTextController.cursorOffset,
     addPendingPromptAttachments,
     clearPendingPromptAttachments,
     flashFooter,
@@ -5792,8 +5774,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const rawPrompt = promptInput.plainText
     const trimmed = rawPrompt.trim()
     if (!trimmed && pendingAttachments().length === 0) {
-      promptInput.clear()
-      syncPromptTextSnapshot()
+      promptTextController.clear()
       return
     }
     if (workflowScreenShowing() && isWorkspaceShellCommand(rawPrompt)) {
@@ -5802,15 +5783,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       } catch (error) {
         flashFooter(formatError(error), "error")
       } finally {
-        promptInput.clear()
-        syncPromptTextSnapshot()
+        promptTextController.clear()
       }
       return
     }
     if (workflowNodeInstructionsEditor() && !trimmed.startsWith("/")) {
       flashFooter("instructions editor is open; type in the I/O panel and use /workflow node instructions save", "info")
-      promptInput.clear()
-      syncPromptTextSnapshot()
+      promptTextController.clear()
       return
     }
     const allowSlashCommandSubmission = !workflowScreenShowing() || isWorkflowCommandInput(rawPrompt)
@@ -5967,8 +5946,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
       : null
     if (handledCommand) {
-      promptInput.clear()
-      syncPromptTextSnapshot()
+      promptTextController.clear()
       setPromptHistoryIndex(null)
       setPromptHistoryDraft(null)
       if (shouldClearCommandCenterForSlashCommand(handledCommand)) {
@@ -5998,8 +5976,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         const attachment = attachmentState()
         if (!attachment) {
           flashFooter("No session attached.", "error")
-          promptInput.clear()
-          syncPromptTextSnapshot()
+          promptTextController.clear()
           return
         }
         submissionUi = beginSubmittedPromptUi(rawPrompt)
@@ -6040,8 +6017,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     if (!isAttached()) {
       flashFooter(SESSION_NEW_ERROR_HINT, "error")
-      promptInput.clear()
-      syncPromptTextSnapshot()
+      promptTextController.clear()
       return
     }
 
@@ -6097,8 +6073,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       const attachment = attachmentState()
       if (!attachment) {
         flashFooter("No session attached.", "error")
-        promptInput.clear()
-        syncPromptTextSnapshot()
+        promptTextController.clear()
         return
       }
       const attachments = await preparePromptAttachmentsForSubmit(rawAttachments, {
@@ -6329,8 +6304,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       promptFocused: Boolean(promptInput?.focused),
       commandCenterOpen: commandCenterOpen(),
       keyName: event.name,
-      currentText: promptInput?.plainText ?? promptTextSnapshot,
-      cursorOffset: promptInput?.cursorOffset ?? promptTextSnapshot.length,
+      currentText: promptTextController.currentText(),
+      cursorOffset: promptTextController.cursorOffset(),
       eventType: event.eventType,
       ctrl: event.ctrl,
       meta: event.meta,
@@ -6355,7 +6330,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       keyName: event.name,
       eventType: event.eventType,
       shift: event.shift,
-      promptText: promptInput?.plainText,
+      promptText: promptInput ? promptTextController.currentText() : undefined,
     }) !== null
   }
   const navigatePromptTurns = (direction: "previous" | "next") => {
@@ -6439,7 +6414,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       }
     }
-    if (event.eventType !== "release" && event.name === "backspace" && isAttached() && !promptInput?.plainText && pendingAttachments().length > 0) {
+    if (event.eventType !== "release" && event.name === "backspace" && isAttached() && !promptTextController.currentText() && pendingAttachments().length > 0) {
       removeLastPendingPromptAttachment()
       return
     }
@@ -7301,8 +7276,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         promptInput = value
         value.syntaxStyle = promptAttachmentTokenStyle
         syncPromptPlaceholder()
-        if (promptTextSnapshot) {
-          setPromptText(promptTextSnapshot)
+        if (promptTextController.snapshot()) {
+          setPromptText(promptTextController.snapshot())
         }
         syncPromptTextSnapshot()
         refreshPromptAttachmentHighlights()
