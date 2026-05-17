@@ -163,6 +163,7 @@ import {
 } from "./extension-api.js"
 import { deleteKernel } from "./kernel-api.js"
 import { createKernelEventSubscriptionController } from "./kernel-event-subscription-controller.js"
+import { createKernelRestartRecoveryController } from "./kernel-restart-recovery-controller.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
 import { runPollingLoop } from "./polling-effects.js"
@@ -940,7 +941,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   // Connection resilience tracking
   const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
   let kernelResyncInFlight: Promise<void> | null = null
-  let kernelRestartRecoveryInFlight: Promise<void> | null = null
   let lastLoggedFocusedBadgeState: string | null = null
   const agentFocusTransitionController = createAgentFocusTransitionController()
   let currentTurnId = computeCurrentTurnId(initialEntries)
@@ -5108,6 +5108,38 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
   })
   const syncKernelEventSubscription = () => kernelEventSubscriptionController.sync()
+  const kernelRestartRecoveryController = createKernelRestartRecoveryController({
+    isClosing: () => closing,
+    isAttached,
+    isDisconnected: daemonDisconnected,
+    getSessionId: () => sessionState().id,
+    getSessionState: (sessionId) => getSessionState(client, sessionId),
+    attachToSession: (sessionId) => attachToSession(client, sessionId, options.clientId),
+    projectSession: (session) => applyProviderRunProfileToSession(session, providerRunState()),
+    applyAttachment: setAttachmentState,
+    applySession: applySessionState,
+    resetKernelEventSubscription: kernelEventSubscriptionController.reset,
+    syncKernelEventSubscription,
+    refreshAgentPanes: () => refreshAgentPanes(sessionState()),
+    clearLocalBusyStateForAuthoritativeIdle: () => {
+      clearLocalBusyStateForAuthoritativeIdle(sessionState())
+    },
+    onRecovered: () => {
+      recordDaemonActivity("kernel_restart_recovered")
+      setDaemonDisconnected(false)
+      setStatusLine(DEFAULT_CONNECTED_STATUS)
+      updateSessionChrome()
+      appendNotice("Reconnected to the Arroba kernel.")
+    },
+    onAttemptFailed: (sessionId, error) => {
+      appLogger?.debug("kernel restart recovery attempt failed", {
+        session_id: sessionId,
+        error: formatError(error),
+      })
+    },
+    sleep,
+  })
+  const recoverAttachedSessionAfterKernelRestart = () => kernelRestartRecoveryController.recover()
 
   const {
     transitionToNoSession,
@@ -6981,53 +7013,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
     }
     await transitionToNoSession(message)
-  }
-
-  const recoverAttachedSessionAfterKernelRestart = () => {
-    if (kernelRestartRecoveryInFlight) {
-      return kernelRestartRecoveryInFlight
-    }
-    const sessionId = sessionState().id
-    if (!isAttached() || !sessionId) {
-      return null
-    }
-    kernelRestartRecoveryInFlight = (async () => {
-      let delayMs = 250
-      while (!closing && isAttached() && sessionState().id === sessionId && daemonDisconnected()) {
-        try {
-          const nextSession = await getSessionState(client, sessionId)
-          if (!isAttached() || sessionState().id !== sessionId) {
-            return
-          }
-          const nextAttachment = await attachToSession(client, sessionId, options.clientId)
-          if (!isAttached() || sessionState().id !== sessionId) {
-            return
-          }
-          setAttachmentState(nextAttachment)
-          applySessionState(applyProviderRunProfileToSession(nextSession, providerRunState()))
-          kernelEventSubscriptionController.reset()
-          await syncKernelEventSubscription()
-          await refreshAgentPanes(sessionState())
-          clearLocalBusyStateForAuthoritativeIdle(sessionState())
-          recordDaemonActivity("kernel_restart_recovered")
-          setDaemonDisconnected(false)
-          setStatusLine(DEFAULT_CONNECTED_STATUS)
-          updateSessionChrome()
-          appendNotice("Reconnected to the Arroba kernel.")
-          return
-        } catch (error) {
-          appLogger?.debug("kernel restart recovery attempt failed", {
-            session_id: sessionId,
-            error: formatError(error),
-          })
-          await sleep(delayMs)
-          delayMs = Math.min(delayMs * 2, 5_000)
-        }
-      }
-    })().finally(() => {
-      kernelRestartRecoveryInFlight = null
-    })
-    return kernelRestartRecoveryInFlight
   }
 
   const startConnectionWatchdog = connectionHealthWatchdogController.start
