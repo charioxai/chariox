@@ -90,6 +90,7 @@ import {
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 import { createHotkeyDebugReporter } from "./hotkey-debug-reporter.js"
 import { createHotkeysToggleController } from "./hotkeys-toggle-controller.js"
+import { createHistoryLoadingRenderController } from "./history-loading-render-controller.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { clampScrollTop } from "./history-viewport.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
@@ -1999,17 +2000,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const setPromptMetaRenderables = promptMetaRenderController.setRenderables
 
-  const renderHistoryLoadingIndicator = () => {
-    renderHistoryLoadingIndicatorView({
-      box: historyLoadingBox,
-      text: historyLoadingText,
-      loading: loadingHistory(),
-      renderer,
-      assignText: (value) => {
-        historyLoadingText = value
-      },
-    })
-  }
+  const historyLoadingRenderController = createHistoryLoadingRenderController({
+    renderer,
+    box: () => historyLoadingBox,
+    text: () => historyLoadingText,
+    loading: loadingHistory,
+    assignText: (value) => {
+      historyLoadingText = value
+    },
+    renderIndicator: renderHistoryLoadingIndicatorView,
+  })
+  const renderHistoryLoadingIndicator = historyLoadingRenderController.render
 
   const requestTranscriptRender = () => {
     transcriptRenderDeferralController.request()
