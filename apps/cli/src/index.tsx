@@ -213,6 +213,9 @@ import {
   createPromptDraftPersistController,
 } from "./prompt-draft-persist-controller.js"
 import {
+  createPromptHistoryNavigationController,
+} from "./prompt-history-navigation-controller.js"
+import {
   createPromptInputHistoryRefreshController,
 } from "./prompt-input-history-refresh-controller.js"
 import { createPromptInputHistoryController } from "./prompt-input-history-controller.js"
@@ -297,7 +300,6 @@ import {
 } from "./response-panes.js"
 import {
   extractPromptHistoryEntries,
-  navigatePromptHistory,
   resolvePromptHistoryKeyNavigation,
 } from "./prompt-history.js"
 import {
@@ -2519,29 +2521,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       promptInput?.focus()
     }, 0)
   }
-  const navigatePromptHistoryInput = (direction: "previous" | "next") => {
-    const currentText = promptInput?.plainText ?? promptTextSnapshot
-    const entries = promptHistoryEntries()
-    const next = navigatePromptHistory({
-      entries,
-      currentText,
-      navigationIndex: promptHistoryIndex(),
-      navigationDraft: promptHistoryDraft(),
-      direction,
-    })
-    if (next.navigationIndex === promptHistoryIndex() && next.text === currentText) {
-      return false
-    }
-    setPromptHistoryIndex(next.navigationIndex)
-    setPromptHistoryDraft(next.navigationDraft)
-    setPromptText(next.text)
-    const sessionId = attachmentState()?.session_id
-    if (sessionId) {
-      schedulePromptDraftPersist(sessionId, next.navigationDraft ?? next.text)
-    }
-    retainPromptFocus()
-    return true
-  }
+  const promptHistoryNavigationController = createPromptHistoryNavigationController({
+    getPromptText: () => promptInput?.plainText ?? promptTextSnapshot,
+    getEntries: promptHistoryEntries,
+    getNavigationIndex: promptHistoryIndex,
+    getNavigationDraft: promptHistoryDraft,
+    setNavigationIndex: setPromptHistoryIndex,
+    setNavigationDraft: setPromptHistoryDraft,
+    setPromptText,
+    getSessionId: () => attachmentState()?.session_id ?? null,
+    schedulePromptDraftPersist,
+    retainPromptFocus,
+  })
+  const navigatePromptHistoryInput = promptHistoryNavigationController.navigate
   const syncPromptPlaceholder = () => {
     if (!promptInput) {
       return
