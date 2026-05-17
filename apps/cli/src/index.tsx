@@ -269,10 +269,7 @@ import {
   getSessionHistory,
   recordPromptInputHistory,
 } from "./session-history-api.js"
-import {
-  createPromptMetaRenderController,
-  type PromptMetaRenderableRefKey,
-} from "./prompt-meta-render-controller.js"
+import { createPromptMetaRenderController } from "./prompt-meta-render-controller.js"
 import { renderPromptMeta } from "./prompt-meta-renderer.js"
 import {
   type BackendProviderId,
@@ -1956,13 +1953,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const promptMetaRenderController = createPromptMetaRenderController({
     getUsage: promptUsageMeta,
+    onRefAssigned: () => {
+      updateSessionChrome()
+    },
     renderMeta: renderPromptMeta,
   })
   const setPromptMetaRenderables = promptMetaRenderController.setRenderables
-  const assignPromptMetaRef = (key: PromptMetaRenderableRefKey) => (value: TextRenderable | undefined) => {
-    promptMetaRenderController.assignRef(key, value)
-    updateSessionChrome()
-  }
+  const assignPromptMetaRef = promptMetaRenderController.assignRefCallback
 
   const requestTranscriptRender = () => {
     transcriptRenderDeferralController.request()

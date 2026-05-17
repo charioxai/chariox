@@ -9,6 +9,7 @@ export type PromptMetaRenderableRefKey = keyof PromptMetaRenderableRefs
 export type PromptMetaRenderControllerDeps = {
   refs?: () => PromptMetaRenderableRefs
   getUsage: () => PromptUsageMeta | null
+  onRefAssigned?: () => void
   renderMeta: (
     refs: PromptMetaRenderableRefs,
     parts: PromptMetaPart[],
@@ -35,11 +36,20 @@ export function createPromptMetaRenderController(
   }
 
   const currentRefs = deps.refs ?? (() => refs)
+  const assignRef = (
+    key: PromptMetaRenderableRefKey,
+    value: PromptMetaRenderableRefs[PromptMetaRenderableRefKey],
+  ) => {
+    refs[key] = value
+    deps.onRefAssigned?.()
+  }
 
   return {
-    assignRef(key: PromptMetaRenderableRefKey, value: PromptMetaRenderableRefs[PromptMetaRenderableRefKey]) {
-      refs[key] = value
-    },
+    assignRef,
+    assignRefCallback: (key: PromptMetaRenderableRefKey) =>
+      (value: PromptMetaRenderableRefs[PromptMetaRenderableRefKey]) => {
+        assignRef(key, value)
+      },
     setRenderables(parts: PromptMetaPart[]) {
       deps.renderMeta(currentRefs(), parts, deps.getUsage())
     },

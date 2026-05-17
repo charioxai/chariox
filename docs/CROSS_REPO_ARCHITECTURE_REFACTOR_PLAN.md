@@ -271,6 +271,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: Cloud API server composition imports domain dependencies directly instead of the public barrel; API build/tests pass.
 - Latest verified batch: CLI focused status badge projection is controller-owned; CLI tests pass.
 - Latest verified batch: CLI transcript entry visibility/renderability projection is controller-owned; CLI tests pass.
+- Latest verified batch: CLI prompt-meta ref callbacks and chrome update hook are controller-owned; CLI tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
