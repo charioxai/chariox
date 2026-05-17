@@ -81,7 +81,8 @@ import {
   createFooterFlashController,
   type FooterFlash,
 } from "./footer-flash-controller.js"
-import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent } from "./hotkeys.js"
+import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
+import { createHotkeysToggleController } from "./hotkeys-toggle-controller.js"
 import { buildHotkeySections } from "./hotkey-help.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { clampScrollTop } from "./history-viewport.js"
@@ -1216,72 +1217,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const currentFocusedRenderable = () => (
     (renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null
   )
-  const inspectHotkeysToggleShortcut = (
-    source: "keyboard" | "stdin" | "textarea",
-    event: { name: string; ctrl?: boolean; meta?: boolean; super?: boolean; eventType?: string; baseCode?: number },
-  ) => {
-    const match = matchHotkeysToggleEvent(event)
-    if (match.normalizedName === "t" || event.ctrl || event.meta || event.super) {
-      appLogger?.debug("evaluated hotkeys toggle shortcut", {
-        source,
-        matched: match.matched,
-        reason: match.reason,
-        key_name: event.name,
-        normalized_name: match.normalizedName,
-        event_type: event.eventType ?? null,
-        ctrl: Boolean(event.ctrl),
-        meta: Boolean(event.meta),
-        super: Boolean(event.super),
-        base_code: event.baseCode ?? null,
-        hotkeys_open: hotkeysOpen(),
-      })
-    }
-    return match
-  }
-  const handleHotkeysToggleShortcut = (
-    source: "keyboard" | "stdin" | "textarea",
-    event: {
-      name: string
-      ctrl?: boolean
-      meta?: boolean
-      super?: boolean
-      eventType?: string
-      baseCode?: number
-      defaultPrevented?: boolean
-      preventDefault?: () => void
-      stopPropagation?: () => void
-    },
-  ) => {
-    if (event.defaultPrevented) {
-      return false
-    }
-    const hotkeysToggle = inspectHotkeysToggleShortcut(source, event)
-    if (!hotkeysToggle.matched) {
-      return false
-    }
-    event.preventDefault?.()
-    event.stopPropagation?.()
-    const previousHotkeysOpen = hotkeysOpen()
-    hotkeyDebug(`shortcut ${source} matched reason=${hotkeysToggle.reason} open=${previousHotkeysOpen} key=${event.name}`)
-    appLogger?.debug("toggling hotkeys via shortcut", {
-      source,
-      reason: hotkeysToggle.reason,
-      hotkeys_open: previousHotkeysOpen,
-      next_hotkeys_open: !previousHotkeysOpen,
-      current_focus: describeRenderableDebug(currentFocusedRenderable()),
-    })
-    toggleHotkeys()
-    hotkeyDebug(`shortcut ${source} finished open=${hotkeysOpen()} saved=${dialogOverlayController.savedFocusDebug()?.type ?? "none"}`)
-    appLogger?.debug("finished toggling hotkeys via shortcut", {
-      source,
-      reason: hotkeysToggle.reason,
-      previous_hotkeys_open: previousHotkeysOpen,
-      hotkeys_open: hotkeysOpen(),
-      saved_focus: dialogOverlayController.savedFocusDebug(),
-      current_focus: describeRenderableDebug(currentFocusedRenderable()),
-    })
-    return true
-  }
   const reconcileWaitingRoom = (next: WaitingRoomState) => {
     const currentState = waitingRoomState()
     const update = deriveWaitingRoomStateUpdate({
@@ -2123,6 +2058,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     flashFooter(`[hotkeys] ${message}`, "info")
   }
+  const hotkeysToggleController = createHotkeysToggleController({
+    hotkeysOpen,
+    toggleHotkeys,
+    debugHotkey: hotkeyDebug,
+    logDebug: (message, fields) => appLogger?.debug(message, fields),
+    currentFocus: currentFocusedRenderable,
+    describeFocus: (focus) => describeRenderableDebug(focus as Renderable | null | undefined),
+    savedFocusDebug: () => dialogOverlayController.savedFocusDebug(),
+  })
+  const handleHotkeysToggleShortcut = hotkeysToggleController.handle
 
   const clipboardController = createClipboardController({
     renderer,
