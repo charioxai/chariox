@@ -222,11 +222,10 @@ import {
 } from "./prompt-history-navigation-controller.js"
 import { createPromptHistoryRestoreController } from "./prompt-history-restore-controller.js"
 import { createPromptKeyDownController } from "./prompt-keydown-controller.js"
+import { createPromptChromeProjectionController } from "./prompt-chrome-projection-controller.js"
 import {
   createPromptPlaceholderSyncController,
-  derivePromptAreaBackground,
   derivePromptInputMaxHeight,
-  derivePromptPlaceholder,
 } from "./prompt-surface-state.js"
 import {
   createPromptInputHistoryRefreshController,
@@ -319,10 +318,7 @@ import {
 } from "./runtime.js"
 import {
   applyProviderRunProfileToSession,
-  deriveFooterHint,
   deriveFocusedStatusBadge,
-  deriveSessionStatusMode,
-  type SessionStatusMode,
 } from "./session-chrome-state.js"
 import {
   createSessionChromeRenderController,
@@ -1311,42 +1307,29 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     turnCompletionController.recordActivity()
   }
   const maybeScheduleConfirmedTurnCompletion = turnCompletionController.maybeScheduleConfirmed
-  const sessionStatusMode = (): SessionStatusMode => {
-    return deriveSessionStatusMode({
-      daemonDisconnected: daemonDisconnected(),
-      working: working(),
-      hasActivePrompt: anyPromptWork(),
-      submitting: submitting(),
-      queueDepth: focusedQueueDepth(),
-    })
-  }
-  const footerHint = () => {
-    return deriveFooterHint({
-      fatalError: fatalError(),
-      activePromptId: focusedActivePrompt()?.id ?? null,
-      queueDepth: focusedQueueDepth(),
-      statusLine: statusLine(),
-    })
-  }
-  const promptPlaceholder = () => {
-    return derivePromptPlaceholder({
-      attached: isAttached(),
-      workflowScreenActive: workflowScreenShowing(),
-      workflowPromptState: workflowPromptState(),
-      attachedPlaceholder: ATTACHED_PROMPT_PLACEHOLDER,
-      detachedPlaceholder: SESSION_NEW_PLACEHOLDER,
-    })
-  }
-  const promptAreaBackground = () => {
-    themeRevision()
-    return derivePromptAreaBackground({
-      attached: isAttached(),
-      workflowScreenActive: workflowScreenShowing(),
-      attachedBackground: theme.backgroundPanel,
-      detachedBackground: theme.backgroundElement,
-      workflowBackground: theme.backgroundElement,
-    })
-  }
+  const promptChromeProjectionController = createPromptChromeProjectionController({
+    daemonDisconnected,
+    working,
+    hasActivePrompt: anyPromptWork,
+    submitting,
+    queueDepth: focusedQueueDepth,
+    fatalError,
+    activePromptId: () => focusedActivePrompt()?.id ?? null,
+    statusLine,
+    isAttached,
+    workflowScreenActive: workflowScreenShowing,
+    workflowPromptState,
+    attachedPlaceholder: ATTACHED_PROMPT_PLACEHOLDER,
+    detachedPlaceholder: SESSION_NEW_PLACEHOLDER,
+    trackThemeRevision: () => themeRevision(),
+    attachedBackground: () => theme.backgroundPanel,
+    detachedBackground: () => theme.backgroundElement,
+    workflowBackground: () => theme.backgroundElement,
+  })
+  const sessionStatusMode = promptChromeProjectionController.sessionStatusMode
+  const footerHint = promptChromeProjectionController.footerHint
+  const promptPlaceholder = promptChromeProjectionController.promptPlaceholder
+  const promptAreaBackground = promptChromeProjectionController.promptAreaBackground
   const promptHistoryRestoreController = createPromptHistoryRestoreController({
     getPreferences: () => untrack(preferencesState),
     setPromptHistoryEntries,
