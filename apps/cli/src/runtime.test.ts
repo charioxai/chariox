@@ -17,6 +17,7 @@ import {
   getSessionStatusLabel,
   getToolActivityLabel,
   reconcileWorkingStateFromSession,
+  SILENT_POLL_THRESHOLD,
   STATUS_BADGE_WIDTH,
   shouldEndSessionOnCliExit,
 } from "./runtime.js"
@@ -29,6 +30,7 @@ test("describeCliError prefers structured error messages", () => {
   assert.equal(describeCliError(new Error("boom")), "boom")
   assert.equal(describeCliError("plain"), "plain")
   assert.equal(DEFAULT_CONNECTED_STATUS, "")
+  assert.equal(SILENT_POLL_THRESHOLD, 8)
 })
 
 test("poll recovery retries transient IPC failures with backoff", () => {

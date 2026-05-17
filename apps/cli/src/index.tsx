@@ -315,6 +315,7 @@ import {
 import {
   STATUS_BADGE_WIDTH,
   DEFAULT_CONNECTED_STATUS,
+  SILENT_POLL_THRESHOLD,
   getExitCleanupDecision,
   getPollRecoveryDecision,
   getProviderActivityLabel,
@@ -759,8 +760,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       sessionChromeUpdateController.flushDeferred()
     },
   })
-  // Connection resilience tracking
-  const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
   const agentFocusTransitionController = createAgentFocusTransitionController()
   const transcriptTurnStateController = createTranscriptTurnStateController({
     initialCurrentTurnId: computeCurrentTurnId(initialEntries),

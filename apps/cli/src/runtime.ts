@@ -2,6 +2,7 @@ import { LocalIpcError } from "./ipc.js"
 
 export const DEFAULT_CONNECTED_STATUS = ""
 export const MAX_TRANSIENT_POLL_FAILURES = 5
+export const SILENT_POLL_THRESHOLD = 8
 export const ACTIVE_STATUS_FALLBACK = "thinking"
 export const STATUS_BADGE_WIDTH = Math.max("DISCONNECTED".length, "SCREENSHOTTING".length)
 const POLL_RETRY_BASE_MS = 250
