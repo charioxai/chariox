@@ -216,6 +216,7 @@ import {
 import { createPromptHistoryRestoreController } from "./prompt-history-restore-controller.js"
 import { createPromptKeyDownController } from "./prompt-keydown-controller.js"
 import { createPromptChromeProjectionController } from "./prompt-chrome-projection-controller.js"
+import { createPromptSessionHistoryController } from "./prompt-session-history-controller.js"
 import {
   createPromptPlaceholderSyncController,
   derivePromptInputMaxHeight,
@@ -1384,19 +1385,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
     },
   })
-  const scheduleSharedPromptInputHistoryRefresh = () => {
-    const sessionId = attachmentState()?.session_id
-    if (!sessionId) {
-      return
-    }
-    promptInputHistoryRefreshController.schedule(sessionId)
-  }
-  const persistablePromptDraft = () => {
-    if (promptHistoryDraft() !== null) {
-      return promptHistoryDraft() ?? ""
-    }
-    return promptTextController.currentText()
-  }
+  const promptSessionHistoryController = createPromptSessionHistoryController({
+    currentSessionId: () => attachmentState()?.session_id ?? null,
+    navigationDraft: promptHistoryDraft,
+    currentPromptText: promptTextController.currentText,
+    scheduleHistoryRefresh: promptInputHistoryRefreshController.schedule,
+  })
+  const scheduleSharedPromptInputHistoryRefresh = promptSessionHistoryController.scheduleSharedRefresh
+  const persistablePromptDraft = promptSessionHistoryController.persistableDraft
   const recordPromptAreaHistoryEntry = promptInputHistoryController.recordPromptAreaEntry
   const syncPromptTextSnapshot = promptTextController.syncSnapshot
   const promptAttachmentHighlightController = createPromptAttachmentHighlightController({
