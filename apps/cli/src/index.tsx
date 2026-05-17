@@ -352,6 +352,7 @@ import {
 } from "./terminal-output-record-queue.js"
 import { createTerminalOutputRecordProcessor } from "./terminal-output-record-processor.js"
 import { createTerminalExitController } from "./terminal-exit-controller.js"
+import { createTerminalResizeController } from "./terminal-resize-controller.js"
 import { createTranscriptViewportController } from "./transcript-viewport-controller.js"
 import { createTranscriptRenderDeferralController } from "./transcript-render-deferral-controller.js"
 import { createTranscriptParserRegistration } from "./transcript-parser-registration.js"
@@ -3765,11 +3766,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   processLifecycleController.start()
   onCleanup(processLifecycleController.stop)
 
-  const onResize = () => {
-    if (isAttached()) {
-      void maybeResize(client, sessionState().id)
-    }
-  }
+  const terminalResizeController = createTerminalResizeController({
+    isAttached,
+    sessionId: () => sessionState().id,
+    resizeSession: (sessionId) => maybeResize(client, sessionId),
+  })
+  const onResize = terminalResizeController.handleResize
 
   const pollerDegradationController = createPollerDegradationController({
     connectedStatusLine: DEFAULT_CONNECTED_STATUS,
