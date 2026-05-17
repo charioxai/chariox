@@ -280,6 +280,7 @@ import {
 import {
   derivePromptContentChangeDecision,
 } from "./prompt-content-change-policy.js"
+import { createPromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
 import { buildPaneGridModel, type PaneGridTone } from "./response-pane-grid.js"
 import {
   responsePaneRowSlots,
@@ -288,8 +289,6 @@ import {
 } from "./response-panes.js"
 import {
   extractPromptHistoryEntries,
-  extractPromptInputHistoryEntries,
-  maxPromptInputHistorySequence,
   navigatePromptHistory,
   promptHistoryEntryListsEqual,
   resolvePromptHistoryKeyNavigation,
@@ -951,7 +950,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let nextTurnId = computeNextTurnId(initialEntries)
   let mountedTranscriptAgentId = initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id ?? null : null
   let hydratedPromptHistorySessionId: string | null | undefined
-  let promptHistoryHydrationGeneration = 0
   let promptInputHistoryLatestSequence = 0
   let promptTextSnapshot = initialPromptDraft
   let promptTextMuting = false
@@ -2342,34 +2340,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     promptTextSnapshot = nextDraft
     setPromptText(nextDraft)
   }
-  const hydratePromptHistoryFromSession = async (sessionId: string) => {
-    const generation = ++promptHistoryHydrationGeneration
-    await loadAndApplyPromptHistoryFromSession(sessionId, generation)
-  }
-  const loadAndApplyPromptHistoryFromSession = async (
-    sessionId: string,
-    generation: number,
-  ) => {
-    const promptInputHistory = await getPromptInputHistory(client, sessionId)
-
-    if (generation !== promptHistoryHydrationGeneration) {
-      return
-    }
-    if (attachmentState()?.session_id !== sessionId) {
-      return
-    }
-
-    const nextEntries = extractPromptInputHistoryEntries(promptInputHistory.entries)
-    promptInputHistoryLatestSequence = maxPromptInputHistorySequence(promptInputHistory.entries)
-
-    setPromptHistoryEntries(nextEntries)
-    setPromptHistoryIndex(null)
-    setPromptHistoryDraft(null)
-    setPreferencesState((current) => mergeSessionPromptState(current, sessionId, {
-      promptHistory: nextEntries,
-    }))
-    await saveSessionPromptState(sessionId, { promptHistory: nextEntries })
-  }
+  const promptHistoryHydrationController = createPromptHistoryHydrationController({
+    loadHistory: (sessionId) => getPromptInputHistory(client, sessionId),
+    isCurrentSession: (sessionId) => attachmentState()?.session_id === sessionId,
+    applyHistory: async (sessionId, nextEntries, latestSequence) => {
+      promptInputHistoryLatestSequence = latestSequence
+      setPromptHistoryEntries(nextEntries)
+      setPromptHistoryIndex(null)
+      setPromptHistoryDraft(null)
+      setPreferencesState((current) => mergeSessionPromptState(current, sessionId, {
+        promptHistory: nextEntries,
+      }))
+      await saveSessionPromptState(sessionId, { promptHistory: nextEntries })
+    },
+  })
+  const hydratePromptHistoryFromSession = (sessionId: string): Promise<void> =>
+    promptHistoryHydrationController.hydrate(sessionId)
   const appendSharedPromptInputHistory = (
     sessionId: string,
     entries: readonly PromptInputHistoryPage["entries"][number][],
@@ -2663,7 +2649,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     hydratedPromptHistorySessionId = attachedSessionId
     restorePromptHistory(attachedSessionId)
     if (!attachedSessionId) {
-      promptHistoryHydrationGeneration += 1
+      promptHistoryHydrationController.invalidate()
       return
     }
     void hydratePromptHistoryFromSession(attachedSessionId).catch((error) => {
@@ -4898,7 +4884,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const primeAttachedSessionBinding = async (session: RuntimeSession) => {
-    const promptHistoryGeneration = ++promptHistoryHydrationGeneration
+    const promptHistoryGeneration = promptHistoryHydrationController.begin()
     const visibleAgentId = selectResponsePaneAgents(
       session.agents,
       session.focused_agent_id,
@@ -4909,12 +4895,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!visibleAgentId) {
       replaceTranscriptEntries([], null)
       setNextHistoryCursor(null)
-      await loadAndApplyPromptHistoryFromSession(session.id, promptHistoryGeneration)
+      await promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
       return
     }
 
     const historyPage = await getSessionHistory(client, session.id, null, visibleAgentId)
-    await loadAndApplyPromptHistoryFromSession(session.id, promptHistoryGeneration)
+    await promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
     const preparedEntries = reindexTranscriptEntries(
       hydrateTranscriptEntries(historyPage.entries),
       0,
