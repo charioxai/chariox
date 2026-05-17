@@ -36,6 +36,7 @@ import {
   startCliAutomationServer,
   stopCliAutomationServer,
 } from "./cli-automation.js"
+import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
 import { createCliAutomationServerController } from "./cli-automation-server-controller.js"
 import { buildCliAutomationSnapshot } from "./cli-automation-snapshot.js"
@@ -3022,40 +3023,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     responseAuxiliaryAgentIds.length = 0
   }
 
-  const primeAttachedSessionBinding = async (session: RuntimeSession) => {
-    const promptHistoryGeneration = promptHistoryHydrationController.begin()
-    const visibleAgentId = selectResponsePaneAgents(
-      session.agents,
-      session.focused_agent_id,
-      splitAgentResponseMode(),
-      maxAgentsPerScreen(),
-    ).visibleTranscriptAgentId
-
-    if (!visibleAgentId) {
-      replaceTranscriptEntries([], null)
-      setNextHistoryCursor(null)
-      await promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
-      return
-    }
-
-    const historyPage = await getSessionHistory(client, session.id, null, visibleAgentId)
-    await promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
-    const preparedEntries = reindexTranscriptEntries(
-      hydrateTranscriptEntries(historyPage.entries),
-      0,
-    )
-
-    setAgentPaneEntries((current) => ({
-      ...current,
-      [visibleAgentId]: preparedEntries.map((entry) => ({ ...entry })),
-    }))
-    setAgentPanePreview(visibleAgentId, formatTranscriptPreview(preparedEntries))
-    replaceTranscriptEntries(
-      preparedEntries.map((entry) => ({ ...entry })),
-      visibleAgentId,
-    )
-    setNextHistoryCursor(historyPage.next_cursor)
-  }
+  const attachedSessionPrimeController = createAttachedSessionPrimeController({
+    promptHistoryHydrationController,
+    splitAgentResponseMode,
+    maxAgentsPerScreen,
+    loadVisibleAgentHistory: (sessionId, agentId) => getSessionHistory(client, sessionId, null, agentId),
+    setAgentPaneEntries: (agentId, nextEntries) => {
+      setAgentPaneEntries((current) => ({
+        ...current,
+        [agentId]: nextEntries,
+      }))
+    },
+    setAgentPanePreview,
+    replaceTranscriptEntries,
+    setNextHistoryCursor,
+  })
+  const primeAttachedSessionBinding = attachedSessionPrimeController.prime
 
   const deferredBootstrapController = createDeferredBootstrapController({
     getDeferred: () => props.bootstrap.deferred,
