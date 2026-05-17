@@ -342,7 +342,6 @@ import { createSessionLifecycleController } from "./session-lifecycle.js"
 import { createTranscriptHistoryLoadController } from "./transcript-history-load-controller.js"
 import {
   applyTranscriptDisplayState,
-  collapseLatestTranscriptTurn,
   resolveVisibleTurnToggle,
   setTranscriptBlobCollapsed,
 } from "./transcript-display.js"
@@ -523,6 +522,7 @@ import { createTranscriptRetentionController } from "./transcript-retention-cont
 import { createTranscriptEventController } from "./transcript-event-controller.js"
 import { createTranscriptStateController } from "./transcript-state-controller.js"
 import { createTranscriptStreamController } from "./transcript-stream-controller.js"
+import { createTranscriptTurnExpansionController } from "./transcript-turn-expansion-controller.js"
 import {
   buildEmptyTranscriptRenderable,
   buildLoadingTranscriptRenderable,
@@ -1956,6 +1956,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const handlePromptContentChange = promptContentChangeController.handleChange
   const expandedTurnIdsForAgent = (agentId: string | null | undefined) => agentId ? (expandedTurnIdsByAgent()[agentId] ?? []) : []
+  const transcriptTurnExpansionController = createTranscriptTurnExpansionController({
+    expandedTurnIdsForAgent,
+    updateExpandedTurnIdsByAgent: (updater) => {
+      setExpandedTurnIdsByAgent((current) => updater(current))
+    },
+  })
+  const setExpandedTurnState = transcriptTurnExpansionController.setExpandedTurnState
+  const replaceExpandedTurnsForAgent = transcriptTurnExpansionController.replaceExpandedTurnsForAgent
+  const collapseLatestTurnForAgent = transcriptTurnExpansionController.collapseLatestTurnForAgent
+  const applyExpandedTurns = transcriptTurnExpansionController.applyExpandedTurns
 
   const transcriptStateController = createTranscriptStateController({
     entries: () => entries.filter(Boolean),
@@ -2652,75 +2662,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ...current,
       [agentId]: text,
     }))
-  }
-
-  const setExpandedTurnState = (agentId: string | null | undefined, turnId: number | null | undefined, expanded: boolean) => {
-    if (!agentId || !turnId) {
-      return
-    }
-    setExpandedTurnIdsByAgent((current) => {
-      const previous = new Set(current[agentId] ?? [])
-      if (expanded) {
-        previous.delete(turnId)
-      } else {
-        previous.add(turnId)
-      }
-
-      if (previous.size === 0) {
-        if (!(agentId in current)) {
-          return current
-        }
-        const next = { ...current }
-        delete next[agentId]
-        return next
-      }
-
-      const nextTurnIds = [...previous].sort((left, right) => left - right)
-      const currentTurnIds = current[agentId] ?? []
-      if (currentTurnIds.length === nextTurnIds.length && currentTurnIds.every((value, index) => value === nextTurnIds[index])) {
-        return current
-      }
-      return {
-        ...current,
-        [agentId]: nextTurnIds,
-      }
-    })
-  }
-
-  const replaceExpandedTurnsForAgent = (agentId: string | null | undefined, turnIds: readonly number[]) => {
-    if (!agentId) {
-      return
-    }
-    setExpandedTurnIdsByAgent((current) => {
-      const nextTurnIds = [...new Set(turnIds)].sort((left, right) => left - right)
-      if (nextTurnIds.length === 0) {
-        if (!(agentId in current)) {
-          return current
-        }
-        const next = { ...current }
-        delete next[agentId]
-        return next
-      }
-
-      const currentTurnIds = current[agentId] ?? []
-      if (currentTurnIds.length === nextTurnIds.length && currentTurnIds.every((value, index) => value === nextTurnIds[index])) {
-        return current
-      }
-      return {
-        ...current,
-        [agentId]: nextTurnIds,
-      }
-    })
-  }
-
-  const collapseLatestTurnForAgent = (agentId: string | null | undefined, paneEntries: TranscriptEntry[]) => {
-    const nextTurnIds = collapseLatestTranscriptTurn(paneEntries, expandedTurnIdsForAgent(agentId))
-    replaceExpandedTurnsForAgent(agentId, nextTurnIds)
-    return nextTurnIds
-  }
-
-  const applyExpandedTurns = (entries: TranscriptEntry[], expandedTurnIds: readonly number[]) => {
-    return applyTranscriptDisplayState(entries, expandedTurnIds)
   }
 
   const persistVisibleTranscriptEntries = (nextEntries: TranscriptEntry[]) => {
