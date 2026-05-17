@@ -1,6 +1,5 @@
 import { ARROBA_ASCII_ART, type SessionListEntry } from "./sessions.js"
 import {
-  BACKEND_PROVIDER_IDS,
   catalogModelOptions,
   normalizeBackendProviderId,
   selectConfiguredModel,
@@ -12,16 +11,13 @@ import {
   DEFAULT_THEME_REGISTRY,
   normalizeThemeName,
   themeLabel,
-  themeOptions,
   type ThemeName,
   type ThemeRegistry,
 } from "./theme-registry.js"
 import {
-  cycleWaitingRoomWorktreeSelectionId,
   normalizeWaitingRoomWorktreeSelectionId,
 } from "./waiting-room-worktrees.js"
 import {
-  cycleWaitingRoomSliceSelectionId,
   normalizeWaitingRoomSliceSelectionId,
   waitingRoomSlices,
 } from "./waiting-room-slices.js"
@@ -45,8 +41,8 @@ import { waitingRoomStartRows } from "./waiting-room-start-rows.js"
 import {
   waitingRoomChoice,
   waitingRoomEfforts,
-  waitingRoomModel,
 } from "./waiting-room-choice.js"
+import { cycleWaitingRoomFocusedValue } from "./waiting-room-value-cycling.js"
 import type { SliceRecord } from "./cli-types.js"
 
 export {
@@ -259,71 +255,12 @@ export function cycleWaitingRoomValue(
   themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
   remote: WaitingRoomRemoteState = {},
 ) {
-  if (state.focus === "model") {
-    const options = catalogModelOptions(catalog, state.providerId)
-    if (options.length === 0) {
-      return state
-    }
-    const index = Math.max(0, options.findIndex((option) => option.id === state.modelId))
-    const next = options[modulo(index + delta, options.length)]!
-    return normalizeWaitingRoomState(
-      {
-        ...state,
-        modelId: next.id,
-      },
-      sessions,
-      catalog,
-      themeRegistry,
-      remote,
-    )
-  }
-  if (state.focus === "provider") {
-    const index = Math.max(0, BACKEND_PROVIDER_IDS.indexOf(state.providerId))
-    return normalizeWaitingRoomState(
-      {
-        ...state,
-        providerId: BACKEND_PROVIDER_IDS[modulo(index + delta, BACKEND_PROVIDER_IDS.length)]!,
-      },
-      sessions,
-      catalog,
-      themeRegistry,
-      remote,
-    )
-  }
-  if (state.focus === "effort") {
-    const efforts = waitingRoomEfforts(waitingRoomModel(state, catalog))
-    const index = Math.max(0, efforts.indexOf(state.effort))
-    return {
-      ...state,
-      effort: efforts[modulo(index + delta, efforts.length)] ?? "",
-    }
-  }
-  if (state.focus === "theme") {
-    const options = themeOptions(themeRegistry)
-    const ids = options.map((option) => option.id)
-    const index = Math.max(0, ids.indexOf(normalizeThemeName(state.themeId, themeRegistry)))
-    return {
-      ...state,
-      themeId: ids[modulo(index + delta, ids.length)] ?? normalizeThemeName(state.themeId, themeRegistry),
-    }
-  }
-  if (state.focus === "worktree") {
-    return {
-      ...state,
-      worktreeSelectionId: cycleWaitingRoomWorktreeSelectionId(state.worktreeSelectionId, delta),
-    }
-  }
-  if (state.focus === "slice") {
-    return {
-      ...state,
-      sliceSelectionId: cycleWaitingRoomSliceSelectionId(
-        state.sliceSelectionId,
-        waitingRoomSlices(remote),
-        delta,
-      ),
-    }
-  }
-  return state
+  return cycleWaitingRoomFocusedValue(state, delta, {
+    catalog,
+    themeRegistry,
+    remote,
+    normalizeState: (next) => normalizeWaitingRoomState(next, sessions, catalog, themeRegistry, remote),
+  })
 }
 
 export function waitingRoomRows(
