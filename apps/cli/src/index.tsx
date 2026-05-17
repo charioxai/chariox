@@ -327,8 +327,8 @@ import {
 } from "./runtime.js"
 import {
   applyProviderRunProfileToSession,
-  deriveFocusedStatusBadge,
 } from "./session-chrome-state.js"
+import { createFocusedStatusBadgeController } from "./focused-status-badge-controller.js"
 import {
   createSessionChromeRenderController,
 } from "./session-chrome-render-controller.js"
@@ -943,13 +943,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       focusedAgentId: focusedAgentId(),
     })
   }
-  const focusedStatusBadge = () => deriveFocusedStatusBadge({
-    attached: isAttached(),
-    daemonDisconnected: daemonDisconnected(),
-    activeStatusLabel: focusedActivityLabel(),
-    focusedBusy: focusedAgentBusy(),
-    agents: allAgentsBusyState(),
+  const focusedStatusBadgeController = createFocusedStatusBadgeController({
+    isAttached,
+    daemonDisconnected,
+    activeStatusLabel: focusedActivityLabel,
+    focusedBusy: focusedAgentBusy,
+    agents: allAgentsBusyState,
   })
+  const focusedStatusBadge = focusedStatusBadgeController.badge
   const runtimeDebugLogger = createCliRuntimeDebugLogger({
     logger: appLogger,
     debugLogsEnabled: DEBUG_LOGS_ENABLED,
