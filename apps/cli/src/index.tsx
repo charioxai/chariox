@@ -51,6 +51,12 @@ import {
   shouldPreserveAgentActivityLabel as shouldPreserveAgentActivityLabelState,
 } from "./agent-activity-state.js"
 import {
+  captureCliDialogFocus,
+  describeCliDialogFocusTarget,
+  restoreCliDialogFocus,
+  type CliDialogFocusTarget,
+} from "./cli-dialog-focus-controller.js"
+import {
   renderCliDialogOverlay,
 } from "./cli-dialog-overlay.js"
 import {
@@ -1392,17 +1398,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     logViewDebug("state changed")
   })
   const describeRenderableDebug = (renderable: Renderable | null | undefined) => {
-    if (!renderable) {
-      return null
-    }
-    const focusable = renderable as Renderable & { focused?: boolean }
-    return {
-      id: String((renderable as { id?: string | number }).id ?? ""),
-      type: renderable.constructor?.name ?? null,
-      destroyed: renderable.isDestroyed,
-      focused: Boolean(focusable.focused),
-    }
+    return describeCliDialogFocusTarget(renderable as CliDialogFocusTarget | null | undefined)
   }
+  const currentFocusedRenderable = () => (
+    (renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null
+  )
   const inspectHotkeysToggleShortcut = (
     source: "keyboard" | "stdin" | "textarea",
     event: { name: string; ctrl?: boolean; meta?: boolean; super?: boolean; eventType?: string; baseCode?: number },
@@ -1455,7 +1455,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       reason: hotkeysToggle.reason,
       hotkeys_open: previousHotkeysOpen,
       next_hotkeys_open: !previousHotkeysOpen,
-      current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+      current_focus: describeRenderableDebug(currentFocusedRenderable()),
     })
     toggleHotkeys()
     hotkeyDebug(`shortcut ${source} finished open=${hotkeysOpen()} saved=${describeRenderableDebug(hotkeysFocus)?.type ?? "none"}`)
@@ -1465,7 +1465,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       previous_hotkeys_open: previousHotkeysOpen,
       hotkeys_open: hotkeysOpen(),
       saved_focus: describeRenderableDebug(hotkeysFocus),
-      current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+      current_focus: describeRenderableDebug(currentFocusedRenderable()),
     })
     return true
   }
@@ -2761,37 +2761,59 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       hotkeySections: hotkeySections(),
     })
   }
+  const captureDialogFocus = () => {
+    const focused = currentFocusedRenderable()
+    hotkeysFocus = captureCliDialogFocus(
+      focused as CliDialogFocusTarget | null,
+      promptInput as CliDialogFocusTarget | null | undefined,
+    ) as Renderable | null
+    return focused
+  }
+  const restoreDialogFocusLater = (
+    restoreTarget: Renderable | null,
+    onRestored?: () => void,
+    onSkipped?: () => void,
+  ) => {
+    startTimeout(() => {
+      const restored = restoreCliDialogFocus(restoreTarget as CliDialogFocusTarget | null)
+      if (restored) {
+        onRestored?.()
+      } else {
+        onSkipped?.()
+      }
+      hotkeysFocus = null
+    }, 1)
+  }
   const closeHotkeys = () => {
     if (!hotkeysOpen()) {
       return
     }
     const restoreTarget = hotkeysFocus
-    hotkeyDebug(`close start open=${hotkeysOpen()} saved=${describeRenderableDebug(restoreTarget)?.type ?? "none"} current=${describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null)?.type ?? "none"}`)
+    hotkeyDebug(`close start open=${hotkeysOpen()} saved=${describeRenderableDebug(restoreTarget)?.type ?? "none"} current=${describeRenderableDebug(currentFocusedRenderable())?.type ?? "none"}`)
     appLogger?.debug("closing hotkeys overlay", {
       hotkeys_open: hotkeysOpen(),
       restore_focus: describeRenderableDebug(restoreTarget),
-      current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+      current_focus: describeRenderableDebug(currentFocusedRenderable()),
     })
     setHotkeysOpen(false)
     renderHotkeysOverlay()
-    startTimeout(() => {
-      if (!restoreTarget || restoreTarget.isDestroyed) {
+    restoreDialogFocusLater(
+      restoreTarget,
+      () => {
+        hotkeyDebug(`close restored saved=${describeRenderableDebug(restoreTarget)?.type ?? "none"} current=${describeRenderableDebug(currentFocusedRenderable())?.type ?? "none"}`)
+        appLogger?.debug("hotkeys overlay restored focus", {
+          restore_focus: describeRenderableDebug(restoreTarget),
+          current_focus: describeRenderableDebug(currentFocusedRenderable()),
+        })
+      },
+      () => {
         hotkeyDebug(`close skip-restore saved=${describeRenderableDebug(restoreTarget)?.type ?? "none"}`)
         appLogger?.debug("hotkeys overlay skipped focus restore", {
           restore_focus: describeRenderableDebug(restoreTarget),
-          current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+          current_focus: describeRenderableDebug(currentFocusedRenderable()),
         })
-        hotkeysFocus = null
-        return
-      }
-      restoreTarget.focus()
-      hotkeyDebug(`close restored saved=${describeRenderableDebug(restoreTarget)?.type ?? "none"} current=${describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null)?.type ?? "none"}`)
-      appLogger?.debug("hotkeys overlay restored focus", {
-        restore_focus: describeRenderableDebug(restoreTarget),
-        current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
-      })
-      hotkeysFocus = null
-    }, 1)
+      },
+    )
   }
   const closeTerminalPairingDialog = () => {
     if (!terminalPairingOpen()) {
@@ -2800,12 +2822,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const restoreTarget = hotkeysFocus
     setTerminalPairingOpen(false)
     renderHotkeysOverlay()
-    startTimeout(() => {
-      if (restoreTarget && !restoreTarget.isDestroyed) {
-        restoreTarget.focus()
-      }
-      hotkeysFocus = null
-    }, 1)
+    restoreDialogFocusLater(restoreTarget)
   }
   const closeSessionBrowserDialog = () => {
     if (!sessionBrowserOpen()) {
@@ -2814,34 +2831,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const restoreTarget = hotkeysFocus
     setSessionBrowserOpen(false)
     renderHotkeysOverlay()
-    startTimeout(() => {
-      if (restoreTarget && !restoreTarget.isDestroyed) {
-        restoreTarget.focus()
-      }
-      hotkeysFocus = null
-    }, 1)
+    restoreDialogFocusLater(restoreTarget)
   }
   const openHotkeys = () => {
     if (hotkeysOpen()) {
       return
     }
-    const focused = (renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null
-    hotkeysFocus = focused && !focused.isDestroyed
-      ? focused
-      : promptInput && !promptInput.isDestroyed
-        ? promptInput
-        : null
+    const focused = captureDialogFocus()
     hotkeyDebug(`open start current=${describeRenderableDebug(focused)?.type ?? "none"} saved=${describeRenderableDebug(hotkeysFocus)?.type ?? "none"}`)
     appLogger?.debug("opening hotkeys overlay", {
       hotkeys_open: hotkeysOpen(),
       current_focus: describeRenderableDebug(focused),
       saved_focus: describeRenderableDebug(hotkeysFocus),
     })
-    hotkeysFocus?.blur()
-    hotkeyDebug(`open blurred saved=${describeRenderableDebug(hotkeysFocus)?.type ?? "none"} current=${describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null)?.type ?? "none"}`)
+    hotkeyDebug(`open blurred saved=${describeRenderableDebug(hotkeysFocus)?.type ?? "none"} current=${describeRenderableDebug(currentFocusedRenderable())?.type ?? "none"}`)
     appLogger?.debug("hotkeys overlay blurred saved focus", {
       saved_focus: describeRenderableDebug(hotkeysFocus),
-      current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+      current_focus: describeRenderableDebug(currentFocusedRenderable()),
     })
     setHotkeysOpen(true)
     renderHotkeysOverlay()
@@ -2849,20 +2855,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     appLogger?.debug("hotkeys overlay opened", {
       hotkeys_open: hotkeysOpen(),
       saved_focus: describeRenderableDebug(hotkeysFocus),
-      current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+      current_focus: describeRenderableDebug(currentFocusedRenderable()),
     })
   }
   const openTerminalPairingDialog = async () => {
     if (terminalPairingOpen()) {
       return
     }
-    const focused = (renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null
-    hotkeysFocus = focused && !focused.isDestroyed
-      ? focused
-      : promptInput && !promptInput.isDestroyed
-        ? promptInput
-        : null
-    hotkeysFocus?.blur()
+    captureDialogFocus()
     setTerminalPairingState(null)
     setTerminalPairingQrLines([])
     setHotkeysOpen(false)
@@ -2889,13 +2889,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       flashFooter("no sessions available to join", "error")
       return
     }
-    const focused = (renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null
-    hotkeysFocus = focused && !focused.isDestroyed
-      ? focused
-      : promptInput && !promptInput.isDestroyed
-        ? promptInput
-        : null
-    hotkeysFocus?.blur()
+    captureDialogFocus()
     setHotkeysOpen(false)
     setTerminalPairingOpen(false)
     setSessionBrowserIndex(clampSessionBrowserIndex(waitingRoomState().sessionIndex, sessions.length))
@@ -2904,11 +2898,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     flashFooter("select a session to open, archive, or delete", "info")
   }
   const toggleHotkeys = () => {
-    hotkeyDebug(`toggle open=${hotkeysOpen()} current=${describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null)?.type ?? "none"}`)
+    hotkeyDebug(`toggle open=${hotkeysOpen()} current=${describeRenderableDebug(currentFocusedRenderable())?.type ?? "none"}`)
     appLogger?.debug("toggleHotkeys invoked", {
       hotkeys_open: hotkeysOpen(),
       saved_focus: describeRenderableDebug(hotkeysFocus),
-      current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+      current_focus: describeRenderableDebug(currentFocusedRenderable()),
     })
     if (hotkeysOpen()) {
       closeHotkeys()
@@ -5556,7 +5550,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       startTimeout(() => {
         logViewDebug("view command:post render tick", {
           requested_layout: layout,
-          current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+          current_focus: describeRenderableDebug(currentFocusedRenderable()),
         })
       }, 0)
     },
