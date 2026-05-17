@@ -150,6 +150,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: CLI waiting-room value-cycling wrapper is owned by the value-cycling policy module; CLI tests pass.
 - Latest verified batch: CLI command-center item type and search/ranking policy are responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI command-center tree traversal/projection is responsibility-owned; CLI tests pass.
+- Latest verified batch: CLI command-center static slash command tree is responsibility-owned; CLI tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
