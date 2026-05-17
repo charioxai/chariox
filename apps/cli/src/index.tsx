@@ -203,6 +203,9 @@ import {
   createPromptDraftPersistController,
 } from "./prompt-draft-persist-controller.js"
 import {
+  createTurnCompletionController,
+} from "./turn-completion-controller.js"
+import {
   preparePromptAttachmentsForSubmit,
   promptAttachmentTransferIsForced,
 } from "./prompt-attachment-transfer.js"
@@ -916,11 +919,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let uiBatchDepth = 0
   let pendingTerminalRecordFlush: ReturnType<typeof startTimeout> | undefined
   let pendingTerminalRecords: TerminalOutputRecord[] = []
-  let pendingTurnCompletion: ReturnType<typeof startTimeout> | undefined
-  let turnCompletionConfirmed = false
   // Connection resilience tracking
   let lastDaemonActivityAt = Date.now()
-  let lastTurnActivityAt = Date.now()
   let connectionWatchdogTimeout: ReturnType<typeof startTimeout> | undefined
   let consecutiveSilentPolls = 0
   const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
@@ -2245,68 +2245,42 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       overlayFootprint: COMMAND_CENTER_OVERLAY_FOOTPRINT,
     })
   }
-  const cancelPendingTurnCompletion = () => {
-    if (pendingTurnCompletion) {
-      clearTimeout(pendingTurnCompletion)
-      pendingTurnCompletion = undefined
-    }
-  }
-  const recordTurnActivity = (_activityType: string) => {
-    lastTurnActivityAt = Date.now()
-    cancelPendingTurnCompletion()
-  }
-  const turnCompletionDelayMs = () => getTurnCompletionDelayMs({
-    sessionHasPromptWork: sessionHasPromptWork(sessionState()),
-    pendingTerminalRecordCount: pendingTerminalRecords.length,
-    pendingTerminalRecordFlush: Boolean(pendingTerminalRecordFlush),
-    lastTurnActivityAt,
-    now: Date.now(),
-    quietWindowMs: TURN_COMPLETION_QUIET_MS,
+  const turnCompletionController = createTurnCompletionController({
+    now: Date.now,
+    scheduleTimer: startTimeout,
+    clearTimer: clearTimeout,
+    hasActivePrompt: () => Boolean(activePrompt()),
+    getDelayMs: (lastTurnActivityAt) => getTurnCompletionDelayMs({
+      sessionHasPromptWork: sessionHasPromptWork(sessionState()),
+      pendingTerminalRecordCount: pendingTerminalRecords.length,
+      pendingTerminalRecordFlush: Boolean(pendingTerminalRecordFlush),
+      lastTurnActivityAt,
+      now: Date.now(),
+      quietWindowMs: TURN_COMPLETION_QUIET_MS,
+    }),
+    completeTurn: () => {
+      batch(() => {
+        activeToolLabels.clear()
+        setAgentActivityLabels({})
+        setStreamingAgentId(null)
+        setSubmitting(false)
+        submittingAgentId = null
+        setAgentBusyLatches({})
+        setProviderActivityLabel(null)
+        setActiveStatusLabel(null)
+        if (!activePrompt() && statusLine() === "Cancellation requested.") {
+          setStatusLine(DEFAULT_CONNECTED_STATUS)
+        }
+        setWorking(false)
+      })
+      renderSessionChromeBoundary()
+    },
   })
-  const maybeScheduleConfirmedTurnCompletion = () => {
-    if (!turnCompletionConfirmed || activePrompt()) {
-      return
-    }
-    scheduleTurnCompletion()
+  const cancelPendingTurnCompletion = turnCompletionController.cancelPending
+  const recordTurnActivity = (_activityType: string) => {
+    turnCompletionController.recordActivity()
   }
-  const finalizeTurnCompletion = () => {
-    cancelPendingTurnCompletion()
-    const delayMs = turnCompletionDelayMs()
-    if (delayMs === null) {
-      return
-    }
-    if (delayMs > 0) {
-      scheduleTurnCompletion()
-      return
-    }
-    batch(() => {
-      activeToolLabels.clear()
-      setAgentActivityLabels({})
-      setStreamingAgentId(null)
-      setSubmitting(false)
-      submittingAgentId = null
-      setAgentBusyLatches({})
-      setProviderActivityLabel(null)
-      setActiveStatusLabel(null)
-      if (!activePrompt() && statusLine() === "Cancellation requested.") {
-        setStatusLine(DEFAULT_CONNECTED_STATUS)
-      }
-      setWorking(false)
-    })
-    turnCompletionConfirmed = false
-    renderSessionChromeBoundary()
-  }
-  const scheduleTurnCompletion = () => {
-    cancelPendingTurnCompletion()
-    const delayMs = turnCompletionDelayMs()
-    if (delayMs === null) {
-      return
-    }
-    pendingTurnCompletion = startTimeout(() => {
-      pendingTurnCompletion = undefined
-      finalizeTurnCompletion()
-    }, delayMs)
-  }
+  const maybeScheduleConfirmedTurnCompletion = turnCompletionController.maybeScheduleConfirmed
   const sessionStatusMode = (): SessionStatusMode => {
     return deriveSessionStatusMode({
       daemonDisconnected: daemonDisconnected(),
@@ -3050,8 +3024,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const appendUserPrompt = (text: string, agentId?: string | null) => {
     recordTurnActivity("prompt_submit")
-    turnCompletionConfirmed = false
-    cancelPendingTurnCompletion()
+    turnCompletionController.reset()
     const targetAgentId = agentId ?? focusedAgentId()
     submittingAgentId = targetAgentId
     setStreamingAgentId(targetAgentId)
@@ -3243,11 +3216,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setMultiAgentResponseLayout(transition.nextLayout)
     setWorking(transition.nextWorking)
     if (transition.nextHasPromptWork) {
-      turnCompletionConfirmed = false
-      cancelPendingTurnCompletion()
-    } else if (turnCompletionConfirmed || shouldConfirmIdleCompletion) {
-      turnCompletionConfirmed = true
-      scheduleTurnCompletion()
+      turnCompletionController.reset()
+    } else if (turnCompletionController.isConfirmed() || shouldConfirmIdleCompletion) {
+      turnCompletionController.confirmAndSchedule()
     } else {
       cancelPendingTurnCompletion()
     }
@@ -3271,7 +3242,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         setStatusLine(DEFAULT_CONNECTED_STATUS)
       }
       if (!transition.nextHasPromptWork) {
-        turnCompletionConfirmed = true
+        turnCompletionController.confirm()
         cancelPendingTurnCompletion()
         setWorking(false)
       }
@@ -3297,8 +3268,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     batch(() => {
-      turnCompletionConfirmed = false
-      cancelPendingTurnCompletion()
+      turnCompletionController.reset()
       activeToolLabels.clear()
       setAgentActivityLabels({})
       setStreamingAgentId(null)
@@ -3318,11 +3288,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const applyProviderActivity = (active: boolean) => {
     if (active) {
-      cancelPendingTurnCompletion()
       setWorking(true)
-    } else if (turnCompletionConfirmed) {
-      scheduleTurnCompletion()
     }
+    turnCompletionController.handleProviderActivity(active)
     updateSessionChrome()
   }
 
@@ -3351,7 +3319,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
     }
     clearAgentBusy(completionAgentId)
-    turnCompletionConfirmed = true
+    turnCompletionController.confirm()
     maybeScheduleConfirmedTurnCompletion()
   }
 
@@ -7441,9 +7409,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       clearTimeout(footerFlashTimeout)
     }
     clearPendingPromptDraftPersist()
-    if (pendingTurnCompletion) {
-      clearTimeout(pendingTurnCompletion)
-    }
+    cancelPendingTurnCompletion()
     if (pendingSessionChromeFlush) {
       clearTimeout(pendingSessionChromeFlush)
     }
