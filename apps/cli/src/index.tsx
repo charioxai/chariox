@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, MouseButton, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, MouseButton, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type Renderable, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
@@ -12,6 +12,7 @@ import { createStore, reconcile } from "solid-js/store"
 import type {
   AgentInstance,
   BootstrapState,
+  PromptQueueItem,
   RuntimeAttachment,
   RuntimeInteraction,
   RuntimeProviderRun,
@@ -36,6 +37,16 @@ import { createAuthoritativeIdleController } from "./authoritative-idle-controll
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
 import { createCliAutomationServerController } from "./cli-automation-server-controller.js"
 import { buildCliAutomationSnapshot } from "./cli-automation-snapshot.js"
+import {
+  ATTACHED_PROMPT_PLACEHOLDER,
+  CHROME_UPDATE_THROTTLE_MS,
+  COMMAND_CENTER_OVERLAY_FOOTPRINT,
+  LIVE_TRANSCRIPT_LIMIT,
+  LIVE_TRANSCRIPT_MAX_CHARS,
+  PROMPT_KEYBINDINGS,
+  STREAM_BATCH_WINDOW_MS,
+  TURN_COMPLETION_QUIET_MS,
+} from "./cli-runtime-tuning.js"
 import { createDeferredBootstrapController } from "./deferred-bootstrap-controller.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
 import {
@@ -518,28 +529,6 @@ import {
   buildWorkflowOutlineRenderable,
 } from "./workspace-renderables.js"
 import parserConfig from "./parsers-config.js"
-
-const PROMPT_KEYBINDINGS = [
-  { name: "return", action: "submit" },
-  { name: "return", shift: true, action: "newline" },
-  { name: "return", meta: true, action: "newline" },
-] satisfies KeyBinding[]
-
-const LIVE_TRANSCRIPT_LIMIT = 400
-const LIVE_TRANSCRIPT_MAX_CHARS = 250_000
-const STREAM_BATCH_WINDOW_MS = 48
-const CHROME_UPDATE_THROTTLE_MS = 48
-const TURN_COMPLETION_QUIET_MS = 1_500
-const COMMAND_CENTER_OVERLAY_FOOTPRINT = 3
-const ATTACHED_PROMPT_PLACEHOLDER = "Write your next prompt here"
-
-type PromptQueueItem = {
-  id: string
-  source_attachment_id: string
-  target_agent_id?: string | null
-  prompt: string
-  status: string
-}
 
 const DEBUG_LOGS_ENABLED = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
 const OPEN_CONSOLE_ON_ERROR = process.env.ARROBA_OPEN_CONSOLE_ON_ERROR === "1"
