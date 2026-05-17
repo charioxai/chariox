@@ -263,6 +263,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: CLI prompt session draft/history persistence is owned by a persistence controller; CLI tests pass.
 - Latest verified batch: CLI SIGINT stop/exit policy is owned by the global keyboard shortcut controller; CLI tests pass.
 - Latest verified batch: Cloud active README no longer names the deleted WEB_CLI bridge; active Cloud docs scan passes outside archive/web work.
+- Latest verified batch: CLI agent-pane runtime reset is owned by a reset controller; CLI tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule

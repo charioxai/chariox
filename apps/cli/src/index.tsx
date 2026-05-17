@@ -75,6 +75,7 @@ import {
   shouldRefreshAgentPanesForSessionChange as shouldRefreshAgentPanesForSessionChangeState,
 } from "./agent-pane-state.js"
 import { createAgentPaneRefreshController } from "./agent-pane-refresh-controller.js"
+import { createAgentPaneRuntimeResetController } from "./agent-pane-runtime-reset-controller.js"
 import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
 import { createAgentPaneStoreController } from "./agent-pane-store-controller.js"
 import { createAgentPaneTranscriptEntryController } from "./agent-pane-transcript-entry-controller.js"
@@ -2408,10 +2409,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const replaceTranscriptEntries = primaryTranscriptEntryController.replaceEntries
   const prependTranscriptEntries = primaryTranscriptEntryController.prependEntries
 
-  const clearAgentPaneRuntime = () => {
-    agentPaneTranscriptRenderController.clearAll()
-    agentPaneRuntimeStore.clearCurrentAuxiliaryAgentIds()
-  }
+  const agentPaneRuntimeResetController = createAgentPaneRuntimeResetController({
+    clearRenderedPanes: agentPaneTranscriptRenderController.clearAll,
+    clearCurrentAuxiliaryAgentIds: agentPaneRuntimeStore.clearCurrentAuxiliaryAgentIds,
+  })
+  const clearAgentPaneRuntime = agentPaneRuntimeResetController.reset
 
   const attachedSessionPrimeController = createAttachedSessionPrimeController({
     promptHistoryHydrationController,
