@@ -1,0 +1,252 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import type { PromptAttachmentPart, RuntimeAttachment, RuntimeSession } from "./cli-types.js"
+import {
+  createNormalPromptSubmitController,
+  type NormalPromptSubmitControllerDeps,
+} from "./normal-prompt-submit-controller.js"
+import type { PendingPromptAttachment } from "./prompt-attachment-state.js"
+import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
+import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
+
+test("normal prompt submit requires an attachment", async () => {
+  const harness = createHarness({ attachment: null })
+
+  await harness.controller.submit("hello")
+
+  assert.equal(harness.footerMessages().at(-1)?.message, "No session attached.")
+  assert.equal(harness.clearPromptCount(), 1)
+  assert.deepEqual(harness.submissions(), [])
+})
+
+test("normal prompt submit prepares attachments, submits, and records history", async () => {
+  const harness = createHarness({
+    pendingAttachments: [pendingAttachment("file-1")],
+    inlineLocalFiles: true,
+    submitPrompt: async () => promptSubmissionResult("session-submitted", "agent-submitted", "PromptSubmitted"),
+  })
+
+  await harness.controller.submit("hello")
+
+  assert.deepEqual(harness.preparedAttachments(), [{
+    attachments: [{ url: "/tmp/file.txt", mime: "text/plain", filename: "file.txt" }],
+    inlineLocalFiles: true,
+  }])
+  assert.deepEqual(harness.submissions(), [{
+    attachmentId: "attachment-1",
+    targetAgentId: "agent-1",
+    prompt: "hello\n",
+    attachments: [{ url: "/tmp/file.txt", mime: "text/plain", filename: "file.txt", contents_base64: "ZmlsZQ==" }],
+  }])
+  assert.deepEqual(harness.appendedPrompts(), [{ text: "hello\n", agentId: "agent-1" }])
+  assert.equal(harness.appliedSessions().at(-1)?.id, "session-submitted")
+  assert.deepEqual(harness.streamingAgentIds(), ["agent-submitted"])
+  assert.deepEqual(harness.statusLines(), ["Prompt submitted."])
+  assert.deepEqual(harness.recordedHistory(), [{ sessionId: "session-1", rawPrompt: "hello" }])
+})
+
+test("normal prompt submit reports queued status with active prompt id", async () => {
+  const harness = createHarness({
+    submitPrompt: async () => promptSubmissionResult("session-submitted", null, "Queued", "prompt-active"),
+  })
+
+  await harness.controller.submit("hello\n")
+
+  assert.deepEqual(harness.statusLines(), ["Prompt queued behind prompt-active."])
+  assert.equal(harness.submissions().at(-1)?.prompt, "hello\n")
+})
+
+test("normal prompt submit restores UI after submit failure", async () => {
+  const harness = createHarness({
+    submitPrompt: async () => {
+      throw new Error("submit failed")
+    },
+  })
+
+  await harness.controller.submit("hello")
+
+  assert.equal(harness.logErrors().at(-1)?.message, "prompt submission failed")
+  assert.equal(harness.restoredSnapshots().at(-1)?.rawPrompt, "hello")
+  assert.deepEqual(harness.clearedBusyAgents(), ["agent-busy"])
+  assert.deepEqual(harness.submittingAgentIds(), [null])
+  assert.deepEqual(harness.submittingValues(), [false])
+  assert.equal(harness.workingValues().at(-1), false)
+  assert.equal(harness.fatalErrors().at(-1), "submit failed")
+})
+
+function createHarness(options: {
+  attachment?: RuntimeAttachment | null
+  pendingAttachments?: PendingPromptAttachment[]
+  inlineLocalFiles?: boolean
+  submitPrompt?: NormalPromptSubmitControllerDeps["submitPrompt"]
+} = {}) {
+  const preparedAttachments: Array<{ attachments: PromptAttachmentPart[]; inlineLocalFiles: boolean }> = []
+  const submissions: Array<{
+    attachmentId: string
+    targetAgentId: string | null
+    prompt: string
+    attachments: PromptAttachmentPart[]
+  }> = []
+  const appendedPrompts: Array<{ text: string; agentId: string | null | undefined }> = []
+  const appliedSessions: RuntimeSession[] = []
+  const streamingAgentIds: Array<string | null> = []
+  const statusLines: string[] = []
+  const recordedHistory: Array<{ sessionId: string; rawPrompt: string }> = []
+  const restoredSnapshots: SubmittedPromptUiSnapshot[] = []
+  const clearedBusyAgents: Array<string | null | undefined> = []
+  const submittingAgentIds: Array<string | null> = []
+  const submittingValues: boolean[] = []
+  const workingValues: boolean[] = []
+  const footerMessages: Array<{ message: string; tone: "info" | "error" }> = []
+  const logErrors: Array<{ message: string; fields: Record<string, unknown> }> = []
+  const fatalErrors: string[] = []
+  let clearPromptCount = 0
+
+  const controller = createNormalPromptSubmitController({
+    getPendingAttachments: () => options.pendingAttachments ?? [],
+    waitForPendingAgentFocusTransition: async () => {},
+    getFocusedAgentId: () => "agent-1",
+    clearActiveToolLabels: () => {},
+    setProviderActivityLabel: () => {},
+    setActiveStatusLabel: () => {},
+    getAttachment: () => options.attachment === undefined ? { id: "attachment-1", session_id: "session-1" } : options.attachment,
+    getSessionId: () => "session-1",
+    clearPromptText: () => {
+      clearPromptCount += 1
+    },
+    shouldInlineLocalFiles: () => options.inlineLocalFiles ?? false,
+    preparePromptAttachmentsForSubmit: async (attachments, transferOptions) => {
+      preparedAttachments.push({ attachments, inlineLocalFiles: transferOptions.inlineLocalFiles })
+      return attachments.map((attachment) => ({ ...attachment, contents_base64: "ZmlsZQ==" }))
+    },
+    beginSubmittedPromptUi: (rawPrompt) => ({ rawPrompt, attachments: [], sessionId: "session-1" }),
+    renderPromptTranscript: (prompt) => prompt,
+    appendUserPrompt: (text, agentId) => {
+      appendedPrompts.push({ text, agentId })
+    },
+    submitPrompt: async (attachmentId, targetAgentId, prompt, attachments) => {
+      submissions.push({ attachmentId, targetAgentId, prompt, attachments })
+      return options.submitPrompt
+        ? options.submitPrompt(attachmentId, targetAgentId, prompt, attachments)
+        : promptSubmissionResult("session-submitted", targetAgentId, "PromptSubmitted")
+    },
+    applySessionState: (session) => {
+      appliedSessions.push(session)
+    },
+    setStreamingAgentId: (agentId) => {
+      streamingAgentIds.push(agentId)
+    },
+    setWorking: (working) => {
+      workingValues.push(working)
+    },
+    updateSessionChrome: () => {},
+    setStatusLine: (line) => {
+      statusLines.push(line)
+    },
+    recordPromptAreaHistoryEntry: (sessionId, rawPrompt) => {
+      recordedHistory.push({ sessionId, rawPrompt })
+    },
+    restoreFailedPromptUi: (snapshot) => {
+      if (snapshot) {
+        restoredSnapshots.push(snapshot)
+      }
+      return Boolean(snapshot)
+    },
+    getSubmittingAgentId: () => "agent-busy",
+    clearAgentBusy: (agentId) => {
+      clearedBusyAgents.push(agentId)
+    },
+    setSubmittingAgentId: (agentId) => {
+      submittingAgentIds.push(agentId)
+    },
+    setSubmitting: (submitting) => {
+      submittingValues.push(submitting)
+    },
+    setFatalError: (message) => {
+      fatalErrors.push(message)
+    },
+    flashFooter: (message, tone) => {
+      footerMessages.push({ message, tone })
+    },
+    logError: (message, fields) => {
+      logErrors.push({ message, fields })
+    },
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+  })
+
+  return {
+    controller,
+    preparedAttachments: () => preparedAttachments,
+    submissions: () => submissions,
+    appendedPrompts: () => appendedPrompts,
+    appliedSessions: () => appliedSessions,
+    streamingAgentIds: () => streamingAgentIds,
+    statusLines: () => statusLines,
+    recordedHistory: () => recordedHistory,
+    restoredSnapshots: () => restoredSnapshots,
+    clearedBusyAgents: () => clearedBusyAgents,
+    submittingAgentIds: () => submittingAgentIds,
+    submittingValues: () => submittingValues,
+    workingValues: () => workingValues,
+    footerMessages: () => footerMessages,
+    logErrors: () => logErrors,
+    fatalErrors: () => fatalErrors,
+    clearPromptCount: () => clearPromptCount,
+  }
+}
+
+function pendingAttachment(id: string): PendingPromptAttachment {
+  return {
+    id,
+    url: "/tmp/file.txt",
+    mime: "text/plain",
+    filename: "file.txt",
+    kind: "text",
+    token: "[file 1]",
+  }
+}
+
+function promptSubmissionResult(
+  sessionId: string,
+  targetAgentId: string | null,
+  outcomeName: string,
+  activePromptId: string | null = null,
+): PromptSubmissionResult {
+  return {
+    payload: {
+      outcome: {},
+      session: runtimeSession(sessionId, activePromptId),
+    },
+    targetAgentId,
+    outcomeName,
+  }
+}
+
+function runtimeSession(id: string, activePromptId: string | null): RuntimeSession {
+  return {
+    id,
+    workspace_id: "/workspace",
+    worktree_id: "/workspace/tree",
+    created_at_ms: 1,
+    status: "Created",
+    active_provider_run_id: null,
+    attachment_ids: [],
+    active_prompt: activePromptId
+      ? {
+        id: activePromptId,
+        source_attachment_id: "attachment-1",
+        prompt: "hello",
+        status: "running",
+      }
+      : null,
+    queued_prompts: [],
+    focused_agent_id: null,
+    max_agents: 1,
+    agents: [],
+    config_state: {
+      version: 1,
+      values: {},
+    },
+  }
+}

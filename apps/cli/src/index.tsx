@@ -206,8 +206,8 @@ import {
 import { createPromptInputHistoryController } from "./prompt-input-history-controller.js"
 import {
   createPromptSubmissionUiController,
-  type SubmittedPromptUiSnapshot,
 } from "./prompt-submission-ui-controller.js"
+import { createNormalPromptSubmitController } from "./normal-prompt-submit-controller.js"
 import {
   createPromptTextController,
 } from "./prompt-text-controller.js"
@@ -229,11 +229,6 @@ import {
   respondToInteraction,
   submitPromptWithRecovery,
 } from "./prompt-runtime-api.js"
-import {
-  formatPromptSubmissionBody,
-  formatPromptSubmissionStatusLine,
-  pendingPromptAttachmentsToParts,
-} from "./prompt-submission-state.js"
 import {
   getPromptInputHistory,
   getSessionHistory,
@@ -5289,6 +5284,52 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     formatError,
   })
 
+  const normalPromptSubmitController = createNormalPromptSubmitController({
+    getPendingAttachments: pendingAttachments,
+    waitForPendingAgentFocusTransition,
+    getFocusedAgentId: focusedAgentId,
+    clearActiveToolLabels: () => activeToolLabels.clear(),
+    setProviderActivityLabel,
+    setActiveStatusLabel,
+    getAttachment: attachmentState,
+    getSessionId: () => sessionState().id,
+    clearPromptText: () => promptTextController.clear(),
+    shouldInlineLocalFiles: () => Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
+    preparePromptAttachmentsForSubmit,
+    beginSubmittedPromptUi,
+    renderPromptTranscript,
+    appendUserPrompt,
+    submitPrompt: (attachmentId, targetAgentId, prompt, attachments) =>
+      submitPromptWithRecovery(
+        client,
+        sessionState().id,
+        attachmentId,
+        targetAgentId,
+        prompt,
+        attachments,
+        options,
+        appLogger,
+      ),
+    applySessionState,
+    setStreamingAgentId,
+    setWorking,
+    updateSessionChrome,
+    setStatusLine,
+    recordPromptAreaHistoryEntry,
+    restoreFailedPromptUi,
+    getSubmittingAgentId: () => submittingAgentId,
+    clearAgentBusy,
+    setSubmittingAgentId: (agentId) => {
+      submittingAgentId = agentId
+    },
+    setSubmitting,
+    setFatalError,
+    flashFooter,
+    logInfo: (message, fields) => appLogger?.info(message, fields),
+    logError: (message, fields) => appLogger?.error(message, fields),
+    formatError,
+  })
+
   const submitPrompt = async () => {
     if (!promptInput) {
       return
@@ -5339,72 +5380,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
 
-    const prompt = formatPromptSubmissionBody(rawPrompt)
-    const rawAttachments = pendingPromptAttachmentsToParts(pendingAttachments())
-    let submissionUi: SubmittedPromptUiSnapshot | null = null
-    try {
-      await waitForPendingAgentFocusTransition()
-      const targetAgentId = focusedAgentId()
-      appLogger?.info("submitting prompt", {
-        chars: prompt.length,
-        attachments: rawAttachments.length,
-      })
-      activeToolLabels.clear()
-      setProviderActivityLabel(null)
-      setActiveStatusLabel(null)
-      const attachment = attachmentState()
-      if (!attachment) {
-        flashFooter("No session attached.", "error")
-        promptTextController.clear()
-        return
-      }
-      const attachments = await preparePromptAttachmentsForSubmit(rawAttachments, {
-        inlineLocalFiles: Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
-      })
-      submissionUi = beginSubmittedPromptUi(rawPrompt)
-      appendUserPrompt(renderPromptTranscript(prompt), targetAgentId)
-      const submission = await submitPromptWithRecovery(
-        client,
-        sessionState().id,
-        attachment.id,
-        targetAgentId,
-        prompt,
-        attachments,
-        options,
-        appLogger,
-      )
-      const payload = submission.payload
-      const submittedTargetAgentId = submission.targetAgentId ?? targetAgentId
-      applySessionState(payload.session)
-      setStreamingAgentId(submittedTargetAgentId)
-      setWorking(true)
-      updateSessionChrome()
-      const outcomeName = submission.outcomeName
-      appLogger?.info("prompt submitted", {
-        outcome: outcomeName,
-        active_prompt_id: payload.session.active_prompt?.id ?? null,
-        queued_prompts: payload.session.queued_prompts.length,
-      })
-      setStatusLine(
-        formatPromptSubmissionStatusLine({
-          outcomeName,
-          activePromptId: payload.session.active_prompt?.id ?? null,
-        }),
-      )
-      updateSessionChrome()
-      recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
-    } catch (error) {
-      appLogger?.error("prompt submission failed", {
-        error: formatError(error),
-      })
-      restoreFailedPromptUi(submissionUi)
-      clearAgentBusy(submittingAgentId)
-      submittingAgentId = null
-      setSubmitting(false)
-      setWorking(false)
-      setFatalError(formatError(error))
-      updateSessionChrome()
-    }
+    await normalPromptSubmitController.submit(rawPrompt)
   }
 
   const requestPromptStop = async () => {
