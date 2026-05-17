@@ -404,6 +404,9 @@ import {
 } from "./status-indicator-renderer.js"
 import { syncAuxiliaryPane } from "./response-layout-render.js"
 import { createRenderScheduler } from "./render-scheduler.js"
+import {
+  createResponsePaneRepaintController,
+} from "./response-pane-repaint-controller.js"
 import { bootstrapSession } from "./session-bootstrap.js"
 import { applyTheme, createTranscriptSyntaxStyle, setThemeRegistry, theme } from "./theme.js"
 import { DEFAULT_THEME_REGISTRY, loadThemeRegistry } from "./theme-registry.js"
@@ -920,7 +923,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let historyLoadGeneration = 0
   let pendingHistoryScrollRestore = 0
   let pendingTranscriptRender = false
-  let pendingSplitPaneRefresh = 0
   let uiBatchDepth = 0
   // Connection resilience tracking
   let lastDaemonActivityAt = Date.now()
@@ -3942,19 +3944,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     updateSessionChrome()
   })
 
-  const refreshSplitPaneFocusRepaint = () => {
-    const refreshToken = ++pendingSplitPaneRefresh
-    const refresh = () => {
-      if (refreshToken !== pendingSplitPaneRefresh) {
-        return
-      }
+  const responsePaneRepaintController = createResponsePaneRepaintController({
+    scheduleTimer: startTimeout,
+    repaint: () => {
       applyResponseLayout()
       scheduleResponsePaneRepaint()
-    }
-
-    refresh()
-    startTimeout(refresh, 0)
-  }
+    },
+  })
+  const refreshSplitPaneFocusRepaint = responsePaneRepaintController.refreshFocus
 
   const applySessionChromeUpdate = () => {
     syncPromptPlaceholder()
