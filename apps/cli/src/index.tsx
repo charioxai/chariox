@@ -432,8 +432,6 @@ import {
   deriveWaitingRoomStateUpdate,
   deriveWaitingRoomVariantSelectionDecision,
   waitingRoomSessionLifecycleActionForEvent,
-  type WaitingRoomDeleteDecision,
-  type WaitingRoomSessionLifecycleDecision,
   type WaitingRoomSessionLifecycleAction,
 } from "./waiting-room-controller.js"
 import {
@@ -448,6 +446,7 @@ import {
   type WaitingRoomState,
 } from "./waiting-room.js"
 import { createWaitingRoomTransitionController } from "./waiting-room-transition-controller.js"
+import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
 import {
   primeWaitingRoomWorktreeInventory,
 } from "./waiting-room-worktrees.js"
@@ -538,19 +537,11 @@ const PROMPT_KEYBINDINGS = [
 
 const LIVE_TRANSCRIPT_LIMIT = 400
 const LIVE_TRANSCRIPT_MAX_CHARS = 250_000
-const WAITING_ROOM_SESSION_ACTION_CONFIRM_MS = 4_000
 const STREAM_BATCH_WINDOW_MS = 48
 const CHROME_UPDATE_THROTTLE_MS = 48
 const TURN_COMPLETION_QUIET_MS = 1_500
 const COMMAND_CENTER_OVERLAY_FOOTPRINT = 3
 const ATTACHED_PROMPT_PLACEHOLDER = "Write your next prompt here"
-
-type PendingWaitingRoomSessionAction = {
-  action: WaitingRoomSessionLifecycleAction
-  targetKind: "session" | "sessions" | "machine" | "kernel"
-  targetId: string
-  expiresAtMs: number
-}
 
 type PromptQueueItem = {
   id: string
@@ -1629,7 +1620,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
   let waitingRoomDataRefresh: Promise<void> | null = null
   let waitingRoomInventoryVersion: string | null = null
-  let pendingWaitingRoomSessionAction: PendingWaitingRoomSessionAction | null = null
+  const waitingRoomLifecycleConfirmationController = createWaitingRoomLifecycleConfirmationController()
   const applyWaitingRoomSessionLifecycleAction = async (
     action: WaitingRoomSessionLifecycleAction,
     stateOverride?: WaitingRoomState,
@@ -1662,33 +1653,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             catalog: providerCatalogState(),
           })
       if (decision.action === "error") {
-        pendingWaitingRoomSessionAction = null
+        waitingRoomLifecycleConfirmationController.clear()
         flashFooter(decision.message, "error")
         return
       }
 
-      const target = waitingRoomLifecycleTarget(decision)
-      const now = Date.now()
-      const pending = pendingWaitingRoomSessionAction
-      const keyLabel = action === "archive" ? "A" : "D"
-      if (
-        !pending
-        || pending.action !== action
-        || pending.targetKind !== target.kind
-        || pending.targetId !== target.id
-        || pending.expiresAtMs <= now
-      ) {
-        pendingWaitingRoomSessionAction = {
-          action,
-          targetKind: target.kind,
-          targetId: target.id,
-          expiresAtMs: now + WAITING_ROOM_SESSION_ACTION_CONFIRM_MS,
-        }
-        flashFooter(`press ${keyLabel} again to ${target.verb} ${target.label}`, action === "delete" ? "error" : "info")
+      const confirmation = waitingRoomLifecycleConfirmationController.confirm(action, decision)
+      if (confirmation.action === "await-confirmation") {
+        flashFooter(confirmation.message, confirmation.tone)
         return
       }
 
-      pendingWaitingRoomSessionAction = null
       if (decision.action === "archive") {
         const updated = await archiveSessionById(client, decision.session.id)
         setAvailableSessions(availableSessions().filter((candidate) => candidate.id !== updated.id))
@@ -1775,67 +1750,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
       flashFooter(formatError(error), "error")
     }
-  }
-  const waitingRoomLifecycleTarget = (
-    decision: WaitingRoomSessionLifecycleDecision | WaitingRoomDeleteDecision,
-  ) => {
-    if (decision.action === "archive") {
-      return {
-        kind: "session" as const,
-        id: decision.session.id,
-        label: `session ${formatSessionDisplayLabel(decision.session)}`,
-        verb: "archive",
-      }
-    }
-    if (decision.action === "archive-all") {
-      return {
-        kind: "sessions" as const,
-        id: "all",
-        label: `${decision.sessions.length} session${decision.sessions.length === 1 ? "" : "s"}`,
-        verb: "archive",
-      }
-    }
-    if (decision.action === "delete-session") {
-      return {
-        kind: "session" as const,
-        id: decision.session.id,
-        label: `session ${formatSessionDisplayLabel(decision.session)}`,
-        verb: "delete",
-      }
-    }
-    if (decision.action === "delete-all-sessions") {
-      return {
-        kind: "sessions" as const,
-        id: "all",
-        label: `${decision.sessions.length} session${decision.sessions.length === 1 ? "" : "s"}`,
-        verb: "delete",
-      }
-    }
-    if (decision.action === "delete") {
-      return {
-        kind: "session" as const,
-        id: decision.session.id,
-        label: `session ${formatSessionDisplayLabel(decision.session)}`,
-        verb: "delete",
-      }
-    }
-    if (decision.action === "delete-machine") {
-      return {
-        kind: "machine" as const,
-        id: decision.machineId,
-        label: `machine ${decision.label}`,
-        verb: "delete",
-      }
-    }
-    if (decision.action === "delete-kernel") {
-      return {
-        kind: "kernel" as const,
-        id: decision.kernelId,
-        label: `kernel ${decision.label}`,
-        verb: "delete",
-      }
-    }
-    throw new Error("unsupported waiting room lifecycle decision")
   }
   const connectDetachedKernelFromWaitingRoom = async () => {
     appLogger?.info("connecting detached cli to configured kernel endpoint")
