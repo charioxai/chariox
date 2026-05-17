@@ -424,6 +424,7 @@ import { applyTheme, createTranscriptSyntaxStyle, setThemeRegistry, theme } from
 import { DEFAULT_THEME_REGISTRY, loadThemeRegistry } from "./theme-registry.js"
 import {
   deriveWaitingRoomActivationDecision,
+  deriveWaitingRoomControlActivationDecision,
   deriveWaitingRoomDeleteDecision,
   deriveWaitingRoomKeyNavigationDecision,
   deriveWaitingRoomModelSelectionDecision,
@@ -443,7 +444,6 @@ import {
 import {
   createWaitingRoomState,
   waitingRoomRemoteKernelCanDelete,
-  waitingRoomRemoteKernelIsAttachable,
   type WaitingRoomFocus,
   type WaitingRoomState,
 } from "./waiting-room.js"
@@ -482,7 +482,6 @@ import {
   configureRelay,
   connectKernelCloudRelay,
   createTerminalPairingLink,
-  formatTerminalTypeLabel,
   getRelayStatus,
   issueKernelCloudRelayClientToken,
   logoutCloudRelay,
@@ -1556,82 +1555,40 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       if (!kernelConnected()) {
         await connectDetachedKernelFromWaitingRoom()
       }
-      if (waitingRoomState().focus === "relay") {
-        await handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
-        return
+      const remote = {
+        relay: relayStatusState(),
+        machines: remoteMachinesState(),
+        kernels: remoteKernelsState(),
+        terminals: terminalsState(),
+        slices: slicesState(),
       }
-      if (waitingRoomState().focus === "workspace") {
-        const command = `/workspace ${pendingWorkspaceTarget()}`
-        setPromptText(command)
-        promptInput?.focus()
-        syncCommandCenter(command)
-        flashFooter("edit the workspace path and press Enter", "info")
-        return
-      }
-      if (waitingRoomState().focus === "worktree") {
-        const command = `/worktree ${pendingWorktreeTarget()}`
-        setPromptText(command)
-        promptInput?.focus()
-        syncCommandCenter(command)
-        flashFooter("edit the worktree path and press Enter", "info")
-        return
-      }
-      if (waitingRoomState().focus === "machine") {
-        const machine = remoteMachinesState()[waitingRoomState().machineIndex]
-        if (!machine) {
-          flashFooter("no remote machine selected", "error")
+      const controlDecision = deriveWaitingRoomControlActivationDecision({
+        state: waitingRoomState(),
+        workspacePath: pendingWorkspaceTarget(),
+        worktreePath: pendingWorktreeTarget(),
+        remote,
+      })
+      if (controlDecision.action !== "none") {
+        if (controlDecision.action === "cloud") {
+          await handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
           return
         }
-        const label = machine.display_name ?? machine.registry_alias ?? machine.machine_alias ?? machine.machine_id
-        if (machine.online === false || machine.pending || machine.kernel_count === 0) {
-          flashFooter(`press D twice to delete machine ${label}`, "info")
+        if (controlDecision.action === "stage-command") {
+          setPromptText(controlDecision.command)
+          promptInput?.focus()
+          syncCommandCenter(controlDecision.command)
+          flashFooter(controlDecision.message, "info")
           return
         }
-        const command = `/machine kernels ${machine.registry_alias ?? machine.machine_alias ?? machine.machine_id}`
-        setPromptText(command)
-        promptInput?.focus()
-        syncCommandCenter(command)
-        flashFooter(`press Enter to list kernels for ${label}`, "info")
-        return
-      }
-      if (waitingRoomState().focus === "remote-kernel") {
-        const kernel = remoteKernelsState()[waitingRoomState().remoteKernelIndex]
-        if (!kernel) {
-          flashFooter("no remote kernel selected", "error")
+        if (controlDecision.action === "open-terminal-pairing") {
+          await openTerminalPairingDialog()
           return
         }
-        const target = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
-        if (!waitingRoomRemoteKernelIsAttachable(kernel)) {
-          flashFooter(
-            waitingRoomRemoteKernelCanDelete(kernel)
-              ? `press D twice to delete kernel ${target}`
-              : `kernel ${target} is active`,
-            waitingRoomRemoteKernelCanDelete(kernel) ? "info" : "error",
-          )
+        if (controlDecision.action === "open-session-browser") {
+          openSessionBrowserDialog()
           return
         }
-        const command = `/relay cloud client-token ${target}`
-        setPromptText(command)
-        promptInput?.focus()
-        syncCommandCenter(command)
-        flashFooter(`press Enter to mint a relay token for ${target}`, "info")
-        return
-      }
-      if (waitingRoomState().focus === "terminal") {
-        const terminal = terminalsState()[waitingRoomState().terminalIndex]
-        if (!terminal) {
-          flashFooter("no terminal selected", "error")
-          return
-        }
-        flashFooter(`${terminal.terminal_id} is a ${formatTerminalTypeLabel(terminal.terminal_type)}`, "info")
-        return
-      }
-      if (waitingRoomState().focus === "add-terminal") {
-        await openTerminalPairingDialog()
-        return
-      }
-      if (waitingRoomState().focus === "join-sessions") {
-        openSessionBrowserDialog()
+        flashFooter(controlDecision.message, controlDecision.action === "error" ? "error" : "info")
         return
       }
       const decision = deriveWaitingRoomActivationDecision({
@@ -1640,13 +1597,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         catalog: providerCatalogState(),
         currentProvider: (options.provider ?? "opencode") as BackendProviderId,
         currentModel: options.model,
-        remote: {
-          relay: relayStatusState(),
-          machines: remoteMachinesState(),
-          kernels: remoteKernelsState(),
-          terminals: terminalsState(),
-          slices: slicesState(),
-        },
+        remote,
       })
       if (decision.action === "create") {
         const session = await createSession(client, pendingWorkspaceTarget(), pendingWorktreeTarget(), undefined, {

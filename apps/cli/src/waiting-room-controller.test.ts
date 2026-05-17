@@ -5,6 +5,7 @@ import type { ProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import {
   deriveWaitingRoomActivationDecision,
+  deriveWaitingRoomControlActivationDecision,
   deriveWaitingRoomDeleteDecision,
   deriveWaitingRoomKeyNavigationDecision,
   deriveWaitingRoomModelSelectionDecision,
@@ -174,6 +175,149 @@ test("deriveWaitingRoomActivationDecision returns join and error decisions for s
     action: "error",
     message: "no session available to join",
   })
+})
+
+test("deriveWaitingRoomControlActivationDecision stages workspace and worktree commands", () => {
+  assert.deepEqual(deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "workspace" }),
+    workspacePath: "/repo",
+    worktreePath: "/repo",
+  }), {
+    action: "stage-command",
+    command: "/workspace /repo",
+    message: "edit the workspace path and press Enter",
+  })
+  assert.deepEqual(deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "worktree" }),
+    workspacePath: "/repo",
+    worktreePath: "/repo-feature",
+  }), {
+    action: "stage-command",
+    command: "/worktree /repo-feature",
+    message: "edit the worktree path and press Enter",
+  })
+})
+
+test("deriveWaitingRoomControlActivationDecision handles machine activation", () => {
+  const approved = deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "machine" }),
+    workspacePath: "/workspace",
+    worktreePath: "/workspace",
+    remote: {
+      machines: [{
+        machine_id: "machine-1",
+        registry_alias: "builder",
+        trust_status: "approved",
+        online: true,
+        pending: false,
+        kernel_count: 2,
+        available_providers: [],
+      }],
+    },
+  })
+  const inactive = deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "machine" }),
+    workspacePath: "/workspace",
+    worktreePath: "/workspace",
+    remote: {
+      machines: [{
+        machine_id: "machine-2",
+        display_name: "old-builder",
+        trust_status: "approved",
+        online: false,
+        pending: false,
+        kernel_count: 0,
+        available_providers: [],
+      }],
+    },
+  })
+
+  assert.deepEqual(approved, {
+    action: "stage-command",
+    command: "/machine kernels builder",
+    message: "press Enter to list kernels for builder",
+  })
+  assert.deepEqual(inactive, {
+    action: "info",
+    message: "press D twice to delete machine old-builder",
+  })
+})
+
+test("deriveWaitingRoomControlActivationDecision handles remote kernel activation", () => {
+  const attachable = deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "remote-kernel" }),
+    workspacePath: "/workspace",
+    worktreePath: "/workspace",
+    remote: {
+      kernels: [{
+        kernel_id: "kernel-1",
+        machine_id: "machine-1",
+        relay_alias: "builder-kernel",
+        accepting_remote_leases: true,
+        leased_agent_count: 0,
+        local_session_count: 0,
+      }],
+    },
+  })
+  const busy = deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "remote-kernel" }),
+    workspacePath: "/workspace",
+    worktreePath: "/workspace",
+    remote: {
+      kernels: [{
+        kernel_id: "kernel-2",
+        machine_id: "machine-1",
+        relay_alias: "busy-kernel",
+        accepting_remote_leases: false,
+        leased_agent_count: 1,
+        local_session_count: 0,
+      }],
+    },
+  })
+
+  assert.deepEqual(attachable, {
+    action: "stage-command",
+    command: "/relay cloud client-token builder-kernel",
+    message: "press Enter to mint a relay token for builder-kernel",
+  })
+  assert.deepEqual(busy, {
+    action: "error",
+    message: "kernel busy-kernel is active",
+  })
+})
+
+test("deriveWaitingRoomControlActivationDecision handles terminal and dialog actions", () => {
+  assert.deepEqual(deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "relay" }),
+    workspacePath: "/workspace",
+    worktreePath: "/workspace",
+  }), { action: "cloud" })
+  assert.deepEqual(deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "terminal" }),
+    workspacePath: "/workspace",
+    worktreePath: "/workspace",
+    remote: {
+      terminals: [{
+        terminal_id: "term-1",
+        terminal_type: "web",
+        paired_at_ms: 1,
+        revoked: false,
+      }],
+    },
+  }), {
+    action: "info",
+    message: "term-1 is a Web terminal",
+  })
+  assert.deepEqual(deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "add-terminal" }),
+    workspacePath: "/workspace",
+    worktreePath: "/workspace",
+  }), { action: "open-terminal-pairing" })
+  assert.deepEqual(deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "join-sessions" }),
+    workspacePath: "/workspace",
+    worktreePath: "/workspace",
+  }), { action: "open-session-browser" })
 })
 
 test("deriveWaitingRoomSessionLifecycleDecision selects focused sessions for archive and delete", () => {

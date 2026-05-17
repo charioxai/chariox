@@ -11,10 +11,12 @@ import {
   moveWaitingRoomFocus,
   normalizeWaitingRoomState,
   waitingRoomRemoteKernelCanDelete,
+  waitingRoomRemoteKernelIsAttachable,
   waitingRoomRemoteMachineCanDelete,
   waitingRoomChoice,
   type WaitingRoomRemoteState,
   type WaitingRoomState,
+  type WaitingRoomTerminalType,
 } from "./waiting-room.js"
 import {
   clearStagedWaitingRoomWorktreeSelection,
@@ -40,6 +42,15 @@ export type WaitingRoomActivationDecision =
   | { action: "create"; launch: WaitingRoomLaunchConfig }
   | { action: "join"; session: SessionListEntry; launch: WaitingRoomLaunchConfig }
   | { action: "error"; message: string }
+  | { action: "none" }
+
+export type WaitingRoomControlActivationDecision =
+  | { action: "cloud" }
+  | { action: "stage-command"; command: string; message: string }
+  | { action: "info"; message: string }
+  | { action: "error"; message: string }
+  | { action: "open-terminal-pairing" }
+  | { action: "open-session-browser" }
   | { action: "none" }
 
 export type WaitingRoomSessionLifecycleAction = "archive" | "delete"
@@ -169,6 +180,20 @@ function waitingRoomArrowKeyForEvent(event: WaitingRoomKeyEvent): WaitingRoomArr
     : null
 }
 
+function formatWaitingRoomTerminalTypeLabel(value: WaitingRoomTerminalType): string {
+  switch (value) {
+    case "web":
+      return "Web terminal"
+    case "ios":
+      return "iOS terminal"
+    case "android":
+      return "Android terminal"
+    case "cli":
+    default:
+      return "CLI"
+  }
+}
+
 export function deriveWaitingRoomStateUpdate(options: {
   currentState: WaitingRoomState
   nextState: WaitingRoomState
@@ -243,6 +268,83 @@ export function deriveWaitingRoomActivationDecision(options: {
     action: "join",
     session: choice.session,
     launch,
+  }
+}
+
+export function deriveWaitingRoomControlActivationDecision(options: {
+  state: WaitingRoomState
+  workspacePath: string
+  worktreePath: string
+  remote?: WaitingRoomRemoteState
+}): WaitingRoomControlActivationDecision {
+  const remote = options.remote ?? {}
+  switch (options.state.focus) {
+    case "relay":
+      return { action: "cloud" }
+    case "workspace":
+      return {
+        action: "stage-command",
+        command: `/workspace ${options.workspacePath}`,
+        message: "edit the workspace path and press Enter",
+      }
+    case "worktree":
+      return {
+        action: "stage-command",
+        command: `/worktree ${options.worktreePath}`,
+        message: "edit the worktree path and press Enter",
+      }
+    case "machine": {
+      const machine = remote.machines?.[options.state.machineIndex]
+      if (!machine) {
+        return { action: "error", message: "no remote machine selected" }
+      }
+      const label = machine.display_name ?? machine.registry_alias ?? machine.machine_alias ?? machine.machine_id
+      if (machine.online === false || machine.pending || machine.kernel_count === 0) {
+        return { action: "info", message: `press D twice to delete machine ${label}` }
+      }
+      const target = machine.registry_alias ?? machine.machine_alias ?? machine.machine_id
+      return {
+        action: "stage-command",
+        command: `/machine kernels ${target}`,
+        message: `press Enter to list kernels for ${label}`,
+      }
+    }
+    case "remote-kernel": {
+      const kernel = remote.kernels?.[options.state.remoteKernelIndex]
+      if (!kernel) {
+        return { action: "error", message: "no remote kernel selected" }
+      }
+      const target = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
+      if (!waitingRoomRemoteKernelIsAttachable(kernel)) {
+        return {
+          action: waitingRoomRemoteKernelCanDelete(kernel) ? "info" : "error",
+          message: waitingRoomRemoteKernelCanDelete(kernel)
+            ? `press D twice to delete kernel ${target}`
+            : `kernel ${target} is active`,
+        }
+      }
+      return {
+        action: "stage-command",
+        command: `/relay cloud client-token ${target}`,
+        message: `press Enter to mint a relay token for ${target}`,
+      }
+    }
+    case "terminal": {
+      const terminal = remote.terminals?.[options.state.terminalIndex]
+      if (!terminal) {
+        return { action: "error", message: "no terminal selected" }
+      }
+      return {
+        action: "info",
+        message: `${terminal.terminal_id} is a ${formatWaitingRoomTerminalTypeLabel(terminal.terminal_type)}`,
+      }
+    }
+    case "add-terminal":
+      return { action: "open-terminal-pairing" }
+    case "join-sessions":
+      return { action: "open-session-browser" }
+    default:
+      return { action: "none" }
   }
 }
 
