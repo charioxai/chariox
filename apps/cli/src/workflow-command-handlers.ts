@@ -28,12 +28,13 @@ import {
   type WorkflowRunCancelPayload,
   type WorkflowRunResumePayload,
 } from "./workflow-run-command-handlers.js"
+import {
+  handleWorkflowSettingsCommand,
+  isWorkflowSettingsCommand,
+} from "./workflow-settings-command-handlers.js"
 import { handleWorkflowTerminalCommand } from "./workflow-terminal-command-handler.js"
 import { readFile } from "node:fs/promises"
 import { resolve as resolvePath } from "node:path"
-
-const WORKFLOW_MAX_TURNS_CONFIG_KEY = "workflow.max_turns"
-const WORKFLOW_LAUNCH_POLICY_CONFIG_KEY = "workflow.launch_policy"
 
 type FooterTone = "info" | "error"
 
@@ -275,175 +276,13 @@ export async function handleWorkflowSlashCommand(
     return
   }
 
-  if (subcommand === "launch-policy") {
-    const value = args[1]?.trim().toLowerCase()
-    if (!value) {
-      deps.flashFooter(`workflow launch policy: ${context.currentWorkflowLaunchPolicy()}`, "info")
-      return
-    }
-    if (value !== "reject" && value !== "queue") {
-      deps.flashFooter("usage: /workflow launch-policy <reject|queue>", "error")
-      return
-    }
-    if (!deps.setWorkflowLaunchPolicy) {
-      deps.flashFooter("workflow runtime commands unavailable", "error")
-      return
-    }
-    const payload = await deps.setWorkflowLaunchPolicy(value)
-    deps.applySessionState(payload.session)
-    deps.flashFooter(`workflow launch policy set to ${value}`, "info")
-    return
-  }
-
-  if (subcommand === "flush-context") {
-    const firstArg = args[1]?.trim().toLowerCase()
-    const selectedRef = context.selectedWorkflowRef()
-    const firstArgIsValue = firstArg === "true" || firstArg === "false"
-    const workflowRef = context.workflowRefOrSelected(firstArgIsValue ? null : args[1])
-    const value = (firstArgIsValue ? args[1] : args[2])?.trim().toLowerCase()
-    if (!workflowRef) {
-      deps.flashFooter("usage: /workflow flush-context [workflow-ref] [true|false]", "error")
-      return
-    }
-    if (firstArgIsValue && !selectedRef) {
-      deps.flashFooter("usage: /workflow flush-context [workflow-ref] [true|false]", "error")
-      return
-    }
-    const resolved = await deps.resolveWorkflow(workflowRef)
-    deps.upsertWorkflowDefinition(resolved.workflow)
-    if (!value) {
-      deps.flashFooter(
-        `workflow ${resolved.workflow.id} flush-context: ${(resolved.workflow.flush_agent_context_before_run ?? true) ? "true" : "false"}`,
-        "info",
-      )
-      return
-    }
-    if (value !== "true" && value !== "false") {
-      deps.flashFooter("usage: /workflow flush-context [workflow-ref] [true|false]", "error")
-      return
-    }
-    if (!deps.setWorkflowFlushContext) {
-      deps.flashFooter("workflow runtime commands unavailable", "error")
-      return
-    }
-    const payload = await deps.setWorkflowFlushContext(
-      resolved.workflow.id,
-      value === "true",
-    )
-    deps.applySessionState(payload.session)
-    deps.upsertWorkflowDefinition(payload.workflow)
-    deps.flashFooter(
-      `workflow ${payload.workflow.id} flush-context set to ${payload.workflow.flush_agent_context_before_run ? "true" : "false"}`,
-      "info",
-    )
-    return
-  }
-
-  if (subcommand === "run-output-schema") {
-    const explicitWorkflowRef = context.firstWorkflowArgIsExplicit(args[1]) ? args[1] : null
-    const workflowRef = context.workflowRefOrSelected(explicitWorkflowRef)
-    const value = explicitWorkflowRef ? args[2] : args[1]
-    if (!workflowRef) {
-      deps.flashFooter("usage: /workflow run-output-schema [workflow-ref] [schema-ref|none]", "error")
-      return
-    }
-    const resolved = await deps.resolveWorkflow(workflowRef)
-    deps.upsertWorkflowDefinition(resolved.workflow)
-    if (value === undefined) {
-      deps.flashFooter(
-        `workflow ${resolved.workflow.id} run-output-schema: ${resolved.workflow.run_output_schema_ref ?? "none"}`,
-        "info",
-      )
-      return
-    }
-    if (!deps.setWorkflowRunOutputSchema) {
-      deps.flashFooter("workflow runtime commands unavailable", "error")
-      return
-    }
-    const schemaRef = value.trim().toLowerCase() === "none" ? null : value
-    const payload = await deps.setWorkflowRunOutputSchema(resolved.workflow.id, schemaRef)
-    deps.applySessionState(payload.session)
-    deps.upsertWorkflowDefinition(payload.workflow)
-    deps.flashFooter(
-      `workflow ${payload.workflow.id} run-output-schema set to ${payload.workflow.run_output_schema_ref ?? "none"}`,
-      "info",
-    )
-    return
-  }
-
-  if (subcommand === "intermediate-output-schema") {
-    const explicitWorkflowRef = context.firstWorkflowArgIsExplicit(args[1]) ? args[1] : null
-    const workflowRef = context.workflowRefOrSelected(explicitWorkflowRef)
-    const value = explicitWorkflowRef ? args[2] : args[1]
-    if (!workflowRef) {
-      deps.flashFooter("usage: /workflow intermediate-output-schema [workflow-ref] [schema-ref|none]", "error")
-      return
-    }
-    const resolved = await deps.resolveWorkflow(workflowRef)
-    deps.upsertWorkflowDefinition(resolved.workflow)
-    if (value === undefined) {
-      deps.flashFooter(
-        `workflow ${resolved.workflow.id} intermediate-output-schema: ${resolved.workflow.intermediate_output_schema_ref ?? "none"}`,
-        "info",
-      )
-      return
-    }
-    if (!deps.setWorkflowIntermediateOutputSchema) {
-      deps.flashFooter("workflow runtime commands unavailable", "error")
-      return
-    }
-    const schemaRef = value.trim().toLowerCase() === "none" ? null : value
-    const payload = await deps.setWorkflowIntermediateOutputSchema(resolved.workflow.id, schemaRef)
-    deps.applySessionState(payload.session)
-    deps.upsertWorkflowDefinition(payload.workflow)
-    deps.flashFooter(
-      `workflow ${payload.workflow.id} intermediate-output-schema set to ${payload.workflow.intermediate_output_schema_ref ?? "none"}`,
-      "info",
-    )
+  if (isWorkflowSettingsCommand(subcommand)) {
+    await handleWorkflowSettingsCommand(deps, context, args)
     return
   }
 
   if (subcommand === "queue") {
     await handleWorkflowQueueCommand(deps, args)
-    return
-  }
-
-  if (subcommand === "max-turns") {
-    const value = args[1]
-    if (!value) {
-      const current = deps.sessionState().config_state?.values?.[WORKFLOW_MAX_TURNS_CONFIG_KEY]
-      const label = current && current.trim() !== "" ? current : "unset"
-      deps.flashFooter(`workflow max turns: ${label}`, "info")
-      return
-    }
-    if (!deps.attachmentState()) {
-      deps.flashFooter("must be attached to set workflow max turns", "error")
-      return
-    }
-    const normalized = value.trim().toLowerCase()
-    const nextValue =
-      normalized === "off" || normalized === "0"
-        ? "0"
-        : Number.isFinite(Number(normalized))
-          ? String(Math.max(1, Math.floor(Number(normalized))))
-          : null
-    if (!nextValue) {
-      deps.flashFooter("usage: /workflow max-turns <count|off>", "error")
-      return
-    }
-    const payload = await deps.updateSessionConfig(
-      deps.sessionState().id,
-      deps.attachmentState()!.id,
-      { [WORKFLOW_MAX_TURNS_CONFIG_KEY]: nextValue },
-      false,
-    )
-    deps.applySessionState(payload.session)
-    deps.flashFooter(
-      nextValue === "0"
-        ? "workflow max turns disabled"
-        : `workflow max turns set to ${nextValue}`,
-      "info",
-    )
     return
   }
 
@@ -572,15 +411,7 @@ function workflowCommandContext(deps: WorkflowCommandHandlerDeps) {
   const firstWorkflowArgIsExplicit = (workflowRef: string | undefined) => (
     !selectedWorkflowRef() || isKnownWorkflowReference(workflowRef)
   )
-  const currentWorkflowLaunchPolicy = (): "reject" | "queue" => {
-    const policy =
-      deps.sessionState().workflow_launch_policy ??
-      deps.sessionState().config_state?.values?.[WORKFLOW_LAUNCH_POLICY_CONFIG_KEY] ??
-      "reject"
-    return policy === "queue" ? "queue" : "reject"
-  }
   return {
-    currentWorkflowLaunchPolicy,
     firstWorkflowArgIsExplicit,
     isKnownWorkflowReference,
     selectedWorkflowRef,
