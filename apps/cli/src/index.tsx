@@ -70,6 +70,7 @@ import {
 import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
+import { createAgentPaneTranscriptInteractionController } from "./agent-pane-transcript-interaction-controller.js"
 import { createProviderNamespaceSubmitController } from "./provider-namespace-submit-controller.js"
 import { createClipboardController } from "./clipboard-controller.js"
 import {
@@ -342,8 +343,6 @@ import { createSessionLifecycleController } from "./session-lifecycle.js"
 import { createTranscriptHistoryLoadController } from "./transcript-history-load-controller.js"
 import {
   applyTranscriptDisplayState,
-  resolveVisibleTurnToggle,
-  setTranscriptBlobCollapsed,
 } from "./transcript-display.js"
 import {
   reindexTranscriptEntries,
@@ -2742,32 +2741,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return lastEntry?.role === "user" && trimSingleTrailingNewline(lastEntry.text) === trimSingleTrailingNewline(text)
   }
 
-  const toggleAuxiliaryPaneTurn = (agentId: string, turnId: number | null | undefined, toggleEntryId?: number) => {
-    if (!turnId) {
-      return
-    }
-    const currentEntries = currentAgentPaneEntries(agentId)
-    const toggleEntry = resolveVisibleTurnToggle(currentEntries, turnId, toggleEntryId)
-    if (!toggleEntry) {
-      return
-    }
-    const expanding = toggleEntry?.toggleMode === "expand"
-    setExpandedTurnState(agentId, turnId, expanding)
-    const nextEntries = applyTranscriptDisplayState(currentEntries, expanding
-      ? expandedTurnIdsForAgent(agentId).filter((value) => value !== turnId)
-      : [...expandedTurnIdsForAgent(agentId), turnId])
-    commitAgentPaneEntries(agentId, nextEntries)
-    reconcileMountedAuxiliaryTranscript(agentId, currentEntries, nextEntries)
-    retainPromptFocus()
-  }
-
-  const toggleAuxiliaryPaneBlob = (agentId: string, entryId: number, collapsed: boolean) => {
-    const currentEntries = currentAgentPaneEntries(agentId)
-    const nextEntries = setTranscriptBlobCollapsed(currentEntries, entryId, expandedTurnIdsForAgent(agentId), collapsed)
-    commitAgentPaneEntries(agentId, nextEntries)
-    reconcileMountedAuxiliaryTranscript(agentId, currentEntries, nextEntries)
-    retainPromptFocus()
-  }
+  const agentPaneTranscriptInteractionController = createAgentPaneTranscriptInteractionController({
+    currentAgentPaneEntries,
+    expandedTurnIdsForAgent,
+    setExpandedTurnState,
+    commitAgentPaneEntries: (agentId, nextEntries) => {
+      commitAgentPaneEntries(agentId, nextEntries)
+    },
+    reconcileMountedAuxiliaryTranscript: (agentId, currentEntries, nextEntries) => {
+      reconcileMountedAuxiliaryTranscript(agentId, currentEntries, nextEntries)
+    },
+    retainPromptFocus,
+  })
+  const toggleAuxiliaryPaneTurn = agentPaneTranscriptInteractionController.toggleTurn
+  const toggleAuxiliaryPaneBlob = agentPaneTranscriptInteractionController.toggleBlob
 
   const clearAuxiliaryAgentPane = (agentId: string) => {
     const scrollbox = agentTranscriptScrollboxes.get(agentId)
