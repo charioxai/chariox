@@ -77,7 +77,7 @@ import {
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent } from "./hotkeys.js"
 import { buildHotkeySections } from "./hotkey-help.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
-import { clampScrollTop, findTurnPromptScrollTarget, promptTurnNavigationDirectionForKey } from "./history-viewport.js"
+import { clampScrollTop } from "./history-viewport.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
@@ -205,6 +205,7 @@ import { createNormalPromptSubmitController } from "./normal-prompt-submit-contr
 import {
   createPromptTextController,
 } from "./prompt-text-controller.js"
+import { createPromptTurnNavigationController } from "./prompt-turn-navigation-controller.js"
 import { createPromptStopController } from "./prompt-stop-controller.js"
 import {
   createTurnCompletionController,
@@ -5354,32 +5355,26 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     return handled
   }
-  const shouldNavigatePromptTurns = (event: { name: string; eventType: string; shift?: boolean }) => {
-    return promptTurnNavigationDirectionForKey({
-      attached: isAttached(),
-      keyName: event.name,
-      eventType: event.eventType,
-      shift: event.shift,
-      promptText: promptInput ? promptTextController.currentText() : undefined,
-    }) !== null
-  }
-  const navigatePromptTurns = (direction: "previous" | "next") => {
-    if (!transcriptScrollbox) {
-      return
-    }
-    const promptOffsets = visibleTranscriptEntries()
+  const promptTurnNavigationController = createPromptTurnNavigationController({
+    isAttached,
+    getPromptText: () => promptInput ? promptTextController.currentText() : undefined,
+    getPromptOffsets: () => visibleTranscriptEntries()
       .filter((entry) => entry.role === "user")
       .map((entry) => transcriptRenderables.get(entry.id)?.wrapper.y ?? null)
-      .filter((offset): offset is number => offset !== null)
-      .sort((left, right) => left - right)
-    const target = findTurnPromptScrollTarget(promptOffsets, transcriptScrollbox.scrollTop, direction)
-    if (target === null || target === undefined) {
-      return
-    }
-    transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: target })
-    transcriptScrollbox.requestRender()
-    lastTranscriptScrollTop = transcriptScrollbox.scrollTop
-  }
+      .filter((offset): offset is number => offset !== null),
+    getScrollState: () => transcriptScrollbox
+      ? { left: transcriptScrollbox.scrollLeft, top: transcriptScrollbox.scrollTop }
+      : null,
+    scrollTo: (position) => {
+      transcriptScrollbox?.scrollTo(position)
+    },
+    requestRender: () => {
+      transcriptScrollbox?.requestRender()
+    },
+    setLastTranscriptScrollTop: (scrollTop) => {
+      lastTranscriptScrollTop = scrollTop
+    },
+  })
   const waitingRoomKeyController = createWaitingRoomKeyController({
     isAttached,
     hotkeysOpen: dialogOverlayOpen,
@@ -5475,8 +5470,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       removeLastPendingPromptAttachment()
       return
     }
-    if (shouldNavigatePromptTurns(event)) {
-      navigatePromptTurns(event.name === "up" ? "previous" : "next")
+    if (promptTurnNavigationController.handleKey(event)) {
       return
     }
     if (waitingRoomKeyController.handleKey(event)) {
