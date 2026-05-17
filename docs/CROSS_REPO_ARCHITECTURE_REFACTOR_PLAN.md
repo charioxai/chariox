@@ -76,6 +76,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: CLI older-transcript history loading is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI prompt-history hydration stale-result guard is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI transcript-history auto-load triggers are responsibility-owned; CLI tests pass.
+- Latest verified batch: CLI transcript render deferral is responsibility-owned; CLI tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule

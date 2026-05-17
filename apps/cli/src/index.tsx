@@ -355,6 +355,7 @@ import { createTranscriptHistoryAutoloadController } from "./transcript-history-
 import {
   createTerminalOutputRecordQueue,
 } from "./terminal-output-record-queue.js"
+import { createTranscriptRenderDeferralController } from "./transcript-render-deferral-controller.js"
 import {
   formatToolTranscriptUpdate,
   mergeToolTranscriptUpdate,
@@ -933,7 +934,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       lastTranscriptScrollTop = scrollTop
     },
   })
-  let pendingTranscriptRender = false
   let uiBatchDepth = 0
   // Connection resilience tracking
   const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
@@ -959,6 +959,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     clearSchedule: clearTimeout,
     requestRootRender: () => {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
+    },
+  })
+  const transcriptRenderDeferralController = createTranscriptRenderDeferralController({
+    isBatched: () => uiBatchDepth > 0,
+    getRenderable: () => transcriptScrollbox,
+    requestRender: (renderable) => {
+      renderScheduler.requestRenderable(renderable)
     },
   })
 
@@ -3547,18 +3554,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const requestTranscriptRender = () => {
-    if (uiBatchDepth > 0) {
-      pendingTranscriptRender = true
-      return
-    }
-    renderScheduler.requestRenderable(transcriptScrollbox)
+    transcriptRenderDeferralController.request()
   }
 
   const flushDeferredUiUpdates = () => {
-    if (pendingTranscriptRender) {
-      pendingTranscriptRender = false
-      renderScheduler.requestRenderable(transcriptScrollbox)
-    }
+    transcriptRenderDeferralController.flush()
     sessionChromeUpdateController.flushDeferred()
   }
 
