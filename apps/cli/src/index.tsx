@@ -335,14 +335,12 @@ import {
   agentPromptState,
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
-  derivePromptLifecycleTransition,
   buildDetachedSessionState,
-  deriveSessionTransitionState,
   sessionHasPromptWork,
   sessionResponseLayout,
-  shouldConfirmIdleTurnCompletion,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
+import { createSessionStateApplyController } from "./session-state-apply-controller.js"
 import { createSessionAttachmentController } from "./session-attachment-controller.js"
 import { resolveSessionAgentReference } from "./session-agent-resolver.js"
 import { createSessionLifecycleController } from "./session-lifecycle.js"
@@ -2144,80 +2142,43 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const handlePromptSelectionSurfaceMouseUp = promptSurfaceMouseController.handleMouseUp
 
-  const applySessionState = (nextSession: RuntimeSession) => {
-    nextSession = normalizeRuntimeSession(nextSession)
-    const previousFocusedAgentId = focusedAgentId()
-    const previousLayout = multiAgentResponseLayout()
-    const promptLifecycle = derivePromptLifecycleTransition(sessionState(), nextSession)
-    const transition = deriveSessionTransitionState({
-      currentSession: sessionState(),
-      nextSession,
-      currentWorking: working(),
-      currentStreamingAgentId: streamingAgentId(),
-      currentAgentActivityLabels: agentActivityLabels(),
-      layoutPreference: preferencesState().ui?.multiAgentResponseLayout,
-    })
-    const shouldConfirmIdleCompletion = shouldConfirmIdleTurnCompletion({
-      nextSession,
-      currentWorking: working(),
-      currentSubmitting: submitting(),
-      currentBusyLatches: agentBusyLatches(),
-      currentStreamingAgentId: streamingAgentId(),
-      currentProviderActivityLabel: providerActivityLabel(),
-      currentActiveStatusLabel: activeStatusLabel(),
-    })
-    setSessionState(nextSession)
-    setAgentActivityLabels(transition.nextAgentActivityLabels)
-    setStreamingAgentId(transition.nextStreamingAgentId)
-    setMultiAgentResponseLayout(transition.nextLayout)
-    setWorking(transition.nextWorking)
-    if (transition.nextHasPromptWork) {
-      turnCompletionController.reset()
-    } else if (turnCompletionController.isConfirmed() || shouldConfirmIdleCompletion) {
-      turnCompletionController.confirmAndSchedule()
-    } else {
-      cancelPendingTurnCompletion()
-    }
-    setProviderActivityLabel(transition.nextFocusedActivityLabel)
-    setActiveStatusLabel(transition.nextFocusedActivityLabel)
-    if (promptLifecycle.activePromptChanged) {
-      setSubmitting(false)
+  const sessionStateApplyController = createSessionStateApplyController({
+    getSession: sessionState,
+    setSession: setSessionState,
+    getFocusedAgentId: focusedAgentId,
+    getCurrentResponseLayout: multiAgentResponseLayout,
+    getLayoutPreference: () => preferencesState().ui?.multiAgentResponseLayout,
+    setResponseLayout: setMultiAgentResponseLayout,
+    getWorking: working,
+    setWorking,
+    getSubmitting: submitting,
+    setSubmitting,
+    clearSubmittingAgentId: () => {
       submittingAgentId = null
-      promptStopController.reset()
-    }
-    for (const settledAgentId of promptLifecycle.settledAgentIds) {
-      clearAgentBusy(settledAgentId)
-    }
-    if (promptLifecycle.cancelledPromptSettled) {
+    },
+    getAgentBusyLatches: agentBusyLatches,
+    getAgentActivityLabels: agentActivityLabels,
+    setAgentActivityLabels,
+    clearAgentBusy,
+    getStreamingAgentId: streamingAgentId,
+    setStreamingAgentId,
+    getProviderActivityLabel: providerActivityLabel,
+    setProviderActivityLabel,
+    getActiveStatusLabel: activeStatusLabel,
+    setActiveStatusLabel,
+    getStatusLine: statusLine,
+    setStatusLine,
+    clearActiveToolLabels: () => {
       activeToolLabels.clear()
-      setAgentActivityLabels({})
-      setStreamingAgentId(nextSession.active_prompt?.target_agent_id ?? null)
-      setProviderActivityLabel(null)
-      setActiveStatusLabel(null)
-      if (statusLine() === "Cancellation requested.") {
-        setStatusLine(DEFAULT_CONNECTED_STATUS)
-      }
-      if (!transition.nextHasPromptWork) {
-        turnCompletionController.confirm()
-        cancelPendingTurnCompletion()
-        setWorking(false)
-      }
-    }
-    if (!transition.nextHasPromptWork) {
-      setSubmitting(false)
-      promptStopController.reset()
-    }
-    syncVisibleActivityLabel()
-    updateSessionChrome()
-    if (
-      transition.nextLayout === "split"
-      && (previousLayout !== transition.nextLayout
-        || previousFocusedAgentId !== transition.nextFocusedAgentId
-        || transition.previousAgentSignature !== transition.nextAgentSignature)
-    ) {
-      refreshSplitPaneFocusRepaint()
-    }
-  }
+    },
+    turnCompletion: turnCompletionController,
+    cancelPendingTurnCompletion,
+    promptStop: promptStopController,
+    syncVisibleActivityLabel: () => syncVisibleActivityLabel(),
+    updateSessionChrome: () => updateSessionChrome(),
+    refreshSplitPaneFocusRepaint: () => refreshSplitPaneFocusRepaint(),
+  })
+  const applySessionState = sessionStateApplyController.apply
 
   const authoritativeIdleController = createAuthoritativeIdleController({
     batchUpdate: batch,
