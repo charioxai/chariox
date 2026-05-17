@@ -520,6 +520,7 @@ import {
 } from "./transcript-render.js"
 import { reconcileMountedTranscriptPane } from "./transcript-pane-reconcile.js"
 import { createTranscriptRetentionController } from "./transcript-retention-controller.js"
+import { createTranscriptEventController } from "./transcript-event-controller.js"
 import { createTranscriptStateController } from "./transcript-state-controller.js"
 import { createTranscriptStreamController } from "./transcript-stream-controller.js"
 import {
@@ -2006,69 +2007,48 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const waitForPendingAgentFocusTransition = (): Promise<void> =>
     agentFocusTransitionController.wait()
 
-  const appendUserPrompt = (text: string, agentId?: string | null) => {
-    recordTurnActivity("prompt_submit")
-    turnCompletionController.reset()
-    const targetAgentId = agentId ?? focusedAgentId()
-    submittingAgentId = targetAgentId
-    setStreamingAgentId(targetAgentId)
-    markAgentBusy(targetAgentId)
-    if (splitAgentResponseMode() && targetAgentId && targetAgentId !== responsePrimaryAgent()?.id) {
-      const paneEntries = currentAgentPaneEntries(targetAgentId)
-      const nextTurnIds = collapseLatestTurnForAgent(targetAgentId, paneEntries)
-      appendTranscriptEntryToAgentPane(targetAgentId, {
-        role: "user",
-        text: trimSingleTrailingNewline(text),
-        turnId: computeNextTurnId(paneEntries),
-      }, nextTurnIds)
-      setSubmitting(true)
-      setWorking(true)
-      renderSessionChromeBoundary()
-      return
-    }
-    const turnId = nextTurnId
-    nextTurnId += 1
-    currentTurnId = turnId
-    const nextTurnIds = collapseLatestTurnForAgent(targetAgentId, entries.filter(Boolean))
-    appendEntry({ role: "user", text: trimSingleTrailingNewline(text), turnId }, nextTurnIds)
-    syncVisibleTranscriptPreview()
-    setSubmitting(true)
-    setWorking(true)
-    renderSessionChromeBoundary()
-    scrollTranscriptToBottom()
-  }
-
-  const appendNotice = (text: string, emphasis: TranscriptEntry["emphasis"] = "muted") => {
-    appendEntry({ role: "notice", text, emphasis })
-    syncVisibleTranscriptPreview()
-    updateSessionChrome()
-  }
-
-  const appendCloudNotice = (text: string) => {
-    if (isAttached()) {
-      appendNotice(text)
-      return
-    }
-    setWaitingRoomCloudNotice(text)
-    rebuildTranscript()
-    updateSessionChrome()
-  }
-
-  const appendProviderError = (text: string) => {
-    const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
-    if (!normalized) {
-      return
-    }
-    cancelPendingTurnCompletion()
-    setWorking(false)
-    setSubmitting(false)
-    clearAgentBusy(visibleTranscriptAgentId())
-    submittingAgentId = null
-    appendEntry({ role: "error", text: normalized, emphasis: "error" })
-    syncVisibleTranscriptPreview()
-    renderSessionChromeBoundary()
-    scrollTranscriptToBottom()
-  }
+  const transcriptEventController = createTranscriptEventController({
+    recordTurnActivity,
+    resetTurnCompletion: () => turnCompletionController.reset(),
+    cancelPendingTurnCompletion,
+    focusedAgentId,
+    visibleTranscriptAgentId,
+    responsePrimaryAgent,
+    splitAgentResponseMode,
+    isAttached,
+    entries: () => entries,
+    nextTurnId: () => nextTurnId,
+    setNextTurnId: (turnId) => {
+      nextTurnId = turnId
+    },
+    setCurrentTurnId: (turnId) => {
+      currentTurnId = turnId
+    },
+    setSubmittingAgentId: (agentId) => {
+      submittingAgentId = agentId
+    },
+    setStreamingAgentId,
+    markAgentBusy,
+    clearAgentBusy,
+    currentAgentPaneEntries: (agentId) => currentAgentPaneEntries(agentId),
+    collapseLatestTurnForAgent: (agentId, paneEntries) => collapseLatestTurnForAgent(agentId, paneEntries),
+    appendTranscriptEntryToAgentPane: (agentId, entry, turnIds) => {
+      appendTranscriptEntryToAgentPane(agentId, entry, turnIds ? [...turnIds] : undefined)
+    },
+    appendEntry,
+    setSubmitting,
+    setWorking,
+    renderSessionChromeBoundary: () => renderSessionChromeBoundary(),
+    syncVisibleTranscriptPreview: () => syncVisibleTranscriptPreview(),
+    scrollTranscriptToBottom,
+    updateSessionChrome: () => updateSessionChrome(),
+    setWaitingRoomCloudNotice,
+    rebuildTranscript: () => rebuildTranscript(),
+  })
+  const appendUserPrompt = transcriptEventController.appendUserPrompt
+  const appendNotice = transcriptEventController.appendNotice
+  const appendCloudNotice = transcriptEventController.appendCloudNotice
+  const appendProviderError = transcriptEventController.appendProviderError
 
   const transcriptRetentionController = createTranscriptRetentionController({
     entries: () => entries.slice(),
