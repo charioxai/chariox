@@ -299,7 +299,6 @@ import {
 } from "./runtime.js"
 import {
   applyProviderRunProfileToSession,
-  deriveAttachedFooterSummary,
   deriveCurrentProviderSelection,
   deriveFooterHint,
   deriveFocusedStatusBadge,
@@ -309,6 +308,9 @@ import {
   type FocusedStatusBadge,
   type SessionStatusMode,
 } from "./session-chrome-state.js"
+import {
+  createSessionChromeRenderController,
+} from "./session-chrome-render-controller.js"
 import {
   createSessionChromeSummaryRenderState,
   renderSessionChromeSummary,
@@ -358,7 +360,6 @@ import {
 } from "./transcript.js"
 import {
   decideBootstrapAction,
-  SESSION_NEW_FOOTER_HINT,
   SESSION_NEW_PLACEHOLDER,
   formatSessionList,
   selectAttachableSession,
@@ -759,7 +760,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let promptMetaUsagePercentText: TextRenderable | undefined
   let commandCenterBox: BoxRenderable | undefined
   let hotkeysOverlayBox: BoxRenderable | undefined
-  const sessionChromeSummaryRenderState = createSessionChromeSummaryRenderState()
   let historyLoadingText: TextRenderable | undefined
   const statusIndicatorRenderState = createStatusIndicatorRenderState()
   let closing = false
@@ -2292,51 +2292,48 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const refreshSplitPaneFocusRepaint = responsePaneRepaintController.refreshFocus
 
-  const applySessionChromeUpdate = () => {
-    syncPromptPlaceholder()
-    renderSessionChromeSummary({
-      renderer,
-      state: sessionChromeSummaryRenderState,
-      promptStateBox,
-      footerSummaryBox,
-      promptStateLabel: fatalError() ? "error" : submitting() ? "thinking" : footerHint(),
-      promptStateTone: fatalError() ? "error" : submitting() ? "thinking" : "muted",
-      footerSummary: isAttached()
-        ? deriveAttachedFooterSummary({
-            session: sessionState(),
-            connectedClientCount: connectedClientCount(),
-            multiAgentMode: multiAgentMode(),
-            responseLayout: multiAgentResponseLayout(),
-            sessionStatusMode: sessionStatusMode(),
-            hotkeyToggleLabel: HOTKEY_TOGGLE_LABEL,
-            focusedHasPromptWork: agentHasPromptWork(sessionState(), focusedAgentId()),
-          })
-        : SESSION_NEW_FOOTER_HINT,
-      footerFlash: footerFlash(),
-    })
-    setPromptMetaRenderables(isAttached() ? promptMetaParts() : [])
-    renderStatusIndicator()
-    renderSplitPaneFooters()
-    renderAgentInteractions()
-  }
-
-  const shouldThrottleSessionChrome = () => (
-    working()
-    || Boolean(activeStatusLabel())
-    || Boolean(providerActivityLabel())
-    || Boolean(streamingAgentId())
-  )
+  const sessionChromeRenderController = createSessionChromeRenderController({
+    renderer,
+    createSummaryRenderState: createSessionChromeSummaryRenderState,
+    renderSummary: (options) => {
+      renderSessionChromeSummary(options as unknown as Parameters<typeof renderSessionChromeSummary>[0])
+    },
+    getPromptStateBox: () => promptStateBox,
+    getFooterSummaryBox: () => footerSummaryBox,
+    syncPromptPlaceholder,
+    getFatalError: fatalError,
+    getSubmitting: submitting,
+    getFooterHint: footerHint,
+    isAttached,
+    getSession: sessionState,
+    getConnectedClientCount: connectedClientCount,
+    getMultiAgentMode: multiAgentMode,
+    getResponseLayout: multiAgentResponseLayout,
+    getSessionStatusMode: sessionStatusMode,
+    getFocusedHasPromptWork: () => agentHasPromptWork(sessionState(), focusedAgentId()),
+    getHotkeyToggleLabel: () => HOTKEY_TOGGLE_LABEL,
+    getFooterFlash: footerFlash,
+    getPromptMetaParts: promptMetaParts,
+    setPromptMetaRenderables,
+    renderStatusIndicator,
+    renderSplitPaneFooters,
+    renderAgentInteractions,
+    getWorking: working,
+    getActiveStatusLabel: activeStatusLabel,
+    getProviderActivityLabel: providerActivityLabel,
+    getStreamingAgentId: streamingAgentId,
+  })
 
   const sessionChromeUpdateController = createSessionChromeUpdateController({
     delayMs: CHROME_UPDATE_THROTTLE_MS,
     scheduleTimer: startTimeout,
     clearTimer: clearTimeout,
     isBatched: () => uiBatchDepth > 0,
-    applyUpdate: applySessionChromeUpdate,
+    applyUpdate: sessionChromeRenderController.apply,
   })
   const renderSessionChromeBoundary = sessionChromeUpdateController.flush
   const updateSessionChrome = () => {
-    sessionChromeUpdateController.request(shouldThrottleSessionChrome())
+    sessionChromeUpdateController.request(sessionChromeRenderController.shouldThrottle())
   }
 
   const setAgentPanePreview = (agentId: string, text: string) => {
