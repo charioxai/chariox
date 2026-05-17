@@ -23,6 +23,11 @@ import {
   describeWaitingRoomWorktreeSelection,
   normalizeWaitingRoomWorktreeSelectionId,
 } from "./waiting-room-worktrees.js"
+import {
+  formatWaitingRoomTerminalTitle,
+  waitingRoomTerminalRows,
+  waitingRoomTerminals,
+} from "./waiting-room-terminal-rows.js"
 import type { SliceRecord } from "./cli-types.js"
 
 export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = 2
@@ -565,69 +570,6 @@ export function waitingRoomRows(
   return rows
 }
 
-function waitingRoomTerminalRows(
-  state: WaitingRoomState,
-  remote: WaitingRoomRemoteState,
-  titleWidth: number,
-): WaitingRoomRow[] {
-  const terminals = waitingRoomTerminals(remote)
-  const typeWidth = Math.max(
-    "Type".length,
-    ...terminals.map((terminal) => formatWaitingRoomTerminalType(terminal.terminal_type).length),
-  )
-  const rows: WaitingRoomRow[] = [
-    {
-      id: "terminals-header",
-      title: "Terminals",
-      value: "",
-      titleWidth,
-      indent: 0,
-      focused: false,
-      selectable: false,
-      scrollbar: "",
-    },
-    {
-      id: "terminal-columns",
-      title: "Terminal ID",
-      value: "",
-      titleWidth,
-      columns: [formatWaitingRoomColumnHeader("Type", typeWidth)],
-      indent: 1,
-      focused: false,
-      selectable: false,
-      scrollbar: "",
-    },
-  ]
-
-  for (const [index, terminal] of terminals.entries()) {
-    rows.push({
-      id: `terminal:${terminal.terminal_id}`,
-      title: formatWaitingRoomTerminalTitle(terminal),
-      value: formatWaitingRoomTerminalType(terminal.terminal_type),
-      titleWidth,
-      columns: [formatWaitingRoomColumn(formatWaitingRoomTerminalType(terminal.terminal_type), typeWidth)],
-      indent: 1,
-      focused: state.focus === "terminal" && state.terminalIndex === index,
-      selectable: true,
-      scrollbar: "",
-    })
-  }
-
-  rows.push({
-    id: "add-terminal",
-    title: "Add New Terminal",
-    value: "Press Enter",
-    titleWidth,
-    indent: 1,
-    focused: state.focus === "add-terminal",
-    selectable: true,
-    scrollbar: "",
-  })
-
-  return rows
-}
-
-
 function waitingRoomRemoteRows(
   state: WaitingRoomState,
   remote: WaitingRoomRemoteState,
@@ -792,10 +734,6 @@ function waitingRoomRemoteMachines(remote: WaitingRoomRemoteState) {
 
 export function waitingRoomRemoteKernels(remote: WaitingRoomRemoteState) {
   return remote.kernels ?? []
-}
-
-export function waitingRoomTerminals(remote: WaitingRoomRemoteState) {
-  return remote.terminals ?? []
 }
 
 function waitingRoomSlices(remote: WaitingRoomRemoteState = {}) {
@@ -1031,25 +969,6 @@ function sessionHasActiveWork(session: SessionListEntry) {
   return activity.working_agent_count > 0
     || activity.active_prompt_count > 0
     || activity.queued_prompt_count > 0
-}
-
-function formatWaitingRoomTerminalTitle(terminal: WaitingRoomTerminal) {
-  const label = terminal.alias ? `${terminal.terminal_id} (${terminal.alias})` : terminal.terminal_id
-  return terminal.revoked ? `${label} (revoked)` : label
-}
-
-function formatWaitingRoomTerminalType(value: WaitingRoomTerminalType) {
-  switch (value) {
-    case "web":
-      return "Web terminal"
-    case "ios":
-      return "iOS terminal"
-    case "android":
-      return "Android terminal"
-    case "cli":
-    default:
-      return "CLI"
-  }
 }
 
 function formatSessionTimestamp(value: number | null) {
