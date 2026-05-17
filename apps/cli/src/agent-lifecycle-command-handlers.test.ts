@@ -1,0 +1,128 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import type {
+  AgentInstance,
+  RuntimeProviderRun,
+  RuntimeSession,
+} from "./cli-types.js"
+import {
+  formatAgentListSummary,
+  handleAgentFocusCommand,
+} from "./agent-lifecycle-command-handlers.js"
+
+test("agent list summary renders aliases and pluralization", () => {
+  assert.equal(formatAgentListSummary([]), "no agents in session")
+  assert.equal(
+    formatAgentListSummary([
+      agent({ agent_ref: "agent-a", alias: "builder" }),
+      agent({ id: "agent-2", agent_ref: "agent-b", state: "Working" }),
+    ]),
+    "2 agents: agent-a (builder) [Idle], agent-b [Working]",
+  )
+})
+
+test("agent focus command applies focus, launches a run, and reports the focused agent", async () => {
+  const agentA = agent({ id: "agent-a", agent_ref: "agent-a" })
+  const agentB = agent({ id: "agent-b", agent_ref: "agent-b", provider: "codex", model: "codex/gpt-5.4" })
+  const previousSession = session({ focused_agent_id: agentA.id, agents: [agentA, agentB] })
+  const focusedSession = session({ focused_agent_id: agentB.id, agents: [agentA, agentB] })
+  let flashedMessage = ""
+  let launchedAgentId: string | null = null
+  let appliedSessionId: string | null = null
+
+  await handleAgentFocusCommand({
+    isAttached: () => true,
+    sessionState: () => previousSession,
+    currentModelId: () => "opencode/gpt-5.4",
+    currentVariantId: () => "high",
+    multiAgentResponseLayout: () => "individual",
+    maxAgentsPerScreen: () => 4,
+    flashFooter: (message) => { flashedMessage = message },
+    formatError: (error) => String(error),
+    applySessionState: (nextSession) => { appliedSessionId = nextSession.focused_agent_id },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    cycleAgentFocus: async () => ({ agent: agentB, session: focusedSession }),
+    launchAgentProviderRun: async (_provider, _model, _variant, agentId) => {
+      launchedAgentId = agentId
+      return providerRun({ agent_instance_id: agentId })
+    },
+    setProviderRunState: () => {},
+    refreshSessionState: async () => focusedSession,
+    destroyAgent: async () => focusedSession,
+    focusAgent: async () => ({ agent: agentB, session: focusedSession }),
+    resolveSessionAgent: () => ({ agent: agentB, error: null }),
+    formatAgentLabel: (entry) => entry?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => {},
+  }, ["focus", agentB.id])
+
+  assert.equal(launchedAgentId, agentB.id)
+  assert.equal(appliedSessionId, agentB.id)
+  assert.equal(flashedMessage, "focused on agent agent-b")
+})
+
+function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {
+  return {
+    id: "agent-1",
+    agent_ref: "agent-1",
+    session_id: "session-1",
+    alias: null,
+    provider: "opencode",
+    model: "gpt-5.4",
+    effort: "medium",
+    worktree_id: "worktree-1",
+    state: "Idle",
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 0,
+    last_activity_at_ms: 0,
+    ...overrides,
+  }
+}
+
+function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
+  return {
+    id: "session-1",
+    alias: null,
+    workspace_id: "workspace-1",
+    worktree_id: "worktree-1",
+    created_at_ms: 0,
+    status: "Running",
+    active_provider_run_id: null,
+    attachment_ids: ["attachment-1"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-1",
+    max_agents: 6,
+    agents: [agent()],
+    workflows: [],
+    workflow_runs: [],
+    config_state: {
+      version: 0,
+      values: {},
+      updated_by_attachment_id: null,
+    },
+    ...overrides,
+  }
+}
+
+function providerRun(overrides: Partial<RuntimeProviderRun> = {}): RuntimeProviderRun {
+  return {
+    id: "run-1",
+    session_id: "session-1",
+    agent_instance_id: "agent-1",
+    adapter_key: "codex",
+    provider: "codex",
+    account_profile: "default",
+    model: "codex/gpt-5.4",
+    variant: "high",
+    usage_tokens_total: null,
+    state: "Running",
+    started_at_ms: 0,
+    ...overrides,
+  }
+}
