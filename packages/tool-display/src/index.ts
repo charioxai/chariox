@@ -1,15 +1,24 @@
+import {
+  parseEmbeddedFileBlock,
+  renderLabeledCodeBlock,
+  renderPathCodeBlock,
+} from "./code-blocks.js"
+import { formatGrepTranscriptUpdate } from "./grep-display.js"
 import { guessPathFenceLanguage } from "./language.js"
 import {
   buildApplyPatchNewPreview,
   formatApplyPatchTranscriptUpdate,
   readApplyPatchFiles,
 } from "./patch-display.js"
+import {
+  formatReadTranscriptUpdate,
+  formatReadWindow,
+  readReadInput,
+  readToolDisplayReadBlock,
+} from "./read-display.js"
 import { formatToolStatusBadge } from "./status.js"
 import {
-  isObjectValue,
   nonEmpty,
-  normalizeToolOutputPayload,
-  readString,
   renderDetail,
   trimTrailingNewlines,
 } from "./strings.js"
@@ -234,23 +243,9 @@ type TodoItem = {
   status?: unknown
 }
 
-type ReadInput = {
-  filePath?: unknown
-  offset?: unknown
-  limit?: unknown
-}
-
-type GrepInput = {
-  pattern?: unknown
-  path?: unknown
-  include?: unknown
-}
-
 type WebFetchInput = {
   format?: unknown
 }
-
-const TOOL_BLOB_VISIBLE_LINES = 10
 
 function formatTodoTranscriptUpdate(update: ToolTranscriptUpdate) {
   if (update.tool !== "todowrite") {
@@ -304,68 +299,6 @@ function isTodoItem(value: unknown): value is TodoItem {
   return Boolean(value) && typeof value === "object"
 }
 
-function formatReadTranscriptUpdate(update: ToolTranscriptUpdate) {
-  if (!isNativeReadTool(update.tool)) {
-    return null
-  }
-
-  const input = readReadInput(update.input)
-  const content = readReadContent(update.output) ?? readReadContent(update.raw)
-  if (!input?.filePath || !content) {
-    return null
-  }
-
-  const header = `**read**${formatToolStatusBadge(nonEmpty(update.status))}\n\`${input.filePath}${formatReadWindow(input)}\``
-  const body = truncateToolBlob(content)
-  const fence = codeFence(body)
-  return `${header}\n\n${fence}${guessPathFenceLanguage(input.filePath)}\n${body}\n${fence}`
-}
-
-function readToolDisplayReadBlock(update: ToolTranscriptUpdate): ToolDisplayBlock | null {
-  if (!isNativeReadTool(update.tool)) {
-    return null
-  }
-  const input = readReadInput(update.input)
-  const content = readReadContent(update.output) ?? readReadContent(update.raw)
-  if (!input?.filePath || content == null) {
-    return null
-  }
-  return {
-    kind: "code",
-    language: guessPathFenceLanguage(input.filePath),
-    text: truncateToolBlob(content),
-  }
-}
-
-function formatGrepTranscriptUpdate(update: ToolTranscriptUpdate) {
-  if (update.tool !== "grep") {
-    return null
-  }
-
-  const input = readGrepInput(update.input)
-  const output = typeof update.output === "string" ? trimTrailingNewlines(update.output) : null
-  if (!input || !output) {
-    return null
-  }
-
-  const parsed = parseGrepOutput(output, input)
-  if (!parsed) {
-    return null
-  }
-
-  return [
-    `**grep**${formatToolStatusBadge(nonEmpty(update.status))}`,
-    `Pattern: \`${input.pattern}\`${parsed.summary}`,
-    ...parsed.blocks,
-  ].join("\n")
-}
-
-function renderLabeledCodeBlock(label: string, content: string, language = "text") {
-  const body = truncateToolBlob(content)
-  const fence = codeFence(body)
-  return `**${label}**\n${fence}${language}\n${body}\n${fence}`
-}
-
 function renderToolBlock(update: ToolTranscriptUpdate, label: string, content: string) {
   const embedded = parseEmbeddedFileBlock(content)
   if (embedded) {
@@ -378,21 +311,6 @@ function renderToolBlock(update: ToolTranscriptUpdate, label: string, content: s
   }
 
   return renderLabeledCodeBlock(label, content, guessToolBlockLanguage(update, label, content))
-}
-
-function renderPathCodeBlock(filePath: string, content: string, rootPath?: string) {
-  const body = truncateToolBlob(content)
-  const fence = codeFence(body)
-  return [
-    `\`${displayGrepPath(filePath, rootPath)}\``,
-    `${fence}${guessPathFenceLanguage(filePath)}\n${body}\n${fence}`,
-  ].join("\n")
-}
-
-function codeFence(content: string) {
-  const matches = content.match(/`+/g) ?? []
-  const width = matches.reduce((max, value) => Math.max(max, value.length), 2) + 1
-  return "`".repeat(width)
 }
 
 function guessCodeFenceLanguage(value: string) {
@@ -458,261 +376,6 @@ function readWebFetchFormat(input: unknown) {
     return format
   }
   return null
-}
-
-
-function readReadInput(input: unknown) {
-  if (!input || typeof input !== "object") {
-    return null
-  }
-
-  const value = input as ReadInput & { path?: unknown }
-  const filePath = typeof value.filePath === "string"
-    ? value.filePath.trim()
-    : typeof value.path === "string"
-      ? value.path.trim()
-      : ""
-  if (!filePath) {
-    return null
-  }
-
-  const result: { filePath: string; offset?: number; limit?: number } = { filePath }
-  if (typeof value.offset === "number") {
-    result.offset = value.offset
-  }
-  if (typeof value.limit === "number") {
-    result.limit = value.limit
-  }
-
-  return result
-}
-
-function formatReadWindow(input: { offset?: number; limit?: number }) {
-  const parts: string[] = []
-  if (input.offset !== undefined) {
-    parts.push(`offset=${input.offset}`)
-  }
-  if (input.limit !== undefined) {
-    parts.push(`limit=${input.limit}`)
-  }
-  return parts.length > 0 ? ` [${parts.join(", ")}]` : ""
-}
-
-function readReadContent(value: unknown) {
-  if (typeof value !== "string" && !isObjectValue(value)) {
-    return null
-  }
-
-  if (typeof value === "string") {
-    const embedded = parseEmbeddedFileBlock(value)
-    if (embedded) {
-      return trimTrailingNewlines(embedded.content)
-    }
-  }
-
-  const normalized = normalizeToolOutputPayload(value)
-  if (!isObjectValue(normalized)) {
-    return null
-  }
-  const directContent = readString(normalized.content_text) ?? readString(normalized.contentText)
-  if (directContent != null) {
-    return trimTrailingNewlines(directContent)
-  }
-  const structured = isObjectValue(normalized.structuredContent) ? normalized.structuredContent : null
-  const structuredContent = structured
-    ? readString(structured.content_text) ?? readString(structured.contentText)
-    : null
-  if (structuredContent != null) {
-    return trimTrailingNewlines(structuredContent)
-  }
-  return null
-}
-
-function truncateToolBlob(text: string) {
-  return collapseMiddleLines(text, TOOL_BLOB_VISIBLE_LINES)
-}
-
-function collapseMiddleLines(text: string, visibleLines: number) {
-  const lines = text.split(/\r?\n/)
-  if (lines.length <= visibleLines * 2 + 1) {
-    return trimTrailingNewlines(text)
-  }
-
-  const headCount = visibleLines
-  const tailCount = visibleLines
-  return [...lines.slice(0, headCount), "...", ...lines.slice(-tailCount)].join("\n")
-}
-
-function readGrepInput(input: unknown) {
-  if (!input || typeof input !== "object") {
-    return null
-  }
-
-  const value = input as GrepInput
-  const pattern = typeof value.pattern === "string" ? value.pattern.trim() : ""
-  if (!pattern) {
-    return null
-  }
-
-  const result: { pattern: string; path?: string; include?: string } = { pattern }
-  if (typeof value.path === "string" && value.path.trim()) {
-    result.path = value.path.trim()
-  }
-  if (typeof value.include === "string" && value.include.trim()) {
-    result.include = value.include.trim()
-  }
-  return result
-}
-
-function parseGrepOutput(output: string, input: { path?: string; include?: string }) {
-  const lines = output.split(/\r?\n/)
-  const summaryLine = lines[0]?.trim() ?? ""
-  if (/^No files found\.?$/i.test(summaryLine)) {
-    return {
-      summary: formatGrepSearchScope(input, 0),
-      blocks: ["```text\nNo files found\n```"],
-    }
-  }
-  const matchCount = Number(/^Found (\d+) matches?/.exec(summaryLine)?.[1] ?? "0")
-  const files = new Map<string, string[]>()
-  let currentFile: string | null = null
-
-  for (const line of lines.slice(1)) {
-    if (!line.trim()) {
-      continue
-    }
-    if (!line.startsWith("  ") && line.endsWith(":")) {
-      currentFile = line.slice(0, -1)
-      files.set(currentFile, [])
-      continue
-    }
-    if (currentFile) {
-      files.get(currentFile)?.push(line.trim())
-    }
-  }
-
-  if (files.size === 0) {
-    return null
-  }
-
-  const entries = [...files.entries()]
-  const totalMatches = matchCount > 0 ? matchCount : entries.reduce((sum, [, fileLines]) => sum + fileLines.length, 0)
-  const summary = entries.length === 1
-    ? ` in ${displayGrepPath(entries[0]![0], input.path)} (${totalMatches} matches)`
-    : ` (${totalMatches} matches in ${entries.length} files)`
-  const blocks = renderPathCodeBlockCollection(
-    entries.map(([filePath, fileLines]) => ({
-      filePath,
-      content: fileLines.join("\n"),
-      rootPath: input.path,
-    })),
-  )
-
-  return { summary, blocks }
-}
-
-function formatGrepSearchScope(input: { path?: string; include?: string }, matches: number) {
-  const location = input.path ? ` in ${displayGrepPath(input.path)}` : ""
-  const include = input.include ? ` [${input.include}]` : ""
-  return `${location}${include} (${matches} matches)`
-}
-
-function displayGrepPath(filePath: string, rootPath?: string) {
-  if (rootPath && filePath.startsWith(`${rootPath}/`)) {
-    return filePath.slice(rootPath.length + 1)
-  }
-  return filePath
-}
-
-type PathCodeBlock = {
-  filePath: string
-  content: string
-  rootPath?: string | undefined
-}
-
-function renderPathCodeBlockCollection(items: PathCodeBlock[]) {
-  if (items.length <= 1) {
-    return items.map((item) => renderPathCodeBlock(item.filePath, item.content, item.rootPath))
-  }
-
-  const totalLines = items.reduce((sum, item) => sum + countPathCodeBlockLines(item), 0)
-  if (totalLines <= TOOL_BLOB_VISIBLE_LINES * 2 + 1) {
-    return items.map((item) => renderPathCodeBlock(item.filePath, item.content, item.rootPath))
-  }
-
-  const head = takePathCodeBlockSide(items, TOOL_BLOB_VISIBLE_LINES, "head")
-  const tail = takePathCodeBlockSide(items, TOOL_BLOB_VISIBLE_LINES, "tail")
-  return [...head, "...", ...tail]
-}
-
-function takePathCodeBlockSide(items: PathCodeBlock[], budget: number, side: "head" | "tail") {
-  const ordered = side === "head" ? items : [...items].reverse()
-  const blocks: string[] = []
-  let remaining = budget
-
-  for (const item of ordered) {
-    if (remaining <= 0) {
-      break
-    }
-    const lineCount = countPathCodeBlockLines(item)
-    if (lineCount <= remaining) {
-      blocks.push(renderPathCodeBlock(item.filePath, item.content, item.rootPath))
-      remaining -= lineCount
-      continue
-    }
-    blocks.push(renderPartialPathCodeBlock(item, remaining, side))
-    remaining = 0
-  }
-
-  return side === "head" ? blocks : blocks.reverse()
-}
-
-function countPathCodeBlockLines(item: PathCodeBlock) {
-  const body = truncateToolBlob(item.content)
-  return 3 + body.split(/\r?\n/).length
-}
-
-function renderPartialPathCodeBlock(item: PathCodeBlock, budget: number, side: "head" | "tail") {
-  if (budget <= 1) {
-    return `\`${displayGrepPath(item.filePath, item.rootPath)}\``
-  }
-
-  const language = guessPathFenceLanguage(item.filePath)
-  const lines = truncateToolBlob(item.content).split(/\r?\n/)
-  const visible = Math.max(1, budget - 3)
-  const clipped = side === "head" ? lines.slice(0, visible) : lines.slice(-visible)
-  const body = clipped.join("\n")
-  const fence = codeFence(body)
-  return [
-    `\`${displayGrepPath(item.filePath, item.rootPath)}\``,
-    `${fence}${language}`,
-    body,
-    fence,
-  ].join("\n")
-}
-
-type EmbeddedFileBlock = {
-  filePath: string
-  content: string
-  rootPath?: string
-}
-
-function parseEmbeddedFileBlock(value: string): EmbeddedFileBlock | null {
-  const pathMatch = value.match(/<path>([\s\S]*?)<\/path>/)
-  const contentMatch = value.match(/<content>([\s\S]*?)<\/content>/)
-  if (!pathMatch || !contentMatch) {
-    return null
-  }
-
-  const filePath = trimTrailingNewlines(pathMatch[1] ?? "").trim()
-  if (!filePath) {
-    return null
-  }
-
-  return {
-    filePath,
-    content: trimTrailingNewlines(contentMatch[1] ?? ""),
-  }
 }
 
 function inferToolFilePath(update: ToolTranscriptUpdate, label: string) {
