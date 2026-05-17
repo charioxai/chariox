@@ -37,3 +37,18 @@ test("prompt meta render controller renders with current refs and usage", () => 
     { refs: { modelText: "model" } as unknown as PromptMetaRenderableRefs, parts: [], usage },
   ])
 })
+
+test("prompt meta render controller owns refs when no external refs are provided", () => {
+  const rendered: PromptMetaRenderableRefs[] = []
+  const controller = createPromptMetaRenderController({
+    getUsage: () => null,
+    renderMeta: (refs) => {
+      rendered.push(refs)
+    },
+  })
+
+  controller.assignRef("providerText", "provider" as unknown as PromptMetaRenderableRefs["providerText"])
+  controller.setRenderables([])
+
+  assert.equal(rendered[0]?.providerText, "provider")
+})

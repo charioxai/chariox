@@ -267,7 +267,10 @@ import {
   getSessionHistory,
   recordPromptInputHistory,
 } from "./session-history-api.js"
-import { createPromptMetaRenderController } from "./prompt-meta-render-controller.js"
+import {
+  createPromptMetaRenderController,
+  type PromptMetaRenderableRefKey,
+} from "./prompt-meta-render-controller.js"
 import { renderPromptMeta } from "./prompt-meta-renderer.js"
 import {
   type BackendProviderId,
@@ -740,18 +743,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let statusIndicatorBox: BoxRenderable | undefined
   let footerSummaryBox: BoxRenderable | undefined
   let historyLoadingBox: BoxRenderable | undefined
-  let promptMetaProviderText: TextRenderable | undefined
-  let promptMetaProviderDividerText: TextRenderable | undefined
-  let promptMetaModelText: TextRenderable | undefined
-  let promptMetaModelDividerText: TextRenderable | undefined
-  let promptMetaVariantText: TextRenderable | undefined
-  let promptMetaUsageDividerText: TextRenderable | undefined
-  let promptMetaUsageTokensText: TextRenderable | undefined
-  let promptMetaUsageBarOpenText: TextRenderable | undefined
-  let promptMetaUsageBarFilledText: TextRenderable | undefined
-  let promptMetaUsageBarEmptyText: TextRenderable | undefined
-  let promptMetaUsageBarCloseText: TextRenderable | undefined
-  let promptMetaUsagePercentText: TextRenderable | undefined
   let commandCenterBox: BoxRenderable | undefined
   let hotkeysOverlayBox: BoxRenderable | undefined
   let historyLoadingText: TextRenderable | undefined
@@ -1985,24 +1976,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const renderAgentInteractions = agentInteractionStripController.render
 
   const promptMetaRenderController = createPromptMetaRenderController({
-    refs: () => ({
-      providerText: promptMetaProviderText,
-      providerDividerText: promptMetaProviderDividerText,
-      modelText: promptMetaModelText,
-      modelDividerText: promptMetaModelDividerText,
-      variantText: promptMetaVariantText,
-      usageDividerText: promptMetaUsageDividerText,
-      usageTokensText: promptMetaUsageTokensText,
-      usageBarOpenText: promptMetaUsageBarOpenText,
-      usageBarFilledText: promptMetaUsageBarFilledText,
-      usageBarEmptyText: promptMetaUsageBarEmptyText,
-      usageBarCloseText: promptMetaUsageBarCloseText,
-      usagePercentText: promptMetaUsagePercentText,
-    }),
     getUsage: promptUsageMeta,
     renderMeta: renderPromptMeta,
   })
   const setPromptMetaRenderables = promptMetaRenderController.setRenderables
+  const assignPromptMetaRef = (key: PromptMetaRenderableRefKey) => (value: TextRenderable | undefined) => {
+    promptMetaRenderController.assignRef(key, value)
+    updateSessionChrome()
+  }
 
   const historyLoadingRenderController = createHistoryLoadingRenderController({
     renderer,
@@ -4252,54 +4233,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         }
         void submitPrompt()
       }}
-      onPromptMetaProviderTextRef={(value) => {
-        promptMetaProviderText = value
-        updateSessionChrome()
-      }}
-      onPromptMetaProviderDividerTextRef={(value) => {
-        promptMetaProviderDividerText = value
-        updateSessionChrome()
-      }}
-      onPromptMetaModelTextRef={(value) => {
-        promptMetaModelText = value
-        updateSessionChrome()
-      }}
-      onPromptMetaModelDividerTextRef={(value) => {
-        promptMetaModelDividerText = value
-        updateSessionChrome()
-      }}
-      onPromptMetaVariantTextRef={(value) => {
-        promptMetaVariantText = value
-        updateSessionChrome()
-      }}
-      onPromptMetaUsageDividerTextRef={(value) => {
-        promptMetaUsageDividerText = value
-        updateSessionChrome()
-      }}
-      onPromptMetaUsageTokensTextRef={(value) => {
-        promptMetaUsageTokensText = value
-        updateSessionChrome()
-      }}
-      onPromptMetaUsageBarOpenTextRef={(value) => {
-        promptMetaUsageBarOpenText = value
-        updateSessionChrome()
-      }}
-      onPromptMetaUsageBarFilledTextRef={(value) => {
-        promptMetaUsageBarFilledText = value
-        updateSessionChrome()
-      }}
-      onPromptMetaUsageBarEmptyTextRef={(value) => {
-        promptMetaUsageBarEmptyText = value
-        updateSessionChrome()
-      }}
-      onPromptMetaUsageBarCloseTextRef={(value) => {
-        promptMetaUsageBarCloseText = value
-        updateSessionChrome()
-      }}
-      onPromptMetaUsagePercentTextRef={(value) => {
-        promptMetaUsagePercentText = value
-        updateSessionChrome()
-      }}
+      onPromptMetaProviderTextRef={assignPromptMetaRef("providerText")}
+      onPromptMetaProviderDividerTextRef={assignPromptMetaRef("providerDividerText")}
+      onPromptMetaModelTextRef={assignPromptMetaRef("modelText")}
+      onPromptMetaModelDividerTextRef={assignPromptMetaRef("modelDividerText")}
+      onPromptMetaVariantTextRef={assignPromptMetaRef("variantText")}
+      onPromptMetaUsageDividerTextRef={assignPromptMetaRef("usageDividerText")}
+      onPromptMetaUsageTokensTextRef={assignPromptMetaRef("usageTokensText")}
+      onPromptMetaUsageBarOpenTextRef={assignPromptMetaRef("usageBarOpenText")}
+      onPromptMetaUsageBarFilledTextRef={assignPromptMetaRef("usageBarFilledText")}
+      onPromptMetaUsageBarEmptyTextRef={assignPromptMetaRef("usageBarEmptyText")}
+      onPromptMetaUsageBarCloseTextRef={assignPromptMetaRef("usageBarCloseText")}
+      onPromptMetaUsagePercentTextRef={assignPromptMetaRef("usagePercentText")}
       onStatusIndicatorBoxRef={(value) => {
         statusIndicatorBox = value
         updateSessionChrome()
