@@ -162,6 +162,7 @@ import {
   updateSkill,
 } from "./extension-api.js"
 import { deleteKernel } from "./kernel-api.js"
+import { createKernelEventSubscriptionController } from "./kernel-event-subscription-controller.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
 import { runPollingLoop } from "./polling-effects.js"
@@ -940,9 +941,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
   let kernelResyncInFlight: Promise<void> | null = null
   let kernelRestartRecoveryInFlight: Promise<void> | null = null
-  let subscribedSessionId: string | null = null
-  let subscribedAttachmentId: string | null = null
-  let subscribedScope: "session" | "waiting-room" | null = null
   let lastLoggedFocusedBadgeState: string | null = null
   const agentFocusTransitionController = createAgentFocusTransitionController()
   let currentTurnId = computeCurrentTurnId(initialEntries)
@@ -5063,6 +5061,54 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
   })
 
+  const kernelEventSubscriptionController = createKernelEventSubscriptionController({
+    supportsKernelEventStream: () => supportsKernelEventStream,
+    getAttachment: attachmentState,
+    getSessionId: () => sessionState().id,
+    subscribeToWaitingRoomInventory: () => client.subscribeToWaitingRoomInventory(),
+    subscribeToKernelEvents: (sessionId, attachmentId) => client.subscribeToKernelEvents(sessionId, attachmentId),
+    onEvaluate: (state) => {
+      appLogger?.debug("evaluating kernel event subscription", {
+        session_id: state.nextSessionId,
+        attachment_id: state.nextAttachmentId,
+        subscribed_session_id: state.sessionId,
+        subscribed_attachment_id: state.attachmentId,
+        subscribed_scope: state.scope,
+        attached: state.attached,
+      })
+    },
+    onWaitingRoomSubscribed: () => {
+      appLogger?.info("subscribed to waiting room inventory events")
+    },
+    onSessionSubscribed: (sessionId, attachmentId) => {
+      appLogger?.info("subscribed to kernel events", {
+        session_id: sessionId,
+        attachment_id: attachmentId,
+      })
+    },
+    onWaitingRoomSubscriptionFailed: (error) => {
+      appLogger?.error("waiting room inventory subscription failed", {
+        error: formatError(error),
+      })
+      setDaemonDisconnected(true)
+      setStatusLine("Waiting to reconnect to the Arroba kernel.")
+      appendNotice(`Waiting room inventory subscription failed: ${formatError(error)}`, "warning")
+      updateSessionChrome()
+    },
+    onSessionSubscriptionFailed: (sessionId, attachmentId, error) => {
+      appLogger?.error("kernel event subscription failed", {
+        session_id: sessionId,
+        attachment_id: attachmentId,
+        error: formatError(error),
+      })
+      setDaemonDisconnected(true)
+      setStatusLine("Waiting to reconnect to the Arroba kernel.")
+      appendNotice(`Kernel event subscription failed: ${formatError(error)}`, "warning")
+      updateSessionChrome()
+    },
+  })
+  const syncKernelEventSubscription = () => kernelEventSubscriptionController.sync()
+
   const {
     transitionToNoSession,
     detachCurrentAttachment,
@@ -6917,9 +6963,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         }
         setAttachmentState(nextAttachment)
         applySessionState(applyProviderRunProfileToSession(nextSession, providerRunState()))
-        subscribedSessionId = null
-        subscribedAttachmentId = null
-        subscribedScope = null
+        kernelEventSubscriptionController.reset()
         await syncKernelEventSubscription()
         await refreshAgentPanes(sessionState())
         clearLocalBusyStateForAuthoritativeIdle(sessionState())
@@ -6961,9 +7005,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           }
           setAttachmentState(nextAttachment)
           applySessionState(applyProviderRunProfileToSession(nextSession, providerRunState()))
-          subscribedSessionId = null
-          subscribedAttachmentId = null
-          subscribedScope = null
+          kernelEventSubscriptionController.reset()
           await syncKernelEventSubscription()
           await refreshAgentPanes(sessionState())
           clearLocalBusyStateForAuthoritativeIdle(sessionState())
@@ -6986,70 +7028,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       kernelRestartRecoveryInFlight = null
     })
     return kernelRestartRecoveryInFlight
-  }
-
-  async function syncKernelEventSubscription() {
-    if (!supportsKernelEventStream) {
-      return
-    }
-
-    const attachment = attachmentState()
-    const sessionId = attachment ? sessionState().id : null
-    appLogger?.debug("evaluating kernel event subscription", {
-      session_id: sessionId,
-      attachment_id: attachment?.id ?? null,
-      subscribed_session_id: subscribedSessionId,
-      subscribed_attachment_id: subscribedAttachmentId,
-      subscribed_scope: subscribedScope,
-      attached: Boolean(attachment),
-    })
-
-    if (!attachment || !sessionId) {
-      if (subscribedScope === "waiting-room") {
-        return
-      }
-      try {
-        await client.subscribeToWaitingRoomInventory()
-        subscribedScope = "waiting-room"
-        subscribedAttachmentId = null
-        subscribedSessionId = null
-        appLogger?.info("subscribed to waiting room inventory events")
-      } catch (error) {
-        appLogger?.error("waiting room inventory subscription failed", {
-          error: formatError(error),
-        })
-        setDaemonDisconnected(true)
-        setStatusLine("Waiting to reconnect to the Arroba kernel.")
-        appendNotice(`Waiting room inventory subscription failed: ${formatError(error)}`, "warning")
-        updateSessionChrome()
-      }
-      return
-    }
-
-    if (subscribedScope === "session" && subscribedAttachmentId === attachment.id && subscribedSessionId === sessionId) {
-      return
-    }
-
-    try {
-      await client.subscribeToKernelEvents(sessionId, attachment.id)
-      subscribedScope = "session"
-      subscribedAttachmentId = attachment.id
-      subscribedSessionId = sessionId
-      appLogger?.info("subscribed to kernel events", {
-        session_id: sessionId,
-        attachment_id: attachment.id,
-      })
-    } catch (error) {
-      appLogger?.error("kernel event subscription failed", {
-        session_id: sessionId,
-        attachment_id: attachment.id,
-        error: formatError(error),
-      })
-      setDaemonDisconnected(true)
-      setStatusLine("Waiting to reconnect to the Arroba kernel.")
-      appendNotice(`Kernel event subscription failed: ${formatError(error)}`, "warning")
-      updateSessionChrome()
-    }
   }
 
   const startConnectionWatchdog = connectionHealthWatchdogController.start
