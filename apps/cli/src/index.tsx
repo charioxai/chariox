@@ -514,6 +514,7 @@ import { createTranscriptRetentionController } from "./transcript-retention-cont
 import { createTranscriptEventController } from "./transcript-event-controller.js"
 import { createTranscriptStateController } from "./transcript-state-controller.js"
 import { createTranscriptStreamController } from "./transcript-stream-controller.js"
+import { createTranscriptTurnStateController } from "./transcript-turn-state-controller.js"
 import { createTranscriptTurnExpansionController } from "./transcript-turn-expansion-controller.js"
 import {
   buildEmptyTranscriptRenderable,
@@ -774,8 +775,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   // Connection resilience tracking
   const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
   const agentFocusTransitionController = createAgentFocusTransitionController()
-  let currentTurnId = computeCurrentTurnId(initialEntries)
-  let nextTurnId = computeNextTurnId(initialEntries)
+  const transcriptTurnStateController = createTranscriptTurnStateController({
+    initialCurrentTurnId: computeCurrentTurnId(initialEntries),
+    initialNextTurnId: computeNextTurnId(initialEntries),
+  })
   let submittingAgentId: string | null = null
   const promptTextController = createPromptTextController({
     initialText: initialPromptDraft,
@@ -1612,7 +1615,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
     entryCounter,
     setEntryCounter,
-    currentTurnId: () => currentTurnId,
+    currentTurnId: transcriptTurnStateController.getCurrentTurnId,
     visibleTranscriptAgentId,
     expandedTurnIdsForAgent,
     setExpandedTurnState: (agentId, turnId, expanded) => {
@@ -1655,13 +1658,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     splitAgentResponseMode,
     isAttached,
     entries: () => entries,
-    nextTurnId: () => nextTurnId,
-    setNextTurnId: (turnId) => {
-      nextTurnId = turnId
-    },
-    setCurrentTurnId: (turnId) => {
-      currentTurnId = turnId
-    },
+    nextTurnId: transcriptTurnStateController.getNextTurnId,
+    setNextTurnId: transcriptTurnStateController.setNextTurnId,
+    setCurrentTurnId: transcriptTurnStateController.setCurrentTurnId,
     setSubmittingAgentId: (agentId) => {
       submittingAgentId = agentId
     },
@@ -1896,7 +1895,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setEntries(reconcile(nextEntries))
     },
     entryCounter,
-    currentTurnId: () => currentTurnId,
+    currentTurnId: transcriptTurnStateController.getCurrentTurnId,
     tools: primaryTranscriptRuntimeStore.tools,
     activeToolLabels: primaryTranscriptRuntimeStore.activeToolLabels,
     cancelPendingTurnCompletion,
@@ -2477,12 +2476,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setEntries(reconcile(nextEntries))
     },
     setEntryCounter,
-    setCurrentTurnId: (turnId) => {
-      currentTurnId = turnId
-    },
-    setNextTurnId: (turnId) => {
-      nextTurnId = turnId
-    },
+    setCurrentTurnId: transcriptTurnStateController.setCurrentTurnId,
+    setNextTurnId: transcriptTurnStateController.setNextTurnId,
     setMountedTranscriptAgentId: primaryTranscriptRuntimeStore.setMountedTranscriptAgentId,
     setLastScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
     rebuildTranscript,
