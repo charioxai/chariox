@@ -264,6 +264,7 @@ import {
   fallbackProviderCommandCatalogs,
   type ProviderCommandCatalogs,
 } from "./provider-command-catalog.js"
+import { createProviderActivityController } from "./provider-activity-controller.js"
 import {
   getProviderAuthStatus,
   getProviderCatalog,
@@ -358,6 +359,7 @@ import { createTranscriptScrollMonitorController } from "./transcript-scroll-mon
 import {
   createTerminalOutputRecordQueue,
 } from "./terminal-output-record-queue.js"
+import { createTerminalOutputRecordProcessor } from "./terminal-output-record-processor.js"
 import { createTerminalExitController } from "./terminal-exit-controller.js"
 import { createTranscriptRenderDeferralController } from "./transcript-render-deferral-controller.js"
 import { createWorkingAnimationController } from "./working-animation-controller.js"
@@ -2249,13 +2251,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const clearLocalBusyStateForAuthoritativeIdle = authoritativeIdleController.clear
 
-  const applyProviderActivity = (active: boolean) => {
-    if (active) {
-      setWorking(true)
-    }
-    turnCompletionController.handleProviderActivity(active)
-    updateSessionChrome()
-  }
+  const providerActivityController = createProviderActivityController({
+    setWorking,
+    handleProviderActivity: turnCompletionController.handleProviderActivity,
+    updateSessionChrome: () => updateSessionChrome(),
+  })
+  const applyProviderActivity = providerActivityController.apply
 
   const assistantMessageCompletionController = createAssistantMessageCompletionController({
     entries: () => entries.filter(Boolean),
@@ -2323,12 +2324,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const appendProviderChunk = transcriptStreamController.appendProviderChunk
   const appendToolUpdate = transcriptStreamController.appendToolUpdate
 
-  const processTerminalOutputRecord = (record: TerminalOutputRecord) => {
-    if (record.kind === "prompt_echo") {
-      appendPromptEchoToSharedHistory(Buffer.from(record.bytes).toString("utf8"))
-    }
-    kernelEventController.processTerminalOutputRecord(record)
-  }
+  const terminalOutputRecordProcessor = createTerminalOutputRecordProcessor({
+    appendPromptEchoToSharedHistory,
+    processKernelTerminalOutputRecord: (record) => {
+      kernelEventController.processTerminalOutputRecord(record)
+    },
+  })
+  const processTerminalOutputRecord = terminalOutputRecordProcessor.process
 
   const terminalOutputRecordQueue = createTerminalOutputRecordQueue<ReturnType<typeof startTimeout>, TerminalOutputRecord>({
     delayMs: STREAM_BATCH_WINDOW_MS,
