@@ -443,7 +443,10 @@ import {
   deriveWorkspaceShellContextForSession,
   submitWorkspaceShellCommand as submitWorkspaceShellCommandWithDeps,
 } from "./workspace-shell-controller.js"
-import { createWorkflowController, deriveWorkflowSelectionState } from "./workflow-controller.js"
+import {
+  createWorkflowController,
+  createWorkflowSelectionSyncController,
+} from "./workflow-controller.js"
 import {
   deriveWorkflowPromptState,
   formatWorkflowPromptPlaceholder,
@@ -998,20 +1001,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return nextSession.focused_agent_id !== focusedAgentId()
   }
 
+  const workflowSelectionSyncController = createWorkflowSelectionSyncController({
+    workflows: () => sessionState().workflows ?? [],
+    selectedWorkflowId,
+    selectedWorkflowNodeId,
+    setSelectedWorkflowId,
+    setSelectedWorkflowNodeId,
+  })
   createEffect(() => {
-    const nextSelection = deriveWorkflowSelectionState(
-      sessionState().workflows ?? [],
-      selectedWorkflowId(),
-      selectedWorkflowNodeId(),
-    )
-    const nextWorkflowId = nextSelection.workflowId
-    if (selectedWorkflowId() !== nextWorkflowId) {
-      setSelectedWorkflowId(nextWorkflowId)
-    }
-    const nextNodeId = nextSelection.nodeId
-    if (selectedWorkflowNodeId() !== nextNodeId) {
-      setSelectedWorkflowNodeId(nextNodeId)
-    }
+    workflowSelectionSyncController.sync()
   })
   const agentPanePreview = (agentId: string) => agentPanePreviews()[agentId] ?? ""
   const agentActivityLabel = (agentId: string | null | undefined) => (agentId ? agentActivityLabels()[agentId] ?? null : null)
