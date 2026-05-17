@@ -402,6 +402,7 @@ import {
   createStatusIndicatorRenderState,
   renderStatusIndicator as renderStatusIndicatorView,
 } from "./status-indicator-renderer.js"
+import { createStatusIndicatorController } from "./status-indicator-controller.js"
 import { createRenderScheduler } from "./render-scheduler.js"
 import {
   createResponsePaneRepaintController,
@@ -2029,24 +2030,25 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const runUiBatch = uiBatchController.run
 
-  const renderStatusIndicator = () => {
-    const attached = isAttached()
-    const badge = attached ? focusedStatusBadge() : null
-    if (!badge) {
-      runtimeDebugLogger.resetFocusedBadgeChange()
-    } else {
-      logFocusedBadgeChange(badge)
-    }
-    renderStatusIndicatorView({
-      renderer,
-      box: statusIndicatorBox,
-      state: statusIndicatorRenderState,
-      attached,
-      badge,
-      badgeWidth: STATUS_BADGE_WIDTH,
-      animationFrame: workingAnimationFrame(),
-    })
-  }
+  const statusIndicatorController = createStatusIndicatorController({
+    isAttached,
+    getBadge: focusedStatusBadge,
+    getAnimationFrame: workingAnimationFrame,
+    resetFocusedBadgeChange: runtimeDebugLogger.resetFocusedBadgeChange,
+    logFocusedBadgeChange,
+    renderIndicator: ({ attached, badge, animationFrame }) => {
+      renderStatusIndicatorView({
+        renderer,
+        box: statusIndicatorBox,
+        state: statusIndicatorRenderState,
+        attached,
+        badge,
+        badgeWidth: STATUS_BADGE_WIDTH,
+        animationFrame,
+      })
+    },
+  })
+  const renderStatusIndicator = statusIndicatorController.render
 
   const responseLayoutController = createResponseLayoutController({
     getRefs: () => ({
