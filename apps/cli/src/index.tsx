@@ -58,6 +58,7 @@ import { createCliDialogOverlayController } from "./cli-dialog-overlay-controlle
 import {
   renderCliDialogOverlay,
 } from "./cli-dialog-overlay.js"
+import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import {
   computeTranscriptRebuildScrollTop,
   nextWaitingRoomIntroStep,
@@ -74,7 +75,7 @@ import {
   createFooterFlashController,
   type FooterFlash,
 } from "./footer-flash-controller.js"
-import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent, shouldCycleFocusOnTabEvent } from "./hotkeys.js"
+import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent } from "./hotkeys.js"
 import { buildHotkeySections } from "./hotkey-help.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { clampScrollTop } from "./history-viewport.js"
@@ -5389,81 +5390,42 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       void activateWaitingRoom()
     },
   })
-  const handleStdinData = (chunk: Buffer | string) => {
-    const event = parseKeypress(chunk, { useKittyKeyboard: true })
-    if (!event) {
-      return
-    }
-    if (event.eventType !== "release" && dialogOverlayOpen() && event.name === "escape") {
-      closeActiveDialogOverlay()
-      return
-    }
-    if (handleSessionBrowserKey(event)) {
-      return
-    }
-    if (event.eventType !== "release" && event.ctrl && event.name === "e") {
+  const stdinKeyController = createCliStdinKeyController({
+    parseKeypress: (chunk, options) => parseKeypress(chunk, options),
+    dialogOverlayOpen,
+    closeActiveDialogOverlay,
+    handleSessionBrowserKey,
+    requestExit: () => {
       void requestExit()
-      return
-    }
-    if (handleFocusedInteractionKey(event)) {
-      return
-    }
-    if (promptInput?.focused && commandCenterOpen()) {
-      if (event.eventType !== "release" && event.name === "escape") {
-        clearCommandCenter()
-      }
-      return
-    }
-    if (event.eventType !== "release" && event.ctrl && event.name === "p") {
-      if (dialogOverlayOpen()) {
-        return
-      }
-      toggleWorkspaceScreen()
-      return
-    }
-    if (shouldCycleFocusOnTabEvent(event, {
-      attached: isAttached(),
-      hotkeysOpen: dialogOverlayOpen(),
-      promptFocused: Boolean(promptInput?.focused),
-      commandCenterOpen: commandCenterOpen(),
-      commandCenterQuery: commandCenterController.query(),
-    })) {
-      if (workflowScreenActive()) {
-        cycleWorkflowCanvasNode()
-      } else {
-        void handleCycleAgentFocus()
-      }
-      return
-    }
-    if (event.eventType !== "release" && event.meta && event.name === "c" && copyPromptSelection()) {
-      return
-    }
-    if (event?.ctrl && event.name === "c") {
-      void (activePrompt() ? requestPromptStop() : requestExit())
-      return
-    }
-    if (dialogOverlayOpen()) {
-      return
-    }
-    if (event.eventType !== "release" && promptInput?.focused) {
-      if (event.name === "backspace" && removePromptAttachmentsForEdit("backspace")) {
-        return
-      }
-      if (event.name === "delete" && removePromptAttachmentsForEdit("delete")) {
-        return
-      }
-    }
-    if (event.eventType !== "release" && event.name === "backspace" && isAttached() && !promptTextController.currentText() && pendingAttachments().length > 0) {
-      removeLastPendingPromptAttachment()
-      return
-    }
-    if (promptTurnNavigationController.handleKey(event)) {
-      return
-    }
-    if (waitingRoomKeyController.handleKey(event)) {
-      return
-    }
-  }
+    },
+    handleFocusedInteractionKey,
+    promptFocused: () => Boolean(promptInput?.focused),
+    commandCenterOpen,
+    commandCenterQuery: () => commandCenterController.query(),
+    clearCommandCenter,
+    toggleWorkspaceScreen,
+    isAttached,
+    workflowScreenActive,
+    cycleWorkflowCanvasNode,
+    cycleAgentFocus: () => {
+      void handleCycleAgentFocus()
+    },
+    copyPromptSelection,
+    activePrompt,
+    requestPromptStop: () => {
+      void requestPromptStop()
+    },
+    removePromptAttachmentsForEdit,
+    currentPromptText: () => promptTextController.currentText(),
+    pendingAttachmentCount: () => pendingAttachments().length,
+    removeLastPendingPromptAttachment,
+    handlePromptTurnNavigationKey: (event) => promptTurnNavigationController.handleKey({
+      ...event,
+      eventType: event.eventType ?? "",
+    }),
+    handleWaitingRoomKey: waitingRoomKeyController.handleKey,
+  })
+  const handleStdinData = stdinKeyController.handleData
 
   const automationSnapshot = () => {
     return buildCliAutomationSnapshot({
