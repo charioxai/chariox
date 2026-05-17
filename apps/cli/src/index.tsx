@@ -50,6 +50,7 @@ import {
   resolveActiveToolLabelForAgent,
   shouldPreserveAgentActivityLabel as shouldPreserveAgentActivityLabelState,
 } from "./agent-activity-state.js"
+import { createAgentFocusTransitionController } from "./agent-focus-transition-controller.js"
 import {
   captureCliDialogFocus,
   describeCliDialogFocusTarget,
@@ -945,7 +946,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let subscribedAttachmentId: string | null = null
   let subscribedScope: "session" | "waiting-room" | null = null
   let lastLoggedFocusedBadgeState: string | null = null
-  let pendingAgentFocusTransition: Promise<void> | null = null
+  const agentFocusTransitionController = createAgentFocusTransitionController()
   let currentTurnId = computeCurrentTurnId(initialEntries)
   let nextTurnId = computeNextTurnId(initialEntries)
   let mountedTranscriptAgentId = initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id ?? null : null
@@ -3005,28 +3006,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     lastTranscriptScrollTop = transcriptScrollbox.scrollTop
   }
 
-  const trackAgentFocusTransition = async <T,>(operation: () => Promise<T>): Promise<T> => {
-    const transition = operation()
-    const completion = transition.then(
-      () => undefined,
-      () => undefined,
-    )
-    pendingAgentFocusTransition = completion
-    try {
-      return await transition
-    } finally {
-      if (pendingAgentFocusTransition === completion) {
-        pendingAgentFocusTransition = null
-      }
-    }
-  }
+  const trackAgentFocusTransition = <T,>(operation: () => Promise<T>): Promise<T> =>
+    agentFocusTransitionController.track(operation)
 
-  const waitForPendingAgentFocusTransition = async () => {
-    if (!pendingAgentFocusTransition) {
-      return
-    }
-    await pendingAgentFocusTransition
-  }
+  const waitForPendingAgentFocusTransition = (): Promise<void> =>
+    agentFocusTransitionController.wait()
 
   const appendUserPrompt = (text: string, agentId?: string | null) => {
     recordTurnActivity("prompt_submit")
