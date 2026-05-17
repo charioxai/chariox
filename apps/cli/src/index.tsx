@@ -221,6 +221,7 @@ import { createPromptHistoryRestoreController } from "./prompt-history-restore-c
 import { createPromptKeyDownController } from "./prompt-keydown-controller.js"
 import { createPromptChromeProjectionController } from "./prompt-chrome-projection-controller.js"
 import { createPromptSessionHistoryController } from "./prompt-session-history-controller.js"
+import { createPromptSubmissionAgentStateController } from "./prompt-submission-agent-state-controller.js"
 import {
   createPromptPlaceholderSyncController,
   derivePromptInputMaxHeight,
@@ -779,7 +780,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     initialCurrentTurnId: computeCurrentTurnId(initialEntries),
     initialNextTurnId: computeNextTurnId(initialEntries),
   })
-  let submittingAgentId: string | null = null
+  const promptSubmissionAgentStateController = createPromptSubmissionAgentStateController()
   const promptTextController = createPromptTextController({
     initialText: initialPromptDraft,
     getPromptInput: () => promptInput ?? null,
@@ -884,7 +885,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setAgentBusyLatches((current) => updater(current))
     },
     getSubmitting: submitting,
-    getSubmittingAgentId: () => submittingAgentId,
+    getSubmittingAgentId: promptSubmissionAgentStateController.getSubmittingAgentId,
     getStreamingAgentId: streamingAgentId,
   })
   const agentPanePreview = agentRuntimeProjectionController.agentPanePreview
@@ -1256,7 +1257,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         setAgentActivityLabels({})
         setStreamingAgentId(null)
         setSubmitting(false)
-        submittingAgentId = null
+        promptSubmissionAgentStateController.clearSubmittingAgentId()
         setAgentBusyLatches({})
         setProviderActivityLabel(null)
         setActiveStatusLabel(null)
@@ -1661,9 +1662,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     nextTurnId: transcriptTurnStateController.getNextTurnId,
     setNextTurnId: transcriptTurnStateController.setNextTurnId,
     setCurrentTurnId: transcriptTurnStateController.setCurrentTurnId,
-    setSubmittingAgentId: (agentId) => {
-      submittingAgentId = agentId
-    },
+    setSubmittingAgentId: promptSubmissionAgentStateController.setSubmittingAgentId,
     setStreamingAgentId,
     markAgentBusy,
     clearAgentBusy,
@@ -1797,9 +1796,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setWorking,
     getSubmitting: submitting,
     setSubmitting,
-    clearSubmittingAgentId: () => {
-      submittingAgentId = null
-    },
+    clearSubmittingAgentId: promptSubmissionAgentStateController.clearSubmittingAgentId,
     getAgentBusyLatches: agentBusyLatches,
     getAgentActivityLabels: agentActivityLabels,
     setAgentActivityLabels,
@@ -1829,9 +1826,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAgentActivityLabels,
     setStreamingAgentId,
     setSubmitting,
-    clearSubmittingAgentId: () => {
-      submittingAgentId = null
-    },
+    clearSubmittingAgentId: promptSubmissionAgentStateController.clearSubmittingAgentId,
     resetPromptStop: promptStopController.reset,
     setAgentBusyLatches,
     setProviderActivityLabel,
@@ -2124,7 +2119,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (isAttached()) {
       return
     }
-    submittingAgentId = null
+    promptSubmissionAgentStateController.clearSubmittingAgentId()
     setAgentBusyLatches({})
   })
 
@@ -3428,11 +3423,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     recordPromptAreaHistoryEntry,
     clearCommandCenter,
     restoreFailedPromptUi,
-    getSubmittingAgentId: () => submittingAgentId,
+    getSubmittingAgentId: promptSubmissionAgentStateController.getSubmittingAgentId,
     clearAgentBusy,
-    setSubmittingAgentId: (agentId) => {
-      submittingAgentId = agentId
-    },
+    setSubmittingAgentId: promptSubmissionAgentStateController.setSubmittingAgentId,
     setSubmitting,
     setFatalError,
     flashFooter,
@@ -3473,11 +3466,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setStatusLine,
     recordPromptAreaHistoryEntry,
     restoreFailedPromptUi,
-    getSubmittingAgentId: () => submittingAgentId,
+    getSubmittingAgentId: promptSubmissionAgentStateController.getSubmittingAgentId,
     clearAgentBusy,
-    setSubmittingAgentId: (agentId) => {
-      submittingAgentId = agentId
-    },
+    setSubmittingAgentId: promptSubmissionAgentStateController.setSubmittingAgentId,
     setSubmitting,
     setFatalError,
     flashFooter,
