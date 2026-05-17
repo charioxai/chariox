@@ -3,6 +3,7 @@ import test from "node:test"
 
 import type { AgentInstance, CliOptions, RuntimeSession } from "./cli-types.js"
 import {
+  activeInteractionForAgent,
   agentPromptState,
   agentHasPromptWork,
   deriveAttachedCliTransitionState,
@@ -10,6 +11,9 @@ import {
   buildDetachedSessionState,
   derivePromptLifecycleTransition,
   deriveSessionTransitionState,
+  focusedAgentIdForSession,
+  focusedProviderRunForAgent,
+  promptWorkByAgent,
   sessionHasProcessingAgent,
   sessionHasPromptWork,
   sessionResponseLayout,
@@ -49,6 +53,49 @@ test("sessionResponseLayout prefers session config over fallback", () => {
   assert.equal(sessionResponseLayout(splitSession, "individual"), "split")
   assert.equal(sessionResponseLayout(session(), "split"), "split")
   assert.equal(sessionResponseLayout(session(), null), "individual")
+})
+
+test("runtime session projections derive focus, interactions, provider run, and prompt work by agent", () => {
+  const nextSession = session({
+    focused_agent_id: null,
+    agents: [agent("agent-a"), agent("agent-b")],
+    active_interactions: [
+      {
+        id: "interaction-1",
+        agent_id: "agent-b",
+        kind: "permission",
+        level: "info",
+        title: "Approve?",
+        message: "Approve?",
+        choices: [{ id: "yes", label: "Yes", reply: "yes", style: "primary" }],
+        requested_at_ms: 1,
+      },
+    ],
+    prompt_states: {
+      "agent-b": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "prompt-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-b",
+          prompt: "review",
+          status: "queued",
+        }],
+      },
+    },
+  })
+
+  const providerRun = providerRunFor("agent-a")
+
+  assert.equal(focusedAgentIdForSession(nextSession), "agent-a")
+  assert.equal(activeInteractionForAgent(nextSession, "agent-b")?.id, "interaction-1")
+  assert.equal(activeInteractionForAgent(nextSession, null), null)
+  assert.equal(focusedProviderRunForAgent(providerRun, "agent-a")?.id, "run-1")
+  assert.equal(focusedProviderRunForAgent(providerRun, "agent-b"), null)
+  assert.deepEqual(promptWorkByAgent(nextSession), {
+    "agent-a": false,
+    "agent-b": true,
+  })
 })
 
 test("deriveSessionTransitionState preserves active agent labels and clears idle ones", () => {
@@ -420,5 +467,20 @@ function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstanc
     created_at_ms: 1,
     last_activity_at_ms: 1,
     ...overrides,
+  }
+}
+
+function providerRunFor(agentId: string) {
+  return {
+    id: "run-1",
+    session_id: "session-1",
+    agent_instance_id: agentId,
+    adapter_key: "opencode",
+    provider: "opencode",
+    account_profile: "default",
+    model: "model",
+    variant: null,
+    usage_tokens_total: null,
+    state: "running",
   }
 }

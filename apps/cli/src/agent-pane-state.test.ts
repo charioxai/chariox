@@ -1,7 +1,12 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
+import {
+  refreshAgentPaneState,
+  selectCurrentAgentPaneEntries,
+  shouldRefreshAgentPanesForSessionChange,
+  trimAgentPaneEntries,
+} from "./agent-pane-state.js"
 
 test("trimAgentPaneEntries drops the oldest entries and clears trimmed merge keys", () => {
   const trimmedMergeKeys: string[] = []
@@ -46,6 +51,40 @@ test("selectCurrentAgentPaneEntries prefers the live visible transcript over sta
     "second question",
     "second answer",
   ])
+})
+
+test("shouldRefreshAgentPanesForSessionChange refreshes on agent shape or focused agent changes", () => {
+  assert.equal(shouldRefreshAgentPanesForSessionChange({
+    previousAgents: [{ id: "agent-a" }],
+    nextAgents: [{ id: "agent-a" }, { id: "agent-b" }],
+    splitAgentResponseMode: false,
+    currentFocusedAgentId: "agent-a",
+    nextFocusedAgentId: "agent-a",
+  }), true)
+
+  assert.equal(shouldRefreshAgentPanesForSessionChange({
+    previousAgents: [{ id: "agent-a" }, { id: "agent-b" }],
+    nextAgents: [{ id: "agent-a" }, { id: "agent-b" }],
+    splitAgentResponseMode: false,
+    currentFocusedAgentId: "agent-a",
+    nextFocusedAgentId: "agent-b",
+  }), true)
+
+  assert.equal(shouldRefreshAgentPanesForSessionChange({
+    previousAgents: [{ id: "agent-a" }, { id: "agent-b" }],
+    nextAgents: [{ id: "agent-a" }, { id: "agent-b" }],
+    splitAgentResponseMode: true,
+    currentFocusedAgentId: "agent-a",
+    nextFocusedAgentId: "agent-b",
+  }), false)
+
+  assert.equal(shouldRefreshAgentPanesForSessionChange({
+    previousAgents: [{ id: "agent-a" }, { id: "agent-b" }],
+    nextAgents: [{ id: "agent-a" }, { id: "agent-b" }],
+    splitAgentResponseMode: false,
+    currentFocusedAgentId: "agent-a",
+    nextFocusedAgentId: "agent-a",
+  }), false)
 })
 
 test("refreshAgentPaneState backfills older history until a user turn and keeps only valid expanded turns", async () => {

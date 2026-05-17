@@ -24,6 +24,24 @@ export function selectCurrentAgentPaneEntries<TEntry extends object>(options: {
   return (options.paneEntriesByAgent[options.agentId] ?? []).map((entry) => ({ ...entry }))
 }
 
+export function shouldRefreshAgentPanesForSessionChange<TAgent extends { id: string }>(options: {
+  previousAgents: readonly TAgent[]
+  nextAgents: readonly TAgent[]
+  splitAgentResponseMode: boolean
+  currentFocusedAgentId: string | null
+  nextFocusedAgentId: string | null
+}): boolean {
+  const previousAgentSignature = options.previousAgents.map((agent) => agent.id).join(",")
+  const nextAgentSignature = options.nextAgents.map((agent) => agent.id).join(",")
+  if (nextAgentSignature !== previousAgentSignature) {
+    return true
+  }
+  if (options.splitAgentResponseMode) {
+    return false
+  }
+  return options.nextFocusedAgentId !== options.currentFocusedAgentId
+}
+
 function countRenderablePaneEntries<TEntry extends { role: string }>(entries: readonly TEntry[]) {
   return entries.filter((entry) => entry.role !== "turn_toggle").length
 }

@@ -4,6 +4,8 @@ import {
   normalizeAgentPromptState,
   type AgentPromptState,
   type CliOptions,
+  type RuntimeInteraction,
+  type RuntimeProviderRun,
   type RuntimeSession,
   type SessionHistoryCursor,
   type TranscriptEntry,
@@ -129,6 +131,27 @@ export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
   })
 }
 
+export function focusedAgentIdForSession(session: RuntimeSession): string | null {
+  return session.focused_agent_id ?? session.agents[0]?.id ?? null
+}
+
+export function activeInteractionForAgent(
+  session: RuntimeSession,
+  agentId: string | null | undefined,
+): RuntimeInteraction | null {
+  if (!agentId) {
+    return null
+  }
+  return session.active_interactions?.find((interaction) => interaction.agent_id === agentId) ?? null
+}
+
+export function focusedProviderRunForAgent(
+  run: RuntimeProviderRun | null,
+  focusedAgentId: string | null | undefined,
+): RuntimeProviderRun | null {
+  return run && run.agent_instance_id === focusedAgentId ? run : null
+}
+
 export function shouldConfirmIdleTurnCompletion(options: {
   nextSession: RuntimeSession
   currentWorking: boolean
@@ -180,6 +203,14 @@ export function agentHasPromptWork(
   return Boolean(promptState?.active_prompt) || (promptState?.queued_prompts.length ?? 0) > 0
 }
 
+export function promptWorkByAgent(session: RuntimeSession): Record<string, boolean> {
+  const state: Record<string, boolean> = {}
+  for (const agent of session.agents) {
+    state[agent.id] = agentHasPromptWork(session, agent.id)
+  }
+  return state
+}
+
 export function sessionResponseLayout(
   session: RuntimeSession | null | undefined,
   fallback?: MultiAgentResponseLayout | null,
@@ -198,8 +229,7 @@ export function deriveSessionTransitionState(
     .map((agent) => agent.id)
     .join(",")
   const nextAgentSignature = options.nextSession.agents.map((agent) => agent.id).join(",")
-  const nextFocusedAgentId =
-    options.nextSession.focused_agent_id ?? options.nextSession.agents[0]?.id ?? null
+  const nextFocusedAgentId = focusedAgentIdForSession(options.nextSession)
   const nextHasPromptWork = sessionHasPromptWork(options.nextSession)
   const resolvedStreamingAgentId = resolveStreamingAgentId(
     options.nextSession.agents,

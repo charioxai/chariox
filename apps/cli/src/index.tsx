@@ -66,7 +66,11 @@ import { createBackgroundPollerStartupController } from "./background-poller-sta
 import { createCommandCenterCommandExecutor } from "./command-center-command-executor.js"
 import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
-import { selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
+import {
+  selectCurrentAgentPaneEntries,
+  shouldRefreshAgentPanesForSessionChange as shouldRefreshAgentPanesForSessionChangeState,
+  trimAgentPaneEntries,
+} from "./agent-pane-state.js"
 import { createAgentPaneRefreshController } from "./agent-pane-refresh-controller.js"
 import { createAgentPaneTranscriptEntryController } from "./agent-pane-transcript-entry-controller.js"
 import { createAgentPaneTranscriptInteractionController } from "./agent-pane-transcript-interaction-controller.js"
@@ -328,11 +332,15 @@ import {
   createSessionChromeUpdateController,
 } from "./session-chrome-update-controller.js"
 import {
+  activeInteractionForAgent as activeInteractionForAgentForSession,
   agentHasPromptWork,
   agentPromptState,
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
   buildDetachedSessionState,
+  focusedAgentIdForSession,
+  focusedProviderRunForAgent,
+  promptWorkByAgent,
   sessionHasPromptWork,
   sessionResponseLayout,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
@@ -927,16 +935,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   const isAttached = () => attachmentState() !== null
-  const focusedAgentId = () => sessionState().focused_agent_id ?? sessionState().agents[0]?.id ?? null
+  const focusedAgentId = () => focusedAgentIdForSession(sessionState())
   const multiAgentMode = () => isAttached() && sessionState().agents.length > 1
   const workflowScreenShowing = () => isAttached() && workspaceScreenMode() === "workflow"
   const splitAgentResponseMode = () => isAttached() && sessionState().agents.length > 1 && multiAgentResponseLayout() === "split"
-  const activeInteractionForAgent = (agentId: string | null | undefined): RuntimeInteraction | null => {
-    if (!agentId) {
-      return null
-    }
-    return sessionState().active_interactions?.find((interaction) => interaction.agent_id === agentId) ?? null
-  }
+  const activeInteractionForAgent = (agentId: string | null | undefined): RuntimeInteraction | null =>
+    activeInteractionForAgentForSession(sessionState(), agentId)
   const focusedAgentInteraction = () => activeInteractionForAgent(focusedAgentId())
   const workflowPromptState = createMemo(() => deriveWorkflowPromptState({
     workflowScreenActive: workflowScreenShowing(),
@@ -977,15 +981,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     renderScheduler.requestRoot()
   }
   const shouldRefreshAgentPanesForSessionChange = (nextSession: RuntimeSession) => {
-    const previousAgentSignature = sessionState().agents.map((agent) => agent.id).join(",")
-    const nextAgentSignature = nextSession.agents.map((agent) => agent.id).join(",")
-    if (nextAgentSignature !== previousAgentSignature) {
-      return true
-    }
-    if (splitAgentResponseMode()) {
-      return false
-    }
-    return nextSession.focused_agent_id !== focusedAgentId()
+    return shouldRefreshAgentPanesForSessionChangeState({
+      previousAgents: sessionState().agents,
+      nextAgents: nextSession.agents,
+      splitAgentResponseMode: splitAgentResponseMode(),
+      currentFocusedAgentId: focusedAgentId(),
+      nextFocusedAgentId: focusedAgentIdForSession(nextSession),
+    })
   }
 
   const workflowSelectionSyncController = createWorkflowSelectionSyncController({
@@ -1006,9 +1008,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return provider && isBackendProviderId(provider) ? provider : null
   }
   const focusedProviderRun = () => {
-    const run = providerRunState()
-    const agentId = focusedAgentId()
-    return run && run.agent_instance_id === agentId ? run : null
+    return focusedProviderRunForAgent(providerRunState(), focusedAgentId())
   }
   const resolveSessionAgent = (reference?: string | null) => {
     return resolveSessionAgentReference(sessionState(), focusedAgentId(), reference)
@@ -1029,13 +1029,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const agentActivePrompt = (agentId: string | null | undefined) => promptStateForAgent(agentId)?.active_prompt ?? null
   const agentBusyLatch = (agentId: string | null | undefined) => readAgentBusyLatch(agentBusyLatches(), agentId)
   const anyPromptWork = () => sessionHasPromptWork(sessionState())
-  const hasPromptWorkByAgent = () => {
-    const state: Record<string, boolean> = {}
-    for (const agent of sessionState().agents) {
-      state[agent.id] = agentHasPromptWork(sessionState(), agent.id)
-    }
-    return state
-  }
+  const hasPromptWorkByAgent = () => promptWorkByAgent(sessionState())
   const focusedPromptState = () => promptStateForAgent(focusedAgentId())
   const focusedQueueDepth = () => agentQueuedDepth(focusedAgentId())
   const focusedActivePrompt = () => agentActivePrompt(focusedAgentId())
