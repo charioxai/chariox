@@ -250,13 +250,10 @@ import {
 import type { PromptMetaPart } from "./prompt-meta.js"
 import { renderPromptMeta } from "./prompt-meta-renderer.js"
 import {
-  backendProviderLabel,
   type BackendProviderId,
   fallbackProviderCatalog,
   isBackendProviderId,
   normalizeBackendProviderId,
-  selectConfiguredModel,
-  selectConfiguredVariant,
   type ProviderCatalog,
 } from "./provider-catalog.js"
 import {
@@ -271,13 +268,13 @@ import {
   launchProviderRun,
   listProviderProcesses,
   logoutProvider,
-  providerRunUsesNativeTui,
   sameProviderRun,
   startProviderLogin,
   teardownProviderProcesses,
   tryGetProviderRun,
   updateSessionConfig,
 } from "./provider-api.js"
+import { createProviderSelectionController } from "./provider-selection-controller.js"
 import { createProviderRecoveryController } from "./provider-recovery-controller.js"
 import {
   applyHistoryDeferral,
@@ -427,10 +424,8 @@ import {
   deriveWaitingRoomControlActivationDecision,
   deriveWaitingRoomDeleteDecision,
   deriveWaitingRoomKeyNavigationDecision,
-  deriveWaitingRoomModelSelectionDecision,
   deriveWaitingRoomSessionLifecycleDecision,
   deriveWaitingRoomStateUpdate,
-  deriveWaitingRoomVariantSelectionDecision,
   waitingRoomSessionLifecycleActionForEvent,
   type WaitingRoomSessionLifecycleAction,
 } from "./waiting-room-controller.js"
@@ -1807,168 +1802,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
     return waitingRoomDataRefresh
   }
-  const applyModelSelection = async (modelId: string) => {
-    const currentSelection = currentProviderSelection()
-    const decision = deriveWaitingRoomModelSelectionDecision({
-      modelId,
-      state: waitingRoomState(),
-      sessions: availableSessions(),
-      catalog: providerCatalogState(),
-      themeRegistry: themeRegistryState(),
-      currentProvider: normalizeBackendProviderId(currentSelection.provider),
-      configuredEffort: currentSelection.effort,
-    })
-    if (decision.kind === "error") {
-      flashFooter(decision.message, "error")
-      return
-    }
-    reconcileWaitingRoom(decision.nextState)
-    if (!isAttached()) {
-      flashFooter(`selected model ${decision.selectedModelId}`, "info")
-      return
-    }
-    const agentId = focusedAgentId()
-    if (!agentId) {
-      flashFooter("no focused agent to update", "error")
-      return
-    }
-    const activeRun = providerRunState()
-    if (activeRun?.agent_instance_id === agentId && providerRunUsesNativeTui(activeRun)) {
-      flashFooter("model is controlled by the provider-native TUI for this agent", "error")
-      return
-    }
-    const payload = await updateAgentProfile(
-      client,
-      sessionState().id,
-      agentId,
-      {
-        provider: decision.launch.provider,
-        model: decision.launch.model,
-        effort: decision.launch.effort,
-      },
-    )
-    applySessionState(payload.session)
-    setProviderRunState(null)
-    flashFooter(`model set to ${decision.selectedModelId}`, "info")
-  }
-  const applyVariantSelection = async (variant: string) => {
-    const currentSelection = currentProviderSelection()
-    const decision = deriveWaitingRoomVariantSelectionDecision({
-      variant,
-      currentModelId: currentSelection.model,
-      currentProviderId: normalizeBackendProviderId(currentSelection.provider),
-      state: waitingRoomState(),
-      sessions: availableSessions(),
-      catalog: providerCatalogState(),
-      themeRegistry: themeRegistryState(),
-    })
-    if (decision.kind === "error") {
-      flashFooter(decision.message, "error")
-      return
-    }
-    reconcileWaitingRoom(decision.nextState)
-    if (!isAttached()) {
-      flashFooter(`selected variant ${decision.selectedVariant}`, "info")
-      return
-    }
-    const agentId = focusedAgentId()
-    if (!agentId) {
-      flashFooter("no focused agent to update", "error")
-      return
-    }
-    const activeRun = providerRunState()
-    if (activeRun?.agent_instance_id === agentId && providerRunUsesNativeTui(activeRun)) {
-      flashFooter("variant is controlled by the provider-native TUI for this agent", "error")
-      return
-    }
-    const payload = await updateAgentProfile(
-      client,
-      sessionState().id,
-      agentId,
-      {
-        provider: decision.launch.provider,
-        model: decision.launch.model,
-        effort: decision.launch.effort,
-      },
-    )
-    applySessionState(payload.session)
-    setProviderRunState(null)
-    flashFooter(`variant set to ${decision.selectedVariant}`, "info")
-  }
-  const applyProviderSelection = async (providerId: string) => {
-    if (!isBackendProviderId(providerId)) {
-      flashFooter(`unknown provider: ${providerId}`, "error")
-      return
-    }
-    options.provider = providerId
-    const saved = preferencesState().providers?.[providerId]
-    const selected = selectConfiguredModel(
-      providerCatalogState(),
-      saved?.model ?? options.model,
-      providerId,
-    )
-    if (selected) {
-      options.model = selected.id
-    }
-    if (saved?.effort != null) {
-      options.effort = saved.effort
-    } else if (selected) {
-      options.effort = selectConfiguredVariant(selected, options.effort)
-    }
-    reconcileWaitingRoom({
-      ...waitingRoomState(),
-      providerId,
-      modelId: options.model,
-      effort: options.effort,
-    })
-    if (isAttached() && attachmentState()) {
-      try {
-        const agentId = focusedAgentId()
-        if (!agentId) {
-          flashFooter("no focused agent to update", "error")
-          return
-        }
-        const payload = await updateAgentProfile(
-          client,
-          sessionState().id,
-          agentId,
-          {
-            provider: providerId,
-            model: options.model,
-            effort: options.effort,
-          },
-        )
-        applySessionState(payload.session)
-        setProviderRunState(null)
-      } catch (error) {
-        appLogger?.warn("provider profile update failed", {
-          provider: providerId,
-          error: formatError(error),
-        })
-        flashFooter(formatError(error), "error")
-        return
-      }
-    }
-    if (providerId === "codex") {
-      try {
-        const status = await getProviderAuthStatus(client, providerId)
-        if (status.auth_state !== "authenticated") {
-          appendNotice(
-            [
-              "Codex is not logged in.",
-              status.login_hint ?? "Run /provider login codex to authenticate.",
-            ].join(" "),
-          )
-        }
-      } catch (error) {
-        appLogger?.warn("provider auth status lookup failed after selection", {
-          provider: providerId,
-          error: formatError(error),
-        })
-      }
-    }
-    flashFooter(`${backendProviderLabel(providerId)} selected`, "info")
-  }
   const currentProviderSelection = () => deriveCurrentProviderSelection({
     providerRun: focusedProviderRun(),
     focusedAgent: focusedAgent(),
@@ -1977,6 +1810,40 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     defaultModel: options.model,
     defaultEffort: options.effort,
   })
+  const providerSelectionController = createProviderSelectionController({
+    currentProviderSelection,
+    waitingRoomState,
+    availableSessions,
+    providerCatalog: providerCatalogState,
+    themeRegistry: themeRegistryState,
+    preferences: preferencesState,
+    defaults: () => ({
+      provider: (options.provider ?? "opencode") as BackendProviderId,
+      model: options.model,
+      effort: options.effort,
+    }),
+    setDefaults: (selection) => {
+      options.provider = selection.provider
+      options.model = selection.model
+      options.effort = selection.effort
+    },
+    reconcileWaitingRoom,
+    isAttached,
+    focusedAgentId,
+    providerRunState,
+    sessionState,
+    updateAgentProfile: (sessionId, agentId, profile) => updateAgentProfile(client, sessionId, agentId, profile),
+    applySessionState: (session) => applySessionState(session),
+    clearProviderRunState: () => setProviderRunState(null),
+    getProviderAuthStatus: (provider) => getProviderAuthStatus(client, provider),
+    appendNotice: (text) => appendNotice(text),
+    flashFooter: (message, tone) => flashFooter(message, tone),
+    warn: (message, fields) => appLogger?.warn(message, fields),
+    formatError,
+  })
+  const applyProviderSelection = providerSelectionController.applyProviderSelection
+  const applyModelSelection = providerSelectionController.applyModelSelection
+  const applyVariantSelection = providerSelectionController.applyVariantSelection
   const promptMetaParts = (): PromptMetaPart[] => derivePromptMetaState({
     providerRun: focusedProviderRun(),
     focusedAgent: focusedAgent(),
