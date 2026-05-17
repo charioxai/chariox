@@ -16,6 +16,7 @@ export type GlobalKeyboardShortcutControllerDeps = {
 
 export type GlobalKeyboardShortcutController = {
   handleKey(event: GlobalKeyboardShortcutEvent): boolean
+  handleSigint(): void
 }
 
 export function createGlobalKeyboardShortcutController(
@@ -25,8 +26,18 @@ export function createGlobalKeyboardShortcutController(
     event.preventDefault()
     event.stopPropagation()
   }
+  const requestPromptStopOrExit = () => {
+    if (deps.activePrompt()) {
+      deps.requestPromptStop()
+    } else {
+      deps.requestExit()
+    }
+  }
 
   return {
+    handleSigint() {
+      requestPromptStopOrExit()
+    },
     handleKey(event) {
       if (deps.handleHotkeysToggleShortcut("keyboard", event)) {
         return true
@@ -43,11 +54,7 @@ export function createGlobalKeyboardShortcutController(
       }
       if (event.ctrl && event.name === "c") {
         consume(event)
-        if (deps.activePrompt()) {
-          deps.requestPromptStop()
-        } else {
-          deps.requestExit()
-        }
+        requestPromptStopOrExit()
         return true
       }
       if (deps.dialogOverlayOpen()) {

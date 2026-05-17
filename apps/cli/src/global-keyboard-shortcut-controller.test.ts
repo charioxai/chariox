@@ -44,6 +44,16 @@ test("global keyboard shortcut controller maps ctrl-c to stop or exit", () => {
   assert.deepEqual(exitHarness.calls(), ["hotkeys:c", "exit"])
 })
 
+test("global keyboard shortcut controller maps SIGINT to stop or exit", () => {
+  const stopHarness = createHarness({ activePrompt: true })
+  stopHarness.controller.handleSigint()
+  assert.deepEqual(stopHarness.calls(), ["stop"])
+
+  const exitHarness = createHarness({ activePrompt: false })
+  exitHarness.controller.handleSigint()
+  assert.deepEqual(exitHarness.calls(), ["exit"])
+})
+
 test("global keyboard shortcut controller consumes keys while a dialog is open", () => {
   const harness = createHarness({ dialogOpen: true })
   const event = keyEvent("x")

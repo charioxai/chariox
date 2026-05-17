@@ -3462,10 +3462,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     activePrompt,
   })
   useKeyboard(globalKeyboardShortcutController.handleKey)
-
-  const handleSigint = () => {
-    void (activePrompt() ? requestPromptStop() : requestExit())
-  }
+  const handleSigint = globalKeyboardShortcutController.handleSigint
   const promptKeyDownController = createPromptKeyDownController({
     handleFocusedInteractionKey,
     handleCommandCenterKey,
