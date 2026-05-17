@@ -739,10 +739,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     BoxRenderable,
     ToolTranscriptUpdate
   >()
-  let historyLoadingBox: BoxRenderable | undefined
   let commandCenterBox: BoxRenderable | undefined
   let hotkeysOverlayBox: BoxRenderable | undefined
-  let historyLoadingText: TextRenderable | undefined
   const statusIndicatorRenderState = createStatusIndicatorRenderState()
   const closingStateController = createCliClosingStateController()
   const primaryTranscriptRuntimeStore = createPrimaryTranscriptRuntimeStoreController<
@@ -840,9 +838,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const primaryTranscriptSurfaceTone = responsePaneProjectionController.primaryTranscriptSurfaceTone
   const auxiliaryTranscriptSurfaceTone = responsePaneProjectionController.auxiliaryTranscriptSurfaceTone
+  const historyLoadingRenderController = createHistoryLoadingRenderController({
+    renderer,
+    loading: loadingHistory,
+    renderIndicator: renderHistoryLoadingIndicatorView,
+  })
+  const renderHistoryLoadingIndicator = historyLoadingRenderController.render
   const responsePaneRenderScheduleController = createResponsePaneRenderScheduleController({
     responseLayoutBox: () => responseLayoutBox,
-    historyLoadingBox: () => historyLoadingBox,
+    historyLoadingBox: historyLoadingRenderController.getBox,
     requestTree: (renderable) => renderScheduler.requestTree(renderable),
     requestRoot: () => renderScheduler.requestRoot(),
   })
@@ -1982,18 +1986,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     updateSessionChrome()
   }
 
-  const historyLoadingRenderController = createHistoryLoadingRenderController({
-    renderer,
-    box: () => historyLoadingBox,
-    text: () => historyLoadingText,
-    loading: loadingHistory,
-    assignText: (value) => {
-      historyLoadingText = value
-    },
-    renderIndicator: renderHistoryLoadingIndicatorView,
-  })
-  const renderHistoryLoadingIndicator = historyLoadingRenderController.render
-
   const requestTranscriptRender = () => {
     transcriptRenderDeferralController.request()
   }
@@ -2041,7 +2033,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       primaryInteractionBox: responsePrimaryInteractionBox,
       primaryFooterBox: responsePrimaryFooterBox,
       primaryScrollbox: transcriptScrollbox,
-      historyLoadingBox,
+      historyLoadingBox: historyLoadingRenderController.getBox(),
       auxiliaryPanes: responseAuxiliaryPanes,
       auxiliaryInteractionBoxes: responseAuxiliaryInteractionBoxes,
       auxiliaryFooterBoxes: responseAuxiliaryFooterBoxes,
@@ -4155,7 +4147,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         applyResponseLayout()
       }}
       onHistoryLoadingBoxRef={(value) => {
-        historyLoadingBox = value
+        historyLoadingRenderController.assignBox(value)
         logViewDebug("mounted history loading box")
         renderHistoryLoadingIndicator()
       }}

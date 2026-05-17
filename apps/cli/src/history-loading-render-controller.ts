@@ -8,24 +8,32 @@ type HistoryLoadingRenderOptions<TRenderer, TBox, TText> = {
 
 export type HistoryLoadingRenderControllerDeps<TRenderer, TBox, TText> = {
   renderer: TRenderer
-  box: () => TBox | undefined
-  text: () => TText | undefined
   loading: () => boolean
-  assignText: (text: TText | undefined) => void
   renderIndicator: (options: HistoryLoadingRenderOptions<TRenderer, TBox, TText>) => void
 }
 
 export function createHistoryLoadingRenderController<TRenderer, TBox, TText>(
   deps: HistoryLoadingRenderControllerDeps<TRenderer, TBox, TText>,
 ) {
+  let box: TBox | undefined
+  let text: TText | undefined
+
   return {
+    assignBox(value: TBox | undefined) {
+      box = value
+    },
+    getBox() {
+      return box
+    },
     render() {
       deps.renderIndicator({
-        box: deps.box(),
-        text: deps.text(),
+        box,
+        text,
         loading: deps.loading(),
         renderer: deps.renderer,
-        assignText: deps.assignText,
+        assignText: (value) => {
+          text = value
+        },
       })
     },
   }
