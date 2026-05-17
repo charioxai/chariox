@@ -201,6 +201,12 @@ import {
 } from "./prompt-history-navigation-controller.js"
 import { createPromptKeyDownController } from "./prompt-keydown-controller.js"
 import {
+  createPromptPlaceholderSyncController,
+  derivePromptAreaBackground,
+  derivePromptInputMaxHeight,
+  derivePromptPlaceholder,
+} from "./prompt-surface-state.js"
+import {
   createPromptInputHistoryRefreshController,
 } from "./prompt-input-history-refresh-controller.js"
 import { createPromptInputHistoryController } from "./prompt-input-history-controller.js"
@@ -456,7 +462,6 @@ import {
 } from "./workflow-inspector-projection.js"
 import {
   deriveWorkflowPromptState,
-  formatWorkflowPromptPlaceholder,
 } from "./workflow-prompt-state.js"
 import {
   createWorkflowNodeInstructionsEditorController,
@@ -1640,22 +1645,24 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
   const promptPlaceholder = () => {
-    if (!isAttached()) {
-      return SESSION_NEW_PLACEHOLDER
-    }
-    return formatWorkflowPromptPlaceholder({
+    return derivePromptPlaceholder({
+      attached: isAttached(),
       workflowScreenActive: workflowScreenShowing(),
-      state: workflowPromptState(),
+      workflowPromptState: workflowPromptState(),
       attachedPlaceholder: ATTACHED_PROMPT_PLACEHOLDER,
       detachedPlaceholder: SESSION_NEW_PLACEHOLDER,
     })
   }
-  const promptAreaBackground = () => (
-    themeRevision(),
-    isAttached()
-      ? (workflowScreenShowing() ? theme.backgroundElement : theme.backgroundPanel)
-      : theme.backgroundElement
-  )
+  const promptAreaBackground = () => {
+    themeRevision()
+    return derivePromptAreaBackground({
+      attached: isAttached(),
+      workflowScreenActive: workflowScreenShowing(),
+      attachedBackground: theme.backgroundPanel,
+      detachedBackground: theme.backgroundElement,
+      workflowBackground: theme.backgroundElement,
+    })
+  }
   const restorePromptHistory = (sessionId: string | null) => {
     const preferences = untrack(preferencesState)
     const nextEntries = sessionId
@@ -1782,11 +1789,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const refreshPromptAttachmentHighlights = promptAttachmentHighlightController.refresh
   const setPromptText = promptTextController.setText
-  const promptInputMaxHeight = () => (
-    isAttached()
-      ? Math.max(6, dimensions().height - 11)
-      : 6
-  )
+  const promptInputMaxHeight = () => derivePromptInputMaxHeight({
+    attached: isAttached(),
+    terminalHeight: dimensions().height,
+  })
   const promptFocusRetentionController = createPromptFocusRetentionController({
     delayMs: 0,
     scheduleTimer: startTimeout,
@@ -1809,12 +1815,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     retainPromptFocus,
   })
   const navigatePromptHistoryInput = promptHistoryNavigationController.navigate
-  const syncPromptPlaceholder = () => {
-    if (!promptInput) {
-      return
-    }
-    promptInput.placeholder = promptPlaceholder()
-  }
+  const promptPlaceholderSyncController = createPromptPlaceholderSyncController({
+    getPromptInput: () => promptInput ?? null,
+    getPlaceholder: promptPlaceholder,
+  })
+  const syncPromptPlaceholder = promptPlaceholderSyncController.sync
   createEffect(() => {
     promptPlaceholder()
     syncPromptPlaceholder()
