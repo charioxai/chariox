@@ -451,12 +451,11 @@ import { submitWorkspaceShellCommand as submitWorkspaceShellCommandWithDeps } fr
 import { createWorkflowController, deriveWorkflowSelectionState } from "./workflow-controller.js"
 import {
   deriveWorkflowPromptState,
-  formatWorkflowInvocationPrompt,
   formatWorkflowPromptPlaceholder,
   isWorkflowCommandInput,
   resolveActiveWorkflowRun,
-  validateWorkflowPromptSubmit,
 } from "./workflow-prompt-state.js"
+import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-controller.js"
 import { WorkspaceLayout } from "./workspace-layout.js"
 import {
   approveRemoteMachine,
@@ -5234,6 +5233,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
 
+  const workflowPromptSubmitController = createWorkflowPromptSubmitController({
+    getWorkflowPromptState: workflowPromptState,
+    getPendingAttachmentCount: () => pendingAttachments().length,
+    beginSubmittedPromptUi,
+    restoreFailedPromptUi,
+    invokeWorkflowEndpoint,
+    getSessionId: () => sessionState().id,
+    recordPromptAreaHistoryEntry,
+    flashFooter,
+    formatError,
+  })
+
   const submitPrompt = async () => {
     if (!promptInput) {
       return
@@ -5342,39 +5353,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
 
     if (workflowScreenShowing()) {
-      const submitDecision = validateWorkflowPromptSubmit({
-        state: workflowPromptState(),
-        pendingAttachmentCount: pendingAttachments().length,
-      })
-      if (!submitDecision.ok) {
-        flashFooter(submitDecision.message, submitDecision.tone)
-        return
-      }
-      const workflowInvocationPrompt = formatWorkflowInvocationPrompt(rawPrompt)
-
-      let submissionUi: SubmittedPromptUiSnapshot | null = null
-      try {
-        submissionUi = beginSubmittedPromptUi(rawPrompt)
-        const payload = await invokeWorkflowEndpoint(
-          submitDecision.workflowId,
-          submitDecision.endpointId,
-          workflowInvocationPrompt,
-        )
-        if ("workflow_run" in payload) {
-          flashFooter(
-            `started workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
-            "info",
-          )
-        } else {
-          flashFooter(`queued workflow launch ${payload.queued_launch.id}`, "info")
-        }
-        recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
-        return
-      } catch (error) {
-        restoreFailedPromptUi(submissionUi)
-        flashFooter(formatError(error), "error")
-        return
-      }
+      await workflowPromptSubmitController.submit(rawPrompt)
+      return
     }
 
     const prompt = formatPromptSubmissionBody(rawPrompt)
