@@ -417,10 +417,8 @@ import {
 import { bootstrapSession } from "./session-bootstrap.js"
 import { applyTheme, createTranscriptSyntaxStyle, setThemeRegistry, theme } from "./theme.js"
 import { DEFAULT_THEME_REGISTRY, loadThemeRegistry } from "./theme-registry.js"
-import {
-  deriveWaitingRoomStateUpdate,
-} from "./waiting-room-controller.js"
 import { createWaitingRoomActivationController } from "./waiting-room-activation-controller.js"
+import { createWaitingRoomReconcileController } from "./waiting-room-reconcile-controller.js"
 import {
   getWaitingRoomInventory,
   type RemoteKernelView,
@@ -1216,53 +1214,53 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const currentFocusedRenderable = () => (
     (renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null
   )
-  const reconcileWaitingRoom = (next: WaitingRoomState) => {
-    const currentState = waitingRoomState()
-    const update = deriveWaitingRoomStateUpdate({
-      currentState,
-      nextState: next,
-      sessions: availableSessions(),
-      catalog: providerCatalogState(),
-      remote: {
-        cloudNotice: waitingRoomCloudNotice(),
-        inventoryStatus: waitingRoomInventoryStatus(),
-        loadingFrame: waitingRoomState().introStep,
-        relay: relayStatusState(),
-        machines: remoteMachinesState(),
-        kernels: remoteKernelsState(),
-        terminals: terminalsState(),
-        slices: slicesState(),
-      },
-      themeRegistry: themeRegistryState(),
-      currentProvider: (options.provider ?? "opencode") as BackendProviderId,
-      currentModel: options.model,
-    })
-    setWaitingRoomState(update.normalizedState)
-    options.provider = update.nextProvider
-    options.model = update.nextModel
-    options.effort = update.nextEffort
-    if (currentState.themeId !== update.normalizedState.themeId) {
-      const nextThemeId = applyTheme(update.normalizedState.themeId, themeRegistryState())
+  const waitingRoomReconcileController = createWaitingRoomReconcileController({
+    getCurrentState: waitingRoomState,
+    setWaitingRoomState,
+    getSessions: availableSessions,
+    getProviderCatalog: providerCatalogState,
+    getRemoteState: () => ({
+      cloudNotice: waitingRoomCloudNotice(),
+      inventoryStatus: waitingRoomInventoryStatus(),
+      loadingFrame: waitingRoomState().introStep,
+      relay: relayStatusState(),
+      machines: remoteMachinesState(),
+      kernels: remoteKernelsState(),
+      terminals: terminalsState(),
+      slices: slicesState(),
+    }),
+    getThemeRegistry: themeRegistryState,
+    getCurrentProvider: () => (options.provider ?? "opencode") as BackendProviderId,
+    getCurrentModel: () => options.model,
+    setProviderDefaults: (defaults) => {
+      options.provider = defaults.provider
+      options.model = defaults.model
+      options.effort = defaults.effort
+    },
+    applyTheme,
+    resetTranscriptSyntax: () => {
       transcriptSyntax = createTranscriptSyntaxStyle()
+    },
+    bumpThemeRevision: () => {
       setThemeRevision((revision) => revision + 1)
-      void saveUiPreferences({ theme: nextThemeId })
-      setPreferencesState((current) => mergeUiPreferences(current, { theme: nextThemeId }))
-      applyResponseLayout()
-      renderCommandCenter()
-    }
-    if (update.shouldPersistProviderPreferences) {
-      void saveProviderPreferences(update.nextProvider, {
-        model: options.model,
-        effort: options.effort,
-      })
-    }
-    if (!isAttached()) {
-      rebuildTranscript()
-    }
-    updateSessionChrome()
-    syncCommandCenter()
-    return update.normalizedState
-  }
+    },
+    saveUiThemePreference: (themeId) => {
+      void saveUiPreferences({ theme: themeId })
+    },
+    mergeUiThemePreference: (themeId) => {
+      setPreferencesState((current) => mergeUiPreferences(current, { theme: themeId }))
+    },
+    applyResponseLayout: () => applyResponseLayout(),
+    renderCommandCenter: () => renderCommandCenter(),
+    saveProviderPreferences: (provider, preferences) => {
+      void saveProviderPreferences(provider, preferences)
+    },
+    isAttached,
+    rebuildTranscript: () => rebuildTranscript(),
+    updateSessionChrome: () => updateSessionChrome(),
+    syncCommandCenter: () => syncCommandCenter(),
+  })
+  const reconcileWaitingRoom = waitingRoomReconcileController.reconcile
   const waitingRoomActivationController = createWaitingRoomActivationController({
     isKernelConnected: kernelConnected,
     connectKernel: () => connectDetachedKernelFromWaitingRoom(),

@@ -200,6 +200,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: CLI runtime session snapshot application is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI hotkey-toggle shortcut handling is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI waiting-room activation side effects are responsibility-owned; CLI tests pass.
+- Latest verified batch: CLI waiting-room reconciliation side effects are responsibility-owned; CLI tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
