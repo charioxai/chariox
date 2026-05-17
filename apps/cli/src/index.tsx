@@ -205,6 +205,7 @@ import { createPromptSurfaceMouseController } from "./prompt-surface-mouse-contr
 import {
   createPromptHistoryNavigationController,
 } from "./prompt-history-navigation-controller.js"
+import { createPromptHistoryRestoreController } from "./prompt-history-restore-controller.js"
 import { createPromptKeyDownController } from "./prompt-keydown-controller.js"
 import {
   createPromptPlaceholderSyncController,
@@ -1647,19 +1648,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       workflowBackground: theme.backgroundElement,
     })
   }
-  const restorePromptHistory = (sessionId: string | null) => {
-    const preferences = untrack(preferencesState)
-    const nextEntries = sessionId
-      ? sessionPromptHistoryEntries(preferences, sessionId)
-      : []
-    const nextDraft = sessionId
-      ? sessionPromptDraftEntry(preferences, sessionId)
-      : ""
-    setPromptHistoryEntries(nextEntries)
-    setPromptHistoryIndex(null)
-    setPromptHistoryDraft(null)
-    setPromptText(nextDraft)
-  }
+  const promptHistoryRestoreController = createPromptHistoryRestoreController({
+    getPreferences: () => untrack(preferencesState),
+    setPromptHistoryEntries,
+    resetPromptHistoryNavigation: () => {
+      setPromptHistoryIndex(null)
+      setPromptHistoryDraft(null)
+    },
+    setPromptText: (text) => {
+      setPromptText(text)
+    },
+  })
+  const restorePromptHistory = promptHistoryRestoreController.restore
   const persistSessionPromptState = async (
     sessionId: string,
     next: {
