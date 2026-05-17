@@ -1,7 +1,12 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { hydrateTranscriptEntries, mergeAdjacentHistoryPageEntries } from "./transcript-history.js"
+import type { TranscriptEntry } from "./cli-types.js"
+import {
+  hydrateTranscriptEntries,
+  mergeAdjacentHistoryPageEntries,
+  stitchPrependedHistory,
+} from "./transcript-history.js"
 
 test("hydrateTranscriptEntries reconstructs tool updates and suppresses idle status noise", () => {
   const entries = hydrateTranscriptEntries([
@@ -104,3 +109,77 @@ test("mergeAdjacentHistoryPageEntries preserves merge keys across stitched fragm
   assert.equal(merged[0]?.entry.text, "hello world")
   assert.equal(merged[0]?.entry.merge_key, "a-1")
 })
+
+test("stitchPrependedHistory merges adjacent assistant fragments", () => {
+  const stitched = stitchPrependedHistory(
+    [entry(1, "assistant", "hello ", {
+      historyEntryIndex: 7,
+      historyFragmentStart: 0,
+      historyFragmentEnd: 6,
+      historyTotalChars: 11,
+    })],
+    [entry(2, "assistant", "world", {
+      historyEntryIndex: 7,
+      historyFragmentStart: 6,
+      historyFragmentEnd: 11,
+      historyTotalChars: 11,
+    })],
+  )
+
+  assert.equal(stitched.length, 1)
+  assert.equal(stitched[0]?.text, "hello world")
+  assert.equal(stitched[0]?.sourceText, "hello world")
+  assert.equal(stitched[0]?.historyFragmentStart, 0)
+  assert.equal(stitched[0]?.historyFragmentEnd, 11)
+  assert.equal(stitched[0]?.historyDeferred, undefined)
+})
+
+test("stitchPrependedHistory rebuilds structured tool fragments", () => {
+  const toolPayload = JSON.stringify({
+    id: "tool-1",
+    tool: "bash",
+    status: "completed",
+    input: { command: "pnpm test" },
+    output: "ok",
+  })
+  const splitAt = Math.floor(toolPayload.length / 2)
+
+  const stitched = stitchPrependedHistory(
+    [entry(1, "tool", toolPayload.slice(0, splitAt), {
+      sourceText: toolPayload.slice(0, splitAt),
+      historyEntryIndex: 9,
+      historyFragmentStart: 0,
+      historyFragmentEnd: splitAt,
+      historyTotalChars: toolPayload.length,
+      mergeKey: "stale",
+    })],
+    [entry(2, "tool", toolPayload.slice(splitAt), {
+      sourceText: toolPayload.slice(splitAt),
+      historyEntryIndex: 9,
+      historyFragmentStart: splitAt,
+      historyFragmentEnd: toolPayload.length,
+      historyTotalChars: toolPayload.length,
+      mergeKey: "stale",
+    })],
+  )
+
+  assert.equal(stitched.length, 1)
+  assert.equal(stitched[0]?.mergeKey, "tool-1")
+  assert.match(stitched[0]?.text ?? "", /\*\*bash\*\*/)
+  assert.match(stitched[0]?.text ?? "", /pnpm test/)
+  assert.equal(stitched[0]?.sourceText, toolPayload)
+})
+
+function entry(
+  id: number,
+  role: TranscriptEntry["role"],
+  text: string,
+  overrides: Partial<TranscriptEntry> = {},
+): TranscriptEntry {
+  return {
+    id,
+    role,
+    text,
+    ...overrides,
+  }
+}

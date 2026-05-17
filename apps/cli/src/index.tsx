@@ -279,9 +279,8 @@ import {
 import { createProviderSelectionController } from "./provider-selection-controller.js"
 import { createProviderRecoveryController } from "./provider-recovery-controller.js"
 import {
-  applyHistoryDeferral,
   hydrateTranscriptEntries,
-  markDeferredHistoryEntries,
+  stitchPrependedHistory,
 } from "./transcript-history.js"
 import {
   createPromptContentChangeController,
@@ -362,9 +361,6 @@ import { createTerminalExitController } from "./terminal-exit-controller.js"
 import { createTranscriptRenderDeferralController } from "./transcript-render-deferral-controller.js"
 import { createWorkingAnimationController } from "./working-animation-controller.js"
 import {
-  formatToolTranscriptUpdate,
-  mergeToolTranscriptUpdate,
-  parseToolTranscriptUpdate,
   shouldRenderProviderStatus,
   type ToolTranscriptUpdate,
 } from "./transcript.js"
@@ -3021,67 +3017,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       lastTranscriptScrollTop = transcriptScrollbox?.scrollTop ?? 0
     }
     syncVisibleTranscriptPreview(transcriptAgentId, sanitizedEntries)
-  }
-
-  const mergeHistoryFragments = (older: TranscriptEntry, newer: TranscriptEntry): TranscriptEntry => {
-    const sourceText = (older.sourceText ?? older.text) + (newer.sourceText ?? newer.text)
-    const mergedBase: TranscriptEntry = {
-      ...newer,
-      text: newer.text,
-      sourceText,
-    }
-    if (older.historyFragmentStart !== undefined) mergedBase.historyFragmentStart = older.historyFragmentStart
-    if (newer.historyFragmentEnd !== undefined) mergedBase.historyFragmentEnd = newer.historyFragmentEnd
-    const totalChars = newer.historyTotalChars ?? older.historyTotalChars
-    if (totalChars !== undefined) mergedBase.historyTotalChars = totalChars
-    if (older.role !== "tool") {
-      return applyHistoryDeferral({
-        ...mergedBase,
-        text: older.text + newer.text,
-      })
-    }
-
-    const parsed = parseToolTranscriptUpdate(sourceText)
-    if (!parsed) {
-      const pending: TranscriptEntry = {
-        ...mergedBase,
-        text: sourceText,
-      }
-      delete pending.mergeKey
-      return {
-        ...applyHistoryDeferral(pending),
-      }
-    }
-
-    const merged = mergeToolTranscriptUpdate(null, parsed)
-    return applyHistoryDeferral({
-      ...mergedBase,
-      text: formatToolTranscriptUpdate(merged),
-      mergeKey: parsed.id,
-    })
-  }
-
-  const stitchPrependedHistory = (olderEntries: TranscriptEntry[], currentEntries: TranscriptEntry[]) => {
-    if (olderEntries.length === 0 || currentEntries.length === 0) {
-      return markDeferredHistoryEntries([...olderEntries, ...currentEntries])
-    }
-
-    const tail = olderEntries.at(-1)
-    const head = currentEntries[0]
-    if (
-      tail?.historyEntryIndex === undefined
-      || head?.historyEntryIndex === undefined
-      || tail.historyEntryIndex !== head.historyEntryIndex
-      || tail.historyFragmentEnd !== head.historyFragmentStart
-    ) {
-      return markDeferredHistoryEntries([...olderEntries, ...currentEntries])
-    }
-
-    return markDeferredHistoryEntries([
-      ...olderEntries.slice(0, -1),
-      mergeHistoryFragments(tail, head),
-      ...currentEntries.slice(1),
-    ])
   }
 
   const prependTranscriptEntries = async (nextEntries: TranscriptEntry[]) => {
