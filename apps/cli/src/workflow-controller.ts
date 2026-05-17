@@ -2,19 +2,12 @@ import type {
   QueuedWorkflowLaunch,
   RuntimeSession,
   WorkflowDefinition,
-  WorkflowEdgeDefinition,
   WorkflowEndpointDefinition,
-  WorkflowNodeDefinition,
   WorkflowRun,
   WorkflowWatchdogDefinition,
 } from "./cli-types.js"
 import {
-  addWorkflowEdgeRequest,
-  addWorkflowNodeRequest,
-  aliasWorkflowEndpointRequest,
   aliasWorkflowRequest,
-  bindWorkflowEndpointRequest,
-  createWorkflowEndpointRequest,
   createWorkflowRequest,
   createWorkflowWatchdogRequest,
   clearQueuedWorkflowLaunchesRequest,
@@ -26,25 +19,20 @@ import {
   listWorkflowsRequest,
   listWorkflowRunsRequest,
   removeQueuedWorkflowLaunchRequest,
-  removeWorkflowEdgeRequest,
-  removeWorkflowNodeRequest,
   removeWorkflowWatchdogRequest,
   resumeWorkflowRunRequest,
   resolveWorkflowRequest,
   setWorkflowFlushContextRequest,
   setWorkflowIntermediateOutputSchemaRequest,
   setWorkflowLaunchPolicyRequest,
-  setWorkflowNodeCanCompleteRunRequest,
-  setWorkflowNodeCanEmitIntermediateOutputRequest,
-  setWorkflowNodeIntermediateOutputSchemaRequest,
-  setWorkflowNodeMaxTurnsRequest,
   setWorkflowRunOutputSchemaRequest,
   setWorkflowWatchdogEnabledRequest,
-  updateWorkflowNodeInstructionsRequest,
 } from "./ipc-requests.js"
+import { expectVariant } from "./ipc-response.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
 import { createWorkflowScreenController } from "./workflow-screen-controller.js"
 import { createWorkflowSessionStateController } from "./workflow-session-state.js"
+import { createWorkflowTopologyController } from "./workflow-topology-controller.js"
 
 export {
   createWorkflowSelectionSyncController,
@@ -85,6 +73,10 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     rebuildTranscript: deps.rebuildTranscript,
     applyResponseLayout: deps.applyResponseLayout,
   })
+  const workflowTopology = createWorkflowTopologyController({
+    sendRequest: deps.sendRequest,
+    sessionId: () => deps.sessionState().id,
+  })
 
   const createWorkflow = async (alias?: string | null) => {
     const response = await deps.sendRequest(createWorkflowRequest(deps.sessionState().id, alias))
@@ -123,162 +115,6 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
       deps.applyResponseLayout()
     }
     return payload.workflow
-  }
-
-  const createWorkflowEndpoint = async (
-    workflowRef: string,
-    entryNodeId: string,
-    alias?: string | null,
-  ) => {
-    const response = await deps.sendRequest(
-      createWorkflowEndpointRequest(deps.sessionState().id, workflowRef, entryNodeId, alias),
-    )
-    return expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowEndpointCreated",
-    )
-  }
-
-  const assignWorkflowEndpointAlias = async (
-    workflowRef: string,
-    endpointRef: string,
-    alias: string,
-  ) => {
-    const response = await deps.sendRequest(
-      aliasWorkflowEndpointRequest(deps.sessionState().id, workflowRef, endpointRef, alias),
-    )
-    return expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowEndpointAliased",
-    )
-  }
-
-  const bindWorkflowEndpoint = async (
-    workflowRef: string,
-    endpointRef: string,
-    entryNodeId: string,
-  ) => {
-    const response = await deps.sendRequest(
-      bindWorkflowEndpointRequest(deps.sessionState().id, workflowRef, endpointRef, entryNodeId),
-    )
-    return expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowEndpointBound",
-    )
-  }
-
-  const addWorkflowNode = async (workflowRef: string, agentId: string) => {
-    const response = await deps.sendRequest(addWorkflowNodeRequest(deps.sessionState().id, workflowRef, agentId))
-    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowNodeAdded",
-    )
-  }
-
-  const removeWorkflowNode = async (workflowRef: string, nodeId: string) => {
-    const response = await deps.sendRequest(removeWorkflowNodeRequest(deps.sessionState().id, workflowRef, nodeId))
-    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowNodeRemoved",
-    )
-  }
-
-  const updateWorkflowNodeInstructions = async (
-    workflowRef: string,
-    nodeId: string,
-    instructions: string | null,
-  ) => {
-    const response = await deps.sendRequest(
-      updateWorkflowNodeInstructionsRequest(deps.sessionState().id, workflowRef, nodeId, instructions),
-    )
-    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowNodeInstructionsUpdated",
-    )
-  }
-
-  const setWorkflowNodeCanCompleteRun = async (
-    workflowRef: string,
-    nodeId: string,
-    canCompleteWorkflowRun: boolean,
-  ) => {
-    const response = await deps.sendRequest(
-      setWorkflowNodeCanCompleteRunRequest(deps.sessionState().id, workflowRef, nodeId, canCompleteWorkflowRun),
-    )
-    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowNodeCanCompleteRunUpdated",
-    )
-  }
-
-  const setWorkflowNodeMaxTurns = async (
-    workflowRef: string,
-    nodeId: string,
-    maxTurns: number | null,
-  ) => {
-    const response = await deps.sendRequest(
-      setWorkflowNodeMaxTurnsRequest(deps.sessionState().id, workflowRef, nodeId, maxTurns),
-    )
-    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowNodeMaxTurnsUpdated",
-    )
-  }
-
-  const setWorkflowNodeCanEmitIntermediateOutput = async (
-    workflowRef: string,
-    nodeId: string,
-    canEmitIntermediateWorkflowRunOutput: boolean,
-  ) => {
-    const response = await deps.sendRequest(
-      setWorkflowNodeCanEmitIntermediateOutputRequest(
-        deps.sessionState().id,
-        workflowRef,
-        nodeId,
-        canEmitIntermediateWorkflowRunOutput,
-      ),
-    )
-    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowNodeCanEmitIntermediateOutputUpdated",
-    )
-  }
-
-  const setWorkflowNodeIntermediateOutputSchema = async (
-    workflowRef: string,
-    nodeId: string,
-    intermediateOutputSchemaRef: string | null,
-  ) => {
-    const response = await deps.sendRequest(
-      setWorkflowNodeIntermediateOutputSchemaRequest(
-        deps.sessionState().id,
-        workflowRef,
-        nodeId,
-        intermediateOutputSchemaRef,
-      ),
-    )
-    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowNodeIntermediateOutputSchemaUpdated",
-    )
-  }
-
-  const addWorkflowEdge = async (workflowRef: string, fromNodeId: string, toNodeId: string) => {
-    const response = await deps.sendRequest(
-      addWorkflowEdgeRequest(deps.sessionState().id, workflowRef, fromNodeId, toNodeId),
-    )
-    return expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowEdgeAdded",
-    )
-  }
-
-  const removeWorkflowEdge = async (workflowRef: string, edgeId: string) => {
-    const response = await deps.sendRequest(removeWorkflowEdgeRequest(deps.sessionState().id, workflowRef, edgeId))
-    return expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowEdgeRemoved",
-    )
   }
 
   const invokeWorkflowEndpoint = async (
@@ -496,24 +332,13 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
 
   return {
     ...workflowScreen,
+    ...workflowTopology,
     replaceWorkflowDefinitions: workflowSessionState.replaceWorkflowDefinitions,
     upsertWorkflowDefinition: workflowSessionState.upsertWorkflowDefinition,
     createWorkflow,
     listWorkflows,
     resolveWorkflow,
     assignWorkflowAlias,
-    createWorkflowEndpoint,
-    assignWorkflowEndpointAlias,
-    bindWorkflowEndpoint,
-    addWorkflowNode,
-    removeWorkflowNode,
-    updateWorkflowNodeInstructions,
-    setWorkflowNodeCanCompleteRun,
-    setWorkflowNodeCanEmitIntermediateOutput,
-    setWorkflowNodeIntermediateOutputSchema,
-    setWorkflowNodeMaxTurns,
-    addWorkflowEdge,
-    removeWorkflowEdge,
     invokeWorkflowEndpoint,
     createWorkflowWatchdog,
     listWorkflowWatchdogs,
@@ -531,11 +356,4 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     cancelWorkflowRun,
     resumeWorkflowRun,
   }
-}
-
-function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
-  if (!(variant in response)) {
-    throw new Error(`unexpected response variant: expected ${variant}`)
-  }
-  return response[variant] as T
 }
