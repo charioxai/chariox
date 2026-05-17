@@ -739,8 +739,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     BoxRenderable,
     ToolTranscriptUpdate
   >()
-  let promptStateBox: BoxRenderable | undefined
-  let footerSummaryBox: BoxRenderable | undefined
   let historyLoadingBox: BoxRenderable | undefined
   let commandCenterBox: BoxRenderable | undefined
   let hotkeysOverlayBox: BoxRenderable | undefined
@@ -2140,8 +2138,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     renderSummary: (options) => {
       renderSessionChromeSummary(options as unknown as Parameters<typeof renderSessionChromeSummary>[0])
     },
-    getPromptStateBox: () => promptStateBox,
-    getFooterSummaryBox: () => footerSummaryBox,
     syncPromptPlaceholder,
     getFatalError: fatalError,
     getSubmitting: submitting,
@@ -4249,7 +4245,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         updateSessionChrome()
       }}
       onFooterSummaryBoxRef={(value) => {
-        footerSummaryBox = value
+        sessionChromeRenderController.assignFooterSummaryBox(value)
         updateSessionChrome()
       }}
       onHotkeysOverlayBoxRef={(value) => {

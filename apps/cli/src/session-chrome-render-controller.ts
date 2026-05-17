@@ -10,23 +10,21 @@ import {
   SESSION_NEW_FOOTER_HINT,
 } from "./sessions.js"
 
-export type SessionChromeSummaryRenderOptions<TState> = {
+export type SessionChromeSummaryRenderOptions<TState, TBox = unknown> = {
   renderer: unknown
   state: TState
-  promptStateBox: unknown
-  footerSummaryBox: unknown
+  promptStateBox: TBox | undefined
+  footerSummaryBox: TBox | undefined
   promptStateLabel: string
   promptStateTone: "error" | "thinking" | "muted"
   footerSummary: string
   footerFlash: FooterFlash | null
 }
 
-export type SessionChromeRenderControllerDeps<TState> = {
+export type SessionChromeRenderControllerDeps<TState, TBox = unknown> = {
   renderer: unknown
   createSummaryRenderState: () => TState
-  renderSummary: (options: SessionChromeSummaryRenderOptions<TState>) => void
-  getPromptStateBox: () => unknown
-  getFooterSummaryBox: () => unknown
+  renderSummary: (options: SessionChromeSummaryRenderOptions<TState, TBox>) => void
   syncPromptPlaceholder: () => void
   getFatalError: () => string | null
   getSubmitting: () => boolean
@@ -51,16 +49,20 @@ export type SessionChromeRenderControllerDeps<TState> = {
   getStreamingAgentId: () => string | null
 }
 
-export function createSessionChromeRenderController<TState>(deps: SessionChromeRenderControllerDeps<TState>) {
+export function createSessionChromeRenderController<TState, TBox = unknown>(
+  deps: SessionChromeRenderControllerDeps<TState, TBox>,
+) {
   const state = deps.createSummaryRenderState()
+  let promptStateBox: TBox | undefined
+  let footerSummaryBox: TBox | undefined
 
   const apply = () => {
     deps.syncPromptPlaceholder()
     deps.renderSummary({
       renderer: deps.renderer,
       state,
-      promptStateBox: deps.getPromptStateBox(),
-      footerSummaryBox: deps.getFooterSummaryBox(),
+      promptStateBox,
+      footerSummaryBox,
       promptStateLabel: deps.getFatalError()
         ? "error"
         : deps.getSubmitting()
@@ -98,6 +100,12 @@ export function createSessionChromeRenderController<TState>(deps: SessionChromeR
   )
 
   return {
+    assignPromptStateBox(value: TBox | undefined) {
+      promptStateBox = value
+    },
+    assignFooterSummaryBox(value: TBox | undefined) {
+      footerSummaryBox = value
+    },
     apply,
     shouldThrottle,
   }

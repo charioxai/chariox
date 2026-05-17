@@ -19,11 +19,13 @@ test("session chrome render controller applies attached chrome in order", () => 
     sessionStatusMode: "working",
   }))
 
+  controller.assignPromptStateBox("prompt-box")
+  controller.assignFooterSummaryBox("footer-box")
   controller.apply()
 
   assert.deepEqual(calls, [
     "placeholder",
-    "summary:ready:muted:Session session-1 • 2 CLIs connected • 2 agents in session • Ctrl+C to stop • Tab cycles focus • Ctrl+P opens workflow • ? hotkeys:none",
+    "summary:prompt-box:footer-box:ready:muted:Session session-1 • 2 CLIs connected • 2 agents in session • Ctrl+C to stop • Tab cycles focus • Ctrl+P opens workflow • ? hotkeys:none",
     "meta:1",
     "status",
     "footers",
@@ -43,7 +45,7 @@ test("session chrome render controller clears prompt meta while detached", () =>
 
   assert.deepEqual(calls, [
     "placeholder",
-    `summary:ready:muted:${SESSION_NEW_FOOTER_HINT}:none`,
+    `summary:none:none:ready:muted:${SESSION_NEW_FOOTER_HINT}:none`,
     "meta:0",
     "status",
     "footers",
@@ -68,14 +70,12 @@ function createDeps(overrides: {
   activeStatusLabel?: string | null
   providerActivityLabel?: string | null
   streamingAgentId?: string | null
-} = {}): SessionChromeRenderControllerDeps<Record<string, never>> {
+} = {}): SessionChromeRenderControllerDeps<Record<string, never>, string> {
   const calls = overrides.calls ?? []
   const attached = overrides.attached ?? true
   return {
     renderer: {},
     createSummaryRenderState: () => ({}),
-    getPromptStateBox: () => undefined,
-    getFooterSummaryBox: () => undefined,
     syncPromptPlaceholder: () => {
       calls.push("placeholder")
     },
@@ -109,7 +109,15 @@ function createDeps(overrides: {
     getProviderActivityLabel: () => overrides.providerActivityLabel ?? null,
     getStreamingAgentId: () => overrides.streamingAgentId ?? null,
     renderSummary: (options) => {
-      calls.push(`summary:${options.promptStateLabel}:${options.promptStateTone}:${options.footerSummary}:${options.footerFlash?.message ?? "none"}`)
+      calls.push([
+        "summary",
+        options.promptStateBox ?? "none",
+        options.footerSummaryBox ?? "none",
+        options.promptStateLabel,
+        options.promptStateTone,
+        options.footerSummary,
+        options.footerFlash?.message ?? "none",
+      ].join(":"))
     },
   }
 }
