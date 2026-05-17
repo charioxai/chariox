@@ -296,6 +296,7 @@ import {
 import { createPromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
 import { createResponseLayoutController } from "./response-layout-controller.js"
 import { createResponsePaneProjectionController } from "./response-pane-projection-controller.js"
+import { createResponsePaneRenderScheduleController } from "./response-pane-render-schedule-controller.js"
 import {
   splitPaneAuxiliaryAgentIds,
 } from "./response-panes.js"
@@ -830,11 +831,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const primaryTranscriptSurfaceTone = responsePaneProjectionController.primaryTranscriptSurfaceTone
   const auxiliaryTranscriptSurfaceTone = responsePaneProjectionController.auxiliaryTranscriptSurfaceTone
-  const scheduleResponsePaneRepaint = () => {
-    renderScheduler.requestTree(responseLayoutBox)
-    renderScheduler.requestTree(historyLoadingBox)
-    renderScheduler.requestRoot()
-  }
+  const responsePaneRenderScheduleController = createResponsePaneRenderScheduleController({
+    responseLayoutBox: () => responseLayoutBox,
+    historyLoadingBox: () => historyLoadingBox,
+    requestTree: (renderable) => renderScheduler.requestTree(renderable),
+    requestRoot: () => renderScheduler.requestRoot(),
+  })
+  const scheduleResponsePaneRepaint = responsePaneRenderScheduleController.scheduleRepaint
   const shouldRefreshAgentPanesForSessionChange = (nextSession: RuntimeSession) => {
     return shouldRefreshAgentPanesForSessionChangeState({
       previousAgents: sessionState().agents,
