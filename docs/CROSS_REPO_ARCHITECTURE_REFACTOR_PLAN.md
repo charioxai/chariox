@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web terminal side-panel composition. `TerminalSidePanelComposition` owns workspace/capabilities panel state, context projection, refresh loops, file viewer, git/action controllers, panel views, and side-panel DOM routing. `client.ts` is 2,110 lines; web suite passes 1,028 tests; repo lint and diff checks pass. Next highest-responsibility slice is terminal runtime/freeform composition: active session/runtime state, live-agent controllers, session connection/hydration/records, and route/global event wiring.
+2026-05-18: Latest verified stage is Cloud web terminal runtime composition. `TerminalRuntimeComposition` owns active session/runtime controllers, rendering suppression, status rendering, and badge trace projection/recording. `client.ts` is 2,074 lines; web suite passes 1,031 tests; repo lint and diff checks pass. Next highest-responsibility slice is live-agent/session orchestration: freeform pane lifecycle/config controllers plus session connection, hydration, record, and route wiring.
 
 ## Responsibility Rule
 
