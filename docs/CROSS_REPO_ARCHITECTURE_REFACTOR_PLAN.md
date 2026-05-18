@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Live agent alias persistence and sidebar agent alias/workspace/config mutations now live in focused controllers with regression coverage; `client.ts` is 5,656 lines and the web suite passes with 914 tests. Next highest-responsibility slice is waiting-room floating overlay DOM ownership, followed by workflow sidebar hydration and freeform clock/effect controllers.
+2026-05-18: Latest verified stage is Cloud web. Waiting-room floating overlay DOM ownership now lives in a focused controller, after live agent alias persistence and sidebar agent mutation controllers; `client.ts` is 5,582 lines and the web suite passes with 917 tests. Next highest-responsibility slice is workflow sidebar hydration, followed by freeform clock/effect controllers.
 
 ## Responsibility Rule
 
