@@ -29,7 +29,6 @@ import {
   getSkillRequest,
   getProviderRunRequest,
   getSessionStateRequest,
-  grantAgentCapabilityRequest,
   launchProviderRunRequest,
   moveAgentToRemoteRequest,
   pumpTerminalOutputRequest,
@@ -42,6 +41,7 @@ import {
 } from "../ipc-requests.js"
 import { localAttachmentPath, preparePromptAttachmentsForSubmit, promptAttachmentTransferIsForced } from "../prompt-attachment-transfer.js"
 import { classifyPromptAttachment } from "../prompt-attachments.js"
+import { grantNativeCapabilities } from "./capability-grants.js"
 import { hiddenInstructionsEnd, hiddenInstructionsStart, redactHiddenInstructions } from "./hidden-instructions.js"
 
 const CLAUDE_ATTACHMENT_CONTEXT_BYTES = 200_000
@@ -364,29 +364,6 @@ function printNativeClaudeUsage() {
     "  --grant-skill <name>             Grant an installed Arroba skill to the native agent before provider launch",
     "",
   ].join("\n"))
-}
-
-async function grantNativeCapabilities(
-  client: LocalIpcClient,
-  workspace: string,
-  agentId: string,
-  mcps: string[],
-  skills: string[],
-): Promise<void> {
-  for (const name of mcps) {
-    const response = await client.send<Record<string, unknown>>(grantAgentCapabilityRequest(workspace, agentId, "mcp", name))
-    const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
-    if (!agent.mcp_grants?.includes(name)) {
-      throw new Error(`Arroba MCP grant ${name} was accepted but is missing from agent ${agentId}`)
-    }
-  }
-  for (const name of skills) {
-    const response = await client.send<Record<string, unknown>>(grantAgentCapabilityRequest(workspace, agentId, "skill", name))
-    const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
-    if (!agent.skill_grants?.includes(name)) {
-      throw new Error(`Arroba skill grant ${name} was accepted but is missing from agent ${agentId}`)
-    }
-  }
 }
 
 async function runClaudeRemoteRendered(

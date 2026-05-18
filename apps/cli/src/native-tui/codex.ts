@@ -25,7 +25,6 @@ import {
   createSessionRequest,
   getProviderRunRequest,
   getSessionStateRequest,
-  grantAgentCapabilityRequest,
   launchProviderRunRequest,
   moveAgentToRemoteRequest,
   pollRuntimeNoticesRequest,
@@ -39,6 +38,7 @@ import {
   preparePromptAttachmentsForSubmit,
   promptAttachmentTransferIsForced,
 } from "../prompt-attachment-transfer.js"
+import { grantNativeCapabilities } from "./capability-grants.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
 import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 
@@ -376,29 +376,6 @@ function printNativeCodexUsage() {
     "  --grant-skill NAME              Grant an installed Arroba skill to the native agent before provider launch",
     "  creates a new Arroba agent in the selected session and launches native `codex --remote` for it.",
   ].join("\n") + "\n")
-}
-
-async function grantNativeCapabilities(
-  client: LocalIpcClient,
-  workspace: string,
-  agentId: string,
-  mcps: string[],
-  skills: string[],
-): Promise<void> {
-  for (const name of mcps) {
-    const response = await client.send<Record<string, unknown>>(grantAgentCapabilityRequest(workspace, agentId, "mcp", name))
-    const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
-    if (!agent.mcp_grants?.includes(name)) {
-      throw new Error(`Arroba MCP grant ${name} was accepted but is missing from agent ${agentId}`)
-    }
-  }
-  for (const name of skills) {
-    const response = await client.send<Record<string, unknown>>(grantAgentCapabilityRequest(workspace, agentId, "skill", name))
-    const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
-    if (!agent.skill_grants?.includes(name)) {
-      throw new Error(`Arroba skill grant ${name} was accepted but is missing from agent ${agentId}`)
-    }
-  }
 }
 
 function parseMode(value: string): "build" | "plan" {
