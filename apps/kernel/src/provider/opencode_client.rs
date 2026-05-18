@@ -17,52 +17,13 @@ pub use catalog::{
 };
 pub use defaults::OpenCodeConfiguredDefaults;
 pub use event_subscription::OpenCodeEventSubscription;
+pub use events::{OpenCodeEvent, OpenCodePermissionRequest};
 pub use message::{
     OpenCodeMessage, OpenCodeMessageCacheTokens, OpenCodeMessageInfo, OpenCodeMessageTime,
     OpenCodeMessageTokens, OpenCodePart, OpenCodePartTime, OpenCodeSelectedModel,
     OpenCodeToolState,
 };
 pub use session::OpenCodeSessionSnapshot;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OpenCodeEvent {
-    MessageUpdated {
-        info: OpenCodeMessageInfo,
-    },
-    MessagePartDelta {
-        session_id: String,
-        message_id: String,
-        part_id: String,
-        field: String,
-        delta: String,
-    },
-    MessagePartUpdated {
-        part: Box<OpenCodePart>,
-    },
-    SessionError {
-        session_id: String,
-        message: String,
-    },
-    SessionStatus {
-        session_id: String,
-        kind: String,
-    },
-    PermissionAsked {
-        request: OpenCodePermissionRequest,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpenCodePermissionRequest {
-    pub id: String,
-    pub session_id: String,
-    pub permission: String,
-    pub tool: Option<String>,
-    pub command: Option<String>,
-    pub cwd: Option<String>,
-    pub reason: Option<String>,
-    pub patterns: Vec<String>,
-}
 
 #[derive(Debug, Clone)]
 pub struct OpenCodeClient {
