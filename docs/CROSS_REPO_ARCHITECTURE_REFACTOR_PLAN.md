@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is native interaction bridge cleanup. Native-provider and relay-forwarded permission requests now share the timeout-backed `RuntimeInteraction` resolution helper, preserving one kernel-owned interaction path. `cargo fmt --manifest-path apps/kernel/Cargo.toml -- --check` and `cargo test --manifest-path apps/kernel/Cargo.toml native_interaction -- --test-threads=1` pass.
+2026-05-18: Latest verified stage is final source-size and boundary audit. Excluding generated build output, lockfiles, and iOS, both repos have source files under 2k lines; Cloud `client.ts` and `server.ts` are coordinators, browser relay bootstrap remains service-owned, and active `/web-cli` names are limited to legacy storage fallback tests or archived docs.
 
 ## Responsibility Rule
 
