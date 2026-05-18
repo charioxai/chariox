@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. `WaitingRoomWorkspaceController` now owns waiting-room directory search requests, worktree refresh orchestration, and workspace suggestion active-descendant projection; `client.ts` is 3,944 lines and the web suite passes with 963 tests. Next highest-responsibility slice is waiting-room floating/session DOM action ownership.
+2026-05-18: Latest verified stage is Cloud web. `WaitingRoomOverlayController` now owns waiting-room modal/floating layer synchronization and preserves active local edit inputs outside `client.ts`; `client.ts` is 3,910 lines and the web suite passes with 966 tests. Next highest-responsibility slice is waiting-room session activity indicator ownership.
 
 ## Responsibility Rule
 
