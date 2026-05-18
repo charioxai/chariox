@@ -354,6 +354,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: CLI Claude native launch-environment parsing uses shared helpers; CLI tests pass.
 - Latest verified batch: CLI Claude remote-rendered terminal I/O is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI native kernel pump supports Claude local TUI without a provider-local loop; CLI tests pass.
+- Latest verified batch: CLI OpenCode native HTTP proxy/interception is responsibility-owned; CLI tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
