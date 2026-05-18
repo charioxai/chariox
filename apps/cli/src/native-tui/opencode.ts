@@ -16,9 +16,7 @@ import {
 import { LocalIpcClient } from "../ipc.js"
 import {
   cancelActivePromptRequest,
-  getProviderRunRequest,
   getSessionStateRequest,
-  launchProviderRunRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
   respondToInteractionRequest,
@@ -31,6 +29,10 @@ import {
 } from "../prompt-attachment-transfer.js"
 import { grantNativeCapabilities } from "./capability-grants.js"
 import { hiddenInstructionsStart, redactHiddenInstructions } from "./hidden-instructions.js"
+import {
+  getNativeProviderRun,
+  requestNativeProviderRunLaunch,
+} from "./provider-run-control.js"
 import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 import {
   attachNativeSession,
@@ -135,8 +137,12 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     let upstreamBaseUrl: string
     let run: RuntimeProviderRun | null = null
     if (options.serverInKernel) {
-      const launched = await launchProviderRun(client, session.id, "opencode", "default", "default", "", agent.id, {
-        nativeTui: true,
+      const launched = await requestNativeProviderRunLaunch(client, {
+        sessionId: session.id,
+        provider: "opencode",
+        model: "default",
+        effort: "",
+        agentId: agent.id,
       })
       run = !remotePlacement && launched.session_id === session.id
         ? await waitForOpenCodeRunReady(client, launched.id)
@@ -166,9 +172,13 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     }
     const proxyUrl = `http://127.0.0.1:${proxyAddress.port}`
     if (!options.serverInKernel) {
-      const launched = await launchProviderRun(client, session.id, "opencode", "default", "default", "", agent.id, {
-        structuredEndpoint: proxyUrl,
-        nativeTui: true,
+      const launched = await requestNativeProviderRunLaunch(client, {
+        sessionId: session.id,
+        provider: "opencode",
+        model: "default",
+        effort: "",
+        agentId: agent.id,
+        native: { structuredEndpoint: proxyUrl },
       })
       run = !remotePlacement && launched.session_id === session.id
         ? await waitForOpenCodeRunReady(client, launched.id)
@@ -416,39 +426,6 @@ function parseKernelPort(value: string, arg: string): string {
   return String(port)
 }
 
-async function launchProviderRun(
-  client: LocalIpcClient,
-  sessionId: string,
-  provider: string,
-  accountProfile: string,
-  model: string,
-  effort: string,
-  agentId: string,
-  native?: {
-    structuredEndpoint?: string | null
-    providerSessionId?: string | null
-    nativeTui?: boolean | null
-  },
-): Promise<RuntimeProviderRun> {
-  const nativeBinding = {
-    ...(native?.structuredEndpoint !== undefined ? { structuredEndpoint: native.structuredEndpoint } : {}),
-    ...(native?.providerSessionId !== undefined ? { providerSessionId: native.providerSessionId } : {}),
-    nativeTui: true,
-  }
-  const response = await client.send<Record<string, unknown>>(
-    launchProviderRunRequest(sessionId, provider, accountProfile, model, effort, agentId, nativeBinding),
-  )
-  const payload = "ProviderRunLaunched" in response
-    ? expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched")
-    : expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunchAccepted")
-  return payload.provider_run
-}
-
-async function getProviderRun(client: LocalIpcClient, providerRunId: string): Promise<RuntimeProviderRun> {
-  const response = await client.send<Record<string, unknown>>(getProviderRunRequest(providerRunId))
-  return expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRun").provider_run
-}
-
 async function updateProviderRunSelection(
   client: LocalIpcClient,
   sessionId: string,
@@ -475,7 +452,7 @@ async function waitForOpenCodeRunReady(
   const deadline = Date.now() + 60_000
   let latest: RuntimeProviderRun | null = null
   while (Date.now() < deadline) {
-    latest = await getProviderRun(client, providerRunId)
+    latest = await getNativeProviderRun(client, providerRunId)
     if (
       latest.state === "Running"
       && latest.structured_endpoint
@@ -624,7 +601,7 @@ async function handleProxyRequest(
       debugNativeMutation("selection_observed", selection)
     }
     const run = state.providerRunLocal
-      ? await getProviderRun(options.client, state.providerRunId)
+      ? await getNativeProviderRun(options.client, state.providerRunId)
       : null
     if (selection && run && shouldApplyNativeSelection(selection, state.lastNativeSelection, run)) {
       const updated = await updateProviderRunSelection(

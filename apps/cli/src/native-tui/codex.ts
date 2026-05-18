@@ -17,9 +17,7 @@ import {
 } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
-  getProviderRunRequest,
   getSessionStateRequest,
-  launchProviderRunRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
   respondToInteractionRequest,
@@ -31,6 +29,10 @@ import {
 } from "../prompt-attachment-transfer.js"
 import { grantNativeCapabilities } from "./capability-grants.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
+import {
+  getNativeProviderRun,
+  requestNativeProviderRunLaunch,
+} from "./provider-run-control.js"
 import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 import {
   attachNativeSession,
@@ -435,24 +437,17 @@ async function launchNativeProviderRun(options: {
   structuredEndpoint: string
   providerSessionId: string
 }): Promise<RuntimeProviderRun> {
-  const response = await options.client.send<Record<string, unknown>>(
-    launchProviderRunRequest(
-      options.sessionId,
-      "codex",
-      "default",
-      options.model,
-      options.effort,
-      options.agentId,
-      {
-        structuredEndpoint: options.structuredEndpoint,
-        providerSessionId: options.providerSessionId,
-        nativeTui: true,
-      },
-    ),
-  )
-  const run = "ProviderRunLaunched" in response
-    ? expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched").provider_run
-    : expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunchAccepted").provider_run
+  const run = await requestNativeProviderRunLaunch(options.client, {
+    sessionId: options.sessionId,
+    provider: "codex",
+    model: options.model,
+    effort: options.effort,
+    agentId: options.agentId,
+    native: {
+      structuredEndpoint: options.structuredEndpoint,
+      providerSessionId: options.providerSessionId,
+    },
+  })
   if (run.session_id !== options.sessionId) return run
   return waitForProviderRunReady(options.client, run.id)
 }
@@ -464,20 +459,13 @@ async function launchManagedNativeProviderRun(options: {
   model: string
   effort: string
 }): Promise<RuntimeProviderRun> {
-  const response = await options.client.send<Record<string, unknown>>(
-    launchProviderRunRequest(
-      options.sessionId,
-      "codex",
-      "default",
-      options.model,
-      options.effort,
-      options.agentId,
-      { nativeTui: true },
-    ),
-  )
-  return "ProviderRunLaunched" in response
-    ? expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched").provider_run
-    : expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunchAccepted").provider_run
+  return requestNativeProviderRunLaunch(options.client, {
+    sessionId: options.sessionId,
+    provider: "codex",
+    model: options.model,
+    effort: options.effort,
+    agentId: options.agentId,
+  })
 }
 
 async function waitForProviderRunReady(
@@ -487,10 +475,7 @@ async function waitForProviderRunReady(
   const deadline = Date.now() + 60_000
   let latest: RuntimeProviderRun | null = null
   while (Date.now() < deadline) {
-    latest = expectVariant<{ provider_run: RuntimeProviderRun }>(
-      await client.send<Record<string, unknown>>(getProviderRunRequest(providerRunId)),
-      "ProviderRun",
-    ).provider_run
+    latest = await getNativeProviderRun(client, providerRunId)
     if (latest.state === "Running" && latest.provider_session_id) return latest
     if (latest.state === "Ended") throw new Error(`Codex provider run ended before attach was ready: ${providerRunId}`)
     await sleep(250)

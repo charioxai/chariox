@@ -22,9 +22,7 @@ import {
   appendNativeProviderOutputRequest,
   completePromptRequest,
   getSkillRequest,
-  getProviderRunRequest,
   getSessionStateRequest,
-  launchProviderRunRequest,
   pumpTerminalOutputRequest,
   requestNativeProviderInteractionRequest,
   resizeTerminalRequest,
@@ -35,6 +33,10 @@ import { localAttachmentPath, preparePromptAttachmentsForSubmit, promptAttachmen
 import { classifyPromptAttachment } from "../prompt-attachments.js"
 import { grantNativeCapabilities } from "./capability-grants.js"
 import { hiddenInstructionsEnd, hiddenInstructionsStart, redactHiddenInstructions } from "./hidden-instructions.js"
+import {
+  getNativeProviderRun,
+  requestNativeProviderRunLaunch,
+} from "./provider-run-control.js"
 import {
   attachNativeSession,
   createNativeSession,
@@ -1508,15 +1510,16 @@ async function launchClaudeNativeRun(
   model: string,
   effort: string,
 ): Promise<RuntimeProviderRun> {
-  const response = await client.send<Record<string, unknown>>(
-    launchProviderRunRequest(sessionId, "claude", "default", model, effort, agentId, {
+  return requestNativeProviderRunLaunch(client, {
+    sessionId,
+    provider: "claude",
+    model,
+    effort,
+    agentId,
+    native: {
       structuredEndpoint: `native://claude/${process.pid}`,
-      nativeTui: true,
-    }),
-  )
-  return "ProviderRunLaunched" in response
-    ? expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched").provider_run
-    : expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunchAccepted").provider_run
+    },
+  })
 }
 
 async function launchClaudeRemoteRenderedRun(
@@ -1526,14 +1529,13 @@ async function launchClaudeRemoteRenderedRun(
   model: string,
   effort: string,
 ): Promise<RuntimeProviderRun> {
-  const response = await client.send<Record<string, unknown>>(
-    launchProviderRunRequest(sessionId, "claude", "default", model, effort, agentId, {
-      nativeTui: true,
-    }),
-  )
-  return "ProviderRunLaunched" in response
-    ? expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched").provider_run
-    : expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunchAccepted").provider_run
+  return requestNativeProviderRunLaunch(client, {
+    sessionId,
+    provider: "claude",
+    model,
+    effort,
+    agentId,
+  })
 }
 
 async function waitForProviderRunReady(client: LocalIpcClient, providerRunId: string): Promise<RuntimeProviderRun> {
@@ -1571,10 +1573,7 @@ async function waitForRemoteRenderedRunExit(client: LocalIpcClient, providerRunI
 
 async function getProviderRunIfAvailable(client: LocalIpcClient, providerRunId: string): Promise<RuntimeProviderRun | null> {
   try {
-    return expectVariant<{ provider_run: RuntimeProviderRun }>(
-      await client.send<Record<string, unknown>>(getProviderRunRequest(providerRunId)),
-      "ProviderRun",
-    ).provider_run
+    return await getNativeProviderRun(client, providerRunId)
   } catch (error) {
     if (isProviderRunNotFound(error)) return null
     throw error

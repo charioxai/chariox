@@ -333,6 +333,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: Cloud account-control, browser-dashboard, and browser-relay-kernel services use explicit narrow repository interfaces; API build/tests pass.
 - Latest verified batch: CLI native-TUI capability grants are shared across provider launchers; CLI tests pass.
 - Latest verified batch: CLI native-TUI session/agent lifecycle is shared across provider launchers; CLI tests pass.
+- Latest verified batch: CLI native-TUI provider-run launch/get IPC is shared across provider launchers; CLI tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
