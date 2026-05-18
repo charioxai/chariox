@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is runtime transport responsibility split. `apps/kernel/src/runtime_transport.rs` now owns server, connection, and request admission wiring at 759 lines; subscription polling/replay moved to `runtime_transport/subscriptions.rs`, and outbound backpressure send policy moved to `runtime_transport/outgoing.rs`. Both kernel websocket integration targets pass 7 + 8 tests.
+2026-05-18: Latest verified stage is runtime MCP adapter/test split. `apps/kernel/src/transport/mcp_server.rs` now owns only HTTP/MCP JSON-RPC handling at 377 lines, with runtime tool scenario coverage moved to `transport/mcp_server/tests.rs`. `cargo test --manifest-path apps/kernel/Cargo.toml transport::mcp_server --lib -- --test-threads=1` passes 8 tests.
 
 ## Responsibility Rule
 
