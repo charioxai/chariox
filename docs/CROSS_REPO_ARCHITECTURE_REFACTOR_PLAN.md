@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web terminal runtime surface ownership. Prompt, output, runtime event, and runtime app wiring now live in `terminal-browser-runtime-surfaces.ts`; `client.ts` remains 3 lines and `terminal-browser-app.ts` is 526 lines. Web suite passes 1,048 tests; repo lint and diff checks pass. Next slice is stylesheet ownership: `base-shell.ts` and `workspace.ts` are the largest active web files.
+2026-05-18: Latest verified stage is Cloud web terminal runtime surface ownership. `client.ts` remains 3 lines and terminal app wiring is split by route/platform/runtime surfaces. Web suite passes 1,048 tests; repo lint and diff checks pass. Files around 1,000 lines are acceptable when ownership is coherent. Next work should target real boundary gaps: OSS router/composition ownership, stale compatibility barrels/helpers, and Cloud modules only when they still mix unrelated responsibilities.
 
 ## Responsibility Rule
 
@@ -93,7 +93,7 @@ No protocol shape changes are intended. If `LocalDaemonRequest`, `LocalDaemonRes
 
 ## Execution Order
 
-1. Maintain architecture guardrails and line-budget checks for `client.ts`, `server.ts`, `waiting-room-kernel.ts`, and `runtime/router.rs`.
+1. Maintain architecture guardrails and coarse coordinator checks for `client.ts`, `server.ts`, `waiting-room-kernel.ts`, and `runtime/router.rs`; do not split files only because they are near 1,000 lines.
 2. Finish Cloud web coordinator extraction around real responsibilities, starting with remaining terminal session/freeform/waiting-room orchestration.
 3. Continue OSS router extraction around runtime responsibilities, then introduce the kernel composition boundary.
 4. Split remaining CLI composition/state/controller code after shared protocol/runtime seams are stable.
