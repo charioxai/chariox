@@ -4,6 +4,7 @@ mod prompt_queue;
 mod prompt_runtime;
 mod runtime_interactions;
 mod service;
+mod session_identity;
 mod store;
 mod types;
 mod workflow_canvas;

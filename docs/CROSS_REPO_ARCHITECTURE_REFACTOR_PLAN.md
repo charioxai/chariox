@@ -374,6 +374,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: OSS workflow-run aggregate state is responsibility-owned; focused session tests pass.
 - Latest verified batch: OSS runtime interaction contracts are responsibility-owned; focused session tests pass.
 - Latest verified batch: OSS prompt queue contracts are responsibility-owned; focused session tests pass.
+- Latest verified batch: OSS session identity, invite, and creation contracts are responsibility-owned; focused session tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
