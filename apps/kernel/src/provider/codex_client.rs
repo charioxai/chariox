@@ -1,11 +1,9 @@
 use std::collections::BTreeMap;
-use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::stream::MaybeTlsStream;
-use tokio_tungstenite::tungstenite::{connect, Message, WebSocket};
+use tokio_tungstenite::tungstenite::{connect, Message};
 
 use crate::error::DaemonError;
 use crate::mcp::ArrobaMcpServerConfig;
@@ -25,6 +23,7 @@ mod json_rpc;
 mod notifications;
 mod permission;
 mod runtime_mcp;
+mod socket_io;
 
 mod mcp_config;
 
@@ -41,11 +40,11 @@ use permission::{
     CodexPermissionPolicy,
 };
 use runtime_mcp::call_runtime_mcp_tool;
+use socket_io::set_socket_timeouts;
 
 pub use auth::{ProviderAuthStatus, ProviderLoginStart};
 pub use health::codex_endpoint_is_healthy;
-
-pub type CodexSocket = WebSocket<MaybeTlsStream<TcpStream>>;
+pub use socket_io::CodexSocket;
 
 #[derive(Clone)]
 pub struct CodexClient {
@@ -1064,28 +1063,6 @@ impl CodexClient {
             message,
         }
     }
-}
-
-fn set_socket_timeouts(
-    socket: &mut CodexSocket,
-    read_timeout: Option<Duration>,
-    write_timeout: Option<Duration>,
-) -> Result<(), DaemonError> {
-    if let MaybeTlsStream::Plain(stream) = socket.get_mut() {
-        stream
-            .set_read_timeout(read_timeout)
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "codex_socket_timeout",
-                message: error.to_string(),
-            })?;
-        stream
-            .set_write_timeout(write_timeout)
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "codex_socket_timeout",
-                message: error.to_string(),
-            })?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
