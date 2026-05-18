@@ -18,6 +18,10 @@ import { createCliAgentPaneComposition } from "./cli-agent-pane-composition.js"
 import { createCliAppState } from "./cli-app-state.js"
 import { createCliAppCommandRoutingComposition } from "./cli-app-command-routing-composition.js"
 import { createCliAppProcessRuntimeComposition } from "./cli-app-process-runtime-composition.js"
+import {
+  createCliAppWorkflowActionComposition,
+  createCliAppWorkflowProjectionComposition,
+} from "./cli-app-workflow-composition.js"
 import { createCliOverlayInteractionComposition } from "./cli-overlay-interaction-composition.js"
 import { createCliPrimaryTranscriptComposition } from "./cli-primary-transcript-composition.js"
 import { createCliPromptSurfaceComposition } from "./cli-prompt-surface-composition.js"
@@ -128,17 +132,6 @@ import { createTranscriptSyntaxStyle } from "./theme.js"
 import {
   deriveWorkspaceShellContextForSession,
 } from "./workspace-shell-controller.js"
-import {
-  createWorkflowController,
-  createWorkflowSelectionSyncController,
-} from "./workflow-controller.js"
-import {
-  createWorkflowInspectorController,
-} from "./workflow-inspector-controller.js"
-import {
-  createWorkflowNodeInstructionsEditorController,
-} from "./workflow-node-instructions-editor-controller.js"
-import { createWorkflowTerminalPanelController } from "./workflow-terminal-panel-controller.js"
 import {
   computeCurrentTurnId,
   computeNextTurnId,
@@ -417,7 +410,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     workspaceScreenMode,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
-    workflowScreenActive: () => workflowScreenActive(),
+    workflowScreenActive: () => workflowActions.workflowScreenActive(),
     selectedWorkflowId,
     selectedWorkflowNodeId,
     providerRunState,
@@ -456,28 +449,18 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     requestRoot: () => renderScheduler.requestRoot(),
   })
   const scheduleResponsePaneRepaint = responsePaneRenderScheduleController.scheduleRepaint
-  const workflowSelectionSyncController = createWorkflowSelectionSyncController({
-    workflows: () => sessionState().workflows ?? [],
+  const {
+    workflowInspector,
+    bindWorkflowNodeInstructionsEditor,
+  } = createCliAppWorkflowProjectionComposition({
+    sessionState,
     selectedWorkflowId,
     selectedWorkflowNodeId,
+    workflowInspectorMode,
+    workflowNodeInstructionsEditor,
     setSelectedWorkflowId,
     setSelectedWorkflowNodeId,
   })
-  createEffect(() => {
-    workflowSelectionSyncController.sync()
-  })
-  const workflowInspectorController = createWorkflowInspectorController({
-    getSession: sessionState,
-    getSelectedWorkflowId: selectedWorkflowId,
-    getSelectedWorkflowNodeId: selectedWorkflowNodeId,
-    getInspectorMode: workflowInspectorMode,
-    getNodeInstructionsEditor: workflowNodeInstructionsEditor,
-    updateNodeInstructionsDraft: (draft) => workflowNodeInstructionsEditorController.updateDraft(draft),
-    setNodeInstructionsInputRef: (editorRef) => {
-      workflowNodeInstructionsEditorController.setInputRef(editorRef)
-    },
-  })
-  const workflowInspector = workflowInspectorController.project
   const promptStopController = createPromptStopController({
     getAttachment: attachmentState,
     getActivePrompt: activePrompt,
@@ -927,7 +910,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     transcriptEntryProjectionController,
     transcriptRenderDeferralController,
     isAttached,
-    workflowScreenActive: () => workflowScreenActive(),
+    workflowScreenActive: () => workflowActions.workflowScreenActive(),
     maxAgentsPerScreen,
     responseVisibleAgents,
     focusedAgentId,
@@ -1071,7 +1054,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     selectedWorkflowId,
     selectedWorkflowNodeId,
     setSelectedWorkflowNodeId,
-    workflowScreenActive: () => workflowScreenActive(),
+    workflowScreenActive: () => workflowActions.workflowScreenActive(),
     workflowInspector,
     workspaceShellEntries,
     workspaceShellContext,
@@ -1110,9 +1093,11 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAgentPanePreview,
   })
 
-  const workflowNodeInstructionsEditorController = createWorkflowNodeInstructionsEditorController({
-    getEditor: workflowNodeInstructionsEditor,
-    setEditor: setWorkflowNodeInstructionsEditor,
+  const workflowActions = createCliAppWorkflowActionComposition({
+    client,
+    bindWorkflowNodeInstructionsEditor,
+    workflowNodeInstructionsEditor,
+    setWorkflowNodeInstructionsEditor,
     workflowScreenShowing,
     setWorkspaceScreenMode,
     rebuildTranscript,
@@ -1120,20 +1105,17 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     focusPromptInput: () => {
       promptInputRefController.focus()
     },
-  })
-  const openWorkflowNodeInstructionsEditor = workflowNodeInstructionsEditorController.open
-  const closeWorkflowNodeInstructionsEditor = workflowNodeInstructionsEditorController.close
-  const getWorkflowNodeInstructionsContext = workflowNodeInstructionsEditorController.context
-  const getWorkflowNodeInstructionsDraft = workflowNodeInstructionsEditorController.draft
-
-  const openWorkflowTerminalPanel = createWorkflowTerminalPanelController({
-    clearNodeInstructionsEditor: workflowNodeInstructionsEditorController.clear,
     setWorkflowInspectorMode,
     setSelectedWorkflowId,
-    workflowScreenShowing,
-    setWorkspaceScreenMode,
-    rebuildTranscript,
-  }).open
+    isAttached,
+    sessionState,
+    applySessionState,
+    selectedWorkflowId,
+    selectedWorkflowNodeId,
+    setSelectedWorkflowNodeId,
+    workspaceScreenMode,
+    applyResponseLayout,
+  })
 
   const agentPaneRuntimeResetController = createAgentPaneRuntimeResetController({
     clearRenderedPanes: clearAllAuxiliaryAgentPanes,
@@ -1243,56 +1225,6 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   const {
-    workflowScreenActive,
-    toggleWorkspaceScreen,
-    showWorkflowScreen,
-    selectWorkflowCanvas,
-    cycleWorkflowCanvasNode,
-    replaceWorkflowDefinitions,
-    upsertWorkflowDefinition,
-    createWorkflow,
-    listWorkflows,
-    resolveWorkflow,
-    assignWorkflowAlias,
-    createWorkflowEndpoint,
-    assignWorkflowEndpointAlias,
-    bindWorkflowEndpoint,
-    addWorkflowNode,
-    removeWorkflowNode,
-    addWorkflowEdge,
-    removeWorkflowEdge,
-    updateWorkflowNodeInstructions,
-    setWorkflowNodeCanCompleteRun,
-    setWorkflowNodeCanEmitIntermediateOutput,
-    setWorkflowNodeIntermediateOutputSchema,
-    setWorkflowNodeMaxTurns,
-    invokeWorkflowEndpoint,
-    createWorkflowWatchdog,
-    listWorkflowWatchdogs,
-    setWorkflowWatchdogEnabled,
-    removeWorkflowWatchdog,
-    setWorkflowFlushContext,
-    setWorkflowRunOutputSchema,
-    setWorkflowIntermediateOutputSchema,
-    listWorkflowRuns,
-    cancelWorkflowRun,
-    resumeWorkflowRun,
-  } = createWorkflowController({
-    sendRequest: (request) => client.send<Record<string, unknown>>(request),
-    isAttached,
-    sessionState,
-    applySessionState,
-    selectedWorkflowId,
-    setSelectedWorkflowId,
-    selectedWorkflowNodeId,
-    setSelectedWorkflowNodeId,
-    workspaceScreenMode,
-    setWorkspaceScreenMode,
-    rebuildTranscript,
-    applyResponseLayout,
-  })
-
-  const {
     cycleFocusedInteractionChoice,
     executeCommandCenterCommand,
     handleCloudCommand,
@@ -1339,11 +1271,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     applyResponseLayout,
     applySessionState,
     refreshAgentPanes,
-    openWorkflowNodeInstructionsEditor,
-    closeWorkflowNodeInstructionsEditor,
-    getWorkflowNodeInstructionsDraft,
-    getWorkflowNodeInstructionsContext,
-    openWorkflowTerminalPanel,
+    ...workflowActions,
     rebuildTranscript,
     requestRootRender: () => {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
@@ -1355,39 +1283,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     trackAgentFocusTransition,
     setProviderRunState,
     resolveSessionAgent,
-    workflowScreenActive,
-    showWorkflowScreen,
     selectedWorkflowId,
-    selectWorkflowCanvas,
-    replaceWorkflowDefinitions,
-    upsertWorkflowDefinition,
-    createWorkflow,
-    listWorkflows,
-    resolveWorkflow,
-    assignWorkflowAlias,
-    createWorkflowEndpoint,
-    assignWorkflowEndpointAlias,
-    bindWorkflowEndpoint,
-    addWorkflowNode,
-    removeWorkflowNode,
-    addWorkflowEdge,
-    removeWorkflowEdge,
-    updateWorkflowNodeInstructions,
-    setWorkflowNodeCanCompleteRun,
-    setWorkflowNodeCanEmitIntermediateOutput,
-    setWorkflowNodeIntermediateOutputSchema,
-    setWorkflowNodeMaxTurns,
-    invokeWorkflowEndpoint,
-    createWorkflowWatchdog,
-    listWorkflowWatchdogs,
-    setWorkflowWatchdogEnabled,
-    removeWorkflowWatchdog,
-    setWorkflowFlushContext,
-    setWorkflowRunOutputSchema,
-    setWorkflowIntermediateOutputSchema,
-    listWorkflowRuns,
-    cancelWorkflowRun,
-    resumeWorkflowRun,
     refreshSplitPaneFocusRepaint,
     recordPromptAreaHistoryEntry,
     promptTextController,
@@ -1454,8 +1350,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     applyWaitingRoomSessionLifecycleAction,
     activateWaitingRoom,
     handleSessionBrowserKey,
-    toggleWorkspaceScreen,
-    cycleWorkflowCanvasNode,
+    toggleWorkspaceScreen: workflowActions.toggleWorkspaceScreen,
+    cycleWorkflowCanvasNode: workflowActions.cycleWorkflowCanvasNode,
     copyPromptSelection,
     removePromptAttachmentsForEdit,
     removeLastPendingPromptAttachment,
@@ -1475,7 +1371,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleStdinData,
     clearTerminalOutputRecordTimer,
     workspaceScreenMode,
-    workflowScreenActive,
+    workflowScreenActive: workflowActions.workflowScreenActive,
     daemonDisconnected,
     statusLine,
     sessionState,
@@ -1509,7 +1405,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setWorkspaceScreenMode,
     rebuildTranscript,
     applyResponseLayout,
-    showWorkflowScreen,
+    showWorkflowScreen: workflowActions.showWorkflowScreen,
     submitWorkspaceShellCommand,
     attachmentState,
     setPromptText,
