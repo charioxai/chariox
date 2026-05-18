@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. `TerminalSessionConnectionComposition` now owns the restore/start/join/remote/close/lifecycle controller graph; `client.ts` is 3,035 lines and the web suite passes with 1016 tests. Next highest-responsibility slice is waiting-room control-plane/session composition.
+2026-05-18: Latest verified stage is Cloud web waiting-room session control. `WaitingRoomSessionControlComposition` owns create-session visibility, action-menu state, start/join/lifecycle orchestration, session/create DOM routing, and waiting-room key routing. `client.ts` is 2,841 lines; web suite passes 1,020 tests; lint and diff checks pass. Next highest-responsibility slice is waiting-room runtime refresh/bootstrap client ownership.
 
 ## Responsibility Rule
 
