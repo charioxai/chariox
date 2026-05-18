@@ -543,41 +543,43 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let session_id = session_id.to_string();
         let context_file = context_file.to_string();
         let request_id = request_id.to_string();
-        std::thread::spawn(move || match bridge.request_blocking(&session_id, interaction) {
-            Ok(resolution) => {
-                let allowed = resolution.reply.as_deref() == Some("allow")
-                    || resolution.choice_id.as_deref() == Some("allow_once");
-                write_claude_permission_response(
-                    &context_file,
-                    &request_id,
-                    allowed,
-                    if allowed {
-                        "Approved through Arroba."
-                    } else if resolution.status == "timed_out" {
-                        "Timed out waiting for Arroba approval."
-                    } else {
-                        "Denied through Arroba."
-                    },
-                );
-            }
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.provider_output",
-                    "Claude native permission bridge failed",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "request_id": request_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                write_claude_permission_response(
-                    &context_file,
-                    &request_id,
-                    false,
-                    "Arroba permission bridge failed.",
-                );
-            }
-        });
+        std::thread::spawn(
+            move || match bridge.request_blocking(&session_id, interaction) {
+                Ok(resolution) => {
+                    let allowed = resolution.reply.as_deref() == Some("allow")
+                        || resolution.choice_id.as_deref() == Some("allow_once");
+                    write_claude_permission_response(
+                        &context_file,
+                        &request_id,
+                        allowed,
+                        if allowed {
+                            "Approved through Arroba."
+                        } else if resolution.status == "timed_out" {
+                            "Timed out waiting for Arroba approval."
+                        } else {
+                            "Denied through Arroba."
+                        },
+                    );
+                }
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider_output",
+                        "Claude native permission bridge failed",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "request_id": request_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    write_claude_permission_response(
+                        &context_file,
+                        &request_id,
+                        false,
+                        "Arroba permission bridge failed.",
+                    );
+                }
+            },
+        );
         Ok(())
     }
 

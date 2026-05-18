@@ -2,7 +2,7 @@ use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::agent_control_executor::execute_agent_control_request;
-use crate::runtime::command::{KernelCommand, command_caller_user_id};
+use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::session_actor::{SessionActor, SessionRuntime};
 use crate::runtime::state::KernelRuntimeState;
 

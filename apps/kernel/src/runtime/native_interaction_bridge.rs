@@ -105,9 +105,7 @@ pub(crate) async fn execute_native_provider_interaction_request(
     state: &KernelRuntimeState,
     request: RequestNativeProviderInteractionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let timeout = request.timeout_sec.map(Duration::from_secs);
-    let timeout_session_id = request.session_id.clone();
-    let timeout_interaction_id = request.interaction_id.clone();
+    let session_id = request.session_id.clone();
     let interaction = RuntimeInteraction::new(
         request.interaction_id,
         request.agent_id,
@@ -120,25 +118,16 @@ pub(crate) async fn execute_native_provider_interaction_request(
         request.timeout_sec,
         request.default_on_timeout,
     );
-    let receiver = state
-        .create_runtime_interaction(&request.session_id, interaction)
-        .await?;
-    if let Some(timeout) = timeout {
-        let state = state.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(timeout).await;
-            let _ = state
-                .timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id)
-                .await;
-        });
-    }
-    let resolution = receiver.await.map_err(|error| DaemonError::LocalTransport {
-        operation: "native_provider_interaction_request",
-        message: format!("interaction dropped before resolution: {error}"),
-    })?;
+    let resolution = request_runtime_interaction_with_timeout(
+        state,
+        &session_id,
+        interaction,
+        "native_provider_interaction_request",
+    )
+    .await?;
     Ok(LocalDaemonResponse::NativeProviderInteractionResolved {
         resolution: NativeProviderInteractionResolution {
-            status: resolution.status.to_string(),
+            status: resolution.status,
             choice_id: resolution.choice_id,
             reply: resolution.reply,
         },
@@ -151,11 +140,26 @@ pub(crate) async fn forward_relay_native_interaction(
     interaction: RuntimeInteraction,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
     let interaction = interaction.with_agent_id(context.home_agent_id.clone());
+    request_runtime_interaction_with_timeout(
+        state,
+        &context.home_session_id,
+        interaction,
+        "relay_forward_native_interaction",
+    )
+    .await
+}
+
+async fn request_runtime_interaction_with_timeout(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    interaction: RuntimeInteraction,
+    operation: &'static str,
+) -> Result<ProviderNativeInteractionResolution, DaemonError> {
     let timeout = interaction.timeout_sec().map(Duration::from_secs);
-    let timeout_session_id = context.home_session_id.clone();
+    let timeout_session_id = session_id.to_string();
     let timeout_interaction_id = interaction.id().to_string();
     let receiver = state
-        .create_runtime_interaction(&context.home_session_id, interaction)
+        .create_runtime_interaction(session_id, interaction)
         .await?;
     if let Some(timeout) = timeout {
         let state = state.clone();
@@ -169,7 +173,7 @@ pub(crate) async fn forward_relay_native_interaction(
     let resolution = receiver
         .await
         .map_err(|error| DaemonError::LocalTransport {
-            operation: "relay_forward_native_interaction",
+            operation,
             message: format!("interaction dropped before resolution: {error}"),
         })?;
     Ok(ProviderNativeInteractionResolution {

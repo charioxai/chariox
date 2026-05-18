@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is CLI workflow composition split. `cli-app-root.tsx` now delegates workflow selection sync, inspector projection, node-instruction editing, workflow panel opening, and workflow action wiring to `cli-app-workflow-composition.ts`. `pnpm --filter @arroba/cli run lint` passes.
+2026-05-18: Latest verified stage is native interaction bridge cleanup. Native-provider and relay-forwarded permission requests now share the timeout-backed `RuntimeInteraction` resolution helper, preserving one kernel-owned interaction path. `cargo fmt --manifest-path apps/kernel/Cargo.toml -- --check` and `cargo test --manifest-path apps/kernel/Cargo.toml native_interaction -- --test-threads=1` pass.
 
 ## Responsibility Rule
 
