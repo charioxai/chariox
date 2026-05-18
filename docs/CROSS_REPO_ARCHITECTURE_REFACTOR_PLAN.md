@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is OpenCode runtime lifecycle split. `apps/kernel/tests/opencode_runtime_lifecycle_integration.rs` now owns cleanup, runtime clearing, session error, and cancellation scenarios at 582 lines, while `opencode_runtime_integration.rs` keeps endpoint/reconnect behavior at 970 lines. Both OpenCode targets compile; the lifecycle target passes 7 tests.
+2026-05-18: Latest verified stage is remote native TUI drill harness split. `apps/cli/scripts/live-remote-native-tui-drill.mjs` now keeps scenario orchestration at 1,394 lines, with generic drill runtime helpers, provider-native prompt drivers, MCP/skill capability fixtures, and Hetzner/remote execution helpers moved under `apps/cli/scripts/lib/`. `node --check` passes for the drill and helper modules, and `node apps/cli/scripts/live-remote-native-tui-drill.mjs --help` loads successfully.
 
 ## Responsibility Rule
 

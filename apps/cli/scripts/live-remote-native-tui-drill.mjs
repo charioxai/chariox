@@ -1,13 +1,10 @@
-import { spawn, execFile } from "node:child_process"
+import { spawn } from "node:child_process"
 import net from "node:net"
 import path from "node:path"
 import { access, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
-import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
 import os from "node:os"
-
-import WebSocket from "ws"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -16,20 +13,48 @@ import {
   createSessionRequest,
   deleteSliceRequest,
   endSessionRequest,
-  getProviderRunRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
   importSliceProviderAuthRequest,
-  installMcpServerRequest,
-  installSkillRequest,
   listAgentsRequest,
   listRemoteMachinesRequest,
   pumpTerminalOutputRequest,
-  sendTerminalInputRequest,
   startSliceRequest,
 } from "../dist/ipc-requests.js"
+import {
+  cleanupNativeDrillCapabilities,
+  installNativeDrillCapabilities,
+  waitForProviderRunMcpGrant,
+} from "./lib/native-tui-capabilities.mjs"
+import {
+  ensureExecutionDirectory,
+  prepareHetznerWorktree,
+  remoteEnvCommand,
+  removeExecutionFile,
+  shellQuote,
+  sshArgs,
+  waitForExecutionFileContent,
+} from "./lib/native-tui-remote-execution.mjs"
+import {
+  assertBinary,
+  makeAvailablePorts,
+  resolveCommandPath,
+  runLogged,
+  screenQuit,
+  screenStuff,
+  startScreen,
+  terminateChild,
+  waitForFileMatch,
+  waitForLogOccurrences,
+  waitForTcpPort,
+} from "./lib/drill-runtime-helpers.mjs"
+import {
+  runNativeCodexPrompt,
+  runNativeOpenCodePrompt,
+  runNativeOpenCodePromptDetached,
+  sendClaudeRenderedPromptViaKernelInput,
+} from "./lib/native-tui-provider-drivers.mjs"
 
-const execFileAsync = promisify(execFile)
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
@@ -142,113 +167,6 @@ function printHelp() {
   ].join("\n"))
 }
 
-function makePorts(base = 52000 + Math.floor(Math.random() * 4000)) {
-  return {
-    relayPort: base,
-    kernelPort: base + 1000,
-    workerKernelPort: base + 1100,
-    workerMcpPort: base + 1101,
-    mcpPort: base + 1001,
-    openCodePort: base + 2000,
-    codexPort: base + 2001,
-  }
-}
-
-async function makeAvailablePorts() {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    const ports = makePorts()
-    if (await portsAreAvailable(ports)) return ports
-  }
-  throw new Error("could not find available drill ports")
-}
-
-async function portsAreAvailable(ports) {
-  const candidates = [
-    ports.relayPort,
-    ports.kernelPort,
-    ports.workerKernelPort,
-    ports.workerMcpPort,
-    ports.mcpPort,
-    ports.openCodePort,
-    ports.codexPort,
-  ]
-  for (const port of candidates) {
-    if (!(await portIsAvailable(port))) return false
-  }
-  return true
-}
-
-async function portIsAvailable(port) {
-  return await new Promise((resolve) => {
-    const server = net.createServer()
-    server.once("error", () => resolve(false))
-    server.listen(port, "127.0.0.1", () => {
-      server.close(() => resolve(true))
-    })
-  })
-}
-
-async function assertBinary(binaryPath, manifestPath, binName) {
-  try {
-    await access(binaryPath)
-  } catch {
-    throw new Error(`missing built binary ${binaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`)
-  }
-}
-
-async function waitForTcpPort(port, host = "127.0.0.1", timeoutMs = 15_000) {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const ready = await new Promise((resolve) => {
-      const socket = net.connect({ host, port })
-      socket.once("connect", () => {
-        socket.destroy()
-        resolve(true)
-      })
-      socket.once("error", () => {
-        socket.destroy()
-        resolve(false)
-      })
-    })
-    if (ready) return
-    await sleep(100)
-  }
-  throw new Error(`TCP listener ${host}:${port} did not become reachable`)
-}
-
-function sshArgs(options, remoteCommand) {
-  return [
-    "-i",
-    options.hetznerKey,
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "StrictHostKeyChecking=accept-new",
-    options.hetznerHost,
-    remoteCommand,
-  ]
-}
-
-function remoteEnvCommand(env, command) {
-  const assignments = Object.entries(env)
-    .map(([key, value]) => `${key}=${shellQuote(String(value))}`)
-    .join(" ")
-  return `cd ${shellQuote(env.ARROBA_REMOTE_REPO)} && env ${assignments} bash -lc ${shellQuote(command)}`
-}
-
-async function prepareHetznerWorktree(options, localWorktree) {
-  const parent = path.posix.dirname(localWorktree)
-  await execFileAsync("ssh", sshArgs(options, [
-    "set -e",
-    `test -x ${shellQuote(path.posix.join(options.hetznerRepo, "apps/kernel/target/debug/arroba-kernel"))}`,
-    `test -x ${shellQuote(path.posix.join(options.hetznerRepo, "apps/relay/target/debug/arroba-relay"))}`,
-    `mkdir -p ${shellQuote(parent)}`,
-    `git -C ${shellQuote(options.hetznerRepo)} worktree remove --force ${shellQuote(localWorktree)} 2>/dev/null || rm -rf ${shellQuote(localWorktree)}`,
-    `git -C ${shellQuote(options.hetznerRepo)} worktree prune`,
-    `git -C ${shellQuote(options.hetznerRepo)} worktree add --force --detach ${shellQuote(localWorktree)} HEAD`,
-  ].join("; ")))
-}
-
 async function waitForLocalDaemon(kernelUrl, workspace, worktree) {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const client = new LocalIpcClient(kernelUrl, {
@@ -308,91 +226,6 @@ async function waitForRemoteMachine(relayUrl, relayToken, targetDaemonAlias, mac
     await client.close().catch(() => {})
   }
   throw new Error(`remote machine ${machineAlias} did not appear in home kernel inventory`)
-}
-
-async function terminateChild(child, signal = "SIGTERM") {
-  if (!child || child.exitCode != null) return
-  child.kill(signal)
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    sleep(5_000),
-  ])
-  if (child.exitCode == null) {
-    child.kill("SIGKILL")
-    await Promise.race([
-      new Promise((resolve) => child.once("exit", resolve)),
-      sleep(2_000),
-    ])
-  }
-}
-
-async function runLogged(command, args, options = {}) {
-  await new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd ?? repoRoot,
-      env: options.env ?? process.env,
-      stdio: "inherit",
-    })
-    child.once("error", reject)
-    child.once("exit", (code, signal) => {
-      if (code === 0) {
-        resolve()
-        return
-      }
-      reject(new Error(`${command} ${args.join(" ")} exited with ${signal ?? code}`))
-    })
-  })
-}
-
-async function resolveCommandPath(command) {
-  const { stdout } = await execFileAsync("bash", ["-lc", `command -v ${shellQuote(command)}`])
-  return stdout.trim()
-}
-
-async function screen(name, args) {
-  await execFileAsync("screen", ["-S", name, ...args])
-}
-
-async function screenQuit(name) {
-  await screen(name, ["-X", "quit"]).catch(() => {})
-}
-
-async function screenStuff(name, text) {
-  await screen(name, ["-p", "0", "-X", "stuff", text])
-}
-
-function startScreen(name, logDir, command, args, env) {
-  return execFileAsync("screen", [
-    "-dmS",
-    name,
-    "-L",
-    command,
-    ...args,
-  ], { env, cwd: logDir })
-}
-
-async function waitForFileMatch(file, pattern, timeoutMs = 90_000) {
-  const deadline = Date.now() + timeoutMs
-  let text = ""
-  while (Date.now() < deadline) {
-    text = await readFile(file, "utf8").catch(() => "")
-    const match = text.match(pattern)
-    if (match) return { match, text }
-    await sleep(250)
-  }
-  throw new Error(`timed out waiting for ${pattern} in ${file}\n${text.slice(-4000)}`)
-}
-
-async function waitForLogOccurrences(logFile, needle, count, timeoutMs = 120_000) {
-  const deadline = Date.now() + timeoutMs
-  let text = ""
-  while (Date.now() < deadline) {
-    text = await readFile(logFile, "utf8").catch(() => "")
-    const occurrences = text.split(needle).length - 1
-    if (occurrences >= count) return text
-    await sleep(250)
-  }
-  throw new Error(`timed out waiting for ${count} occurrences of ${needle} in ${logFile}\n${text.slice(-4000)}`)
 }
 
 async function automationRequest(socketPath, request) {
@@ -506,160 +339,6 @@ async function waitForAgentBadgeTone(socketPath, alias, tone, timeoutMs = 90_000
   throw new Error(`timed out waiting for ${alias} badge tone ${tone}; last=${JSON.stringify(last)}`)
 }
 
-async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, prompt, logFile, filePath = null) {
-  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
-  const args = [
-    "run",
-    "--attach",
-    proxyUrl,
-    "--session",
-    providerSessionId,
-    "--dir",
-    worktree,
-  ]
-  if (filePath) args.push("--file", filePath, "--")
-  args.push(prompt)
-  const output = await new Promise((resolve, reject) => {
-    const child = spawn(executable, args, {
-      cwd: worktree,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    })
-    let stdout = ""
-    let stderr = ""
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM")
-      reject(new Error(`opencode run --attach timed out for ${providerSessionId}`))
-    }, 180_000)
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk.toString("utf8")
-    })
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk.toString("utf8")
-    })
-    child.once("error", (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
-    child.once("exit", (code, signal) => {
-      clearTimeout(timer)
-      if (code === 0) {
-        resolve(`${stdout}\n${stderr}`)
-        return
-      }
-      reject(new Error(`opencode run --attach exited with ${signal ?? code}\n${stdout}\n${stderr}`))
-    })
-  })
-  await writeFile(logFile, output)
-}
-
-async function runNativeOpenCodePromptDetached(proxyUrl, providerSessionId, worktree, prompt) {
-  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
-  const child = spawn(executable, [
-    "run",
-    "--attach",
-    proxyUrl,
-    "--session",
-    providerSessionId,
-    "--dir",
-    worktree,
-    prompt,
-  ], {
-    cwd: worktree,
-    env: process.env,
-    stdio: ["ignore", "pipe", "pipe"],
-  })
-  let stdout = ""
-  let stderr = ""
-  let exitResult = null
-  let exitError = null
-  child.stdout?.on("data", (chunk) => { stdout += chunk.toString("utf8") })
-  child.stderr?.on("data", (chunk) => { stderr += chunk.toString("utf8") })
-  child.once("error", (error) => {
-    exitError = error
-  })
-  child.once("exit", (code, signal) => {
-    exitResult = { code, signal }
-  })
-  return {
-    wait: async (timeoutMs = 240_000) => await new Promise((resolve, reject) => {
-      if (exitError) {
-        reject(exitError)
-        return
-      }
-      if (exitResult) {
-        if (exitResult.code === 0) resolve(`${stdout}\n${stderr}`)
-        else reject(new Error(`opencode run --attach exited with ${exitResult.signal ?? exitResult.code}\n${stdout}\n${stderr}`))
-        return
-      }
-      const timer = setTimeout(() => {
-        child.kill("SIGTERM")
-        reject(new Error(`opencode run --attach timed out for ${providerSessionId}\n${stdout}\n${stderr}`))
-      }, timeoutMs)
-      child.once("error", (error) => {
-        clearTimeout(timer)
-        reject(error)
-      })
-      child.once("exit", (code, signal) => {
-        clearTimeout(timer)
-        if (code === 0) resolve(`${stdout}\n${stderr}`)
-        else reject(new Error(`opencode run --attach exited with ${signal ?? code}\n${stdout}\n${stderr}`))
-      })
-    }),
-  }
-}
-
-async function codexRpc(proxyUrl, messages, timeoutMs = 30_000) {
-  return await new Promise((resolve, reject) => {
-    const ws = new WebSocket(proxyUrl)
-    const responses = []
-    const timer = setTimeout(() => {
-      ws.close()
-      reject(new Error(`codex rpc timed out; responses=${JSON.stringify(responses)}`))
-    }, timeoutMs)
-    ws.once("open", () => {
-      for (const message of messages) ws.send(JSON.stringify(message))
-    })
-    ws.on("message", (raw) => {
-      let message = null
-      try {
-        message = JSON.parse(raw.toString())
-      } catch {
-        return
-      }
-      responses.push(message)
-      const wanted = new Set(messages.filter((entry) => entry.id !== undefined).map((entry) => entry.id))
-      const received = new Set(responses.filter((entry) => entry.id !== undefined).map((entry) => entry.id))
-      if ([...wanted].every((id) => received.has(id))) {
-        clearTimeout(timer)
-        ws.close()
-        resolve(responses)
-      }
-    })
-    ws.once("error", (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
-  })
-}
-
-async function runNativeCodexPrompt(proxyUrl, threadId, prompt, extraInput = []) {
-  const responses = await codexRpc(proxyUrl, [
-    {
-      id: 2,
-      method: "turn/start",
-      params: {
-        threadId,
-        input: [{ type: "text", text: prompt, text_elements: [] }, ...extraInput],
-      },
-    },
-  ])
-  const turnResponse = responses.find((response) => response.id === 2)
-  if (!turnResponse || turnResponse.error) {
-    throw new Error(`codex native turn failed: ${JSON.stringify(turnResponse)}`)
-  }
-}
-
 async function waitForInteraction(socketPath, alias, timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs
   let last = null
@@ -726,12 +405,6 @@ async function answerPermissionFromCli(socketPath, alias) {
   return pending.interaction
 }
 
-async function sendClaudeRenderedPromptViaKernelInput(client, sessionId, attachmentId, providerRunId, prompt) {
-  await client.send(sendTerminalInputRequest(sessionId, attachmentId, prompt, providerRunId))
-  await sleep(250)
-  await client.send(sendTerminalInputRequest(sessionId, attachmentId, "\r", providerRunId))
-}
-
 async function waitForClaudeProviderRunId(logFile) {
   return (await waitForFileMatch(logFile, /provider run:\s+([^\s]+)/, 90_000)).match[1]
 }
@@ -770,38 +443,6 @@ async function waitForFileContent(filePath, expected, timeoutMs = 240_000) {
   throw new Error(`timed out waiting for ${filePath} to contain ${JSON.stringify(expected)}`)
 }
 
-async function runHetznerCommand(options, command) {
-  const { stdout } = await execFileAsync("ssh", sshArgs(options, command), { maxBuffer: 4 * 1024 * 1024 })
-  return stdout
-}
-
-async function ensureExecutionDirectory(options, remoteExecution, dirPath) {
-  if (remoteExecution) {
-    await runHetznerCommand(options, `mkdir -p ${shellQuote(dirPath)}`)
-    return
-  }
-  await mkdir(dirPath, { recursive: true })
-}
-
-async function removeExecutionFile(options, remoteExecution, filePath) {
-  if (remoteExecution) {
-    await runHetznerCommand(options, `rm -f ${shellQuote(filePath)}`).catch(() => {})
-    return
-  }
-  await rm(filePath, { force: true }).catch(() => {})
-}
-
-async function waitForExecutionFileContent(options, remoteExecution, filePath, expected, timeoutMs = 240_000) {
-  if (!remoteExecution) return await waitForFileContent(filePath, expected, timeoutMs)
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const content = await runHetznerCommand(options, `cat ${shellQuote(filePath)}`).catch(() => "")
-    if (content === expected) return content
-    await sleep(500)
-  }
-  throw new Error(`timed out waiting for remote ${filePath} to contain ${JSON.stringify(expected)}`)
-}
-
 function permissionPrompt(markerText, filePath, content) {
   const shellCommand = `printf '${content}\\n' > ${filePath}`
   return `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
@@ -811,180 +452,12 @@ function claudePermissionPrompt(markerText, filePath, content) {
   return `Please create the file ${filePath} with exactly this content: ${content}. You can use Bash if convenient. After the file is written, reply with exactly ${markerText}.`
 }
 
-function shellQuote(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`
-}
-
 function attachedFilePrompt(markerText) {
   return `Read the attached file and reply with exactly ${markerText} and nothing else.`
 }
 
 function attachedImagePrompt(markerText) {
   return `Reply with exactly ${markerText} and nothing else after receiving the attached image.`
-}
-
-async function createNativeDrillMcpServer(workspace, name) {
-  const scriptDir = path.join(workspace, ".arroba", "native-tui-drill")
-  const scriptPath = path.join(scriptDir, `${name}.mjs`)
-  await mkdir(scriptDir, { recursive: true })
-  await writeFile(scriptPath, [
-    "let buffer = Buffer.alloc(0)",
-    "function write(message) {",
-    "  const body = Buffer.from(JSON.stringify(message), 'utf8')",
-    "  process.stdout.write(`Content-Length: ${body.length}\\r\\n\\r\\n`)",
-    "  process.stdout.write(body)",
-    "}",
-    "function handle(message) {",
-    "  const { id, method, params } = message",
-    "  if (method === 'notifications/initialized') return",
-    "  if (method === 'initialize') {",
-    "    write({ jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'arroba-native-tui-drill', version: '1.0.0' } } })",
-    "    return",
-    "  }",
-    "  if (method === 'tools/list') {",
-    "    write({ jsonrpc: '2.0', id, result: { tools: [{ name: 'echo_marker', description: 'Echoes a marker for Arroba native TUI MCP drills.', inputSchema: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'] } }] } })",
-    "    return",
-    "  }",
-    "  if (method === 'tools/call' && params?.name === 'echo_marker') {",
-    "    write({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `ECHO:${params?.arguments?.marker ?? ''}` }] } })",
-    "    return",
-    "  }",
-    "  write({ jsonrpc: '2.0', id, error: { code: -32601, message: `unknown method ${method}` } })",
-    "}",
-    "process.stdin.on('data', (chunk) => {",
-    "  buffer = Buffer.concat([buffer, chunk])",
-    "  while (true) {",
-    "    const newline = buffer.indexOf('\\n')",
-    "    if (newline >= 0) {",
-    "      const line = buffer.subarray(0, newline).toString('utf8').trim()",
-    "      buffer = buffer.subarray(newline + 1)",
-    "      if (line) handle(JSON.parse(line))",
-    "      continue",
-    "    }",
-    "    const headerEnd = buffer.indexOf('\\r\\n\\r\\n')",
-    "    if (headerEnd < 0) return",
-    "    const header = buffer.subarray(0, headerEnd).toString('utf8')",
-    "    const match = /^content-length:\\s*(\\d+)$/im.exec(header)",
-    "    if (!match) throw new Error(`missing Content-Length: ${header}`)",
-    "    const length = Number(match[1])",
-    "    const bodyStart = headerEnd + 4",
-    "    const frameEnd = bodyStart + length",
-    "    if (buffer.length < frameEnd) return",
-    "    const message = JSON.parse(buffer.subarray(bodyStart, frameEnd).toString('utf8'))",
-    "    buffer = buffer.subarray(frameEnd)",
-    "    handle(message)",
-    "  }",
-    "})",
-  ].join("\n"), "utf8")
-  return scriptPath
-}
-
-function nativeDrillMcpConfig(name, command) {
-  return {
-    name,
-    transport: {
-      type: "stdio",
-      command: "node",
-      args: [command],
-    },
-    enabled: true,
-    required: true,
-    tools: {},
-  }
-}
-
-async function createNativeDrillSkill(sourceRoot, name, nativeMarker, arrobaMarker) {
-  const skillDir = path.join(sourceRoot, name)
-  await mkdir(skillDir, { recursive: true })
-  await writeFile(path.join(skillDir, "SKILL.md"), [
-    "---",
-    `name: ${name}`,
-    `description: Native TUI drill skill for ${name}.`,
-    "short-description: Native TUI drill",
-    "---",
-    `If the prompt asks for the native skill marker, reply with exactly ${nativeMarker} and nothing else.`,
-    `If the prompt asks for the Arroba skill marker, reply with exactly ${arrobaMarker} and nothing else.`,
-    "",
-  ].join("\n"))
-  return skillDir
-}
-
-async function installNativeDrillCapabilities({
-  homeClient,
-  workerKernelUrl,
-  provider,
-  scenarioRoot,
-  workspace,
-  options,
-  markers,
-}) {
-  if (!options.includeMcpSkills) return null
-  if (options.hetznerWorker) {
-    throw new Error("--include-mcp-skills is not implemented for --hetzner-worker yet; use same-host standard remote or home-managed slice")
-  }
-  const normalizedProvider = provider.replaceAll(/[^a-z0-9_-]/gi, "-").toLowerCase()
-  const suffix = `${process.pid}-${Date.now()}`
-  const mcpName = `native-${normalizedProvider}-${suffix}-node`
-  const skillName = `native-${normalizedProvider}-${suffix}-skill`
-  const mcpServerPath = await createNativeDrillMcpServer(workspace, mcpName)
-  const mcpConfig = nativeDrillMcpConfig(mcpName, mcpServerPath)
-  const skillSource = await createNativeDrillSkill(
-    path.join(scenarioRoot, "skill-source"),
-    skillName,
-    markers.nativeSkill,
-    markers.arrobaSkill,
-  )
-  await homeClient.send(installMcpServerRequest(workspace, mcpConfig))
-  const installedSkill = unwrapVariant(
-    await homeClient.send(installSkillRequest(workspace, skillSource)),
-    "SkillInstalled",
-  ).skill
-
-  if (options.standardHomeWorker && workerKernelUrl) {
-    const workerClient = new LocalIpcClient(workerKernelUrl, {
-      kernelPingIntervalMs: 60_000,
-      kernelMaxMissedPongs: 10,
-    })
-    try {
-      await workerClient.send(installMcpServerRequest(workspace, mcpConfig))
-    } finally {
-      await workerClient.close().catch(() => {})
-    }
-  }
-
-  return {
-    mcpName,
-    mcpServerPath,
-    skillName: installedSkill?.name ?? skillName,
-  }
-}
-
-async function cleanupNativeDrillCapabilities(workspace, nativeCapabilities) {
-  if (!nativeCapabilities) return
-  await rm(path.join(workspace, ".arroba", "skills", nativeCapabilities.skillName), {
-    recursive: true,
-    force: true,
-  }).catch(() => {})
-  await rm(path.join(workspace, ".arroba", "mcps", `${nativeCapabilities.mcpName}.json`), {
-    force: true,
-  }).catch(() => {})
-  await rm(nativeCapabilities.mcpServerPath, { force: true }).catch(() => {})
-}
-
-async function waitForProviderRunMcpGrant(client, providerRunId, mcpName, timeoutMs = 90_000) {
-  const deadline = Date.now() + timeoutMs
-  let lastRun = null
-  while (Date.now() < deadline) {
-    const run = unwrapVariant(
-      await client.send(getProviderRunRequest(providerRunId)),
-      "ProviderRun",
-    ).provider_run
-    lastRun = run
-    const mcps = run?.mcp_servers ?? []
-    if (mcps.some((mcp) => mcp.name === mcpName)) return run
-    await sleep(500)
-  }
-  throw new Error(`timed out waiting for provider run ${providerRunId} MCP grant ${mcpName}; last=${JSON.stringify(lastRun)}`)
 }
 
 function relayClient(relayUrl, relayToken, targetDaemonAlias) {
