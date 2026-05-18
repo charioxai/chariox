@@ -1,5 +1,5 @@
 import { appendFileSync } from "node:fs"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import process from "node:process"
@@ -15,7 +15,6 @@ import { LocalIpcClient } from "../ipc.js"
 import {
   appendNativeProviderOutputRequest,
   completePromptRequest,
-  getSkillRequest,
   getSessionStateRequest,
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
@@ -40,10 +39,20 @@ import {
   startClaudePermissionBridge,
 } from "./claude-permission-bridge.js"
 import {
+  buildClaudeNativeSkillContext,
+  writeClaudeHookContextResponse,
+} from "./claude-skill-context.js"
+import {
   type ClaudeTuiController,
   startClaudeAttachedPty,
   startClaudeScreen,
 } from "./claude-tui-launcher.js"
+import {
+  type ClaudeHookEvent,
+  drainAssistantText,
+  readClaudeHookEvents,
+  waitForAssistantText,
+} from "./claude-transcript.js"
 import { hiddenInstructionsEnd, hiddenInstructionsStart, redactHiddenInstructions } from "./hidden-instructions.js"
 import { inferWorkspaceTargetsFromLaunchDirectory } from "./launch-environment.js"
 import {
@@ -83,19 +92,6 @@ type NativeClaudeOptions = {
   remoteRendered: boolean
   grantMcps: string[]
   grantSkills: string[]
-}
-
-type ClaudeHookEvent = {
-  index: number
-  hook_event_name: string
-  hook_context_request_id?: string | null
-  prompt?: string | null
-  transcript_path?: string | null
-  permission_mode?: string | null
-  tool_name?: string | null
-  tool_input?: unknown
-  tool_response?: unknown
-  error?: unknown
 }
 
 export async function runClaudeNativeTui(args: string[]): Promise<void> {
@@ -743,150 +739,6 @@ function startClaudeBridge(options: {
       stopped = true
     },
   }
-}
-
-async function readClaudeHookEvents(file: string): Promise<ClaudeHookEvent[]> {
-  const raw = await readFile(file, "utf8").catch(() => "")
-  return raw
-    .split("\n")
-    .map((line, index) => ({ line, index }))
-    .filter(({ line }) => line.trim())
-    .map(({ line, index }) => {
-      try {
-        const value = JSON.parse(line) as Omit<ClaudeHookEvent, "index">
-        return { ...value, index }
-      } catch {
-        return { index, hook_event_name: "parse_error" }
-      }
-    })
-}
-
-async function drainAssistantText(transcriptPath: string, offsets: Map<string, number>): Promise<string> {
-  const { text, lineCount } = await readAssistantTextAfterOffset(transcriptPath, offsets.get(transcriptPath) ?? 0)
-  offsets.set(transcriptPath, lineCount)
-  return text
-}
-
-async function waitForAssistantText(transcriptPath: string, offsets: Map<string, number>): Promise<string> {
-  const start = offsets.get(transcriptPath) ?? 0
-  const deadline = Date.now() + 5_000
-  let latestLineCount = start
-  while (Date.now() < deadline) {
-    const { text, lineCount } = await readAssistantTextAfterOffset(transcriptPath, start)
-    latestLineCount = Math.max(latestLineCount, lineCount)
-    if (text.trim()) {
-      offsets.set(transcriptPath, lineCount)
-      return text
-    }
-    await sleep(200)
-  }
-  offsets.set(transcriptPath, latestLineCount)
-  return ""
-}
-
-async function readAssistantTextAfterOffset(transcriptPath: string, start: number): Promise<{ text: string; lineCount: number }> {
-  const raw = await readFile(transcriptPath, "utf8").catch(() => "")
-  const lines = raw.split("\n").filter((line) => line.trim())
-  const texts: string[] = []
-  for (const line of lines.slice(start)) {
-    try {
-      const entry = JSON.parse(line)
-      if (isAssistantTranscriptEntry(entry)) {
-        const text = collectTextValues(entry).join("\n").trim()
-        if (text) texts.push(text)
-      }
-    } catch {}
-  }
-  return { text: texts.join("\n"), lineCount: lines.length }
-}
-
-function isAssistantTranscriptEntry(value: unknown): boolean {
-  if (!value || typeof value !== "object") return false
-  const record = value as Record<string, unknown>
-  if (record.type === "assistant" || record.role === "assistant") return true
-  const message = record.message
-  return Boolean(message && typeof message === "object" && (message as Record<string, unknown>).role === "assistant")
-}
-
-function collectTextValues(value: unknown): string[] {
-  if (!value || typeof value !== "object") return []
-  if (Array.isArray(value)) return value.flatMap((entry) => collectTextValues(entry))
-  const record = value as Record<string, unknown>
-  const text = typeof record.text === "string" ? [record.text] : []
-  return text.concat(Object.values(record).flatMap((entry) => collectTextValues(entry)))
-}
-
-async function writeClaudeHookContextResponse(dir: string, requestId: string, context: string): Promise<void> {
-  if (!requestId.trim()) return
-  await mkdir(dir, { recursive: true })
-  await writeFile(path.join(dir, `${requestId}.txt`), context, "utf8")
-}
-
-async function buildClaudeNativeSkillContext(
-  client: LocalIpcClient,
-  sessionId: string,
-  workspace: string,
-  agentId: string,
-  prompt: string,
-): Promise<string> {
-  const session = await sessionState(client, sessionId)
-  const agent = session.agents.find((candidate) => candidate.id === agentId)
-  const grants = agent?.skill_grants ?? []
-  if (grants.length === 0) return ""
-  const lines = [
-    "Available Arroba skills for this agent:",
-    "Use these granted skills as routing hints when they match the task. If a skill is explicitly selected, mentioned, or requested below, follow its full instructions.",
-  ]
-  const requestedBodies: Array<{ name: string; body: string }> = []
-  for (const grant of grants) {
-    const response = await client.send<Record<string, unknown>>(getSkillRequest(workspace, grant))
-    const skill = expectVariant<{ skill: { name: string; description: string; short_description?: string | null; path: string } }>(response, "Skill").skill
-    lines.push(`- \`${skill.name}\`: ${skill.short_description || skill.description}`)
-    if (promptExplicitlyRequestsSkill(prompt, skill.name)) {
-      const body = await readFile(skill.path, "utf8")
-      requestedBodies.push({ name: skill.name, body })
-    }
-  }
-  if (requestedBodies.length > 0) {
-    lines.push("", "Full instructions for explicitly requested Arroba skills:")
-    for (const { name, body } of requestedBodies) {
-      lines.push(`<arroba_skill name="${name}">`, body.trim(), "</arroba_skill>")
-    }
-  }
-  return lines.join("\n")
-}
-
-function promptExplicitlyRequestsSkill(prompt: string, skillName: string): boolean {
-  const normalizedPrompt = prompt.toLowerCase()
-  const normalizedSkill = skillName.toLowerCase()
-  const explicitMarkers = [
-    `@${normalizedSkill}`,
-    `\`${normalizedSkill}\``,
-    `/skill ${normalizedSkill}`,
-    `skill ${normalizedSkill}`,
-    `use ${normalizedSkill}`,
-    `using ${normalizedSkill}`,
-    `with ${normalizedSkill}`,
-  ]
-  return explicitMarkers.some((marker) => normalizedPrompt.includes(marker))
-    || containsTokenishSkillName(normalizedPrompt, normalizedSkill)
-}
-
-function containsTokenishSkillName(prompt: string, skillName: string): boolean {
-  let index = prompt.indexOf(skillName)
-  while (index >= 0) {
-    const before = index > 0 ? prompt.charCodeAt(index - 1) : null
-    const afterIndex = index + skillName.length
-    const after = afterIndex < prompt.length ? prompt.charCodeAt(afterIndex) : null
-    if (isSkillBoundary(before) && isSkillBoundary(after)) return true
-    index = prompt.indexOf(skillName, index + skillName.length)
-  }
-  return false
-}
-
-function isSkillBoundary(code: number | null): boolean {
-  if (code === null) return true
-  return !((code >= 48 && code <= 57) || (code >= 97 && code <= 122) || code === 45 || code === 95)
 }
 
 function extractHiddenInstructions(prompt: string): string {
