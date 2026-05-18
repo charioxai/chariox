@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is hosted Cloud relay drill scenario split. `apps/cli/scripts/live-hosted-cloud-relay-drill.mjs` is now 1,007 lines and keeps setup/login/pair/connect sequencing, while multi-user Cloud access, remote CLI automation, and second-kernel/token-rotation assertions live under `apps/cli/scripts/lib/hosted-cloud-*-scenarios.mjs`. `node --check` passes for the drill and new scenario modules.
+2026-05-18: Latest verified stage is CLI executable entrypoint split. `apps/cli/src/index.tsx` is now 72 lines and owns subcommand dispatch, parser/logger bootstrap, runtime bootstrap, and render mounting; the interactive app composition moved to `apps/cli/src/cli-app-root.tsx`, with process runtime singletons in `cli-runtime-singletons.ts`. `pnpm --filter @arroba/cli run lint` passes.
 
 ## Responsibility Rule
 
