@@ -6,7 +6,7 @@ import { PaneGridBorderChars, theme } from "./theme.js"
 type RefHandler = (value: any) => void
 type IndexedRefHandler = (index: number, value: any) => void
 
-type WorkspaceLayoutProps = {
+export type WorkspaceLayoutProps = {
   width: number
   height: number
   fatalError: boolean

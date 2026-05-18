@@ -30,8 +30,8 @@ import { createCliWaitingRoomComposition } from "./cli-waiting-room-composition.
 import { createCliClosingStateController } from "./cli-closing-state-controller.js"
 import {
   COMMAND_CENTER_OVERLAY_FOOTPRINT,
-  PROMPT_KEYBINDINGS,
 } from "./cli-runtime-tuning.js"
+import { CliAppWorkspaceView } from "./cli-app-workspace-view.js"
 import { createAgentFocusTransitionController } from "./agent-focus-transition-controller.js"
 import {
   createCliRendererFocusController,
@@ -62,9 +62,6 @@ import {
 } from "./prompt-text-controller.js"
 import { createPromptStopController } from "./prompt-stop-controller.js"
 import { createPrimaryTranscriptRuntimeStoreController } from "./primary-transcript-runtime-store-controller.js"
-import {
-  promptAttachmentTokenStyle,
-} from "./prompt-attachment-tokens.js"
 import {
   cancelActivePrompt,
 } from "./prompt-runtime-api.js"
@@ -144,7 +141,6 @@ import {
   createWorkflowNodeInstructionsEditorController,
 } from "./workflow-node-instructions-editor-controller.js"
 import { createWorkflowTerminalPanelController } from "./workflow-terminal-panel-controller.js"
-import { WorkspaceLayout } from "./workspace-layout.js"
 import {
   computeCurrentTurnId,
   computeNextTurnId,
@@ -1714,7 +1710,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   setKernelTerminalOutputRecordProcessor(runtimeProcessKernelTerminalOutputRecord)
 
   return (
-    <WorkspaceLayout
+    <CliAppWorkspaceView
       width={dimensions().width}
       height={dimensions().height}
       fatalError={fatalError() !== null}
@@ -1723,150 +1719,39 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}
-      promptKeyBindings={PROMPT_KEYBINDINGS}
-      onRootMouseUp={retainPromptFocus}
-      onResponseSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
-      onFooterMouseUp={handlePromptSelectionSurfaceMouseUp}
-      onResponseLayoutBoxRef={(value) => {
-        responsePaneRenderRefStore.assignLayoutBox(value)
-        logViewDebug("mounted response layout box")
-        applyResponseLayout()
-      }}
-      onResponseRowBoxRef={(index, value) => {
-        responsePaneRenderRefStore.assignRowBox(index, value)
-        applyResponseLayout()
-      }}
-      onPaneGridBorderRowRef={(index, value) => {
-        responsePaneRenderRefStore.assignBorderRow(index, value)
-        applyResponseLayout()
-      }}
-      onPaneGridBottomBorderRowRef={(value) => {
-        responsePaneRenderRefStore.assignBottomBorderRow(value)
-        applyResponseLayout()
-      }}
-      onPaneGridHorizontalSegmentRef={(rowIndex, segmentIndex, value) => {
-        responsePaneRenderRefStore.assignHorizontalSegment(rowIndex, segmentIndex, value)
-        applyResponseLayout()
-      }}
-      onPaneGridBottomHorizontalSegmentRef={(segmentIndex, value) => {
-        responsePaneRenderRefStore.assignBottomHorizontalSegment(segmentIndex, value)
-        applyResponseLayout()
-      }}
-      onPaneGridJunctionTextRef={(rowIndex, junctionIndex, value) => {
-        responsePaneRenderRefStore.assignJunctionText(rowIndex, junctionIndex, value)
-        applyResponseLayout()
-      }}
-      onPaneGridBottomJunctionTextRef={(junctionIndex, value) => {
-        responsePaneRenderRefStore.assignBottomJunctionText(junctionIndex, value)
-        applyResponseLayout()
-      }}
-      onPaneGridVerticalSegmentRef={(rowIndex, segmentIndex, value) => {
-        responsePaneRenderRefStore.assignVerticalSegment(rowIndex, segmentIndex, value)
-        applyResponseLayout()
-      }}
-      onResponsePrimaryPaneRef={(value) => {
-        responsePaneRenderRefStore.assignPrimaryPane(value)
-        logViewDebug("mounted response primary pane")
-        applyResponseLayout()
-      }}
-      onHistoryLoadingBoxRef={(value) => {
-        historyLoadingRenderController.assignBox(value)
-        logViewDebug("mounted history loading box")
-        renderHistoryLoadingIndicator()
-      }}
-      onTranscriptScrollboxRef={(value) => {
-        transcriptScrollboxRefController.assignScrollbox(value)
-        logViewDebug("mounted primary transcript scrollbox")
-        rebuildTranscript()
-        ensureBackgroundPollersStarted()
-      }}
-      onResponsePrimaryInteractionBoxRef={(value) => {
-        responsePaneRenderRefStore.assignPrimaryInteractionBox(value)
-        renderAgentInteractions()
-        applyResponseLayout()
-      }}
-      onResponsePrimaryFooterBoxRef={(value) => {
-        responsePaneRenderRefStore.assignPrimaryFooterBox(value)
-        renderSplitPaneFooters()
-        applyResponseLayout()
-      }}
-      onResponseAuxiliaryPaneRef={(index, value) => {
-        responsePaneRenderRefStore.assignAuxiliaryPane(index, value)
-        logViewDebug("mounted response auxiliary pane", {
-          pane_index: index + 1,
-        })
-        applyResponseLayout()
-      }}
-      onResponseAuxiliaryScrollboxRef={(index, value) => {
-        responsePaneRenderRefStore.assignAuxiliaryScrollbox(index, value)
-        logViewDebug("mounted response auxiliary scrollbox", {
-          pane_index: index + 1,
-        })
-        applyResponseLayout()
-      }}
-      onResponseAuxiliaryInteractionBoxRef={(index, value) => {
-        responsePaneRenderRefStore.assignAuxiliaryInteractionBox(index, value)
-        renderAgentInteractions()
-        applyResponseLayout()
-      }}
-      onResponseAuxiliaryFooterBoxRef={(index, value) => {
-        responsePaneRenderRefStore.assignAuxiliaryFooterBox(index, value)
-        renderSplitPaneFooters()
-        applyResponseLayout()
-      }}
-      onCommandCenterBoxRef={(value) => {
-        commandCenterController.assignBox(value)
-        renderCommandCenter()
-      }}
-      onPromptInputRef={(value) => {
-        promptInputRefController.assignInput(value)
-        promptInputRefController.setSyntaxStyle(promptAttachmentTokenStyle)
-        syncPromptPlaceholder()
-        if (promptTextController.snapshot()) {
-          setPromptText(promptTextController.snapshot())
-        }
-        syncPromptTextSnapshot()
-        refreshPromptAttachmentHighlights()
-        ensureBackgroundPollersStarted()
-      }}
-      onPromptKeyDown={handlePromptKeyDown}
-      onPromptContentChange={handlePromptContentChange}
-      onPromptSubmit={() => {
-        if (focusedAgentInteraction()) {
-          void submitFocusedInteractionChoice()
-          return
-        }
-        if (commandCenterOpen()) {
-          if (selectCommandCenterFromSubmit()) {
-            return
-          }
-        }
-        void submitPrompt()
-      }}
-      onPromptMetaProviderTextRef={assignPromptMetaRef("providerText")}
-      onPromptMetaProviderDividerTextRef={assignPromptMetaRef("providerDividerText")}
-      onPromptMetaModelTextRef={assignPromptMetaRef("modelText")}
-      onPromptMetaModelDividerTextRef={assignPromptMetaRef("modelDividerText")}
-      onPromptMetaVariantTextRef={assignPromptMetaRef("variantText")}
-      onPromptMetaUsageDividerTextRef={assignPromptMetaRef("usageDividerText")}
-      onPromptMetaUsageTokensTextRef={assignPromptMetaRef("usageTokensText")}
-      onPromptMetaUsageBarOpenTextRef={assignPromptMetaRef("usageBarOpenText")}
-      onPromptMetaUsageBarFilledTextRef={assignPromptMetaRef("usageBarFilledText")}
-      onPromptMetaUsageBarEmptyTextRef={assignPromptMetaRef("usageBarEmptyText")}
-      onPromptMetaUsageBarCloseTextRef={assignPromptMetaRef("usageBarCloseText")}
-      onPromptMetaUsagePercentTextRef={assignPromptMetaRef("usagePercentText")}
-      onStatusIndicatorBoxRef={(value) => {
-        assignStatusIndicatorBox(value)
-        updateSessionChrome()
-      }}
-      onFooterSummaryBoxRef={(value) => {
-        assignFooterSummaryBox(value)
-        updateSessionChrome()
-      }}
-      onHotkeysOverlayBoxRef={(value) => {
-        assignDialogOverlayBox(value)
-        renderHotkeysOverlay()
-      }}
+      retainPromptFocus={retainPromptFocus}
+      handlePromptSelectionSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
+      responsePaneRenderRefStore={responsePaneRenderRefStore}
+      historyLoadingRenderController={historyLoadingRenderController}
+      transcriptScrollboxRefController={transcriptScrollboxRefController}
+      commandCenterController={commandCenterController}
+      promptInputRefController={promptInputRefController}
+      promptTextController={promptTextController}
+      assignPromptMetaRef={assignPromptMetaRef}
+      assignStatusIndicatorBox={assignStatusIndicatorBox}
+      assignFooterSummaryBox={assignFooterSummaryBox}
+      assignDialogOverlayBox={assignDialogOverlayBox}
+      handlePromptKeyDown={handlePromptKeyDown}
+      handlePromptContentChange={handlePromptContentChange}
+      focusedAgentInteraction={focusedAgentInteraction}
+      submitFocusedInteractionChoice={submitFocusedInteractionChoice}
+      commandCenterOpen={commandCenterOpen}
+      selectCommandCenterFromSubmit={selectCommandCenterFromSubmit}
+      submitPrompt={submitPrompt}
+      logViewDebug={logViewDebug}
+      applyResponseLayout={applyResponseLayout}
+      renderHistoryLoadingIndicator={renderHistoryLoadingIndicator}
+      rebuildTranscript={rebuildTranscript}
+      ensureBackgroundPollersStarted={ensureBackgroundPollersStarted}
+      renderAgentInteractions={renderAgentInteractions}
+      renderSplitPaneFooters={renderSplitPaneFooters}
+      renderCommandCenter={renderCommandCenter}
+      syncPromptPlaceholder={syncPromptPlaceholder}
+      setPromptText={setPromptText}
+      syncPromptTextSnapshot={syncPromptTextSnapshot}
+      refreshPromptAttachmentHighlights={refreshPromptAttachmentHighlights}
+      updateSessionChrome={updateSessionChrome}
+      renderHotkeysOverlay={renderHotkeysOverlay}
     />
   )
 }
