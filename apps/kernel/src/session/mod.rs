@@ -1,6 +1,7 @@
 mod agent_config;
 mod owner;
 mod prompt_runtime;
+mod runtime_interactions;
 mod service;
 mod store;
 mod types;
