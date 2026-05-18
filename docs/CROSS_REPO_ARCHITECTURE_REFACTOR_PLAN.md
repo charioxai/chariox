@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is CLI app shell render binding split. `apps/cli/src/index.tsx` owns executable bootstrap, `cli-app-root.tsx` owns interactive controller composition, and `cli-app-workspace-view.tsx` owns `WorkspaceLayout` ref/event wiring. `pnpm --filter @arroba/cli run lint` passes.
+2026-05-18: Latest verified stage is CLI command routing bridge split. `cli-app-root.tsx` now delegates command action handlers, command-center execution, and prompt/stdin input routing to `cli-app-command-routing-composition.ts`, while executable bootstrap and shell render binding remain separated. `pnpm --filter @arroba/cli run lint` passes.
 
 ## Responsibility Rule
 
