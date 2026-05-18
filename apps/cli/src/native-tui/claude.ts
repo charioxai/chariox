@@ -6,48 +6,27 @@ import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import {
-  normalizeRuntimeSession,
-  type PromptQueueItem,
   type RuntimeProviderRun,
-  type RuntimeSession,
 } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
-  appendNativeProviderOutputRequest,
-  completePromptRequest,
-  getSessionStateRequest,
   sendTerminalInputRequest,
-  submitPromptRequest,
 } from "../ipc-requests.js"
-import { preparePromptAttachmentsForSubmit, promptAttachmentTransferIsForced } from "../prompt-attachment-transfer.js"
+import { promptAttachmentTransferIsForced } from "../prompt-attachment-transfer.js"
 import { grantNativeCapabilities } from "./capability-grants.js"
 import {
-  extractClaudeNativePromptAttachments,
-  formatClaudeAttachmentContext,
-  formatClaudeNativeAttachmentPromptSuffix,
-  joinClaudeAdditionalContext,
-  joinClaudeVisiblePrompt,
-} from "./claude-attachments.js"
+  startClaudeBridge,
+} from "./claude-bridge.js"
 import { claudeHookSettings, writeClaudeHookHandler } from "./claude-hook-handler.js"
 import {
   type ClaudePromptOriginState,
   startClaudePermissionBridge,
 } from "./claude-permission-bridge.js"
 import {
-  buildClaudeNativeSkillContext,
-  writeClaudeHookContextResponse,
-} from "./claude-skill-context.js"
-import {
   type ClaudeTuiController,
   startClaudeAttachedPty,
   startClaudeScreen,
 } from "./claude-tui-launcher.js"
-import {
-  type ClaudeHookEvent,
-  drainAssistantText,
-  readClaudeHookEvents,
-  waitForAssistantText,
-} from "./claude-transcript.js"
 import {
   forwardClaudeRemoteRenderedStdin,
   installClaudeRemoteRenderedResizeForwarder,
@@ -55,7 +34,6 @@ import {
   writeClaudeRemoteRenderedTerminalRecords,
 } from "./claude-remote-rendered-io.js"
 import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
-import { hiddenInstructionsEnd, hiddenInstructionsStart, redactHiddenInstructions } from "./hidden-instructions.js"
 import {
   defaultKernelEndpoint,
   inferWorkspaceTargetsFromLaunchDirectory,
@@ -212,6 +190,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       inlineLocalAttachments: Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
       promptOrigin,
       submitPrompt: tui.submitPrompt,
+      debug: debugNativeClaude,
     })
     pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
       intervalMs: 500,
@@ -452,176 +431,6 @@ async function runClaudeRemoteRendered(
   }
 }
 
-function startClaudeBridge(options: {
-  client: LocalIpcClient
-  sessionId: string
-  attachmentId: string
-  agentId: string
-  providerRunId: string
-  eventsFile: string
-  contextFile: string
-  attachmentContextDir: string
-  hookContextResponseDir: string
-  workspace: string
-  worktree: string
-  inlineLocalAttachments: boolean
-  promptOrigin: ClaudePromptOriginState
-  submitPrompt: (prompt: string) => Promise<void>
-}): { stop: () => void } {
-  let stopped = false
-  let nextEventIndex = 0
-  let activePromptId: string | null = null
-  const injectedPromptIds = new Set<string>()
-  const nativeSubmittedPromptIds = new Set<string>()
-  const transcriptLineOffsets = new Map<string, number>()
-
-  const loop = async () => {
-    while (!stopped) {
-      try {
-        const events = await readClaudeHookEvents(options.eventsFile)
-        for (const event of events.slice(nextEventIndex)) {
-          nextEventIndex = Math.max(nextEventIndex, event.index + 1)
-          if (event.hook_event_name === "UserPromptSubmit" && event.prompt) {
-            const prompt = event.prompt.trim()
-            const isInjected = activePromptId && injectedPromptIds.has(activePromptId)
-            if (!isInjected) {
-              const attachments = await preparePromptAttachmentsForSubmit(
-                extractClaudeNativePromptAttachments(prompt, options.worktree),
-                { inlineLocalFiles: options.inlineLocalAttachments },
-              )
-              if (attachments.length > 0) {
-                debugNativeClaude("native_prompt_attachments_observed", {
-                  attachmentCount: attachments.length,
-                })
-              }
-              if (event.hook_context_request_id) {
-                const context = await buildClaudeNativeSkillContext(
-                  options.client,
-                  options.sessionId,
-                  options.workspace,
-                  options.agentId,
-                  prompt,
-                )
-                await writeClaudeHookContextResponse(
-                  options.hookContextResponseDir,
-                  event.hook_context_request_id,
-                  context,
-                )
-              }
-              const response = await options.client.send<Record<string, unknown>>(
-                submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
-              )
-              const submittedPrompt = extractSubmittedPromptId(response, options.agentId)
-              if (submittedPrompt) {
-                activePromptId = submittedPrompt
-                nativeSubmittedPromptIds.add(submittedPrompt)
-                options.promptOrigin.current = "native"
-              } else {
-                const state = await sessionState(options.client, options.sessionId)
-                activePromptId = promptForAgent(state, options.agentId)?.id ?? activePromptId
-                if (activePromptId) {
-                  nativeSubmittedPromptIds.add(activePromptId)
-                  options.promptOrigin.current = "native"
-                }
-              }
-            }
-          } else if (event.hook_event_name === "Stop") {
-            const output = event.transcript_path
-              ? await waitForAssistantText(event.transcript_path, transcriptLineOffsets)
-              : ""
-            if (output.trim()) {
-              await options.client.send<Record<string, unknown>>(
-                appendNativeProviderOutputRequest(
-                  options.sessionId,
-                  options.attachmentId,
-                  options.providerRunId,
-                  "provider_output",
-                  output.endsWith("\n") ? output : `${output}\n`,
-                  `claude-native-${Date.now()}`,
-                ),
-              )
-            }
-            await options.client.send<Record<string, unknown>>(completePromptRequest(options.sessionId))
-              .catch(() => ({}))
-            activePromptId = null
-            options.promptOrigin.current = null
-            await writeFile(options.contextFile, "", "utf8").catch(() => {})
-          }
-        }
-
-        const state = await sessionState(options.client, options.sessionId)
-        const activePrompt = promptForAgent(state, options.agentId)
-        if (activePrompt && activePrompt.id !== activePromptId && !nativeSubmittedPromptIds.has(activePrompt.id)) {
-          activePromptId = activePrompt.id
-          injectedPromptIds.add(activePrompt.id)
-          options.promptOrigin.current = "external"
-          const hidden = extractHiddenInstructions(activePrompt.prompt)
-          const attachmentContext = await formatClaudeAttachmentContext(
-            activePrompt.attachments ?? [],
-            options.attachmentContextDir,
-          )
-          const nativeAttachmentSuffix = await formatClaudeNativeAttachmentPromptSuffix(
-            activePrompt.attachments ?? [],
-            options.attachmentContextDir,
-          )
-          await writeFile(options.contextFile, joinClaudeAdditionalContext(hidden, attachmentContext), "utf8")
-          if ((activePrompt.attachments?.length ?? 0) > 0) {
-            debugNativeClaude("attachments_forwarded", {
-              promptId: activePrompt.id,
-              attachmentCount: activePrompt.attachments?.length ?? 0,
-            })
-          }
-          const visible = redactHiddenInstructions(activePrompt.prompt).trim()
-          const prompt = joinClaudeVisiblePrompt(nativeAttachmentSuffix, visible)
-          if (prompt) {
-            await options.submitPrompt(prompt)
-          }
-        }
-      } catch (error) {
-        process.stderr.write(`[arroba claude native-tui] bridge warning: ${error instanceof Error ? error.message : String(error)}\n`)
-      }
-      await sleep(500)
-    }
-  }
-  void loop()
-  return {
-    stop: () => {
-      stopped = true
-    },
-  }
-}
-
-function extractHiddenInstructions(prompt: string): string {
-  const start = prompt.indexOf(hiddenInstructionsStart)
-  if (start < 0) return ""
-  const end = prompt.indexOf(hiddenInstructionsEnd, start)
-  if (end < 0) return prompt.slice(start)
-  return prompt.slice(start + hiddenInstructionsStart.length, end).trim()
-}
-
-function promptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
-  return session.prompt_states?.[agentId]?.active_prompt
-    ?? (session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null)
-}
-
-function extractSubmittedPromptId(response: Record<string, unknown>, agentId: string): string | null {
-  const payload = response.PromptSubmitted as { outcome?: Record<string, unknown>; session?: RuntimeSession } | undefined
-  if (!payload) return null
-  for (const variant of Object.values(payload.outcome ?? {})) {
-    const prompt = variant && typeof variant === "object"
-      ? (variant as { prompt?: PromptQueueItem | null }).prompt
-      : null
-    if (prompt?.id) return prompt.id
-  }
-  const session = payload.session ? normalizeRuntimeSession(payload.session) : null
-  return session ? promptForAgent(session, agentId)?.id ?? null : null
-}
-
-async function sessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
-  const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
-  return normalizeRuntimeSession(expectVariant<{ session: RuntimeSession }>(response, "SessionState").session)
-}
-
 async function launchClaudeNativeRun(
   client: LocalIpcClient,
   sessionId: string,
@@ -706,13 +515,6 @@ function isProviderRunNotFound(error: unknown): boolean {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
-  if (!(variant in response)) {
-    throw new Error(`expected ${variant} response, received ${JSON.stringify(response)}`)
-  }
-  return response[variant] as T
 }
 
 function debugNativeClaude(label: string, payload: unknown) {
