@@ -407,6 +407,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: Claude runtime state/binding contracts are responsibility-owned; focused Claude runtime tests pass.
 - Latest verified batch: Claude runtime JSON event projection is responsibility-owned; focused Claude runtime tests pass.
 - Latest verified batch: OpenCode runtime event draining and resubscribe/snapshot recovery are responsibility-owned; focused OpenCode runtime tests pass.
+- Latest verified batch: Codex runtime tool transcript update projection is responsibility-owned; focused Codex runtime tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
