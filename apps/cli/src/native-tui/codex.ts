@@ -12,10 +12,6 @@ import {
   type TerminalOutputRecord,
 } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
-import {
-  pollRuntimeNoticesRequest,
-  pumpTerminalOutputRequest,
-} from "../ipc-requests.js"
 import { promptAttachmentTransferIsForced } from "../prompt-attachment-transfer.js"
 import { grantNativeCapabilities } from "./capability-grants.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
@@ -44,6 +40,7 @@ import {
 } from "./codex-json-rpc.js"
 import { resolveCodexNativePermissionResponse } from "./codex-permission.js"
 import { handleCodexNativeTurnStart } from "./codex-turn-submission.js"
+import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
 import {
   getNativeProviderRun,
   requestNativeProviderRunLaunch,
@@ -213,9 +210,13 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       "  prompt policy:  native prompts pass through; Arroba observes the session",
       "",
     ].join("\n"))
-    pump = startKernelPumpLoop(client, session.id, attachment.id, remotePlacement
-      ? (records) => proxy?.projectKernelOutputToTui(records)
-      : undefined)
+    pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
+      onTerminalRecords: remotePlacement
+        ? (records) => proxy?.projectKernelOutputToTui(records)
+        : undefined,
+      debug: debugNativeCodex,
+      formatError,
+    })
     await runCodexTui({
       proxyUrl,
       model: options.model,
@@ -714,44 +715,6 @@ function bindObservedThread(
 
 function sendRaw(socket: WebSocket, raw: WebSocket.RawData) {
   if (socket.readyState === WebSocket.OPEN) socket.send(raw)
-}
-
-function startKernelPumpLoop(
-  client: LocalIpcClient,
-  sessionId: string,
-  attachmentId: string,
-  onTerminalRecords?: (records: TerminalOutputRecord[]) => void,
-): { stop: () => void } {
-  let stopped = false
-  let inFlight = false
-  const tick = async () => {
-    if (stopped || inFlight) return
-    inFlight = true
-    try {
-      const response = await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
-      if (onTerminalRecords && "TerminalOutput" in response) {
-        const records = (response.TerminalOutput as { records?: unknown[] }).records
-        if (Array.isArray(records) && records.length > 0) {
-          onTerminalRecords(records as TerminalOutputRecord[])
-        }
-      }
-      await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
-    } catch (error) {
-      debugNativeCodex("pump_error", { error: formatError(error) })
-    } finally {
-      inFlight = false
-    }
-  }
-  const interval = setInterval(() => {
-    void tick()
-  }, 250)
-  void tick()
-  return {
-    stop: () => {
-      stopped = true
-      clearInterval(interval)
-    },
-  }
 }
 
 async function runCodexTui(options: {

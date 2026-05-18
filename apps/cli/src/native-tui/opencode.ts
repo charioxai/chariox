@@ -11,8 +11,6 @@ import {
 import { LocalIpcClient } from "../ipc.js"
 import {
   cancelActivePromptRequest,
-  pollRuntimeNoticesRequest,
-  pumpTerminalOutputRequest,
   submitPromptRequest,
   updateProviderRunSelectionRequest,
 } from "../ipc-requests.js"
@@ -49,6 +47,7 @@ import {
   proxyOpenCodeEventsForNativeTui,
   requestHeadersForFetch,
 } from "./opencode-event-stream.js"
+import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
 import {
   compactSelection,
   extractOpenCodeSelection,
@@ -213,7 +212,10 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       "  prompt policy:  native prompts pass through; Arroba observes the session",
       "",
     ].join("\n"))
-    pump = startKernelPumpLoop(client, session.id, attachment.id)
+    pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
+      debug: debugNativeMutation,
+      formatError,
+    })
 
     await runOpenCodeAttach({
       proxyUrl,
@@ -634,37 +636,6 @@ async function readRequestBuffer(request: IncomingMessage): Promise<Buffer> {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
   }
   return Buffer.concat(chunks)
-}
-
-function startKernelPumpLoop(
-  client: LocalIpcClient,
-  sessionId: string,
-  attachmentId: string,
-): { stop: () => void } {
-  let stopped = false
-  let inFlight = false
-  const tick = async () => {
-    if (stopped || inFlight) return
-    inFlight = true
-    try {
-      await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
-      await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
-    } catch (error) {
-      debugNativeMutation("pump_error", { error: formatError(error) })
-    } finally {
-      inFlight = false
-    }
-  }
-  const interval = setInterval(() => {
-    void tick()
-  }, 250)
-  void tick()
-  return {
-    stop: () => {
-      stopped = true
-      clearInterval(interval)
-    },
-  }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
