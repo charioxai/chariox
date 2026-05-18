@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is OpenCode prompt-routing integration split. Focused-agent routing, focus changes during active prompts, explicit cross-agent prompts, and detach/rejoin active-turn coverage moved from `apps/kernel/tests/opencode_runtime_integration.rs` into `apps/kernel/tests/opencode_prompt_routing_integration.rs`; original file is 1,536 lines. Both OpenCode integration targets compile and the new prompt-routing target passes 4 tests.
+2026-05-18: Latest verified stage is session-service unit test responsibility split. `apps/kernel/src/session/service/tests.rs` now only hosts shared setup plus behavioral modules for session lifecycle, workflow definitions/publications, workflow runs/watchdogs, and workflow dispatch/join behavior; the largest split file is 599 lines. `cargo test --manifest-path apps/kernel/Cargo.toml session::service --lib -- --test-threads=1` passes 32 tests.
 
 ## Responsibility Rule
 
