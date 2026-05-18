@@ -359,6 +359,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: CLI Claude native hook bridge is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI Claude native provider-run lifecycle is responsibility-owned; CLI tests pass.
 - Latest verified batch: OSS local provider catalog loading/auth helpers and relay blocking are responsibility-owned; focused kernel provider-request tests pass.
+- Latest verified batch: OSS local remote-machine record/registry helpers are responsibility-owned; focused kernel provider-request tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
