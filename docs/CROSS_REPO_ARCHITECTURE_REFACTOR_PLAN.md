@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web route shell composition. `TerminalRouteShellComposition` owns route rendering, app sidebar shell wiring, browser auth routing, theme startup, nav sync, and route-shell helpers. `client.ts` is 1,151 lines; web suite passes 1,047 tests; repo lint and diff checks pass. Next highest-responsibility slice is terminal session and waiting-room coordinator wiring in `client.ts`.
+2026-05-18: Latest verified stage is Cloud web waiting-room control composition. `WaitingRoomControlComposition` owns waiting-room session controls, workspace search/editing, overlays, activity indicators, and sidebar agent config wiring. `client.ts` is 991 lines; web suite passes 1,047 tests; repo lint and diff checks pass. Next highest-responsibility slice is terminal session connection and runtime event wiring in `client.ts`.
 
 ## Responsibility Rule
 
