@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Terminal transport reattach gating now lives in a focused controller; `client.ts` is 4,889 lines and the web suite passes with 935 tests. Next highest-responsibility slice is active terminal session close/dispose lifecycle.
+2026-05-18: Latest verified stage is Cloud web. Active terminal session close/dispose now lives in a focused controller; `client.ts` is 4,879 lines and the web suite passes with 937 tests. Next highest-responsibility slice is terminal connect single-flight/start orchestration.
 
 ## Responsibility Rule
 
