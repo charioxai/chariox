@@ -3,6 +3,7 @@ mod owner;
 mod prompt_queue;
 mod prompt_runtime;
 mod runtime_interactions;
+mod runtime_session;
 mod runtime_worktrees;
 mod service;
 mod session_config;
