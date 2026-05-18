@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is session-service unit test responsibility split. `apps/kernel/src/session/service/tests.rs` now only hosts shared setup plus behavioral modules for session lifecycle, workflow definitions/publications, workflow runs/watchdogs, and workflow dispatch/join behavior; the largest split file is 599 lines. `cargo test --manifest-path apps/kernel/Cargo.toml session::service --lib -- --test-threads=1` passes 32 tests.
+2026-05-18: Latest verified stage is kernel websocket integration split. `apps/kernel/tests/kernel_websocket_integration.rs` now covers protocol/transport behavior at 656 lines, and `apps/kernel/tests/kernel_websocket_runtime_integration.rs` covers runtime responsiveness/backpressure behavior at 1,179 lines. Both focused integration targets compile and pass 7 + 8 tests.
 
 ## Responsibility Rule
 
