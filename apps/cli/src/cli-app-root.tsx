@@ -1,23 +1,23 @@
 import process from "node:process"
 import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
-import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
+import { clearTimeout, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import { BoxRenderable, ScrollBoxRenderable, TextRenderable, type TextareaRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createEffect, onCleanup } from "solid-js"
+import { batch, createEffect } from "solid-js"
 import { reconcile } from "solid-js/store"
 
 import type {
   BootstrapState,
+  RuntimeSession,
   TerminalOutputRecord,
 } from "./cli-types.js"
 import { createCliAgentPaneComposition } from "./cli-agent-pane-composition.js"
-import { createCliBackgroundRuntimeComposition } from "./cli-background-runtime-composition.js"
-import { createCliAutomationProcessComposition } from "./cli-automation-process-composition.js"
 import { createCliAppState } from "./cli-app-state.js"
 import { createCliAppCommandRoutingComposition } from "./cli-app-command-routing-composition.js"
+import { createCliAppProcessRuntimeComposition } from "./cli-app-process-runtime-composition.js"
 import { createCliOverlayInteractionComposition } from "./cli-overlay-interaction-composition.js"
 import { createCliPrimaryTranscriptComposition } from "./cli-primary-transcript-composition.js"
 import { createCliPromptSurfaceComposition } from "./cli-prompt-surface-composition.js"
@@ -1461,18 +1461,18 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     removeLastPendingPromptAttachment,
   })
 
-  const automationProcessComposition = createCliAutomationProcessComposition({
+  const {
+    recordDaemonActivity: runtimeRecordDaemonActivity,
+    ensureBackgroundPollersStarted,
+    processKernelTerminalOutputRecord: runtimeProcessKernelTerminalOutputRecord,
+  } = createCliAppProcessRuntimeComposition({
     client,
     options,
-    appLogger: appLogger ?? null,
+    appLogger,
     formatError,
     flashFooter,
     handleSigint,
     handleStdinData,
-    onSigint: (handler) => process.on("SIGINT", handler),
-    offSigint: (handler) => process.off("SIGINT", handler),
-    onStdinData: (handler) => process.stdin.on("data", handler),
-    offStdinData: (handler) => process.stdin.off("data", handler),
     clearTerminalOutputRecordTimer,
     workspaceScreenMode,
     workflowScreenActive,
@@ -1520,40 +1520,21 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     cycleFocusedInteractionChoice,
     restoreTerminalAndExit,
     sleep,
-  })
-  automationProcessComposition.start()
-  onCleanup(automationProcessComposition.stop)
-
-  const {
-    recordDaemonActivity: runtimeRecordDaemonActivity,
-    ensureBackgroundPollersStarted,
-    processKernelTerminalOutputRecord: runtimeProcessKernelTerminalOutputRecord,
-  } = createCliBackgroundRuntimeComposition({
-    client,
-    appLogger,
-    formatError,
-    sleep,
-    scheduleInterval: startInterval,
-    clearInterval,
     closingStateController,
-    isAttached,
-    sessionState,
-    resizeSession: (sessionId) => maybeResize(client, sessionId),
+    supportsKernelEventStream,
+    resizeSession: (sessionId: string) => maybeResize(client, sessionId),
     setDaemonDisconnected,
     setStatusLine,
     updateSessionChrome,
     appendNotice,
     working,
-    supportsKernelEventStream,
     recoverProviderRun,
-    daemonDisconnected,
     recordTurnActivity,
     resolveTerminalRecordAgentId,
     setStreamingAgentId,
     markAgentBusy,
     splitAgentResponseMode,
     visibleTranscriptAgentId,
-    focusedAgentId,
     hasTrailingUserPrompt,
     currentAgentPaneEntries,
     appendTranscriptEntryToAgentPane,
@@ -1577,13 +1558,12 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     logProviderRunDebug,
     setProviderRunState,
     refreshAgentPanes,
-    attachmentState,
-    catchUpAttachedSession: (sessionId, attachmentId, session) =>
+    catchUpAttachedSession: (sessionId: string, attachmentId: string, session: RuntimeSession) =>
       catchUpAttachedSession(client, sessionId, attachmentId, session, appLogger),
-    getSessionState: (sessionId) => getSessionState(client, sessionId),
-    tryGetProviderRun: (providerRunId) => tryGetProviderRun(client, providerRunId, appLogger),
+    getSessionState: (sessionId: string) => getSessionState(client, sessionId),
+    tryGetProviderRun: (providerRunId: string) => tryGetProviderRun(client, providerRunId, appLogger),
     clearLocalBusyStateForAuthoritativeIdle,
-    attachToSession: (sessionId) => attachToSession(client, sessionId, options.clientId),
+    attachToSession: (sessionId: string) => attachToSession(client, sessionId, options.clientId),
     setAttachmentState,
     kernelEventSubscriptionController,
     syncKernelEventSubscription,
@@ -1591,22 +1571,14 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     queueTerminalOutputRecords,
     scheduleSharedPromptInputHistoryRefresh,
     handleWaitingRoomRefresh: refreshWaitingRoomData,
-    flashFooter,
     recoverAttachedSessionAfterKernelRestart,
     setFatalError,
-    pumpTerminalOutput: (sessionId, attachmentId) => pumpTerminalOutput(client, sessionId, attachmentId),
-    pollRuntimeNotices: (sessionId, attachmentId) => pollRuntimeNotices(client, sessionId, attachmentId),
+    pumpTerminalOutput: (sessionId: string, attachmentId: string) => pumpTerminalOutput(client, sessionId, attachmentId),
+    pollRuntimeNotices: (sessionId: string, attachmentId: string) => pollRuntimeNotices(client, sessionId, attachmentId),
     promptInputRefController,
     transcriptScrollboxRefController,
     primaryTranscriptRuntimeStore,
-    rebuildTranscript,
     syncPromptPlaceholder,
-    addResizeListener: (handler) => {
-      process.stdout.on("resize", handler)
-    },
-    removeResizeListener: (handler) => {
-      process.stdout.off("resize", handler)
-    },
     logViewDebug,
     footerFlashController,
     clearPendingPromptDraftPersist,
@@ -1617,9 +1589,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setWorkingAnimationFrame,
     sessionStatusMode,
     renderSplitPaneFooters,
-    waitingRoomState,
     setWaitingRoomState,
-    kernelConnected,
     hydrateCurrentAttachedSession,
   })
   recordDaemonActivity = runtimeRecordDaemonActivity
