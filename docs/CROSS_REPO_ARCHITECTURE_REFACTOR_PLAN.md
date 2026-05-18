@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Terminal startup handshakes, live freeform agent lifecycle, and live agent profile/config mutation now live in focused terminal controllers with source guards keeping those kernel request details out of `client.ts`. `client.ts` is 9,243 lines, so the highest-impact remaining work is still extracting terminal/session/freeform orchestration from that file before lower-impact cleanup.
+2026-05-18: Latest verified stage is Cloud web. Terminal startup handshakes, live freeform agent lifecycle/config mutation, and freeform spawn/substitute dialog kernel mutations now live in focused terminal controllers with source guards keeping those kernel request details out of `client.ts`. `client.ts` is 9,158 lines, so the highest-impact remaining work is still extracting terminal/session/freeform orchestration from that file before lower-impact cleanup.
 
 ## Responsibility Rule
 
