@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. `TerminalActiveRuntimeController` now owns the active terminal runtime state object, alongside `TerminalActiveSessionController` for session/connect gates; `client.ts` is 3,654 lines and the web suite passes with 983 tests. Next highest-responsibility slice is terminal app/container wiring that removes broad state access from `client.ts`.
+2026-05-18: Latest verified stage is Cloud web. `FreeformKernelRowController` now owns Freeform kernel-row projection, row mounting, row actions, workflow-create pending state, and create failure handling; `client.ts` is 3,601 lines and the web suite passes with 986 tests. Next highest-responsibility slice is terminal app/container wiring for the remaining Freeform controls.
 
 ## Responsibility Rule
 
