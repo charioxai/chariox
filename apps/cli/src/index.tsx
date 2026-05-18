@@ -14,6 +14,7 @@ import type {
   RuntimeSession,
   TerminalOutputRecord,
 } from "./cli-types.js"
+import { createCliBackgroundRuntimeComposition } from "./cli-background-runtime-composition.js"
 import { createCliAutomationProcessComposition } from "./cli-automation-process-composition.js"
 import { createCliAppState } from "./cli-app-state.js"
 import { createCliCommandActionComposition } from "./cli-command-action-composition.js"
@@ -47,9 +48,7 @@ import {
   createCliRendererFocusController,
 } from "./cli-renderer-focus-controller.js"
 import { createCliLoadingStateController } from "./cli-loading-state-controller.js"
-import { createCliPollingController } from "./cli-polling-controller.js"
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
-import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
 import { createCommandCenterCommandExecutor } from "./command-center-command-executor.js"
 import { createCommandCenterLayoutController } from "./command-center-layout-controller.js"
 import { createCommandCenterController } from "./command-center-controller.js"
@@ -82,8 +81,6 @@ import {
   createInteractionProjectionController,
 } from "./interaction-projection-controller.js"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
-import { createKernelEventDispatchController } from "./kernel-event-dispatch-controller.js"
-import { createKernelEventController } from "./kernel-event-controller.js"
 import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
 import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
@@ -96,18 +93,11 @@ import { createSessionBrowserProjectionController } from "./session-browser-proj
 import { updateAgentProfile } from "./agent-api.js"
 import { createKernelEventSubscriptionController } from "./kernel-event-subscription-controller.js"
 import { createKernelRestartRecoveryController } from "./kernel-restart-recovery-controller.js"
-import { createKernelResyncController } from "./kernel-resync-controller.js"
-import { createKernelSessionSnapshotController } from "./kernel-session-snapshot-controller.js"
-import { createKernelSessionUnavailableController } from "./kernel-session-unavailable-controller.js"
 import {
   createCliProcessLoggerRegistry,
   formatCliError,
 } from "./cli-process-logging.js"
 import { runLogViewer } from "./logs.js"
-import {
-  createConnectionHealthWatchdogController,
-} from "./connection-health-watchdog-controller.js"
-import { createDaemonActivityController } from "./daemon-activity-controller.js"
 import {
   bootstrapCliRuntime,
 } from "./cli-runtime-bootstrap.js"
@@ -156,7 +146,6 @@ import {
 } from "./prompt-submission-ui-controller.js"
 import { createPromptSubmitCoordinator } from "./prompt-submit-coordinator.js"
 import { createNormalPromptSubmitController } from "./normal-prompt-submit-controller.js"
-import { createPollerDegradationController } from "./poller-degradation-controller.js"
 import {
   createPromptTextController,
 } from "./prompt-text-controller.js"
@@ -200,7 +189,6 @@ import {
   getProviderCommandCatalogs,
   getProviderRun,
   launchProviderRun,
-  sameProviderRun,
   tryGetProviderRun,
 } from "./provider-api.js"
 import { createProviderSelectionController } from "./provider-selection-controller.js"
@@ -224,10 +212,7 @@ import {
 import {
   STATUS_BADGE_WIDTH,
   DEFAULT_CONNECTED_STATUS,
-  SILENT_POLL_THRESHOLD,
   getExitCleanupDecision,
-  getPollRecoveryDecision,
-  getProviderActivityLabel,
   getSessionStatusLabel,
   getTurnCompletionDelayMs,
   shouldEndSessionOnCliExit,
@@ -259,12 +244,8 @@ import { createSessionStateApplyController } from "./session-state-apply-control
 import { createSessionAttachmentController } from "./session-attachment-controller.js"
 import { createSessionLifecycleController } from "./session-lifecycle.js"
 import { createTranscriptHistoryLoadController } from "./transcript-history-load-controller.js"
-import {
-  trimSingleTrailingNewline,
-} from "./transcript-text.js"
 import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
 import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
-import { createTranscriptScrollMonitorController } from "./transcript-scroll-monitor-controller.js"
 import { createTranscriptScrollboxRefController } from "./transcript-scrollbox-ref-controller.js"
 import { createTranscriptEntryProjectionController } from "./transcript-entry-projection-controller.js"
 import {
@@ -272,14 +253,11 @@ import {
 } from "./terminal-output-record-queue.js"
 import { createTerminalOutputRecordProcessor } from "./terminal-output-record-processor.js"
 import { createTerminalExitController } from "./terminal-exit-controller.js"
-import { createTerminalResizeController } from "./terminal-resize-controller.js"
 import { createTranscriptViewportController } from "./transcript-viewport-controller.js"
 import { createTranscriptRenderDeferralController } from "./transcript-render-deferral-controller.js"
 import { createTranscriptParserRegistration } from "./transcript-parser-registration.js"
 import { createVisibleActivityLabelController } from "./visible-activity-label-controller.js"
-import { createWorkingAnimationController } from "./working-animation-controller.js"
 import {
-  shouldRenderProviderStatus,
   type ToolTranscriptUpdate,
 } from "./transcript.js"
 import {
@@ -300,7 +278,6 @@ import {
   listSessions,
   resolveSession,
 } from "./session-api.js"
-import { isSessionUnavailableError } from "./session-errors.js"
 import {
   catchUpAttachedSession,
   pollRuntimeNotices,
@@ -328,8 +305,6 @@ import {
   getWaitingRoomInventory,
 } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
-import { createWaitingRoomIntroAnimationController } from "./waiting-room-intro-animation-controller.js"
-import { createWaitingRoomRefreshIntervalController } from "./waiting-room-refresh-interval-controller.js"
 import { createWaitingRoomTransitionController } from "./waiting-room-transition-controller.js"
 import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifecycle-action-controller.js"
 import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
@@ -363,7 +338,6 @@ import {
   computeCurrentTurnId,
   computeNextTurnId,
   formatTranscriptPreview,
-  previewLineForTerminalRecord,
 } from "./transcript-preview.js"
 import {
   buildTranscriptEntryRenderable,
@@ -1765,10 +1739,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const appendProviderChunk = transcriptStreamController.appendProviderChunk
   const appendToolUpdate = transcriptStreamController.appendToolUpdate
 
+  let processKernelTerminalOutputRecord: (record: TerminalOutputRecord) => void = () => {}
   const terminalOutputRecordProcessor = createTerminalOutputRecordProcessor({
     appendPromptEchoToSharedHistory,
     processKernelTerminalOutputRecord: (record) => {
-      kernelEventController.processTerminalOutputRecord(record)
+      processKernelTerminalOutputRecord(record)
     },
   })
   const processTerminalOutputRecord = terminalOutputRecordProcessor.process
@@ -3285,61 +3260,29 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   automationProcessComposition.start()
   onCleanup(automationProcessComposition.stop)
 
-  const terminalResizeController = createTerminalResizeController({
+  const {
+    recordDaemonActivity,
+    ensureBackgroundPollersStarted,
+    processKernelTerminalOutputRecord: runtimeProcessKernelTerminalOutputRecord,
+  } = createCliBackgroundRuntimeComposition({
+    client,
+    appLogger,
+    formatError,
+    sleep,
+    scheduleInterval: startInterval,
+    clearInterval,
+    closingStateController,
     isAttached,
-    sessionId: () => sessionState().id,
+    sessionState,
     resizeSession: (sessionId) => maybeResize(client, sessionId),
-  })
-  const onResize = terminalResizeController.handleResize
-
-  const pollerDegradationController = createPollerDegradationController({
-    connectedStatusLine: DEFAULT_CONNECTED_STATUS,
-    logger: appLogger,
     setDaemonDisconnected,
     setStatusLine,
     updateSessionChrome,
     appendNotice,
-  })
-  const markPollerDegraded = pollerDegradationController.markDegraded
-  const markPollerRecovered = pollerDegradationController.markRecovered
-
-  const connectionHealthWatchdogController = createConnectionHealthWatchdogController({
-    now: Date.now,
-    intervalMs: 250,
-    silenceWindowMs: 2000,
-    silentThreshold: SILENT_POLL_THRESHOLD,
-    scheduleInterval: startInterval,
-    clearInterval,
-    isClosing: closingStateController.isClosing,
-    isAttached,
-    isWorking: working,
-    onRecover: (decision) => {
-      appLogger?.warn("connection appears stale - no activity while working", {
-        consecutive_silent_polls: decision.nextConsecutiveSilentPolls,
-        time_since_last_activity_ms: decision.timeSinceLastActivityMs,
-      })
-      if (supportsKernelEventStream) {
-        void client.restartKernelEventStream().catch((error) => {
-          appLogger?.warn("kernel event stream restart failed", {
-            error: formatError(error),
-          })
-        })
-      } else {
-        void recoverProviderRun("stale connection - no activity received")
-      }
-    },
-  })
-
-  const daemonActivityController = createDaemonActivityController({
-    recordConnectionActivity: () => connectionHealthWatchdogController.recordActivity(),
+    working,
+    supportsKernelEventStream,
+    recoverProviderRun,
     daemonDisconnected,
-    setDaemonDisconnected,
-    updateSessionChrome,
-  })
-  const recordDaemonActivity = daemonActivityController.record
-
-  const kernelEventController = createKernelEventController({
-    recordDaemonActivity,
     recordTurnActivity,
     resolveTerminalRecordAgentId,
     setStreamingAgentId,
@@ -3349,7 +3292,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     focusedAgentId,
     hasTrailingUserPrompt,
     currentAgentPaneEntries,
-    computeNextTurnId,
     appendTranscriptEntryToAgentPane,
     appendProviderChunkToAgentPane,
     appendToolUpdateToAgentPane,
@@ -3358,325 +3300,65 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setProviderActivityLabel,
     applyProviderActivity,
     syncVisibleActivityLabel,
-    getProviderActivityLabel,
-    shouldRenderProviderStatus,
     appendEntry,
     appendProviderChunk,
     appendToolUpdate,
     appendProviderError,
     syncVisibleTranscriptPreview,
     appendAgentPanePreview,
-    previewLineForTerminalRecord,
-    trimSingleTrailingNewline,
-    setDaemonDisconnected,
-    setStatusLine,
-    updateSessionChrome,
-    appendNotice: (message, tone) => appendNotice(message, tone === "warning" ? "warning" : "muted"),
-    connectedStatusLine: DEFAULT_CONNECTED_STATUS,
     markAssistantMessageCompleted,
-  })
-
-  const kernelSessionSnapshotController = createKernelSessionSnapshotController({
-    getSession: sessionState,
-    getProviderRun: providerRunState,
-    projectSession: applyProviderRunProfileToSession,
+    providerRunState,
     shouldRefreshAgentPanesForSessionChange,
-    sessionHasPromptWork,
     applySessionState,
-    sameProviderRun,
     logProviderRunDebug,
-    setProviderRun: setProviderRunState,
-    updateSessionChrome,
-    supportsKernelEventStream: () => supportsKernelEventStream,
-    recoverProviderRun,
+    setProviderRunState,
     refreshAgentPanes,
-  })
-  const applyKernelSessionSnapshot = kernelSessionSnapshotController.apply
-
-  const kernelResyncController = createKernelResyncController({
-    getAttachment: attachmentState,
-    isAttached,
-    getSessionId: () => sessionState().id,
-    getSessionStateSnapshot: sessionState,
+    attachmentState,
     catchUpAttachedSession: (sessionId, attachmentId, session) =>
       catchUpAttachedSession(client, sessionId, attachmentId, session, appLogger),
     getSessionState: (sessionId) => getSessionState(client, sessionId),
-    getActiveProviderRunId: (session) => session.active_provider_run_id ?? null,
-    getProviderRunState: providerRunState,
     tryGetProviderRun: (providerRunId) => tryGetProviderRun(client, providerRunId, appLogger),
-    sameProviderRun,
-    projectSession: applyProviderRunProfileToSession,
-    shouldRefreshAgentPanesForSessionChange,
-    sessionHasPromptWork,
-    applySession: applySessionState,
-    applyProviderRun: setProviderRunState,
-    refreshAgentPanes,
     clearLocalBusyStateForAuthoritativeIdle,
-    onProviderRunCleared: (run, sessionId, reason) => {
-      logProviderRunDebug("kernel resync cleared provider run", run, {
-        session_id: sessionId,
-        reason,
-      })
-    },
-    onProviderRunRefreshed: (run, sessionId, previousProviderRunId, reason) => {
-      logProviderRunDebug("kernel resync refreshed provider run", run, {
-        session_id: sessionId,
-        previous_provider_run_id: previousProviderRunId,
-        reason,
-      })
-    },
-    onResyncStart: (sessionId, attachmentId, reason) => {
-      appLogger?.info("resyncing attached kernel state", {
-        reason,
-        session_id: sessionId,
-        attachment_id: attachmentId,
-      })
-    },
-    onResyncComplete: (reason) => {
-      recordDaemonActivity(`kernel_resync_${reason}`)
-      setDaemonDisconnected(false)
-      setStatusLine(DEFAULT_CONNECTED_STATUS)
-      updateSessionChrome()
-    },
-    onResyncFailed: (reason, error) => {
-      appLogger?.warn("attached kernel resync failed", {
-        reason,
-        error: formatError(error),
-      })
-      setDaemonDisconnected(true)
-      setStatusLine("Waiting to reconnect to the Arroba kernel.")
-      updateSessionChrome()
-    },
-  })
-
-  const resyncAttachedKernelState = (reason: string) => kernelResyncController.resync(reason)
-
-  const kernelSessionUnavailableController = createKernelSessionUnavailableController({
-    isAttached,
-    getSession: sessionState,
-    getProviderRun: providerRunState,
-    getSessionState: (sessionId) => getSessionState(client, sessionId),
     attachToSession: (sessionId) => attachToSession(client, sessionId, options.clientId),
-    applyAttachment: setAttachmentState,
-    projectSession: applyProviderRunProfileToSession,
-    applySession: applySessionState,
-    resetKernelEventSubscription: kernelEventSubscriptionController.reset,
+    setAttachmentState,
+    kernelEventSubscriptionController,
     syncKernelEventSubscription,
-    refreshAgentPanes,
-    clearLocalBusyStateForAuthoritativeIdle,
-    recordDaemonActivity,
-    onRecovered: () => {
-      setDaemonDisconnected(false)
-      setStatusLine(DEFAULT_CONNECTED_STATUS)
-      updateSessionChrome()
-    },
-    onStateLookupFailed: (sessionId, message, error) => {
-      appLogger?.debug("session unavailable confirmed by state lookup failure", {
-        session_id: sessionId,
-        message,
-        error: formatError(error),
-      })
-    },
     transitionToNoSession,
-  })
-  const handleKernelSessionUnavailable = kernelSessionUnavailableController.handle
-
-  const kernelEventDispatchController = createKernelEventDispatchController({
-    recordDaemonActivity,
     queueTerminalOutputRecords,
-    applyRuntimeNotices: kernelEventController.applyRuntimeNotices,
-    applyAssistantMessageCompleted: kernelEventController.applyAssistantMessageCompleted,
-    applyKernelSessionSnapshot,
     scheduleSharedPromptInputHistoryRefresh,
-    handleKernelSessionUnavailable,
-    refreshWaitingRoomData,
-    applyTransportResumed: kernelEventController.applyTransportResumed,
-    resyncAttachedKernelState,
-    appendNotice,
+    handleWaitingRoomRefresh: refreshWaitingRoomData,
     flashFooter,
-    applyTransportClosed: kernelEventController.applyTransportClosed,
     recoverAttachedSessionAfterKernelRestart,
-  })
-  const handleKernelEvent = kernelEventDispatchController.handleKernelEvent
-
-  const startConnectionWatchdog = connectionHealthWatchdogController.start
-
-  const pollingController = createCliPollingController({
-    isClosing: closingStateController.isClosing,
-    logger: appLogger,
-    formatError,
-    isSessionUnavailableError,
-    getPollRecoveryDecision,
-    onSessionUnavailable: () => {
-      transitionToNoSession("Current session is no longer available.")
-    },
-    onMarkRecovered: markPollerRecovered,
-    onMarkDegraded: markPollerDegraded,
-    onFatalError: (error) => {
-      if (error instanceof Error && /local transport/i.test(error.message)) {
-        setDaemonDisconnected(true)
-      }
-      setFatalError(formatError(error))
-      updateSessionChrome()
-    },
-    sleep,
-    isAttached,
-    getAttachment: attachmentState,
-    getSession: sessionState,
-    getProviderRun: providerRunState,
-    setProviderRun: setProviderRunState,
-    updateSessionChrome,
-    recordDaemonActivity,
-    queueTerminalOutputRecords,
+    setFatalError,
     pumpTerminalOutput: (sessionId, attachmentId) => pumpTerminalOutput(client, sessionId, attachmentId),
     pollRuntimeNotices: (sessionId, attachmentId) => pollRuntimeNotices(client, sessionId, attachmentId),
-    appendNotice: (message) => appendNotice(message),
-    sessionHasPromptWork,
-    getSessionState: (sessionId) => getSessionState(client, sessionId),
-    projectSession: applyProviderRunProfileToSession,
-    shouldRefreshAgentPanesForSessionChange,
-    applySessionState,
-    refreshAgentPanes,
-    tryGetProviderRun: (providerRunId) => tryGetProviderRun(client, providerRunId, appLogger),
-    sameProviderRun,
-    logProviderRunDebug,
-    recoverProviderRun,
-  })
-  const pollOutput = pollingController.pollOutput
-  const pollNotices = pollingController.pollNotices
-  const pollSessionState = pollingController.pollSessionState
-
-  const backgroundPollerStartupController = createBackgroundPollerStartupController({
-    logger: appLogger,
-    ready: () => promptInputRefController.hasInput() && transcriptScrollboxRefController.hasScrollbox(),
-    promptMounted: promptInputRefController.hasInput,
-    transcriptScrollTop: () => transcriptScrollboxRefController.scrollTop(0),
-    setLastTranscriptScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
-    isAttached,
+    promptInputRefController,
+    transcriptScrollboxRefController,
+    primaryTranscriptRuntimeStore,
     rebuildTranscript,
     syncPromptPlaceholder,
-    focusPrompt: () => {
-      promptInputRefController.focus()
+    addResizeListener: (handler) => {
+      process.stdout.on("resize", handler)
     },
-    blurPrompt: () => {
-      promptInputRefController.blur()
-    },
-    addResizeListener: () => {
-      process.stdout.on("resize", onResize)
-    },
-    removeResizeListener: () => {
-      process.stdout.off("resize", onResize)
-    },
-    supportsKernelEventStream: () => supportsKernelEventStream,
-    syncKernelEventSubscription,
-    pollOutput,
-    pollNotices,
-    pollSessionState,
-    startConnectionWatchdog,
-    stopConnectionWatchdog: () => {
-      connectionHealthWatchdogController.stop()
+    removeResizeListener: (handler) => {
+      process.stdout.off("resize", handler)
     },
     logViewDebug,
-  })
-  const ensureBackgroundPollersStarted = backgroundPollerStartupController.ensureStarted
-
-  onCleanup(() => {
-    closingStateController.markClosing()
-    backgroundPollerStartupController.stop()
-  })
-
-  onCleanup(() => {
-    footerFlashController.clearTimer()
-    clearPendingPromptDraftPersist()
-    cancelPendingTurnCompletion()
-    sessionChromeUpdateController.clearTimer()
-    promptInputHistoryRefreshController.clearTimer()
-  })
-
-  const disposeKernelEventHandler = supportsKernelEventStream
-    ? client.onKernelEvent((event) => {
-      void handleKernelEvent(event)
-    })
-    : () => {}
-
-  createEffect(() => {
-    void attachmentState()
-    void sessionState().id
-    void syncKernelEventSubscription()
-  })
-
-  onCleanup(() => {
-    disposeKernelEventHandler()
-    void client.unsubscribeFromKernelEvents().catch(() => {
-      // Ignore teardown errors while closing the TUI.
-    })
-  })
-
-  const transcriptScrollMonitorController = createTranscriptScrollMonitorController({
-    intervalMs: 75,
-    scheduleInterval: startInterval,
-    clearInterval,
-    monitorScroll: () => {
-      transcriptHistoryAutoloadController.monitorScroll()
-    },
-  })
-  transcriptScrollMonitorController.start()
-
-  onCleanup(() => {
-    transcriptScrollMonitorController.stop()
-  })
-
-  const workingAnimationController = createWorkingAnimationController({
-    intervalMs: 120,
-    scheduleInterval: startInterval,
-    clearInterval,
-    incrementFrame: () => {
-      setWorkingAnimationFrame((value) => value + 1)
-    },
+    footerFlashController,
+    clearPendingPromptDraftPersist,
+    cancelPendingTurnCompletion,
+    sessionChromeUpdateController,
+    promptInputHistoryRefreshController,
+    transcriptHistoryAutoloadController,
+    setWorkingAnimationFrame,
     sessionStatusMode,
-    splitAgentResponseMode,
-    updateSessionChrome,
     renderSplitPaneFooters,
-  })
-  workingAnimationController.start()
-
-  onCleanup(() => {
-    workingAnimationController.stop()
-  })
-
-  const waitingRoomIntroAnimationController = createWaitingRoomIntroAnimationController({
-    intervalMs: 90,
-    scheduleInterval: startInterval,
-    clearInterval,
-    isAttached,
-    getWaitingRoomState: waitingRoomState,
+    waitingRoomState,
     setWaitingRoomState,
-    rebuildTranscript,
+    kernelConnected,
+    hydrateCurrentAttachedSession,
   })
-  waitingRoomIntroAnimationController.start()
-
-  onCleanup(() => {
-    waitingRoomIntroAnimationController.stop()
-  })
-
-  const waitingRoomRefreshIntervalController = createWaitingRoomRefreshIntervalController({
-    intervalMs: 2_500,
-    scheduleInterval: startInterval,
-    clearInterval,
-    refreshWaitingRoomData,
-  })
-  waitingRoomRefreshIntervalController.start()
-
-  onCleanup(() => {
-    waitingRoomRefreshIntervalController.stop()
-  })
-
-  onMount(() => {
-    if (kernelConnected()) {
-      void refreshWaitingRoomData()
-      void hydrateCurrentAttachedSession("mount")
-    }
-  })
+  processKernelTerminalOutputRecord = runtimeProcessKernelTerminalOutputRecord
 
   return (
     <WorkspaceLayout
