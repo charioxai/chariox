@@ -7,9 +7,9 @@ use crate::provider::opencode_client::OpenCodePermissionRequest;
 use crate::provider::run_actor::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
 };
-use crate::provider::RuntimeProviderRun;
+use crate::provider::{OpenCodeClient, RuntimeProviderRun};
 
-use super::{OpenCodeClient, OpenCodeRuntimeState};
+use super::OpenCodeRuntimeState;
 
 pub(super) fn handle_permission_request(
     run: &RuntimeProviderRun,
