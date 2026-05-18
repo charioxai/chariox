@@ -5,6 +5,7 @@ mod service;
 mod store;
 mod types;
 mod workflow_canvas;
+mod workflow_definition;
 mod workflow_graph;
 mod workflow_publication;
 mod workspace_links;
