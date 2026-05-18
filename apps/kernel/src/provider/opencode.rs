@@ -1,23 +1,21 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
-use std::thread::sleep;
-use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
-use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
-use crate::provider::{
-    AgentEndpointMode, LaunchProviderRequest, OpenCodeClient, ProviderLaunchResult,
-};
+use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
+
+use self::mcp_config::runtime_mcp_env;
+use self::ports::resolve_opencode_launch_port;
+
+mod catalog_endpoint;
+mod mcp_config;
+mod ports;
+
+pub use catalog_endpoint::{ensure_opencode_catalog_endpoint, opencode_catalog_endpoint};
 
 const OPENCODE_ENV_OVERRIDE: &str = "ARROBA_OPENCODE_BIN";
-const OPENCODE_PORT_OVERRIDE: &str = "ARROBA_OPENCODE_PORT";
-const OPENCODE_PORT_RANGE_OVERRIDE: &str = "ARROBA_OPENCODE_PORT_RANGE";
 const OPENCODE_BIND_HOST_OVERRIDE: &str = "ARROBA_OPENCODE_BIND_HOST";
-static OPENCODE_MANAGED_CATALOG_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
 
 pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
     let _guard = crate::env_lock::lock();
@@ -42,8 +40,6 @@ fn resolve_opencode_executable_unlocked() -> Result<PathBuf, DaemonError> {
         }
     })
 }
-
-const OPENCODE_CONFIG_CONTENT_ENV: &str = "OPENCODE_CONFIG_CONTENT";
 
 pub fn plan_opencode_launch(
     request: Option<&LaunchProviderRequest>,
@@ -74,11 +70,7 @@ fn plan_opencode_launch_unlocked(
 
     if request.is_some() {
         let executable = resolve_opencode_executable_unlocked()?;
-        let port = reserve_unused_port_from_range(
-            OPENCODE_PORT_RANGE_OVERRIDE,
-            "opencode_reserve_port_range",
-        )?
-        .unwrap_or(reserve_unused_port()?);
+        let port = resolve_opencode_launch_port(true)?;
         let base_url = format!("http://127.0.0.1:{port}");
         return Ok(managed_launch(
             executable,
@@ -92,7 +84,7 @@ fn plan_opencode_launch_unlocked(
         ));
     }
 
-    let port = resolve_opencode_port()?;
+    let port = resolve_opencode_launch_port(false)?;
     let base_url = format!("http://127.0.0.1:{port}");
     let executable = resolve_opencode_executable_unlocked()?;
 
@@ -137,291 +129,6 @@ fn managed_launch(
 
 fn resolve_opencode_bind_host() -> String {
     env::var(OPENCODE_BIND_HOST_OVERRIDE).unwrap_or_else(|_| "127.0.0.1".to_string())
-}
-
-pub fn opencode_catalog_endpoint() -> Result<String, DaemonError> {
-    let _guard = crate::env_lock::lock();
-    opencode_catalog_endpoint_unlocked()
-}
-
-fn opencode_catalog_endpoint_unlocked() -> Result<String, DaemonError> {
-    let port = resolve_opencode_port()?;
-    Ok(format!("http://127.0.0.1:{port}"))
-}
-
-pub fn ensure_opencode_catalog_endpoint() -> Result<String, DaemonError> {
-    let launch = plan_opencode_launch(None)?;
-    let endpoint =
-        launch
-            .structured_endpoint
-            .clone()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "ensure_opencode_catalog_endpoint",
-                message: "opencode launch did not expose a structured endpoint".to_string(),
-            })?;
-    if endpoint_is_healthy(&endpoint) {
-        return Ok(endpoint);
-    }
-    if launch.endpoint_mode == AgentEndpointMode::External {
-        return Err(DaemonError::LocalTransport {
-            operation: "ensure_opencode_catalog_endpoint",
-            message: format!("configured OpenCode endpoint `{endpoint}` is not reachable"),
-        });
-    }
-
-    let program = launch
-        .pty_program
-        .clone()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "ensure_opencode_catalog_endpoint",
-            message: "opencode launch did not provide an executable".to_string(),
-        })?;
-    let mut command = Command::new(program);
-    command
-        .args(&launch.pty_args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if let Some(working_directory) = launch.working_directory.as_ref() {
-        command.current_dir(working_directory);
-    }
-    let mut child = command.spawn().map_err(|error| {
-        clear_opencode_managed_catalog_port_if_unset();
-        DaemonError::LocalTransport {
-            operation: "ensure_opencode_catalog_endpoint",
-            message: format!("failed to start OpenCode server: {error}"),
-        }
-    })?;
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if endpoint_is_healthy(&endpoint) {
-            return Ok(endpoint);
-        }
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "ensure_opencode_catalog_endpoint",
-                message: format!("failed to poll OpenCode server startup: {error}"),
-            })?
-        {
-            clear_opencode_managed_catalog_port_if_unset();
-            return Err(DaemonError::LocalTransport {
-                operation: "ensure_opencode_catalog_endpoint",
-                message: format!("OpenCode server exited before becoming healthy: {status}"),
-            });
-        }
-        if Instant::now() >= deadline {
-            clear_opencode_managed_catalog_port_if_unset();
-            return Err(DaemonError::LocalTransport {
-                operation: "ensure_opencode_catalog_endpoint",
-                message: format!(
-                    "timed out waiting for OpenCode server to become healthy at `{endpoint}`"
-                ),
-            });
-        }
-        sleep(Duration::from_millis(100));
-    }
-}
-
-fn runtime_mcp_env(
-    request: Option<&LaunchProviderRequest>,
-) -> Result<BTreeMap<String, String>, DaemonError> {
-    let mut env = BTreeMap::new();
-    let Some(request) = request else {
-        return Ok(env);
-    };
-    let mut config = serde_json::Map::new();
-    let mut mcp = serde_json::Map::new();
-    let provider_mcp_servers = super::mcp_proxy::provider_facing_mcp_proxy_configs(
-        &request.mcp_servers,
-        request
-            .runtime_mcp_binding
-            .as_ref()
-            .map(|binding| binding.server_url.as_str()),
-        request
-            .runtime_mcp_binding
-            .as_ref()
-            .map(|binding| binding.auth_token.as_str()),
-    )?;
-    for server in &provider_mcp_servers {
-        mcp.insert(server.name.clone(), opencode_mcp_config(server));
-    }
-    if let Some(binding) = request.runtime_mcp_binding.as_ref() {
-        mcp.insert(
-            "arroba".to_string(),
-            serde_json::json!({
-                "type": "remote",
-                "url": binding.server_url,
-                "enabled": true,
-                "headers": {
-                    "Authorization": format!("Bearer {}", binding.auth_token),
-                }
-            }),
-        );
-    }
-    if !mcp.is_empty() {
-        config.insert("mcp".to_string(), serde_json::Value::Object(mcp));
-    }
-    if !config.is_empty() {
-        env.insert(
-            OPENCODE_CONFIG_CONTENT_ENV.to_string(),
-            serde_json::Value::Object(config).to_string(),
-        );
-    }
-    Ok(env)
-}
-
-fn reserve_unused_port() -> Result<u16, DaemonError> {
-    TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "opencode_reserve_port",
-            message: error.to_string(),
-        })?
-        .local_addr()
-        .map(|address| address.port())
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "opencode_reserve_port",
-            message: error.to_string(),
-        })
-}
-
-fn reserve_unused_port_from_range(
-    env_name: &'static str,
-    operation: &'static str,
-) -> Result<Option<u16>, DaemonError> {
-    let Some(value) = env::var_os(env_name) else {
-        return Ok(None);
-    };
-    let value = value.to_string_lossy();
-    let Some((start, end)) = value.split_once('-') else {
-        return Err(DaemonError::InvalidConfig {
-            field: env_name,
-            message: "must use START-END TCP port range syntax",
-        });
-    };
-    let start = start
-        .parse::<u16>()
-        .map_err(|_| DaemonError::InvalidConfig {
-            field: env_name,
-            message: "range start must be a valid TCP port",
-        })?;
-    let end = end.parse::<u16>().map_err(|_| DaemonError::InvalidConfig {
-        field: env_name,
-        message: "range end must be a valid TCP port",
-    })?;
-    if start > end {
-        return Err(DaemonError::InvalidConfig {
-            field: env_name,
-            message: "range start must be less than or equal to range end",
-        });
-    }
-    for port in start..=end {
-        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return Ok(Some(port));
-        }
-    }
-    Err(DaemonError::LocalTransport {
-        operation,
-        message: format!("no available port in {env_name}={value}"),
-    })
-}
-
-pub(crate) fn opencode_mcp_config(server: &ArrobaMcpServerConfig) -> serde_json::Value {
-    match &server.transport {
-        ArrobaMcpTransportConfig::Stdio {
-            command,
-            args,
-            env: static_env,
-            env_vars,
-            cwd,
-        } => {
-            let mut env = static_env.clone();
-            for name in env_vars {
-                if let Ok(value) = std::env::var(name) {
-                    env.insert(name.clone(), value);
-                }
-            }
-            let command_parts = std::iter::once(command.clone())
-                .chain(args.iter().cloned())
-                .collect::<Vec<_>>();
-            let mut config = serde_json::json!({
-                "type": "local",
-                "command": command_parts,
-                "enabled": server.enabled,
-                "environment": env,
-            });
-            if let Some(cwd) = cwd {
-                config["cwd"] = serde_json::Value::String(cwd.display().to_string());
-            }
-            config
-        }
-        ArrobaMcpTransportConfig::StreamableHttp {
-            url,
-            bearer_token_env_var,
-            http_headers,
-            env_http_headers,
-        } => {
-            let mut headers = http_headers.clone();
-            for (header, env_var) in env_http_headers {
-                if let Ok(value) = std::env::var(env_var) {
-                    headers.insert(header.clone(), value);
-                }
-            }
-            if let Some(env_var) = bearer_token_env_var {
-                if let Ok(value) = std::env::var(env_var) {
-                    headers.insert("Authorization".to_string(), format!("Bearer {value}"));
-                }
-            }
-            serde_json::json!({
-                "type": "remote",
-                "url": url,
-                "enabled": server.enabled,
-                "headers": headers,
-            })
-        }
-    }
-}
-
-fn endpoint_is_healthy(base_url: &str) -> bool {
-    OpenCodeClient::new("catalog", base_url)
-        .and_then(|client| client.check_health())
-        .is_ok()
-}
-
-fn resolve_opencode_port() -> Result<u16, DaemonError> {
-    if let Some(value) = env::var_os(OPENCODE_PORT_OVERRIDE) {
-        let value = value.to_string_lossy().into_owned();
-        return value
-            .parse::<u16>()
-            .map_err(|_| DaemonError::InvalidConfig {
-                field: "ARROBA_OPENCODE_PORT",
-                message: "must be a valid TCP port",
-            });
-    }
-
-    let port = OPENCODE_MANAGED_CATALOG_PORT.get_or_init(|| Mutex::new(None));
-    let mut guard = port.lock().map_err(|error| DaemonError::LocalTransport {
-        operation: "opencode_managed_catalog_port",
-        message: error.to_string(),
-    })?;
-    if let Some(port) = *guard {
-        return Ok(port);
-    }
-    let reserved = reserve_unused_port()?;
-    *guard = Some(reserved);
-    Ok(reserved)
-}
-
-fn clear_opencode_managed_catalog_port_if_unset() {
-    if env::var_os(OPENCODE_PORT_OVERRIDE).is_some() {
-        return;
-    }
-    if let Some(port) = OPENCODE_MANAGED_CATALOG_PORT.get() {
-        if let Ok(mut guard) = port.lock() {
-            *guard = None;
-        }
-    }
 }
 
 fn resolve_candidate(candidate: PathBuf, treat_as_literal_path: bool) -> Option<PathBuf> {
