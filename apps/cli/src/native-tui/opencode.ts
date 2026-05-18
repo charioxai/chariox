@@ -8,15 +8,12 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import {
   type RuntimeProviderRun,
-  type RuntimeSession,
 } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
   cancelActivePromptRequest,
-  getSessionStateRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
-  respondToInteractionRequest,
   submitPromptRequest,
   updateProviderRunSelectionRequest,
 } from "../ipc-requests.js"
@@ -38,6 +35,10 @@ import {
   getNativeProviderRun,
   requestNativeProviderRunLaunch,
 } from "./provider-run-control.js"
+import {
+  openCodeNativePermissionChoice,
+  resolveActiveOpenCodePermissionInteraction,
+} from "./opencode-permission.js"
 import {
   compactSelection,
   extractOpenCodeSelection,
@@ -583,7 +584,7 @@ async function handleProxyRequest(
   if (!isKernelRequest && method === "POST" && /^\/session\/[^/]+\/permissions\//.test(path)) {
     const body = await readRequestJson<Record<string, unknown>>(request).catch(() => ({}))
     const choiceId = openCodeNativePermissionChoice(body)
-    const resolved = await resolveActiveNativePermissionInteraction(options.client, options.sessionId, options.agentId, choiceId)
+    const resolved = await resolveActiveOpenCodePermissionInteraction(options.client, options.sessionId, options.agentId, choiceId)
     if (!resolved) {
       response.writeHead(409, { "content-type": "application/json" })
       response.end(JSON.stringify({
@@ -602,37 +603,6 @@ async function handleProxyRequest(
   }
 
   await proxyToOpenCode(request, response, options.upstreamBaseUrl, !isKernelRequest)
-}
-
-async function resolveActiveNativePermissionInteraction(
-  client: LocalIpcClient,
-  sessionId: string,
-  agentId: string,
-  choiceId: string,
-): Promise<boolean> {
-  const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
-  const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
-  const interaction = session.active_interactions?.find((entry) =>
-    entry.agent_id === agentId && entry.kind === "permission")
-  if (!interaction) return false
-  await client.send<Record<string, unknown>>(
-    respondToInteractionRequest(sessionId, interaction.id, choiceId),
-  )
-  return true
-}
-
-function openCodeNativePermissionChoice(body: Record<string, unknown>): string {
-  const raw = [
-    body.response,
-    body.decision,
-    body.choice,
-    body.action,
-    body.status,
-  ].find((value) => typeof value === "string")
-  const value = typeof raw === "string" ? raw.toLowerCase() : ""
-  if (value.includes("always") || value.includes("session")) return "allow_session"
-  if (value.includes("reject") || value.includes("deny") || value.includes("decline")) return "deny"
-  return "allow_once"
 }
 
 async function proxyOpenCodeEventsForNativeTui(
