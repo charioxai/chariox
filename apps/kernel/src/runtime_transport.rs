@@ -1,7 +1,4 @@
-use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
-use std::hash::{Hash, Hasher};
 use std::net::TcpListener as StdTcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -10,7 +7,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_tungstenite::{
@@ -20,7 +17,7 @@ use tokio_tungstenite::{
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::local::{LocalDaemonRequest, RelayStatus, RemoteMachineRecord};
+use crate::local::{RelayStatus, RemoteMachineRecord};
 use crate::runtime::command::{KernelCommand, KernelCommandSource};
 use crate::runtime::event_log::{EventLog, ReplayGap, ReplayOutcome};
 use crate::runtime::projection::{SessionSnapshotProjection, TransportHealthStore};
@@ -36,6 +33,11 @@ use crate::transport::kernel_protocol::{
     WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
+mod command_cache;
+
+pub(crate) use command_cache::COMMAND_RESULT_CACHE_LIMIT;
+use command_cache::{CommandFingerprint, CommandReservation, CommandResultCache};
+
 pub(crate) const WATCH_INTERVAL_MS: u64 = 50;
 const STATE_INTERVAL_TICKS: u64 = 4;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 20;
@@ -44,57 +46,8 @@ const WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 50;
 const DURABLE_SNAPSHOT_POLL_INTERVAL_MS: u64 = 5_000;
 const WEBSOCKET_PING_INTERVAL_MS: u64 = 5_000;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
-pub(crate) const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
 const BACKPRESSURE_CLOSE_REASON: &str = "kernel transport overloaded; reconnecting";
 pub(crate) const INBOUND_REQUEST_LIMIT: usize = 8;
-
-#[derive(Debug, Clone)]
-struct CachedCommandResult {
-    fingerprint: CommandFingerprint,
-    response: Box<Option<Value>>,
-    error: Option<KernelTransportError>,
-}
-
-#[derive(Debug)]
-enum CommandResultEntry {
-    Pending {
-        fingerprint: CommandFingerprint,
-        waiters: Vec<oneshot::Sender<CachedCommandResult>>,
-    },
-    Completed(CachedCommandResult),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CommandFingerprint {
-    command_type: String,
-    source: String,
-    session_id: Option<String>,
-    attachment_id: Option<String>,
-    request_hash: u64,
-}
-
-impl CommandFingerprint {
-    fn from_command_and_request(command: &KernelCommand, request: &LocalDaemonRequest) -> Self {
-        let mut hasher = DefaultHasher::new();
-        serde_json::to_vec(request)
-            .unwrap_or_default()
-            .hash(&mut hasher);
-        Self {
-            command_type: command.command_type.clone(),
-            source: serde_json::to_string(&command.source)
-                .unwrap_or_else(|_| "unknown".to_string()),
-            session_id: command.session_id.clone(),
-            attachment_id: command.attachment_id.clone(),
-            request_hash: hasher.finish(),
-        }
-    }
-}
-
-enum CommandReservation {
-    Dispatch,
-    Wait(oneshot::Receiver<CachedCommandResult>),
-    Conflict,
-}
 
 #[derive(Debug, Clone)]
 struct KernelSubscription {
@@ -106,8 +59,7 @@ struct KernelSubscription {
 #[derive(Debug)]
 struct KernelTransportRuntime {
     event_log: EventLog<KernelEvent>,
-    command_results: Mutex<BTreeMap<String, CommandResultEntry>>,
-    command_result_order: Mutex<VecDeque<String>>,
+    command_result_cache: CommandResultCache,
     transport_health: TransportHealthStore,
 }
 
@@ -121,8 +73,7 @@ impl KernelTransportRuntime {
     fn new(transport_health: TransportHealthStore) -> Self {
         Self {
             event_log: EventLog::new(RECENT_EVENT_LIMIT),
-            command_results: Mutex::new(BTreeMap::new()),
-            command_result_order: Mutex::new(VecDeque::new()),
+            command_result_cache: CommandResultCache::default(),
             transport_health,
         }
     }
@@ -140,8 +91,7 @@ impl KernelTransportRuntime {
                 operation: "reserve kernel event ids",
                 message: error.to_string(),
             })?,
-            command_results: Mutex::new(BTreeMap::new()),
-            command_result_order: Mutex::new(VecDeque::new()),
+            command_result_cache: CommandResultCache::default(),
             transport_health,
         })
     }
@@ -491,7 +441,11 @@ async fn handle_incoming_payload(
                 &request,
             );
             let fingerprint = CommandFingerprint::from_command_and_request(&command, &request);
-            match reserve_command_result(runtime, &command.command_id, &fingerprint).await {
+            match runtime
+                .command_result_cache
+                .reserve(&command.command_id, &fingerprint)
+                .await
+            {
                 CommandReservation::Wait(wait_rx) => {
                     let outgoing_tx = outgoing_tx.clone();
                     let close_tx = close_tx.clone();
@@ -567,7 +521,10 @@ async fn handle_incoming_payload(
             let permit = match Arc::clone(inbound_request_permits).try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(error) => {
-                    forget_pending_command_result(&runtime, &command.command_id).await;
+                    runtime
+                        .command_result_cache
+                        .forget_pending(&command.command_id)
+                        .await;
                     runtime.transport_health.record_inbound_overload_rejection();
                     let _ = try_send_outgoing_frame(
                         outgoing_tx,
@@ -630,7 +587,10 @@ async fn handle_incoming_payload(
                         error: Some(map_kernel_error(&error)),
                     },
                 };
-                complete_command_result(&runtime, command_id, fingerprint, &outgoing).await;
+                runtime
+                    .command_result_cache
+                    .complete(command_id, fingerprint, &outgoing)
+                    .await;
                 let _ = try_send_outgoing_frame(
                     &outgoing_tx,
                     &close_tx,
@@ -1443,96 +1403,6 @@ async fn emit_replay_gap_snapshot(
                 }),
             );
         }
-    }
-}
-
-async fn reserve_command_result(
-    runtime: &Arc<KernelTransportRuntime>,
-    command_id: &str,
-    fingerprint: &CommandFingerprint,
-) -> CommandReservation {
-    let mut results = runtime.command_results.lock().await;
-    match results.get_mut(command_id) {
-        Some(CommandResultEntry::Completed(cached)) => {
-            if cached.fingerprint == *fingerprint {
-                let (tx, rx) = oneshot::channel();
-                let _ = tx.send(cached.clone());
-                CommandReservation::Wait(rx)
-            } else {
-                CommandReservation::Conflict
-            }
-        }
-        Some(CommandResultEntry::Pending {
-            fingerprint: existing,
-            waiters,
-        }) => {
-            if existing == fingerprint {
-                let (tx, rx) = oneshot::channel();
-                waiters.push(tx);
-                CommandReservation::Wait(rx)
-            } else {
-                CommandReservation::Conflict
-            }
-        }
-        None => {
-            results.insert(
-                command_id.to_string(),
-                CommandResultEntry::Pending {
-                    fingerprint: fingerprint.clone(),
-                    waiters: Vec::new(),
-                },
-            );
-            CommandReservation::Dispatch
-        }
-    }
-}
-
-async fn complete_command_result(
-    runtime: &Arc<KernelTransportRuntime>,
-    command_id: String,
-    fingerprint: CommandFingerprint,
-    frame: &KernelOutgoingFrame,
-) {
-    let KernelOutgoingFrame::Response {
-        response, error, ..
-    } = frame
-    else {
-        return;
-    };
-    let cached = CachedCommandResult {
-        fingerprint,
-        response: response.clone(),
-        error: error.clone(),
-    };
-    let waiters = {
-        let mut results = runtime.command_results.lock().await;
-        match results.insert(
-            command_id.clone(),
-            CommandResultEntry::Completed(cached.clone()),
-        ) {
-            Some(CommandResultEntry::Pending { waiters, .. }) => waiters,
-            _ => Vec::new(),
-        }
-    };
-    for waiter in waiters {
-        let _ = waiter.send(cached.clone());
-    }
-    let mut order = runtime.command_result_order.lock().await;
-    order.push_back(command_id);
-    while order.len() > COMMAND_RESULT_CACHE_LIMIT {
-        if let Some(expired) = order.pop_front() {
-            runtime.command_results.lock().await.remove(&expired);
-        }
-    }
-}
-
-async fn forget_pending_command_result(runtime: &Arc<KernelTransportRuntime>, command_id: &str) {
-    let mut results = runtime.command_results.lock().await;
-    if matches!(
-        results.get(command_id),
-        Some(CommandResultEntry::Pending { .. })
-    ) {
-        results.remove(command_id);
     }
 }
 

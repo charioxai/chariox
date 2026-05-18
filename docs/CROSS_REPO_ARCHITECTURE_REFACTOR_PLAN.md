@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is CLI runtime projection ownership. Focused-agent, response-pane, interaction, workflow prompt, transcript-entry, status badge, and runtime debug projections moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-runtime-projection-composition.ts`; `index.tsx` is 1,947 lines. CLI lint and test pass 1,046 tests.
+2026-05-18: Latest verified stage is kernel websocket command-cache ownership. Duplicate command fingerprinting, result reservation, waiter fanout, pending cleanup, and cache eviction moved from `apps/kernel/src/runtime_transport.rs` into `apps/kernel/src/runtime_transport/command_cache.rs`; `runtime_transport.rs` is 1,491 lines. Kernel lib and websocket integration targets compile.
 
 ## Responsibility Rule
 
