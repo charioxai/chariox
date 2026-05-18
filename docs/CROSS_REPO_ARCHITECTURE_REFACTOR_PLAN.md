@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. `TerminalActiveSessionController` now owns the active terminal session object plus connect/reattach gates; `client.ts` is 3,652 lines and the web suite passes with 981 tests. Next highest-responsibility slice is terminal runtime state ownership.
+2026-05-18: Latest verified stage is Cloud web. `TerminalActiveRuntimeController` now owns the active terminal runtime state object, alongside `TerminalActiveSessionController` for session/connect gates; `client.ts` is 3,654 lines and the web suite passes with 983 tests. Next highest-responsibility slice is terminal app/container wiring that removes broad state access from `client.ts`.
 
 ## Responsibility Rule
 
