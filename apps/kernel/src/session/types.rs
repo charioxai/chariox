@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fmt;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,9 +15,14 @@ pub use super::runtime_interactions::{
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
     RuntimeInteractionCustomChoice, RuntimeInteractionKind, RuntimeInteractionLevel,
 };
+pub use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
+pub use super::session_config::SessionConfigState;
 use super::session_identity::{default_session_members, default_session_owner_user_id};
 pub use super::session_identity::{
     CreateSessionRequest, SessionAgentDefaults, SessionInvite, SessionMember, DEFAULT_LOCAL_USER_ID,
+};
+pub use super::session_lifecycle::{
+    KernelRestartReconciliation, SchedulerState, SessionExecutionMode, SessionStatus,
 };
 pub use super::workflow_canvas::{
     WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
@@ -57,144 +61,6 @@ pub use super::workspace_links::{WorkspaceLinkAttachment, WorkspaceLinkDefinitio
 
 pub const DEFAULT_SESSION_MAX_AGENTS: i32 = 64;
 pub const DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT: usize = 128;
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionStatus {
-    Created,
-    Active,
-    Parked,
-    Ended,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionExecutionMode {
-    SingleAgent,
-    MultiAgentWorkflow,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SchedulerState {
-    Idle,
-    Runnable,
-    Running,
-    Waiting,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct KernelRestartReconciliation {
-    pub cleared_active_provider_run: bool,
-    pub interrupted_prompt_count: usize,
-    pub stopped_workflow_run_count: usize,
-}
-
-impl KernelRestartReconciliation {
-    pub fn changed(&self) -> bool {
-        self.cleared_active_provider_run
-            || self.interrupted_prompt_count > 0
-            || self.stopped_workflow_run_count > 0
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WorktreeIsolationMode {
-    SharedSession,
-    IsolatedBranch,
-    IsolatedWorktree,
-}
-
-impl fmt::Display for SessionExecutionMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = match self {
-            Self::SingleAgent => "single_agent",
-            Self::MultiAgentWorkflow => "multi_agent_workflow",
-        };
-
-        write!(f, "{value}")
-    }
-}
-
-impl fmt::Display for SessionStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = match self {
-            Self::Created => "created",
-            Self::Active => "active",
-            Self::Parked => "parked",
-            Self::Ended => "ended",
-        };
-
-        write!(f, "{value}")
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct SessionConfigState {
-    version: u64,
-    values: BTreeMap<String, String>,
-    updated_by_attachment_id: Option<String>,
-}
-
-impl SessionConfigState {
-    pub fn version(&self) -> u64 {
-        self.version
-    }
-
-    pub fn values(&self) -> &BTreeMap<String, String> {
-        &self.values
-    }
-
-    pub fn updated_by_attachment_id(&self) -> Option<&str> {
-        self.updated_by_attachment_id.as_deref()
-    }
-
-    pub fn apply_changes(
-        &mut self,
-        values: BTreeMap<String, String>,
-        updated_by_attachment_id: impl Into<String>,
-    ) {
-        for (key, value) in values {
-            self.values.insert(key, value);
-        }
-        self.version += 1;
-        self.updated_by_attachment_id = Some(updated_by_attachment_id.into());
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeWorktreeAssignment {
-    id: String,
-    worktree_id: String,
-    branch: String,
-    isolation_mode: WorktreeIsolationMode,
-}
-
-impl RuntimeWorktreeAssignment {
-    pub fn new(
-        id: impl Into<String>,
-        worktree_id: impl Into<String>,
-        branch: impl Into<String>,
-        isolation_mode: WorktreeIsolationMode,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            worktree_id: worktree_id.into(),
-            branch: branch.into(),
-            isolation_mode,
-        }
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-    pub fn worktree_id(&self) -> &str {
-        &self.worktree_id
-    }
-    pub fn branch(&self) -> &str {
-        &self.branch
-    }
-    pub fn isolation_mode(&self) -> WorktreeIsolationMode {
-        self.isolation_mode
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSession {
