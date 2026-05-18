@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. `TerminalRuntimeHydrationCoordinator` now owns provider catalog hydration, prompt/background hydration fan-out, and history hydration entrypoints; `client.ts` is 3,118 lines and the web suite passes with 1013 tests. Next highest-responsibility slice is terminal session connection composition.
+2026-05-18: Latest verified stage is Cloud web. `TerminalSessionConnectionComposition` now owns the restore/start/join/remote/close/lifecycle controller graph; `client.ts` is 3,035 lines and the web suite passes with 1016 tests. Next highest-responsibility slice is waiting-room control-plane/session composition.
 
 ## Responsibility Rule
 
