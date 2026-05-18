@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. `TerminalSessionStateRefreshController` now owns refresh timer/promise/runtime handles, and active-record snapshots move that refresh runtime as one object; `client.ts` is 3,666 lines and the web suite passes with 978 tests. Next highest-responsibility slice is active terminal session/runtime state ownership.
+2026-05-18: Latest verified stage is Cloud web. `TerminalActiveSessionController` now owns the active terminal session object plus connect/reattach gates; `client.ts` is 3,652 lines and the web suite passes with 981 tests. Next highest-responsibility slice is terminal runtime state ownership.
 
 ## Responsibility Rule
 
