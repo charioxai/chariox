@@ -1,5 +1,3 @@
-use serde::Deserialize;
-
 use crate::error::DaemonError;
 use crate::mcp::ArrobaMcpServerConfig;
 use crate::provider::{ProviderNativeInteractionBridge, ProviderWriteAccessMode};
@@ -32,6 +30,7 @@ pub use auth::{ProviderAuthStatus, ProviderLoginStart};
 pub use health::codex_endpoint_is_healthy;
 pub use notifications::CodexNotification;
 pub use socket_io::CodexSocket;
+pub use thread_runtime::{CodexThread, CodexThreadStartResponse};
 
 #[derive(Clone)]
 pub struct CodexClient {
@@ -50,19 +49,6 @@ pub struct CodexClient {
 pub struct CodexRunSelection {
     pub model: Option<String>,
     pub variant: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct CodexThreadStartResponse {
-    pub thread: CodexThread,
-    pub model: String,
-    #[serde(rename = "reasoningEffort", default)]
-    pub reasoning_effort: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct CodexThread {
-    pub id: String,
 }
 
 impl CodexClient {

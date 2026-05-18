@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::DaemonError;
@@ -7,9 +8,20 @@ use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderWriteAcc
 
 use super::mcp_config::{append_codex_mcp_overrides, append_runtime_mcp_overrides};
 use super::permission::{codex_collaboration_mode, codex_permission_policy, CodexPermissionPolicy};
-use super::{
-    CodexClient, CodexNotification, CodexSocket, CodexThreadStartResponse, CODEX_MCP_TOKEN_ENV,
-};
+use super::{CodexClient, CodexNotification, CodexSocket, CODEX_MCP_TOKEN_ENV};
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CodexThreadStartResponse {
+    pub thread: CodexThread,
+    pub model: String,
+    #[serde(rename = "reasoningEffort", default)]
+    pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CodexThread {
+    pub id: String,
+}
 
 impl CodexClient {
     pub fn thread_start(

@@ -27,8 +27,8 @@ pub use codex::{
     resolve_codex_executable,
 };
 pub use codex_client::{
-    CodexClient, CodexNotification, CodexRunSelection, CodexSocket, ProviderAuthStatus,
-    ProviderLoginStart,
+    CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexThread,
+    CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
 };
 pub use codex_runtime::{run_codex_utility_prompt, CodexRuntimeState};
 pub use command_catalog::{
