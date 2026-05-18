@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Freeform dialog orchestration, waiting-room key handling, and terminal kernel event routing now live in focused controllers with source guards. `client.ts` is 8,797 lines; next highest-impact slice is terminal session snapshot reconciliation.
+2026-05-18: Latest verified stage is Cloud web. Freeform dialog orchestration, waiting-room key handling, terminal kernel event routing, and terminal session snapshot reconciliation now live in focused controllers with source guards. `client.ts` is 8,691 lines; next highest-impact slice is terminal prompt/session lifecycle orchestration.
 
 ## Responsibility Rule
 
