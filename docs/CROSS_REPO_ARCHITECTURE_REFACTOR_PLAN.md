@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Waiting-room/session alias, sidebar agent alias/workspace edits, and sidebar agent option-picker commits now live in focused controllers; `client.ts` is 4,536 lines and the web suite passes with 947 tests. Next highest-responsibility slice is terminal output/agent-pane rendering ownership.
+2026-05-18: Latest verified stage is Cloud web. Terminal output and agent-pane rendering ownership is consolidated in `TerminalOutputPaneController`, including template transcript rendering; `client.ts` is 4,446 lines and the web suite passes with 948 tests. Next highest-responsibility slice is terminal prompt/draft/history helper ownership.
 
 ## Responsibility Rule
 
