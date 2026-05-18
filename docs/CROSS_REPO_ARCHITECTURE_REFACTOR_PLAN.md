@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web terminal panel stylesheet ownership. `terminal-panel-surfaces.ts` is now a composition barrel over feature-owned workflow, sidebar session, settings, workspace/git, rail, and waiting-room surface modules with byte-preserved CSS. `client.ts` is 755 lines; web suite passes 1,047 tests; repo lint and diff checks pass. Next highest-responsibility slice is `client.ts` coordinator ownership.
+2026-05-18: Latest verified stage is Cloud web terminal browser app ownership. `client.ts` is a 3-line bundle entry; `terminal/app/terminal-browser-app.ts` owns the browser terminal app container and startup guard tests enforce that boundary. Web suite passes 1,048 tests; repo lint and diff checks pass. Next highest-responsibility slice is splitting the app container by subsystem wiring.
 
 ## Responsibility Rule
 
