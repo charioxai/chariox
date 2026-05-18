@@ -16,7 +16,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 Cloud API is responsibility-owned: server/service/repository aggregates are composition-only, route and HTTP adapter guardrails are in place, and domain facades/focused repository facets own relay bootstrap, browser session, pairing, invites, managed history, admin, billing, and runtime-token policy.
 
-Cloud web remains the highest-impact area. Latest verified web stage: app-sidebar input focus, terminal session record ownership/background refresh, waiting-room new-session launch, and existing-session join orchestration moved out of `client.ts` into focused terminal modules with tests. `client.ts` is still very large at 9,720 lines, so subsequent web slices should keep targeting it before lower-impact work.
+Cloud web remains the highest-impact area. Latest verified web stage: app-sidebar input focus, terminal session record ownership/background refresh, waiting-room new-session launch, existing-session join, and archive/delete lifecycle orchestration moved out of `client.ts` into focused terminal modules with tests. `client.ts` is still very large at 9,530 lines, so subsequent web slices should keep targeting it before lower-impact work.
 
 OSS CLI/kernel work has moved most TUI command handling, waiting-room, prompt, transcript, workflow, relay/cloud, provider-native, workflow gateway, session-contract, and provider adapter/client responsibilities into named modules with compatibility barrels where needed. Latest verified provider stage includes Codex transcript item/text/tool-state projection split.
 
