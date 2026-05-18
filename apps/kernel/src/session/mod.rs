@@ -8,6 +8,7 @@ mod workflow_canvas;
 mod workflow_definition;
 mod workflow_diagnostics;
 mod workflow_graph;
+mod workflow_outputs;
 mod workflow_publication;
 mod workflow_scheduling;
 mod workspace_links;
