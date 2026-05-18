@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Production terminal kernel handshake ownership moved from `apps/web/src/client.ts` into `apps/web/src/terminal/terminal-session-kernel-connection.ts`: session create, attach, event subscribe, state hydrate, and provider launch request/response parsing. `client.ts` is 9,474 lines, so the highest-impact remaining work is still extracting terminal/session/freeform orchestration from that file before lower-impact cleanup.
+2026-05-18: Latest verified stage is Cloud web. Production and remote terminal startup handshakes now use `apps/web/src/terminal/terminal-session-kernel-connection.ts` for session create, attach, event subscribe, state hydrate, and provider launch request/response parsing; a source guard keeps those protocol details out of `client.ts`. `client.ts` is 9,464 lines, so the highest-impact remaining work is still extracting terminal/session/freeform orchestration from that file before lower-impact cleanup.
 
 ## Responsibility Rule
 
