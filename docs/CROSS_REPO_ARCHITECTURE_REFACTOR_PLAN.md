@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. `FreeformPromptLayoutController` now owns prompt textarea sizing, resize-frame coalescing, sticky-output tail repair, and footer turn-clock compression; `client.ts` is 3,419 lines and the web suite passes with 991 tests. Next highest-responsibility slice is terminal route state wiring.
+2026-05-18: Latest verified stage is Cloud web. `TerminalRouteStateController` now owns terminal route view projection, runtime config hydration, preset-count reads, and live-layout defer policy; `client.ts` is 3,383 lines and the web suite passes with 994 tests. Next highest-responsibility slice is workflow route state wiring.
 
 ## Responsibility Rule
 
