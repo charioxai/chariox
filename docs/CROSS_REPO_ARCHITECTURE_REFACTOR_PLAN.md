@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Terminal kernel events, session snapshots, prompt submit/stop, production start/join, history hydration, output reconciliation, remote/dev startup, prompt DOM, and workspace panel DOM routing now live in focused controllers with source guards. `client.ts` is 7,638 lines; next highest-impact slice is remaining waiting-room/session global DOM routing.
+2026-05-18: Latest verified stage is Cloud web. Terminal kernel events, session snapshots, prompt submit/stop, production start/join, history hydration, output reconciliation, remote/dev startup, prompt DOM, workspace panel DOM, and waiting-room session DOM routing now live in focused controllers with tests/source guards. `client.ts` is 7,339 lines; next highest-impact slice is sidebar create-session/agent config DOM routing.
 
 ## Responsibility Rule
 
