@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Global terminal event registration now lives in a focused controller; `client.ts` is 5,137 lines and the web suite passes with 929 tests. Next highest-responsibility slice is freeform desk/template lifecycle.
+2026-05-18: Latest verified stage is Cloud web. Freeform desk/template lifecycle now lives in a focused controller; `client.ts` is 4,931 lines and the web suite passes with 931 tests. Next highest-responsibility slice is freeform footer controls rendering and substitute action wiring.
 
 ## Responsibility Rule
 
