@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::error::DaemonError;
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest};
 
-use super::{claude_mcp_config, normalized_claude_model};
+use super::launch_args::{claude_mcp_config, normalized_claude_model};
 
 pub(super) struct ClaudeNativeTuiFiles {
     pub(super) events_file: PathBuf,

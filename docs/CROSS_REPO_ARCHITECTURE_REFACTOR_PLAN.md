@@ -400,6 +400,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: Codex launch MCP/env/model-catalog config is responsibility-owned; focused Codex provider tests pass.
 - Latest verified batch: Codex catalog endpoint startup and port selection policy are responsibility-owned; focused Codex provider tests pass.
 - Latest verified batch: OpenCode launch MCP config, catalog startup, and port selection policy are responsibility-owned; focused OpenCode provider tests pass.
+- Latest verified batch: Claude structured launch args and MCP config are responsibility-owned; focused Claude provider tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule

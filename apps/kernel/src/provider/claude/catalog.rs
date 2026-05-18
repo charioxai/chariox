@@ -7,7 +7,8 @@ use std::path::PathBuf;
 
 use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, OpenCodeProviderModel};
 
-use super::{normalized_claude_model, resolve_claude_executable};
+use super::launch_args::normalized_claude_model;
+use super::resolve_claude_executable;
 
 const CLAUDE_KNOWN_MODELS: &[(&str, &str)] = &[
     ("sonnet", "Claude Sonnet"),
