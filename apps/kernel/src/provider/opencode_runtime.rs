@@ -1,14 +1,14 @@
 use crate::error::DaemonError;
 use crate::provider::run_actor::ProviderNativeInteractionBridge;
 use crate::terminal::TerminalOutputKind;
-use std::collections::BTreeMap;
 use std::sync::mpsc::TryRecvError;
 
-use super::{OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription};
+use super::{OpenCodeClient, OpenCodeEvent};
 
 mod parts;
 mod permission;
 mod snapshot;
+mod state;
 mod transcript;
 
 use parts::{handle_message_part_delta, handle_message_part_updated};
@@ -18,6 +18,9 @@ use snapshot::{
     opencode_message_completes_active_prompt, opencode_messages_complete_active_prompt,
     record_snapshot_message_metadata, render_snapshot_output_chunks,
 };
+pub(super) use state::OpenCodeEventDrainResult;
+pub(crate) use state::OpenCodeRuntimeState;
+pub use state::{OpenCodeAssistantCompletion, OpenCodeOutputChunk};
 use transcript::{format_session_status, render_session_error_transcript_update};
 
 #[cfg(test)]
@@ -27,86 +30,6 @@ const OPENCODE_EVENT_RESUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Durat
 const OPENCODE_EVENT_RESUBSCRIBE_RETRY_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(100);
 const OPENCODE_EVENT_DRAIN_MAX_EVENTS: usize = 256;
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpenCodeOutputChunk {
-    pub kind: TerminalOutputKind,
-    pub merge_key: Option<String>,
-    pub bytes: Vec<u8>,
-}
-
-pub(super) struct OpenCodeEventDrainResult {
-    pub chunks: Vec<OpenCodeOutputChunk>,
-    pub completions: Vec<OpenCodeAssistantCompletion>,
-    pub prompt_completed: bool,
-    pub terminal_failure: Option<String>,
-    pub notices: Vec<String>,
-    pub resolved_model: Option<String>,
-    pub resolved_model_source: Option<&'static str>,
-    pub resolved_variant: Option<String>,
-    pub resolved_usage_tokens_total: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpenCodeAssistantCompletion {
-    pub message_id: String,
-    pub completed_at_ms: u64,
-}
-
-#[derive(Debug)]
-pub(crate) struct OpenCodeRuntimeState {
-    base_url: String,
-    session_id: String,
-    emitted_text_offsets: BTreeMap<String, usize>,
-    emitted_tool_summaries: BTreeMap<String, String>,
-    buffered_text_deltas: BTreeMap<String, Vec<String>>,
-    message_roles: BTreeMap<String, String>,
-    part_kinds: BTreeMap<String, String>,
-    part_message_ids: BTreeMap<String, String>,
-    event_subscription: OpenCodeEventSubscription,
-    last_status_kind: Option<String>,
-    last_completed_assistant_message_id: Option<String>,
-    active_user_message_id: Option<String>,
-}
-
-impl OpenCodeRuntimeState {
-    pub(super) fn new(
-        base_url: String,
-        session_id: String,
-        event_subscription: OpenCodeEventSubscription,
-    ) -> Self {
-        Self {
-            base_url,
-            session_id,
-            emitted_text_offsets: BTreeMap::new(),
-            emitted_tool_summaries: BTreeMap::new(),
-            buffered_text_deltas: BTreeMap::new(),
-            message_roles: BTreeMap::new(),
-            part_kinds: BTreeMap::new(),
-            part_message_ids: BTreeMap::new(),
-            event_subscription,
-            last_status_kind: None,
-            last_completed_assistant_message_id: None,
-            active_user_message_id: None,
-        }
-    }
-
-    pub(super) fn base_url(&self) -> &str {
-        &self.base_url
-    }
-
-    pub(super) fn session_id(&self) -> &str {
-        &self.session_id
-    }
-
-    pub(super) fn stop(self) {
-        self.event_subscription.stop();
-    }
-
-    pub(super) fn note_prompt_submitted(&mut self, user_message_id: String) {
-        self.active_user_message_id = Some(user_message_id);
-    }
-}
-
 pub(super) fn drain_opencode_events(
     run: &crate::provider::RuntimeProviderRun,
     state: &mut OpenCodeRuntimeState,
