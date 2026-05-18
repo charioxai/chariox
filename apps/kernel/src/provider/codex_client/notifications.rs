@@ -4,7 +4,79 @@ use serde_json::{json, Value};
 
 use crate::provider::ProviderRunTokenUsage;
 
-use super::{CodexNotification, JsonRpcMessage};
+use super::JsonRpcMessage;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodexNotification {
+    AgentMessageDelta {
+        item_id: String,
+        delta: String,
+    },
+    ReasoningTextDelta {
+        item_id: String,
+        delta: String,
+    },
+    ReasoningSummaryTextDelta {
+        item_id: String,
+        delta: String,
+    },
+    ReasoningSummaryPartAdded {
+        item_id: String,
+        summary_index: usize,
+    },
+    ItemStarted {
+        item: Value,
+    },
+    ItemCompleted {
+        item: Value,
+    },
+    ExecCommandStarted {
+        call_id: String,
+        command: Value,
+        cwd: Option<String>,
+    },
+    ExecCommandCompleted {
+        call_id: String,
+        command: Value,
+        cwd: Option<String>,
+        output: Option<String>,
+        exit_code: Option<i64>,
+        success: Option<bool>,
+        stderr: Option<String>,
+    },
+    ExecCommandOutputDelta {
+        call_id: String,
+        chunk: String,
+    },
+    CommandExecutionOutputDelta {
+        item_id: String,
+        delta: String,
+    },
+    FileChangeOutputDelta {
+        item_id: String,
+        delta: String,
+    },
+    McpToolCallProgress {
+        item_id: String,
+        message: String,
+    },
+    TokenUsageUpdated {
+        thread_id: String,
+        turn_id: String,
+        usage: ProviderRunTokenUsage,
+    },
+    TurnStarted {
+        turn_id: String,
+    },
+    TurnCompleted {
+        turn_id: String,
+        status: String,
+        error_message: Option<String>,
+    },
+    Error {
+        message: String,
+    },
+}
 
 pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotification> {
     let method = message.method?;

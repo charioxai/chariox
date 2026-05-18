@@ -1,11 +1,8 @@
 use serde::Deserialize;
-use serde_json::Value;
 
 use crate::error::DaemonError;
 use crate::mcp::ArrobaMcpServerConfig;
-use crate::provider::{
-    ProviderNativeInteractionBridge, ProviderRunTokenUsage, ProviderWriteAccessMode,
-};
+use crate::provider::{ProviderNativeInteractionBridge, ProviderWriteAccessMode};
 
 use super::codex::CODEX_MCP_TOKEN_ENV;
 use super::resolve_codex_executable;
@@ -33,6 +30,7 @@ use permission::{
 
 pub use auth::{ProviderAuthStatus, ProviderLoginStart};
 pub use health::codex_endpoint_is_healthy;
+pub use notifications::CodexNotification;
 pub use socket_io::CodexSocket;
 
 #[derive(Clone)]
@@ -52,78 +50,6 @@ pub struct CodexClient {
 pub struct CodexRunSelection {
     pub model: Option<String>,
     pub variant: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CodexNotification {
-    AgentMessageDelta {
-        item_id: String,
-        delta: String,
-    },
-    ReasoningTextDelta {
-        item_id: String,
-        delta: String,
-    },
-    ReasoningSummaryTextDelta {
-        item_id: String,
-        delta: String,
-    },
-    ReasoningSummaryPartAdded {
-        item_id: String,
-        summary_index: usize,
-    },
-    ItemStarted {
-        item: Value,
-    },
-    ItemCompleted {
-        item: Value,
-    },
-    ExecCommandStarted {
-        call_id: String,
-        command: Value,
-        cwd: Option<String>,
-    },
-    ExecCommandCompleted {
-        call_id: String,
-        command: Value,
-        cwd: Option<String>,
-        output: Option<String>,
-        exit_code: Option<i64>,
-        success: Option<bool>,
-        stderr: Option<String>,
-    },
-    ExecCommandOutputDelta {
-        call_id: String,
-        chunk: String,
-    },
-    CommandExecutionOutputDelta {
-        item_id: String,
-        delta: String,
-    },
-    FileChangeOutputDelta {
-        item_id: String,
-        delta: String,
-    },
-    McpToolCallProgress {
-        item_id: String,
-        message: String,
-    },
-    TokenUsageUpdated {
-        thread_id: String,
-        turn_id: String,
-        usage: ProviderRunTokenUsage,
-    },
-    TurnStarted {
-        turn_id: String,
-    },
-    TurnCompleted {
-        turn_id: String,
-        status: String,
-        error_message: Option<String>,
-    },
-    Error {
-        message: String,
-    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
