@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web waiting-room session control. `WaitingRoomSessionControlComposition` owns create-session visibility, action-menu state, start/join/lifecycle orchestration, session/create DOM routing, and waiting-room key routing. `client.ts` is 2,841 lines; web suite passes 1,020 tests; lint and diff checks pass. Next highest-responsibility slice is waiting-room runtime refresh/bootstrap client ownership.
+2026-05-18: Latest verified stage is Cloud web waiting-room runtime connection. `WaitingRoomRuntimeConnectionComposition` owns bootstrap clients, runtime views, cached inventory persistence, connection-failure display, and refresh scheduling. `client.ts` is 2,777 lines; web suite passes 1,022 tests; lint and diff checks pass. Next highest-responsibility slice is terminal prompt/output/freeform composition in `client.ts`.
 
 ## Responsibility Rule
 
