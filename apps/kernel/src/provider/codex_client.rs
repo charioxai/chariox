@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::stream::MaybeTlsStream;
 use tokio_tungstenite::tungstenite::{connect, Message, WebSocket};
@@ -20,6 +20,7 @@ use super::resolve_codex_executable;
 mod approval_bodies;
 mod auth;
 mod catalog;
+mod json_rpc;
 mod notifications;
 mod permission;
 mod runtime_mcp;
@@ -31,6 +32,7 @@ use approval_bodies::{
     file_change_approval_body,
 };
 use catalog::{codex_catalog_from_models, CodexModelListResponse};
+use json_rpc::JsonRpcMessage;
 use mcp_config::{append_codex_mcp_overrides, append_runtime_mcp_overrides};
 use notifications::{parse_notification, rpc_error_message};
 use permission::{
@@ -145,26 +147,6 @@ pub struct CodexThreadStartResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CodexThread {
     pub id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct JsonRpcMessage {
-    #[serde(default)]
-    id: Option<Value>,
-    #[serde(default)]
-    method: Option<String>,
-    #[serde(default)]
-    params: Option<Value>,
-    #[serde(default)]
-    result: Option<Value>,
-    #[serde(default)]
-    error: Option<JsonRpcError>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct JsonRpcError {
-    #[serde(default)]
-    message: Option<String>,
 }
 
 impl CodexClient {
