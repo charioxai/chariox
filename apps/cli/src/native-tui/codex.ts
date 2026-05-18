@@ -39,6 +39,7 @@ import {
   startCodexAppServerInKernel,
   stopCodexAppServerInKernel,
 } from "./codex-app-server.js"
+import { createCodexKernelOutputProjection } from "./codex-kernel-output-projection.js"
 import { resolveCodexNativePermissionResponse } from "./codex-permission.js"
 import { extractCodexAttachments, extractCodexPrompt } from "./codex-prompt.js"
 import {
@@ -480,17 +481,7 @@ async function startCodexProxy(options: {
     method: string | undefined
   }>()
   let nextUpstreamRequestId = 1
-  let nextProjectedTurnId = 1
   let upstreamSocket: WebSocket | null = null
-  let projectedThreadId: string | null = null
-  const projectedItems = new Map<string, {
-    key: string
-    turnId: string
-    itemId: string
-    kind: "agentMessage" | "reasoning"
-    text: string
-    timer: NodeJS.Timeout | null
-  }>()
 
   const ensureUpstream = () => {
     if (upstreamSocket && upstreamSocket.readyState !== WebSocket.CLOSED) return upstreamSocket
@@ -560,168 +551,11 @@ async function startCodexProxy(options: {
     }
   }
 
-  const turnPayload = (turnId: string, status: "inProgress" | "completed") => ({
-    id: turnId,
-    items: [],
-    itemsView: "notLoaded",
-    status,
-    error: null,
-    startedAt: Math.floor(Date.now() / 1000),
-    completedAt: status === "completed" ? Math.floor(Date.now() / 1000) : null,
-    durationMs: null,
+  const kernelOutputProjection = createCodexKernelOutputProjection({
+    agentId: options.agentId,
+    broadcast: broadcastToNativeTuis,
+    debug: debugNativeCodex,
   })
-
-  const startProjectedTurn = () => {
-    if (!projectedThreadId) return null
-    const turnId = `arroba-projected-turn-${nextProjectedTurnId++}`
-    broadcastToNativeTuis({
-      jsonrpc: "2.0",
-      method: "thread/status/changed",
-      params: {
-        threadId: projectedThreadId,
-        status: { type: "active", activeFlags: [] },
-      },
-    })
-    broadcastToNativeTuis({
-      jsonrpc: "2.0",
-      method: "turn/started",
-      params: {
-        threadId: projectedThreadId,
-        turn: turnPayload(turnId, "inProgress"),
-      },
-    })
-    return turnId
-  }
-
-  const completeProjectedItemSoon = (projection: {
-    key: string
-    turnId: string
-    itemId: string
-    kind: "agentMessage" | "reasoning"
-    text: string
-    timer: NodeJS.Timeout | null
-  }) => {
-    if (projection.timer) clearTimeout(projection.timer)
-    projection.timer = setTimeout(() => {
-      if (!projectedThreadId) return
-      broadcastToNativeTuis({
-        jsonrpc: "2.0",
-        method: "item/completed",
-        params: {
-          item: projection.kind === "reasoning"
-            ? { type: "reasoning", id: projection.itemId, summary: [], content: [] }
-            : { type: "agentMessage", id: projection.itemId, text: projection.text, phase: "final_answer", memoryCitation: null },
-          threadId: projectedThreadId,
-          turnId: projection.turnId,
-          completedAtMs: Date.now(),
-        },
-      })
-      broadcastToNativeTuis({
-        jsonrpc: "2.0",
-        method: "thread/status/changed",
-        params: {
-          threadId: projectedThreadId,
-          status: { type: "idle" },
-        },
-      })
-      broadcastToNativeTuis({
-        jsonrpc: "2.0",
-        method: "turn/completed",
-        params: {
-          threadId: projectedThreadId,
-          turn: turnPayload(projection.turnId, "completed"),
-        },
-      })
-      projectedItems.delete(projection.key)
-    }, 750)
-  }
-
-  const projectKernelOutputToTui = (records: TerminalOutputRecord[]) => {
-    for (const record of records) {
-      if (!projectedThreadId) continue
-      if (record.agent_id && record.agent_id !== options.agentId) continue
-      if (
-        record.kind !== "prompt_echo"
-        && record.kind !== "provider_output"
-        && record.kind !== "provider_reasoning"
-        && record.kind !== "provider_error"
-      ) continue
-      const delta = Buffer.from(record.bytes).toString("utf8")
-      if (!delta) continue
-
-      if (record.kind === "prompt_echo") {
-        const turnId = startProjectedTurn()
-        if (!turnId) continue
-        const itemId = `arroba-projected-user-${Date.now()}-${nextProjectedTurnId}`
-        broadcastToNativeTuis({
-          jsonrpc: "2.0",
-          method: "item/started",
-          params: {
-            item: {
-              type: "userMessage",
-              id: itemId,
-              content: [{ type: "text", text: delta, text_elements: [] }],
-            },
-            threadId: projectedThreadId,
-            turnId,
-            startedAtMs: Date.now(),
-          },
-        })
-        broadcastToNativeTuis({
-          jsonrpc: "2.0",
-          method: "item/completed",
-          params: {
-            item: {
-              type: "userMessage",
-              id: itemId,
-              content: [{ type: "text", text: delta, text_elements: [] }],
-            },
-            threadId: projectedThreadId,
-            turnId,
-            completedAtMs: Date.now(),
-          },
-        })
-        debugNativeCodex("projected_output_to_tui", { agentId: options.agentId, kind: record.kind, byteLength: record.bytes.length })
-        continue
-      }
-
-      const itemKind = record.kind === "provider_reasoning" ? "reasoning" : "agentMessage"
-      const itemKey = `${itemKind}:${record.merge_key ?? "default"}`
-      let projection = projectedItems.get(itemKey)
-      if (!projection) {
-        const turnId = startProjectedTurn()
-        if (!turnId) continue
-        const itemId = `arroba-projected-${itemKind}-${Date.now()}-${nextProjectedTurnId}`
-        projection = { key: itemKey, turnId, itemId, kind: itemKind, text: "", timer: null }
-        projectedItems.set(itemKey, projection)
-        broadcastToNativeTuis({
-          jsonrpc: "2.0",
-          method: "item/started",
-          params: {
-            item: itemKind === "reasoning"
-              ? { type: "reasoning", id: itemId, summary: [], content: [] }
-              : { type: "agentMessage", id: itemId, text: "", phase: "final_answer", memoryCitation: null },
-            threadId: projectedThreadId,
-            turnId,
-            startedAtMs: Date.now(),
-          },
-        })
-      }
-      projection.text += delta
-      broadcastToNativeTuis({
-        jsonrpc: "2.0",
-        method: record.kind === "provider_reasoning" ? "item/reasoning/textDelta" : "item/agentMessage/delta",
-        params: {
-          threadId: projectedThreadId,
-          turnId: projection.turnId,
-          itemId: projection.itemId,
-          delta,
-        },
-      })
-      completeProjectedItemSoon(projection)
-      debugNativeCodex("projected_output_to_tui", { agentId: options.agentId, kind: record.kind, byteLength: record.bytes.length })
-    }
-  }
 
   const handleUpstreamMessage = (raw: WebSocket.RawData) => {
     const message = parseJsonRpcMessage(raw)
@@ -741,7 +575,7 @@ async function startCodexProxy(options: {
       if (pending.method === "thread/start" && message.result) {
         const threadId = extractCodexThreadId(message)
         if (threadId) {
-          projectedThreadId = threadId
+          kernelOutputProjection.setThreadId(threadId)
           bindObservedThread(options, threadId)
         }
       }
@@ -752,7 +586,7 @@ async function startCodexProxy(options: {
     if (message.method === "thread/started") {
       const thread = message.params?.thread
       if (thread && typeof thread === "object" && "id" in thread && typeof thread.id === "string") {
-        projectedThreadId = thread.id
+        kernelOutputProjection.setThreadId(thread.id)
       }
     }
     broadcast(message)
@@ -839,7 +673,7 @@ async function startCodexProxy(options: {
       httpServer.close((httpError?: Error) => callback?.(error ?? httpError))
     })
   }) as WebSocketServer["close"]
-  return Object.assign(server, { projectKernelOutputToTui })
+  return Object.assign(server, { projectKernelOutputToTui: kernelOutputProjection.project })
 }
 
 function bindObservedThread(
