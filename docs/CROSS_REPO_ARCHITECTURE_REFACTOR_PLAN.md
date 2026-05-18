@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is kernel crate-root cleanup. Inline crate-root integration tests moved from `apps/kernel/src/lib.rs` into `apps/kernel/src/lib_tests.rs`; `lib.rs` is 39 lines and only owns module exports/re-exports. Kernel lib test target compiles.
+2026-05-18: Latest verified stage is scheduler workflow prompt dispatch ownership. Workflow prompt submission, local/remote dispatch, retryable provider dispatch, and workflow provider-run relaunch moved from `apps/kernel/src/scheduler/runtime.rs` into `apps/kernel/src/scheduler/runtime/prompt_dispatch.rs`; `runtime.rs` is 1,332 lines. Kernel lib target compiles and scheduler runtime tests pass.
 
 ## Responsibility Rule
 
