@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is remote native TUI drill harness split. `apps/cli/scripts/live-remote-native-tui-drill.mjs` now keeps scenario orchestration at 1,394 lines, with generic drill runtime helpers, provider-native prompt drivers, MCP/skill capability fixtures, and Hetzner/remote execution helpers moved under `apps/cli/scripts/lib/`. `node --check` passes for the drill and helper modules, and `node apps/cli/scripts/live-remote-native-tui-drill.mjs --help` loads successfully.
+2026-05-18: Latest verified stage is hosted Cloud relay drill scenario split. `apps/cli/scripts/live-hosted-cloud-relay-drill.mjs` is now 1,007 lines and keeps setup/login/pair/connect sequencing, while multi-user Cloud access, remote CLI automation, and second-kernel/token-rotation assertions live under `apps/cli/scripts/lib/hosted-cloud-*-scenarios.mjs`. `node --check` passes for the drill and new scenario modules.
 
 ## Responsibility Rule
 
