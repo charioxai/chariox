@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. `WorkflowRouteCoordinator` now owns workflow route URL state, route view projection, hydration, refresh, design IDs, and create-workflow routing; `client.ts` is 3,278 lines and the web suite passes with 999 tests. Next highest-responsibility slice is history route wiring.
+2026-05-18: Latest verified stage is Cloud web. `HistoryRouteCoordinator` now owns history route state, projection, refresh, sidebar sync, and search DOM routing; `client.ts` is 3,226 lines and the web suite passes with 1002 tests. Next highest-responsibility slice is terminal session start/connect/reattach wiring.
 
 ## Responsibility Rule
 
