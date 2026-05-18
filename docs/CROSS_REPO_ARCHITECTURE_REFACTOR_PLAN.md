@@ -362,6 +362,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: OSS local remote-machine record/registry helpers are responsibility-owned; focused kernel provider-request tests pass.
 - Latest verified batch: OSS relay registry owns peer maps, daemon presence projection, aliasing, pending requests, and subscriptions; relay tests pass.
 - Latest verified batch: OSS session workspace-link definitions and repo-root normalization are responsibility-owned; focused session tests pass.
+- Latest verified batch: OSS workflow-publication definitions, pairing codes, sender credentials, and trusted-sender policy are responsibility-owned; focused session tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule

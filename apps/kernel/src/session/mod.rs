@@ -4,6 +4,7 @@ mod prompt_runtime;
 mod service;
 mod store;
 mod types;
+mod workflow_publication;
 mod workspace_links;
 
 pub use agent_config::{
