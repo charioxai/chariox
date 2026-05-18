@@ -21,6 +21,7 @@ import { createCliCommandActionComposition } from "./cli-command-action-composit
 import { createCliInputRoutingComposition } from "./cli-input-routing-composition.js"
 import { createCliOverlayInteractionComposition } from "./cli-overlay-interaction-composition.js"
 import { createCliPromptSurfaceComposition } from "./cli-prompt-surface-composition.js"
+import { createCliSessionLifecycleComposition } from "./cli-session-lifecycle-composition.js"
 import { createCliWaitingRoomComposition } from "./cli-waiting-room-composition.js"
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
 import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
@@ -71,8 +72,6 @@ import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
 import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
-import { createKernelEventSubscriptionController } from "./kernel-event-subscription-controller.js"
-import { createKernelRestartRecoveryController } from "./kernel-restart-recovery-controller.js"
 import {
   createCliProcessLoggerRegistry,
   formatCliError,
@@ -87,7 +86,6 @@ import {
 import {
   createCliUiBatchController,
 } from "./cli-ui-batch-controller.js"
-import { createCliExitController } from "./cli-exit-controller.js"
 import { createPromptAttachmentIntakeController } from "./prompt-attachment-intake-controller.js"
 import { createPromptSubmissionAgentStateController } from "./prompt-submission-agent-state-controller.js"
 import {
@@ -119,10 +117,8 @@ import { createProviderActivityController } from "./provider-activity-controller
 import {
   getProviderCatalog,
   getProviderRun,
-  launchProviderRun,
   tryGetProviderRun,
 } from "./provider-api.js"
-import { createProviderRecoveryController } from "./provider-recovery-controller.js"
 import { createPromptInputRefController } from "./prompt-input-ref-controller.js"
 import { createResponseLayoutController } from "./response-layout-controller.js"
 import { createResponsePaneProjectionController } from "./response-pane-projection-controller.js"
@@ -137,14 +133,9 @@ import {
 import {
   STATUS_BADGE_WIDTH,
   DEFAULT_CONNECTED_STATUS,
-  getExitCleanupDecision,
   getSessionStatusLabel,
   getTurnCompletionDelayMs,
-  shouldEndSessionOnCliExit,
 } from "./runtime.js"
-import {
-  applyProviderRunProfileToSession,
-} from "./session-chrome-state.js"
 import { createFocusedStatusBadgeController } from "./focused-status-badge-controller.js"
 import {
   createSessionChromeRenderController,
@@ -159,15 +150,11 @@ import {
 } from "./session-chrome-update-controller.js"
 import {
   agentHasPromptWork,
-  deriveAttachedCliTransitionState,
-  deriveDetachedCliTransitionState,
   focusedAgentIdForSession,
   sessionHasPromptWork,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
 import { createSessionStateApplyController } from "./session-state-apply-controller.js"
-import { createSessionAttachmentController } from "./session-attachment-controller.js"
-import { createSessionLifecycleController } from "./session-lifecycle.js"
 import { createTranscriptHistoryLoadController } from "./transcript-history-load-controller.js"
 import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
 import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
@@ -177,7 +164,6 @@ import {
   createTerminalOutputRecordQueue,
 } from "./terminal-output-record-queue.js"
 import { createTerminalOutputRecordProcessor } from "./terminal-output-record-processor.js"
-import { createTerminalExitController } from "./terminal-exit-controller.js"
 import { createTranscriptViewportController } from "./transcript-viewport-controller.js"
 import { createTranscriptRenderDeferralController } from "./transcript-render-deferral-controller.js"
 import { createTranscriptParserRegistration } from "./transcript-parser-registration.js"
@@ -222,7 +208,6 @@ import {
   createResponsePaneRepaintController,
 } from "./response-pane-repaint-controller.js"
 import { createTranscriptSyntaxStyle, theme } from "./theme.js"
-import { createWaitingRoomTransitionController } from "./waiting-room-transition-controller.js"
 import {
   deriveWorkspaceShellContextForSession,
 } from "./workspace-shell-controller.js"
@@ -1868,126 +1853,61 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     loadOlderHistory: () => transcriptHistoryLoadController.loadOlderPage(),
   })
 
+  let recordDaemonActivity: (activityType: string) => void = () => {}
   const {
     hydrateCurrentAttachedSession,
-    finalizeAttachedSessionBinding,
-  } = createSessionAttachmentController({
+    kernelEventSubscriptionController,
+    syncKernelEventSubscription,
+    recoverAttachedSessionAfterKernelRestart,
+    transitionToNoSession,
+    detachCurrentAttachment,
+    attachBinding,
+    recoverProviderRun,
+    requestExit,
+    requestWaitingRoom,
+    restoreTerminalAndExit,
+  } = createCliSessionLifecycleComposition({
+    client,
+    options,
+    appLogger,
+    renderer,
+    sleep,
+    formatError,
+    supportsKernelEventStream,
+    closingStateController,
     isAttached,
+    daemonDisconnected,
     attachmentState,
     sessionState,
-    getSessionState: (sessionId) => getSessionState(client, sessionId),
+    providerRunState,
+    createdSessionState,
+    waitingRoomState,
+    preferencesState,
+    connectedClientCount,
+    persistablePromptDraft,
+    syncPromptTextSnapshot,
+    flushPendingPromptDraftPersist,
+    persistSessionPromptState,
     applySessionState,
     refreshAgentPanes,
     refreshSplitPaneFocusRepaint,
     maybeResize: (sessionId) => maybeResize(client, sessionId),
     catchUpAttachedSession: (sessionId, attachmentId, session) =>
       catchUpAttachedSession(client, sessionId, attachmentId, session, appLogger),
-    formatError,
-    logWarning: (message, fields) => {
-      appLogger?.warn(message, fields)
-    },
-  })
-
-  const kernelEventSubscriptionController = createKernelEventSubscriptionController({
-    supportsKernelEventStream: () => supportsKernelEventStream,
-    getAttachment: attachmentState,
-    getSessionId: () => sessionState().id,
-    subscribeToWaitingRoomInventory: () => client.subscribeToWaitingRoomInventory(),
-    subscribeToKernelEvents: (sessionId, attachmentId) => client.subscribeToKernelEvents(sessionId, attachmentId),
-    onEvaluate: (state) => {
-      appLogger?.debug("evaluating kernel event subscription", {
-        session_id: state.nextSessionId,
-        attachment_id: state.nextAttachmentId,
-        subscribed_session_id: state.sessionId,
-        subscribed_attachment_id: state.attachmentId,
-        subscribed_scope: state.scope,
-        attached: state.attached,
-      })
-    },
-    onWaitingRoomSubscribed: () => {
-      appLogger?.info("subscribed to waiting room inventory events")
-    },
-    onSessionSubscribed: (sessionId, attachmentId) => {
-      appLogger?.info("subscribed to kernel events", {
-        session_id: sessionId,
-        attachment_id: attachmentId,
-      })
-    },
-    onWaitingRoomSubscriptionFailed: (error) => {
-      appLogger?.error("waiting room inventory subscription failed", {
-        error: formatError(error),
-      })
-      setDaemonDisconnected(true)
-      setStatusLine("Waiting to reconnect to the Arroba kernel.")
-      appendNotice(`Waiting room inventory subscription failed: ${formatError(error)}`, "warning")
-      updateSessionChrome()
-    },
-    onSessionSubscriptionFailed: (sessionId, attachmentId, error) => {
-      appLogger?.error("kernel event subscription failed", {
-        session_id: sessionId,
-        attachment_id: attachmentId,
-        error: formatError(error),
-      })
-      setDaemonDisconnected(true)
-      setStatusLine("Waiting to reconnect to the Arroba kernel.")
-      appendNotice(`Kernel event subscription failed: ${formatError(error)}`, "warning")
-      updateSessionChrome()
-    },
-  })
-  const syncKernelEventSubscription = () => kernelEventSubscriptionController.sync()
-  const kernelRestartRecoveryController = createKernelRestartRecoveryController({
-    isClosing: closingStateController.isClosing,
-    isAttached,
-    isDisconnected: daemonDisconnected,
-    getSessionId: () => sessionState().id,
-    getSessionState: (sessionId) => getSessionState(client, sessionId),
-    attachToSession: (sessionId) => attachToSession(client, sessionId, options.clientId),
-    projectSession: (session) => applyProviderRunProfileToSession(session, providerRunState()),
-    applyAttachment: setAttachmentState,
-    applySession: applySessionState,
-    resetKernelEventSubscription: kernelEventSubscriptionController.reset,
-    syncKernelEventSubscription,
-    refreshAgentPanes: () => refreshAgentPanes(sessionState()),
-    clearLocalBusyStateForAuthoritativeIdle: () => {
-      clearLocalBusyStateForAuthoritativeIdle(sessionState())
-    },
-    onRecovered: () => {
-      recordDaemonActivity("kernel_restart_recovered")
-      setDaemonDisconnected(false)
-      setStatusLine(DEFAULT_CONNECTED_STATUS)
-      updateSessionChrome()
-      appendNotice("Reconnected to the Arroba kernel.")
-    },
-    onAttemptFailed: (sessionId, error) => {
-      appLogger?.debug("kernel restart recovery attempt failed", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    },
-    sleep,
-  })
-  const recoverAttachedSessionAfterKernelRestart = () => kernelRestartRecoveryController.recover()
-
-  const {
-    transitionToNoSession,
-    detachCurrentAttachment,
-    attachBinding,
-  } = createSessionLifecycleController({
-    cliOptions: options,
-    connectedStatus: DEFAULT_CONNECTED_STATUS,
-    waitingRoomState,
-    attachmentState,
-    deriveDetachedCliTransitionState,
-    deriveAttachedCliTransitionState,
+    primeAttachedSessionBinding,
+    clearLocalBusyStateForAuthoritativeIdle,
+    recordDaemonActivity: (activityType) => recordDaemonActivity(activityType),
+    currentModelId,
+    currentVariantId,
+    focusedAgentId,
     clearPendingPromptAttachments,
     clearActiveToolLabels: primaryTranscriptRuntimeStore.clearActiveToolLabels,
-    clearWorkflows: () => {},
     clearAgentPaneRuntime,
-    clearDirectoryTree: () => setDirectoryTreeState(null),
-    clearTranscript: () => replaceTranscriptEntries([]),
-    refreshResponseLayout: applyResponseLayout,
-    resetWorkspaceScreen: () => setWorkspaceScreenMode("agents"),
-    resetStopRequestInFlight: () => {
+    setDirectoryTreeState,
+    replaceTranscriptEntries,
+    applyResponseLayout,
+    setWorkspaceScreenMode,
+    resetPromptStop: () => {
       promptStopController.reset()
     },
     bumpHistoryLoadGeneration: () => {
@@ -1995,20 +1915,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
     reconcileWaitingRoom,
     refreshWaitingRoomData,
-    requestRender: () => {
+    requestRootRender: () => {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
     },
     clearPromptInput: () => {
       promptInputRefController.clear()
     },
-    syncPromptTextSnapshot,
     blurPromptInput: () => {
       promptInputRefController.blur()
     },
     focusPromptInput: () => {
       promptInputRefController.focus()
     },
-    layoutPreference: () => preferencesState().ui?.multiAgentResponseLayout ?? null,
     setMultiAgentResponseLayout,
     setAttachmentState,
     setProviderRunState,
@@ -2029,47 +1947,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setSessionHydratingState,
     setHistoryLoadingState,
     setStatusLine,
-    updateSessionChrome,
-    refreshSplitPaneFocusRepaint,
-    attachToSession: (sessionId, clientId) => attachToSession(client, sessionId, clientId),
-    getSessionState: (sessionId) => getSessionState(client, sessionId),
-    launchProviderRun: (sessionId, provider, accountProfile, model, effort, targetAgentId) =>
-      launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
-    tryGetProviderRun: (providerRunId) => tryGetProviderRun(client, providerRunId, appLogger),
     setProviderCatalogState,
-    getProviderCatalog: () => getProviderCatalog(client, appLogger),
-    syncCliProviderSelection: ({ provider, model, effort }) => {
-      options.provider = provider
-      options.model = model
-      options.effort = effort
-      reconcileWaitingRoom({
-        ...waitingRoomState(),
-        providerId: normalizeBackendProviderId(provider),
-        modelId: model,
-        effort,
-      })
-    },
-    primeAttachedSessionBinding,
-    hydrateAttachedSessionBinding: (sessionId, attachmentId, session) =>
-      finalizeAttachedSessionBinding({ sessionId, attachmentId, session }),
     setAvailableSessions,
-    listSessions: () => listSessions(client),
     scheduleShortViewportHistoryCheck: () => transcriptHistoryAutoloadController.scheduleShortViewportCheck(),
-    detachAttachment: (attachmentId) => detachSessionAttachment(client, attachmentId),
-    syncKernelEventSubscription,
-    formatError,
-    logWarning: (message, fields) => {
-      appLogger?.warn(message, fields)
-    },
-    logAttachedProviderRun: (mode, run, fields) => {
-      logProviderRunDebug(
-        mode === "launched"
-          ? "attached session launched provider run"
-          : "attached session loaded existing provider run",
-        run,
-        fields,
-      )
-    },
+    updateSessionChrome,
+    appendNotice,
+    flashFooter,
+    logProviderRunDebug,
   })
 
   const {
@@ -2229,36 +2113,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     refreshSplitPaneFocusRepaint,
   })
 
-  const providerRecoveryController = createProviderRecoveryController({
-    isAttached,
-    getSessionId: () => sessionState().id,
-    getProvider: () => options.provider ?? "opencode",
-    getAccountProfile: () => options.accountProfile,
-    getModel: currentModelId,
-    getEffort: currentVariantId,
-    getTargetAgentId: focusedAgentId,
-    launchProviderRun: ({ sessionId, provider, accountProfile, model, effort, targetAgentId }) =>
-      launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
-    getSessionState: (sessionId) => getSessionState(client, sessionId),
-    projectSession: applyProviderRunProfileToSession,
-    applyProviderRun: setProviderRunState,
-    applySession: applySessionState,
-    resizeSession: (sessionId) => maybeResize(client, sessionId),
-    onRecovered: (reason) => {
-      setStatusLine("Recovered provider connection.")
-      updateSessionChrome()
-      flashFooter(`recovered provider run after ${reason}`, "info")
-    },
-    onRecoveryFailed: (reason, error) => {
-      appLogger?.warn("provider recovery failed", {
-        reason,
-        error: formatError(error),
-      })
-    },
-  })
-
-  const recoverProviderRun = providerRecoveryController.recover
-
   const commandCenterCommandExecutor = createCommandCenterCommandExecutor({
     onExit: () => requestExit(),
     onWaiting: () => requestWaitingRoom(),
@@ -2285,120 +2139,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     formatError,
   })
   const executeCommandCenterCommand = commandCenterCommandExecutor.execute
-
-  const exitController = createCliExitController({
-    isClosing: closingStateController.isClosing,
-    setClosing: closingStateController.setClosing,
-    getCreatedSession: createdSessionState,
-    getConnectedClientCount: connectedClientCount,
-    getAttachment: attachmentState,
-    getSessionId: () => sessionState().id,
-    getPromptDraft: persistablePromptDraft,
-    syncPromptTextSnapshot,
-    flushPromptDraftPersist: flushPendingPromptDraftPersist,
-    persistSessionPromptDraft: (sessionId, promptDraft) =>
-      persistSessionPromptState(sessionId, { promptDraft }),
-    shouldEndSessionOnExit: shouldEndSessionOnCliExit,
-    archiveSession: async (sessionId) => {
-      await archiveSessionById(client, sessionId)
-    },
-    detachAttachment: (attachmentId) => detachSessionAttachment(client, attachmentId),
-    getCleanupDecision: getExitCleanupDecision,
-    restoreTerminalAndExit: (exitCode) => restoreTerminalAndExit(exitCode),
-    onForceExitAfterCleanupFailure: () => {
-      appLogger?.warn("forcing cli exit after prior cleanup failure")
-    },
-    onExitRequested: (createdSession) => {
-      appLogger?.info("requested cli exit", {
-        created_session: createdSession,
-      })
-    },
-    onPromptDraftFlushFailed: (error) => {
-      appLogger?.warn("failed to flush prompt draft during exit", {
-        error: formatError(error),
-      })
-    },
-    onPromptDraftPersistFailed: (sessionId, error) => {
-      appLogger?.warn("failed to persist prompt draft during exit", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    },
-    onCleanupFailed: (decision, error) => {
-      appLogger?.warn("exit cleanup failed", {
-        error: formatError(error),
-        will_exit: decision.exit,
-      })
-      appendNotice(decision.message, "warning")
-      setStatusLine(decision.message)
-    },
-    onCleanupCompleted: () => {
-      appLogger?.info("cli exit cleanup completed")
-    },
-  })
-
-  const requestExit = exitController.requestExit
-
-  const waitingRoomTransitionController = createWaitingRoomTransitionController({
-    isClosing: closingStateController.isClosing,
-    getCreatedSession: createdSessionState,
-    getConnectedClientCount: connectedClientCount,
-    getAttachment: attachmentState,
-    getSessionId: () => sessionState().id,
-    getPromptDraft: persistablePromptDraft,
-    syncPromptTextSnapshot,
-    flushPromptDraftPersist: flushPendingPromptDraftPersist,
-    persistSessionPromptDraft: (sessionId, promptDraft) =>
-      persistSessionPromptState(sessionId, { promptDraft }),
-    shouldEndSessionOnExit: shouldEndSessionOnCliExit,
-    archiveSession: async (sessionId) => {
-      await archiveSessionById(client, sessionId)
-    },
-    detachAttachment: (attachmentId) => detachSessionAttachment(client, attachmentId),
-    transitionToWaitingRoom: (message) => {
-      void transitionToNoSession(message)
-    },
-    onWaitingRoomRequested: (createdSession) => {
-      appLogger?.info("requested waiting room", {
-        created_session: createdSession,
-      })
-    },
-    onPromptDraftFlushFailed: (error) => {
-      appLogger?.warn("failed to flush prompt draft during waiting-room transition", {
-        error: formatError(error),
-      })
-    },
-    onPromptDraftPersistFailed: (sessionId, error) => {
-      appLogger?.warn("failed to persist prompt draft during waiting-room transition", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    },
-    onCleanupFailed: (error) => {
-      appLogger?.warn("waiting room cleanup failed", {
-        error: formatError(error),
-      })
-      appendNotice(formatError(error), "warning")
-    },
-    onTransitionCompleted: () => {
-      appLogger?.info("waiting room transition completed")
-    },
-  })
-
-  const requestWaitingRoom = waitingRoomTransitionController.requestWaitingRoom
-
-  const terminalExitController = createTerminalExitController({
-    renderer,
-    sleep,
-    exitProcess: (exitCode) => process.exit(exitCode),
-    onRendererDestroyFailed: (error) => {
-      appLogger?.warn("renderer destroy failed during exit", {
-        error: formatError(error),
-      })
-    },
-  })
-
-  const restoreTerminalAndExit = terminalExitController.restoreAndExit
 
   const {
     cycleFocusedInteractionChoice,
@@ -2581,7 +2321,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   onCleanup(automationProcessComposition.stop)
 
   const {
-    recordDaemonActivity,
+    recordDaemonActivity: runtimeRecordDaemonActivity,
     ensureBackgroundPollersStarted,
     processKernelTerminalOutputRecord: runtimeProcessKernelTerminalOutputRecord,
   } = createCliBackgroundRuntimeComposition({
@@ -2678,6 +2418,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     kernelConnected,
     hydrateCurrentAttachedSession,
   })
+  recordDaemonActivity = runtimeRecordDaemonActivity
   processKernelTerminalOutputRecord = runtimeProcessKernelTerminalOutputRecord
 
   return (

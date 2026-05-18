@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is CLI waiting-room ownership. Waiting-room reconcile, inventory refresh, detached-kernel connect, activation, lifecycle actions, and provider/model selection projection moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-waiting-room-composition.ts`; `index.tsx` is 2,847 lines and the new module is 321 lines. CLI test passes 1,046 tests. Files around 1,000 lines are acceptable when they own a coherent responsibility; prioritize the largest ownership violations next.
+2026-05-18: Latest verified stage is CLI session lifecycle ownership. Attachment hydration, kernel event subscription, restart recovery, attach/detach transitions, provider recovery, exit cleanup, and waiting-room transition cleanup moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-session-lifecycle-composition.ts`; `index.tsx` is 2,588 lines and the new module is 466 lines. CLI test passes 1,046 tests. Files around 1,000 lines are acceptable when they own a coherent responsibility; prioritize the largest ownership violations next.
 
 ## Responsibility Rule
 
