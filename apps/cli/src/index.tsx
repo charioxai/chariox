@@ -11,9 +11,9 @@ import { reconcile } from "solid-js/store"
 
 import type {
   BootstrapState,
-  RuntimeSession,
   TerminalOutputRecord,
 } from "./cli-types.js"
+import { createCliAgentPaneComposition } from "./cli-agent-pane-composition.js"
 import { createCliBackgroundRuntimeComposition } from "./cli-background-runtime-composition.js"
 import { createCliAutomationProcessComposition } from "./cli-automation-process-composition.js"
 import { createCliAppState } from "./cli-app-state.js"
@@ -48,16 +48,8 @@ import { createCommandCenterCommandExecutor } from "./command-center-command-exe
 import { createCommandCenterLayoutController } from "./command-center-layout-controller.js"
 import { createCommandCenterController } from "./command-center-controller.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
-import { createAgentPaneRefreshController } from "./agent-pane-refresh-controller.js"
 import { createAgentPaneRuntimeResetController } from "./agent-pane-runtime-reset-controller.js"
 import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
-import { createAgentPaneStoreController } from "./agent-pane-store-controller.js"
-import { createAgentPaneTranscriptEntryController } from "./agent-pane-transcript-entry-controller.js"
-import { createAgentPaneTranscriptInteractionController } from "./agent-pane-transcript-interaction-controller.js"
-import { createAgentPaneTranscriptRenderController } from "./agent-pane-transcript-render-controller.js"
-import { createAgentPaneTranscriptRetentionController } from "./agent-pane-transcript-retention-controller.js"
-import { createAgentPaneTranscriptStreamController } from "./agent-pane-transcript-stream-controller.js"
-import { createAgentPaneStreamingCommitController } from "./agent-pane-streaming-commit-controller.js"
 import { createFooterFlashController } from "./footer-flash-controller.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 import { createHistoryLoadingRenderController } from "./history-loading-render-controller.js"
@@ -124,9 +116,6 @@ import { createResponseLayoutController } from "./response-layout-controller.js"
 import { createResponsePaneProjectionController } from "./response-pane-projection-controller.js"
 import { createResponsePaneRenderRefStoreController } from "./response-pane-render-ref-store-controller.js"
 import { createResponsePaneRenderScheduleController } from "./response-pane-render-schedule-controller.js"
-import {
-  splitPaneAuxiliaryAgentIds,
-} from "./response-panes.js"
 import {
   extractPromptHistoryEntries,
 } from "./prompt-history.js"
@@ -229,7 +218,6 @@ import { WorkspaceLayout } from "./workspace-layout.js"
 import {
   computeCurrentTurnId,
   computeNextTurnId,
-  formatTranscriptPreview,
 } from "./transcript-preview.js"
 import {
   buildTranscriptEntryRenderable,
@@ -1481,180 +1469,51 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     sessionChromeUpdateController.request(sessionChromeRenderController.shouldThrottle())
   }
 
-  const agentPaneStoreController = createAgentPaneStoreController({
-    isAttached,
-    getVisibleTranscriptAgentId: visibleTranscriptAgentId,
-    getVisibleTranscriptEntries: transcriptEntryProjectionController.renderableEntries,
-    getPaneEntriesByAgent: agentPaneEntries,
-    updatePaneEntries: (updater) => {
-      setAgentPaneEntries((current) => updater(current))
-    },
-    updatePanePreviews: (updater) => {
-      setAgentPanePreviews((current) => updater(current))
-    },
-    getSessionAgents: () => sessionState().agents,
-    getFocusedAgentId: focusedAgentId,
-    getMaxAgentsPerScreen: maxAgentsPerScreen,
-    splitAgentResponseMode,
-    getPrimaryAgentId: () => responsePrimaryAgent()?.id ?? null,
-    expandedTurnIdsForAgent,
-    replaceTranscriptEntries: (nextEntries, agentId) => {
-      replaceTranscriptEntries(nextEntries, agentId)
-    },
-    reconcileMountedAuxiliaryTranscript: (agentId, previousPaneEntries, sanitizedEntries) => {
-      reconcileMountedAuxiliaryTranscript(agentId, previousPaneEntries, sanitizedEntries)
-    },
-  })
-  const setAgentPanePreview = agentPaneStoreController.setAgentPanePreview
-  const persistVisibleTranscriptEntries = agentPaneStoreController.persistVisibleTranscriptEntries
-  const setAgentTranscriptEntries = agentPaneStoreController.setAgentTranscriptEntries
-  const visibleAuxiliaryAgentIds = agentPaneStoreController.visibleAuxiliaryAgentIds
-  const commitAgentPaneEntries = agentPaneStoreController.commitAgentPaneEntries
-  const currentAgentPaneEntries = agentPaneStoreController.currentAgentPaneEntries
-
-  const agentPaneTranscriptEntryController = createAgentPaneTranscriptEntryController({
+  const {
+    clearAllAuxiliaryAgentPanes,
+    clearAuxiliaryAgentPane,
+    rebuildAuxiliaryAgentPane,
+    persistVisibleTranscriptEntries,
+    setAgentPanePreview,
+    setAgentTranscriptEntries,
     currentAgentPaneEntries,
+    hasTrailingUserPrompt,
+    syncVisibleTranscriptPreview,
+    appendAgentPanePreview,
+    appendTranscriptEntryToAgentPane,
+    appendProviderChunkToAgentPane,
+    appendToolUpdateToAgentPane,
+    refreshAgentPanes,
+    shouldRefreshAgentPanesForSessionChange,
+  } = createCliAgentPaneComposition({
+    client,
+    renderer,
+    isAttached,
     visibleTranscriptAgentId,
     visibleTranscriptEntries: transcriptEntryProjectionController.renderableEntries,
-    expandedTurnIdsForAgent,
-    setAgentPanePreview,
-    updateAgentPanePreviews: (updater) => {
-      setAgentPanePreviews((current) => updater(current))
-    },
-    trimLiveAgentPaneEntries: (agentId, nextEntries) => trimLiveAgentPaneEntries(agentId, nextEntries),
-    setAgentTranscriptEntries: (agentId, nextEntries, turnIds) => {
-      setAgentTranscriptEntries(agentId, nextEntries, turnIds ? [...turnIds] : undefined)
-    },
-  })
-  const hasTrailingUserPrompt = agentPaneTranscriptEntryController.hasTrailingUserPrompt
-
-  const agentPaneTranscriptInteractionController = createAgentPaneTranscriptInteractionController({
-    currentAgentPaneEntries,
+    agentPaneEntries,
+    setAgentPaneEntries,
+    setAgentPanePreviews,
+    setExpandedTurnIdsByAgent,
+    setNextHistoryCursor,
+    sessionState,
+    focusedAgentId,
+    maxAgentsPerScreen,
+    splitAgentResponseMode,
+    responsePrimaryAgent,
+    expandedTurnIdsByAgent,
     expandedTurnIdsForAgent,
     setExpandedTurnState,
-    commitAgentPaneEntries: (agentId, nextEntries) => {
-      commitAgentPaneEntries(agentId, nextEntries)
-    },
-    reconcileMountedAuxiliaryTranscript: (agentId, currentEntries, nextEntries) => {
-      reconcileMountedAuxiliaryTranscript(agentId, currentEntries, nextEntries)
-    },
-    retainPromptFocus,
-  })
-  const toggleAuxiliaryPaneTurn = agentPaneTranscriptInteractionController.toggleTurn
-  const toggleAuxiliaryPaneBlob = agentPaneTranscriptInteractionController.toggleBlob
-
-  const agentPaneTranscriptRenderController = createAgentPaneTranscriptRenderController({
-    scrollboxes: agentPaneRuntimeStore.scrollboxes,
-    entryRenderables: agentPaneRuntimeStore.entryRenderables,
-    emptyRenderables: agentPaneRuntimeStore.emptyRenderables,
-    toolStates: agentPaneRuntimeStore.toolStates,
-    paneEntries: (agentId) => agentPaneEntries()[agentId] ?? [],
-    buildEmptyRenderable: () => buildEmptyTranscriptRenderable(renderer),
-    buildEntryRenderable: (agentId, entry) => buildTranscriptEntryRenderable(
-      renderer,
-      entry,
-      transcriptSyntaxStyleController.current(),
-      (turnId, nextToggleEntryId) => toggleAuxiliaryPaneTurn(agentId, turnId, nextToggleEntryId),
-      (entryId, collapsed) => toggleAuxiliaryPaneBlob(agentId, entryId, collapsed),
-      auxiliaryTranscriptSurfaceTone(agentId),
-    ),
-    renderMode: transcriptRenderMode,
-    requestRenderable: (renderable) => renderScheduler.requestRenderable(renderable),
-    clampScrollTop,
-    activeAgentIdsForSession: (session: RuntimeSession) => splitPaneAuxiliaryAgentIds(
-      session.agents,
-      session.focused_agent_id,
-      true,
-      maxAgentsPerScreen(),
-    ),
-  })
-  const auxiliaryAgentPaneTools = agentPaneTranscriptRenderController.toolStateForAgent
-  const clearAuxiliaryAgentPane = agentPaneTranscriptRenderController.clearPane
-  const rebuildAuxiliaryAgentPane = agentPaneTranscriptRenderController.rebuildPane
-  const updateAuxiliaryTranscriptEntry = agentPaneTranscriptRenderController.updateEntry
-  const reconcileMountedAuxiliaryTranscript = agentPaneTranscriptRenderController.reconcileMountedTranscript
-  const pruneAuxiliaryAgentPanes = agentPaneTranscriptRenderController.prunePanes
-
-  const agentPaneTranscriptRetentionController = createAgentPaneTranscriptRetentionController({
-    maxEntries: LIVE_TRANSCRIPT_LIMIT,
-    maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
-    deleteToolForMergeKey: (agentId, mergeKey) => {
-      auxiliaryAgentPaneTools(agentId).delete(mergeKey)
-    },
-  })
-  const trimLiveAgentPaneEntries = agentPaneTranscriptRetentionController.trimLiveEntries
-
-  const agentPaneStreamingCommitController = createAgentPaneStreamingCommitController({
-    trimLiveAgentPaneEntries,
-    expandedTurnIdsForAgent,
-    commitAgentPaneEntries,
-    splitAgentResponseMode,
-    getResponsePrimaryAgentId: () => responsePrimaryAgent()?.id ?? null,
-    replaceTranscriptEntries: (nextEntries, agentId) => {
-      replaceTranscriptEntries(nextEntries, agentId)
-    },
-    visibleAuxiliaryAgentIds,
-    updateAuxiliaryTranscriptEntry,
-    reconcileMountedAuxiliaryTranscript,
-  })
-  const commitStreamingAgentPaneEntry = agentPaneStreamingCommitController.commitStreamingEntry
-
-  const syncVisibleTranscriptPreview = agentPaneTranscriptEntryController.syncVisibleTranscriptPreview
-  const appendAgentPanePreview = agentPaneTranscriptEntryController.appendPreview
-  const appendTranscriptEntryToAgentPane = agentPaneTranscriptEntryController.appendEntry
-
-  const agentPaneTranscriptStreamController = createAgentPaneTranscriptStreamController({
-    currentAgentPaneEntries,
-    trimLiveAgentPaneEntries,
-    setAgentTranscriptEntries,
-    commitStreamingAgentPaneEntry,
-    toolStateForAgent: auxiliaryAgentPaneTools,
-  })
-  const appendProviderChunkToAgentPane = agentPaneTranscriptStreamController.appendProviderChunk
-  const appendToolUpdateToAgentPane = agentPaneTranscriptStreamController.appendToolUpdate
-
-  createEffect(() => {
-    if (!isAttached()) {
-      return
-    }
-    const agentId = responsePrimaryAgent()?.id ?? null
-    const currentEntries = transcriptEntryProjectionController.renderableEntries().map((entry) => ({ ...entry }))
-    if (!agentId || agentId !== primaryTranscriptRuntimeStore.getMountedTranscriptAgentId()) {
-      return
-    }
-    setAgentPaneEntries((current) => ({
-      ...current,
-      [agentId]: currentEntries,
-    }))
-    setAgentPanePreview(agentId, formatTranscriptPreview(currentEntries))
-  })
-
-  const agentPaneRefreshController = createAgentPaneRefreshController({
-    getCurrentAgents: () => sessionState().agents,
-    getFocusedAgentId: focusedAgentId,
-    getExpandedTurnIdsByAgent: expandedTurnIdsByAgent,
-    currentAgentPaneEntries,
-    splitAgentResponseMode,
-    maxAgentsPerScreen,
-    loadHistoryPage: async (sessionId, agentId, cursor) => {
-      const historyPage = await getSessionHistory(client, sessionId, cursor, agentId)
-      return {
-        entries: historyPage.entries,
-        nextCursor: historyPage.next_cursor,
-      }
-    },
-    pruneAuxiliaryAgentPanes,
-    setExpandedTurnIdsByAgent,
-    setAgentPanePreviews,
-    setAgentPaneEntries,
-    setNextHistoryCursor,
     applyExpandedTurns,
-    replaceTranscriptEntries: (entries, agentId) => replaceTranscriptEntries(entries, agentId),
+    retainPromptFocus,
+    agentPaneRuntimeStore,
+    transcriptSyntaxStyleController,
+    auxiliaryTranscriptSurfaceTone,
+    renderScheduler,
+    primaryTranscriptRuntimeStore,
+    replaceTranscriptEntries: (nextEntries, agentId) => replaceTranscriptEntries(nextEntries, agentId),
     applyResponseLayout,
-    rebuildAuxiliaryAgentPane,
   })
-  const refreshAgentPanes = agentPaneRefreshController.refresh
-  const shouldRefreshAgentPanesForSessionChange = agentPaneRefreshController.shouldRefreshForSessionChange
 
   const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({
     getScrollbox: transcriptScrollboxRefController.current,
@@ -1764,7 +1623,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const prependTranscriptEntries = primaryTranscriptEntryController.prependEntries
 
   const agentPaneRuntimeResetController = createAgentPaneRuntimeResetController({
-    clearRenderedPanes: agentPaneTranscriptRenderController.clearAll,
+    clearRenderedPanes: clearAllAuxiliaryAgentPanes,
     clearCurrentAuxiliaryAgentIds: agentPaneRuntimeStore.clearCurrentAuxiliaryAgentIds,
   })
   const clearAgentPaneRuntime = agentPaneRuntimeResetController.reset
