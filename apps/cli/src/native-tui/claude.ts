@@ -5,9 +5,6 @@ import path from "node:path"
 import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import {
-  type RuntimeProviderRun,
-} from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
   sendTerminalInputRequest,
@@ -22,6 +19,12 @@ import {
   type ClaudePromptOriginState,
   startClaudePermissionBridge,
 } from "./claude-permission-bridge.js"
+import {
+  launchClaudeNativeRun,
+  launchClaudeRemoteRenderedRun,
+  waitForClaudeProviderRunReady,
+  waitForClaudeRemoteRenderedRunExit,
+} from "./claude-provider-run.js"
 import {
   type ClaudeTuiController,
   startClaudeAttachedPty,
@@ -41,10 +44,6 @@ import {
   parseNativeMode as parseMode,
   parseNativePermissions as parsePermissions,
 } from "./launch-environment.js"
-import {
-  getNativeProviderRun,
-  requestNativeProviderRunLaunch,
-} from "./provider-run-control.js"
 import {
   attachNativeSession,
   createNativeSession,
@@ -137,7 +136,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
     await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     const launched = await launchClaudeNativeRun(client, session.id, agent.id, options.model, options.effort)
     const run = launched.session_id === session.id
-      ? await waitForProviderRunReady(client, launched.id)
+      ? await waitForClaudeProviderRunReady(client, launched.id)
       : launched
     permissionBridge = await startClaudePermissionBridge({
       client,
@@ -383,7 +382,7 @@ async function runClaudeRemoteRendered(
       : await spawnNativeAgent(client, session.id, "claude", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef, options.sliceRef)
     await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
-    const run = await waitForProviderRunReady(client, launched.id)
+    const run = await waitForClaudeProviderRunReady(client, launched.id)
 
     process.stderr.write([
       "[arroba claude remote-native-tui]",
@@ -421,7 +420,7 @@ async function runClaudeRemoteRendered(
         sendTerminalInputRequest(session.id, attachment.id, "\r", run.id),
       )
     }
-    await waitForRemoteRenderedRunExit(client, run.id)
+    await waitForClaudeRemoteRenderedRunExit(client, run.id)
   } finally {
     restoreStdin?.()
     disposeEvents?.()
@@ -429,92 +428,6 @@ async function runClaudeRemoteRendered(
     await client.unsubscribeFromKernelEvents().catch(() => {})
     await client.close()
   }
-}
-
-async function launchClaudeNativeRun(
-  client: LocalIpcClient,
-  sessionId: string,
-  agentId: string,
-  model: string,
-  effort: string,
-): Promise<RuntimeProviderRun> {
-  return requestNativeProviderRunLaunch(client, {
-    sessionId,
-    provider: "claude",
-    model,
-    effort,
-    agentId,
-    native: {
-      structuredEndpoint: `native://claude/${process.pid}`,
-    },
-  })
-}
-
-async function launchClaudeRemoteRenderedRun(
-  client: LocalIpcClient,
-  sessionId: string,
-  agentId: string,
-  model: string,
-  effort: string,
-): Promise<RuntimeProviderRun> {
-  return requestNativeProviderRunLaunch(client, {
-    sessionId,
-    provider: "claude",
-    model,
-    effort,
-    agentId,
-  })
-}
-
-async function waitForProviderRunReady(client: LocalIpcClient, providerRunId: string): Promise<RuntimeProviderRun> {
-  const deadline = Date.now() + 30_000
-  let latest: RuntimeProviderRun | null = null
-  let latestError: unknown = null
-  while (Date.now() < deadline) {
-    latest = await getProviderRunIfAvailable(client, providerRunId).catch((error) => {
-      latestError = error
-      return null
-    })
-    if (latest?.state === "Running") return latest
-    if (latest?.state === "Ended") throw new Error(`Claude provider run ended before native TUI was ready: ${providerRunId}`)
-    await sleep(250)
-  }
-  throw new Error(`timed out waiting for Claude provider run ${providerRunId}; latest state ${latest?.state ?? "unknown"}${latestError ? `; latest error ${formatError(latestError)}` : ""}`)
-}
-
-async function waitForRemoteRenderedRunExit(client: LocalIpcClient, providerRunId: string): Promise<void> {
-  let sawProviderRun = false
-  while (true) {
-    const run = await getProviderRunIfAvailable(client, providerRunId).catch((error) => {
-      if (sawProviderRun) throw error
-      return null
-    })
-    if (!run) {
-      await sleep(500)
-      continue
-    }
-    sawProviderRun = true
-    if (run.state === "Ended") return
-    await sleep(1_000)
-  }
-}
-
-async function getProviderRunIfAvailable(client: LocalIpcClient, providerRunId: string): Promise<RuntimeProviderRun | null> {
-  try {
-    return await getNativeProviderRun(client, providerRunId)
-  } catch (error) {
-    if (isProviderRunNotFound(error)) return null
-    throw error
-  }
-}
-
-function isProviderRunNotFound(error: unknown): boolean {
-  const message = formatError(error)
-  return message.includes("provider run") && message.includes("not found")
-}
-
-function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 function debugNativeClaude(label: string, payload: unknown) {
