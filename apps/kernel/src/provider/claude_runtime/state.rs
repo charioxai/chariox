@@ -1,0 +1,70 @@
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::process::{Child, ChildStdin};
+use std::sync::mpsc::Receiver;
+
+use super::process::{stop_child, ClaudeRuntimeMessage};
+use super::{AgentExecutionMode, AgentPermissionLevel};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClaudeRunSelection {
+    pub model: Option<String>,
+    pub variant: Option<String>,
+}
+
+pub(crate) struct ClaudeRuntimeBinding {
+    pub state: ClaudeRuntimeState,
+    pub selection: ClaudeRunSelection,
+}
+
+pub struct ClaudeRuntimeState {
+    pub(super) program: String,
+    pub(super) env: BTreeMap<String, String>,
+    pub(super) env_remove: Vec<String>,
+    pub(super) working_directory: Option<PathBuf>,
+    pub(super) child: Child,
+    pub(super) stdin: ChildStdin,
+    pub(super) receiver: Receiver<ClaudeRuntimeMessage>,
+    pub(super) active_model: String,
+    pub(super) active_variant: Option<String>,
+    pub(super) active_execution_mode: AgentExecutionMode,
+    pub(super) active_permission_level: AgentPermissionLevel,
+    pub(super) session_id: Option<String>,
+    pub(super) active_turn_id: Option<String>,
+    pub(super) cancelled_turn_pending_settlement: bool,
+    pub(super) next_turn_number: u64,
+    pub(super) result_number: u64,
+    pub(super) emitted_text_offsets: BTreeMap<String, usize>,
+    pub(super) saw_text_delta: bool,
+    pub(super) exit_reported: bool,
+}
+
+impl std::fmt::Debug for ClaudeRuntimeState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClaudeRuntimeState")
+            .field("program", &self.program)
+            .field("working_directory", &self.working_directory)
+            .field("active_model", &self.active_model)
+            .field("active_variant", &self.active_variant)
+            .field("active_execution_mode", &self.active_execution_mode)
+            .field("active_permission_level", &self.active_permission_level)
+            .field("session_id", &self.session_id)
+            .field("active_turn_id", &self.active_turn_id)
+            .field(
+                "cancelled_turn_pending_settlement",
+                &self.cancelled_turn_pending_settlement,
+            )
+            .field("next_turn_number", &self.next_turn_number)
+            .field("result_number", &self.result_number)
+            .field("emitted_text_offsets", &self.emitted_text_offsets)
+            .field("saw_text_delta", &self.saw_text_delta)
+            .field("exit_reported", &self.exit_reported)
+            .finish()
+    }
+}
+
+impl Drop for ClaudeRuntimeState {
+    fn drop(&mut self) {
+        stop_child(&mut self.child);
+    }
+}
