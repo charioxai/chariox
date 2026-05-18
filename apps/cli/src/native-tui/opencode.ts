@@ -1,12 +1,10 @@
-import { spawn, execFile } from "node:child_process"
+import { spawn } from "node:child_process"
 import { appendFileSync } from "node:fs"
 import http, { type IncomingMessage, type ServerResponse } from "node:http"
-import net from "node:net"
 import path from "node:path"
 import process from "node:process"
 import { Readable, Transform } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
-import { promisify } from "node:util"
 
 import {
   type PromptAttachmentPart,
@@ -30,6 +28,14 @@ import {
 import { grantNativeCapabilities } from "./capability-grants.js"
 import { hiddenInstructionsStart, redactHiddenInstructions } from "./hidden-instructions.js"
 import {
+  defaultKernelEndpoint,
+  inferWorkspaceTargetsFromLaunchDirectory,
+  parseKernelPort,
+  parseNativeMode as parseMode,
+  parseNativePermissions as parsePermissions,
+  reserveLocalPort as reservePort,
+} from "./launch-environment.js"
+import {
   getNativeProviderRun,
   requestNativeProviderRunLaunch,
 } from "./provider-run-control.js"
@@ -41,8 +47,6 @@ import {
   resolveNativeSession,
   spawnNativeAgent,
 } from "./session-control.js"
-
-const execFileAsync = promisify(execFile)
 
 type NativeOpenCodeOptions = {
   sessionRef?: string
@@ -376,56 +380,6 @@ function printNativeOpenCodeUsage() {
   ].join("\n") + "\n")
 }
 
-function parseMode(value: string): "build" | "plan" {
-  if (value === "build" || value === "plan") return value
-  throw new Error("--mode must be build or plan")
-}
-
-function parsePermissions(value: string): "required" | "yolo" {
-  if (value === "required" || value === "yolo") return value
-  throw new Error("--permissions must be required or yolo")
-}
-
-async function inferWorkspaceTargetsFromLaunchDirectory(cwd: string): Promise<{ workspace: string; worktree: string }> {
-  try {
-    const [worktreeResult, commonDirResult] = await Promise.all([
-      execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd }),
-      execFileAsync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd }),
-    ])
-    const worktree = worktreeResult.stdout.trim()
-    const commonDir = commonDirResult.stdout.trim()
-    if (!worktree) {
-      return { workspace: cwd, worktree: cwd }
-    }
-    const workspace = commonDir.endsWith("/.git")
-      ? commonDir.slice(0, -"/.git".length)
-      : worktree
-    return { workspace, worktree }
-  } catch {
-    return { workspace: cwd, worktree: cwd }
-  }
-}
-
-function defaultKernelEndpoint(kernelPort?: string): string {
-  if (process.env.ARROBA_KERNEL_URL) {
-    return process.env.ARROBA_KERNEL_URL
-  }
-  const host = process.env.ARROBA_KERNEL_HOST ?? "127.0.0.1"
-  const port = kernelPort ?? process.env.ARROBA_KERNEL_PORT ?? "43119"
-  return `ws://${host}:${port}/kernel`
-}
-
-function parseKernelPort(value: string, arg: string): string {
-  if (!/^\d+$/.test(value)) {
-    throw new Error(`${arg} must be a TCP port`)
-  }
-  const port = Number(value)
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error(`${arg} must be between 1 and 65535`)
-  }
-  return String(port)
-}
-
 async function updateProviderRunSelection(
   client: LocalIpcClient,
   sessionId: string,
@@ -473,22 +427,6 @@ function assertLocalStructuredEndpoint(endpoint: string) {
   if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
     throw new Error(`native OpenCode TUI mode only supports local provider endpoints for now; got ${endpoint}`)
   }
-}
-
-async function reservePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer()
-    server.once("error", reject)
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address()
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("port reservation did not expose a TCP address")))
-        return
-      }
-      const port = address.port
-      server.close(() => resolve(port))
-    })
-  })
 }
 
 async function startOpenCodeServer(baseUrl: string, workingDirectory: string) {
